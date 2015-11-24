@@ -3,5 +3,5 @@
 
 Vagrant.configure(2) do |config|
   config.vm.box = "precise64"
-  config.vm.provision "shell", inline: "sudo apt-get update && sudo apt-get install build-essential"
+  config.vm.provision "shell", inline: "sudo apt-get update && sudo apt-get install build-essential nasm"
 end
