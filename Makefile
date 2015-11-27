@@ -9,16 +9,13 @@ assembly_object_files := $(patsubst src/arch/$(arch)/%.asm, build/arch/$(arch)/%
 
 .PHONY: all clean run iso isovagrant
 
-all: $(isovagrant)
+all: $(iso)
 
 clean:
 	@rm -r build
 
 run: $(iso)
 	@qemu-system-x86_64 -hda $(iso)
-
-isovagrant: $(kernel)
-	@vagrant ssh -c "cd /vagrant ; make iso"
 
 iso: $(iso)
 
