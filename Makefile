@@ -32,7 +32,7 @@ $(kernel): cargo $(rust_os) $(assembly_object_files) $(linker_script)
 	@x86_64-elf-ld -n --gc-sections -T $(linker_script) -o $(kernel) $(assembly_object_files) $(rust_os)
 
 cargo:
-	@cargo build --target $(target) --verbose
+	@cargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone
 
 # compile assembly files
 build/arch/$(arch)/%.o: src/arch/$(arch)/%.asm
