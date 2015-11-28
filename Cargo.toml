@@ -3,8 +3,9 @@ name = "breenix"
 version = "0.1.0"
 authors = ["Ryan Breen <ryan@ryanbreen.com>"]
 
-[dependencies.core]
-path = "core"
+
+[dependencies]
+rlibc = "0.1.4"
 
 [lib]
 crate-type = ["staticlib"]
