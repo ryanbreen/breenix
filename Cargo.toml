@@ -1,0 +1,10 @@
+[package]
+name = "breenix"
+version = "0.1.0"
+authors = ["Ryan Breen <ryan@ryanbreen.com>"]
+
+[dependencies.core]
+path = "core"
+
+[lib]
+crate-type = ["staticlib"]
