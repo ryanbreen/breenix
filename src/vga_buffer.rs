@@ -1,5 +1,6 @@
 use core::ptr::Unique;
 use core::fmt::Write;
+use spin::Mutex;
 
 #[repr(u8)]
 pub enum Color {
@@ -25,12 +26,13 @@ pub enum Color {
 struct ColorCode(u8);
 
 impl ColorCode {
-    const fn new(foreground: Color, background: Color) -> ColorCode {
-        ColorCode((background as u8) << 4 | (foreground as u8))
-    }
+  const fn new(foreground: Color, background: Color) -> ColorCode {
+    ColorCode((background as u8) << 4 | (foreground as u8))
+  }
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct ScreenChar {
     ascii_character: u8,
     color_code: ColorCode,
@@ -74,7 +76,22 @@ impl Writer {
     unsafe{ self.buffer.get_mut() }
   }
 
-  fn new_line(&mut self) {/* TODO */}
+  fn new_line(&mut self) {
+    for row in 0..(BUFFER_HEIGHT-1) {
+      let buffer = self.buffer();
+      buffer.chars[row] = buffer.chars[row + 1]
+    }
+    self.clear_row(BUFFER_HEIGHT-1);
+    self.column_position = 0;
+  }
+
+  fn clear_row(&mut self, row: usize) {
+    let blank = ScreenChar {
+      ascii_character: b' ',
+      color_code: self.color_code,
+    };
+    self.buffer().chars[row] = [blank; BUFFER_WIDTH];
+  }
 }
 
 impl ::core::fmt::Write for Writer {
@@ -86,13 +103,8 @@ impl ::core::fmt::Write for Writer {
   }
 }
 
-pub unsafe fn print_something() {
-  let mut writer = Writer {
-        column_position: 0,
-        color_code: ColorCode::new(Color::LightGreen, Color::Black),
-        buffer: Unique::new(0xb8000 as *mut _),
-    };
-  writer.write_byte(b'H');
-  writer.write_str("ello! ");
-  write!(writer, "Number is {}", 42);
-}
+pub static WRITER: Mutex<Writer> = Mutex::new(Writer {
+    column_position: 0,
+    color_code: ColorCode::new(Color::LightGreen, Color::Black),
+    buffer: unsafe { Unique::new(0xb8000 as *mut _) },
+});

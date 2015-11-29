@@ -2,13 +2,15 @@
 #![no_std]
 
 extern crate rlibc;
+extern crate spin;
 
 mod vga_buffer;
 
 #[no_mangle]
 pub unsafe extern fn rust_main() {
-  vga_buffer::print_something();
-
+  use core::fmt::Write;
+  vga_buffer::WRITER.lock().write_str("Hello again");
+  write!(vga_buffer::WRITER.lock(), ", some numbers: {} {}", 42, 67);
   loop{}
 }
 
