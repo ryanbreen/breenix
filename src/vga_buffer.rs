@@ -70,12 +70,6 @@ impl Writer {
     }
   }
 
-  pub fn write_str(&mut self, s: &str) {
-    for byte in s.bytes() {
-      self.write_byte(byte)
-    }
-  }
-
   fn buffer(&mut self) -> &mut Buffer {
     unsafe{ self.buffer.get_mut() }
   }
@@ -83,12 +77,22 @@ impl Writer {
   fn new_line(&mut self) {/* TODO */}
 }
 
+impl ::core::fmt::Write for Writer {
+  fn write_str(&mut self, s: &str) -> ::core::fmt::Result {
+    for byte in s.bytes() {
+      self.write_byte(byte)
+    }
+    Ok(())
+  }
+}
+
 pub unsafe fn print_something() {
   let mut writer = Writer {
-      column_position: 0,
-      color_code: ColorCode::new(Color::LightGreen, Color::Black),
-      buffer: Unique::new(0xb8000 as *mut _),
-  };
-
-  writer.write_str("Happy dance!");
+        column_position: 0,
+        color_code: ColorCode::new(Color::LightGreen, Color::Black),
+        buffer: Unique::new(0xb8000 as *mut _),
+    };
+  writer.write_byte(b'H');
+  writer.write_str("ello! ");
+  //write!(writer, "The numbers are {} and {}", 42, 1.0/3.0);
 }
