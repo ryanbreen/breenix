@@ -94,5 +94,5 @@ pub unsafe fn print_something() {
     };
   writer.write_byte(b'H');
   writer.write_str("ello! ");
-  //write!(writer, "The numbers are {} and {}", 42, 1.0/3.0);
+  write!(writer, "Number is {}", 42);
 }
