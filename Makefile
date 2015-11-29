@@ -17,7 +17,7 @@ clean:
 	@rm -r build
 
 run: $(iso)
-	@qemu-system-x86_64 -hda $(iso)
+	@qemu-system-x86_64 -hda $(iso) -m 5G
 
 iso: $(iso)
 
