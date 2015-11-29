@@ -8,5 +8,8 @@ authors = ["Ryan Breen <ryan@ryanbreen.com>"]
 rlibc = "0.1.4"
 spin = "0.3.4"
 
+[dependencies.multiboot2]
+git = "https://github.com/phil-opp/multiboot2-elf64"
+
 [lib]
 crate-type = ["staticlib"]
