@@ -1,12 +1,12 @@
 pub use self::area_frame_allocator::AreaFrameAllocator;
 mod area_frame_allocator;
 
+pub const PAGE_SIZE: usize = 4096;
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Frame {
     number: usize,
 }
-
-pub const PAGE_SIZE: usize = 4096;
 
 impl Frame {
   fn containing_address(address: usize) -> Frame {
@@ -15,6 +15,6 @@ impl Frame {
 }
 
 pub trait FrameAllocator {
-    fn allocate_frame(&mut self) -> Option<Frame>;
-    fn deallocate_frame(&mut self, frame: Frame);
+  fn allocate_frame(&mut self) -> Option<Frame>;
+  fn deallocate_frame(&mut self, frame: Frame);
 }
