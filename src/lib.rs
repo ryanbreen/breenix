@@ -1,4 +1,4 @@
-#![feature(no_std, lang_items, const_fn, unique, core_str_ext)]
+#![feature(no_std, lang_items, const_fn, unique, core_str_ext, iter_cmp)]
 #![no_std]
 
 extern crate rlibc;
@@ -7,6 +7,7 @@ extern crate multiboot2;
 
 #[macro_use]
 mod vga_buffer;
+mod memory;
 
 #[lang = "panic_fmt"]
 extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
@@ -43,9 +44,13 @@ pub extern fn rust_main(multiboot_information_address: usize) {
   let multiboot_end = multiboot_start + (boot_info.total_size as usize);
   println!("multiboot start={} multiboot end={}", multiboot_start, multiboot_end);
 
-  panic!();
+  let mut frame_allocator = memory::AreaFrameAllocator::new(
+    kernel_start as usize, kernel_end as usize, multiboot_start,
+    multiboot_end, memory_map_tag.memory_areas());
+  println!("{:?}", frame_allocator.allocate_frame());
+  println!("{:?}", frame_allocator.allocate_frame());
 
-  loop{}
+  panic!();
 }
 
 #[lang = "eh_personality"] extern fn eh_personality() {}
