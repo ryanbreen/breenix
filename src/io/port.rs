@@ -1,10 +1,11 @@
-pub struct Port {
+pub struct Port<T> {
     port: u16,
+    phantom: PhantomData<T>,
 }
 
-impl Port {
-    pub unsafe fn new(port: u16) -> Port {
-        Port { port: port }
+impl<T> Port<T> {
+    pub unsafe fn new(port: u16) -> Port<T> {
+        Port { port: port, phantom: PhantomData }
     }
 
     pub fn read(&mut self) -> u8 {
