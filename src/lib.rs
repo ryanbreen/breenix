@@ -6,6 +6,7 @@ extern crate spin;
 extern crate multiboot2;
 
 mod io;
+
 #[macro_use]
 mod vga_buffer;
 mod memory;
@@ -56,6 +57,9 @@ pub extern fn rust_main(multiboot_information_address: usize) {
       break;
     }
   }
+
+  let scancode = io::KEYBOARD.lock().read();
+  println!("Got keyboard code {}", scancode);
 
   panic!();
 }
