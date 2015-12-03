@@ -1,10 +1,11 @@
-#![feature(no_std, lang_items, const_fn, unique, core_str_ext, iter_cmp)]
+#![feature(no_std, lang_items, const_fn, unique, core_str_ext, iter_cmp, asm)]
 #![no_std]
 
 extern crate rlibc;
 extern crate spin;
 extern crate multiboot2;
 
+mod io;
 #[macro_use]
 mod vga_buffer;
 mod memory;
