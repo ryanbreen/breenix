@@ -1,5 +1,3 @@
-use core::marker::PhantomData;
-
 /// Read a `u8`-sized value from `port`.
 pub unsafe fn inb(port: u16) -> u8 {
     // The registers for the `in` and `out` instructions are always the
@@ -36,23 +34,4 @@ pub unsafe fn inl(port: u16) -> u32 {
 /// Write a `u32`-sized `value` to `port`.
 pub unsafe fn outl(value: u32, port: u16) {
     asm!("outl %eax, %dx" :: "{dx}"(port), "{eax}"(value) :: "volatile");
-}
-
-pub struct Port<T> {
-    port: u16,
-    phantom: PhantomData<T>,
-}
-
-impl<T> Port<T> {
-    pub unsafe fn new(port: u16) -> Port<T> {
-        Port { port: port, phantom: PhantomData }
-    }
-
-    pub fn read(&mut self) -> u8 {
-        unsafe { inb(self.port) }
-    }
-
-    pub fn write(&mut self, value: u8) {
-        unsafe { outb(value, self.port) }
-    }
 }
