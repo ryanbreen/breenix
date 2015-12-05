@@ -2,8 +2,11 @@ use core::marker::PhantomData;
 
 mod x86;
 
-//#[cfg(any(target_arch="x86", target_arch="x86_64"))]
-//pub use x86::{inb, outb, inw, outw, inl, outl};
+use spin::Mutex;
+
+pub static KEYBOARD: Mutex<Port<u8>> = Mutex::new(unsafe {
+    Port::new(0x60)
+});
 
 /// This trait is defined for any type which can be read or written over a
 /// port.  The processor supports I/O with `u8`, `u16` and `u32`.  The

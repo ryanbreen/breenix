@@ -11,12 +11,6 @@ mod io;
 mod vga_buffer;
 mod memory;
 
-use spin::Mutex;
-
-pub static KEYBOARD: Mutex<io::Port<u8>> = Mutex::new(unsafe {
-    io::Port::new(0x60)
-});
-
 #[lang = "panic_fmt"]
 extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
   println!("\n\nPANIC in {} at line {}:", file, line);
@@ -64,7 +58,7 @@ pub extern fn rust_main(multiboot_information_address: usize) {
     }
   }
 
-  let scancode = KEYBOARD.lock().read();
+  let scancode = io::KEYBOARD.lock().read();
   println!("Got keyboard code {}", scancode);
 
   panic!();
