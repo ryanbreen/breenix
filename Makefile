@@ -34,6 +34,10 @@ $(kernel): cargo $(rust_os) $(assembly_object_files) $(linker_script)
 cargo:
 	@cargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone
 
+libcore:
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone core/src/lib.rs	
+	@mv libcore.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcore.rlib
+
 # compile assembly files
 build/arch/$(arch)/%.o: src/arch/$(arch)/%.asm
 	@mkdir -p $(shell dirname $@)
