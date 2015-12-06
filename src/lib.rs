@@ -58,10 +58,10 @@ pub extern fn rust_main(multiboot_information_address: usize) {
     }
   }
 
-  let scancode = io::KEYBOARD.lock().read();
-  println!("Got keyboard code {}", scancode);
-
-  panic!();
+  loop {
+    let scancode = io::KEYBOARD.lock().read();
+    println!("Got keyboard code {}", scancode);
+  }
 }
 
 #[lang = "eh_personality"] extern fn eh_personality() {}
