@@ -22,7 +22,7 @@ extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
 pub extern fn rust_main(multiboot_information_address: usize) {
   vga_buffer::clear_screen();
   println!("Hello World{}", "!");
-  println!("Whoop these numbers {} {}", 42, 100.0/33.0);
+  println!("Whoop these numbers {} {}", 42, 100/33);
 
   let boot_info = unsafe{ multiboot2::load(multiboot_information_address) };
   let memory_map_tag = boot_info.memory_map_tag().expect("Memory map tag required");
@@ -59,8 +59,15 @@ pub extern fn rust_main(multiboot_information_address: usize) {
   }
 
   loop {
-    let scancode = io::KEYBOARD.lock().read();
-    println!("Got keyboard code {}", scancode);
+    unsafe {
+      let scancode = io::KEYBOARD.lock().read();
+
+      if scancode == 16 {
+        panic!();
+      }
+
+      println!("Got keyboard code {}", scancode);
+    }
   }
 }
 

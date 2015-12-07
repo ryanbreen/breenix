@@ -14,7 +14,7 @@ assembly_object_files := $(patsubst src/arch/$(arch)/%.asm, build/arch/$(arch)/%
 all: $(iso)
 
 clean:
-	@rm -r build
+	@rm -r target
 
 run: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G
