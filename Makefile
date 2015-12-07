@@ -9,7 +9,7 @@ grub_cfg := src/arch/$(arch)/grub.cfg
 assembly_source_files := $(wildcard src/arch/$(arch)/*.asm)
 assembly_object_files := $(patsubst src/arch/$(arch)/%.asm, build/arch/$(arch)/%.o, $(assembly_source_files))
 
-.PHONY: all clean run iso isovagrant
+.PHONY: all clean run iso isovagrant libcore patch_libcore
 
 all: $(iso)
 
@@ -34,7 +34,13 @@ $(kernel): cargo $(rust_os) $(assembly_object_files) $(linker_script)
 cargo:
 	@cargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone
 
-libcore:
+patch_libcore:
+	@cp libcore_nofp.patch core/libcore
+	@cd core/libcore
+	@patch -p1 <libcore_nofp.patch
+	@cd -
+
+libcore: $(patch_libcore)
 	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone core/src/lib.rs	
 	@mv libcore.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcore.rlib
 
