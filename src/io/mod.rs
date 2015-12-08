@@ -58,3 +58,42 @@ impl<T: InOut> Port<T> {
         unsafe { T::port_out(self.port, value); }
     }
 }
+
+struct Pic {
+    offset: u8,
+    command: Port<u8>,
+    data: Port<u8>,
+}
+
+impl Pic {
+    fn handles_interrupt(&self, interupt_id: u8) -> bool {
+        self.offset <= interupt_id && interupt_id < self.offset + 8
+    }
+
+    unsafe fn end_of_interrupt(&mut self) {
+        self.command.write(0x20);
+    }
+}
+
+pub struct ChainedPics {
+    pics: [Pic; 2],
+}
+
+impl ChainedPics {
+    pub const unsafe fn new(offset1: u8, offset2: u8) -> ChainedPics {
+        ChainedPics {
+            pics: [
+                Pic {
+                    offset: offset1,
+                    command: Port::new(0x20),
+                    data: Port::new(0x21),
+                },
+                Pic {
+                    offset: offset2,
+                    command: Port::new(0xA0),
+                    data: Port::new(0xA1),
+                },
+            ]
+        }
+    }
+}

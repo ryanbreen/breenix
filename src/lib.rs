@@ -62,6 +62,7 @@ pub extern fn rust_main(multiboot_information_address: usize) {
     unsafe {
       let scancode = io::KEYBOARD.lock().read();
 
+      // If the user hits 'q', exit.
       if scancode == 16 {
         panic!();
       }
