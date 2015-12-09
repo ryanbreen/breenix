@@ -118,16 +118,29 @@ impl ChainedPics {
         let saved_mask1 = self.pics[0].data.read();
         let saved_mask2 = self.pics[1].data.read();
 
-        // Send command: Begin 3-byte initialization sequence.
+         // Tell each PIC that we're going to send it a three-byte
+        // initialization sequence on its data port.
         self.pics[0].command.write(CMD_INIT);
         wait();
         self.pics[1].command.write(CMD_INIT);
         wait();
 
-        // Send data 1: Set interrupt offset.
+        // Byte 1: Set up our base offsets.
         self.pics[0].data.write(self.pics[0].offset);
         wait();
         self.pics[1].data.write(self.pics[1].offset);
+        wait();
+
+        // Byte 2: Configure chaining between PIC1 and PIC2.
+        self.pics[0].data.write(4);
+        wait();
+        self.pics[1].data.write(2);
+        wait();
+
+        // Byte 3: Set our mode.
+        self.pics[0].data.write(MODE_8086);
+        wait();
+        self.pics[1].data.write(MODE_8086);
         wait();
 
         self.pics[0].data.write(saved_mask1);
