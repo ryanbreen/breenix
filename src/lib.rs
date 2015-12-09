@@ -64,6 +64,8 @@ pub extern fn rust_main(multiboot_information_address: usize) {
 
       // If the user hits 'q', exit.
       if scancode == 16 {
+        io::PICS.lock().initialize();
+        println!("Interrupts engaged");
         panic!();
       }
 
