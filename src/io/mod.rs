@@ -4,8 +4,21 @@ mod x86;
 
 use spin::Mutex;
 
+/// Command sent to begin PIC initialization.
+const CMD_INIT: u8 = 0x11;
+
+/// Command sent to acknowledge an interrupt.
+const CMD_END_OF_INTERRUPT: u8 = 0x20;
+
+// The mode in which we want to run our PICs.
+const MODE_8086: u8 = 0x01;
+
 pub static KEYBOARD: Mutex<Port<u8>> = Mutex::new(unsafe {
     Port::new(0x60)
+});
+
+pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
+    ChainedPics::new(0x20, 0x28)
 });
 
 /// This trait is defined for any type which can be read or written over a
@@ -71,7 +84,7 @@ impl Pic {
     }
 
     unsafe fn end_of_interrupt(&mut self) {
-        self.command.write(0x20);
+        self.command.write(CMD_END_OF_INTERRUPT);
     }
 }
 
@@ -94,6 +107,43 @@ impl ChainedPics {
                     data: Port::new(0xA1),
                 },
             ]
+        }
+    }
+
+    pub unsafe fn initialize(&mut self) {
+
+        let mut wait_port: Port<u8> = Port::new(0x80);
+        let mut wait = || { wait_port.write(0) };
+
+        let saved_mask1 = self.pics[0].data.read();
+        let saved_mask2 = self.pics[1].data.read();
+
+        // Send command: Begin 3-byte initialization sequence.
+        self.pics[0].command.write(CMD_INIT);
+        wait();
+        self.pics[1].command.write(CMD_INIT);
+        wait();
+
+        // Send data 1: Set interrupt offset.
+        self.pics[0].data.write(self.pics[0].offset);
+        wait();
+        self.pics[1].data.write(self.pics[1].offset);
+        wait();
+
+        self.pics[0].data.write(saved_mask1);
+        self.pics[1].data.write(saved_mask2);
+    }
+
+    pub fn handles_interrupt(&self, interrupt_id: u8) -> bool {
+        self.pics.iter().any(|p| p.handles_interrupt(interrupt_id))
+    }
+
+    pub unsafe fn notify_end_of_interrupt(&mut self, interrupt_id: u8) {
+        if self.handles_interrupt(interrupt_id) {
+            if self.pics[1].handles_interrupt(interrupt_id) {
+                self.pics[1].end_of_interrupt();
+            }
+            self.pics[0].end_of_interrupt();
         }
     }
 }
