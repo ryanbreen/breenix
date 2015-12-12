@@ -5,6 +5,9 @@ extern crate rlibc;
 extern crate spin;
 extern crate multiboot2;
 
+#[macro_use]
+extern crate bitflags;
+
 mod io;
 
 #[macro_use]
