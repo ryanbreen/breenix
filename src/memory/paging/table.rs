@@ -13,6 +13,12 @@ impl Index<usize> for Table {
     fn index(&self, index: usize) -> &Entry {
         &self.entries[index]
     }
+
+    pub fn zero(&mut self) {
+    for entry in self.entries.iter_mut() {
+        entry.set_unused();
+    }
+}
 }
 
 impl IndexMut<usize> for Table {
