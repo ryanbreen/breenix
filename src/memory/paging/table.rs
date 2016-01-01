@@ -3,8 +3,29 @@ use memory::paging::ENTRY_COUNT;
 
 pub const P4: *mut Table = 0xffffffff_fffff000 as *mut _;
 
-pub struct Table {
+pub trait TableLevel {}
+
+pub enum Level4 {}
+enum Level3 {}
+enum Level2 {}
+enum Level1 {}
+
+impl TableLevel for Level4 {}
+impl TableLevel for Level3 {}
+impl TableLevel for Level2 {}
+impl TableLevel for Level1 {}
+
+trait HierachicalLevel: TableLevel {}
+
+impl HierachicalLevel for Level4 {}
+impl HierachicalLevel for Level3 {}
+impl HierachicalLevel for Level2 {}
+
+use core::marker::PhantomData;
+
+pub struct Table<L: TableLevel> {
     entries: [Entry; ENTRY_COUNT],
+    level: PhantomData<L>,
 }
 
 use core::ops::{Index, IndexMut};
