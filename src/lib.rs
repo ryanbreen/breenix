@@ -61,6 +61,11 @@ pub extern fn rust_main(multiboot_information_address: usize) {
     }
   }
 
+  memory::test_paging(&mut frame_allocator);
+
+}
+
+/**
   loop {
     unsafe {
       let scancode = io::KEYBOARD.lock().read();
@@ -75,7 +80,8 @@ pub extern fn rust_main(multiboot_information_address: usize) {
       println!("Got keyboard code {}", scancode);
     }
   }
-}
+  **/
+//}
 
 #[lang = "eh_personality"] extern fn eh_personality() {}
 
