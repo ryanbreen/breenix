@@ -1,5 +1,6 @@
 use memory::paging::entry::*;
 use memory::paging::ENTRY_COUNT;
+use memory::FrameAllocator;
 
 pub const P4: *mut Table<Level4> = 0xffffffff_fffff000 as *mut _;
 
@@ -15,11 +16,21 @@ impl TableLevel for Level3 {}
 impl TableLevel for Level2 {}
 impl TableLevel for Level1 {}
 
-trait HierachicalLevel: TableLevel {}
+trait HierachicalLevel: TableLevel {
+    type NextLevel: TableLevel;
+}
 
-impl HierachicalLevel for Level4 {}
-impl HierachicalLevel for Level3 {}
-impl HierachicalLevel for Level2 {}
+impl HierachicalLevel for Level4 {
+    type NextLevel = Level3;
+}
+
+impl HierachicalLevel for Level3 {
+    type NextLevel = Level2;
+}
+
+impl HierachicalLevel for Level2 {
+    type NextLevel = Level1;
+}
 
 use core::marker::PhantomData;
 
@@ -41,12 +52,12 @@ impl<L> Table<L> where L: TableLevel
 
 impl<L> Table<L> where L: HierachicalLevel
 {
-  pub fn next_table(&self, index: usize) -> Option<&Table<???>> {
+  pub fn next_table(&self, index: usize) -> Option<&Table<L::NextLevel>> {
     self.next_table_address(index)
         .map(|address| unsafe { &*(address as *const _) })
   }
 
-  pub fn next_table_mut(&mut self, index: usize) -> Option<&mut Table<???>> {
+  pub fn next_table_mut(&mut self, index: usize) -> Option<&mut Table<L::NextLevel>> {
     self.next_table_address(index)
         .map(|address| unsafe { &mut *(address as *mut _) })
   }
@@ -59,6 +70,22 @@ impl<L> Table<L> where L: HierachicalLevel
     } else {
       None
     }
+  }
+  
+  pub fn next_table_create<A>(&mut self,
+                            index: usize,
+                            allocator: &mut A)
+                            -> &mut Table<L::NextLevel>
+    where A: FrameAllocator
+  {
+      if self.next_table(index).is_none() {
+          assert!(!self.entries[index].flags().contains(HUGE_PAGE),
+                  "mapping code does not support huge pages");
+          let frame = allocator.allocate_frame().expect("no frames available");
+          self.entries[index].set(frame, PRESENT | WRITABLE);
+          self.next_table_mut(index).unwrap().zero();
+      }
+      self.next_table_mut(index).unwrap()
   }
 }
 
