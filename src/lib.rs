@@ -8,6 +8,8 @@ extern crate multiboot2;
 #[macro_use]
 extern crate bitflags;
 
+extern crate x86;
+
 mod io;
 
 #[macro_use]
