@@ -17,7 +17,11 @@ impl Frame {
   }
 
   fn start_address(&self) -> PhysicalAddress {
-      self.number * PAGE_SIZE
+    self.number * PAGE_SIZE
+  }
+
+  fn clone(&self) -> Frame {
+    Frame { number: self.number }
   }
 }
 
