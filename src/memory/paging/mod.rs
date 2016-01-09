@@ -3,6 +3,8 @@ use memory::PAGE_SIZE; // needed later
 mod entry;
 mod table;
 
+mod temporary_paeg;
+
 pub use self::entry::*;
 use self::table::{Table, Level4};
 use core::ptr::Unique;
