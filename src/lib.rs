@@ -33,6 +33,13 @@ fn enable_nxe_bit() {
     }
 }
 
+fn enable_write_protect_bit() {
+    use x86::controlregs::{cr0, cr0_write};
+
+    let wp_bit = 1 << 16;
+    unsafe { cr0_write(cr0() | wp_bit) };
+}
+
 #[no_mangle]
 pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // ATTENTION: we have a very small stack and no guard page
@@ -64,6 +71,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
         multiboot_end, memory_map_tag.memory_areas());
 
     enable_nxe_bit();
+    enable_write_protect_bit();
     memory::remap_the_kernel(&mut frame_allocator, boot_info);
     println!("It did not crash!");
 
