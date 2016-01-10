@@ -9,7 +9,7 @@ pub trait TableLevel {}
 pub enum Level4 {}
 enum Level3 {}
 enum Level2 {}
-enum Level1 {}
+pub enum Level1 {}
 
 impl TableLevel for Level4 {}
 impl TableLevel for Level3 {}
