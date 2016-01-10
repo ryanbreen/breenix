@@ -281,7 +281,7 @@ pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation)
         println!("mapping section at addr: {:#x}, size: {:#x}",
             section.addr, section.size);
 
-        let flags = WRITABLE; // TODO use real section flags
+        let flags = EntryFlags::from_elf_section_flags(section);
 
         let range = Range {
             start: section.addr as usize,
