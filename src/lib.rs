@@ -74,8 +74,21 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     enable_write_protect_bit();
     memory::remap_the_kernel(&mut frame_allocator, boot_info);
     println!("It did not crash!");
+  
+    loop {
+      unsafe {
+        let scancode = io::KEYBOARD.lock().read();
 
-    loop {}
+        // If the user hits 'q', exit.
+        if scancode == 16 {
+          io::PICS.lock().initialize();
+          println!("Interrupts engaged");
+          panic!();
+        }
+
+        println!("Got keyboard code {}", scancode);
+      }
+    }
 }
 
 
