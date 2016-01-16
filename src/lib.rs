@@ -86,7 +86,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
           panic!();
         }
 
-        println!("Got keyboard code {}", scancode);
+        if scancode != 0xFA {
+          println!("Got keyboard code {}", scancode);
+        }
+
       }
     }
 }
