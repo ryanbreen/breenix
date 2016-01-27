@@ -35,8 +35,8 @@ cargo:
 	@cargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone
 
 patch_libcore:
-	@cp libcore_nofp.patch core/libcore
-	@cd core/libcore
+	@cp libcore_nofp.patch core/src
+	@cd core/src
 	@patch -p1 <libcore_nofp.patch
 	@cd -
 
