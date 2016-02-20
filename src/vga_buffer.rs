@@ -16,6 +16,7 @@ macro_rules! print {
 }
 
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum Color {
     Black      = 0,
     Blue       = 1,
