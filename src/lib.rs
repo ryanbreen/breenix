@@ -10,11 +10,14 @@ extern crate bitflags;
 
 extern crate x86;
 
-mod io;
+// Note: We must define vga_buffer first since it declared println!  Otherwise, no
+// other mod can print.
 
 #[macro_use]
 mod vga_buffer;
 mod memory;
+
+mod io;
 
 #[lang = "panic_fmt"]
 extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
@@ -42,9 +45,6 @@ fn enable_write_protect_bit() {
 
 #[no_mangle]
 pub extern "C" fn rust_main(multiboot_information_address: usize) {
-    // ATTENTION: we have a very small stack and no guard page
-
-    // the same as before
     vga_buffer::clear_screen();
     println!("Hello World{}", "!");
 
@@ -74,24 +74,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     enable_write_protect_bit();
     memory::remap_the_kernel(&mut frame_allocator, boot_info);
     println!("It did not crash!");
-  
-    loop {
-      unsafe {
-        let scancode = io::KEYBOARD.lock().read();
 
-        // If the user hits 'q', exit.
-        if scancode == 16 {
-          io::PICS.lock().initialize();
-          println!("Interrupts engaged");
-          panic!();
-        }
-
-        if scancode != 0xFA {
-          println!("Got keyboard code {}", scancode);
-        }
-
-      }
-    }
+    io::keyboard::test();
 }
 
 

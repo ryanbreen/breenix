@@ -13,9 +13,8 @@ const CMD_END_OF_INTERRUPT: u8 = 0x20;
 // The mode in which we want to run our PICs.
 const MODE_8086: u8 = 0x01;
 
-pub static KEYBOARD: Mutex<Port<u8>> = Mutex::new(unsafe {
-  Port::new(0x60)
-});
+#[macro_use]
+pub mod keyboard;
 
 pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
   ChainedPics::new(0x20, 0x28)
