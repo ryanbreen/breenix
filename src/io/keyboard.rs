@@ -48,25 +48,29 @@ pub fn scancode_to_ascii(code: u8) -> char {
       if code >= 0x2C && code <= 0x32 {
         return YXCVBNM[(code - 0x2C) as usize];
       }
-      return ' ';
+      return code as char;
     },
   }
 }
 
 pub fn test() {
 
+  let mut last_scancode:u8 = 0;
+
   loop {
     unsafe {
 
       let scancode = KEYBOARD.lock().read();
 
-      // If the user hits 'q', exit.
-      if scancode == 16 {
-        io::PICS.lock().initialize();
-        println!("Interrupts engaged");
-        panic!();
+      if scancode > 128 {
+        continue;
       }
 
+      if last_scancode == scancode {
+        continue;
+      }
+
+      last_scancode = scancode;
       if scancode != 0xFA {
         print!("{}", scancode_to_ascii(scancode));
       }
