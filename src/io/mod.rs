@@ -16,6 +16,9 @@ const MODE_8086: u8 = 0x01;
 #[macro_use]
 pub mod keyboard;
 
+#[macro_use]
+pub mod idt;
+
 pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
   ChainedPics::new(0x20, 0x28)
 });

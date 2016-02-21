@@ -75,7 +75,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     memory::remap_the_kernel(&mut frame_allocator, boot_info);
     println!("It did not crash!");
 
-    io::keyboard::test();
+    //io::keyboard::test();
+    io::idt::test();
 }
 
 

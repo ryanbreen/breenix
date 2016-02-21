@@ -53,6 +53,9 @@ pub fn scancode_to_ascii(code: u8) -> char {
   }
 }
 
+extern fn handle_interrupt() {
+}
+
 pub fn test() {
 
   let mut last_scancode:u8 = 0;
