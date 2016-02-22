@@ -17,8 +17,11 @@ start:
 
     ; load the 64-bit GDT
     lgdt [gdt64.pointer]
-    ; load the 64-bit IDT
-    lidt [idt64]
+
+    %include "./src/arch/x86_64/interrupts.asm"
+
+    ; load the IDT
+    lidt [idtr]
 
     ; update selectors
     mov ax, gdt64.data
@@ -151,8 +154,6 @@ p4_table:
 p3_table:
     resb 4096
 p2_table:
-    resb 4096
-idt64:
     resb 4096
 stack_bottom:
     resb 4096*4
