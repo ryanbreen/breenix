@@ -17,6 +17,8 @@ start:
 
     ; load the 64-bit GDT
     lgdt [gdt64.pointer]
+    ; load the 64-bit IDT
+    lidt [idt64]
 
     ; update selectors
     mov ax, gdt64.data
@@ -130,6 +132,7 @@ enable_paging:
 
     ret
 
+
 section .rodata
 gdt64:
     dq 0 ; zero entry
@@ -148,6 +151,8 @@ p4_table:
 p3_table:
     resb 4096
 p2_table:
+    resb 4096
+idt64:
     resb 4096
 stack_bottom:
     resb 4096*4
