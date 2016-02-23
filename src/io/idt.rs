@@ -26,7 +26,8 @@ impl IDT {
 
   // Cribbed from https://github.com/levex/osdev/blob/master/arch/idt.c#L28
   fn initialize(&mut self) {
-    //self.idt_location = (&self.data as *mut u8) as u32;
+    println!("{:p}", (&self.data));
+    //self.idt_location = (&self.data as *mut _) as u32;
     self.idt_location = 0x100;
     println!("IDT: Location: {:x}", self.idt_location);
     self.idtr_location = 0x10F0;

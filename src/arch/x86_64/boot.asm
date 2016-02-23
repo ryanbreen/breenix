@@ -18,10 +18,8 @@ start:
     ; load the 64-bit GDT
     lgdt [gdt64.pointer]
 
-    %include "./src/arch/x86_64/interrupts.asm"
-
     ; load the IDT
-    lidt [idtr]
+    ;lidt [idtr]
 
     ; update selectors
     mov ax, gdt64.data
