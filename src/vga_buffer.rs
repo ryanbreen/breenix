@@ -2,7 +2,6 @@ use core::ptr::Unique;
 use core::fmt::Write;
 use spin::Mutex;
 
-
 macro_rules! println {
     ($fmt:expr) => (print!(concat!($fmt, "\n")));
     ($fmt:expr, $($arg:tt)*) => (print!(concat!($fmt, "\n"), $($arg)*));
