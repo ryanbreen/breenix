@@ -17,6 +17,9 @@ extern crate x86;
 mod vga_buffer;
 mod memory;
 
+#[macro_use]
+mod util;
+
 mod io;
 
 #[lang = "panic_fmt"]
