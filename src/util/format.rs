@@ -32,6 +32,7 @@ impl StrWriter {
       }
       len = x;
     }
+    len += 1;
     unsafe { return ::core::str::from_utf8_unchecked(&self.bytes[2..len]); }
   }
 

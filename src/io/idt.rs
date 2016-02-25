@@ -58,6 +58,11 @@ impl IDT {
     println!("IDT: IDTR Location: 0x{:x}", self.idtr_location);
 
     unsafe {
+      println!("{:?}", (fn_ptr as *const fn()));
+      println!("{}", test_success);
+      (*(fn_ptr as *const fn()))();
+      println!("{}", test_success);
+
       asm!("lidt %idtr" :: "{idtr}"(self.idtr_location) :: "volatile");
 
       //asm!("int %int" :: "{int}"("$0x2f"));
