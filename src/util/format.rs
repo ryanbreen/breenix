@@ -38,9 +38,14 @@ impl ::core::fmt::Write for StrWriter {
   }
 }
 
-pub fn address_of_array(ptr: &[u8]) -> &str {
+pub fn address_str_of_ptr<T>(ptr: *const T) -> &'static str {
   unsafe {
     WRITER.write_fmt(format_args!("{:?}", &ptr as *const _));
     return WRITER.to_str().clone();
   }
+}
+
+pub fn address_of_ptr<T>(ptr: *const T) -> u32 {
+  let address = address_str_of_ptr(ptr);
+  return u32::from_str_radix(&(address[2..]), 16).unwrap();
 }

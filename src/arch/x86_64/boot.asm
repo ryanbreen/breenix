@@ -133,7 +133,6 @@ enable_paging:
 
     ret
 
-
 section .rodata
 gdt64:
     dq 0 ; zero entry
