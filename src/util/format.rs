@@ -2,12 +2,12 @@ use core::fmt::Write;
 use spin::Mutex;
 
 static mut WRITER:StrWriter = StrWriter {
-  bytes: [0; 8],
+  bytes: [122; 32],
   idx: 0,
 };
 
 pub struct StrWriter {
-  bytes: [u8; 8],
+  bytes: [u8; 32],
   idx: usize,
 }
 
@@ -15,7 +15,7 @@ impl StrWriter {
   pub fn write_byte(&mut self, byte: u8) {
     match byte {
       byte => {
-        if self.idx < 8 {
+        if self.idx < 32 {
           self.bytes[self.idx] = byte;
           self.idx += 1;
         }
@@ -24,8 +24,20 @@ impl StrWriter {
   }
 
   fn to_str(&mut self) -> &str {
+    // Find the true length of the str
+    let mut len = 30;
+    for x in 2..32 {
+      if self.bytes[x] == 122 {
+        break;
+      }
+      len = x;
+    }
+    unsafe { return ::core::str::from_utf8_unchecked(&self.bytes[2..len]); }
+  }
+
+  fn clear(&mut self) {
     self.idx = 0;
-    unsafe { return ::core::str::from_utf8_unchecked(&self.bytes); }
+    self.bytes = [122; 32];
   }
 }
 
@@ -38,14 +50,12 @@ impl ::core::fmt::Write for StrWriter {
   }
 }
 
-pub fn address_str_of_ptr<T>(ptr: *const T) -> &'static str {
+pub fn address_of_ptr<T>(ptr: *const T) -> u32 {
   unsafe {
-    WRITER.write_fmt(format_args!("{:?}", &ptr as *const _));
-    return WRITER.to_str().clone();
+    WRITER.write_fmt(format_args!("{:?}", ptr as *const _));
+    let rvalue = u32::from_str_radix(WRITER.to_str().clone(), 16).unwrap();
+    WRITER.clear();
+    return rvalue;
   }
 }
 
-pub fn address_of_ptr<T>(ptr: *const T) -> u32 {
-  let address = address_str_of_ptr(ptr);
-  return u32::from_str_radix(&(address[2..]), 16).unwrap();
-}

@@ -39,14 +39,12 @@ impl IDT {
     let address = format::address_of_ptr(&self.data);
     println!("IDT location as a str: {}", address);
     self.idt_location = address;
-    println!("IDT: Location: {:x}", self.idt_location);
-    println!("IDT: Location: {}", self.idt_location);
-    println!("IDT: IDTR Location: {:x}", self.idtr_location);
+    println!("IDT: Location: 0x{:x}", self.idt_location);
 
     self.setup = true;
 
     // Try to set the test id
-    //println!("{:?}", &idt_test_handler as *const _);
+    println!("IDT test handler location: {:?}", &idt_test_handler as *const _);
     let fn_ptr = format::address_of_ptr(&idt_test_handler as *const _);
     self.idt_register_interrupt(0x2f, fn_ptr);
     println!("Test fn lives at 0x{:x}", fn_ptr);
@@ -56,10 +54,11 @@ impl IDT {
     self.idtr[1] = (self.idt_location & 0x0000ffff) as u16;
     self.idtr[2] = (self.idt_location & 0xffff0000 >> 8) as u16;
 
-    let idtr_location = format::address_of_ptr(&self.data);
+    self.idtr_location = format::address_of_ptr(&self.data);
+    println!("IDT: IDTR Location: 0x{:x}", self.idtr_location);
 
     unsafe {
-      asm!("lidt %idtr" :: "{idtr}"(idtr_location) :: "volatile");
+      asm!("lidt %idtr" :: "{idtr}"(self.idtr_location) :: "volatile");
 
       //asm!("int %int" :: "{int}"("$0x2f"));
     }
