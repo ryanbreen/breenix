@@ -51,10 +51,10 @@ impl ::core::fmt::Write for StrWriter {
   }
 }
 
-pub fn address_of_ptr<T>(ptr: *const T) -> u32 {
+pub fn address_of_ptr<T>(ptr: *const T) -> u64 {
   unsafe {
     WRITER.write_fmt(format_args!("{:?}", ptr as *const _));
-    let rvalue = u32::from_str_radix(WRITER.to_str().clone(), 16).unwrap();
+    let rvalue = u64::from_str_radix(WRITER.to_str().clone(), 16).unwrap();
     WRITER.clear();
     return rvalue;
   }
