@@ -19,6 +19,9 @@ clean:
 run: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G
 
+debug: $(iso)
+	@qemu-system-x86_64 -hda $(iso) -m 5G -d int -no-reboot
+
 iso: $(iso)
 
 $(iso): $(kernel) $(grub_cfg)
