@@ -1,19 +1,31 @@
-use util::format;
 
-#[repr(C)]
-struct IDT {
-  test_timeout: u16,
-  idt_location: u64,
-  idtr_location: u64,
-  setup: bool,
-  data: [u8;0x22FB],
-  idtr: [u16;5],
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug)]
+struct IDTEntry {
+  clbk_low: u16,
+  selector: u16,
+  zero: u8,
+  flags: u8,
+  clbk_mid: u16,
+  clbk_high: u32,
+  zero2: u32
 }
 
+#[repr(C, packed)]
+struct IDTable {
+  limit: u16,
+  base: *const [IDTEntry;IDT_SIZE]
+}
+
+const IDT_SIZE: usize = 256;
+
 static mut test_success:bool = false;
+static mut idt_init:bool = false;
+
 #[no_mangle]
 pub extern "C" fn idt_test_handler() {
   unsafe {
+    println!("Test handler called");
     test_success = true;
   }
 }
@@ -23,92 +35,75 @@ pub extern "C" fn idt_default_handler() {
   println!("Default handler");
 }
 
-impl IDT {
-  fn new() -> IDT
-  {
-      let mut idt = IDT {
-          test_timeout: 0x1000,
-          setup: false,
-          idt_location: 0,
-          idtr_location: 0,
-          data: [0; 0x22FB],
-          idtr: [0; 5]
-      };
-      idt.initialize();
-      return idt;
+// The table itself, an array of 256 entries.
+// All the entries are statically initialized so that all interrupts are by
+// default handled by a function that do nothing.
+// Specialized handlers will come later
+static mut descriptors: [IDTEntry;IDT_SIZE] = [IDTEntry {
+    clbk_low:  0,
+    clbk_mid:  0,
+    clbk_high: 0,
+    selector: 0x08,
+    flags: 0x8E,
+    zero: 0,
+    zero2: 0
+};IDT_SIZE];
+
+static mut idt_table: IDTable = IDTable {
+  limit: 0, 
+  base: 0 as *const [IDTEntry;IDT_SIZE]
+};
+
+pub unsafe fn load_descriptor(num: usize, clbk: u64, flags: u8, selector: u16) {
+  if num >= IDT_SIZE {
+    println!("Invalid interrupt {}", num);
+    return;
   }
 
-  // Cribbed from https://github.com/levex/osdev/blob/master/arch/idt.c#L28
-  fn initialize(&mut self) {
+  descriptors[num].clbk_low  = (clbk & 0xFFFF) as u16;
+  descriptors[num].clbk_mid  = ((clbk >> 16) & 0xFFFF) as u16;
+  descriptors[num].clbk_high = ((clbk >> 32) & 0xFFFFFFFF) as u32;
+  descriptors[num].selector = selector;
+  descriptors[num].flags = flags;
+}
 
-    let address = format::address_of_ptr(&self.data);
-    println!("IDT location as a str: {}", address);
-    self.idt_location = address;
-    println!("IDT: Location: 0x{:x}", self.idt_location);
-
-    self.setup = true;
-
-    for i in 0..255 {
-      //self.idt_register_interrupt(i, format::address_of_ptr(&idt_default_handler as *const _));
+// Cribbed from https://github.com/levex/osdev/blob/master/arch/idt.c#L28 and
+// https://github.com/LeoTestard/Quasar/blob/master/arch/x86_64/idt.rs
+pub fn setup() {
+  unsafe {
+    if idt_init {
+      // IDT already initialized
+      return;
     }
 
-    // Try to set the test id
-    println!("IDT test handler location: {:?}", &idt_test_handler as *const _);
-    let fn_ptr = format::address_of_ptr(&idt_test_handler as *const _);
+    idt_init = false;
 
-    self.idt_register_interrupt(0x2f, fn_ptr);
-    println!("Test fn lives at 0x{:x}", fn_ptr);
+    // FIXME: this souldn't be necessary (see above)
+    idt_table.limit = (IDT_SIZE as u16) * 8;
+    idt_table.base = &descriptors as *const [IDTEntry;256];
 
-    // Initialize idtr
-    self.idtr[0] = 0x22FB-1;
-    self.idtr[1] = ((self.idt_location & 0xffff000000000000) >> 48) as u16;
-    self.idtr[2] = ((self.idt_location & 0xffff00000000) >> 32) as u16;
-    self.idtr[3] = ((self.idt_location & 0xffff0000) >> 16) as u16;
-    self.idtr[4] = (self.idt_location & 0x0000ffff) as u16;
-
-    self.idtr_location = format::address_of_ptr(&self.data);
-    println!("IDT: IDTR: 0x{:x} 0x{:x} 0x{:x} 0x{:x} 0x{:x}", self.idtr[0], self.idtr[1], self.idtr[2], self.idtr[3], self.idtr[4]);
-
-    unsafe {
-      asm!("lidt %idtr" :: "{idtr}"(self.idtr_location) :: "volatile");
-      asm!("int $$0x2f" :::: "volatile");
-    }
-  }
-
-  fn idt_register_interrupt(&mut self, idx: u8, callback: u64) {
-    if !self.setup {
-      panic!("Invalid IDT!");
+    // FIXME: this shouldn't be necessary (see above)
+    let mut i = 0;
+    let clbk_addr = &idt_default_handler as *const _ as u64;
+    while i < IDT_SIZE {
+      load_descriptor(i, clbk_addr, 0x8E, 0x08);
+      i += 1
     }
 
-    let i:usize = idx as usize * 16; // Each IDT entry is 8 bytes
-    //(uint16_t*)(idt_location + 8*i + 0) = (uint16_t)(callback & 0x0000ffff);
-    self.data[i] =   ((callback & 0x0000ff00) >> 8) as u8;
-    self.data[i+1] = (callback & 0x000000ff) as u8;
-    //*(uint16_t*)(idt_location + 8*i + 2) = (uint16_t)0x8;
-    self.data[i+3] = 0x8 as u8;
-    //*(uint8_t*) (idt_location + 8*i + 4) = 0x00;
-    self.data[i+4] = 0x00 as u8;
-    //*(uint8_t*) (idt_location + 8*i + 5) = 0x8e;//0 | IDT_32BIT_INTERRUPT_GATE | IDT_PRESENT;
-    self.data[i+5] = 0x8e as u8; //0 | IDT_32BIT_INTERRUPT_GATE | IDT_PRESENT;
-    //*(uint16_t*)(idt_location + 8*i + 6) = (uint16_t)((callback & 0xffff0000) >> 16);
-    self.data[i+6] = ((callback & 0xff000000) >> 24) as u8;
-    self.data[i+7] = ((callback & 0x00ff0000) >> 16) as u8;
-    self.data[i+8] = ((callback & 0xff0000000000) >> 40) as u8;
-    self.data[i+9] = ((callback & 0x00ff00000000) >> 32) as u8;
-    self.data[i+10] = ((callback & 0xff00000000000000) >> 60) as u8;
-    self.data[i+11] = ((callback & 0x00ff000000000000) >> 52) as u8;
-    println!("{:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}",
-      self.data[i+10], self.data[i+11], self.data[i+8], self.data[i+9],
-      self.data[i+6], self.data[i+7], self.data[i], self.data[i+1]
-    );
-    unsafe {
-      if test_success {
-        println!("Registered INT#{}", idx);
-      }
-    }
+    let fn_ptr = &idt_test_handler as *const _ as u64;
+    load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
+
+    let idt_table_address = (&idt_table as * const _ as u64);
+    let entry_at_offset = idt_table_address + (0x2F*0x80);
+    println!("idt starts at {}, entry at {}, delta {}", idt_table_address, entry_at_offset, entry_at_offset - idt_table_address);
+    //println!("{:?}", *(entry_at_offset as *const IDTEntry));
+
+    println!("Initted test handler {}", fn_ptr);
+
+    asm!("lidt ($0)" :: "r" (idt_table_address));
+    //asm!("sti");
+    asm!("int $$0x2f" :::: "volatile");
   }
 }
 
-pub fn test() {
-  let _ = IDT::new();
-}
+

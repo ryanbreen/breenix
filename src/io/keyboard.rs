@@ -58,9 +58,10 @@ extern fn handle_interrupt() {
 
 pub fn test() {
 
-  let mut last_scancode:u8 = 0;
+  //let mut last_scancode:u8 = 0;
 
   loop {
+    /*
     unsafe {
 
       let scancode = KEYBOARD.lock().read();
@@ -78,6 +79,6 @@ pub fn test() {
         print!("{}", scancode_to_ascii(scancode));
       }
 
-    }
+    }*/
   }
 }

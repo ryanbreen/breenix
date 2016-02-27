@@ -17,9 +17,6 @@ extern crate x86;
 mod vga_buffer;
 mod memory;
 
-#[macro_use]
-mod util;
-
 mod io;
 
 #[lang = "panic_fmt"]
@@ -49,7 +46,6 @@ fn enable_write_protect_bit() {
 #[no_mangle]
 pub extern "C" fn rust_main(multiboot_information_address: usize) {
     vga_buffer::clear_screen();
-    println!("Hello World{}", "!");
 
     let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
     let memory_map_tag = boot_info.memory_map_tag()
@@ -78,8 +74,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     memory::remap_the_kernel(&mut frame_allocator, boot_info);
     println!("It did not crash!");
 
-    //io::keyboard::test();
-    io::idt::test();
+    io::idt::setup();
+    io::keyboard::test();
 }
 
 
