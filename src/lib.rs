@@ -37,46 +37,50 @@ fn enable_nxe_bit() {
 }
 
 fn enable_write_protect_bit() {
-    use x86::controlregs::{cr0, cr0_write};
+  use x86::controlregs::{cr0, cr0_write};
 
-    let wp_bit = 1 << 16;
-    unsafe { cr0_write(cr0() | wp_bit) };
+  let wp_bit = 1 << 16;
+  unsafe { cr0_write(cr0() | wp_bit) };
 }
 
 #[no_mangle]
 pub extern "C" fn rust_main(multiboot_information_address: usize) {
-    vga_buffer::clear_screen();
+  vga_buffer::clear_screen();
 
-    let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
-    let memory_map_tag = boot_info.memory_map_tag()
-        .expect("Memory map tag required");
-    let elf_sections_tag = boot_info.elf_sections_tag()
-        .expect("Elf sections tag required");
+  let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
+  let memory_map_tag = boot_info.memory_map_tag()
+      .expect("Memory map tag required");
+  let elf_sections_tag = boot_info.elf_sections_tag()
+      .expect("Elf sections tag required");
 
-    let kernel_start = elf_sections_tag.sections().map(|s| s.addr).min().unwrap();
-    let kernel_end = elf_sections_tag.sections().map(|s| s.addr + s.size).max()
-        .unwrap();
+  let kernel_start = elf_sections_tag.sections().map(|s| s.addr).min().unwrap();
+  let kernel_end = elf_sections_tag.sections().map(|s| s.addr + s.size).max()
+      .unwrap();
 
-    let multiboot_start = multiboot_information_address;
-    let multiboot_end = multiboot_start + (boot_info.total_size as usize);
+  let multiboot_start = multiboot_information_address;
+  let multiboot_end = multiboot_start + (boot_info.total_size as usize);
 
-    println!("kernel start: 0x{:x}, kernel end: 0x{:x}",
-        kernel_start, kernel_end);
-    println!("multiboot start: 0x{:x}, multiboot end: 0x{:x}",
-        multiboot_start, multiboot_end);
+  println!("kernel start: 0x{:x}, kernel end: 0x{:x}",
+      kernel_start, kernel_end);
+  println!("multiboot start: 0x{:x}, multiboot end: 0x{:x}",
+      multiboot_start, multiboot_end);
 
-    let mut frame_allocator = memory::AreaFrameAllocator::new(
-        kernel_start as usize, kernel_end as usize, multiboot_start,
-        multiboot_end, memory_map_tag.memory_areas());
+  let mut frame_allocator = memory::AreaFrameAllocator::new(
+      kernel_start as usize, kernel_end as usize, multiboot_start,
+      multiboot_end, memory_map_tag.memory_areas());
 
-    enable_nxe_bit();
-    enable_write_protect_bit();
-    memory::remap_the_kernel(&mut frame_allocator, boot_info);
-    
-    io::idt::setup();
-    io::keyboard::test();
+  enable_nxe_bit();
+  enable_write_protect_bit();
+  memory::remap_the_kernel(&mut frame_allocator, boot_info);
+  
+  io::idt::setup();
+  io::keyboard::test();
 }
 
+#[no_mangle]
+pub extern "C" fn default_irq_handler() {
+  println!("IRQ");
+}
 
 #[lang = "eh_personality"] extern fn eh_personality() {}
 

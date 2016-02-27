@@ -1,3 +1,4 @@
+const IDT_SIZE: usize = 256;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -14,13 +15,19 @@ struct IDTEntry {
 #[repr(C)]
 struct IDTable {
   limit: u16,
-  base: u64
+  base: *const [IDTEntry;IDT_SIZE]
 }
-
-const IDT_SIZE: usize = 256;
 
 static mut test_success:bool = false;
 static mut idt_init:bool = false;
+
+extern {
+  static _asm_irq_handler_array: [u64;IDT_SIZE as usize];
+}
+
+pub fn get_irq_handler(num: u16) -> u64 {
+  _asm_irq_handler_array[num as usize]
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn idt_test_handler() {
@@ -37,7 +44,6 @@ pub extern "C" fn idt_default_handler() {
 // All the entries are statically initialized so that all interrupts are by
 // default handled by a function that do nothing.
 // Specialized handlers will come later
-#[repr(C)]
 static mut descriptors: [IDTEntry;IDT_SIZE] = [IDTEntry {
     clbk_low:  0,
     clbk_mid:  0,
@@ -48,10 +54,9 @@ static mut descriptors: [IDTEntry;IDT_SIZE] = [IDTEntry {
     zero2: 0
 };IDT_SIZE];
 
-#[repr(C)]
 static mut idt_table: IDTable = IDTable {
   limit: 0, 
-  base: 0
+  base: 0 as *const [IDTEntry;IDT_SIZE]
 };
 
 pub unsafe fn load_descriptor(num: usize, clbk: u64, flags: u8, selector: u16) {
@@ -63,9 +68,13 @@ pub unsafe fn load_descriptor(num: usize, clbk: u64, flags: u8, selector: u16) {
   descriptors[num].clbk_low  = ((clbk as u64) & 0xFFFF) as u16;
   descriptors[num].clbk_mid  = (((clbk as u64) >> 16) & 0xFFFF) as u16;
   descriptors[num].clbk_high = (((clbk as u64) >> 32) & 0xFFFFFFFF) as u32;
-  println!("{:x} {:x} {:x}", descriptors[num].clbk_high, descriptors[num].clbk_mid, descriptors[num].clbk_low);
   descriptors[num].selector = selector;
   descriptors[num].flags = flags;
+
+  if num == 32 {
+    println!("{:x} {:x} {:x}", descriptors[num].clbk_high, descriptors[num].clbk_mid, descriptors[num].clbk_low);
+    println!("{:?}", descriptors[num]);
+  }
 }
 
 // Cribbed from https://github.com/levex/osdev/blob/master/arch/idt.c#L28 and
@@ -81,11 +90,12 @@ pub fn setup() {
 
     // FIXME: this shouldn't be necessary (see above)
     idt_table.limit = ((IDT_SIZE as u16) * 128) - 1;
-    idt_table.base = &descriptors as *const _ as u64;
+    idt_table.base = &descriptors as *const [IDTEntry;IDT_SIZE];
 
-    let clbk_addr = &idt_default_handler as *const _ as u64;
-    for i in 0..IDT_SIZE {
-      load_descriptor(i, clbk_addr, 0x8E, 0x08);
+    //let clbk_addr = &idt_default_handler as *const _ as u64;
+    for i in 0..33 {
+      let clbk_addr = get_irq_handler(i);
+      load_descriptor(i as usize, clbk_addr, 0x8E, 0x08);
     }
 
     let fn_ptr = &idt_test_handler as *const _ as u64;
@@ -93,8 +103,8 @@ pub fn setup() {
     println!("Initted test handler {:x}", fn_ptr);
 
 
-    let idt_table_address = idt_table.base;
-    let entry_at_offset = idt_table_address + (0x80 * 0x10);
+    let idt_table_address = idt_table.base as u64;
+    let entry_at_offset = idt_table_address + (0x80 * 32);
     println!("idt starts at {:x}, entry at {:x}, delta {:x}", idt_table_address, entry_at_offset, entry_at_offset - idt_table_address);
     
     let idt_entry = *(entry_at_offset as *const IDTEntry);
@@ -113,7 +123,7 @@ pub fn setup() {
     asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
     //asm!("sti");
     //asm!("int $$0x2f" :::: "volatile");
-    asm!("int $$0x12" :::: "volatile");
+    //asm!("int $$0x12" :::: "volatile");
     
   }
 }
