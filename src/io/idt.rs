@@ -107,7 +107,7 @@ pub fn setup() {
 
 
     let idt_table_address = idt_table.base as u64;
-    let entry_at_offset = idt_table_address + (0x80 * 32);
+    let entry_at_offset = idt_table_address + (0x80 * 0x10);
     println!("idt starts at {:x}, entry at {:x}, delta {:x}", idt_table_address, entry_at_offset, entry_at_offset - idt_table_address);
     
     let idt_entry = *(entry_at_offset as *const IDTEntry);
@@ -125,7 +125,7 @@ pub fn setup() {
 */
     asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
     //asm!("sti");
-    //asm!("int $$0x2f" :::: "volatile");
+    asm!("int $$0x2f" :::: "volatile");
     //asm!("int $$0x12" :::: "volatile");
     
   }
