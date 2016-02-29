@@ -13,6 +13,7 @@ struct IDTEntry {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct IDTable {
   limit: u16,
   base: *const [IDTEntry;IDT_SIZE]
@@ -70,14 +71,6 @@ pub unsafe fn load_descriptor(num: usize, clbk: u64, flags: u8, selector: u16) {
   descriptors[num].clbk_high = (((clbk as u64) >> 32) & 0xFFFFFFFF) as u32;
   descriptors[num].selector = selector;
   descriptors[num].flags = flags;
-
-
-  let mut beans;
-  if num == 32 {
-    beans = false;
-    println!("{:x} {:x} {:x}", descriptors[num].clbk_high, descriptors[num].clbk_mid, descriptors[num].clbk_low);
-    println!("{:?}", descriptors[num]);
-  }
 }
 
 // Cribbed from https://github.com/levex/osdev/blob/master/arch/idt.c#L28 and
@@ -92,41 +85,31 @@ pub fn setup() {
     idt_init = false;
 
     // FIXME: this shouldn't be necessary (see above)
-    idt_table.limit = ((IDT_SIZE as u16) * 128) - 1;
+    idt_table.limit = (IDT_SIZE as u16) * 8;
     idt_table.base = &descriptors as *const [IDTEntry;IDT_SIZE];
 
-    //let clbk_addr = &idt_default_handler as *const _ as u64;
+    let clbk_addr = &idt_default_handler as *const _ as u64;
     for i in 0..IDT_SIZE as u16 {
-      let clbk_addr = get_irq_handler(i);
+      //let clbk_addr = get_irq_handler(i);
       load_descriptor(i as usize, clbk_addr, 0x8E, 0x08);
     }
 
-    //let fn_ptr = &idt_test_handler as *const _ as u64;
-    //load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
-    //println!("Initted test handler {:x}", fn_ptr);
-
+    let fn_ptr = &idt_test_handler as *const _ as u64;
+    load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
+    println!("Initted test handler {:x}", fn_ptr);
 
     let idt_table_address = idt_table.base as u64;
-    let entry_at_offset = idt_table_address + (0x80 * 0x10);
+    let entry_at_offset = idt_table_address + (0x2F*0x10);
     println!("idt starts at {:x}, entry at {:x}, delta {:x}", idt_table_address, entry_at_offset, entry_at_offset - idt_table_address);
     
     let idt_entry = *(entry_at_offset as *const IDTEntry);
     println!("{:?}", idt_entry);
     println!("{:x}", (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64);
 
-/*
-    let idt_table_address = idt_table.base;
-    let entry_at_offset = idt_table_address + (0x2F*0x80);
-    println!("idt starts at {:x}, entry at {:x}, delta {:x}", idt_table_address, entry_at_offset, entry_at_offset - idt_table_address);
-    
-    let idt_entry = *(entry_at_offset as *const IDTEntry);
-    println!("{:?}", idt_entry);
-    println!("{:x}", (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64);
-*/
-    asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
+    asm!("lidt ($0)" :: "r" (idt_table));
     //asm!("sti");
-    asm!("int $$0x2f" :::: "volatile");
-    //asm!("int $$0x12" :::: "volatile");
+    //asm!("int $$0x2f" :::: "volatile");
+    asm!("int $$0x12" :::: "volatile");
     
   }
 }
