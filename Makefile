@@ -20,7 +20,10 @@ run: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G
 
 debug: $(iso)
-	@qemu-system-x86_64 -hda $(iso) -m 5G -d int -no-reboot
+	@qemu-system-x86_64 -hda $(iso) -m 5G -d int -no-reboot -s -S
+
+gdb:
+	@rust-os-gdb/bin/rust-gdb "build/kernel-x86_64.bin" -ex "target remote :1234"
 
 iso: $(iso)
 

@@ -71,7 +71,10 @@ pub unsafe fn load_descriptor(num: usize, clbk: u64, flags: u8, selector: u16) {
   descriptors[num].selector = selector;
   descriptors[num].flags = flags;
 
+
+  let mut beans;
   if num == 32 {
+    beans = false;
     println!("{:x} {:x} {:x}", descriptors[num].clbk_high, descriptors[num].clbk_mid, descriptors[num].clbk_low);
     println!("{:?}", descriptors[num]);
   }
@@ -93,14 +96,14 @@ pub fn setup() {
     idt_table.base = &descriptors as *const [IDTEntry;IDT_SIZE];
 
     //let clbk_addr = &idt_default_handler as *const _ as u64;
-    for i in 0..33 {
+    for i in 0..IDT_SIZE as u16 {
       let clbk_addr = get_irq_handler(i);
       load_descriptor(i as usize, clbk_addr, 0x8E, 0x08);
     }
 
-    let fn_ptr = &idt_test_handler as *const _ as u64;
-    load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
-    println!("Initted test handler {:x}", fn_ptr);
+    //let fn_ptr = &idt_test_handler as *const _ as u64;
+    //load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
+    //println!("Initted test handler {:x}", fn_ptr);
 
 
     let idt_table_address = idt_table.base as u64;
