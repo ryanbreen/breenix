@@ -109,9 +109,10 @@ pub fn setup() {
     asm!("lidt ($0)" :: "r" (idt_table));
     //asm!("sti");
     //asm!("int $$0x2f" :::: "volatile");
-    asm!("int $$0x12" :::: "volatile");
+    //asm!("int $$0x12" :::: "volatile");
     
+    //idt_test_handler();
+    println!("{}", test_success);
+
   }
 }
-
-
