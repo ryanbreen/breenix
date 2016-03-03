@@ -111,13 +111,14 @@ pub fn setup() {
     println!("{:x}", (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64);
 
     let address_of_fn = (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64;
-    let my_fun = address_of_fn as * const fn();
-    (*my_fun)();
+    let my_fun:fn() = *(address_of_fn as * const fn());
+    //println!("{:?}", my_fun);
+    //my_fun();
 
-    asm!("lidt ($0)" :: "r" (idt_table));
+    asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
     //asm!("sti");
     //asm!("int $$0x2f" :::: "volatile");
-    //asm!("int $$0x12" :::: "volatile");
+    asm!("int $$0x12" :::: "volatile");
     
     //idt_test_handler();
     println!("{}", test_success);
