@@ -19,6 +19,7 @@ struct IDTable {
   base: *const [IDTEntry;IDT_SIZE]
 }
 
+static mut counter:u64 = 0;
 static mut test_success:bool = false;
 static mut idt_init:bool = false;
 
@@ -31,14 +32,17 @@ pub fn get_irq_handler(num: u16) -> u64 {
 }
 
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn idt_test_handler() {
   println!("Test handler called");
   test_success = true;
 }
 
 #[no_mangle]
-pub extern "C" fn idt_default_handler() {
+#[inline(never)]
+pub unsafe extern "C" fn idt_default_handler() {
   println!("Default handler");
+  counter += 1;
 }
 
 // The table itself, an array of 256 entries.
@@ -88,15 +92,15 @@ pub fn setup() {
     idt_table.limit = (IDT_SIZE as u16) * 8;
     idt_table.base = &descriptors as *const [IDTEntry;IDT_SIZE];
 
-    let clbk_addr = &idt_default_handler as *const _ as u64;
+    //let clbk_addr = &idt_default_handler as *const _ as u64;
     for i in 0..IDT_SIZE as u16 {
-      //let clbk_addr = get_irq_handler(i);
+      let clbk_addr = get_irq_handler(i);
       load_descriptor(i as usize, clbk_addr, 0x8E, 0x08);
     }
 
-    let fn_ptr = &idt_test_handler as *const _ as u64;
-    load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
-    println!("Initted test handler {:x}", fn_ptr);
+    //let fn_ptr = &idt_test_handler as *const _ as u64;
+    //load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
+    //println!("Initted test handler {:x}", fn_ptr);
 
     let idt_table_address = idt_table.base as u64;
     let entry_at_offset = idt_table_address + (0x2F*0x10);
@@ -105,6 +109,10 @@ pub fn setup() {
     let idt_entry = *(entry_at_offset as *const IDTEntry);
     println!("{:?}", idt_entry);
     println!("{:x}", (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64);
+
+    let address_of_fn = (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64;
+    let my_fun = address_of_fn as * const fn();
+    (*my_fun)();
 
     asm!("lidt ($0)" :: "r" (idt_table));
     //asm!("sti");
