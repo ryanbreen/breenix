@@ -19,7 +19,7 @@ pub unsafe fn inw(port: u16) -> u16 {
     result
 }
 
-/// Write a `u8`-sized `value` to `port`.
+/// Write a `u16`-sized `value` to `port`.
 pub unsafe fn outw(value: u16, port: u16) {
     asm!("outw %ax, %dx" :: "{dx}"(port), "{ax}"(value) :: "volatile");
 }

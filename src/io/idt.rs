@@ -1,5 +1,7 @@
 const IDT_SIZE: usize = 256;
 
+use io::x86;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct IDTEntry {
@@ -23,25 +25,17 @@ static mut counter:u64 = 0;
 static mut test_success:bool = false;
 static mut idt_init:bool = false;
 
-extern {
-  static _asm_irq_handler_array: [u64;IDT_SIZE as usize];
-}
-
-pub fn get_irq_handler(num: u16) -> u64 {
-  _asm_irq_handler_array[num as usize]
-}
-
 #[no_mangle]
 #[inline(never)]
 pub unsafe extern "C" fn idt_test_handler() {
-  println!("Test handler called");
+  //println!("Test handler called");
   test_success = true;
 }
 
 #[no_mangle]
 #[inline(never)]
 pub unsafe extern "C" fn idt_default_handler() {
-  println!("Default handler");
+  //println!("Default handler");
   counter += 1;
 }
 
@@ -95,7 +89,7 @@ pub fn setup() {
     let clbk_addr = &idt_default_handler as *const _ as u64;
     for i in 0..IDT_SIZE as u16 {
       //let clbk_addr = get_irq_handler(i);
-      load_descriptor(i as usize, clbk_addr, 0x8E, 0x08);
+      load_descriptor(i as usize, clbk_addr, 0x8E, 0x80);
     }
 
     let fn_ptr = &idt_test_handler as *const _ as u64;
@@ -118,8 +112,19 @@ pub fn setup() {
     //println!("{:?}", my_fun);
     //my_fun();
 
+    x86::outw(0x20, 0x11u8 as u16);
+    x86::outw(0xA0, 0x11u8 as u16);
+    x86::outw(0x21, 0x20u8 as u16);
+    x86::outw(0xA1, 0x28u8 as u16);
+    x86::outw(0x21, 0x04u8 as u16);
+    x86::outw(0xA1, 0x02u8 as u16);
+    x86::outw(0x21, 0x01u8 as u16);
+    x86::outw(0xA1, 0x01u8 as u16);
+    x86::outw(0x21, 0x00u8 as u16);
+    x86::outw(0xA1, 0x00u8 as u16);
+
     asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
-    //asm!("sti");
+    asm!("sti");
     //asm!("int $$0x2f" :::: "volatile");
     //asm!("int $$0x12" :::: "volatile");
     
