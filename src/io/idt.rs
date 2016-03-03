@@ -92,13 +92,16 @@ pub fn setup() {
     idt_table.limit = (IDT_SIZE as u16) * 8;
     idt_table.base = &descriptors as *const [IDTEntry;IDT_SIZE];
 
-    //let clbk_addr = &idt_default_handler as *const _ as u64;
+    let clbk_addr = &idt_default_handler as *const _ as u64;
     for i in 0..IDT_SIZE as u16 {
-      let clbk_addr = get_irq_handler(i);
+      //let clbk_addr = get_irq_handler(i);
       load_descriptor(i as usize, clbk_addr, 0x8E, 0x08);
     }
 
-    //let fn_ptr = &idt_test_handler as *const _ as u64;
+    let fn_ptr = &idt_test_handler as *const _ as u64;
+    println!("{}", test_success);
+    (*(fn_ptr as *const fn()))();
+    println!("{}", test_success);
     //load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
     //println!("Initted test handler {:x}", fn_ptr);
 
@@ -111,14 +114,14 @@ pub fn setup() {
     println!("{:x}", (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64);
 
     let address_of_fn = (idt_entry.clbk_high as u64) << 32 | (idt_entry.clbk_mid as u64) << 16 | idt_entry.clbk_low as u64;
-    let my_fun:fn() = *(address_of_fn as * const fn());
+    (*(address_of_fn as *const fn()))();
     //println!("{:?}", my_fun);
     //my_fun();
 
     asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
     //asm!("sti");
     //asm!("int $$0x2f" :::: "volatile");
-    asm!("int $$0x12" :::: "volatile");
+    //asm!("int $$0x12" :::: "volatile");
     
     //idt_test_handler();
     println!("{}", test_success);
