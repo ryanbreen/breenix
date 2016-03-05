@@ -1,5 +1,5 @@
 global start
-extern long_mode_start
+;extern long_mode_start
 
 section .text
 bits 32
@@ -124,16 +124,85 @@ enable_paging:
 
     ret
 
+section .bss
+align 4096
+p4_table:
+    resb 4096
+p3_table:
+    resb 4096
+p2_table:
+    resb 4096
+stack_bottom:
+    resb 4096*8192
+stack_top:
 
 
-struc GDTEntry
-    .limitl resw 1
-    .basel resw 1
-    .basem resb 1
-    .attribute resb 1
-    .flags__limith resb 1
-    .baseh resb 1
-endstruc
+section .text
+bits 64
+
+%include "src/arch/x86_64/descriptor_flags.inc"
+%include "src/arch/x86_64/gdt_entry.inc"
+
+long_mode_start:
+    ; load the IDT
+    ;lidt [idtr]
+
+    ; update selectors
+    mov ax, gdt.kernel_data
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+
+    ; call the rust main
+    extern rust_main
+    call setup_SSE
+    call rust_main
+
+    .os_returned:
+        ; rust main returned, print `OS returned!`
+        mov rax, 0x4f724f204f534f4f
+        mov [0xb8000], rax
+        mov rax, 0x4f724f754f744f65
+        mov [0xb8008], rax
+        mov rax, 0x4f214f644f654f6e
+        mov [0xb8010], rax
+        hlt
+
+; Prints `ERROR: ` and the given error code to screen and hangs.
+; parameter: error code (in ascii) in al
+error_msg:
+    mov rbx, 0x4f4f4f524f524f45
+    mov [0xb8000], rbx
+    mov rbx, 0x4f204f204f3a4f52
+    mov [0xb8008], rbx
+    mov byte [0xb800e], al
+    hlt
+    jmp error_msg
+
+; Check for SSE and enable it. If it's not supported throw error "a".
+setup_SSE:
+    ; check for SSE
+    mov rax, 0x1
+    cpuid
+    test edx, 1<<25
+    jz .no_SSE
+
+    ; enable SSE
+    mov rax, cr0
+    and ax, 0xFFFB      ; clear coprocessor emulation CR0.EM
+    or ax, 0x2          ; set coprocessor monitoring  CR0.MP
+    mov cr0, rax
+    mov rax, cr4
+    or ax, 3 << 9       ; set CR4.OSFXSR and CR4.OSXMMEXCPT at the same time
+    mov cr4, rax
+
+    ret
+.no_SSE:
+    mov al, "a"
+    jmp error_msg
+
 
 gdtr:
     dw gdt.end + 1  ; size
@@ -143,60 +212,60 @@ gdt:
     .null equ $ - gdt
     dq 0
 
-.kernel_code equ $ - gdt
-istruc GDTEntry
-    at GDTEntry.limitl, dw 0
-    at GDTEntry.basel, dw 0
-    at GDTEntry.basem, db 0
-    at GDTEntry.attribute, db attrib.present | attrib.user | attrib.code
-    at GDTEntry.flags__limith, db flags.long_mode
-    at GDTEntry.baseh, db 0
-iend
+    .kernel_code equ $ - gdt
+    istruc GDTEntry
+        at GDTEntry.limitl, dw 0
+        at GDTEntry.basel, dw 0
+        at GDTEntry.basem, db 0
+        at GDTEntry.attribute, db attrib.present | attrib.user | attrib.code
+        at GDTEntry.flags__limith, db flags.long_mode
+        at GDTEntry.baseh, db 0
+    iend
 
-.kernel_data equ $ - gdt
-istruc GDTEntry
-    at GDTEntry.limitl, dw 0
-    at GDTEntry.basel, dw 0
-    at GDTEntry.basem, db 0
-; AMD System Programming Manual states that the writeable bit is ignored in long mode, but ss can not be set to this descriptor without it
-    at GDTEntry.attribute, db attrib.present | attrib.user | attrib.writable
-    at GDTEntry.flags__limith, db 0
-    at GDTEntry.baseh, db 0
-iend
+    .kernel_data equ $ - gdt
+    istruc GDTEntry
+        at GDTEntry.limitl, dw 0
+        at GDTEntry.basel, dw 0
+        at GDTEntry.basem, db 0
+    ; AMD System Programming Manual states that the writeable bit is ignored in long mode, but ss can not be set to this descriptor without it
+        at GDTEntry.attribute, db attrib.present | attrib.user | attrib.writable
+        at GDTEntry.flags__limith, db 0
+        at GDTEntry.baseh, db 0
+    iend
 
-.user_code equ $ - gdt
-istruc GDTEntry
-    at GDTEntry.limitl, dw 0
-    at GDTEntry.basel, dw 0
-    at GDTEntry.basem, db 0
-    at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.user | attrib.code
-    at GDTEntry.flags__limith, db flags.long_mode
-    at GDTEntry.baseh, db 0
-iend
+    .user_code equ $ - gdt
+    istruc GDTEntry
+        at GDTEntry.limitl, dw 0
+        at GDTEntry.basel, dw 0
+        at GDTEntry.basem, db 0
+        at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.user | attrib.code
+        at GDTEntry.flags__limith, db flags.long_mode
+        at GDTEntry.baseh, db 0
+    iend
 
-.user_data equ $ - gdt
-istruc GDTEntry
-    at GDTEntry.limitl, dw 0
-    at GDTEntry.basel, dw 0
-    at GDTEntry.basem, db 0
-; AMD System Programming Manual states that the writeable bit is ignored in long mode, but ss can not be set to this descriptor without it
-    at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.user | attrib.writable
-    at GDTEntry.flags__limith, db 0
-    at GDTEntry.baseh, db 0
-iend
+    .user_data equ $ - gdt
+    istruc GDTEntry
+        at GDTEntry.limitl, dw 0
+        at GDTEntry.basel, dw 0
+        at GDTEntry.basem, db 0
+    ; AMD System Programming Manual states that the writeable bit is ignored in long mode, but ss can not be set to this descriptor without it
+        at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.user | attrib.writable
+        at GDTEntry.flags__limith, db 0
+        at GDTEntry.baseh, db 0
+    iend
 
-.tss equ $ - gdt
-istruc GDTEntry
-    at GDTEntry.limitl, dw (tss.end - tss) & 0xFFFF
-    at GDTEntry.basel, dw (tss-$$+0x7C00) & 0xFFFF
-    at GDTEntry.basem, db ((tss-$$+0x7C00) >> 16) & 0xFF
-    at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.tssAvailabe64
-    at GDTEntry.flags__limith, db ((tss.end - tss) >> 16) & 0xF
-    at GDTEntry.baseh, db ((tss-$$+0x7C00) >> 24) & 0xFF
-iend
-dq 0 ;tss descriptors are extended to 16 Bytes
+    .tss equ $ - gdt
+    istruc GDTEntry
+        at GDTEntry.limitl, dw (tss.end - tss) & 0xFFFF
+        at GDTEntry.basel, dw (tss-$$+0x7C00) & 0xFFFF
+        at GDTEntry.basem, db ((tss-$$+0x7C00) >> 16) & 0xFF
+        at GDTEntry.attribute, db attrib.present | attrib.ring3 | attrib.tssAvailabe64
+        at GDTEntry.flags__limith, db ((tss.end - tss) >> 16) & 0xF
+        at GDTEntry.baseh, db ((tss-$$+0x7C00) >> 24) & 0xFF
+    iend
+    dq 0 ;tss descriptors are extended to 16 Bytes
 
-.end equ $ - gdt
+    .end equ $ - gdt
 
 struc TSS
     .reserved1 resd 1    ;The previous TSS - if we used hardware task switching this would form a linked list.
@@ -224,16 +293,3 @@ tss:
         at TSS.iomap_base, dw 0xFFFF
     iend
 .end:
-
-
-section .bss
-align 4096
-p4_table:
-    resb 4096
-p3_table:
-    resb 4096
-p2_table:
-    resb 4096
-stack_bottom:
-    resb 4096*8192
-stack_top:
