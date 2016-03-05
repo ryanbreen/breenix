@@ -1,6 +1,6 @@
-const IDT_SIZE: usize = 256;
-
 use io::x86;
+
+const IDT_SIZE: usize = 256;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -18,7 +18,7 @@ struct IDTEntry {
 #[derive(Clone, Copy)]
 struct IDTable {
   limit: u16,
-  base: *const [IDTEntry;IDT_SIZE]
+  base: u64
 }
 
 static mut counter:u64 = 0;
@@ -55,7 +55,7 @@ static mut descriptors: [IDTEntry;IDT_SIZE] = [IDTEntry {
 
 static mut idt_table: IDTable = IDTable {
   limit: 0, 
-  base: 0 as *const [IDTEntry;IDT_SIZE]
+  base: 0
 };
 
 pub unsafe fn load_descriptor(num: usize, clbk: u64, flags: u8, selector: u16) {
@@ -83,21 +83,21 @@ pub fn setup() {
     idt_init = false;
 
     // FIXME: this shouldn't be necessary (see above)
-    idt_table.limit = (IDT_SIZE as u16) * 8;
-    idt_table.base = &descriptors as *const [IDTEntry;IDT_SIZE];
+    idt_table.limit = ((IDT_SIZE as u16) * 16) -1;
+    idt_table.base = &descriptors as *const _ as u64;
 
     let clbk_addr = &idt_default_handler as *const _ as u64;
     for i in 0..IDT_SIZE as u16 {
       //let clbk_addr = get_irq_handler(i);
-      load_descriptor(i as usize, clbk_addr, 0x8E, 0x80);
+      load_descriptor(i as usize, clbk_addr, 0x8E, 0x8);
     }
 
     let fn_ptr = &idt_test_handler as *const _ as u64;
     println!("{}", test_success);
     (*(fn_ptr as *const fn()))();
     println!("{}", test_success);
-    //load_descriptor(0x2f, fn_ptr, 0x8E, 0x08);
-    //println!("Initted test handler {:x}", fn_ptr);
+    load_descriptor(0x2f, fn_ptr, 0x8E, 0x8);
+    println!("Initted test handler {:x}", fn_ptr);
 
     let idt_table_address = idt_table.base as u64;
     let entry_at_offset = idt_table_address + (0x2F*0x10);
@@ -112,6 +112,7 @@ pub fn setup() {
     //println!("{:?}", my_fun);
     //my_fun();
 
+    /*
     x86::outw(0x20, 0x11u8 as u16);
     x86::outw(0xA0, 0x11u8 as u16);
     x86::outw(0x21, 0x20u8 as u16);
@@ -122,8 +123,12 @@ pub fn setup() {
     x86::outw(0xA1, 0x01u8 as u16);
     x86::outw(0x21, 0x00u8 as u16);
     x86::outw(0xA1, 0x00u8 as u16);
+    */
 
-    asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
+    //asm!("lidt ($0)" :: "r" (&idt_table as *const _ as u64));
+    println!("idt_table lives at {:x}", &idt_table as *const _ as u64);
+    println!("idt_table limit {:x}, offset {:?}", idt_table.limit, idt_table.base);
+    asm!("lidt ($0)" :: "r" (idt_table));
     asm!("sti");
     //asm!("int $$0x2f" :::: "volatile");
     //asm!("int $$0x12" :::: "volatile");

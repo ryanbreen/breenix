@@ -4,6 +4,17 @@ section .text
 bits 64
 
 long_mode_start:
+    ; load the IDT
+    ;lidt [idtr]
+
+    ; update selectors
+    mov ax, gdt.kernel_data
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+
     ; call the rust main
     extern rust_main
     call setup_SSE
