@@ -288,6 +288,10 @@ pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation)
             end: (section.addr + section.size) as usize,
         };
         for address in range.step_by(PAGE_SIZE) {
+            if address & PAGE_SIZE != 0 {
+              println!("{:x}", address);
+            }
+
             assert!(address % PAGE_SIZE == 0,
                 "sections need to be page aligned");
             let frame = Frame::containing_address(address);

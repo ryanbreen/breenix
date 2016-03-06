@@ -10,11 +10,6 @@ SECTIONS {
     *(.rodata .rodata.*)
   }
 
-  .text : ALIGN(4K)
-  {
-    *(.text .text.*)
-  }
-
   .data : ALIGN(4K)
   {
     *(.data .data.*)
@@ -26,5 +21,10 @@ SECTIONS {
 
   .gcc_except_table : ALIGN(4K) {
     *(.gcc_except_table)
+  }
+
+  .text : ALIGN(4K)
+  {
+    *(.text .text.*)
   }
 }

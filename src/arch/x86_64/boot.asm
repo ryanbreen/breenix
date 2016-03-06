@@ -19,9 +19,6 @@ start:
     ; load the 64-bit GDT
     lgdt [gdt64.pointer]
 
-    ; load the IDT
-    ;lidt [idtr]
-
     ; update selectors
     mov ax, gdt64.data
     mov ss, ax
@@ -134,29 +131,10 @@ enable_paging:
 
     ret
 
-section .bss
-
-;;; P4 page table for configuring virtual memory.  Must be aligned on a
-;;; 4096-byte boundary.
-align 4096
-p4_table:
-    resb 4096
-
-;;; P3 page table for configuring virtual memory.  Must be aligned on a
-;;; 4096-byte boundary.
-p3_table:
-    resb 4096
-
-;;; P4 page table for configuring virtual memory.  Must be aligned on a
-;;; 4096-byte boundary.
-p2_table:
-    resb 4096
-
-;;; Our kernel stack.
-stack_bottom:
-        resb 8192
-stack_top:
-
+;;; Export selectors so Rust can access them.
+gdt64_code_offset:
+    dw gdt64.code
+    
 ;;; Global Description Table.  Used to set segmentation to the restricted
 ;;; values needed for 64-bit mode.
 section .rodata
@@ -170,6 +148,14 @@ gdt64:
     dw $ - gdt64 - 1
     dq gdt64
 
-;;; Export selectors so Rust can access them.
-gdt64_code_offset:
-    dw gdt64.code
+section .bss
+align 4096
+p4_table:
+    resb 4096
+p3_table:
+    resb 4096
+p2_table:
+    resb 4096
+stack_bottom:
+    resb 4096*8192
+stack_top:

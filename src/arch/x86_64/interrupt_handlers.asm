@@ -41,34 +41,34 @@ trace:
 ;;;
 ;;; This needs to be kept in sync with InterruptContext.
 %macro push_caller_saved 0
-        ;; For later: "<Tobba> ekidd: one thing you can also do to preserve
-        ;; FPU registers in interrupt handlers is to simply set the EM flag in
-        ;; CR0".  Seen on #rust-osdev.
+  ;; For later: "<Tobba> ekidd: one thing you can also do to preserve
+  ;; FPU registers in interrupt handlers is to simply set the EM flag in
+  ;; CR0".  Seen on #rust-osdev.
 
-        ;; Save ordinary registers.
-        push rax
-        push rcx
-        push rdx
-        push r8
-        push r9
-        push r10
-        push r11
-        ;; These two are caller-saved on x86_64!
-        push rdi
-        push rsi
+  ;; Save ordinary registers.
+  push rax
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  ;; These two are caller-saved on x86_64!
+  push rdi
+  push rsi
 %endmacro
 
 %macro pop_caller_saved 0
-        ;; Restore ordinary registers.
-        pop rsi
-        pop rdi
-        pop r11
-        pop r10
-        pop r9
-        pop r8
-        pop rdx
-        pop rcx
-        pop rax
+  ;; Restore ordinary registers.
+  pop rsi
+  pop rdi
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  pop rdx
+  pop rcx
+  pop rax
 %endmacro
 
 ;;; "Error" interrupts have two extra dwords pushed onto the stack: a 0 pad to
@@ -170,43 +170,3 @@ report_interrupt:
 
         pop_caller_saved
         iretq
-
-section .rodata
-interrupt_handlers:
-        dq int_entry_0
-        dq int_entry_1
-        dq int_entry_2
-        dq int_entry_3
-        dq int_entry_4
-        dq int_entry_5
-        dq int_entry_6
-        dq int_entry_7
-        dq int_entry_8
-        dq 0
-        dq int_entry_10
-        dq int_entry_11
-        dq int_entry_12
-        dq int_entry_13
-        dq int_entry_14
-        dq 0
-        dq int_entry_16
-        dq int_entry_17
-        dq int_entry_18
-        dq int_entry_19
-        dq 0
-        dq 0
-        dq 0
-        dq 0
-        dq 0
-        dq 0
-        dq 0
-        dq 0
-        dq 0
-        dq 0
-        dq 0                    ; int_entry_30
-        dq 0
-%assign i 32
-%rep    224
-        dq int_entry_%+i
-%assign i i+1
-%endrep
