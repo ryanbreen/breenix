@@ -82,75 +82,9 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   io::keyboard::test();
 }
 
-/// Various data available on our stack when handling an interrupt.
-///
-/// Only `pub` because `rust_interrupt_handler` is.
-#[repr(C, packed)]
-pub struct InterruptContext {
-  rsi: u64,
-  rdi: u64,
-  r11: u64,
-  r10: u64,
-  r9: u64,
-  r8: u64,
-  rdx: u64,
-  rcx: u64,
-  rax: u64,
-  int_id: u32,
-  _pad_1: u32,
-  error_code: u32,
-  _pad_2: u32,
-}
-
-/// Print our information about a CPU exception, and loop.
-fn cpu_exception_handler(ctx: &InterruptContext) {
-
-  // Print general information provided by x86::irq.
-  println!("{}, error 0x{:x}",
-           x86::irq::EXCEPTIONS[ctx.int_id as usize],
-           ctx.error_code);
-
-  // Provide detailed information about our error code if we know how to
-  // parse it.
-  match ctx.int_id {
-      14 => {
-          let err = x86::irq::PageFaultError::from_bits(ctx.error_code);
-          println!("{:?}", err);
-      }
-      _ => {}
-  }
-
-  loop {}
-}
-
-
-/// Called from our assembly-language interrupt handlers to dispatch an
-/// interrupt.
 #[no_mangle]
-pub unsafe extern "C" fn rust_interrupt_handler(ctx: &InterruptContext) {
-  match ctx.int_id {
-    0x00...0x0F => cpu_exception_handler(ctx),
-    0x20 => { /* Timer. */ }
-    0x21 => {
-      println!("Keyboard bullshit");
-      /*
-      if let Some(input) = keyboard::read_char() {
-        if input == '\r' {
-          println!("");
-        } else {
-          print!("{}", input);
-        }
-      }
-      */
-    }
-    0x80 => println!("Not actually Linux, sorry."),
-    _ => {
-      println!("UNKNOWN INTERRUPT #{}", ctx.int_id);
-      loop {}
-    }
-  }
-
-  io::idt::PICS.lock().notify_end_of_interrupt(ctx.int_id as u8);
+pub extern "C" fn rust_interrupt_handler(ctx: &io::idt::InterruptContext) {
+  io::idt::rust_interrupt_handler(ctx);
 }
 
 #[lang = "eh_personality"] extern fn eh_personality() {}
