@@ -74,17 +74,17 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   enable_nxe_bit();
   enable_write_protect_bit();
-  memory::remap_the_kernel(&mut frame_allocator, boot_info);
+  //memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   unsafe {
-    io::idt::setup();
+    io::interrupts::setup();
   }
   io::keyboard::test();
 }
 
 #[no_mangle]
-pub extern "C" fn rust_interrupt_handler(ctx: &io::idt::InterruptContext) {
-  io::idt::rust_interrupt_handler(ctx);
+pub extern "C" fn rust_interrupt_handler(ctx: &io::interrupts::InterruptContext) {
+  io::interrupts::rust_interrupt_handler(ctx);
 }
 
 #[lang = "eh_personality"] extern fn eh_personality() {}

@@ -170,3 +170,43 @@ report_interrupt:
 
         pop_caller_saved
         iretq
+
+section .rodata
+interrupt_handlers:
+        dq int_entry_0
+        dq int_entry_1
+        dq int_entry_2
+        dq int_entry_3
+        dq int_entry_4
+        dq int_entry_5
+        dq int_entry_6
+        dq int_entry_7
+        dq int_entry_8
+        dq 0
+        dq int_entry_10
+        dq int_entry_11
+        dq int_entry_12
+        dq int_entry_13
+        dq int_entry_14
+        dq 0
+        dq int_entry_16
+        dq int_entry_17
+        dq int_entry_18
+        dq int_entry_19
+        dq 0
+        dq 0
+        dq 0
+        dq 0
+        dq 0
+        dq 0
+        dq 0
+        dq 0
+        dq 0
+        dq 0
+        dq 0                    ; int_entry_30
+        dq 0
+%assign i 32
+%rep    224
+        dq int_entry_%+i
+%assign i i+1
+%endrep

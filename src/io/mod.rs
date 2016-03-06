@@ -17,7 +17,7 @@ const MODE_8086: u8 = 0x01;
 pub mod keyboard;
 
 #[macro_use]
-pub mod idt;
+pub mod interrupts;
 
 /// This trait is defined for any type which can be read or written over a
 /// port.  The processor supports I/O with `u8`, `u16` and `u32`.  The
