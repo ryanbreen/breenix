@@ -1,7 +1,5 @@
 global start
 global gdt64_code_offset
-global HEAP_BOTTOM
-global HEAP_TOP
 extern long_mode_start
 
 section .text
@@ -142,29 +140,22 @@ section .bss
 ;;; 4096-byte boundary.
 align 4096
 p4_table:
-        resb 4096
+    resb 4096
 
 ;;; P3 page table for configuring virtual memory.  Must be aligned on a
 ;;; 4096-byte boundary.
 p3_table:
-        resb 4096
+    resb 4096
 
 ;;; P4 page table for configuring virtual memory.  Must be aligned on a
 ;;; 4096-byte boundary.
 p2_table:
-        resb 4096
+    resb 4096
 
-;;; Our kernel stack.  We want to make this large enough so that we don't
-;;; need to worry about overflowing it until we figure out how to set up
-;;; a guard page and print errors on page faults.
+;;; Our kernel stack.
 stack_bottom:
         resb 8192
 stack_top:
-
-align 4096
-HEAP_BOTTOM:
-        resb 4*1024*1024
-HEAP_TOP:
 
 ;;; Global Description Table.  Used to set segmentation to the restricted
 ;;; values needed for 64-bit mode.
