@@ -74,7 +74,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   enable_nxe_bit();
   enable_write_protect_bit();
-  //memory::remap_the_kernel(&mut frame_allocator, boot_info);
+  memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   unsafe {
     io::interrupts::setup();

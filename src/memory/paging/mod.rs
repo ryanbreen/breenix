@@ -254,63 +254,60 @@ impl RecursivePageTable {
 pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation)
     where A: FrameAllocator
 {
-    use core::ops::Range;
+  use core::ops::Range;
 
-    let mut temporary_page = TemporaryPage::new(Page { number: 0xcafebabe },
-        allocator);
+  let mut temporary_page = TemporaryPage::new(Page { number: 0xcafebabe }, allocator);
 
-    let mut active_table = unsafe { ActivePageTable::new() };
-    let mut new_table = {
-        let frame = allocator.allocate_frame().expect("no more frames");
-        InactivePageTable::new(frame, &mut active_table, &mut temporary_page)
-    };
+  let mut active_table = unsafe { ActivePageTable::new() };
+  let mut new_table = {
+    let frame = allocator.allocate_frame().expect("no more frames");
+    InactivePageTable::new(frame, &mut active_table, &mut temporary_page)
+  };
 
-    active_table.with(&mut new_table, &mut temporary_page, |mapper| {
-      let elf_sections_tag = boot_info.elf_sections_tag()
-          .expect("Memory map tag required");
+  active_table.with(&mut new_table, &mut temporary_page, |mapper| {
+    let elf_sections_tag = boot_info.elf_sections_tag()
+                                    .expect("Memory map tag required");
 
-      for section in elf_sections_tag.sections() {
-        use multiboot2::ELF_SECTION_ALLOCATED;
-        use self::entry::WRITABLE;
-
-        if !section.flags().contains(ELF_SECTION_ALLOCATED) {
-            // section is not loaded to memory
-            continue;
-        }
-
-        println!("mapping section at addr: {:#x}, size: {:#x}",
-            section.addr, section.size);
-
-        let flags = EntryFlags::from_elf_section_flags(section);
-
-        let range = Range {
-            start: section.addr as usize,
-            end: (section.addr + section.size) as usize,
-        };
-        for address in range.step_by(PAGE_SIZE) {
-            if address & PAGE_SIZE != 0 {
-              println!("{:x}", address);
-            }
-
-            assert!(address % PAGE_SIZE == 0,
-                "sections need to be page aligned");
-            let frame = Frame::containing_address(address);
-            mapper.identity_map(frame, flags, allocator);
-        }
+    // identity map the allocated kernel sections
+    for section in elf_sections_tag.sections() {
+      if !section.is_allocated() {
+        // section is not loaded to memory
+        continue;
       }
 
-      // identity map the VGA text buffer
-      let vga_buffer_frame = Frame::containing_address(0xb8000);
-      mapper.identity_map(vga_buffer_frame, WRITABLE, allocator);
-    });
+      assert!(section.addr as usize % PAGE_SIZE == 0,
+              "sections need to be page aligned");
+      println!("mapping section at addr: {:#x}, size: {:#x}",
+               section.addr,
+               section.size);
 
-    let old_table = active_table.switch(new_table);
-    println!("NEW TABLE!!!");
+      let flags = EntryFlags::from_elf_section_flags(section);
 
-    // turn the old p4 page into a guard page
-    let old_p4_page = Page::containing_address(old_table.p4_frame.start_address());
-    active_table.unmap(old_p4_page, allocator);
-    println!("guard page at {:#x}", old_p4_page.start_address());
+      let start_frame = Frame::containing_address(section.start_address());
+      let end_frame = Frame::containing_address(section.end_address() - 1);
+      for frame in Frame::range_inclusive(start_frame, end_frame) {
+        mapper.identity_map(frame, flags, allocator);
+      }
+    }
+
+    // identity map the VGA text buffer
+    let vga_buffer_frame = Frame::containing_address(0xb8000);
+    mapper.identity_map(vga_buffer_frame, WRITABLE, allocator);
+
+    // identity map the multiboot info structure
+    let multiboot_start = Frame::containing_address(boot_info.start_address());
+    let multiboot_end = Frame::containing_address(boot_info.end_address() - 1);
+    for frame in Frame::range_inclusive(multiboot_start, multiboot_end) {
+      mapper.identity_map(frame, PRESENT, allocator);
+    }
+  });
+
+  let old_table = active_table.switch(new_table);
+  println!("NEW TABLE!!!");
+
+  let old_p4_page = Page::containing_address(old_table.p4_frame.start_address());
+  active_table.unmap(old_p4_page, allocator);
+  println!("guard page at {:#x}", old_p4_page.start_address());
 }
 
 pub fn test_paging<A>(allocator: &mut A)
