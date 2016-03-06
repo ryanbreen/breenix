@@ -19,10 +19,6 @@ pub mod keyboard;
 #[macro_use]
 pub mod idt;
 
-pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
-  ChainedPics::new(0x20, 0x28)
-});
-
 /// This trait is defined for any type which can be read or written over a
 /// port.  The processor supports I/O with `u8`, `u16` and `u32`.  The
 /// functions in this trait are all unsafe because they can write to
