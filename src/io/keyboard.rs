@@ -23,9 +23,9 @@ const SPACE_RELEASED:u8 = 0xB9;
 const ENTER_PRESSED:u8 = 0x1C;
 const ENTER_RELEASED:u8 = 0x9C;
 
-static QUERTYZUIOP: [char;10] = ['q','w','e','r','t','z','u','i','o','p']; // 0x10-0x1c
+static QUERTYZUIOP: [char;10] = ['q','w','e','r','t','y','u','i','o','p']; // 0x10-0x1c
 static ASDFGHJKL: [char;9] = ['a','s','d','f','g','h','j','k','l'];
-static YXCVBNM: [char;7] = ['y','x','c','v','b','n','m'];
+static YXCVBNM: [char;7] = ['z','x','c','v','b','n','m'];
 static NUM: [char;9] = ['1','2','3','4','5','6','7','8','9'];
 
 pub fn scancode_to_ascii(code: u8) -> Option<char> {
