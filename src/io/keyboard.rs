@@ -28,27 +28,27 @@ static ASDFGHJKL: [char;9] = ['a','s','d','f','g','h','j','k','l'];
 static YXCVBNM: [char;7] = ['y','x','c','v','b','n','m'];
 static NUM: [char;9] = ['1','2','3','4','5','6','7','8','9'];
 
-pub fn scancode_to_ascii(code: u8) -> char {
+pub fn scancode_to_ascii(code: u8) -> Option<char> {
   match code {
-    ENTER_PRESSED => return '\n',
-    SPACE_PRESSED => return ' ',
-    POINT_RELEASED => return '.',
-    SLASH_RELEASED => return '/',
-    ZERO_PRESSED => return '0',
+    ENTER_PRESSED => return Some('\n'),
+    SPACE_PRESSED => return Some(' '),
+    POINT_RELEASED => return Some('.'),
+    SLASH_RELEASED => return Some('/'),
+    ZERO_PRESSED => return Some('0'),
     _ => {
       if code >= ONE_PRESSED && code <= NINE_PRESSED {
-        return NUM[(code - ONE_PRESSED) as usize];
+        return Some(NUM[(code - ONE_PRESSED) as usize]);
       }
       if code >= 0x10 && code <= 0x1C {
-        return QUERTYZUIOP[(code - 0x10) as usize];
+        return Some(QUERTYZUIOP[(code - 0x10) as usize]);
       }
       if code >= 0x1E && code <= 0x26 {
-        return ASDFGHJKL[(code - 0x1E) as usize];
+        return Some(ASDFGHJKL[(code - 0x1E) as usize]);
       }
       if code >= 0x2C && code <= 0x32 {
-        return YXCVBNM[(code - 0x2C) as usize];
+        return Some(YXCVBNM[(code - 0x2C) as usize]);
       }
-      return code as char;
+      return None;
     },
   }
 }
@@ -82,18 +82,17 @@ pub fn read_char() -> Option<char> {
 /*
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
-
+*/
   // Look up the ASCII keycode.
-  if let Some(ascii) = find_ascii(scancode) {
+  if let Some(ascii) = scancode_to_ascii(scancode) {
       // The `as char` converts our ASCII data to Unicode, which is
       // correct as long as we're only using 7-bit ASCII.
-      Some(state.modifiers.apply_to(ascii) as char)
+      //Some(state.modifiers.apply_to(ascii) as char)
+      return Some(ascii);
   } else {
       // Either this was a modifier key, or it some key we don't know how
       // to handle yet, or it's part of a multibyte scancode.  Just look
       // innocent and pretend nothing happened.
-      None
+      return None;
   }
-  */
-  return Some(scancode_to_ascii(scancode));
 }
