@@ -22,6 +22,12 @@ SECTIONS {
     . = ALIGN(4K);
   }
 
+  .got :
+  {
+    *(.got .got.plt)
+    . = ALIGN(4K);
+  }
+
   .text :
   {
     *(.text .text.*)

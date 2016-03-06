@@ -275,6 +275,10 @@ pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation)
         continue;
       }
 
+      if section.addr as usize % PAGE_SIZE != 0 {
+        println!("section with flags {:?} at 0x{:x} is not aligned", section.flags, section.addr);
+      }
+
       assert!(section.addr as usize % PAGE_SIZE == 0,
               "sections need to be page aligned");
       println!("mapping section at addr: {:#x}, size: {:#x}",
