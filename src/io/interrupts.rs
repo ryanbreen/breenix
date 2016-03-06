@@ -4,6 +4,7 @@ use spin::Mutex;
 use x86;
 use x86::irq::IdtEntry;
 use io::ChainedPics;
+use io::keyboard;
 
 const IDT_SIZE: usize = 256;
 
@@ -73,8 +74,6 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
     0x00...0x0F => cpu_exception_handler(ctx),
     0x20 => { /* Timer. */ }
     0x21 => {
-      println!("Keyboard bullshit");
-      /*
       if let Some(input) = keyboard::read_char() {
         if input == '\r' {
           println!("");
@@ -82,7 +81,6 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
           print!("{}", input);
         }
       }
-      */
     }
     0x80 => println!("Not actually Linux, sorry."),
     _ => {

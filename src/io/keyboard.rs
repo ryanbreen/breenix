@@ -53,32 +53,47 @@ pub fn scancode_to_ascii(code: u8) -> char {
   }
 }
 
-extern fn handle_interrupt() {
+/// Our keyboard state, including our I/O port, our currently pressed
+/// modifiers, etc.
+struct State {
+  /// The PS/2 serial IO port for the keyboard.  There's a huge amount of
+  /// emulation going on at the hardware level to allow us to pretend to
+  /// be an early-80s IBM PC.
+  ///
+  /// We could read the standard keyboard port directly using
+  /// `inb(0x60)`, but it's nicer if we wrap it up in an `cpuio::Port`
+  /// object.
+  port: Port<u8>
 }
 
-pub fn test() {
+/// Our global keyboard state, protected by a mutex.
+static STATE: Mutex<State> = Mutex::new(State {
+    port: unsafe { Port::new(0x60) },
+    //modifiers: Modifiers::new(),
+});
 
-  //let mut last_scancode:u8 = 0;
+/// Try to read a single input character
+pub fn read_char() -> Option<char> {
+  let mut state = STATE.lock();
 
-  loop {
-    /*
-    unsafe {
+  // Read a single scancode off our keyboard port.
+  let scancode = unsafe { state.port.read() }; 
 
-      let scancode = KEYBOARD.lock().read();
+/*
+  // Give our modifiers first crack at this.
+  state.modifiers.update(scancode);
 
-      if scancode > 128 {
-        continue;
-      }
-
-      if last_scancode == scancode {
-        continue;
-      }
-
-      last_scancode = scancode;
-      if scancode != 0xFA {
-        print!("{}", scancode_to_ascii(scancode));
-      }
-
-    }*/
+  // Look up the ASCII keycode.
+  if let Some(ascii) = find_ascii(scancode) {
+      // The `as char` converts our ASCII data to Unicode, which is
+      // correct as long as we're only using 7-bit ASCII.
+      Some(state.modifiers.apply_to(ascii) as char)
+  } else {
+      // Either this was a modifier key, or it some key we don't know how
+      // to handle yet, or it's part of a multibyte scancode.  Just look
+      // innocent and pretend nothing happened.
+      None
   }
+  */
+  return Some(scancode_to_ascii(scancode));
 }
