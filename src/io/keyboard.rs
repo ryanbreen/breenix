@@ -61,15 +61,50 @@ struct State {
   /// be an early-80s IBM PC.
   ///
   /// We could read the standard keyboard port directly using
-  /// `inb(0x60)`, but it's nicer if we wrap it up in an `cpuio::Port`
-  /// object.
-  port: Port<u8>
+  /// `inb(0x60)`, but it's nicer if we wrap it up in a `Port` object.
+  port: Port<u8>,
+
+  /// The collection of currently-pressed modifier keys.
+  modifiers: Modifiers,
+}
+
+struct Modifiers {
+  l_shift: bool,
+  r_shift: bool,
+  caps_lock: bool,
+}
+
+impl Modifiers {
+  const fn new() -> Modifiers {
+    Modifiers {
+      l_shift: false,
+      r_shift: false,
+      caps_lock: false,
+    }
+  }
+
+  fn update(&mut self, scancode: u8) {
+    match scancode {
+      0x2A => self.l_shift = true,
+      0x36 => self.r_shift = true,
+      0x3A => self.caps_lock = !self.caps_lock,
+      _ => {},
+    }
+  }
+
+  fn apply_to(&self, ascii: char) -> char {
+    if self.l_shift || self.r_shift || self.caps_lock {
+      return ((ascii as u8) - 32) as char;
+    }
+
+    return ascii;
+  }
 }
 
 /// Our global keyboard state, protected by a mutex.
 static STATE: Mutex<State> = Mutex::new(State {
     port: unsafe { Port::new(0x60) },
-    //modifiers: Modifiers::new(),
+    modifiers: Modifiers::new(),
 });
 
 /// Try to read a single input character
@@ -79,16 +114,14 @@ pub fn read_char() -> Option<char> {
   // Read a single scancode off our keyboard port.
   let scancode = unsafe { state.port.read() }; 
 
-/*
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
-*/
+
   // Look up the ASCII keycode.
   if let Some(ascii) = scancode_to_ascii(scancode) {
       // The `as char` converts our ASCII data to Unicode, which is
       // correct as long as we're only using 7-bit ASCII.
-      //Some(state.modifiers.apply_to(ascii) as char)
-      return Some(ascii);
+      return Some(state.modifiers.apply_to(ascii))
   } else {
       // Either this was a modifier key, or it some key we don't know how
       // to handle yet, or it's part of a multibyte scancode.  Just look
