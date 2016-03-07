@@ -14,6 +14,7 @@ pub struct Key {
   scancode: u8
 }
 
+const ZERO_KEY:Key = Key { lower:'0', upper:')', scancode: 0x29 };
 const ONE_KEY:Key = Key { lower:'1', upper:'!', scancode: 0x2 };
 const TWO_KEY:Key = Key { lower:'2', upper:'@', scancode: 0x3 };
 const THREE_KEY:Key = Key { lower:'3', upper:'#', scancode: 0x4 };
@@ -26,25 +27,38 @@ const NINE_KEY:Key = Key { lower:'9', upper:'(', scancode: 0xA };
 
 static KEYS:[Option<Key>;256] = [
   /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
-  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), None, None, None, None, None, /* 0xF */
-  /* 0x10  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x1F */
-  /* 0x20  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x2F */
-  /* 0x30  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x3F */
-  /* 0x40  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x4F */
-  /* 0x50  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x5F */
-  /* 0x60  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x6F */
-  /* 0x70  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x7F */
-  /* 0x80  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x8F */
-  /* 0x90  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x9F */
-  /* 0x100 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x10F */
-  /* 0x110 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x11F */
-  /* 0x120 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x12F */
-  /* 0x130 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x13F */
-  /* 0x140 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x14F */
-  /* 0x140 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x15F */
+  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), None, None, None, None, /* 0xF */
+  /* 0x10  */ None, None, None, None, None, None, None, None, /* 0x17 */
+  /* 0x18  */ None, None, None, None, None, None, None, None, /* 0x1F */
+  /* 0x20  */ None, None, None, None, None, None, None, None, /* 0x27 */
+  /* 0x28  */ None, None, None, None, None, None, None, None, /* 0x2F */
+  /* 0x30  */ None, None, None, None, None, None, None, None, /* 0x37 */
+  /* 0x38  */ None, None, None, None, None, None, None, None, /* 0x3F */
+  /* 0x40  */ None, None, None, None, None, None, None, None, /* 0x47 */
+  /* 0x48  */ None, None, None, None, None, None, None, None, /* 0x4F */
+  /* 0x50  */ None, None, None, None, None, None, None, None, /* 0x57 */
+  /* 0x58  */ None, None, None, None, None, None, None, None, /* 0x5F */
+  /* 0x60  */ None, None, None, None, None, None, None, None, /* 0x67 */
+  /* 0x68  */ None, None, None, None, None, None, None, None, /* 0x6F */
+  /* 0x70  */ None, None, None, None, None, None, None, None, /* 0x77 */
+  /* 0x78  */ None, None, None, None, None, None, None, None, /* 0x7F */
+  /* 0x80  */ None, None, None, None, None, None, None, None, /* 0x87 */
+  /* 0x88  */ None, None, None, None, None, None, None, None, /* 0x8F */
+  /* 0x90  */ None, None, None, None, None, None, None, None, /* 0x97 */
+  /* 0x98  */ None, None, None, None, None, None, None, None, /* 0x9F */
+  /* 0x100 */ None, None, None, None, None, None, None, None, /* 0x107 */
+  /* 0x108 */ None, None, None, None, None, None, None, None, /* 0x10F */
+  /* 0x110 */ None, None, None, None, None, None, None, None, /* 0x117 */
+  /* 0x118 */ None, None, None, None, None, None, None, None, /* 0x11F */
+  /* 0x120 */ None, None, None, None, None, None, None, None, /* 0x127 */
+  /* 0x128 */ None, None, None, None, None, None, None, None, /* 0x12F */
+  /* 0x130 */ None, None, None, None, None, None, None, None, /* 0x137 */
+  /* 0x138 */ None, None, None, None, None, None, None, None, /* 0x13F */
+  /* 0x140 */ None, None, None, None, None, None, None, None, /* 0x147 */
+  /* 0x148 */ None, None, None, None, None, None, None, None, /* 0x14F */
+  /* 0x150 */ None, None, None, None, None, None, None, None, /* 0x157 */
+  /* 0x158 */ None, None, None, None, None, None, None, None, /* 0x15F */
 ];
-
-const ZERO_PRESSED:u8 = 0x29;
 
 const POINT_PRESSED:u8 = 0x34;
 const POINT_RELEASED:u8 = 0xB4;
