@@ -7,6 +7,34 @@ static KEYBOARD: Mutex<Port<u8>> = Mutex::new(unsafe {
   Port::new(0x60)
 });
 
+#[derive(Debug, Clone, Copy)]
+pub struct Key {
+  lower: char,
+  upper: char,
+  scancode: u8
+}
+
+const ONE_KEY:Key = Key { lower:'1', upper:'!', scancode: 0x2 };
+
+static KEYS:[Option<Key>;256] = [
+  /* 0x0   */ None, None, Some(ONE_KEY), None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0xF */
+  /* 0x10  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x1F */
+  /* 0x20  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x2F */
+  /* 0x30  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x3F */
+  /* 0x40  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x4F */
+  /* 0x50  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x5F */
+  /* 0x60  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x6F */
+  /* 0x70  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x7F */
+  /* 0x80  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x8F */
+  /* 0x90  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x9F */
+  /* 0x100 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x10F */
+  /* 0x110 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x11F */
+  /* 0x120 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x12F */
+  /* 0x130 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x13F */
+  /* 0x140 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x14F */
+  /* 0x140 */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x15F */
+];
+
 const ZERO_PRESSED:u8 = 0x29;
 const ONE_PRESSED:u8 = 0x2;
 const NINE_PRESSED:u8 = 0xA;
@@ -23,13 +51,14 @@ const SPACE_RELEASED:u8 = 0xB9;
 const ENTER_PRESSED:u8 = 0x1C;
 const ENTER_RELEASED:u8 = 0x9C;
 
-static QUERTYZUIOP: [char;10] = ['q','w','e','r','t','y','u','i','o','p']; // 0x10-0x1c
+static QUERTYUIOP: [char;10] = ['q','w','e','r','t','y','u','i','o','p']; // 0x10-0x1c
 static ASDFGHJKL: [char;9] = ['a','s','d','f','g','h','j','k','l'];
-static YXCVBNM: [char;7] = ['z','x','c','v','b','n','m'];
+static ZXCVBNM: [char;7] = ['z','x','c','v','b','n','m'];
 static NUM: [char;9] = ['1','2','3','4','5','6','7','8','9'];
 
-pub fn scancode_to_ascii(code: u8) -> Option<char> {
-  match code {
+pub fn scancode_to_key(code: u8) -> Option<Key> {
+  return KEYS[code as usize];
+/*  match code {
     ENTER_PRESSED => return Some('\n'),
     SPACE_PRESSED => return Some(' '),
     POINT_RELEASED => return Some('.'),
@@ -40,17 +69,18 @@ pub fn scancode_to_ascii(code: u8) -> Option<char> {
         return Some(NUM[(code - ONE_PRESSED) as usize]);
       }
       if code >= 0x10 && code <= 0x1C {
-        return Some(QUERTYZUIOP[(code - 0x10) as usize]);
+        return Some(QUERTYUIOP[(code - 0x10) as usize]);
       }
       if code >= 0x1E && code <= 0x26 {
         return Some(ASDFGHJKL[(code - 0x1E) as usize]);
       }
       if code >= 0x2C && code <= 0x32 {
-        return Some(YXCVBNM[(code - 0x2C) as usize]);
+        return Some(ZXCVBNM[(code - 0x2C) as usize]);
       }
       return None;
     },
   }
+  */
 }
 
 /// Our keyboard state, including our I/O port, our currently pressed
@@ -94,12 +124,12 @@ impl Modifiers {
     }
   }
 
-  fn apply_to(&self, ascii: char) -> char {
+  fn apply_to(&self, key: Key) -> char {
     if (self.l_shift || self.r_shift) ^ self.caps_lock {
-      return ((ascii as u8) - 32) as char;
+      return key.upper;
     }
 
-    return ascii;
+    return key.lower;
   }
 }
 
@@ -120,10 +150,10 @@ pub fn read_char() -> Option<char> {
   state.modifiers.update(scancode);
 
   // Look up the ASCII keycode.
-  if let Some(ascii) = scancode_to_ascii(scancode) {
+  if let Some(key) = scancode_to_key(scancode) {
       // The `as char` converts our ASCII data to Unicode, which is
       // correct as long as we're only using 7-bit ASCII.
-      return Some(state.modifiers.apply_to(ascii))
+      return Some(state.modifiers.apply_to(key))
   } else {
       // Either this was a modifier key, or it some key we don't know how
       // to handle yet, or it's part of a multibyte scancode.  Just look
