@@ -106,6 +106,9 @@ const SIX_KEY:Key = Key { lower:'6', upper:'^', scancode: 0x7 };
 const SEVEN_KEY:Key = Key { lower:'7', upper:'&', scancode: 0x8 };
 const EIGHT_KEY:Key = Key { lower:'8', upper:'*', scancode: 0x9 };
 const NINE_KEY:Key = Key { lower:'9', upper:'(', scancode: 0xA };
+const DASH_KEY:Key = Key { lower:'-', upper:'_', scancode: 0xC };
+const EQUAL_KEY:Key = Key { lower: '=', upper:'+', scancode: 0xD };
+const TAB_KEY:Key = Key { lower:'\t', upper:'\t', scancode: 0xF };
 const Q_KEY:Key = Key { lower:'q', upper:'Q', scancode: 0x10 };
 const W_KEY:Key = Key { lower:'w', upper:'W', scancode: 0x11 };
 const E_KEY:Key = Key { lower:'e', upper:'E', scancode: 0x12 };
@@ -116,13 +119,25 @@ const U_KEY:Key = Key { lower:'u', upper:'U', scancode: 0x16 };
 const I_KEY:Key = Key { lower:'i', upper:'I', scancode: 0x17 };
 const O_KEY:Key = Key { lower:'o', upper:'O', scancode: 0x18 };
 const P_KEY:Key = Key { lower:'p', upper:'P', scancode: 0x19 };
+const LB_KEY:Key = Key { lower:'[', upper:'{', scancode: 0x1A };
+const RB_KEY:Key = Key { lower:']', upper:'}', scancode: 0x1B };
+const ENTER_KEY:Key = Key { lower:'\r', upper:'\r', scancode: 0x1C };
+const A_KEY:Key = Key { lower:'a', upper:'A', scancode: 0x1E };
+const S_KEY:Key = Key { lower:'s', upper:'S', scancode: 0x1F };
+const D_KEY:Key = Key { lower:'d', upper:'D', scancode: 0x20 };
+const F_KEY:Key = Key { lower:'f', upper:'F', scancode: 0x21 };
+const G_KEY:Key = Key { lower:'g', upper:'G', scancode: 0x22 };
+const H_KEY:Key = Key { lower:'h', upper:'H', scancode: 0x23 };
+const J_KEY:Key = Key { lower:'j', upper:'J', scancode: 0x24 };
+const K_KEY:Key = Key { lower:'k', upper:'K', scancode: 0x25 };
+const L_KEY:Key = Key { lower:'l', upper:'L', scancode: 0x26 };
 
 static KEYS:[Option<Key>;256] = [
   /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
-  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), None, None, None, None, /* 0xF */
+  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), Some(DASH_KEY), Some(EQUAL_KEY), None, Some(TAB_KEY), /* 0xF */
   /* 0x10  */ Some(Q_KEY), Some(W_KEY), Some(E_KEY), Some(R_KEY), Some(T_KEY), Some(Y_KEY), Some(U_KEY), Some(I_KEY), /* 0x17 */
-  /* 0x18  */ Some(O_KEY), Some(P_KEY), None, None, None, None, None, None, /* 0x1F */
-  /* 0x20  */ None, None, None, None, None, None, None, None, /* 0x27 */
+  /* 0x18  */ Some(O_KEY), Some(P_KEY), Some(LB_KEY), Some(RB_KEY), Some(ENTER_KEY), None, Some(A_KEY), Some(S_KEY), /* 0x1F */
+  /* 0x20  */ Some(D_KEY), Some(F_KEY), Some(G_KEY), Some(H_KEY), Some(J_KEY), Some(K_KEY), Some(L_KEY), None, /* 0x27 */
   /* 0x28  */ None, None, None, None, None, None, None, None, /* 0x2F */
   /* 0x30  */ None, None, None, None, None, None, None, None, /* 0x37 */
   /* 0x38  */ None, None, None, None, None, None, None, None, /* 0x3F */
