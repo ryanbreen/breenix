@@ -15,9 +15,18 @@ pub struct Key {
 }
 
 const ONE_KEY:Key = Key { lower:'1', upper:'!', scancode: 0x2 };
+const TWO_KEY:Key = Key { lower:'2', upper:'@', scancode: 0x3 };
+const THREE_KEY:Key = Key { lower:'3', upper:'#', scancode: 0x4 };
+const FOUR_KEY:Key = Key { lower:'4', upper:'$', scancode: 0x5 };
+const FIVE_KEY:Key = Key { lower:'5', upper:'%', scancode: 0x6 };
+const SIX_KEY:Key = Key { lower:'6', upper:'^', scancode: 0x7 };
+const SEVEN_KEY:Key = Key { lower:'7', upper:'&', scancode: 0x8 };
+const EIGHT_KEY:Key = Key { lower:'8', upper:'*', scancode: 0x9 };
+const NINE_KEY:Key = Key { lower:'9', upper:'(', scancode: 0xA };
 
 static KEYS:[Option<Key>;256] = [
-  /* 0x0   */ None, None, Some(ONE_KEY), None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0xF */
+  /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
+  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), None, None, None, None, None, /* 0xF */
   /* 0x10  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x1F */
   /* 0x20  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x2F */
   /* 0x30  */ None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, /* 0x3F */
@@ -36,8 +45,6 @@ static KEYS:[Option<Key>;256] = [
 ];
 
 const ZERO_PRESSED:u8 = 0x29;
-const ONE_PRESSED:u8 = 0x2;
-const NINE_PRESSED:u8 = 0xA;
 
 const POINT_PRESSED:u8 = 0x34;
 const POINT_RELEASED:u8 = 0xB4;
