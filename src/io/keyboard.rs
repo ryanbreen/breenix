@@ -87,8 +87,15 @@ pub fn read_char() -> Option<char> {
   // Read a single scancode off our keyboard port.
   let scancode = unsafe { state.port.read() };
 
+  //print!("0x{:x} ", scancode);
+
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
+
+  // We don't map any keys > 127.
+  if scancode > 127 {
+    return None;
+  }
 
   // Look up the ASCII keycode.
   if let Some(key) = KEYS[scancode as usize] {
@@ -154,7 +161,7 @@ const DOT_KEY:Key = Key { lower:'.', upper:'>', scancode: 0x34 };
 const SLASH_KEY:Key = Key { lower:'/', upper:'?', scancode: 0x35 };
 const SPACE_KEY:Key = Key { lower:' ', upper:' ', scancode: 0x39 };
 
-static KEYS:[Option<Key>;256] = [
+static KEYS:[Option<Key>;128] = [
   /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
   /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), Some(DASH_KEY), Some(EQUAL_KEY), None, Some(TAB_KEY), /* 0xF */
   /* 0x10  */ Some(Q_KEY), Some(W_KEY), Some(E_KEY), Some(R_KEY), Some(T_KEY), Some(Y_KEY), Some(U_KEY), Some(I_KEY), /* 0x17 */
@@ -171,20 +178,4 @@ static KEYS:[Option<Key>;256] = [
   /* 0x68  */ None, None, None, None, None, None, None, None, /* 0x6F */
   /* 0x70  */ None, None, None, None, None, None, None, None, /* 0x77 */
   /* 0x78  */ None, None, None, None, None, None, None, None, /* 0x7F */
-  /* 0x80  */ None, None, None, None, None, None, None, None, /* 0x87 */
-  /* 0x88  */ None, None, None, None, None, None, None, None, /* 0x8F */
-  /* 0x90  */ None, None, None, None, None, None, None, None, /* 0x97 */
-  /* 0x98  */ None, None, None, None, None, None, None, None, /* 0x9F */
-  /* 0x100 */ None, None, None, None, None, None, None, None, /* 0x107 */
-  /* 0x108 */ None, None, None, None, None, None, None, None, /* 0x10F */
-  /* 0x110 */ None, None, None, None, None, None, None, None, /* 0x117 */
-  /* 0x118 */ None, None, None, None, None, None, None, None, /* 0x11F */
-  /* 0x120 */ None, None, None, None, None, None, None, None, /* 0x127 */
-  /* 0x128 */ None, None, None, None, None, None, None, None, /* 0x12F */
-  /* 0x130 */ None, None, None, None, None, None, None, None, /* 0x137 */
-  /* 0x138 */ None, None, None, None, None, None, None, None, /* 0x13F */
-  /* 0x140 */ None, None, None, None, None, None, None, None, /* 0x147 */
-  /* 0x148 */ None, None, None, None, None, None, None, None, /* 0x14F */
-  /* 0x150 */ None, None, None, None, None, None, None, None, /* 0x157 */
-  /* 0x158 */ None, None, None, None, None, None, None, None, /* 0x15F */
 ];
