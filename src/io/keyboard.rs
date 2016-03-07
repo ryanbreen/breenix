@@ -131,6 +131,19 @@ const H_KEY:Key = Key { lower:'h', upper:'H', scancode: 0x23 };
 const J_KEY:Key = Key { lower:'j', upper:'J', scancode: 0x24 };
 const K_KEY:Key = Key { lower:'k', upper:'K', scancode: 0x25 };
 const L_KEY:Key = Key { lower:'l', upper:'L', scancode: 0x26 };
+const TILDE_KEY:Key = Key { lower:'`', upper:'~', scancode: 0x29 };
+const BACKSLASH_KEY:Key = Key { lower:'\\', upper:'|', scancode: 0x2B };
+const Z_KEY:Key = Key { lower:'z', upper:'Z', scancode: 0x2C };
+const X_KEY:Key = Key { lower:'x', upper:'X', scancode: 0x2D };
+const C_KEY:Key = Key { lower:'c', upper:'C', scancode: 0x2E };
+const V_KEY:Key = Key { lower:'v', upper:'V', scancode: 0x2F };
+const B_KEY:Key = Key { lower:'b', upper:'B', scancode: 0x30 };
+const N_KEY:Key = Key { lower:'n', upper:'N', scancode: 0x31 };
+const M_KEY:Key = Key { lower:'m', upper:'M', scancode: 0x32 };
+const COMMA_KEY:Key = Key { lower:',', upper:'<', scancode: 0x33 };
+const DOT_KEY:Key = Key { lower:'.', upper:'>', scancode: 0x34 };
+const SLASH_KEY:Key = Key { lower:'/', upper:'?', scancode: 0x35 };
+const SPACE_KEY:Key = Key { lower:' ', upper:' ', scancode: 0x39 };
 
 static KEYS:[Option<Key>;256] = [
   /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
@@ -138,9 +151,9 @@ static KEYS:[Option<Key>;256] = [
   /* 0x10  */ Some(Q_KEY), Some(W_KEY), Some(E_KEY), Some(R_KEY), Some(T_KEY), Some(Y_KEY), Some(U_KEY), Some(I_KEY), /* 0x17 */
   /* 0x18  */ Some(O_KEY), Some(P_KEY), Some(LB_KEY), Some(RB_KEY), Some(ENTER_KEY), None, Some(A_KEY), Some(S_KEY), /* 0x1F */
   /* 0x20  */ Some(D_KEY), Some(F_KEY), Some(G_KEY), Some(H_KEY), Some(J_KEY), Some(K_KEY), Some(L_KEY), None, /* 0x27 */
-  /* 0x28  */ None, None, None, None, None, None, None, None, /* 0x2F */
-  /* 0x30  */ None, None, None, None, None, None, None, None, /* 0x37 */
-  /* 0x38  */ None, None, None, None, None, None, None, None, /* 0x3F */
+  /* 0x28  */ None, Some(TILDE_KEY), None, Some(BACKSLASH_KEY), Some(Z_KEY), Some(X_KEY), Some(C_KEY), Some(V_KEY), /* 0x2F */
+  /* 0x30  */ Some(B_KEY), Some(N_KEY), Some(M_KEY), Some(COMMA_KEY), Some(DOT_KEY), Some(SLASH_KEY), None, None, /* 0x37 */
+  /* 0x38  */ None, Some(SPACE_KEY), None, None, None, None, None, None, /* 0x3F */
   /* 0x40  */ None, None, None, None, None, None, None, None, /* 0x47 */
   /* 0x48  */ None, None, None, None, None, None, None, None, /* 0x4F */
   /* 0x50  */ None, None, None, None, None, None, None, None, /* 0x57 */
