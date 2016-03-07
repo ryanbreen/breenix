@@ -56,9 +56,18 @@ impl Modifiers {
   }
 
   fn apply_to(&self, key: Key) -> char {
-    // FIXME: numbers and symbols don't honor caps
-    if (self.l_shift || self.r_shift) ^ self.caps_lock {
-      return key.upper;
+    // Only alphabetic keys honor caps lock, so first distinguish between
+    // alphabetic and non alphabetic keys.
+    if (0x10 <= key.scancode && key.scancode <= 0x19) ||
+       (0x1E <= key.scancode && key.scancode <= 0x26) ||
+       (0x2C <= key.scancode && key.scancode <= 0x32) {
+      if (self.l_shift || self.r_shift) ^ self.caps_lock {
+        return key.upper;
+      }
+    } else {
+      if self.l_shift || self.r_shift {
+        return key.upper;
+      }
     }
 
     return key.lower;
