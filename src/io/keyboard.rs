@@ -14,96 +14,6 @@ pub struct Key {
   scancode: u8
 }
 
-const ZERO_KEY:Key = Key { lower:'0', upper:')', scancode: 0x29 };
-const ONE_KEY:Key = Key { lower:'1', upper:'!', scancode: 0x2 };
-const TWO_KEY:Key = Key { lower:'2', upper:'@', scancode: 0x3 };
-const THREE_KEY:Key = Key { lower:'3', upper:'#', scancode: 0x4 };
-const FOUR_KEY:Key = Key { lower:'4', upper:'$', scancode: 0x5 };
-const FIVE_KEY:Key = Key { lower:'5', upper:'%', scancode: 0x6 };
-const SIX_KEY:Key = Key { lower:'6', upper:'^', scancode: 0x7 };
-const SEVEN_KEY:Key = Key { lower:'7', upper:'&', scancode: 0x8 };
-const EIGHT_KEY:Key = Key { lower:'8', upper:'*', scancode: 0x9 };
-const NINE_KEY:Key = Key { lower:'9', upper:'(', scancode: 0xA };
-
-static KEYS:[Option<Key>;256] = [
-  /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
-  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), None, None, None, None, /* 0xF */
-  /* 0x10  */ None, None, None, None, None, None, None, None, /* 0x17 */
-  /* 0x18  */ None, None, None, None, None, None, None, None, /* 0x1F */
-  /* 0x20  */ None, None, None, None, None, None, None, None, /* 0x27 */
-  /* 0x28  */ None, None, None, None, None, None, None, None, /* 0x2F */
-  /* 0x30  */ None, None, None, None, None, None, None, None, /* 0x37 */
-  /* 0x38  */ None, None, None, None, None, None, None, None, /* 0x3F */
-  /* 0x40  */ None, None, None, None, None, None, None, None, /* 0x47 */
-  /* 0x48  */ None, None, None, None, None, None, None, None, /* 0x4F */
-  /* 0x50  */ None, None, None, None, None, None, None, None, /* 0x57 */
-  /* 0x58  */ None, None, None, None, None, None, None, None, /* 0x5F */
-  /* 0x60  */ None, None, None, None, None, None, None, None, /* 0x67 */
-  /* 0x68  */ None, None, None, None, None, None, None, None, /* 0x6F */
-  /* 0x70  */ None, None, None, None, None, None, None, None, /* 0x77 */
-  /* 0x78  */ None, None, None, None, None, None, None, None, /* 0x7F */
-  /* 0x80  */ None, None, None, None, None, None, None, None, /* 0x87 */
-  /* 0x88  */ None, None, None, None, None, None, None, None, /* 0x8F */
-  /* 0x90  */ None, None, None, None, None, None, None, None, /* 0x97 */
-  /* 0x98  */ None, None, None, None, None, None, None, None, /* 0x9F */
-  /* 0x100 */ None, None, None, None, None, None, None, None, /* 0x107 */
-  /* 0x108 */ None, None, None, None, None, None, None, None, /* 0x10F */
-  /* 0x110 */ None, None, None, None, None, None, None, None, /* 0x117 */
-  /* 0x118 */ None, None, None, None, None, None, None, None, /* 0x11F */
-  /* 0x120 */ None, None, None, None, None, None, None, None, /* 0x127 */
-  /* 0x128 */ None, None, None, None, None, None, None, None, /* 0x12F */
-  /* 0x130 */ None, None, None, None, None, None, None, None, /* 0x137 */
-  /* 0x138 */ None, None, None, None, None, None, None, None, /* 0x13F */
-  /* 0x140 */ None, None, None, None, None, None, None, None, /* 0x147 */
-  /* 0x148 */ None, None, None, None, None, None, None, None, /* 0x14F */
-  /* 0x150 */ None, None, None, None, None, None, None, None, /* 0x157 */
-  /* 0x158 */ None, None, None, None, None, None, None, None, /* 0x15F */
-];
-
-const POINT_PRESSED:u8 = 0x34;
-const POINT_RELEASED:u8 = 0xB4;
-
-const SLASH_RELEASED:u8 = 0xB5;
-
-const BACKSPACE_PRESSED:u8 = 0xE;
-const BACKSPACE_RELEASED:u8 = 0x8E;
-const SPACE_PRESSED:u8 = 0x39;
-const SPACE_RELEASED:u8 = 0xB9;
-const ENTER_PRESSED:u8 = 0x1C;
-const ENTER_RELEASED:u8 = 0x9C;
-
-static QUERTYUIOP: [char;10] = ['q','w','e','r','t','y','u','i','o','p']; // 0x10-0x1c
-static ASDFGHJKL: [char;9] = ['a','s','d','f','g','h','j','k','l'];
-static ZXCVBNM: [char;7] = ['z','x','c','v','b','n','m'];
-static NUM: [char;9] = ['1','2','3','4','5','6','7','8','9'];
-
-pub fn scancode_to_key(code: u8) -> Option<Key> {
-  return KEYS[code as usize];
-/*  match code {
-    ENTER_PRESSED => return Some('\n'),
-    SPACE_PRESSED => return Some(' '),
-    POINT_RELEASED => return Some('.'),
-    SLASH_RELEASED => return Some('/'),
-    ZERO_PRESSED => return Some('0'),
-    _ => {
-      if code >= ONE_PRESSED && code <= NINE_PRESSED {
-        return Some(NUM[(code - ONE_PRESSED) as usize]);
-      }
-      if code >= 0x10 && code <= 0x1C {
-        return Some(QUERTYUIOP[(code - 0x10) as usize]);
-      }
-      if code >= 0x1E && code <= 0x26 {
-        return Some(ASDFGHJKL[(code - 0x1E) as usize]);
-      }
-      if code >= 0x2C && code <= 0x32 {
-        return Some(ZXCVBNM[(code - 0x2C) as usize]);
-      }
-      return None;
-    },
-  }
-  */
-}
-
 /// Our keyboard state, including our I/O port, our currently pressed
 /// modifiers, etc.
 struct State {
@@ -146,6 +56,7 @@ impl Modifiers {
   }
 
   fn apply_to(&self, key: Key) -> char {
+    // FIXME: numbers and symbols don't honor caps
     if (self.l_shift || self.r_shift) ^ self.caps_lock {
       return key.upper;
     }
@@ -171,14 +82,72 @@ pub fn read_char() -> Option<char> {
   state.modifiers.update(scancode);
 
   // Look up the ASCII keycode.
-  if let Some(key) = scancode_to_key(scancode) {
-      // The `as char` converts our ASCII data to Unicode, which is
-      // correct as long as we're only using 7-bit ASCII.
-      return Some(state.modifiers.apply_to(key))
+  if let Some(key) = KEYS[scancode as usize] {
+    // The `as char` converts our ASCII data to Unicode, which is
+    // correct as long as we're only using 7-bit ASCII.
+    return Some(state.modifiers.apply_to(key))
   } else {
-      // Either this was a modifier key, or it some key we don't know how
-      // to handle yet, or it's part of a multibyte scancode.  Just look
-      // innocent and pretend nothing happened.
-      return None;
+    // Either this was a modifier key, or it some key we don't know how
+    // to handle yet, or it's part of a multibyte scancode.  Just look
+    // innocent and pretend nothing happened.
+    return None;
   }
 }
+
+/// Super Boring Scancode Mappings below!
+
+const ZERO_KEY:Key = Key { lower:'0', upper:')', scancode: 0x29 };
+const ONE_KEY:Key = Key { lower:'1', upper:'!', scancode: 0x2 };
+const TWO_KEY:Key = Key { lower:'2', upper:'@', scancode: 0x3 };
+const THREE_KEY:Key = Key { lower:'3', upper:'#', scancode: 0x4 };
+const FOUR_KEY:Key = Key { lower:'4', upper:'$', scancode: 0x5 };
+const FIVE_KEY:Key = Key { lower:'5', upper:'%', scancode: 0x6 };
+const SIX_KEY:Key = Key { lower:'6', upper:'^', scancode: 0x7 };
+const SEVEN_KEY:Key = Key { lower:'7', upper:'&', scancode: 0x8 };
+const EIGHT_KEY:Key = Key { lower:'8', upper:'*', scancode: 0x9 };
+const NINE_KEY:Key = Key { lower:'9', upper:'(', scancode: 0xA };
+const Q_KEY:Key = Key { lower:'q', upper:'Q', scancode: 0x10 };
+const W_KEY:Key = Key { lower:'w', upper:'W', scancode: 0x11 };
+const E_KEY:Key = Key { lower:'e', upper:'E', scancode: 0x12 };
+const R_KEY:Key = Key { lower:'r', upper:'R', scancode: 0x13 };
+const T_KEY:Key = Key { lower:'t', upper:'T', scancode: 0x14 };
+const Y_KEY:Key = Key { lower:'y', upper:'Y', scancode: 0x15 };
+const U_KEY:Key = Key { lower:'u', upper:'U', scancode: 0x16 };
+const I_KEY:Key = Key { lower:'i', upper:'I', scancode: 0x17 };
+const O_KEY:Key = Key { lower:'o', upper:'O', scancode: 0x18 };
+const P_KEY:Key = Key { lower:'p', upper:'P', scancode: 0x19 };
+
+static KEYS:[Option<Key>;256] = [
+  /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
+  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), None, None, None, None, /* 0xF */
+  /* 0x10  */ Some(Q_KEY), Some(W_KEY), Some(E_KEY), Some(R_KEY), Some(T_KEY), Some(Y_KEY), Some(U_KEY), Some(I_KEY), /* 0x17 */
+  /* 0x18  */ Some(O_KEY), Some(P_KEY), None, None, None, None, None, None, /* 0x1F */
+  /* 0x20  */ None, None, None, None, None, None, None, None, /* 0x27 */
+  /* 0x28  */ None, None, None, None, None, None, None, None, /* 0x2F */
+  /* 0x30  */ None, None, None, None, None, None, None, None, /* 0x37 */
+  /* 0x38  */ None, None, None, None, None, None, None, None, /* 0x3F */
+  /* 0x40  */ None, None, None, None, None, None, None, None, /* 0x47 */
+  /* 0x48  */ None, None, None, None, None, None, None, None, /* 0x4F */
+  /* 0x50  */ None, None, None, None, None, None, None, None, /* 0x57 */
+  /* 0x58  */ None, None, None, None, None, None, None, None, /* 0x5F */
+  /* 0x60  */ None, None, None, None, None, None, None, None, /* 0x67 */
+  /* 0x68  */ None, None, None, None, None, None, None, None, /* 0x6F */
+  /* 0x70  */ None, None, None, None, None, None, None, None, /* 0x77 */
+  /* 0x78  */ None, None, None, None, None, None, None, None, /* 0x7F */
+  /* 0x80  */ None, None, None, None, None, None, None, None, /* 0x87 */
+  /* 0x88  */ None, None, None, None, None, None, None, None, /* 0x8F */
+  /* 0x90  */ None, None, None, None, None, None, None, None, /* 0x97 */
+  /* 0x98  */ None, None, None, None, None, None, None, None, /* 0x9F */
+  /* 0x100 */ None, None, None, None, None, None, None, None, /* 0x107 */
+  /* 0x108 */ None, None, None, None, None, None, None, None, /* 0x10F */
+  /* 0x110 */ None, None, None, None, None, None, None, None, /* 0x117 */
+  /* 0x118 */ None, None, None, None, None, None, None, None, /* 0x11F */
+  /* 0x120 */ None, None, None, None, None, None, None, None, /* 0x127 */
+  /* 0x128 */ None, None, None, None, None, None, None, None, /* 0x12F */
+  /* 0x130 */ None, None, None, None, None, None, None, None, /* 0x137 */
+  /* 0x138 */ None, None, None, None, None, None, None, None, /* 0x13F */
+  /* 0x140 */ None, None, None, None, None, None, None, None, /* 0x147 */
+  /* 0x148 */ None, None, None, None, None, None, None, None, /* 0x14F */
+  /* 0x150 */ None, None, None, None, None, None, None, None, /* 0x157 */
+  /* 0x158 */ None, None, None, None, None, None, None, None, /* 0x15F */
+];
