@@ -49,7 +49,7 @@ impl Modifiers {
       0x2A => self.l_shift = true,
       0xAA => self.l_shift = false,
       0x36 => self.r_shift = true,
-      0xB6 => self.l_shift = false,
+      0xB6 => self.r_shift = false,
       0x3A => self.caps_lock = !self.caps_lock,
       _ => {},
     }
@@ -86,8 +86,6 @@ pub fn read_char() -> Option<char> {
 
   // Read a single scancode off our keyboard port.
   let scancode = unsafe { state.port.read() };
-
-  //print!("0x{:x} ", scancode);
 
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
