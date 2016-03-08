@@ -1,4 +1,4 @@
-#![feature(no_std, lang_items, const_fn, unique, core_slice_ext, core_str_ext, iter_cmp, asm, step_by)]
+#![feature(no_std, macro_reexport, lang_items, const_fn, unique, core_slice_ext, core_str_ext, iter_cmp, asm, step_by, collections)]
 #![no_std]
 
 extern crate rlibc;

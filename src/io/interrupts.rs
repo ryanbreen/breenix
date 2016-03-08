@@ -6,6 +6,8 @@ use x86::irq::IdtEntry;
 use io::ChainedPics;
 use io::keyboard;
 
+use vga_buffer;
+
 const IDT_SIZE: usize = 256;
 
 #[allow(dead_code)]
@@ -72,14 +74,14 @@ fn cpu_exception_handler(ctx: &InterruptContext) {
 pub fn rust_interrupt_handler(ctx: &InterruptContext) {
   match ctx.int_id {
     0x00...0x0F => cpu_exception_handler(ctx),
-    0x20 => { /* Timer. */ }
+    0x20 => {}
     0x21 => {
-      if let Some(input) = keyboard::read_char() {
-        if input == '\r' {
-          println!("");
-        } else {
-          print!("{}", input);
-        }
+      let current_line = keyboard::read_line();
+      vga_buffer::clear_screen();
+      if current_line.chars().last() == Some('\r') {
+        println!("{}", current_line);
+      } else {
+        print!("{}", current_line);
       }
     }
     0x80 => println!("Not actually Linux, sorry."),

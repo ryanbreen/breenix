@@ -3,6 +3,9 @@ use spin::Mutex;
 use io;
 use io::Port;
 
+use core::slice;
+use core::str;
+
 static KEYBOARD: Mutex<Port<u8>> = Mutex::new(unsafe {
   Port::new(0x60)
 });
@@ -27,6 +30,12 @@ struct State {
 
   /// The collection of currently-pressed modifier keys.
   modifiers: Modifiers,
+
+  /// The current line buffer
+  buffer: [u8; 256],
+
+  /// The position of the last valid char in the buffer
+  pos: usize,
 }
 
 struct Modifiers {
@@ -78,10 +87,12 @@ impl Modifiers {
 static STATE: Mutex<State> = Mutex::new(State {
     port: unsafe { Port::new(0x60) },
     modifiers: Modifiers::new(),
+    buffer: [0; 256],
+    pos: 0,
 });
 
 /// Try to read a single input character
-pub fn read_char() -> Option<char> {
+fn read_char() {
   let mut state = STATE.lock();
 
   // Read a single scancode off our keyboard port.
@@ -92,19 +103,26 @@ pub fn read_char() -> Option<char> {
 
   // We don't map any keys > 127.
   if scancode > 127 {
-    return None;
+    return;
   }
 
   // Look up the ASCII keycode.
   if let Some(key) = KEYS[scancode as usize] {
     // The `as char` converts our ASCII data to Unicode, which is
     // correct as long as we're only using 7-bit ASCII.
-    return Some(state.modifiers.apply_to(key))
-  } else {
-    // Either this was a modifier key, or it some key we don't know how
-    // to handle yet, or it's part of a multibyte scancode.  Just look
-    // innocent and pretend nothing happened.
-    return None;
+    state.buffer[state.pos] = state.modifiers.apply_to(key) as u8;
+    state.pos += 1;
+  }
+}
+
+/// Try to read a single input character
+pub fn read_line() -> &'static str {
+  read_char();
+
+  let mut state = STATE.lock();
+  unsafe {
+    let slice = slice::from_raw_parts(&state.buffer, state.pos);
+    return str::from_utf8_unchecked(&slice[0]);
   }
 }
 
