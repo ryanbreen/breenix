@@ -97,6 +97,12 @@ impl Writer {
     }
   }
 
+  pub fn delete_byte(&mut self) {
+    let col = self.column_position-1;
+    self.write_to_buffers(BUFFER_HEIGHT-1, col, BLANK);
+    self.column_position -= 1;
+  }
+
   fn write_to_buffers(&mut self, row: usize, col: usize, sc:ScreenChar) {
     if self.active {
       unsafe{ self.buffer.get_mut().chars[row][col] = sc; }
