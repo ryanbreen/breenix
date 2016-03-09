@@ -6,6 +6,8 @@ use io::Port;
 use core::slice;
 use core::str;
 
+use vga_buffer;
+
 static KEYBOARD: Mutex<Port<u8>> = Mutex::new(unsafe {
   Port::new(0x60)
 });
@@ -30,12 +32,6 @@ struct State {
 
   /// The collection of currently-pressed modifier keys.
   modifiers: Modifiers,
-
-  /// The current line buffer
-  buffer: [u8; 256],
-
-  /// The position of the last valid char in the buffer
-  pos: usize,
 }
 
 struct Modifiers {
@@ -65,6 +61,10 @@ impl Modifiers {
   }
 
   fn apply_to(&self, key: Key) -> char {
+
+    // First, check for a cmd chord
+
+
     // Only alphabetic keys honor caps lock, so first distinguish between
     // alphabetic and non alphabetic keys.
     if (0x10 <= key.scancode && key.scancode <= 0x19) ||
@@ -87,12 +87,10 @@ impl Modifiers {
 static STATE: Mutex<State> = Mutex::new(State {
     port: unsafe { Port::new(0x60) },
     modifiers: Modifiers::new(),
-    buffer: [0; 256],
-    pos: 0,
 });
 
 /// Try to read a single input character
-fn read_char() {
+pub fn read() {
   let mut state = STATE.lock();
 
   // Read a single scancode off our keyboard port.
@@ -110,19 +108,7 @@ fn read_char() {
   if let Some(key) = KEYS[scancode as usize] {
     // The `as char` converts our ASCII data to Unicode, which is
     // correct as long as we're only using 7-bit ASCII.
-    state.buffer[state.pos] = state.modifiers.apply_to(key) as u8;
-    state.pos += 1;
-  }
-}
-
-/// Try to read a single input character
-pub fn read_line() -> &'static str {
-  read_char();
-
-  let mut state = STATE.lock();
-  unsafe {
-    let slice = slice::from_raw_parts(&state.buffer, state.pos);
-    return str::from_utf8_unchecked(&slice[0]);
+    vga_buffer::KEYBOARD_WRITER.lock().write_byte(state.modifiers.apply_to(key) as u8);
   }
 }
 

@@ -149,7 +149,7 @@ pub static PRINT_WRITER: Mutex<Writer> = Mutex::new(Writer {
   shadow_buffer: Buffer {
     chars: [[BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
   },
-  active: true,
+  active: false,
 });
 
 pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
@@ -159,7 +159,7 @@ pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
   shadow_buffer: Buffer {
     chars: [[BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
   },
-  active: false,
+  active: true,
 });
 
 pub fn clear_screen() {
