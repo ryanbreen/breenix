@@ -77,12 +77,16 @@ impl Writer {
     }
   }
 
+  pub fn deactivate(&mut self) {
+    self.active = false;
+  }
+
   pub fn write_byte(&mut self, byte: u8) {
     match byte {
       b'\n' => self.new_line(),
       byte => {
         if self.column_position >= BUFFER_WIDTH {
-            self.new_line();
+          self.new_line();
         }
 
         let row = BUFFER_HEIGHT - 1;
@@ -91,8 +95,8 @@ impl Writer {
         let cc = self.color_code;
 
         self.write_to_buffers(row, col, ScreenChar {
-            ascii_character: byte,
-            color_code: cc,
+          ascii_character: byte,
+          color_code: cc,
         });
         self.column_position += 1;
       }
@@ -173,5 +177,19 @@ pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
 pub fn clear_screen() {
   for _ in 0..BUFFER_HEIGHT {
     println!("");
+  }
+}
+
+static mut ACTIVE_WRITER:&'static Mutex<Writer> = &PRINT_WRITER;
+static mut INACTIVE_WRITER:&'static Mutex<Writer> = &KEYBOARD_WRITER;
+
+pub fn toggle() {
+  unsafe {
+    ACTIVE_WRITER.lock().deactivate();
+    INACTIVE_WRITER.lock().activate();
+
+    let new_active = INACTIVE_WRITER;
+    INACTIVE_WRITER = ACTIVE_WRITER;
+    ACTIVE_WRITER = new_active;
   }
 }

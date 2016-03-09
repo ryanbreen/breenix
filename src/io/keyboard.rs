@@ -61,8 +61,9 @@ impl Modifiers {
 
   fn update(&mut self, scancode: u8) {
 
+    //println!("{:x} {:x}", self.last_key, scancode);
+
     if self.last_key == 0xE0 {
-      println!("{:x}", scancode);
       match scancode {
         0x5B => self.l_cmd = true,
         0xDB => self.l_cmd = false,
@@ -84,13 +85,14 @@ impl Modifiers {
     self.last_key = scancode;
   }
 
-  fn apply_to(&self, key: Key) -> char {
+  fn apply_to(&self, key: Key) -> Option<char> {
 
     // First, check for a cmd chord
     if self.cmd() {
       if key.scancode == S_KEY.scancode {
         // Switch buffers
-        println!("SWITCHING BUFFERS");
+        vga_buffer::toggle();
+        return None;
       }
     }
 
@@ -100,15 +102,15 @@ impl Modifiers {
        (0x1E <= key.scancode && key.scancode <= 0x26) ||
        (0x2C <= key.scancode && key.scancode <= 0x32) {
       if (self.l_shift || self.r_shift) ^ self.caps_lock {
-        return key.upper;
+        return Some(key.upper);
       }
     } else {
       if self.l_shift || self.r_shift {
-        return key.upper;
+        return Some(key.upper);
       }
     }
 
-    return key.lower;
+    return Some(key.lower);
   }
 }
 
@@ -149,7 +151,9 @@ pub fn read() {
   if let Some(key) = KEYS[scancode as usize] {
     // The `as char` converts our ASCII data to Unicode, which is
     // correct as long as we're only using 7-bit ASCII.
-    vga_buffer::KEYBOARD_WRITER.lock().write_byte(state.modifiers.apply_to(key) as u8);
+    if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
+      vga_buffer::KEYBOARD_WRITER.lock().write_byte(transformed_ascii as u8);
+    }
   }
 }
 

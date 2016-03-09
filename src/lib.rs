@@ -30,13 +30,13 @@ extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
 }
 
 fn enable_nxe_bit() {
-    use x86::msr::{IA32_EFER, rdmsr, wrmsr};
+  use x86::msr::{IA32_EFER, rdmsr, wrmsr};
 
-    let nxe_bit = 1 << 11;
-    unsafe {
-        let efer = rdmsr(IA32_EFER);
-        wrmsr(IA32_EFER, efer | nxe_bit);
-    }
+  let nxe_bit = 1 << 11;
+  unsafe {
+    let efer = rdmsr(IA32_EFER);
+    wrmsr(IA32_EFER, efer | nxe_bit);
+  }
 }
 
 fn enable_write_protect_bit() {
