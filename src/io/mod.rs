@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-mod x86;
+pub mod x86;
 
 use spin::Mutex;
 

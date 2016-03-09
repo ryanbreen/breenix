@@ -2,6 +2,8 @@ use core::ptr::Unique;
 use core::fmt::Write;
 use spin::Mutex;
 
+use io::x86;
+
 macro_rules! println {
     ($fmt:expr) => (print!(concat!($fmt, "\n")));
     ($fmt:expr, $($arg:tt)*) => (print!(concat!($fmt, "\n"), $($arg)*));
@@ -112,6 +114,10 @@ impl Writer {
   fn write_to_buffers(&mut self, row: usize, col: usize, sc:ScreenChar) {
     if self.active {
       unsafe{ self.buffer.get_mut().chars[row][col] = sc; }
+
+      if col < BUFFER_WIDTH - 1 {
+        update_cursor(row as u8, (col + 1) as u8);
+      }
     }
 
     self.shadow_buffer.chars[row][col] = sc;
@@ -173,6 +179,20 @@ pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
   },
   active: false,
 });
+
+#[allow(exceeding_bitshifts)]
+pub fn update_cursor(row: u8, col: u8) {
+  let position:u16 = (row as u16 * (BUFFER_WIDTH as u16)) + col as u16;
+
+  unsafe {
+    // cursor HIGH port to vga INDEX register
+    x86::outb(0x0E, 0x3D4);
+    x86::outb(((position>>8)&0xFF) as u8, 0x3D5);
+    // cursor LOW port to vga INDEX register
+    x86::outb(0x0F, 0x3D4);
+    x86::outb((position&0xFF) as u8, 0x3D5);
+  }
+}
 
 pub fn clear_screen() {
   for _ in 0..BUFFER_HEIGHT {
