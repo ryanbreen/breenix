@@ -107,7 +107,11 @@ impl Writer {
 
   pub fn delete_byte(&mut self) {
     let col = self.column_position-1;
-    self.write_to_buffers(BUFFER_HEIGHT-1, col, BLANK);
+    let cc = self.color_code;
+    self.write_to_buffers(BUFFER_HEIGHT-1, col, ScreenChar {
+      ascii_character: b' ',
+      color_code: cc,
+    });
     self.column_position -= 1;
   }
 
@@ -138,10 +142,18 @@ impl Writer {
 
   fn clear_row(&mut self, row: usize) {
     if self.active {
-      unsafe{ self.buffer.get_mut().chars[row] = [BLANK; BUFFER_WIDTH]; }
+      unsafe{
+        self.buffer.get_mut().chars[row] = [ScreenChar {
+          ascii_character: b' ',
+          color_code: self.color_code,
+        }; BUFFER_WIDTH];
+      }
     }
 
-    self.shadow_buffer.chars[row] = [BLANK; BUFFER_WIDTH];
+    self.shadow_buffer.chars[row] = [ScreenChar {
+      ascii_character: b' ',
+      color_code: self.color_code,
+    }; BUFFER_WIDTH];
   }
 }
 
@@ -155,9 +167,14 @@ impl ::core::fmt::Write for Writer {
   }
 }
 
-const BLANK:ScreenChar = ScreenChar {
+const GREEN_BLANK:ScreenChar = ScreenChar {
   ascii_character: b' ',
   color_code: ColorCode::new(Color::LightGreen, Color::Black),
+};
+
+const RED_BLANK:ScreenChar = ScreenChar {
+  ascii_character: b' ',
+  color_code: ColorCode::new(Color::LightRed, Color::Black),
 };
 
 pub static PRINT_WRITER: Mutex<Writer> = Mutex::new(Writer {
@@ -165,7 +182,7 @@ pub static PRINT_WRITER: Mutex<Writer> = Mutex::new(Writer {
   color_code: ColorCode::new(Color::LightGreen, Color::Black),
   buffer: unsafe { Unique::new(0xb8000 as *mut _) },
   shadow_buffer: Buffer {
-    chars: [[BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
+    chars: [[GREEN_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
   },
   active: true,
 });
@@ -175,7 +192,7 @@ pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
   color_code: ColorCode::new(Color::LightRed, Color::Black),
   buffer: unsafe { Unique::new(0xb8000 as *mut _) },
   shadow_buffer: Buffer {
-    chars: [[BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
+    chars: [[RED_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
   },
   active: false,
 });
