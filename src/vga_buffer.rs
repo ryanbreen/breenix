@@ -106,6 +106,10 @@ impl Writer {
   }
 
   pub fn delete_byte(&mut self) {
+    if self.column_position == 0 {
+      return;
+    }
+
     let col = self.column_position-1;
     let cc = self.color_code;
     self.write_to_buffers(BUFFER_HEIGHT-1, col, ScreenChar {
@@ -113,6 +117,10 @@ impl Writer {
       color_code: cc,
     });
     self.column_position -= 1;
+
+    if self.active {
+      update_cursor(BUFFER_HEIGHT as u8 -1, self.column_position as u8);
+    }
   }
 
   fn write_to_buffers(&mut self, row: usize, col: usize, sc:ScreenChar) {
@@ -138,6 +146,10 @@ impl Writer {
     }
     self.clear_row(BUFFER_HEIGHT-1);
     self.column_position = 0;
+
+    if self.active {
+      update_cursor(BUFFER_HEIGHT as u8 -1, 0);
+    }
   }
 
   fn clear_row(&mut self, row: usize) {
