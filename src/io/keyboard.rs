@@ -8,10 +8,6 @@ use core::str;
 
 use vga_buffer;
 
-static KEYBOARD: Mutex<Port<u8>> = Mutex::new(unsafe {
-  Port::new(0x60)
-});
-
 #[derive(Debug, Clone, Copy)]
 pub struct Key {
   lower: char,
@@ -38,6 +34,11 @@ struct Modifiers {
   l_shift: bool,
   r_shift: bool,
   caps_lock: bool,
+  l_cmd: bool,
+  r_cmd: bool,
+  l_alt: bool,
+  r_alt: bool,
+  last_key: u8,
 }
 
 impl Modifiers {
@@ -46,24 +47,52 @@ impl Modifiers {
       l_shift: false,
       r_shift: false,
       caps_lock: false,
+      l_cmd: false,
+      r_cmd: false,
+      l_alt: false,
+      r_alt: false,
+      last_key: 0,
     }
   }
 
+  fn cmd(&self) -> bool {
+    self.l_cmd || self.r_cmd
+  }
+
   fn update(&mut self, scancode: u8) {
-    match scancode {
-      0x2A => self.l_shift = true,
-      0xAA => self.l_shift = false,
-      0x36 => self.r_shift = true,
-      0xB6 => self.r_shift = false,
-      0x3A => self.caps_lock = !self.caps_lock,
-      _ => {},
+
+    if self.last_key == 0xE0 {
+      println!("{:x}", scancode);
+      match scancode {
+        0x5B => self.l_cmd = true,
+        0xDB => self.l_cmd = false,
+        0x5C => self.r_cmd = true,
+        0xDC => self.r_cmd = false,
+        _ => {},
+      }
+    } else {
+      match scancode {
+        0x2A => self.l_shift = true,
+        0xAA => self.l_shift = false,
+        0x36 => self.r_shift = true,
+        0xB6 => self.r_shift = false,
+        0x3A => self.caps_lock = !self.caps_lock,
+        _ => {},
+      }
     }
+
+    self.last_key = scancode;
   }
 
   fn apply_to(&self, key: Key) -> char {
 
     // First, check for a cmd chord
-
+    if self.cmd() {
+      if key.scancode == S_KEY.scancode {
+        // Switch buffers
+        println!("SWITCHING BUFFERS");
+      }
+    }
 
     // Only alphabetic keys honor caps lock, so first distinguish between
     // alphabetic and non alphabetic keys.
@@ -94,7 +123,7 @@ pub fn read() {
   let mut state = STATE.lock();
 
   // Read a single scancode off our keyboard port.
-  let scancode = unsafe { state.port.read() };
+  let scancode:u8 = unsafe { state.port.read() };
 
   if scancode == ENTER_KEY.scancode {
     vga_buffer::KEYBOARD_WRITER.lock().new_line();
@@ -178,7 +207,8 @@ const SPACE_KEY:Key = Key { lower:' ', upper:' ', scancode: 0x39 };
 
 static KEYS:[Option<Key>;128] = [
   /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
-  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), Some(DASH_KEY), Some(EQUAL_KEY), Some(DELETE_KEY), Some(TAB_KEY), /* 0xF */
+  /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), Some(DASH_KEY),
+                                              Some(EQUAL_KEY), Some(DELETE_KEY), Some(TAB_KEY), /* 0xF */
   /* 0x10  */ Some(Q_KEY), Some(W_KEY), Some(E_KEY), Some(R_KEY), Some(T_KEY), Some(Y_KEY), Some(U_KEY), Some(I_KEY), /* 0x17 */
   /* 0x18  */ Some(O_KEY), Some(P_KEY), Some(LB_KEY), Some(RB_KEY), Some(ENTER_KEY), None, Some(A_KEY), Some(S_KEY), /* 0x1F */
   /* 0x20  */ Some(D_KEY), Some(F_KEY), Some(G_KEY), Some(H_KEY), Some(J_KEY), Some(K_KEY), Some(L_KEY), None, /* 0x27 */

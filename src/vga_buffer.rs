@@ -70,9 +70,11 @@ impl Writer {
   pub fn activate(&mut self) {
     self.active = true;
 
-    // Clear screen
-
     // Write shadow buffer to screen
+    for row in 0..BUFFER_HEIGHT {
+      let buffer = unsafe { self.buffer.get_mut() };
+      buffer.chars[row] = self.shadow_buffer.chars[row];
+    }
   }
 
   pub fn write_byte(&mut self, byte: u8) {
@@ -155,7 +157,7 @@ pub static PRINT_WRITER: Mutex<Writer> = Mutex::new(Writer {
   shadow_buffer: Buffer {
     chars: [[BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
   },
-  active: false,
+  active: true,
 });
 
 pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
@@ -165,7 +167,7 @@ pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
   shadow_buffer: Buffer {
     chars: [[BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
   },
-  active: true,
+  active: false,
 });
 
 pub fn clear_screen() {
