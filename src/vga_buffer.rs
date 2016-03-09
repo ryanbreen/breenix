@@ -105,7 +105,7 @@ impl Writer {
     self.shadow_buffer.chars[row][col] = sc;
   }
 
-  fn new_line(&mut self) {
+  pub fn new_line(&mut self) {
     for row in 0..(BUFFER_HEIGHT-1) {
       if self.active {
         let buffer = unsafe { self.buffer.get_mut() };

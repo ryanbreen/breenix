@@ -96,6 +96,11 @@ pub fn read() {
   // Read a single scancode off our keyboard port.
   let scancode = unsafe { state.port.read() };
 
+  if scancode == ENTER_KEY.scancode {
+    vga_buffer::KEYBOARD_WRITER.lock().new_line();
+    return;
+  }
+
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
 
