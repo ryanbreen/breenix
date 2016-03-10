@@ -21,6 +21,7 @@ pub struct Page {
    number: usize,
 }
 
+#[allow(dead_code)]
 impl Page {
 
   fn containing_address(address: VirtualAddress) -> Page {
@@ -145,6 +146,7 @@ pub struct RecursivePageTable {
   p4: Unique<Table<Level4>>,
 }
 
+#[allow(dead_code)]
 impl RecursivePageTable {
   pub unsafe fn new() -> RecursivePageTable {
     RecursivePageTable { p4: Unique::new(table::P4) }

@@ -1,10 +1,6 @@
 use spin::Mutex;
 
-use io;
 use io::Port;
-
-use core::slice;
-use core::str;
 
 use vga_buffer;
 
@@ -30,6 +26,7 @@ struct State {
   modifiers: Modifiers,
 }
 
+#[allow(dead_code)]
 struct Modifiers {
   l_shift: bool,
   r_shift: bool,
@@ -125,7 +122,7 @@ pub fn read() {
   let mut state = STATE.lock();
 
   // Read a single scancode off our keyboard port.
-  let scancode:u8 = unsafe { state.port.read() };
+  let scancode:u8 = state.port.read();
 
   if scancode == ENTER_KEY.scancode {
     vga_buffer::KEYBOARD_WRITER.lock().new_line();

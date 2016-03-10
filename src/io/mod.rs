@@ -2,8 +2,6 @@ use core::marker::PhantomData;
 
 pub mod x86;
 
-use spin::Mutex;
-
 /// Command sent to begin PIC initialization.
 const CMD_INIT: u8 = 0x11;
 
@@ -60,12 +58,12 @@ impl<T: InOut> Port<T> {
   /// Read data from the port.  This is nominally safe, because you
   /// shouldn't be able to get hold of a port object unless somebody
   /// thinks it's safe to give you one.
-  pub unsafe fn read(&mut self) -> T {
+  pub fn read(&mut self) -> T {
     unsafe { T::port_in(self.port) }
   }
 
   /// Write data to the port.
-  pub unsafe fn write(&mut self, value: T) {
+  pub fn write(&mut self, value: T) {
     unsafe { T::port_out(self.port, value); }
   }
 }
