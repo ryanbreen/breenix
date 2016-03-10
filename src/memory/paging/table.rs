@@ -6,9 +6,12 @@ pub const P4: *mut Table<Level4> = 0xffffffff_fffff000 as *mut _;
 
 pub trait TableLevel {}
 
+#[allow(dead_code)]
 pub enum Level4 {}
-enum Level3 {}
-enum Level2 {}
+#[allow(dead_code)]
+pub enum Level3 {}
+#[allow(dead_code)]
+pub enum Level2 {}
 pub enum Level1 {}
 
 impl TableLevel for Level4 {}
@@ -16,7 +19,7 @@ impl TableLevel for Level3 {}
 impl TableLevel for Level2 {}
 impl TableLevel for Level1 {}
 
-trait HierachicalLevel: TableLevel {
+pub trait HierachicalLevel: TableLevel {
     type NextLevel: TableLevel;
 }
 

@@ -1,7 +1,5 @@
 use memory::Frame; // needed later
 
-use bitflags;
-
 pub struct Entry(u64);
 
 impl Entry {

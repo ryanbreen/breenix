@@ -76,6 +76,7 @@ impl Mapper {
         p1[page.p1_index()].set(frame, flags | PRESENT);
     }
 
+    #[allow(dead_code)]
     pub fn map<A>(&mut self, page: Page, flags: EntryFlags, allocator: &mut A)
         where A: FrameAllocator
     {
@@ -90,6 +91,7 @@ impl Mapper {
         self.map_to(page, frame, flags, allocator)
     }
 
+    #[allow(unused_variables)]
     pub fn unmap<A>(&mut self, page: Page, allocator: &mut A)
         where A: FrameAllocator
     {
