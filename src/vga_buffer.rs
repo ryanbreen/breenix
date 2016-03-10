@@ -240,5 +240,7 @@ pub fn toggle() {
     let new_active = INACTIVE_WRITER;
     INACTIVE_WRITER = ACTIVE_WRITER;
     ACTIVE_WRITER = new_active;
+
+    update_cursor(BUFFER_HEIGHT as u8 -1, ACTIVE_WRITER.lock().column_position as u8);
   }
 }
