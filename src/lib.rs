@@ -75,14 +75,21 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   enable_nxe_bit();
   enable_write_protect_bit();
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
-
-  debug!("A debug message");
   
   unsafe {
     io::interrupts::setup();
   }
 
+  debug();
+
   loop {}
+}
+
+#[allow(unused_must_use)]
+pub fn debug() {
+  use core::fmt::Write;
+  vga_buffer::DEBUG_WRITER.lock().clear();
+  vga_buffer::DEBUG_WRITER.lock().write_fmt(format_args!("{}", "TEST"));
 }
 
 #[no_mangle]

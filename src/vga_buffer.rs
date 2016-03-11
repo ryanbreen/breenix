@@ -1,5 +1,4 @@
 use core::ptr::Unique;
-use core::fmt::Write;
 use spin::Mutex;
 
 use io::x86;
@@ -13,13 +12,6 @@ macro_rules! print {
   ($($arg:tt)*) => ({
     use core::fmt::Write;
     $crate::vga_buffer::PRINT_WRITER.lock().write_fmt(format_args!($($arg)*)).unwrap();
-  });
-}
-
-macro_rules! debug {
-  ($($arg:tt)*) => ({
-    use core::fmt::Write;
-    $crate::vga_buffer::DEBUG_WRITER.lock().write_fmt(format_args!($($arg)*)).unwrap();
   });
 }
 
@@ -174,6 +166,12 @@ impl Writer {
       color_code: self.color_code,
     }; BUFFER_WIDTH];
   }
+
+  pub fn clear(&mut self) {
+    for row in 0..BUFFER_HEIGHT {
+      self.clear_row(row);
+    }
+  }
 }
 
 impl ::core::fmt::Write for Writer {
@@ -246,9 +244,7 @@ pub fn update_cursor(row: u8, col: u8) {
 }
 
 pub fn clear_screen() {
-  for _ in 0..BUFFER_HEIGHT {
-    println!("");
-  }
+  unsafe { ACTIVE_WRITER.lock().clear(); }
 }
 
 static mut ACTIVE_WRITER:&'static Mutex<Writer> = &PRINT_WRITER;
