@@ -15,6 +15,12 @@ macro_rules! print {
   });
 }
 
+macro_rules! debug {
+  ($($arg:tt)*) => ({
+    $crate::vga_buffer::debug();
+  });
+}
+
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum Color {
@@ -240,6 +246,21 @@ pub fn update_cursor(row: u8, col: u8) {
     // cursor LOW port to vga INDEX register
     x86::outb(0x0F, 0x3D4);
     x86::outb((position&0xFF) as u8, 0x3D5);
+  }
+}
+
+#[allow(unused_must_use)]
+pub fn debug() {
+  use core::fmt::Write;
+  use x86::controlregs::{cr0, cr2, cr3, cr4};
+
+  let mut writer = DEBUG_WRITER.lock();
+  writer.clear();
+  unsafe {
+    writer.write_fmt(format_args!("cr0: 0x{:x}\n", cr0()));
+    writer.write_fmt(format_args!("cr2: 0x{:x}\n", cr2()));
+    writer.write_fmt(format_args!("cr3: 0x{:x}\n", cr3()));
+    writer.write_fmt(format_args!("cr4: 0x{:x}\n", cr4()));
   }
 }
 
