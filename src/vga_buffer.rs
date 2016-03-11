@@ -1,8 +1,6 @@
 use core::ptr::Unique;
 use spin::Mutex;
 
-use io::x86;
-
 macro_rules! println {
     ($fmt:expr) => (print!(concat!($fmt, "\n")));
     ($fmt:expr, $($arg:tt)*) => (print!(concat!($fmt, "\n"), $($arg)*));
@@ -238,14 +236,18 @@ pub static DEBUG_WRITER: Mutex<Writer> = Mutex::new(Writer {
 #[allow(exceeding_bitshifts)]
 pub fn update_cursor(row: u8, col: u8) {
   let position:u16 = (row as u16 * (BUFFER_WIDTH as u16)) + col as u16;
+  use io::Port;
 
   unsafe {
+    let mut cursor_control_port:Port<u8> = Port::new(0x3D4);
+    let mut cursor_value_port:Port<u8> = Port::new(0x3D5);
+
     // cursor HIGH port to vga INDEX register
-    x86::outb(0x0E, 0x3D4);
-    x86::outb(((position>>8)&0xFF) as u8, 0x3D5);
+    cursor_control_port.write(0x0E);
+    cursor_value_port.write(((position>>8)&0xFF) as u8);
     // cursor LOW port to vga INDEX register
-    x86::outb(0x0F, 0x3D4);
-    x86::outb((position&0xFF) as u8, 0x3D5);
+    cursor_control_port.write(0x0F);
+    cursor_value_port.write((position&0xFF) as u8);
   }
 }
 
@@ -253,6 +255,9 @@ pub fn update_cursor(row: u8, col: u8) {
 pub fn debug() {
   use core::fmt::Write;
   use x86::controlregs::{cr0, cr2, cr3, cr4};
+  use x86::msr::IA32_EFER;
+  use x86::msr::rdmsr;
+  use x86::perfcnt;
 
   let mut writer = DEBUG_WRITER.lock();
   writer.clear();
@@ -261,6 +266,14 @@ pub fn debug() {
     writer.write_fmt(format_args!("cr2: 0x{:x}\n", cr2()));
     writer.write_fmt(format_args!("cr3: 0x{:x}\n", cr3()));
     writer.write_fmt(format_args!("cr4: 0x{:x}\n", cr4()));
+
+    writer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}", rdmsr(IA32_EFER)));
+
+    /*
+    perfcnt.core_counters().map(|cc| {
+
+    });
+    */
   }
 }
 

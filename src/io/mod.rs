@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-pub mod x86;
+use x86::io::{inl, outl, outw, inw, outb, inb};
 
 /// Command sent to begin PIC initialization.
 const CMD_INIT: u8 = 0x11;
@@ -30,18 +30,18 @@ pub trait InOut {
 }
 
 impl InOut for u8 {
-  unsafe fn port_in(port: u16) -> u8 { x86::inb(port) }
-  unsafe fn port_out(port: u16, value: u8) { x86::outb(value, port); }
+  unsafe fn port_in(port: u16) -> u8 { inb(port) }
+  unsafe fn port_out(port: u16, value: u8) { outb(port, value); }
 }
 
 impl InOut for u16 {
-  unsafe fn port_in(port: u16) -> u16 { x86::inw(port) }
-  unsafe fn port_out(port: u16, value: u16) { x86::outw(value, port); }
+  unsafe fn port_in(port: u16) -> u16 { inw(port) }
+  unsafe fn port_out(port: u16, value: u16) { outw(port, value); }
 }
 
 impl InOut for u32 {
-  unsafe fn port_in(port: u16) -> u32 { x86::inl(port) }
-  unsafe fn port_out(port: u16, value: u32) { x86::outl(value, port); }
+  unsafe fn port_in(port: u16) -> u32 { inl(port) }
+  unsafe fn port_out(port: u16, value: u32) { outl(port, value); }
 }
 
 pub struct Port<T: InOut> {
