@@ -16,6 +16,13 @@ macro_rules! print {
   });
 }
 
+macro_rules! debug {
+  ($($arg:tt)*) => ({
+    use core::fmt::Write;
+    $crate::vga_buffer::DEBUG_WRITER.lock().write_fmt(format_args!($($arg)*)).unwrap();
+  });
+}
+
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum Color {
@@ -189,6 +196,11 @@ const RED_BLANK:ScreenChar = ScreenChar {
   color_code: ColorCode::new(Color::LightRed, Color::Black),
 };
 
+const GRAY_BLANK:ScreenChar = ScreenChar {
+  ascii_character: b' ',
+  color_code: ColorCode::new(Color::LightGray, Color::Black),
+};
+
 pub static PRINT_WRITER: Mutex<Writer> = Mutex::new(Writer {
   column_position: 0,
   color_code: ColorCode::new(Color::LightGreen, Color::Black),
@@ -205,6 +217,16 @@ pub static KEYBOARD_WRITER: Mutex<Writer> = Mutex::new(Writer {
   buffer: unsafe { Unique::new(0xb8000 as *mut _) },
   shadow_buffer: Buffer {
     chars: [[RED_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
+  },
+  active: false,
+});
+
+pub static DEBUG_WRITER: Mutex<Writer> = Mutex::new(Writer {
+  column_position: 0,
+  color_code: ColorCode::new(Color::LightGray, Color::Black),
+  buffer: unsafe { Unique::new(0xb8000 as *mut _) },
+  shadow_buffer: Buffer {
+    chars: [[GRAY_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT]
   },
   active: false,
 });
@@ -230,16 +252,17 @@ pub fn clear_screen() {
 }
 
 static mut ACTIVE_WRITER:&'static Mutex<Writer> = &PRINT_WRITER;
-static mut INACTIVE_WRITER:&'static Mutex<Writer> = &KEYBOARD_WRITER;
+static mut INACTIVE_WRITERS:[&'static Mutex<Writer>;2] = [&KEYBOARD_WRITER, &DEBUG_WRITER];
 
 pub fn toggle() {
   unsafe {
     ACTIVE_WRITER.lock().deactivate();
-    INACTIVE_WRITER.lock().activate();
 
-    let new_active = INACTIVE_WRITER;
-    INACTIVE_WRITER = ACTIVE_WRITER;
+    let new_active = INACTIVE_WRITERS[0];
+    INACTIVE_WRITERS[0] = INACTIVE_WRITERS[1];
+    INACTIVE_WRITERS[1] = ACTIVE_WRITER;
     ACTIVE_WRITER = new_active;
+    ACTIVE_WRITER.lock().activate();
 
     update_cursor(BUFFER_HEIGHT as u8 -1, ACTIVE_WRITER.lock().column_position as u8);
   }
