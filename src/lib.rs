@@ -88,8 +88,16 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 #[allow(unused_must_use)]
 pub fn debug() {
   use core::fmt::Write;
-  vga_buffer::DEBUG_WRITER.lock().clear();
-  vga_buffer::DEBUG_WRITER.lock().write_fmt(format_args!("{}", "TEST"));
+  use x86::controlregs::{cr0, cr2, cr3, cr4};
+
+  let mut writer = vga_buffer::DEBUG_WRITER.lock();
+  writer.clear();
+  unsafe {
+    writer.write_fmt(format_args!("cr0: 0x{:x}\n", cr0()));
+    writer.write_fmt(format_args!("cr2: 0x{:x}\n", cr2()));
+    writer.write_fmt(format_args!("cr3: 0x{:x}\n", cr3()));
+    writer.write_fmt(format_args!("cr4: 0x{:x}\n", cr4()));
+  }
 }
 
 #[no_mangle]
