@@ -30,6 +30,10 @@ mod io;
 
 mod heap;
 
+use core::fmt::Write;
+use collections::vec::Vec;
+use collections::string::*;
+
 #[no_mangle]
 #[allow(non_snake_case)]
 pub fn _Unwind_Resume() {
@@ -92,14 +96,18 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   unsafe {
-    io::interrupts::setup();
     heap::initialize();
+    io::interrupts::setup();
   }
 
-  let mut vec = collections::vec::Vec::<u8>::new();
-  vec.push(1);
-  vec.push(2);
-  vec.push(3);
+  let mut vec = Vec::<String>::new();
+
+  for x in 0..10 {
+    let mut output = String::new();
+    output.write_fmt(format_args!("Entry {}", x));
+    vec.push(output);
+  }
+
   println!("Hey, I made a vector in kernel space! {:?}", vec);
 
   debug!();
