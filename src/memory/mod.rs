@@ -10,9 +10,9 @@ mod paging;
 
 pub const PAGE_SIZE: usize = 4096;
 
-mod math;
-mod virtual_memory_allocator;
-mod heap;
+pub mod math;
+pub mod virtual_memory_allocator;
+pub mod heap;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Frame {

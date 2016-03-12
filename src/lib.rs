@@ -30,6 +30,8 @@ mod io;
 #[cfg(feature = "use-as-rust-allocator")]
 use memory::virtual_memory_allocator;
 
+mod heap;
+
 #[lang = "panic_fmt"]
 extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
   println!("\n\nPANIC in {} at line {}:", file, line);
@@ -86,6 +88,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   
   unsafe {
     io::interrupts::setup();
+    heap::initialize();
   }
 
   debug!();
