@@ -1,13 +1,17 @@
-#![feature(macro_reexport, lang_items, const_fn, unique, asm)]
+#![feature(allocator, macro_reexport, lang_items, const_fn, unique, asm, collections)]
+#![allocator]
+
 #![no_std]
 
 #![cfg_attr(feature = "use-as-rust-allocator", feature(allocator, const_fn))]
 #![cfg_attr(feature = "use-as-rust-allocator", allocator)]
 
+#[cfg(feature = "use-as-rust-allocator")]
+extern crate spin;
 
+extern crate collections;
 extern crate rlibc;
 
-extern crate spin;
 extern crate multiboot2;
 
 extern crate cpuio;
@@ -26,6 +30,7 @@ mod vga_buffer;
 mod memory;
 
 mod io;
+extern crate alloc;
 
 #[cfg(feature = "use-as-rust-allocator")]
 use memory::virtual_memory_allocator;
@@ -90,6 +95,12 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     io::interrupts::setup();
     heap::initialize();
   }
+
+  let mut vec = collections::vec::Vec::<u8>::new();
+  vec.push(1);
+  vec.push(2);
+  vec.push(3);
+  println!("Hey, I made a vector in kernel space! {:?}", vec);
 
   debug!();
 

@@ -3,9 +3,16 @@ name = "breenix"
 version = "0.1.0"
 authors = ["Ryan Breen <ryan@ryanbreen.com>"]
 
+[features]
+
+# When this feature is enabled, build this crate as the actual Rust system
+# allocator.  This also requires pulling in a spinlock crate, to control
+# access to the shared heap.
+use-as-rust-allocator = ["spin"]
+
 [dependencies]
 rlibc = "0.1.4"
-spin = "0.3.4"
+spin = { version = "0.3.4", optional = true }
 cpuio = "*"
 
 [dependencies.multiboot2]

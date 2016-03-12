@@ -11,6 +11,8 @@ mod paging;
 pub const PAGE_SIZE: usize = 4096;
 
 pub mod math;
+
+#[cfg(feature = "use-as-rust-allocator")]
 pub mod virtual_memory_allocator;
 pub mod heap;
 

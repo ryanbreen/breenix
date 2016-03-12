@@ -9,7 +9,7 @@ grub_cfg := src/arch/$(arch)/grub.cfg
 assembly_source_files := $(wildcard src/arch/$(arch)/*.asm)
 assembly_object_files := $(patsubst src/arch/$(arch)/%.asm, build/arch/$(arch)/%.o, $(assembly_source_files))
 
-.PHONY: all clean run iso isovagrant libcore patch_libcore
+.PHONY: all clean run iso kernel isovagrant libcore patch_libcore liballoc librustc_unicode libcollections
 
 all: $(iso)
 
@@ -49,6 +49,20 @@ patch_libcore:
 libcore: $(patch_libcore)
 	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone core/src/lib.rs	
 	@mv libcore.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcore.rlib
+
+liballoc:
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone alloc/src/lib.rs	
+	@mv liballoc.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/liballoc.rlib
+
+librustc_unicode:
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone rustc_unicode/src/lib.rs	
+	@mv librustc_unicode.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/librustc_unicode.rlib
+
+libcollections:
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone collections/src/lib.rs	
+	@mv libcollections.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcollections.rlib
+
+libs: $(libcore) $(liballoc) $(librustc_unicode) $(libcollections)
 
 # compile assembly files
 build/arch/$(arch)/%.o: src/arch/$(arch)/%.asm
