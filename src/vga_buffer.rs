@@ -255,7 +255,7 @@ pub fn update_cursor(row: u8, col: u8) {
 pub fn debug() {
   use core::fmt::Write;
   use x86::controlregs::{cr0, cr2, cr3, cr4};
-  use x86::msr::IA32_EFER;
+  use x86::msr::{IA32_EFER, MSR_EBC_FREQUENCY_ID};
   use x86::msr::rdmsr;
   use x86::perfcnt;
 
@@ -267,7 +267,7 @@ pub fn debug() {
     writer.write_fmt(format_args!("cr3: 0x{:x}\n", cr3()));
     writer.write_fmt(format_args!("cr4: 0x{:x}\n", cr4()));
 
-    writer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}", rdmsr(IA32_EFER)));
+    writer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}\n", rdmsr(IA32_EFER)));
 
     /*
     perfcnt.core_counters().map(|cc| {

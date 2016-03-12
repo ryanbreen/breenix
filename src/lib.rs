@@ -1,7 +1,12 @@
 #![feature(macro_reexport, lang_items, const_fn, unique, asm)]
 #![no_std]
 
+#![cfg_attr(feature = "use-as-rust-allocator", feature(allocator, const_fn))]
+#![cfg_attr(feature = "use-as-rust-allocator", allocator)]
+
+
 extern crate rlibc;
+
 extern crate spin;
 extern crate multiboot2;
 
@@ -21,6 +26,9 @@ mod vga_buffer;
 mod memory;
 
 mod io;
+
+#[cfg(feature = "use-as-rust-allocator")]
+use memory::virtual_memory_allocator;
 
 #[lang = "panic_fmt"]
 extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
