@@ -1,20 +1,11 @@
 pub use self::area_frame_allocator::AreaFrameAllocator;
 pub use self::paging::remap_the_kernel;
-pub use self::virtual_memory_allocator::*;
-pub use self::heap::Heap;
-pub use self::math::*;
 
 use self::paging::PhysicalAddress;
 mod area_frame_allocator;
 mod paging;
 
 pub const PAGE_SIZE: usize = 4096;
-
-pub mod math;
-
-#[cfg(feature = "use-as-rust-allocator")]
-pub mod virtual_memory_allocator;
-pub mod heap;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Frame {

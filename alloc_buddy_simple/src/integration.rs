@@ -1,11 +1,12 @@
 //! This module integrates a `Heap` into our Rust runtime as the actual
 //! system allocator.  This will only be built if the
 //! `use-as-rust-allocator` feature is enabled at compile time.
+
 use core::cmp::min;
 use core::ptr;
 use spin::Mutex;
 
-use memory::heap::*;
+use heap::*;
 
 /// Either our global system heap, or `None` if it hasn't been allocated
 /// yet.

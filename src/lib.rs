@@ -3,14 +3,11 @@
 
 #![no_std]
 
-#![cfg_attr(feature = "use-as-rust-allocator", feature(allocator, const_fn))]
-#![cfg_attr(feature = "use-as-rust-allocator", allocator)]
-
-#[cfg(feature = "use-as-rust-allocator")]
-extern crate spin;
-
 extern crate collections;
+extern crate alloc_buddy_simple;
 extern crate rlibc;
+
+extern crate spin;
 
 extern crate multiboot2;
 
@@ -30,12 +27,15 @@ mod vga_buffer;
 mod memory;
 
 mod io;
-extern crate alloc;
-
-#[cfg(feature = "use-as-rust-allocator")]
-use memory::virtual_memory_allocator;
 
 mod heap;
+
+#[no_mangle]
+#[allow(non_snake_case)]
+pub fn _Unwind_Resume() {
+  println!("UNWIND!");
+  loop {}
+}
 
 #[lang = "panic_fmt"]
 extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {

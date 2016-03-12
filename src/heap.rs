@@ -4,8 +4,7 @@
 //! undefined behavior and thus nasal demons as far as `rustc` is
 //! concerned.
 
-use memory::heap::FreeBlock;
-use memory::virtual_memory_allocator::initialize_allocator;
+use alloc_buddy_simple::{FreeBlock, initialize_allocator};
 
 extern {
   /// The bottom of our heap.  Declared in `boot.asm` so that we can

@@ -15,7 +15,7 @@ use core::cmp::{max, min};
 use core::mem::size_of;
 use core::ptr;
 
-use memory::math::PowersOf2;
+use math::PowersOf2;
 
 const MIN_HEAP_ALIGN: usize = 4096;
 
@@ -477,4 +477,4 @@ mod test {
             free(mem);
         }
     }
-}
+}        
