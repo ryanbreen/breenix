@@ -43,8 +43,7 @@ pub struct ScreenChar {
 }
 
 pub struct VgaWriter {
-  buffer: Unique<Buffer>,
-  column_position: usize,
+  buffer: Unique<Buffer>
 }
 
 impl VgaWriter {
@@ -82,6 +81,5 @@ pub fn update_cursor(row: u8, col: u8) {
 }
 
 pub static mut VGA_WRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter {
-  column_position: 0,
   buffer: unsafe { Unique::new(0xb8000 as *mut _) },
 });

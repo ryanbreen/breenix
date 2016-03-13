@@ -53,6 +53,10 @@ impl Buffer {
     let blank = self.blank_char;
     self.write_to_buffers(BUFFER_HEIGHT-1, col, blank);
     self.column_position -= 1;
+
+    if self.active {
+      vga_writer::update_cursor(BUFFER_HEIGHT as u8 -1, self.column_position as u8);
+    }
   }
 
   fn write_to_buffers(&mut self, row: usize, col: usize, sc:ScreenChar) {
@@ -76,10 +80,14 @@ impl Buffer {
       self.write_to_buffers(BUFFER_HEIGHT-1, col, blank);
     }
     self.column_position = 0;
+
+    if self.active {
+      vga_writer::update_cursor(BUFFER_HEIGHT as u8 -1, 0);
+    }
   }
 
   pub fn clear(&mut self) {
-    for row in 0..BUFFER_HEIGHT {
+    for _ in 0..BUFFER_HEIGHT {
       self.new_line();
     }
   }
