@@ -16,7 +16,7 @@ macro_rules! format {
     use core::fmt::Write;
     let mut output = collections::string::String::new();
     #[allow(unused_must_use)]
-    output.write_fmt(format_args!($($arg)*));
+    let _ = output.write_fmt(format_args!($($arg)*));
     output
   });
 }

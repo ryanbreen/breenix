@@ -237,9 +237,8 @@ pub fn update_cursor(row: u8, col: u8) {
 pub fn debug() {
   use core::fmt::Write;
   use x86::controlregs::{cr0, cr2, cr3, cr4};
-  use x86::msr::{IA32_EFER, MSR_EBC_FREQUENCY_ID};
+  use x86::msr::IA32_EFER;
   use x86::msr::rdmsr;
-  use x86::perfcnt;
 
   let mut writer = DEBUG_WRITER.lock();
   writer.clear();

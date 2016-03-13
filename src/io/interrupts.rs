@@ -30,6 +30,7 @@ pub static PICS: Mutex<ChainedPics> =
 ///
 /// Only `pub` because `rust_interrupt_handler` is.
 #[repr(C, packed)]
+#[derive(Debug)]
 pub struct InterruptContext {
   rsi: u64,
   rdi: u64,
@@ -76,10 +77,10 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
     0x21 => {
       keyboard::read();
     }
-    0x80 => println!("Not actually Linux, sorry."),
+    /* On Linux, this is used for syscalls.  Good enough for me. */
+    0x80 => println!("Syscall {:?}", ctx),
     _ => {
       println!("UNKNOWN INTERRUPT #{}", ctx.int_id);
-      loop {}
     }
   }
 
