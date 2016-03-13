@@ -2,7 +2,8 @@ use spin::Mutex;
 
 use io::Port;
 
-use vga_buffer;
+use buffers;
+use buffers::KEYBOARD_BUFFER;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Key {
@@ -88,7 +89,7 @@ impl Modifiers {
     if self.cmd() {
       if key.scancode == S_KEY.scancode {
         // Switch buffers
-        vga_buffer::toggle();
+        buffers::toggle();
         return None;
       }
     }
@@ -125,12 +126,12 @@ pub fn read() {
   let scancode:u8 = state.port.read();
 
   if scancode == ENTER_KEY.scancode {
-    vga_buffer::KEYBOARD_WRITER.lock().new_line();
+    KEYBOARD_BUFFER.lock().new_line();
     return;
   }
 
   if scancode == DELETE_KEY.scancode {
-    vga_buffer::KEYBOARD_WRITER.lock().delete_byte();
+    KEYBOARD_BUFFER.lock().delete_byte();
     return;
   }
 
@@ -149,7 +150,7 @@ pub fn read() {
     // The `as char` converts our ASCII data to Unicode, which is
     // correct as long as we're only using 7-bit ASCII.
     if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-      vga_buffer::KEYBOARD_WRITER.lock().write_byte(transformed_ascii as u8);
+      KEYBOARD_BUFFER.lock().write_byte(transformed_ascii as u8);
     }
   }
 }

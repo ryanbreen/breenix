@@ -24,7 +24,9 @@ extern crate bitflags;
 #[macro_use(int)]
 extern crate x86;
 
-mod vga_buffer;
+mod buffers;
+mod constants;
+mod vga_writer;
 mod memory;
 
 mod io;
@@ -74,7 +76,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     heap::initialize();
   }
 
-  vga_buffer::clear_screen();
+  unsafe { buffers::ACTIVE_BUFFER.lock().clear(); }
 
   let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
   let memory_map_tag = boot_info.memory_map_tag()

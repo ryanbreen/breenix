@@ -7,7 +7,7 @@ macro_rules! println {
 macro_rules! print {
   ($($arg:tt)*) => ({
     use core::fmt::Write;
-    $crate::vga_buffer::PRINT_WRITER.lock().write_fmt(format_args!($($arg)*)).unwrap();
+    $crate::buffers::PRINT_BUFFER.lock().write_fmt(format_args!($($arg)*)).unwrap();
   });
 }
 
@@ -23,6 +23,6 @@ macro_rules! format {
 
 macro_rules! debug {
   ($($arg:tt)*) => ({
-    $crate::vga_buffer::debug();
+    $crate::buffers::debug();
   });
 }
