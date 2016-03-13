@@ -249,12 +249,6 @@ pub fn debug() {
     writer.write_fmt(format_args!("cr4: 0x{:x}\n", cr4()));
 
     writer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}\n", rdmsr(IA32_EFER)));
-
-    /*
-    perfcnt.core_counters().map(|cc| {
-
-    });
-    */
   }
 }
 
