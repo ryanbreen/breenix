@@ -143,9 +143,8 @@ static mut test_passed:bool = false;
 
 #[allow(dead_code)]
 pub unsafe fn test_interrupt() {
-  println!("Triggering interrupt.");
   int!(0x80);
-  println!("Interrupt returned!");
+  test_passed = true;
 }
 
 /// Platform-independent initialization.
@@ -159,6 +158,8 @@ pub unsafe fn setup() {
   if test_passed {
     // Turn on real interrupts.
     x86::irq::enable();
+  } else {
+    panic!();
   }
 }
 
