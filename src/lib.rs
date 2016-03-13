@@ -1,7 +1,12 @@
-#![feature(allocator, macro_reexport, lang_items, const_fn, unique, asm, collections)]
+#![feature(allocator, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
+
+// Note: We must define macros first since it declared println!  Otherwise, no
+// other mod can print.
+#[macro_use]
+mod macros;
 
 extern crate collections;
 extern crate alloc_buddy_simple;
@@ -19,10 +24,6 @@ extern crate bitflags;
 #[macro_use(int)]
 extern crate x86;
 
-// Note: We must define vga_buffer first since it declared println!  Otherwise, no
-// other mod can print.
-
-#[macro_use]
 mod vga_buffer;
 mod memory;
 
@@ -67,6 +68,12 @@ fn enable_write_protect_bit() {
 
 #[no_mangle]
 pub extern "C" fn rust_main(multiboot_information_address: usize) {
+
+  unsafe {
+    // Do this first since we want all the goodness of collections from jump street.
+    heap::initialize();
+  }
+
   vga_buffer::clear_screen();
 
   let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
@@ -96,16 +103,13 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   unsafe {
-    heap::initialize();
     io::interrupts::setup();
   }
 
   let mut vec = Vec::<String>::new();
 
   for x in 0..10 {
-    let mut output = String::new();
-    output.write_fmt(format_args!("Entry {}", x));
-    vec.push(output);
+    vec.push(format!("Entry {}", x));
   }
 
   println!("Hey, I made a vector in kernel space! {:?}", vec);
