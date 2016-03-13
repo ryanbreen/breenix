@@ -78,7 +78,17 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
       keyboard::read();
     }
     /* On Linux, this is used for syscalls.  Good enough for me. */
-    0x80 => println!("Syscall {:?}", ctx),
+    0x80 => {
+
+      unsafe {
+        if !test_passed {
+          test_passed = true;
+          return;
+        }
+      }
+
+      println!("Syscall {:?}", ctx)
+    },
     _ => {
       println!("UNKNOWN INTERRUPT #{}", ctx.int_id);
     }
@@ -129,6 +139,8 @@ static IDT: Mutex<Idt> = Mutex::new(Idt {
     table: [missing_handler(); IDT_SIZE]
 });
 
+static mut test_passed:bool = false;
+
 #[allow(dead_code)]
 pub unsafe fn test_interrupt() {
   println!("Triggering interrupt.");
@@ -144,8 +156,10 @@ pub unsafe fn setup() {
   // Enable this to trigger a sample interrupt.
   test_interrupt();
 
-  // Turn on real interrupts.
-  x86::irq::enable();
+  if test_passed {
+    // Turn on real interrupts.
+    x86::irq::enable();
+  }
 }
 
 //-------------------------------------------------------------------------
