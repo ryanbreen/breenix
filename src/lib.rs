@@ -26,8 +26,9 @@ extern crate x86;
 
 mod buffers;
 mod constants;
-mod vga_writer;
+mod event;
 mod memory;
+mod vga_writer;
 
 mod io;
 
