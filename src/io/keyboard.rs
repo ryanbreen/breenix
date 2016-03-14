@@ -5,8 +5,57 @@ use io::Port;
 use buffers;
 use buffers::KEYBOARD_BUFFER;
 
+use event::EventType;
+use event::IsEvent;
+use event::IsListener;
+
+/// Event framework
+
+#[derive(Clone, Copy)]
+pub struct ControlKeyState {
+  ctrl: bool,
+  alt: bool,
+  shift: bool,
+  caps_lock: bool,
+  scroll_lock: bool,
+  num_lock: bool
+}
+
+#[derive(Clone, Copy)]
+pub struct KeyEvent {
+  event_type: EventType,
+  scancode: u8,
+  character: char,
+  controls: ControlKeyState
+}
+
+impl IsEvent for KeyEvent {
+  fn event_type(&self) -> EventType {
+    self.event_type
+  }
+}
+
+impl KeyEvent {
+  const fn new(&self, scancode: u8, character: char, modifiers: &Modifiers) -> KeyEvent {
+    KeyEvent {
+      event_type: EventType::KeyEvent,
+      scancode: scancode,
+      character: character,
+      controls: ControlKeyState {
+        ctrl: modifiers.l_cmd || modifiers.r_cmd,
+        alt: modifiers.l_alt || modifiers.r_alt,
+        shift: modifiers.l_shift || modifiers.r_shift,
+        caps_lock: modifiers.caps_lock,
+        scroll_lock: false,
+        num_lock: false,
+      }
+    }
+  }
+}
+
+
 #[derive(Debug, Clone, Copy)]
-pub struct Key {
+struct Key {
   lower: char,
   upper: char,
   scancode: u8
@@ -152,6 +201,20 @@ pub fn read() {
     if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
       KEYBOARD_BUFFER.lock().write_byte(transformed_ascii as u8);
     }
+  }
+}
+
+struct KeyEventScreenWriter {
+
+}
+
+impl IsListener<KeyEvent> for KeyEventScreenWriter {
+  pub fn handles_event(&self, ev: &KeyEvent) -> bool {
+    true
+  }
+
+  pub fn notify(&self, ev: &KeyEvent) {
+
   }
 }
 
