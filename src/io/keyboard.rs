@@ -1,10 +1,12 @@
 use spin::Mutex;
 
 use io::Port;
+use io::interrupts;
 
 use buffers;
 use buffers::KEYBOARD_BUFFER;
 
+use event;
 use event::EventType;
 use event::IsEvent;
 use event::IsListener;
@@ -36,7 +38,7 @@ impl IsEvent for KeyEvent {
 }
 
 impl KeyEvent {
-  const fn new(&self, scancode: u8, character: char, modifiers: &Modifiers) -> KeyEvent {
+  const fn new(scancode: u8, character: char, modifiers: &Modifiers) -> KeyEvent {
     KeyEvent {
       event_type: EventType::KeyEvent,
       scancode: scancode,
@@ -52,7 +54,6 @@ impl KeyEvent {
     }
   }
 }
-
 
 #[derive(Debug, Clone, Copy)]
 struct Key {
@@ -174,16 +175,6 @@ pub fn read() {
   // Read a single scancode off our keyboard port.
   let scancode:u8 = state.port.read();
 
-  if scancode == ENTER_KEY.scancode {
-    KEYBOARD_BUFFER.lock().new_line();
-    return;
-  }
-
-  if scancode == DELETE_KEY.scancode {
-    KEYBOARD_BUFFER.lock().delete_byte();
-    return;
-  }
-
   //println!("{:x}", scancode);
 
   // Give our modifiers first crack at this.
@@ -199,22 +190,37 @@ pub fn read() {
     // The `as char` converts our ASCII data to Unicode, which is
     // correct as long as we're only using 7-bit ASCII.
     if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-      KEYBOARD_BUFFER.lock().write_byte(transformed_ascii as u8);
+      event::dispatch_key_event(&KeyEvent::new(scancode, transformed_ascii, &state.modifiers));
+      return;
     }
   }
+
+  event::dispatch_key_event(&KeyEvent::new(scancode, 0 as char, &state.modifiers));
 }
 
-struct KeyEventScreenWriter {
-
-}
+pub struct KeyEventScreenWriter {}
 
 impl IsListener<KeyEvent> for KeyEventScreenWriter {
-  pub fn handles_event(&self, ev: &KeyEvent) -> bool {
+  fn handles_event(&self, ev: &KeyEvent) -> bool {
     true
   }
 
-  pub fn notify(&self, ev: &KeyEvent) {
+  fn notify(&self, ev: &KeyEvent) {
 
+    if ev.scancode == ENTER_KEY.scancode {
+      KEYBOARD_BUFFER.lock().new_line();
+      return;
+    }
+
+    if ev.scancode == DELETE_KEY.scancode {
+      KEYBOARD_BUFFER.lock().delete_byte();
+      return;
+    }
+
+    if ev.character as u8 != 0 {
+      KEYBOARD_BUFFER.lock().write_byte(ev.character as u8);
+    }
+    
   }
 }
 

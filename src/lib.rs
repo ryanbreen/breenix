@@ -1,4 +1,4 @@
-#![feature(allocator, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
+#![feature(alloc, allocator, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
@@ -9,6 +9,7 @@
 mod macros;
 
 extern crate collections;
+extern crate alloc;
 extern crate alloc_buddy_simple;
 extern crate rlibc;
 
@@ -28,13 +29,16 @@ mod buffers;
 mod constants;
 mod event;
 mod memory;
+mod state;
 mod vga_writer;
 
 mod io;
 
 mod heap;
 
+use alloc::boxed::Box;
 use core::fmt::Write;
+use core::mem;
 use collections::vec::Vec;
 use collections::string::*;
 
@@ -107,6 +111,28 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   
   unsafe {
     io::interrupts::setup();
+
+    use event::IsListener;
+    use io::keyboard::KeyEvent;
+    use io::keyboard::KeyEventScreenWriter;
+    let key_event_listeners:Vec<Box<IsListener<KeyEvent>>> = Vec::new();
+
+    #[allow(mutable_transmutes)]
+    let mut static_listeners:&'static mut collections::vec::Vec<Box<event::IsListener<io::keyboard::KeyEvent>>> =
+      core::intrinsics::transmute(&key_event_listeners);
+
+    static_listeners.push(Box::new(KeyEventScreenWriter{}));
+
+    event::set_key_event_listener(static_listeners);
+
+    println!("About");
+
+    let round_tripped = event::key_event_listeners();
+    println!("Found key event listeners of size {}", round_tripped.unwrap().len());
+
+    // Install keyboard handler.
+    //let keyboard = io::keyboard::Keyboard::new();
+    //io::interrupts::KEYBOARD_HANDLER = (keyboard.read);
   }
 
   let mut vec = Vec::<String>::new();
