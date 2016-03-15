@@ -110,6 +110,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   unsafe {
+    state::initialize();
     io::interrupts::setup();
 
     use event::IsListener;

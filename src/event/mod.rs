@@ -32,7 +32,6 @@ pub fn key_event_listeners() -> Option<&'static mut Vec<Box<IsListener<KeyEvent>
       return None;
     }
 
-    use core::intrinsics::transmute;
     let pointer = KEY_EVENT_LISTENERS_PTR as *mut Vec<Box<IsListener<KeyEvent>>>;
     return Some(&mut (*pointer));
   }
