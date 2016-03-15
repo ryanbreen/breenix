@@ -122,14 +122,14 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     let mut static_listeners:&'static mut collections::vec::Vec<Box<event::IsListener<io::keyboard::KeyEvent>>> =
       core::intrinsics::transmute(&key_event_listeners);
 
-    static_listeners.push(Box::new(KeyEventScreenWriter{}));
+    //static_listeners.push(Box::new(KeyEventScreenWriter{}));
 
-    event::set_key_event_listener(static_listeners);
+    state::register_key_listener(Box::new(KeyEventScreenWriter{}));
 
-    println!("About");
+    //event::set_key_event_listener(static_listeners);
 
-    let round_tripped = event::key_event_listeners();
-    println!("Found key event listeners of size {}", round_tripped.unwrap().len());
+    //let round_tripped = event::key_event_listeners();
+    //println!("Found key event listeners of size {}", round_tripped.unwrap().len());
 
     // Install keyboard handler.
     //let keyboard = io::keyboard::Keyboard::new();

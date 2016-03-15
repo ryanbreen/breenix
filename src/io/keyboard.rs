@@ -6,7 +6,7 @@ use io::interrupts;
 use buffers;
 use buffers::KEYBOARD_BUFFER;
 
-use event;
+use state;
 use event::EventType;
 use event::IsEvent;
 use event::IsListener;
@@ -190,12 +190,12 @@ pub fn read() {
     // The `as char` converts our ASCII data to Unicode, which is
     // correct as long as we're only using 7-bit ASCII.
     if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-      event::dispatch_key_event(&KeyEvent::new(scancode, transformed_ascii, &state.modifiers));
+      state::dispatch_key_event(&KeyEvent::new(scancode, transformed_ascii, &state.modifiers));
       return;
     }
   }
 
-  event::dispatch_key_event(&KeyEvent::new(scancode, 0 as char, &state.modifiers));
+  state::dispatch_key_event(&KeyEvent::new(scancode, 0 as char, &state.modifiers));
 }
 
 pub struct KeyEventScreenWriter {}
