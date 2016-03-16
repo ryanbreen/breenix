@@ -1,4 +1,4 @@
-#![feature(alloc, allocator, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
+#![feature(alloc, allocator, core_intrinsics, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
@@ -29,7 +29,6 @@ mod buffers;
 mod constants;
 mod event;
 mod memory;
-mod state;
 mod vga_writer;
 
 mod io;
@@ -110,30 +109,21 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   unsafe {
-    state::initialize();
     io::interrupts::setup();
 
+    use io::keyboard::KeyEventScreenWriter;
     use event::IsListener;
     use io::keyboard::KeyEvent;
-    use io::keyboard::KeyEventScreenWriter;
+    
+    // Currently, the only thing I can think to do is establish these listeners here because the raw pointer
+    // we track in the event module will not get destroyed.
     let key_event_listeners:Vec<Box<IsListener<KeyEvent>>> = Vec::new();
-
     #[allow(mutable_transmutes)]
     let mut static_listeners:&'static mut collections::vec::Vec<Box<event::IsListener<io::keyboard::KeyEvent>>> =
       core::intrinsics::transmute(&key_event_listeners);
+    event::set_key_event_listener(static_listeners);
 
-    //static_listeners.push(Box::new(KeyEventScreenWriter{}));
-
-    state::register_key_listener(Box::new(KeyEventScreenWriter{}));
-
-    //event::set_key_event_listener(static_listeners);
-
-    //let round_tripped = event::key_event_listeners();
-    //println!("Found key event listeners of size {}", round_tripped.unwrap().len());
-
-    // Install keyboard handler.
-    //let keyboard = io::keyboard::Keyboard::new();
-    //io::interrupts::KEYBOARD_HANDLER = (keyboard.read);
+    event::register_key_event_listener(Box::new(KeyEventScreenWriter{}));
   }
 
   let mut vec = Vec::<String>::new();
