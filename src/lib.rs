@@ -112,17 +112,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     io::interrupts::setup();
 
     use io::keyboard::KeyEventScreenWriter;
-    use event::IsListener;
-    use io::keyboard::KeyEvent;
-    
-    // Currently, the only thing I can think to do is establish these listeners here because the raw pointer
-    // we track in the event module will not get destroyed.
-    let key_event_listeners:Vec<Box<IsListener<KeyEvent>>> = Vec::new();
-    #[allow(mutable_transmutes)]
-    let mut static_listeners:&'static mut collections::vec::Vec<Box<event::IsListener<io::keyboard::KeyEvent>>> =
-      core::intrinsics::transmute(&key_event_listeners);
-    event::set_key_event_listener(static_listeners);
-
     event::register_key_event_listener(Box::new(KeyEventScreenWriter{}));
   }
 
