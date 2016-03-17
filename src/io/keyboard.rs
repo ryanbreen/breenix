@@ -137,15 +137,6 @@ impl Modifiers {
 
   fn apply_to(&self, key: Key) -> Option<char> {
 
-    // First, check for a cmd chord
-    if self.cmd() {
-      if key.scancode == S_KEY.scancode {
-        // Switch buffers
-        buffers::toggle();
-        return None;
-      }
-    }
-
     // Only alphabetic keys honor caps lock, so first distinguish between
     // alphabetic and non alphabetic keys.
     if (0x10 <= key.scancode && key.scancode <= 0x19) ||
@@ -166,8 +157,8 @@ impl Modifiers {
 
 /// Our global keyboard state, protected by a mutex.
 static STATE: Mutex<State> = Mutex::new(State {
-    port: unsafe { Port::new(0x60) },
-    modifiers: Modifiers::new(),
+  port: unsafe { Port::new(0x60) },
+  modifiers: Modifiers::new(),
 });
 
 /// Try to read a single input character
@@ -204,7 +195,7 @@ pub struct KeyEventScreenWriter {}
 
 impl IsListener<KeyEvent> for KeyEventScreenWriter {
   fn handles_event(&self, ev: &KeyEvent) -> bool {
-    true
+    !(ev.scancode == S_KEY.scancode && ev.controls.ctrl)
   }
 
   fn notify(&self, ev: &KeyEvent) {
@@ -223,6 +214,19 @@ impl IsListener<KeyEvent> for KeyEventScreenWriter {
       KEYBOARD_BUFFER.lock().write_byte(ev.character as u8);
     }
     
+  }
+}
+
+pub struct ToggleWatcher{}
+
+impl IsListener<KeyEvent> for ToggleWatcher {
+  fn handles_event(&self, ev: &KeyEvent) -> bool {
+    ev.scancode == S_KEY.scancode && ev.controls.ctrl
+  }
+
+  fn notify(&self, ev: &KeyEvent) {
+    // Switch buffers
+    buffers::toggle();
   }
 }
 
