@@ -300,7 +300,7 @@ pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation)
     mapper.identity_map(vga_buffer_frame, WRITABLE, allocator);
 
     // identity map the kernel state buffer
-    let kernel_state_frame = Frame::containing_address(0xffff000);
+    let kernel_state_frame = Frame::containing_address(0xfff000);
     mapper.identity_map(kernel_state_frame, WRITABLE, allocator);
 
     // identity map the multiboot info structure

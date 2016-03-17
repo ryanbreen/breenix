@@ -1,4 +1,4 @@
-#![feature(alloc, allocator, core_intrinsics, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
+#![feature(alloc, allocator, box_syntax, core_intrinsics, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
@@ -34,6 +34,7 @@ mod vga_writer;
 mod io;
 
 mod heap;
+mod state;
 
 use alloc::boxed::Box;
 use core::fmt::Write;
@@ -112,7 +113,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     io::interrupts::setup();
 
     use io::keyboard::KeyEventScreenWriter;
-    event::register_key_event_listener(Box::new(KeyEventScreenWriter{}));
+    state::register_key_event_listener(Box::new(KeyEventScreenWriter{}));
   }
 
   let mut vec = Vec::<String>::new();
