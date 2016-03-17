@@ -195,7 +195,7 @@ pub struct KeyEventScreenWriter {}
 
 impl IsListener<KeyEvent> for KeyEventScreenWriter {
   fn handles_event(&self, ev: &KeyEvent) -> bool {
-    !(ev.scancode == S_KEY.scancode && ev.controls.ctrl)
+    !ev.controls.ctrl && !ev.controls.alt
   }
 
   fn notify(&self, ev: &KeyEvent) {
@@ -227,6 +227,19 @@ impl IsListener<KeyEvent> for ToggleWatcher {
   fn notify(&self, ev: &KeyEvent) {
     // Switch buffers
     buffers::toggle();
+  }
+}
+
+pub struct DebugWatcher{}
+
+impl IsListener<KeyEvent> for DebugWatcher {
+  fn handles_event(&self, ev: &KeyEvent) -> bool {
+    ev.scancode == D_KEY.scancode && ev.controls.ctrl
+  }
+
+  fn notify(&self, ev: &KeyEvent) {
+    // Switch buffers
+    buffers::debug();
   }
 }
 

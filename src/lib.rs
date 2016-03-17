@@ -112,9 +112,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   unsafe {
     io::interrupts::setup();
 
-    use io::keyboard::{KeyEventScreenWriter,ToggleWatcher};
+    use io::keyboard::{KeyEventScreenWriter,DebugWatcher,ToggleWatcher};
     state::register_key_event_listener(Box::new(KeyEventScreenWriter{}));
     state::register_key_event_listener(Box::new(ToggleWatcher{}));
+    state::register_key_event_listener(Box::new(DebugWatcher{}));
   }
 
   let mut vec = Vec::<String>::new();
