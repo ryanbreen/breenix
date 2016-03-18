@@ -3,7 +3,7 @@ use spin::Mutex;
 use vga_writer;
 use vga_writer::{ScreenChar, ColorCode, Color};
 
-use constants::{GREEN_BLANK,GRAY_BLANK,RED_BLANK,BUFFER_WIDTH,BUFFER_HEIGHT};
+use constants::vga::{GREEN_BLANK,GRAY_BLANK,RED_BLANK,BUFFER_WIDTH,BUFFER_HEIGHT};
 
 pub struct Buffer {
   pub chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],

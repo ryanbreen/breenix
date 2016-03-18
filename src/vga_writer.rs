@@ -1,7 +1,7 @@
 use core::ptr::Unique;
 use spin::Mutex;
 
-use constants::{BUFFER_WIDTH,BUFFER_HEIGHT};
+use constants::vga::{BUFFER_WIDTH,BUFFER_HEIGHT};
 
 use buffers::Buffer;
 
