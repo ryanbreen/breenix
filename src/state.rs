@@ -1,8 +1,6 @@
 
 use alloc::boxed::Box;
 use collections::vec::Vec;
-use core::intrinsics;
-use core::ptr;
 use core::ptr::Unique;
 
 use event::IsListener;
@@ -21,11 +19,9 @@ fn key_event_listeners() -> &'static mut Vec<Box<IsListener<KeyEvent>>> {
 }
 
 pub fn register_key_event_listener(listener: Box<IsListener<KeyEvent>>) {
-  unsafe {
-    let mut listeners:&'static mut Vec<Box<IsListener<KeyEvent>>> = key_event_listeners();
-    listeners.push(listener);
-    println!("There are now {} key listeners", listeners.len());
-  }
+  let mut listeners:&'static mut Vec<Box<IsListener<KeyEvent>>> = key_event_listeners();
+  listeners.push(listener);
+  println!("There are now {} key listeners", listeners.len());
 }
 
 pub fn dispatch_key_event(ev: &KeyEvent) {

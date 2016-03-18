@@ -1,17 +1,9 @@
-
-use alloc::boxed::Box;
-use collections::vec::Vec;
-use core::intrinsics;
-use core::ptr;
-use core::ptr::Unique;
-
-use spin::Mutex;
-
 pub mod keyboard;
 
 pub use self::keyboard::KeyEvent;
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub enum EventType {
   KeyEvent,
   MouseEvent,

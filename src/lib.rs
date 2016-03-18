@@ -1,4 +1,4 @@
-#![feature(alloc, allocator, box_syntax, core_intrinsics, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
+#![feature(alloc, allocator, box_syntax, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
@@ -37,7 +37,6 @@ mod heap;
 mod state;
 
 use core::fmt::Write;
-use core::mem;
 use collections::vec::Vec;
 use collections::string::*;
 

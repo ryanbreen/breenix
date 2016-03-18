@@ -1,13 +1,12 @@
 use spin::Mutex;
 
 use io::Port;
-use io::interrupts;
 
 use state;
 
 use constants::keyboard::{Key, KEYS};
 
-use event::{EventType,IsEvent,IsListener};
+use event::{EventType,IsEvent};
 
 use event::keyboard::{KeyEvent,ControlKeyState};
 
@@ -78,6 +77,7 @@ impl Modifiers {
     }
   }
 
+  #[allow(dead_code)]
   fn cmd(&self) -> bool {
     self.l_cmd || self.r_cmd
   }

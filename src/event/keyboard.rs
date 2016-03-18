@@ -55,6 +55,7 @@ impl IsListener<KeyEvent> for ToggleWatcher {
     ev.scancode == constants::keyboard::S_KEY.scancode && ev.controls.ctrl
   }
 
+  #[allow(unused_variables)]
   fn notify(&self, ev: &KeyEvent) {
     // Switch buffers
     buffers::toggle();
@@ -68,6 +69,7 @@ impl IsListener<KeyEvent> for DebugWatcher {
     ev.scancode == constants::keyboard::D_KEY.scancode && ev.controls.ctrl
   }
 
+  #[allow(unused_variables)]
   fn notify(&self, ev: &KeyEvent) {
     // Switch buffers
     buffers::debug();

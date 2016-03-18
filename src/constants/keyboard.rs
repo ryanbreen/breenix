@@ -57,7 +57,7 @@ pub const DOT_KEY:Key = Key { lower:'.', upper:'>', scancode: 0x34 };
 pub const SLASH_KEY:Key = Key { lower:'/', upper:'?', scancode: 0x35 };
 pub const SPACE_KEY:Key = Key { lower:' ', upper:' ', scancode: 0x39 };
 
-pub static KEYS:[Option<Key>;128] = [
+pub const KEYS:[Option<Key>;128] = [
   /* 0x0   */ None, None, Some(ONE_KEY), Some(TWO_KEY), Some(THREE_KEY), Some(FOUR_KEY), Some(FIVE_KEY), Some(SIX_KEY), /*0x7 */
   /* 0x8   */ Some(SEVEN_KEY), Some(EIGHT_KEY), Some(NINE_KEY), Some(ZERO_KEY), Some(DASH_KEY),
                                               Some(EQUAL_KEY), Some(DELETE_KEY), Some(TAB_KEY), /* 0xF */
