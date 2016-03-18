@@ -7,7 +7,9 @@ use core::ptr::Unique;
 
 use spin::Mutex;
 
-use io::keyboard::KeyEvent;
+pub mod keyboard;
+
+pub use self::keyboard::KeyEvent;
 
 #[derive(Clone, Copy)]
 pub enum EventType {

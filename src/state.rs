@@ -6,8 +6,7 @@ use core::ptr;
 use core::ptr::Unique;
 
 use event::IsListener;
-
-use io::keyboard::KeyEvent;
+use event::keyboard::KeyEvent;
 
 struct State {
   key_listeners: Vec<Box<IsListener<KeyEvent>>>,
