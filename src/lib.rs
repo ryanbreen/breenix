@@ -110,6 +110,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   unsafe {
     io::interrupts::setup();
 
+    io::timer::initialize();
+
     event::keyboard::initialize();
   }
 
