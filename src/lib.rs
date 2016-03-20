@@ -109,15 +109,11 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
       kernel_start as usize, kernel_end as usize, multiboot_start,
       multiboot_end, memory_map_tag.memory_areas());
 
-  println!("el pud");
-
   enable_nxe_bit();
   enable_write_protect_bit();
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
-  unsafe {
-    event::keyboard::initialize();
-  }
+  event::keyboard::initialize();
 
   let mut vec = Vec::<String>::new();
 

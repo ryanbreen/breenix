@@ -5,6 +5,8 @@ use x86;
 use x86::irq::IdtEntry;
 use io::{keyboard,timer,ChainedPics};
 
+use constants::timer::{TIMER_INTERRUPT};
+
 const IDT_SIZE: usize = 256;
 
 #[allow(dead_code)]
@@ -72,7 +74,7 @@ fn cpu_exception_handler(ctx: &InterruptContext) {
 pub fn rust_interrupt_handler(ctx: &InterruptContext) {
   match ctx.int_id {
     0x00...0x0F => cpu_exception_handler(ctx),
-    0x20 => {
+    TIMER_INTERRUPT => {
       timer::timer_interrupt();
     }
     0x21 => {
