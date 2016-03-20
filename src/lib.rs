@@ -1,4 +1,4 @@
-#![feature(alloc, allocator, box_syntax, macro_reexport, lang_items, const_fn, unique, asm, collections, stmt_expr_attributes)]
+#![feature(alloc, allocator, box_syntax, macro_reexport, lang_items, const_fn, unique, asm, collections, trace_macros, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
@@ -108,6 +108,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   let mut frame_allocator = memory::AreaFrameAllocator::new(
       kernel_start as usize, kernel_end as usize, multiboot_start,
       multiboot_end, memory_map_tag.memory_areas());
+
+  println!("el pud");
 
   enable_nxe_bit();
   enable_write_protect_bit();

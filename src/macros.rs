@@ -1,14 +1,14 @@
 
 macro_rules! println {
-    ($fmt:expr) => (print!(concat!($fmt, "\n")));
+    ($fmt:expr) => (print!(concat!("{}.{}-", $fmt, "\n"), $crate::io::timer::time_since_start().0, $crate::io::timer::time_since_start().1));
     ($fmt:expr, $($arg:tt)*) => (print!(concat!($fmt, "\n"), $($arg)*));
 }
 
 macro_rules! print {
-  ($($arg:tt)*) => ({
-    use core::fmt::Write;
-    $crate::buffers::PRINT_BUFFER.lock().write_fmt(format_args!($($arg)*)).unwrap();
-  });
+   ($($arg:tt)*) => ({
+     use core::fmt::Write;
+     $crate::buffers::PRINT_BUFFER.lock().write_fmt(format_args!($($arg)*)).unwrap();
+   });
 }
 
 macro_rules! format {
