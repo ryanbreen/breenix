@@ -1,7 +1,7 @@
 
 macro_rules! println {
-    ($fmt:expr) => (print!(concat!("{}.{}-", $fmt, "\n"), $crate::io::timer::time_since_start().0, $crate::io::timer::time_since_start().1));
-    ($fmt:expr, $($arg:tt)*) => (print!(concat!($fmt, "\n"), $($arg)*));
+    ($fmt:expr) => (print!(concat!("{}.{} - ", $fmt, "\n"), $crate::io::timer::time_since_start().0, $crate::io::timer::time_since_start().1));
+    ($fmt:expr, $($arg:tt)*) => (print!(concat!("{}.{} - ", $fmt, "\n"), $crate::io::timer::time_since_start().0, $crate::io::timer::time_since_start().1, $($arg)*));
 }
 
 macro_rules! print {

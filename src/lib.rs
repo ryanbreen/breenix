@@ -125,7 +125,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     vec.push(format!("Entry {}", x));
   }
 
-  println!("{}.{} Hey, I made a vector in kernel space! {:?}", io::timer::time_since_start().0, io::timer::time_since_start().1, vec);
+  println!("Hey, I made a vector in kernel space! {:?}", io::timer::time_since_start().0, io::timer::time_since_start().1, vec);
 
   debug!();
 
