@@ -79,7 +79,13 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     heap::initialize();
   }
 
-  unsafe { buffers::ACTIVE_BUFFER.lock().clear(); }
+  unsafe {
+    io::timer::initialize();
+
+    io::interrupts::setup();
+
+    buffers::ACTIVE_BUFFER.lock().clear();
+  }
 
   let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
   let memory_map_tag = boot_info.memory_map_tag()
@@ -108,10 +114,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   unsafe {
-    io::interrupts::setup();
-
-    io::timer::initialize();
-
     event::keyboard::initialize();
   }
 
@@ -121,7 +123,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     vec.push(format!("Entry {}", x));
   }
 
-  println!("Hey, I made a vector in kernel space! {:?}", vec);
+  println!("{}.{} Hey, I made a vector in kernel space! {:?}", io::timer::time_since_start().0, io::timer::time_since_start().1, vec);
 
   debug!();
 
