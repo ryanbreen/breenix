@@ -8,6 +8,6 @@ pub const PIT_MASK:u8 = 0xFF;
 pub const PIT_SCALE:u32 = 1193180;
 pub const PIT_SET:u8 = 0x36;
 
-pub const TIMER_IRQ:u8 = 0;
+pub const TIMER_INT:u8 = 0x20;
 
 pub const SUBTICKS_PER_TICK:u8 = 100;

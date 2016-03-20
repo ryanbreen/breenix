@@ -3,8 +3,7 @@ use core::ptr;
 use spin::Mutex;
 use x86;
 use x86::irq::IdtEntry;
-use io::ChainedPics;
-use io::keyboard;
+use io::{keyboard,timer,ChainedPics};
 
 const IDT_SIZE: usize = 256;
 
@@ -73,13 +72,14 @@ fn cpu_exception_handler(ctx: &InterruptContext) {
 pub fn rust_interrupt_handler(ctx: &InterruptContext) {
   match ctx.int_id {
     0x00...0x0F => cpu_exception_handler(ctx),
-    0x20 => {}
+    0x20 => {
+      timer::timer_interrupt();
+    }
     0x21 => {
       keyboard::read();
     }
     /* On Linux, this is used for syscalls.  Good enough for me. */
     0x80 => {
-
       unsafe {
         if !test_passed {
           test_passed = true;

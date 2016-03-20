@@ -141,7 +141,10 @@ int_entry_dummy_error 18
 int_entry_dummy_error 19
 ;;; 30 Security Exception
 
-;;; Fill in cutom handlers 32 through 255.
+;;; Timer tick?
+int_entry_dummy_error 28
+
+;;; Fill in custom handlers 32 through 255.
 int_entry_dummy_error 32
 %assign i 33
 %rep    224
