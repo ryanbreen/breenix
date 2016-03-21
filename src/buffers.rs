@@ -5,6 +5,8 @@ use vga_writer::{ScreenChar, ColorCode, Color};
 
 use constants::vga::{GREEN_BLANK,GRAY_BLANK,RED_BLANK,BUFFER_WIDTH,BUFFER_HEIGHT};
 
+use io::timer;
+
 pub struct Buffer {
   pub chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
   active: bool,
@@ -135,8 +137,9 @@ pub fn debug() {
   use x86::msr::rdmsr;
 
   let mut buffer = DEBUG_BUFFER.lock();
-  buffer.clear();
   unsafe {
+    let time = timer::time_since_start();
+    buffer.write_fmt(format_args!("Time: {}.{}\n", time.0, time.1));
     buffer.write_fmt(format_args!("cr0: 0x{:x}\n", cr0()));
     buffer.write_fmt(format_args!("cr2: 0x{:x}\n", cr2()));
     buffer.write_fmt(format_args!("cr3: 0x{:x}\n", cr3()));
