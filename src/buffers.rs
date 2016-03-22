@@ -139,6 +139,7 @@ pub fn debug() {
   let mut buffer = DEBUG_BUFFER.lock();
   unsafe {
     let time = timer::time_since_start();
+    buffer.write_fmt(format_args!("-------------------------------\n"));
     buffer.write_fmt(format_args!("Time: {}.{}\n", time.0, time.1));
     buffer.write_fmt(format_args!("cr0: 0x{:x}\n", cr0()));
     buffer.write_fmt(format_args!("cr2: 0x{:x}\n", cr2()));
