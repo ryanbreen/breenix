@@ -135,6 +135,7 @@ pub fn debug() {
   use x86::controlregs::{cr0, cr2, cr3, cr4};
   use x86::msr::IA32_EFER;
   use x86::msr::rdmsr;
+  use x86::time::rdtsc;
 
   let mut buffer = DEBUG_BUFFER.lock();
   unsafe {
@@ -145,6 +146,7 @@ pub fn debug() {
     buffer.write_fmt(format_args!("cr2: 0x{:x}\n", cr2()));
     buffer.write_fmt(format_args!("cr3: 0x{:x}\n", cr3()));
     buffer.write_fmt(format_args!("cr4: 0x{:x}\n", cr4()));
+    buffer.write_fmt(format_args!("rdtsc: 0x{:x}\n", rdtsc()));
 
     buffer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}\n", rdmsr(IA32_EFER)));
   }
