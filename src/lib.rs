@@ -78,11 +78,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   }
 
   unsafe {
-    io::timer::initialize();
-
-    io::interrupts::setup();
-
     buffers::ACTIVE_BUFFER.lock().clear();
+    io::initialize();
   }
 
   let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
@@ -112,8 +109,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   event::keyboard::initialize();
-
-  io::initialize();
 
   debug!();
 

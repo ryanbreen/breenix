@@ -162,8 +162,7 @@ impl ChainedPics {
 }
 
 pub fn initialize() {
-  let functions = pci::functions();
-  for function in functions {
-    println!("{:?}", function);
-  }
+  interrupts::initialize();
+  timer::initialize();
+  pci::initialize();
 }

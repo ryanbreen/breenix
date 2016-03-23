@@ -150,18 +150,20 @@ pub unsafe fn test_interrupt() {
 }
 
 /// Platform-independent initialization.
-pub unsafe fn setup() {
-  PICS.lock().initialize();
-  IDT.lock().initialize();
+pub fn initialize() {
+  unsafe {
+    PICS.lock().initialize();
+    IDT.lock().initialize();
 
-  // Enable this to trigger a sample interrupt.
-  test_interrupt();
+    // Enable this to trigger a sample interrupt.
+    test_interrupt();
 
-  if test_passed {
-    // Turn on real interrupts.
-    x86::irq::enable();
-  } else {
-    panic!();
+    if test_passed {
+      // Turn on real interrupts.
+      x86::irq::enable();
+    } else {
+      panic!();
+    }
   }
 }
 

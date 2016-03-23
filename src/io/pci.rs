@@ -196,6 +196,14 @@ pub fn functions() -> FunctionIterator {
     }
 }
 
+/// NOTE: Does not initialize anything.  I'm an asshole.
+pub fn initialize() {
+  let functions = functions();
+  for function in functions {
+    println!("{:?}", function);
+  }
+}
+
 // Running under QEMU, and checking against http://pcidatabase.com/ , we have:
 //
 // 0.0: 8086 1237 Intel 82440LX/EX PCI & Memory
