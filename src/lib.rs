@@ -37,8 +37,6 @@ mod heap;
 mod state;
 
 use core::fmt::Write;
-use collections::vec::Vec;
-use collections::string::*;
 
 #[no_mangle]
 #[allow(non_snake_case)]
@@ -115,13 +113,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   
   event::keyboard::initialize();
 
-  let mut vec = Vec::<String>::new();
-
-  for x in 0..10 {
-    vec.push(format!("Entry {}", x));
-  }
-
-  println!("Hey, I made a vector in kernel space! {:?}", vec);
+  io::initialize();
 
   debug!();
 

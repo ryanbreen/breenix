@@ -17,6 +17,8 @@ pub mod keyboard;
 #[macro_use]
 pub mod interrupts;
 
+pub mod pci;
+
 pub mod timer;
 
 /// This trait is defined for any type which can be read or written over a
@@ -156,5 +158,12 @@ impl ChainedPics {
       }
       self.pics[0].end_of_interrupt();
     }
+  }
+}
+
+pub fn initialize() {
+  let functions = pci::functions();
+  for function in functions {
+    println!("{:?}", function);
   }
 }
