@@ -147,8 +147,8 @@ pub fn debug() {
     buffer.write_fmt(format_args!("cr3: 0x{:x}\n", cr3()));
     buffer.write_fmt(format_args!("cr4: 0x{:x}\n", cr4()));
     buffer.write_fmt(format_args!("rdtsc: 0x{:x}\n", rdtsc()));
-
     buffer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}\n", rdmsr(IA32_EFER)));
+    buffer.write_fmt(format_args!("ticks: {}\n", timer::monotonic_clock()));
   }
 }
 
