@@ -2,6 +2,7 @@
 use constants::timer::{PIT_SCALE,PIT_CONTROL,PIT_SET,PIT_A,PIT_MASK,SUBTICKS_PER_TICK};
 
 use x86::io::outb;
+use io::Port;
 
 static mut timer_ticks:u64 = 0;
 static mut timer_seconds:u64 = 0;
@@ -39,5 +40,21 @@ pub fn time_since_start() -> (u64,u16) {
 pub fn monotonic_clock() -> (u64) {
   unsafe {
     timer_ticks
+  }
+}
+
+struct RealTimeClock {
+  address: Port<u8>,
+  data: Port<u8>,
+}
+
+impl RealTimeClock {
+  pub fn new() -> RealTimeClock {
+    unsafe {
+      RealTimeClock {
+        address: Port::new(0x70),
+        data: Port::new(0x71),
+      }
+    }
   }
 }
