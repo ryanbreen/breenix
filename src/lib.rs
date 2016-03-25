@@ -35,6 +35,7 @@ mod io;
 
 mod heap;
 mod state;
+mod util;
 
 use core::fmt::Write;
 
@@ -109,6 +110,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   memory::remap_the_kernel(&mut frame_allocator, boot_info);
   
   event::keyboard::initialize();
+
+  println!("Time is {}", io::timer::real_time().secs);
 
   debug!();
 
