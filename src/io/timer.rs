@@ -87,6 +87,7 @@ impl RealTimeClock {
     let mut day;
     let mut month;
     let mut year;
+    let mut century;
     let register_b;
     unsafe {
       self.wait();
@@ -96,6 +97,7 @@ impl RealTimeClock {
       day = self.read(7) as usize;
       month = self.read(8) as usize;
       year = self.read(9) as usize;
+      century = self.read(0x32) as usize;
       register_b = self.read(0xB);
     }
 
@@ -106,14 +108,14 @@ impl RealTimeClock {
       day = cvt_bcd(day);
       month = cvt_bcd(month);
       year = cvt_bcd(year);
+      century = cvt_bcd(year);
     }
 
     if register_b & 2 != 2 || hour & 0x80 == 0x80 {
       hour = ((hour & 0x7F) + 12) % 24;
     }
 
-    // TODO: Century Register
-    year += 2000;
+    year += (1000 + (century * 100));
 
     // Unix time from clock
     let mut secs: i64 = (year as i64 - 1970) * 31536000;

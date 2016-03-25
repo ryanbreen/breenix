@@ -15,6 +15,7 @@ pub struct Duration {
 impl Duration {
   /// Create a new duration
   pub fn new(mut secs: i64, mut nanos: i32) -> Self {
+    // TODO: This is weird.  Why not just math?
     while nanos >= NANOS_PER_SEC || (nanos > 0 && secs < 0) {
       secs += 1;
       nanos -= NANOS_PER_SEC;
