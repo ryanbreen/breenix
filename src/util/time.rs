@@ -1,7 +1,7 @@
 use core::cmp::Ordering;
 use core::ops::{Add, Sub};
 
-use constants::timer::{NANOS_PER_MICRO, NANOS_PER_MILLI, NANOS_PER_SEC};
+use constants::timer::NANOS_PER_SEC;
 
 /// A duration
 #[derive(Copy, Clone)]

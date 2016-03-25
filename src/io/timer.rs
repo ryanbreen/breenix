@@ -115,7 +115,7 @@ impl RealTimeClock {
       hour = ((hour & 0x7F) + 12) % 24;
     }
 
-    year += (1000 + (century * 100));
+    year += 1000 + century * 100;
 
     // Unix time from clock
     let mut secs: i64 = (year as i64 - 1970) * 31536000;
