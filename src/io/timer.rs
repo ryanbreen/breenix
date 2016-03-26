@@ -3,7 +3,7 @@ use constants::timer::{PIT_SCALE,PIT_CONTROL,PIT_SET,PIT_A,PIT_MASK,SUBTICKS_PER
 
 use x86::io::outb;
 use io::Port;
-use util::time::Duration;
+use util::time::Time;
 
 static mut timer_ticks:u64 = 0;
 static mut timer_seconds:u64 = 0;
@@ -32,9 +32,9 @@ pub fn timer_interrupt() {
   //switch_task(1);
 }
 
-pub fn time_since_start() -> (u64,u16) {
+pub fn time_since_start() -> Time {
   unsafe {
-    (timer_seconds, timer_millis)
+    Time::new(timer_seconds, timer_millis as u32*1000, 0)
   }
 }
 
@@ -44,7 +44,7 @@ pub fn monotonic_clock() -> u64 {
   }
 }
 
-pub fn real_time() -> Duration {
+pub fn real_time() -> Time {
   RealTimeClock::new().time()
 }
 
@@ -80,7 +80,7 @@ impl RealTimeClock {
   }
 
   /// Get time
-  pub fn time(&mut self) -> Duration {
+  pub fn time(&mut self) -> Time {
     let mut second;
     let mut minute;
     let mut hour;
@@ -118,9 +118,9 @@ impl RealTimeClock {
     year += 1000 + century * 100;
 
     // Unix time from clock
-    let mut secs: i64 = (year as i64 - 1970) * 31536000;
+    let mut secs: u64 = (year as u64 - 1970) * 31536000;
 
-    let mut leap_days = (year as i64 - 1972) / 4 + 1;
+    let mut leap_days = (year as u64 - 1972) / 4 + 1;
     if year % 4 == 0 {
       if month <= 2 {
           leap_days -= 1;
@@ -143,11 +143,11 @@ impl RealTimeClock {
       _ => (),
     }
 
-    secs += (day as i64 - 1) * 86400;
-    secs += hour as i64 * 3600;
-    secs += minute as i64 * 60;
-    secs += second as i64;
+    secs += (day as u64 - 1) * 86400;
+    secs += hour as u64 * 3600;
+    secs += minute as u64 * 60;
+    secs += second as u64;
 
-    Duration::new(secs, 0)
+    Time::new(secs, 0, 0)
   }
 }
