@@ -1,8 +1,4 @@
-use core::cmp::Ordering;
 use core::fmt;
-use core::ops::{Add, Sub};
-
-use constants::timer::NANOS_PER_SEC;
 
 /// A point in time
 #[derive(Copy, Clone)]
