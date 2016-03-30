@@ -200,7 +200,11 @@ pub fn functions() -> FunctionIterator {
 pub fn initialize() {
   let functions = functions();
   for function in functions {
-    println!("{:?}", function);
+    match function.device_id {
+      4663 => println!("{}-{} 82440LX/EX {:?}", function.bus, function.device, function.class_code),
+      4110 => println!("{}-{} Intel Pro 1000/MT {:?}", function.bus, function.device, function.class_code),
+      _ => println!("{:?}", function),
+    }
   }
 }
 
