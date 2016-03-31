@@ -26,12 +26,12 @@ static mut FREE_LISTS: [*mut FreeBlock; 19] = [0 as *mut _; 19];
 /// Initialze our system heap.  Once this is done, it's theoretically safe
 /// to use functions in libcollection that allocate memory.
 pub unsafe fn initialize() {
-    // Convert our fake variables into the pointers we wanted in the first
-    // place.  Again, there may be some risk of undefined behavior here.
-    let heap_bottom_ptr = &mut HEAP_BOTTOM as *mut _;
-    let heap_top_ptr = &mut HEAP_TOP as *mut _;
+  // Convert our fake variables into the pointers we wanted in the first
+  // place.  Again, there may be some risk of undefined behavior here.
+  let heap_bottom_ptr = &mut HEAP_BOTTOM as *mut _;
+  let heap_top_ptr = &mut HEAP_TOP as *mut _;
 
-    // Initialize our main allocator library.
-    let heap_size = heap_top_ptr as usize - heap_bottom_ptr as usize;
-    initialize_allocator(heap_bottom_ptr, heap_size, &mut FREE_LISTS);
+  // Initialize our main allocator library.
+  let heap_size = heap_top_ptr as usize - heap_bottom_ptr as usize;
+  initialize_allocator(heap_bottom_ptr, heap_size, &mut FREE_LISTS);
 }

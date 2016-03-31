@@ -201,9 +201,12 @@ pub fn initialize() {
   let functions = functions();
   for function in functions {
     match function.device_id {
+      4369 => println!("{}-{} VGA {:?}", function.bus, function.device, function.class_code),
       4663 => println!("{}-{} 82440LX/EX {:?}", function.bus, function.device, function.class_code),
       4110 => println!("{}-{} Intel Pro 1000/MT {:?}", function.bus, function.device, function.class_code),
       28672=> println!("{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}", function.bus, function.device, function.class_code),
+      28688=> println!("{}-{} PIIX3 IDE Interface (Triton II) {:?}", function.bus, function.device, function.class_code),
+      28947=> println!("{}-{} PIIX4/4E/4M Power Management Controller {:?}", function.bus, function.device, function.class_code),
       _ => println!("{:?}", function),
     }
   }
