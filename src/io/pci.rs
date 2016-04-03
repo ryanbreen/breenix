@@ -211,10 +211,3 @@ pub fn initialize() {
     }
   }
 }
-
-// Running under QEMU, and checking against http://pcidatabase.com/ , we have:
-//
-// 0.0: 8086 1237 Intel 82440LX/EX PCI & Memory
-// 0.1: 8086 7000 Intel 82371SB PIIX3 PCI-to-ISA Bridge (Triton II)
-// 0.2: 1013 00b8 Cirrus Logic CL-GD5446 64-bit VisualMedia Accelerator
-// 0.3: 8086 100e Intel 02000 Intel Pro 1000/MT
