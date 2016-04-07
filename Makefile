@@ -9,7 +9,7 @@ grub_cfg := src/arch/$(arch)/grub.cfg
 assembly_source_files := $(wildcard src/arch/$(arch)/*.asm)
 assembly_object_files := $(patsubst src/arch/$(arch)/%.asm, build/arch/$(arch)/%.o, $(assembly_source_files))
 
-.PHONY: all clean run iso kernel isovagrant libcore patch_libcore liballoc librustc_unicode libcollections
+.PHONY: all clean run iso kernel isovagrant libcore patch_libcore libs liballoc librustc_unicode libcollections
 
 all: $(iso)
 
