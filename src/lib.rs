@@ -118,8 +118,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   debug!();
 
-  //let scheduler = task::scheduler::Scheduler::new();
-  //scheduler.idle();
+  let scheduler = task::scheduler::Scheduler::new();
+  scheduler.idle();
 }
 
 #[no_mangle]

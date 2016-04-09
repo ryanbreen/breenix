@@ -24,14 +24,16 @@ impl Scheduler {
   }
 
   pub fn idle(&self) {
-    unsafe {
-      println!("Entering idle");
+    loop {
+      self.halt();
+    }
+  }
 
+  fn halt(&self) {
+    unsafe {
       asm!("sti");
       asm!("hlt");
       asm!("cli");
-
-      println!("No longer halting");
     }
   }
 }
