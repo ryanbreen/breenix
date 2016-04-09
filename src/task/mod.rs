@@ -1,3 +1,6 @@
+
+pub mod scheduler;
+
 /// We plan to follow the Linux model where possible, 
 
 struct Task {

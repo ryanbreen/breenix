@@ -35,6 +35,7 @@ mod io;
 
 mod heap;
 mod state;
+mod task;
 mod util;
 
 use core::fmt::Write;
@@ -117,7 +118,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   debug!();
 
-  loop {}
+  //let scheduler = task::scheduler::Scheduler::new();
+  //scheduler.idle();
 }
 
 #[no_mangle]
