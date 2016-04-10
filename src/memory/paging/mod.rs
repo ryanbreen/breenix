@@ -251,7 +251,6 @@ impl RecursivePageTable {
     // TODO free p(1,2,3) table if empty
     allocator.deallocate_frame(frame);
   }
-
 }
 
 pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation)

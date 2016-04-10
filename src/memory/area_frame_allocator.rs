@@ -9,6 +9,7 @@ pub struct AreaFrameAllocator {
   kernel_end: Frame,
   multiboot_start: Frame,
   multiboot_end: Frame,
+  allocated_frame_count: usize,
 }
 
 impl AreaFrameAllocator {
@@ -25,6 +26,7 @@ impl AreaFrameAllocator {
       kernel_end: Frame::containing_address(kernel_end),
       multiboot_start: Frame::containing_address(multiboot_start),
       multiboot_end: Frame::containing_address(multiboot_end),
+      allocated_frame_count: 0,
     };
     allocator.choose_next_area();
     allocator
@@ -42,6 +44,10 @@ impl AreaFrameAllocator {
         self.next_free_frame = start_frame;
       }
     }
+  }
+
+  pub fn allocated_frame_count(&self) -> usize {
+    self.allocated_frame_count
   }
 
 }
@@ -71,6 +77,7 @@ impl FrameAllocator for AreaFrameAllocator {
       } else {
           // frame is unused, increment `next_free_frame` and return it
         self.next_free_frame.number += 1;
+        self.allocated_frame_count += 1;
         return Some(frame);
       }
       // `frame` was not valid, try it again with the updated `next_free_frame`
