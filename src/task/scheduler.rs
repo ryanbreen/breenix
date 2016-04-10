@@ -23,6 +23,27 @@ impl Scheduler {
 
   }
 
+  fn switch(&self, current_task: &Task, new_task: &Task) {
+    asm!("pushf");
+    asm!("pushq %rbx");
+    asm!("pushq %rbpv");
+    asm!("pushq %r12");
+    asm!("pushq %r13");
+    asm!("pushq %r14");
+    asm!("pushq %r15");
+
+    asm!("movq %rsp,(%rdi)");
+    asm!("movq %rsi,%rsp");
+
+    asm!("popq %r15");
+    asm!("popq %r14");
+    asm!("popq %r13");
+    asm!("popq %r12");
+    asm!("popq %rbp");
+    asm!("popq %rbx");
+    asm!("popf");
+  }
+
   pub fn idle(&self) {
     loop {
       self.halt();
