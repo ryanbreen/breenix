@@ -31,9 +31,8 @@ impl Scheduler {
 
   fn halt(&self) {
     unsafe {
-      asm!("sti");
       asm!("hlt");
-      asm!("cli");
+      asm!("pause");
     }
   }
 }
