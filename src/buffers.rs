@@ -150,7 +150,8 @@ pub fn debug() {
     buffer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}\n", rdmsr(IA32_EFER)));
     buffer.write_fmt(format_args!("msr TSC: 0x{:x}\n", rdmsr(TSC)));
     buffer.write_fmt(format_args!("msr MSR_MCG_RFLAGS: 0x{:x}\n", rdmsr(MSR_MCG_RFLAGS)));
-    buffer.write_fmt(format_args!("ticks: {}\n", timer::monotonic_clock()));
+    buffer.write_fmt(format_args!("interrupt count: 0x20={}, 0x21={}, 0x80={}\n",
+      ::state().interrupt_count[0x20], ::state().interrupt_count[0x21], ::state().interrupt_count[0x80]));
   }
 }
 

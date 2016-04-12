@@ -124,6 +124,11 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   scheduler.idle();
 }
 
+/// Provide an easy, globally accessible function to get access to State
+pub fn state() -> &'static mut state::State {
+  state::state()
+}
+
 #[no_mangle]
 pub extern "C" fn rust_interrupt_handler(ctx: &io::interrupts::InterruptContext) {
   io::interrupts::rust_interrupt_handler(ctx);

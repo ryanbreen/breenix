@@ -7,12 +7,14 @@ use event::keyboard::KeyEvent;
 
 pub struct State {
   pub key_listeners: Vec<Box<IsListener<KeyEvent>>>,
+  pub interrupt_count: [u64; 256],
 }
 
 impl State {
   fn new() -> Box<State> {
     box State {
-      key_listeners: Vec::new()
+      key_listeners: Vec::new(),
+      interrupt_count: [0; 256],
     }
   }
 }

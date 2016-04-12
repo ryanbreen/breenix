@@ -72,6 +72,9 @@ fn cpu_exception_handler(ctx: &InterruptContext) {
 /// Called from our assembly-language interrupt handlers to dispatch an
 /// interrupt.
 pub fn rust_interrupt_handler(ctx: &InterruptContext) {
+
+  ::state().interrupt_count[ctx.int_id as usize] += 1;
+
   match ctx.int_id {
     0x00...0x0F => cpu_exception_handler(ctx),
     TIMER_INTERRUPT => {
