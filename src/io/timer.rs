@@ -38,6 +38,7 @@ pub fn time_since_start() -> Time {
   }
 }
 
+#[allow(dead_code)]
 pub fn monotonic_clock() -> u64 {
   unsafe {
     timer_ticks

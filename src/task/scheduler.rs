@@ -4,10 +4,12 @@ use collections::Vec;
 
 use task::Task;
 
+#[allow(dead_code)]
 pub struct Scheduler {
   tasks: Box<Vec<Box<Task>>>,
 }
 
+#[allow(dead_code)]
 impl Scheduler {
   pub fn new() -> Self {
     Scheduler {
