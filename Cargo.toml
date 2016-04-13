@@ -19,10 +19,6 @@ branch = "no_std"
 [dependencies.x86]
 git = "https://github.com/gz/rust-x86.git"
 
-[dependencies.alloc_buddy_simple]
-path = "alloc_buddy_simple"
-features = ["use-as-rust-allocator"]
-
 [dependencies.bump_allocator]
 path = "libs/bump_allocator"
 
