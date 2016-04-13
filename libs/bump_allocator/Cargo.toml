@@ -4,3 +4,4 @@ version = "0.1.0"
 authors = ["Ryan Breen <rbreen@cimpress.com>"]
 
 [dependencies]
+spin = "0.3.4"

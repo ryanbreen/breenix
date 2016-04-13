@@ -6,6 +6,7 @@ authors = ["Ryan Breen <ryan@ryanbreen.com>"]
 [dependencies]
 rlibc = "0.1.4"
 spin = "0.3.4"
+once = "*"
 cpuio = "*"
 
 [dependencies.multiboot2]
@@ -21,6 +22,9 @@ git = "https://github.com/gz/rust-x86.git"
 [dependencies.alloc_buddy_simple]
 path = "alloc_buddy_simple"
 features = ["use-as-rust-allocator"]
+
+[dependencies.bump_allocator]
+path = "libs/bump_allocator"
 
 [lib]
 crate-type = ["staticlib"]
