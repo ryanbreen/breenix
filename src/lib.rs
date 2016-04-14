@@ -8,7 +8,7 @@
 #[macro_use]
 mod macros;
 
-extern crate bump_allocator;
+extern crate hole_list_allocator;
 #[macro_use]
 extern crate collections;
 extern crate alloc;
