@@ -80,22 +80,16 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   let boot_info = unsafe {
     multiboot2::load(multiboot_information_address)
   };
+
   enable_nxe_bit();
   enable_write_protect_bit();
 
   // set up guard page and map the heap pages
   memory::init(boot_info);
 
-  unsafe {
-    buffers::ACTIVE_BUFFER.lock().clear();
-    io::initialize();
-  }
-  
-  event::keyboard::initialize();
+  io::initialize();
 
   println!("Time is {}", io::timer::real_time().secs);
-
-  io::pci::initialize();
 
   debug!();
 

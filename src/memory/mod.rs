@@ -45,6 +45,8 @@ pub fn init(boot_info: &BootInformation) {
   for page in Page::range_inclusive(heap_start_page, heap_end_page) {
     active_table.map(page, paging::WRITABLE, &mut frame_allocator);
   }
+
+  println!("We mapped {} frames", frame_allocator.allocated_frame_count());
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

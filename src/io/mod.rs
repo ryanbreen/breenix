@@ -2,6 +2,8 @@ use core::marker::PhantomData;
 
 use x86::io::{inl, outl, outw, inw, outb, inb};
 
+use event;
+
 /// Command sent to begin PIC initialization.
 const CMD_INIT: u8 = 0x11;
 
@@ -165,4 +167,5 @@ pub fn initialize() {
   interrupts::initialize();
   timer::initialize();
   pci::initialize();
+  event::keyboard::initialize();
 }
