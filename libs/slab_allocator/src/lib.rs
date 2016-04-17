@@ -1,3 +1,6 @@
+//! This is a ported version of https://github.com/gz/rust-slabmalloc
+//! to integrate with the memory infrastructure in phillop's kernel.
+//!
 //! A slab allocator implementation for small objects
 //! (< architecture page size).
 //!
@@ -32,69 +35,70 @@ type VAddr = usize;
 
 const MAX_SLABS: usize = 10;
 
-static mut STATE_PTR: Option<&'static mut ZoneAllocator<'static>> = None;
+static mut ZONE_ALLOCATOR: Option<&'static mut ZoneAllocator<'static>> = None;
 
-/**
-pub fn state() -> &'static mut State {
+pub fn init(memory_mapper: &SlabPageProvider) {
   unsafe {
-    match STATE_PTR {
-      Some(ref mut p) => p,
+    match ZONE_ALLOCATOR {
       None => {
-        STATE_PTR = Some(&mut *Box::into_raw(State::new()));
-        match STATE_PTR {
-          Some(ref mut s) => {
-            /// Do any sort of state init we need beyond new().
-            s
-          },
-          None => {
-            panic!("Failed to init state");
-          }
-        }
-      },
+        let mut alloc:&'static mut ZoneAllocator = &mut ZoneAllocator::create_empty();
+        ZONE_ALLOCATOR = Some(alloc);
+      }
+      Some(al) => {
+        panic!("init called twice");
+      }
     }
   }
 }
-**/
 
 #[no_mangle]
 pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
-    // Find the appropriate cache for this size
+  unsafe {
+    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
 
-    // Lookup or allocate block
     use core::ptr;
     ptr::null_mut()
+  }
 }
 
 #[no_mangle]
 pub extern fn __rust_deallocate(ptr: *mut u8, size: usize, align: usize) {
-    // Return this pointer to the cache
+  unsafe {
+    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
+  }
 }
 
 #[no_mangle]
 pub extern fn __rust_usable_size(size: usize, _align: usize) -> usize {
-    size
+  unsafe {
+    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
+  }
+  size
 }
 
 #[no_mangle]
 pub extern fn __rust_reallocate_inplace(_ptr: *mut u8, size: usize,
     _new_size: usize, _align: usize) -> usize
 {
-    size
+  unsafe {
+    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
+  }
+  size
 }
 
 #[no_mangle]
 pub extern fn __rust_reallocate(ptr: *mut u8, size: usize, new_size: usize,
                                 align: usize) -> *mut u8 {
-    use core::{ptr, cmp};
+  use core::{ptr, cmp};
 
-    // from: https://github.com/rust-lang/rust/blob/
-    //     c66d2380a810c9a2b3dbb4f93a830b101ee49cc2/
-    //     src/liballoc_system/lib.rs#L98-L101
+  // from: https://github.com/rust-lang/rust/blob/
+  //     c66d2380a810c9a2b3dbb4f93a830b101ee49cc2/
+  //     src/liballoc_system/lib.rs#L98-L101
 
-    let new_ptr = __rust_allocate(new_size, align);
-    unsafe { ptr::copy(ptr, new_ptr, cmp::min(size, new_size)) };
-    __rust_deallocate(ptr, size, align);
-    new_ptr
+  let new_ptr = __rust_allocate(new_size, align);
+  unsafe { ptr::copy(ptr, new_ptr, cmp::min(size, new_size)) };
+  __rust_deallocate(ptr, size, align);
+  new_ptr
 }
 
 /// The memory backing as used by the SlabAllocator.
@@ -113,28 +117,28 @@ pub trait SlabPageProvider<'a> {
 /// allocation requests for many different (MAX_SLABS) object sizes
 /// (by selecting the right slab allocator).
 pub struct ZoneAllocator<'a> {
-    pager: Option<&'a mut SlabPageProvider<'a>>,
+    pub pager: Option<&'a mut SlabPageProvider<'a>>,
     slabs: [SlabAllocator<'a>; MAX_SLABS],
 }
 
 impl<'a> ZoneAllocator<'a>{
 
-    pub const fn new(pager: Option<&'a mut SlabPageProvider<'a>>) -> ZoneAllocator<'a> {
-        ZoneAllocator{
-            pager: pager,
-            slabs: [
-                SlabAllocator::new(8, None),
-                SlabAllocator::new(16, None),
-                SlabAllocator::new(32, None),
-                SlabAllocator::new(64, None),
-                SlabAllocator::new(128, None),
-                SlabAllocator::new(256, None),
-                SlabAllocator::new(512, None),
-                SlabAllocator::new(1024, None),
-                SlabAllocator::new(2048, None),
-                SlabAllocator::new(4032, None),
-            ]
-        }
+    pub fn create_empty() -> ZoneAllocator<'a> {
+      ZoneAllocator{
+        pager: None,
+        slabs: [
+            SlabAllocator::new(8, None),
+            SlabAllocator::new(16, None),
+            SlabAllocator::new(32, None),
+            SlabAllocator::new(64, None),
+            SlabAllocator::new(128, None),
+            SlabAllocator::new(256, None),
+            SlabAllocator::new(512, None),
+            SlabAllocator::new(1024, None),
+            SlabAllocator::new(2048, None),
+            SlabAllocator::new(4032, None),
+        ]
+      }
     }
 
     /// Return maximum size an object of size `current_size` can use.

@@ -75,7 +75,7 @@ impl FrameAllocator for AreaFrameAllocator {
         // `frame` is used by the multiboot information structure
         self.next_free_frame = Frame{ number: self.multiboot_end.number + 1 };
       } else {
-          // frame is unused, increment `next_free_frame` and return it
+        // frame is unused, increment `next_free_frame` and return it
         self.next_free_frame.number += 1;
         self.allocated_frame_count += 1;
         return Some(frame);
