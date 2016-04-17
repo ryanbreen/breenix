@@ -37,6 +37,8 @@ pub fn init(boot_info: &BootInformation) {
   let mut active_table = paging::remap_the_kernel(&mut frame_allocator, boot_info);
 
   use self::paging::Page;
+  
+  /*
   use hole_list_allocator::{HEAP_START, HEAP_SIZE};
 
   let heap_start_page = Page::containing_address(HEAP_START);
@@ -47,6 +49,7 @@ pub fn init(boot_info: &BootInformation) {
   }
 
   println!("We mapped {} frames", frame_allocator.allocated_frame_count());
+  */
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

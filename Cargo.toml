@@ -19,8 +19,8 @@ branch = "no_std"
 [dependencies.x86]
 git = "https://github.com/gz/rust-x86.git"
 
-[dependencies.hole_list_allocator]
-path = "libs/hole_list_allocator"
+[dependencies.slab_allocator]
+path = "libs/slab_allocator"
 
 [lib]
 crate-type = ["staticlib"]
