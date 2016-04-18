@@ -2,6 +2,12 @@ use memory::{Frame, FrameAllocator};
 use multiboot2::{MemoryAreaIter, MemoryArea};
 use slab_allocator::{SlabPage,SlabPageProvider};
 
+pub struct AreaFrameSlabPageProvider {
+  pub allocator: Option<&'static mut AreaFrameAllocator>
+}
+
+unsafe impl Sync for AreaFrameSlabPageProvider {}
+
 pub struct AreaFrameAllocator {
   next_free_frame: Frame,
   current_area: Option<&'static MemoryArea>,
@@ -54,21 +60,38 @@ impl AreaFrameAllocator {
   }
 }
 
-impl<'a> SlabPageProvider<'a> for AreaFrameAllocator {
+impl AreaFrameSlabPageProvider {
+  pub fn new(allocator: Option<&'static mut AreaFrameAllocator>) -> AreaFrameSlabPageProvider {
+    AreaFrameSlabPageProvider {
+      allocator: allocator
+    }
+  }
+}
+
+impl<'a> SlabPageProvider<'a> for AreaFrameSlabPageProvider {
   fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>> {
-    let frame:Option<Frame> = self.allocate_frame();
-    match frame {
-      None => return None,
-      Some(f) => {
-        use core::mem::transmute;
-        let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
-        return Some(slab_page);
+    match self.allocator {
+      None => panic!("Invalid allocator"),
+      Some(ref mut allocator) => {
+        let frame:Option<Frame> = allocator.allocate_frame();
+        match frame {
+          None => return None,
+          Some(f) => {
+            use core::mem::transmute;
+            let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
+            return Some(slab_page);
+          }
+        }
       }
     }
   }
 
   fn release_slabpage(&mut self, page: &'a mut SlabPage<'a>) {
 
+  }
+
+  fn write_stuff(&mut self, body: &'static str, param: usize) {
+    println!("{} {}", body, param);
   }
 }
 

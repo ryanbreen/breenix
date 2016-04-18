@@ -37,11 +37,12 @@ const MAX_SLABS: usize = 10;
 
 static mut ZONE_ALLOCATOR: Option<&'static mut ZoneAllocator<'static>> = None;
 
-pub fn init(memory_mapper: &SlabPageProvider) {
+pub fn init<S>(allocator: Option<&'static mut S>)
+  where S: SlabPageProvider<'static> {
   unsafe {
     match ZONE_ALLOCATOR {
       None => {
-        let mut alloc:&'static mut ZoneAllocator = &mut *(&mut ZoneAllocator::create_empty() as *mut ZoneAllocator);
+        let mut alloc:&'static mut ZoneAllocator = &mut *(&mut ZoneAllocator::new(None) as *mut ZoneAllocator);
         ZONE_ALLOCATOR = Some(alloc);
       }
       Some(_) => {
@@ -56,8 +57,18 @@ pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
   unsafe {
     assert!(ZONE_ALLOCATOR.is_some());
 
-    use core::ptr;
-    ptr::null_mut()
+    match ZONE_ALLOCATOR {
+      None => panic!("Allocate called before zone initialized"),
+      Some(ref mut za) => {
+        let result = za.allocate(size, align);
+        match result {
+          None => panic!("Failed to allocate memory"),
+          Some(r) => {
+            return r;
+          }
+        }
+      }
+    }
   }
 }
 
@@ -109,6 +120,7 @@ pub extern fn __rust_reallocate(ptr: *mut u8, size: usize, new_size: usize,
 pub trait SlabPageProvider<'a> {
     fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>>;
     fn release_slabpage(&mut self, &'a mut SlabPage<'a>);
+    fn write_stuff(&mut self, &'static str, usize);
 }
 
 /// A zone allocator.
@@ -117,15 +129,15 @@ pub trait SlabPageProvider<'a> {
 /// allocation requests for many different (MAX_SLABS) object sizes
 /// (by selecting the right slab allocator).
 pub struct ZoneAllocator<'a> {
-    pub pager: Option<&'a mut SlabPageProvider<'a>>,
+    pager: Option<&'a mut SlabPageProvider<'a>>,
     slabs: [SlabAllocator<'a>; MAX_SLABS],
 }
 
 impl<'a> ZoneAllocator<'a>{
 
-    pub fn create_empty() -> ZoneAllocator<'a> {
+    pub const fn new(pager: Option<&'a mut SlabPageProvider<'a>>) -> ZoneAllocator<'a> {
       ZoneAllocator{
-        pager: None,
+        pager: pager,
         slabs: [
             SlabAllocator::new(8, None),
             SlabAllocator::new(16, None),
@@ -214,6 +226,13 @@ impl<'a> ZoneAllocator<'a>{
     /// In case we are out of memory we try to refill the slab using our local pager
     /// and re-try the allocation request once more before we give up.
     pub fn allocate<'b>(&'b mut self, size: usize, align: usize) -> Option<*mut u8> {
+        match self.pager {
+          None => {},
+          Some(ref mut pa) => {
+            pa.write_stuff("Trying to allocate ", size);
+          }
+        }
+
         match self.try_acquire_slab(size) {
             Some(idx) => {
                 let mut p = self.slabs[idx].allocate(align);
@@ -453,6 +472,16 @@ impl<'a> SlabAllocator<'a> {
     /// In case of failure will try to grow the slab allocator by requesting
     /// additional pages and re-try the allocation once more before we give up.
     pub fn allocate<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
+
+        match self.pager {
+          None => {
+            panic!("No pager!");
+          },
+          Some(ref mut pa) => {
+            pa.write_stuff("Trying to allocate ", self.size);
+          }
+        }
+
         assert!(self.size < (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
 
         match self.allocate_in_existing_slabs(alignment) {
