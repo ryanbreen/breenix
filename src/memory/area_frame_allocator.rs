@@ -1,5 +1,6 @@
 use memory::{Frame, FrameAllocator};
 use multiboot2::{MemoryAreaIter, MemoryArea};
+use slab_allocator::{SlabPage,SlabPageProvider};
 
 pub struct AreaFrameAllocator {
   next_free_frame: Frame,
@@ -51,7 +52,24 @@ impl AreaFrameAllocator {
   pub fn allocated_frame_count(&self) -> usize {
     self.allocated_frame_count
   }
+}
 
+impl<'a> SlabPageProvider<'a> for AreaFrameAllocator {
+  fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>> {
+    let frame:Option<Frame> = self.allocate_frame();
+    match frame {
+      None => return None,
+      Some(f) => {
+        use core::mem::transmute;
+        let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
+        return Some(slab_page);
+      }
+    }
+  }
+
+  fn release_slabpage(&mut self, page: &'a mut SlabPage<'a>) {
+
+  }
 }
 
 impl FrameAllocator for AreaFrameAllocator {
