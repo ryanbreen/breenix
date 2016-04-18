@@ -12,6 +12,8 @@ pub struct AreaFrameAllocator {
   allocated_frame_count: usize,
 }
 
+unsafe impl Sync for AreaFrameAllocator {}
+
 impl AreaFrameAllocator {
 
   pub fn new(kernel_start: usize, kernel_end: usize,

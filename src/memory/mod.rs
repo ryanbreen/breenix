@@ -9,6 +9,8 @@ use multiboot2::BootInformation;
 
 pub const PAGE_SIZE: usize = 4096;
 
+static mut AREA_FRAME_ALLOCATOR:Option<&'static mut AreaFrameAllocator> = None;
+
 pub fn init(boot_info: &BootInformation) {
   assert_has_not_been_called!("memory::init must be called only once");
 
@@ -30,14 +32,19 @@ pub fn init(boot_info: &BootInformation) {
            boot_info.start_address(),
            boot_info.end_address());
 
-  let mut frame_allocator = AreaFrameAllocator::new(
-      kernel_start as usize, kernel_end as usize,
-      boot_info.start_address(), boot_info.end_address(),
-      memory_map_tag.memory_areas());
-  let mut active_table = paging::remap_the_kernel(&mut frame_allocator, boot_info);
-
-  use self::paging::Page;
-  
+  unsafe {
+    AREA_FRAME_ALLOCATOR = Some(&mut *(&mut AreaFrameAllocator::new(
+        kernel_start as usize, kernel_end as usize,
+        boot_info.start_address(), boot_info.end_address(),
+        memory_map_tag.memory_areas()) as *mut AreaFrameAllocator));
+    match AREA_FRAME_ALLOCATOR {
+      None => panic!("WTF"),
+      Some(ref mut p) => {
+        let mut active_table = paging::remap_the_kernel(p, boot_info);
+        use self::paging::Page;
+      }
+    }
+  } 
   /*
   use hole_list_allocator::{HEAP_START, HEAP_SIZE};
 

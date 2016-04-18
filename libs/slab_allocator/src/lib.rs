@@ -41,10 +41,10 @@ pub fn init(memory_mapper: &SlabPageProvider) {
   unsafe {
     match ZONE_ALLOCATOR {
       None => {
-        let mut alloc:&'static mut ZoneAllocator = &mut ZoneAllocator::create_empty();
+        let mut alloc:&'static mut ZoneAllocator = &mut *(&mut ZoneAllocator::create_empty() as *mut ZoneAllocator);
         ZONE_ALLOCATOR = Some(alloc);
       }
-      Some(al) => {
+      Some(_) => {
         panic!("init called twice");
       }
     }
@@ -54,7 +54,7 @@ pub fn init(memory_mapper: &SlabPageProvider) {
 #[no_mangle]
 pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
   unsafe {
-    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
+    assert!(ZONE_ALLOCATOR.is_some());
 
     use core::ptr;
     ptr::null_mut()
@@ -64,14 +64,14 @@ pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
 #[no_mangle]
 pub extern fn __rust_deallocate(ptr: *mut u8, size: usize, align: usize) {
   unsafe {
-    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
+    assert!(ZONE_ALLOCATOR.is_some());
   }
 }
 
 #[no_mangle]
 pub extern fn __rust_usable_size(size: usize, _align: usize) -> usize {
   unsafe {
-    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
+    assert!(ZONE_ALLOCATOR.is_some());
   }
   size
 }
@@ -81,7 +81,7 @@ pub extern fn __rust_reallocate_inplace(_ptr: *mut u8, size: usize,
     _new_size: usize, _align: usize) -> usize
 {
   unsafe {
-    assert!(ZONE_ALLOCATOR.unwrap().pager.is_some());
+    assert!(ZONE_ALLOCATOR.is_some());
   }
   size
 }

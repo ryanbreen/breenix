@@ -278,8 +278,7 @@ impl RecursivePageTable {
   }
 }
 
-pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation) -> ActivePageTable
-    where A: FrameAllocator
+pub fn remap_the_kernel(allocator: &mut super::AreaFrameAllocator, boot_info: &BootInformation) -> ActivePageTable
 {
   let mut temporary_page = TemporaryPage::new(Page { number: 0xcafebabe }, allocator);
 
