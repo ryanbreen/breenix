@@ -19,6 +19,9 @@ clean:
 run: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G
 
+run_once: $(iso)
+	@qemu-system-x86_64 -hda $(iso) -m 5G -no-reboot -d int
+
 debug: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G -d int -no-reboot -s -S
 

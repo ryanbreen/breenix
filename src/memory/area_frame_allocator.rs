@@ -1,9 +1,12 @@
 use memory::{Frame, FrameAllocator};
+use memory::paging;
+use memory::paging::{Page,ActivePageTable};
 use multiboot2::{MemoryAreaIter, MemoryArea};
 use slab_allocator::{SlabPage,SlabPageProvider};
 
 pub struct AreaFrameSlabPageProvider {
-  pub allocator: Option<&'static mut AreaFrameAllocator>
+  allocator: Option<&'static mut AreaFrameAllocator>,
+  active_page_table: ActivePageTable,
 }
 
 unsafe impl Sync for AreaFrameSlabPageProvider {}
@@ -61,9 +64,10 @@ impl AreaFrameAllocator {
 }
 
 impl AreaFrameSlabPageProvider {
-  pub fn new(allocator: Option<&'static mut AreaFrameAllocator>) -> AreaFrameSlabPageProvider {
+  pub fn new(allocator: Option<&'static mut AreaFrameAllocator>, active_page_table: ActivePageTable) -> AreaFrameSlabPageProvider {
     AreaFrameSlabPageProvider {
-      allocator: allocator
+      allocator: allocator,
+      active_page_table: active_page_table,
     }
   }
 }
@@ -78,6 +82,10 @@ impl<'a> SlabPageProvider<'a> for AreaFrameSlabPageProvider {
           None => return None,
           Some(f) => {
             use core::mem::transmute;
+
+            let page = Page::containing_address(f.start_address());
+            self.active_page_table.map(page, paging::WRITABLE, *allocator);
+
             let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
             return Some(slab_page);
           }

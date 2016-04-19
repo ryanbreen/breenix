@@ -45,18 +45,14 @@ pub fn init(boot_info: &BootInformation) {
 
     match AREA_FRAME_ALLOCATOR {
       Some(ref mut allocator) => {
-        {
-          let _ = paging::remap_the_kernel(allocator, boot_info);
-        }
+        let active_table = paging::remap_the_kernel(*allocator, boot_info);
 
         {
           use self::paging::Page;
           // let mut alloc:&'static mut ZoneAllocator = &mut *(&mut ZoneAllocator::new(None) as *mut ZoneAllocator);
           let mut page_provider:&'static mut AreaFrameSlabPageProvider =
-            &mut *(&mut AreaFrameSlabPageProvider::new(Some(allocator)) as * mut AreaFrameSlabPageProvider);
-          {
-            slab_allocator::init(Some(page_provider));
-          }
+            &mut *(&mut AreaFrameSlabPageProvider::new(Some(allocator), active_table) as * mut AreaFrameSlabPageProvider);
+          slab_allocator::init(Some(page_provider));
         } 
       },
       None => panic!("Invalid allocator"),
