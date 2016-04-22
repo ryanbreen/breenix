@@ -240,6 +240,7 @@ impl<'a> ZoneAllocator<'a>{
 
         match self.try_acquire_slab(size) {
             Some(idx) => {
+
                 let mut p = self.slabs[idx].allocate(align);
                 if p.is_none() {
                     self.refill_slab_allocator(idx);
@@ -478,7 +479,9 @@ impl<'a> SlabAllocator<'a> {
     /// additional pages and re-try the allocation once more before we give up.
     pub fn allocate<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
-        assert!(self.size < (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
+      //panic!("{} {}", self.size, (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
+
+        assert!(self.size <= (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
 
         match self.allocate_in_existing_slabs(alignment) {
             None => {
