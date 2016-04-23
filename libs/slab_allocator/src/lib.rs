@@ -151,13 +151,56 @@ impl<'a> ZoneAllocator<'a>{
             SlabAllocator::new(4032, None),
         ],
       };
+/*
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[0];
+        slab_alloc.set_pager(Some(p));
+      });
 
-      for i in 0..10 {
-        za.pager.take().map(|p| {
-            let ref mut slab_alloc = za.slabs[i];
-            slab_alloc.set_pager(Some(p));
-        });
-      }
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[1];
+        slab_alloc.set_pager(Some(p));
+      });
+
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[2];
+        slab_alloc.set_pager(Some(p));
+      });
+
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[3];
+        slab_alloc.set_pager(Some(p));
+      });
+
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[4];
+        slab_alloc.set_pager(Some(p));
+      });
+
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[5];
+        slab_alloc.set_pager(Some(p));
+      });
+
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[6];
+        slab_alloc.set_pager(Some(p));
+      });
+
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[7];
+        slab_alloc.set_pager(Some(p));
+      });
+
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[8];
+        slab_alloc.set_pager(Some(p));
+      });
+*/
+      za.pager.take().map(|p| {
+        let ref mut slab_alloc = za.slabs[9];
+        slab_alloc.set_pager(Some(p));
+      });
 
       za
     }
@@ -217,17 +260,6 @@ impl<'a> ZoneAllocator<'a>{
     /// # TODO
     ///  * Panics in case we're OOM (should probably return error).
     fn refill_slab_allocator<'b>(&'b mut self, idx: usize) {
-        match self.pager {
-          None => {
-            panic!("Funk dat");
-          },
-          Some(ref mut pa) => {
-            pa.write_stuff("Trying to add slab ", idx);
-          }
-        }
-
-
-
         self.pager.take().map(|p| {
             match p.allocate_slabpage() {
                 Some(new_head) => {
@@ -421,7 +453,7 @@ pub struct SlabAllocator<'a> {
     /// Allocation size.
     size: usize,
     /// Memory backing store, to request new SlabPages.
-    pub pager: Option<&'a mut SlabPageProvider<'a>>,
+    pager: Option<&'a mut SlabPageProvider<'a>>,
     /// List of SlabPages.
     slabs: SlabList<'a>,
 }
@@ -452,13 +484,14 @@ impl<'a> SlabAllocator<'a> {
     ///  * Amount is currently ignored.
     ///  * Panics on OOM (should return error!)
     fn refill_slab<'b>(&'b mut self, amount: usize) {
+
         self.pager.take().map(|p| {
             match p.allocate_slabpage() {
                 Some(new_head) => {
                     self.insert_slab(new_head);
                     self.pager = Some(p);
                 },
-                None => panic!("OOM")
+                None => panic!("OOM"),
             }
         });
     }

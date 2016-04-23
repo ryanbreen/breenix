@@ -77,7 +77,9 @@ impl<'a> SlabPageProvider<'a> for AreaFrameSlabPageProvider {
     match self.allocator {
       None => panic!("Invalid allocator"),
       Some(ref mut allocator) => {
+        println!("Time to get a frame");
         let frame:Option<Frame> = allocator.allocate_frame();
+        println!("Got a frame? {}", frame.is_some());
         match frame {
           None => return None,
           Some(f) => {
@@ -87,6 +89,7 @@ impl<'a> SlabPageProvider<'a> for AreaFrameSlabPageProvider {
             self.active_page_table.map(page, paging::WRITABLE, *allocator);
 
             let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
+            println!("{:?}", slab_page);
             return Some(slab_page);
           }
         }
@@ -105,6 +108,9 @@ impl<'a> SlabPageProvider<'a> for AreaFrameSlabPageProvider {
 
 impl FrameAllocator for AreaFrameAllocator {
   fn allocate_frame(&mut self) -> Option<Frame> {
+
+    println!("am i even me? {:x}", &self as *const _ as u64);
+    println!("time to get a frame from area {} {:x}", self.allocated_frame_count, &self.current_area as *const _ as u64);
     if let Some(area) = self.current_area {
       // "clone" the frame to return it if it's free. Frame doesn't
       // implement Clone, but we can construct an identical frame.
@@ -113,6 +119,7 @@ impl FrameAllocator for AreaFrameAllocator {
       // the last frame of the current area
       let current_area_last_frame = {
         let address = area.base_addr + area.length - 1;
+
         Frame::containing_address(address as usize)
       };
 
@@ -129,11 +136,13 @@ impl FrameAllocator for AreaFrameAllocator {
         // frame is unused, increment `next_free_frame` and return it
         self.next_free_frame.number += 1;
         self.allocated_frame_count += 1;
+
         return Some(frame);
       }
       // `frame` was not valid, try it again with the updated `next_free_frame`
       self.allocate_frame()
     } else {
+      println!("No free frames left!");
       None // no free frames left
     }
   }
