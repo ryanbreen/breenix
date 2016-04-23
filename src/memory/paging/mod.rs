@@ -1,4 +1,5 @@
-use memory::{PAGE_SIZE, Frame, FrameAllocator};
+use memory::{PAGE_SIZE, Frame};
+use memory::frame_allocator::FrameAllocator;
 use multiboot2::BootInformation;
 
 mod entry;

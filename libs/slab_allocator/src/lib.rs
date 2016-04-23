@@ -208,7 +208,7 @@ impl<'a> ZoneAllocator<'a>{
             SlabAllocator::new(4032, None),
         ],
       };
-/*
+
       za.pager.take().map(|p| {
         let ref mut slab_alloc = za.slabs[0];
         slab_alloc.set_pager(Some(p));
@@ -253,7 +253,7 @@ impl<'a> ZoneAllocator<'a>{
         let ref mut slab_alloc = za.slabs[8];
         slab_alloc.set_pager(Some(p));
       });
-*/
+
       za.pager.take().map(|p| {
         let ref mut slab_alloc = za.slabs[9];
         slab_alloc.set_pager(Some(p));

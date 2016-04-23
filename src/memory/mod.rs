@@ -2,6 +2,7 @@ pub use self::area_frame_allocator::AreaFrameAllocator;
 pub use self::paging::remap_the_kernel;
 
 use self::paging::PhysicalAddress;
+mod frame_allocator;
 mod area_frame_allocator;
 mod paging;
 
@@ -10,11 +11,24 @@ use multiboot2::BootInformation;
 use slab_allocator;
 use slab_allocator::SlabPageProvider;
 
+use alloc::boxed::Box;
+
+use self::frame_allocator::FrameAllocator;
 use self::area_frame_allocator::AreaFrameSlabPageProvider;
+use self::paging::Page;
 
 pub const PAGE_SIZE: usize = 4096;
 
-static mut AREA_FRAME_ALLOCATOR:Option<&'static mut AreaFrameAllocator> = None;
+static mut AREA_FRAME_ALLOCATOR_PTR:Option<&'static mut AreaFrameAllocator> = None;
+
+pub fn frame_allocator() -> &'static mut AreaFrameAllocator {
+  unsafe {
+    match AREA_FRAME_ALLOCATOR_PTR {
+      Some(ref mut a) => a,
+      None => { panic!("frame_allocator called before init"); },
+    }
+  }
+}
 
 pub fn init(boot_info: &BootInformation) {
   assert_has_not_been_called!("memory::init must be called only once");
@@ -38,35 +52,33 @@ pub fn init(boot_info: &BootInformation) {
            boot_info.end_address());
 
   unsafe {
-    AREA_FRAME_ALLOCATOR = Some(&mut *(&mut AreaFrameAllocator::new(
+
+
+    let mut allocator = AreaFrameAllocator::new(
         kernel_start as usize, kernel_end as usize,
         boot_info.start_address(), boot_info.end_address(),
-        memory_map_tag.memory_areas()) as *mut AreaFrameAllocator));
+        memory_map_tag.memory_areas());
 
-    match AREA_FRAME_ALLOCATOR {
-      Some(ref mut allocator) => {
-        let active_table = paging::remap_the_kernel(*allocator, boot_info);
+    let mut active_table = paging::remap_the_kernel(&mut allocator, boot_info);
 
-        {
-          use self::paging::Page;
-          // let mut alloc:&'static mut ZoneAllocator = &mut *(&mut ZoneAllocator::new(None) as *mut ZoneAllocator);
-          let mut page_provider:&'static mut AreaFrameSlabPageProvider =
-            &mut *(&mut AreaFrameSlabPageProvider::new(Some(allocator), active_table) as * mut AreaFrameSlabPageProvider);
-          slab_allocator::init(Some(page_provider));
-        } 
-      },
-      None => panic!("Invalid allocator"),
+    use slab_allocator::{HEAP_START, HEAP_SIZE};
+
+    let heap_start_page = Page::containing_address(HEAP_START);
+    let heap_end_page = Page::containing_address(HEAP_START + HEAP_SIZE-1);
+
+    for page in Page::range_inclusive(heap_start_page, heap_end_page) {
+      active_table.map(page, paging::WRITABLE, &mut allocator);
     }
-  } 
-  /*
-  use hole_list_allocator::{HEAP_START, HEAP_SIZE};
 
-  let heap_start_page = Page::containing_address(HEAP_START);
-  let heap_end_page = Page::containing_address(HEAP_START + HEAP_SIZE-1);
+    AREA_FRAME_ALLOCATOR_PTR = Some(&mut *Box::into_raw(Box::new(allocator)));
 
-  for page in Page::range_inclusive(heap_start_page, heap_end_page) {
-    active_table.map(page, paging::WRITABLE, &mut frame_allocator);
+    use self::paging::Page;
+    // let mut alloc:&'static mut ZoneAllocator = &mut *(&mut ZoneAllocator::new(None) as *mut ZoneAllocator);
+    let mut page_provider:&'static mut AreaFrameSlabPageProvider =
+      &mut *(&mut AreaFrameSlabPageProvider::new(Some(frame_allocator()), active_table) as * mut AreaFrameSlabPageProvider);
+    slab_allocator::init(Some(page_provider)); 
   }
+  /*
 
   println!("We mapped {} frames", frame_allocator.allocated_frame_count());
   */
@@ -117,7 +129,3 @@ impl Iterator for FrameIter {
     }
 }
 
-pub trait FrameAllocator {
-  fn allocate_frame(&mut self) -> Option<Frame>;
-  fn deallocate_frame(&mut self, frame: Frame);
-}

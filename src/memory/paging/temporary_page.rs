@@ -7,6 +7,7 @@ pub struct TemporaryPage {
 
 use super::{ActivePageTable, VirtualAddress};
 use memory::Frame;
+use memory::frame_allocator::FrameAllocator;
 
 use super::table::{Table, Level1};
 
@@ -49,8 +50,6 @@ impl TemporaryPage {
 }
 
 struct TinyAllocator([Option<Frame>; 3]);
-
-use memory::FrameAllocator;
 
 impl FrameAllocator for TinyAllocator {
     fn allocate_frame(&mut self) -> Option<Frame> {

@@ -1,7 +1,8 @@
 use super::{VirtualAddress, PhysicalAddress, Page, ENTRY_COUNT};
 use super::entry::*;
 use super::table::{self, Table, Level4};
-use memory::{PAGE_SIZE, Frame, FrameAllocator};
+use memory::{PAGE_SIZE, Frame};
+use memory::frame_allocator::FrameAllocator;
 use core::ptr::Unique;
 
 pub struct Mapper {

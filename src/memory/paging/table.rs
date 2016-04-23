@@ -1,6 +1,6 @@
 use memory::paging::entry::*;
 use memory::paging::ENTRY_COUNT;
-use memory::FrameAllocator;
+use memory::frame_allocator::FrameAllocator;
 
 pub const P4: *mut Table<Level4> = 0xffffffff_fffff000 as *mut _;
 
