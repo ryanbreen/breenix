@@ -8,13 +8,11 @@ mod paging;
 
 use multiboot2::BootInformation;
 
-use slab_allocator;
-use slab_allocator::SlabPageProvider;
+use self::allocator::slab_allocator;
 
 use alloc::boxed::Box;
 
 use self::frame_allocator::FrameAllocator;
-use self::area_frame_allocator::AreaFrameSlabPageProvider;
 use self::paging::Page;
 
 pub const PAGE_SIZE: usize = 4096;
@@ -53,7 +51,7 @@ pub fn init(boot_info: &BootInformation) {
 
   unsafe {
 
-
+    // First, create our frame allocator using what we know about kernel size
     let mut allocator = AreaFrameAllocator::new(
         kernel_start as usize, kernel_end as usize,
         boot_info.start_address(), boot_info.end_address(),
@@ -70,10 +68,12 @@ pub fn init(boot_info: &BootInformation) {
       active_table.map(page, paging::WRITABLE, &mut allocator);
     }
 
+    // Now that the bootstrap bump allocator is available, move the frame allocator to our
+    // bump-allocated heap space.
     AREA_FRAME_ALLOCATOR_PTR = Some(&mut *Box::into_raw(Box::new(allocator)));
 
+
     use self::paging::Page;
-    // let mut alloc:&'static mut ZoneAllocator = &mut *(&mut ZoneAllocator::new(None) as *mut ZoneAllocator);
     let mut page_provider:&'static mut AreaFrameSlabPageProvider =
       &mut *(&mut AreaFrameSlabPageProvider::new(Some(frame_allocator()), active_table) as * mut AreaFrameSlabPageProvider);
     slab_allocator::init(Some(page_provider)); 

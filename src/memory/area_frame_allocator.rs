@@ -101,17 +101,13 @@ impl<'a> SlabPageProvider<'a> for AreaFrameSlabPageProvider {
   fn release_slabpage(&mut self, page: &'a mut SlabPage<'a>) {
 
   }
-
-  fn write_stuff(&mut self, body: &'static str, param: usize) {
-    println!("{} {}", body, param);
-  }
 }
 
 impl FrameAllocator for AreaFrameAllocator {
   fn allocate_frame(&mut self) -> Option<Frame> {
 
-    println!("am i even me? {:x}", &self as *const _ as u64);
-    println!("time to get a frame from area {} {:x}", self.allocated_frame_count, &self.current_area as *const _ as u64);
+    //println!("am i even me? {:x}", &self as *const _ as u64);
+    //println!("time to get a frame from area {} {:x}", self.allocated_frame_count, &self.current_area as *const _ as u64);
     if let Some(area) = self.current_area {
       // "clone" the frame to return it if it's free. Frame doesn't
       // implement Clone, but we can construct an identical frame.
