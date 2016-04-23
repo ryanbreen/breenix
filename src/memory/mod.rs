@@ -2,13 +2,13 @@ pub use self::area_frame_allocator::AreaFrameAllocator;
 pub use self::paging::remap_the_kernel;
 
 use self::paging::PhysicalAddress;
-mod frame_allocator;
+
 mod area_frame_allocator;
+mod frame_allocator;
 mod paging;
+mod slab_allocator;
 
 use multiboot2::BootInformation;
-
-use self::allocator::slab_allocator;
 
 use alloc::boxed::Box;
 

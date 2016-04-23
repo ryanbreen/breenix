@@ -1,4 +1,19 @@
 
+use core::fmt;
+use core::mem;
+use core::ptr;
+
+#[cfg(target_arch="x86_64")]
+const CACHE_LINE_SIZE: usize = 64;
+
+#[cfg(target_arch="x86_64")]
+const BASE_PAGE_SIZE: usize = 4096;
+
+const MAX_SLABS: usize = 10;
+
+#[cfg(target_arch="x86_64")]
+type VAddr = usize;
+
 /// The memory backing as used by the SlabAllocator.
 ///
 /// A client that wants to use the Zone/Slab allocators
@@ -407,12 +422,6 @@ impl<'a> SlabAllocator<'a> {
         None
     }
 
-    fn write_stuff(&mut self, body:&'static str, param:usize) {
-      self.pager.take().map(|p| {
-        p.write_stuff(body, param);
-      });
-    }
-
     /// Allocates a block of memory with respect to `alignment`.
     ///
     /// In case of failure will try to grow the slab allocator by requesting
@@ -420,7 +429,7 @@ impl<'a> SlabAllocator<'a> {
     pub fn allocate<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
         let size = self.size;
-        self.write_stuff("Allocating ", size);
+        println!("Allocating {}", size);
 
         if self.size > (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE) {
           panic!("{} ({}) > {}", self.size, alignment, BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE);
