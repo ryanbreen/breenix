@@ -24,6 +24,65 @@ use core::mem;
 use core::ptr;
 use core::fmt;
 
+extern crate spin;
+use spin::Mutex;
+
+pub const HEAP_START: usize = 0o_000_001_000_000_0000;
+pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
+
+/// Align downwards. Returns the greatest x with alignment `align`
+/// so that x <= addr. The alignment must be a power of 2.
+pub fn align_down(addr: usize, align: usize) -> usize {
+    if align.is_power_of_two() {
+        addr & !(align - 1)
+    } else if align == 0 {
+        addr
+    } else {
+        panic!("`align` must be a power of 2");
+    }
+}
+
+/// Align upwards. Returns the smallest x with alignment `align`
+/// so that x >= addr. The alignment must be a power of 2.
+pub fn align_up(addr: usize, align: usize) -> usize {
+    align_down(addr + align - 1, align)
+}
+
+#[derive(Debug)]
+struct BumpAllocator {
+    heap_start: usize,
+    heap_size: usize,
+    next: usize,
+}
+
+impl BumpAllocator {
+    /// Create a new allocator, which uses the memory in the
+    /// range [heap_start, heap_start + heap_size).
+    const fn new(heap_start: usize, heap_size: usize) -> BumpAllocator {
+        BumpAllocator {
+            heap_start: heap_start,
+            heap_size: heap_size,
+            next: heap_start,
+        }
+    }
+
+    /// Allocates a block of memory with the given size and alignment.
+    fn allocate(&mut self, size: usize, align: usize) -> Option<*mut u8> {
+        let alloc_start = align_up(self.next, align);
+        let alloc_end = alloc_start + size;
+
+        if alloc_end <= self.heap_start + self.heap_size {
+            self.next = alloc_end;
+            Some(alloc_start as *mut u8)
+        } else {
+            None
+        }
+    }
+}
+
+static BUMP_ALLOCATOR: Mutex<BumpAllocator> = Mutex::new(
+    BumpAllocator::new(HEAP_START, HEAP_SIZE));
+
 #[cfg(target_arch="x86_64")]
 const CACHE_LINE_SIZE: usize = 64;
 
@@ -39,6 +98,9 @@ static mut ZONE_ALLOCATOR: Option<&'static mut ZoneAllocator<'static>> = None;
 
 pub fn init<S: SlabPageProvider<'static>>(allocator: Option<&'static mut S>) {
   unsafe {
+    assert!(ZONE_ALLOCATOR.is_none());
+    assert!(allocator.is_some());
+
     match ZONE_ALLOCATOR {
       None => {
         let zone_alloc:* mut ZoneAllocator = &mut ZoneAllocator::new(Some(&mut *allocator.unwrap())) as *mut ZoneAllocator;
@@ -55,16 +117,19 @@ pub fn init<S: SlabPageProvider<'static>>(allocator: Option<&'static mut S>) {
 #[no_mangle]
 pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
   unsafe {
-    assert!(ZONE_ALLOCATOR.is_some());
+    if ZONE_ALLOCATOR.is_none() {
+      BUMP_ALLOCATOR.lock().allocate(size, align).expect("out of memory")
+    } else {
 
-    match ZONE_ALLOCATOR {
-      None => panic!("Allocate called before zone initialized"),
-      Some(ref mut za) => {
-        let result = za.allocate(size, align);
-        match result {
-          None => panic!("Failed to allocate memory"),
-          Some(r) => {
-            return r;
+      match ZONE_ALLOCATOR {
+        None => panic!("Allocate called before zone initialized"),
+        Some(ref mut za) => {
+          let result = za.allocate(size, align);
+          match result {
+            None => panic!("Failed to allocate memory"),
+            Some(r) => {
+              return r;
+            }
           }
         }
       }
@@ -74,16 +139,11 @@ pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
 
 #[no_mangle]
 pub extern fn __rust_deallocate(ptr: *mut u8, size: usize, align: usize) {
-  unsafe {
-    assert!(ZONE_ALLOCATOR.is_some());
-  }
+  
 }
 
 #[no_mangle]
 pub extern fn __rust_usable_size(size: usize, _align: usize) -> usize {
-  unsafe {
-    assert!(ZONE_ALLOCATOR.is_some());
-  }
   size
 }
 
@@ -91,9 +151,6 @@ pub extern fn __rust_usable_size(size: usize, _align: usize) -> usize {
 pub extern fn __rust_reallocate_inplace(_ptr: *mut u8, size: usize,
     _new_size: usize, _align: usize) -> usize
 {
-  unsafe {
-    assert!(ZONE_ALLOCATOR.is_some());
-  }
   size
 }
 
