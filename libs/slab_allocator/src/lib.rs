@@ -135,8 +135,8 @@ pub struct ZoneAllocator<'a> {
 
 impl<'a> ZoneAllocator<'a>{
 
-    pub const fn new(pager: Option<&'a mut SlabPageProvider<'a>>) -> ZoneAllocator<'a> {
-      ZoneAllocator{
+    pub fn new(pager: Option<&'a mut SlabPageProvider<'a>>) -> ZoneAllocator<'a> {
+      let mut za = ZoneAllocator{
         pager: pager,
         slabs: [
             SlabAllocator::new(8, None),
@@ -149,8 +149,17 @@ impl<'a> ZoneAllocator<'a>{
             SlabAllocator::new(1024, None),
             SlabAllocator::new(2048, None),
             SlabAllocator::new(4032, None),
-        ]
+        ],
+      };
+
+      for i in 0..10 {
+        za.pager.take().map(|p| {
+            let ref mut slab_alloc = za.slabs[i];
+            slab_alloc.set_pager(Some(p));
+        });
       }
+
+      za
     }
 
     /// Return maximum size an object of size `current_size` can use.
@@ -412,7 +421,7 @@ pub struct SlabAllocator<'a> {
     /// Allocation size.
     size: usize,
     /// Memory backing store, to request new SlabPages.
-    pager: Option<&'a mut SlabPageProvider<'a>>,
+    pub pager: Option<&'a mut SlabPageProvider<'a>>,
     /// List of SlabPages.
     slabs: SlabList<'a>,
 }
@@ -426,6 +435,10 @@ impl<'a> SlabAllocator<'a> {
             pager: pager,
             slabs: SlabList::new(),
         }
+    }
+
+    pub fn set_pager(&mut self, pager: Option<&'a mut SlabPageProvider<'a>>) {
+      self.pager = pager;
     }
 
     /// Return object size of this allocator.
@@ -461,6 +474,7 @@ impl<'a> SlabAllocator<'a> {
     fn allocate_in_existing_slabs<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
         let size = self.size;
+
         for (idx, slab_page) in self.slabs.iter_mut().enumerate() {
             match slab_page.allocate(size, alignment) {
                 None => { continue },
@@ -478,8 +492,6 @@ impl<'a> SlabAllocator<'a> {
     /// In case of failure will try to grow the slab allocator by requesting
     /// additional pages and re-try the allocation once more before we give up.
     pub fn allocate<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
-
-      //panic!("{} {}", self.size, (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
 
         assert!(self.size <= (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
 
