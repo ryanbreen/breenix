@@ -62,11 +62,6 @@ impl AreaFrameSlabPageProvider {
         let mut slab_page: &'static mut SlabPage = unsafe { transmute(f.start_address() as usize) };
         slab_page.id = allocator.allocated_frame_count();
 
-/*
-        if slab_page.id > 70 {
-          panic!("Got here {:?}", slab_page);
-        }
-*/
         return Some(slab_page);
       }
     }
@@ -89,8 +84,17 @@ pub struct ZoneAllocator {
 }
 
 impl fmt::Debug for ZoneAllocator {
+    #[allow(unused_must_use)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ZoneAllocator slab_count: {}", self.slabs.len())
+        write!(f, "ZoneAllocator slab_count: {}\n", self.slabs.len());
+
+        let mut idx = 0;
+        for slab_allocator in self.slabs.into_iter() {
+          write!(f, "SlabAllocator {} (size per slab: {}, total slabs: {})\n", idx, slab_allocator.size, slab_allocator.slabs.len());
+          idx += 1;
+        }
+
+        Ok(())
     }
 }
 
