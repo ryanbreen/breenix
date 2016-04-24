@@ -9,7 +9,7 @@
 mod macros;
 
 //extern crate hole_list_allocator;
-extern crate slab_allocator;
+extern crate tiered_allocator;
 
 #[macro_use]
 extern crate collections;

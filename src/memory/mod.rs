@@ -13,17 +13,27 @@ use multiboot2::BootInformation;
 use alloc::boxed::Box;
 
 use self::frame_allocator::FrameAllocator;
-use self::paging::Page;
+use self::paging::{ActivePageTable,Page};
 
 pub const PAGE_SIZE: usize = 4096;
 
 static mut AREA_FRAME_ALLOCATOR_PTR:Option<&'static mut AreaFrameAllocator> = None;
+static mut ACTIVE_TABLE_PTR:Option<&'static mut ActivePageTable> = None;
 
 pub fn frame_allocator() -> &'static mut AreaFrameAllocator {
   unsafe {
     match AREA_FRAME_ALLOCATOR_PTR {
       Some(ref mut a) => a,
       None => { panic!("frame_allocator called before init"); },
+    }
+  }
+}
+
+pub fn page_table() -> &'static mut ActivePageTable {
+  unsafe {
+    match ACTIVE_TABLE_PTR {
+      Some(ref mut a) => a,
+      None => { panic!("active_page_table called before init"); },
     }
   }
 }
@@ -59,7 +69,7 @@ pub fn init(boot_info: &BootInformation) {
 
     let mut active_table = paging::remap_the_kernel(&mut allocator, boot_info);
 
-    use slab_allocator::{HEAP_START, HEAP_SIZE};
+    use tiered_allocator::{HEAP_START, HEAP_SIZE};
 
     let heap_start_page = Page::containing_address(HEAP_START);
     let heap_end_page = Page::containing_address(HEAP_START + HEAP_SIZE-1);
@@ -72,11 +82,10 @@ pub fn init(boot_info: &BootInformation) {
     // bump-allocated heap space.
     AREA_FRAME_ALLOCATOR_PTR = Some(&mut *Box::into_raw(Box::new(allocator)));
 
+    // Same for the active page table
+    ACTIVE_TABLE_PTR = Some(&mut *Box::into_raw(Box::new(active_table)));
 
-    use self::paging::Page;
-    let mut page_provider:&'static mut AreaFrameSlabPageProvider =
-      &mut *(&mut AreaFrameSlabPageProvider::new(Some(frame_allocator()), active_table) as * mut AreaFrameSlabPageProvider);
-    slab_allocator::init(Some(page_provider)); 
+    tiered_allocator::init(slab_allocator.allocate);
   }
   /*
 

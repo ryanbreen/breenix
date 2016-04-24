@@ -1,5 +1,5 @@
 [package]
-name = "slab_allocator"
+name = "tiered_allocator"
 version = "0.1.0"
 authors = ["Ryan Breen <rbreen@cimpress.com>"]
 
