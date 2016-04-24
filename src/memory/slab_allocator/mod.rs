@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
+use collections::vec::Vec;
 
 use core::fmt;
 use core::mem;
@@ -22,9 +23,9 @@ const MAX_SLABS: usize = 10;
 #[cfg(target_arch="x86_64")]
 type VAddr = usize;
 
-static mut ZONE_ALLOCATOR_PTR:Option<&'static mut ZoneAllocator<'static>> = None;
+static mut ZONE_ALLOCATOR_PTR:Option<&'static mut ZoneAllocator> = None;
 
-pub fn zone_allocator() -> &'static mut ZoneAllocator<'static> {
+pub fn zone_allocator() -> &'static mut ZoneAllocator {
   unsafe {
     match ZONE_ALLOCATOR_PTR {
       Some(ref mut za) => za,
@@ -46,8 +47,8 @@ pub fn allocate(size: usize, align: usize) -> *mut u8 {
 
 pub struct AreaFrameSlabPageProvider {}
 
-impl<'a> AreaFrameSlabPageProvider {
-  fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>> {
+impl AreaFrameSlabPageProvider {
+  fn allocate_slabpage(&mut self) -> Option<&'static mut SlabPage> {
     
     let allocator = frame_allocator();
     let frame:Option<Frame> = allocator.allocate_frame();
@@ -59,14 +60,21 @@ impl<'a> AreaFrameSlabPageProvider {
         let page = Page::containing_address(f.start_address());
         page_table().map(page, paging::WRITABLE, allocator);
 
-        let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
+        let mut slab_page: &'static mut SlabPage = unsafe { transmute(f.start_address() as usize) };
+        slab_page.id = allocator.allocated_frame_count();
+
+/*
+        if slab_page.id > 70 {
+          panic!("Got here {:?}", slab_page);
+        }
+*/
         return Some(slab_page);
       }
     }
   }
 
   #[allow(unused_variables)]
-  fn release_slabpage(&mut self, page: &'a mut SlabPage<'a>) {
+  fn release_slabpage(&mut self, page: &mut SlabPage) {
     // TODO: Let's maybe release memory at some point.
   }
 }
@@ -76,14 +84,14 @@ impl<'a> AreaFrameSlabPageProvider {
 /// Has a bunch of slab allocators and can serve
 /// allocation requests for many different (MAX_SLABS) object sizes
 /// (by selecting the right slab allocator).
-pub struct ZoneAllocator<'a> {
+pub struct ZoneAllocator {
     pager: AreaFrameSlabPageProvider,
-    slabs: [SlabAllocator<'a>; MAX_SLABS],
+    slabs: [SlabAllocator; MAX_SLABS],
 }
 
-impl<'a> ZoneAllocator<'a>{
+impl ZoneAllocator{
 
-    pub fn new() -> ZoneAllocator<'a> {
+    pub fn new() -> ZoneAllocator {
       ZoneAllocator{
         pager: AreaFrameSlabPageProvider{},
         slabs: [
@@ -233,133 +241,27 @@ impl<'a> ZoneAllocator<'a>{
 
 }
 
-/// A list of SlabPages.
-struct SlabList<'a> {
-    /// Points to the head of the list.
-    head: Option<&'a mut SlabPage<'a>>,
-    /// Number of elements in the list.
-    pub elements: usize
-}
-
-impl<'a> SlabList<'a> {
-
-    const fn new() -> SlabList<'a> {
-        SlabList{ head: None, elements: 0 }
-    }
-
-    fn iter_mut<'b>(&'b mut self) -> SlabPageIterMut<'a> {
-        let m = match self.head {
-            None => Rawlink::none(),
-            Some(ref mut m) => Rawlink::some(*m)
-        };
-        SlabPageIterMut { head: m }
-    }
-
-    /// Inserts `new_head` at the front of the list.
-    fn insert_front<'b>(&'b mut self, mut new_head: &'a mut SlabPage<'a>) {
-        match self.head {
-            None => {
-                new_head.prev = Rawlink::none();
-                self.head = Some(new_head);
-            }
-            Some(ref mut head) => {
-                new_head.prev = Rawlink::none();
-                head.prev = Rawlink::some(new_head);
-                mem::swap(head, &mut new_head);
-                head.next = Rawlink::some(new_head);
-            }
-        }
-
-        self.elements += 1;
-    }
-
-    /// Removes `slab_page` from the list.
-    fn remove_from_list<'b, 'c>(&'b mut self, slab_page: &'c mut SlabPage<'a>) {
-        unsafe {
-            match slab_page.prev.resolve_mut() {
-                None => {
-                    self.head = slab_page.next.resolve_mut();
-                },
-                Some(prev) => {
-                    prev.next = match slab_page.next.resolve_mut() {
-                        None => Rawlink::none(),
-                        Some(next) => Rawlink::some(next),
-                    };
-                }
-            }
-
-            match slab_page.next.resolve_mut() {
-                None => (),
-                Some(next) => {
-                    next.prev = match slab_page.prev.resolve_mut() {
-                        None => Rawlink::none(),
-                        Some(prev) => Rawlink::some(prev),
-                    };
-                }
-            }
-        }
-
-        self.elements -= 1;
-    }
-
-    /// Does the list contain `s`?
-    fn has_slabpage<'b>(&'b mut self, s: &'a SlabPage<'a>) -> bool {
-        for slab_page in self.iter_mut() {
-            if slab_page as *const SlabPage == s as *const SlabPage {
-                return true;
-            }
-        }
-
-        false
-    }
-
-
-}
-
-/// Iterate over all the pages inside a slab allocator
-struct SlabPageIterMut<'a> {
-    head: Rawlink<SlabPage<'a>>
-}
-
-impl<'a> Iterator for SlabPageIterMut<'a> {
-    type Item = &'a mut SlabPage<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<&'a mut SlabPage<'a>> {
-        unsafe {
-            self.head.resolve_mut().map(|next| {
-                self.head = match next.next.resolve_mut() {
-                    None => Rawlink::none(),
-                    Some(ref mut sp) => Rawlink::some(*sp)
-                };
-                next
-            })
-        }
-    }
-}
-
-
 /// A slab allocator allocates elements of a fixed size.
 ///
 /// It has a list of SlabPages stored inside `slabs` from which
 /// it allocates memory.
-pub struct SlabAllocator<'a> {
+pub struct SlabAllocator {
     /// Allocation size.
     size: usize,
     /// Memory backing store, to request new SlabPages.
     pager: AreaFrameSlabPageProvider,
     /// List of SlabPages.
-    slabs: SlabList<'a>,
+    slabs: Vec<Option<&'static mut SlabPage>>,
 }
 
-impl<'a> SlabAllocator<'a> {
+impl SlabAllocator {
 
     /// Create a new SlabAllocator.
-    pub const fn new(size: usize) -> SlabAllocator<'a> {
+    pub fn new(size: usize) -> SlabAllocator {
         SlabAllocator{
             size: size,
             pager: AreaFrameSlabPageProvider{},
-            slabs: SlabList::new(),
+            slabs: Vec::with_capacity(1000),
         }
     }
 
@@ -375,7 +277,6 @@ impl<'a> SlabAllocator<'a> {
     ///  * Panics on OOM (should return error!)
     #[allow(unused_variables)]
     fn refill_slab<'b>(&'b mut self, amount: usize) {
-
       match self.pager.allocate_slabpage() {
           Some(new_head) => {
               self.insert_slab(new_head);
@@ -385,8 +286,8 @@ impl<'a> SlabAllocator<'a> {
     }
 
     /// Add a new SlabPage.
-    pub fn insert_slab<'b>(&'b mut self, new_head: &'a mut SlabPage<'a>) {
-        self.slabs.insert_front(new_head);
+    pub fn insert_slab<'b>(&'b mut self, new_head: &'static mut SlabPage) {
+      self.slabs.insert(0, Some(new_head));
     }
 
     /// Tries to allocate a block of memory with respect to the `alignment`.
@@ -398,12 +299,30 @@ impl<'a> SlabAllocator<'a> {
 
         for (_, slab_page) in self.slabs.iter_mut().enumerate() {
 
-            match slab_page.allocate(size, alignment) {
-                None => { continue },
+            /*
+            let rvalue:Option<*mut u8> = slab_page.take().map(|page| {
+              match page.allocate(size, alignment) {
+                None => { return None; },
                 Some(obj) => {
                     return Some(obj as *mut u8);
                 }
-            };
+              };
+            });
+
+            return rvalue;
+            */
+
+            match *slab_page {
+              None => { panic!("Invalid slab page"); },
+              Some(ref mut sp) => {
+                match sp.allocate(size, alignment) {
+                  None => { continue },
+                  Some(obj) => {
+                    return Some(obj as *mut u8);
+                  },
+                }                
+              }
+            }
         }
 
         None
@@ -436,14 +355,35 @@ impl<'a> SlabAllocator<'a> {
     pub fn deallocate<'b>(&'b mut self, ptr: *mut u8) {
         let page = (ptr as usize) & !(BASE_PAGE_SIZE-1) as usize;
         let mut slab_page = unsafe {
-            mem::transmute::<VAddr, &'a mut SlabPage>(page)
+            mem::transmute::<VAddr, &'static mut SlabPage>(page)
         };
 
         slab_page.deallocate(ptr, self.size);
 
         if slab_page.is_empty() {
-            self.slabs.remove_from_list(slab_page);
-            self.pager.release_slabpage(slab_page);
+          let mut target:isize = -1;
+
+          for i in 0..self.slabs.len() {
+            let ref candidate_page_option = self.slabs[i];
+
+            candidate_page_option.as_ref().map(|candidate| {
+
+              if slab_page.id == candidate.id {
+                target = i as isize;
+              }
+            });
+
+            if target != -1 {
+              break;
+            }
+          }
+
+          if target == -1 {
+            panic!("Failed to find slab page to evict");
+          }
+
+          self.slabs.remove(target as usize);
+          self.pager.release_slabpage(slab_page);
         }
     }
 
@@ -452,35 +392,31 @@ impl<'a> SlabAllocator<'a> {
 /// Holds allocated data.
 ///
 /// Objects life within data and meta tracks the objects status.
-/// Currently, `bitfield`, `next` and `prev` pointer should fit inside
-/// a single cache-line.
-pub struct SlabPage<'a> {
+/// Currently, `bitfield` and `id`
+pub struct SlabPage {
     /// Holds memory objects.
     data: [u8; 4096 - 64],
-
-    /// Next element in list (used by `SlabList`).
-    next: Rawlink<SlabPage<'a>>,
-    prev: Rawlink<SlabPage<'a>>,
 
     /// A bit-field to track free/allocated memory within `data`.
     ///
     /// # Notes
     /// * With only 48 bits we do waste some space at the end of every page for 8 bytes allocations.
     ///   but 12 bytes on-wards is okay.
-    bitfield: [u8; CACHE_LINE_SIZE - 16]
+    bitfield: [u8; CACHE_LINE_SIZE - 16],
+    id: usize,
 }
 
-unsafe impl<'a> Send for SlabPage<'a> { }
-unsafe impl<'a> Sync for SlabPage<'a> { }
+unsafe impl Send for SlabPage { }
+unsafe impl Sync for SlabPage { }
 
-impl<'a> fmt::Debug for SlabPage<'a> {
+impl fmt::Debug for SlabPage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "SlabPage")
+        write!(f, "SlabPage {}", self.id)
     }
 
 }
 
-impl<'a> SlabPage<'a> {
+impl SlabPage {
 
     /// Tries to find a free block of memory that satisfies `alignment` requirement.
     ///
@@ -572,45 +508,3 @@ impl<'a> SlabPage<'a> {
 
 }
 
-/// Rawlink is a type like Option<T> but for holding a raw pointer
-struct Rawlink<T> {
-    p: *mut T,
-}
-
-impl<T> Rawlink<T> {
-
-    /// Like Option::None for Rawlink
-    fn none() -> Rawlink<T> {
-        Rawlink{ p: ptr::null_mut() }
-    }
-
-    /// Like Option::Some for Rawlink
-    fn some(n: &mut T) -> Rawlink<T> {
-        Rawlink{p: n}
-    }
-
-    /// Convert the `Rawlink` into an Option value
-    ///
-    /// **unsafe** because:
-    ///
-    /// - Dereference of raw pointer.
-    /// - Returns reference of arbitrary lifetime.
-    unsafe fn resolve<'a>(&self) -> Option<&'a T> {
-        self.p.as_ref()
-    }
-
-    /// Convert the `Rawlink` into an Option value
-    ///
-    /// **unsafe** because:
-    ///
-    /// - Dereference of raw pointer.
-    /// - Returns reference of arbitrary lifetime.
-    unsafe fn resolve_mut<'a>(&mut self) -> Option<&'a mut T> {
-        self.p.as_mut()
-    }
-
-    /// Return the `Rawlink` and replace with `Rawlink::none()`
-    fn take(&mut self) -> Rawlink<T> {
-        mem::replace(self, Rawlink::none())
-    }
-}
