@@ -1,4 +1,4 @@
-#![feature(alloc, allocator, box_syntax, macro_reexport, lang_items, const_fn, unique, asm, collections, trace_macros, stmt_expr_attributes)]
+#![feature(alloc, allocator, box_syntax, macro_reexport, lang_items, const_fn, ptr_as_ref, unique, asm, collections, trace_macros, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]

@@ -42,6 +42,7 @@ pub fn init() {
 
 pub fn allocate(size: usize, align: usize) -> *mut u8 {
   // Use the static zone allocator to find this.
+  zone_allocator().allocate(size, align).expect("OOM")
 }
 
 pub struct AreaFrameSlabPageProvider {}
@@ -418,11 +419,7 @@ impl<'a> SlabAllocator<'a> {
         let size = self.size;
         println!("Allocating {}", size);
 
-        if self.size > (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE) {
-          panic!("{} ({}) > {}", self.size, alignment, BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE);
-        }
-
-        assert!(self.size < (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
+        assert!(self.size <= (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
 
         match self.allocate_in_existing_slabs(alignment) {
             None => {

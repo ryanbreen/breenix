@@ -87,6 +87,8 @@ pub fn init(boot_info: &BootInformation) {
     // Same for the active page table
     ACTIVE_TABLE_PTR = Some(&mut *Box::into_raw(Box::new(active_table)));
 
+    slab_allocator::init();
+
     tiered_allocator::init(slab_allocator::allocate);
   }
   /*
