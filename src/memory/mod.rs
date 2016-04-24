@@ -14,7 +14,6 @@ use alloc::boxed::Box;
 
 use tiered_allocator;
 
-use self::frame_allocator::FrameAllocator;
 use self::paging::{ActivePageTable,Page};
 
 pub const PAGE_SIZE: usize = 4096;

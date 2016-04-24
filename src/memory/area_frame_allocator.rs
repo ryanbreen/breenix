@@ -1,7 +1,5 @@
 use memory::Frame;
 use memory::frame_allocator::FrameAllocator;
-use memory::paging;
-use memory::paging::{Page,ActivePageTable};
 use multiboot2::{MemoryAreaIter, MemoryArea};
 
 pub struct AreaFrameAllocator {

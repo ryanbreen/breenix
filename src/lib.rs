@@ -95,7 +95,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   debug!();
 
+  println!("allocated frames: {}", memory::frame_allocator().allocated_frame_count());
+
   let scheduler = task::scheduler::Scheduler::new();
+  println!("allocated frames: {}", memory::frame_allocator().allocated_frame_count());
   scheduler.idle();
 }
 

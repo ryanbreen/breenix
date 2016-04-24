@@ -88,6 +88,7 @@ impl Buffer {
     }
   }
 
+  #[allow(dead_code)]
   pub fn clear(&mut self) {
     for _ in 0..BUFFER_HEIGHT {
       self.new_line();

@@ -1,13 +1,12 @@
+#![allow(dead_code)]
+
 use alloc::boxed::Box;
 
 use core::fmt;
 use core::mem;
 use core::ptr;
 
-use spin::Mutex;
-
 use memory::{Frame,frame_allocator,page_table};
-use memory::area_frame_allocator::AreaFrameAllocator;
 use memory::frame_allocator::FrameAllocator;
 use memory::paging;
 use memory::paging::Page;
@@ -50,10 +49,8 @@ pub struct AreaFrameSlabPageProvider {}
 impl<'a> AreaFrameSlabPageProvider {
   fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>> {
     
-    println!("Time to get a frame");
     let allocator = frame_allocator();
     let frame:Option<Frame> = allocator.allocate_frame();
-    println!("Got a frame? {}", frame.is_some());
     match frame {
       None => return None,
       Some(f) => {
@@ -63,12 +60,12 @@ impl<'a> AreaFrameSlabPageProvider {
         page_table().map(page, paging::WRITABLE, allocator);
 
         let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
-        println!("{:?}", slab_page);
         return Some(slab_page);
       }
     }
   }
 
+  #[allow(unused_variables)]
   fn release_slabpage(&mut self, page: &'a mut SlabPage<'a>) {
     // TODO: Let's maybe release memory at some point.
   }
@@ -196,6 +193,7 @@ impl<'a> ZoneAllocator<'a>{
     ///  * `old_size` - Size of the block.
     ///  * `align` - Alignment of the block.
     ///
+    #[allow(unused_variables)]
     pub fn deallocate<'b>(&'b mut self, ptr: *mut u8, old_size: usize, align: usize) {
         match self.try_acquire_slab(old_size) {
             Some(idx) => self.slabs[idx].deallocate(ptr),
@@ -375,6 +373,7 @@ impl<'a> SlabAllocator<'a> {
     /// # TODO
     ///  * Amount is currently ignored.
     ///  * Panics on OOM (should return error!)
+    #[allow(unused_variables)]
     fn refill_slab<'b>(&'b mut self, amount: usize) {
 
       match self.pager.allocate_slabpage() {
@@ -397,7 +396,7 @@ impl<'a> SlabAllocator<'a> {
 
         let size = self.size;
 
-        for (idx, slab_page) in self.slabs.iter_mut().enumerate() {
+        for (_, slab_page) in self.slabs.iter_mut().enumerate() {
 
             match slab_page.allocate(size, alignment) {
                 None => { continue },
