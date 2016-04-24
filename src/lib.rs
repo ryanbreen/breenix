@@ -1,4 +1,4 @@
-#![feature(alloc, allocator, box_syntax, macro_reexport, lang_items, const_fn, ptr_as_ref, unique, asm, collections, trace_macros, stmt_expr_attributes)]
+#![feature(alloc, allocator, box_syntax, macro_reexport, lang_items, const_fn, unique, asm, collections, trace_macros, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
@@ -93,12 +93,12 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   println!("Time is {}", io::timer::real_time().secs);
 
-  debug!();
-
   println!("allocated frames: {}", memory::frame_allocator().allocated_frame_count());
 
   let scheduler = task::scheduler::Scheduler::new();
   println!("allocated frames: {}", memory::frame_allocator().allocated_frame_count());
+
+  println!("{:?}", memory::slab_allocator::zone_allocator());
   scheduler.idle();
 }
 

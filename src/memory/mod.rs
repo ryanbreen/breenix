@@ -6,7 +6,7 @@ use self::paging::PhysicalAddress;
 mod area_frame_allocator;
 mod frame_allocator;
 mod paging;
-mod slab_allocator;
+pub mod slab_allocator;
 
 use multiboot2::BootInformation;
 

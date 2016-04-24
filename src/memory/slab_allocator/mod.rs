@@ -5,7 +5,6 @@ use collections::vec::Vec;
 
 use core::fmt;
 use core::mem;
-use core::ptr;
 
 use memory::{Frame,frame_allocator,page_table};
 use memory::frame_allocator::FrameAllocator;
@@ -87,6 +86,12 @@ impl AreaFrameSlabPageProvider {
 pub struct ZoneAllocator {
     pager: AreaFrameSlabPageProvider,
     slabs: [SlabAllocator; MAX_SLABS],
+}
+
+impl fmt::Debug for ZoneAllocator {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ZoneAllocator slab_count: {}", self.slabs.len())
+    }
 }
 
 impl ZoneAllocator{
@@ -413,7 +418,6 @@ impl fmt::Debug for SlabPage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "SlabPage {}", self.id)
     }
-
 }
 
 impl SlabPage {
