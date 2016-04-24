@@ -1,7 +1,16 @@
+use alloc::boxed::Box;
 
 use core::fmt;
 use core::mem;
 use core::ptr;
+
+use spin::Mutex;
+
+use memory::{Frame,frame_allocator,page_table};
+use memory::area_frame_allocator::AreaFrameAllocator;
+use memory::frame_allocator::FrameAllocator;
+use memory::paging;
+use memory::paging::Page;
 
 #[cfg(target_arch="x86_64")]
 const CACHE_LINE_SIZE: usize = 64;
@@ -14,14 +23,54 @@ const MAX_SLABS: usize = 10;
 #[cfg(target_arch="x86_64")]
 type VAddr = usize;
 
-/// The memory backing as used by the SlabAllocator.
-///
-/// A client that wants to use the Zone/Slab allocators
-/// has to provide this interface and stick an implementation of it
-/// into every SlabAllocator.
-pub trait SlabPageProvider<'a> {
-    fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>>;
-    fn release_slabpage(&mut self, &'a mut SlabPage<'a>);
+static mut ZONE_ALLOCATOR_PTR:Option<&'static mut ZoneAllocator<'static>> = None;
+
+pub fn zone_allocator() -> &'static mut ZoneAllocator<'static> {
+  unsafe {
+    match ZONE_ALLOCATOR_PTR {
+      Some(ref mut za) => za,
+      None => { panic!("zone_allocator called before init"); },
+    }
+  }
+}
+
+pub fn init() {
+  unsafe {
+    ZONE_ALLOCATOR_PTR = Some(&mut *Box::into_raw(Box::new(ZoneAllocator::new())));
+  }
+}
+
+pub fn allocate(size: usize, align: usize) -> *mut u8 {
+  // Use the static zone allocator to find this.
+}
+
+pub struct AreaFrameSlabPageProvider {}
+
+impl<'a> AreaFrameSlabPageProvider {
+  fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>> {
+    
+    println!("Time to get a frame");
+    let allocator = frame_allocator();
+    let frame:Option<Frame> = allocator.allocate_frame();
+    println!("Got a frame? {}", frame.is_some());
+    match frame {
+      None => return None,
+      Some(f) => {
+        use core::mem::transmute;
+
+        let page = Page::containing_address(f.start_address());
+        page_table().map(page, paging::WRITABLE, allocator);
+
+        let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
+        println!("{:?}", slab_page);
+        return Some(slab_page);
+      }
+    }
+  }
+
+  fn release_slabpage(&mut self, page: &'a mut SlabPage<'a>) {
+    // TODO: Let's maybe release memory at some point.
+  }
 }
 
 /// A zone allocator.
@@ -30,80 +79,28 @@ pub trait SlabPageProvider<'a> {
 /// allocation requests for many different (MAX_SLABS) object sizes
 /// (by selecting the right slab allocator).
 pub struct ZoneAllocator<'a> {
-    pub pager: Option<&'a mut SlabPageProvider<'a>>,
+    pager: AreaFrameSlabPageProvider,
     slabs: [SlabAllocator<'a>; MAX_SLABS],
 }
 
 impl<'a> ZoneAllocator<'a>{
 
-    pub fn new(pager: Option<&'a mut SlabPageProvider<'a>>) -> ZoneAllocator<'a> {
-      let mut za = ZoneAllocator{
-        pager: pager,
+    pub fn new() -> ZoneAllocator<'a> {
+      ZoneAllocator{
+        pager: AreaFrameSlabPageProvider{},
         slabs: [
-            SlabAllocator::new(8, None),
-            SlabAllocator::new(16, None),
-            SlabAllocator::new(32, None),
-            SlabAllocator::new(64, None),
-            SlabAllocator::new(128, None),
-            SlabAllocator::new(256, None),
-            SlabAllocator::new(512, None),
-            SlabAllocator::new(1024, None),
-            SlabAllocator::new(2048, None),
-            SlabAllocator::new(4032, None),
-        ],
-      };
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[0];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[1];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[2];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[3];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[4];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[5];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[6];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[7];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[8];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za.pager.take().map(|p| {
-        let ref mut slab_alloc = za.slabs[9];
-        slab_alloc.set_pager(Some(p));
-      });
-
-      za
+            SlabAllocator::new(8),
+            SlabAllocator::new(16),
+            SlabAllocator::new(32),
+            SlabAllocator::new(64),
+            SlabAllocator::new(128),
+            SlabAllocator::new(256),
+            SlabAllocator::new(512),
+            SlabAllocator::new(1024),
+            SlabAllocator::new(2048),
+            SlabAllocator::new(4032),
+        ]
+      }
     }
 
     /// Return maximum size an object of size `current_size` can use.
@@ -161,15 +158,12 @@ impl<'a> ZoneAllocator<'a>{
     /// # TODO
     ///  * Panics in case we're OOM (should probably return error).
     fn refill_slab_allocator<'b>(&'b mut self, idx: usize) {
-        self.pager.take().map(|p| {
-            match p.allocate_slabpage() {
-                Some(new_head) => {
-                    self.slabs[idx].insert_slab(new_head);
-                    self.pager = Some(p);
-                },
-                None => panic!("OOM")
-            }
-        });
+      match self.pager.allocate_slabpage() {
+          Some(new_head) => {
+              self.slabs[idx].insert_slab(new_head);
+          },
+          None => panic!("OOM")
+      }
     }
 
     /// Allocate a pointer to a block of memory of size `size` with alignment `align`.
@@ -354,7 +348,7 @@ pub struct SlabAllocator<'a> {
     /// Allocation size.
     size: usize,
     /// Memory backing store, to request new SlabPages.
-    pager: Option<&'a mut SlabPageProvider<'a>>,
+    pager: AreaFrameSlabPageProvider,
     /// List of SlabPages.
     slabs: SlabList<'a>,
 }
@@ -362,16 +356,12 @@ pub struct SlabAllocator<'a> {
 impl<'a> SlabAllocator<'a> {
 
     /// Create a new SlabAllocator.
-    pub const fn new(size: usize, pager: Option<&'a mut SlabPageProvider<'a>>) -> SlabAllocator<'a> {
+    pub const fn new(size: usize) -> SlabAllocator<'a> {
         SlabAllocator{
             size: size,
-            pager: pager,
+            pager: AreaFrameSlabPageProvider{},
             slabs: SlabList::new(),
         }
-    }
-
-    pub fn set_pager(&mut self, pager: Option<&'a mut SlabPageProvider<'a>>) {
-      self.pager = pager;
     }
 
     /// Return object size of this allocator.
@@ -386,15 +376,12 @@ impl<'a> SlabAllocator<'a> {
     ///  * Panics on OOM (should return error!)
     fn refill_slab<'b>(&'b mut self, amount: usize) {
 
-        self.pager.take().map(|p| {
-            match p.allocate_slabpage() {
-                Some(new_head) => {
-                    self.insert_slab(new_head);
-                    self.pager = Some(p);
-                },
-                None => panic!("OOM"),
-            }
-        });
+      match self.pager.allocate_slabpage() {
+          Some(new_head) => {
+              self.insert_slab(new_head);
+          },
+          None => panic!("OOM"),
+      }
     }
 
     /// Add a new SlabPage.
@@ -439,13 +426,8 @@ impl<'a> SlabAllocator<'a> {
 
         match self.allocate_in_existing_slabs(alignment) {
             None => {
-                if self.pager.is_some() {
-                    self.refill_slab(1);
-                    return self.allocate(alignment);
-                }
-                else {
-                    return None;
-                }
+                self.refill_slab(1);
+                return self.allocate(alignment);
             },
             Some(obj) => return Some(obj),
         }
@@ -465,9 +447,7 @@ impl<'a> SlabAllocator<'a> {
 
         if slab_page.is_empty() {
             self.slabs.remove_from_list(slab_page);
-            self.pager.as_mut().map(move |p| {
-                p.release_slabpage(slab_page);
-            });
+            self.pager.release_slabpage(slab_page);
         }
     }
 

@@ -12,6 +12,8 @@ use multiboot2::BootInformation;
 
 use alloc::boxed::Box;
 
+use tiered_allocator;
+
 use self::frame_allocator::FrameAllocator;
 use self::paging::{ActivePageTable,Page};
 
@@ -85,7 +87,7 @@ pub fn init(boot_info: &BootInformation) {
     // Same for the active page table
     ACTIVE_TABLE_PTR = Some(&mut *Box::into_raw(Box::new(active_table)));
 
-    tiered_allocator::init(slab_allocator.allocate);
+    tiered_allocator::init(slab_allocator::allocate);
   }
   /*
 

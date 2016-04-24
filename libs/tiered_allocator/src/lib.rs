@@ -83,29 +83,14 @@ impl BumpAllocator {
 static BUMP_ALLOCATOR: Mutex<BumpAllocator> = Mutex::new(
     BumpAllocator::new(HEAP_START, HEAP_SIZE));
 
-static SLAB_ALLOCATE: Option<fn(usize, usize) -> *mut u8> = None;
-static SLAB_DEALLOCATE: Option<fn()> = None;
+static mut SLAB_ALLOCATE: Option<fn(usize, usize) -> *mut u8> = None;
+static mut SLAB_DEALLOCATE: Option<fn()> = None;
 
-/*
-pub fn init(allocator: Option<&'static mut S>) {
+pub fn init(allocate: fn(usize, usize) -> *mut u8) {
   unsafe {
-    //assert!(ZONE_ALLOCATOR.is_none());
-    assert!(allocator.is_some());
-
-    match ZONE_ALLOCATOR {
-      None => {
-        let zone_alloc:* mut ZoneAllocator = &mut ZoneAllocator::new(Some(&mut *allocator.unwrap())) as *mut ZoneAllocator;
-        let mut alloc:&'static mut ZoneAllocator = &mut *(zone_alloc);
-        //ZONE_ALLOCATOR = Some(alloc);
-//        ZONE_ALLOCATOR = Some(&mut *Box::into_raw(Box::new(ZoneAllocator::new(allocator))));
-      }
-      Some(_) => {
-        panic!("init called twice");
-      }
-    }
+    SLAB_ALLOCATE = Some(allocate);
   }
 }
-*/
 
 #[no_mangle]
 pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {

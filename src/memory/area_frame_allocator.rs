@@ -2,15 +2,7 @@ use memory::Frame;
 use memory::frame_allocator::FrameAllocator;
 use memory::paging;
 use memory::paging::{Page,ActivePageTable};
-use memory::slab_allocator::{SlabPage,SlabPageProvider};
 use multiboot2::{MemoryAreaIter, MemoryArea};
-
-pub struct AreaFrameSlabPageProvider {
-  allocator: Option<&'static mut AreaFrameAllocator>,
-  active_page_table: ActivePageTable,
-}
-
-unsafe impl Sync for AreaFrameSlabPageProvider {}
 
 pub struct AreaFrameAllocator {
   next_free_frame: Frame,
@@ -61,45 +53,6 @@ impl AreaFrameAllocator {
 
   pub fn allocated_frame_count(&self) -> usize {
     self.allocated_frame_count
-  }
-}
-
-impl AreaFrameSlabPageProvider {
-  pub fn new(allocator: Option<&'static mut AreaFrameAllocator>, active_page_table: ActivePageTable) -> AreaFrameSlabPageProvider {
-    AreaFrameSlabPageProvider {
-      allocator: allocator,
-      active_page_table: active_page_table,
-    }
-  }
-}
-
-impl<'a> SlabPageProvider<'a> for AreaFrameSlabPageProvider {
-  fn allocate_slabpage(&mut self) -> Option<&'a mut SlabPage<'a>> {
-    match self.allocator {
-      None => panic!("Invalid allocator"),
-      Some(ref mut allocator) => {
-        println!("Time to get a frame");
-        let frame:Option<Frame> = allocator.allocate_frame();
-        println!("Got a frame? {}", frame.is_some());
-        match frame {
-          None => return None,
-          Some(f) => {
-            use core::mem::transmute;
-
-            let page = Page::containing_address(f.start_address());
-            self.active_page_table.map(page, paging::WRITABLE, *allocator);
-
-            let mut slab_page: &'a mut SlabPage = unsafe { transmute(f.start_address() as usize) };
-            println!("{:?}", slab_page);
-            return Some(slab_page);
-          }
-        }
-      }
-    }
-  }
-
-  fn release_slabpage(&mut self, page: &'a mut SlabPage<'a>) {
-
   }
 }
 
