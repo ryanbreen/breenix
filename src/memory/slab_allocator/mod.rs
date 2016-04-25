@@ -264,15 +264,11 @@ impl fmt::Debug for SlabAllocator {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}\n", self.size, self.slabs.len());
     for idx in 0..self.slabs.len() {
-
-      let mut p = || {
-        match self.slabs[idx] {
-          None => panic!("Invalid slab"),
-          Some(s) => write!(f, "{:?}", s),
-        };
+      let slabs:&[Option<&'static mut SlabPage>] = self.slabs.as_slice();
+      match slabs[idx] {
+        None => panic!("Invalid slab"),
+        Some(_) => write!(f, "      idx {} is in use\n", idx),
       };
-      p();
-      
     }
     Ok(())
   }
