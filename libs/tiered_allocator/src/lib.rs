@@ -16,19 +16,30 @@
 //!
 #![feature(allocator)]
 #![allow(unused_features, dead_code, unused_variables)]
-#![feature(const_fn, prelude_import, test, raw, ptr_as_ref, core_prelude, core_slice_ext, libc)]
+#![feature(const_fn, prelude_import, test, raw, ptr_as_ref, core_prelude, core_slice_ext, libc, unique)]
 #![no_std]
 #![allocator]
 
-use core::mem;
-use core::ptr;
-use core::fmt;
-
 extern crate spin;
+
+#[macro_use]
+extern crate once;
+
+use heap::Heap;
+
 use spin::Mutex;
+
+mod heap;
+mod hole;
 
 pub const HEAP_START: usize = 0o_000_001_000_000_0000;
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
+
+lazy_static! {
+    static ref HEAP: Mutex<Heap> = Mutex::new(unsafe {
+        Heap::new(HEAP_START, HEAP_SIZE)
+    });
+}
 
 /// Align downwards. Returns the greatest x with alignment `align`
 /// so that x <= addr. The alignment must be a power of 2.
@@ -47,41 +58,6 @@ pub fn align_down(addr: usize, align: usize) -> usize {
 pub fn align_up(addr: usize, align: usize) -> usize {
     align_down(addr + align - 1, align)
 }
-
-#[derive(Debug)]
-struct BumpAllocator {
-    heap_start: usize,
-    heap_size: usize,
-    next: usize,
-}
-
-impl BumpAllocator {
-    /// Create a new allocator, which uses the memory in the
-    /// range [heap_start, heap_start + heap_size).
-    const fn new(heap_start: usize, heap_size: usize) -> BumpAllocator {
-        BumpAllocator {
-            heap_start: heap_start,
-            heap_size: heap_size,
-            next: heap_start,
-        }
-    }
-
-    /// Allocates a block of memory with the given size and alignment.
-    fn allocate(&mut self, size: usize, align: usize) -> Option<*mut u8> {
-        let alloc_start = align_up(self.next, align);
-        let alloc_end = alloc_start + size;
-
-        if alloc_end <= self.heap_start + self.heap_size {
-            self.next = alloc_end;
-            Some(alloc_start as *mut u8)
-        } else {
-            None
-        }
-    }
-}
-
-static BUMP_ALLOCATOR: Mutex<BumpAllocator> = Mutex::new(
-    BumpAllocator::new(HEAP_START, HEAP_SIZE));
 
 static mut SLAB_ALLOCATE: Option<fn(usize, usize) -> *mut u8> = None;
 static mut SLAB_DEALLOCATE: Option<fn()> = None;
@@ -104,7 +80,7 @@ pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
 }
 
 fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
-  BUMP_ALLOCATOR.lock().allocate(size, align).expect("out of memory")
+  HEAP.lock().allocate_first_fit(size, align).expect("out of memory")
 }
 
 fn slab_allocate(size: usize, align: usize) -> *mut u8 {
