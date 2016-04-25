@@ -96,10 +96,20 @@ pub fn init(allocate: fn(usize, usize) -> *mut u8) {
 pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
   unsafe {
     if SLAB_ALLOCATE.is_none() {
-      BUMP_ALLOCATOR.lock().allocate(size, align).expect("out of memory")
+      bootstrap_allocate(size, align)
     } else {
-      return SLAB_ALLOCATE.expect("invalid allocate")(size, align);
+      slab_allocate(size, align)
     }
+  }
+}
+
+fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
+  BUMP_ALLOCATOR.lock().allocate(size, align).expect("out of memory")
+}
+
+fn slab_allocate(size: usize, align: usize) -> *mut u8 {
+  unsafe {
+    SLAB_ALLOCATE.expect("invalid allocate")(size, align)
   }
 }
 
@@ -129,8 +139,16 @@ pub extern fn __rust_reallocate(ptr: *mut u8, size: usize, new_size: usize,
   //     c66d2380a810c9a2b3dbb4f93a830b101ee49cc2/
   //     src/liballoc_system/lib.rs#L98-L101
 
-  let new_ptr = __rust_allocate(new_size, align);
-  unsafe { ptr::copy(ptr, new_ptr, cmp::min(size, new_size)) };
-  __rust_deallocate(ptr, size, align);
-  new_ptr
+  unsafe {
+    if ptr as usize >= HEAP_START && ptr as usize <= HEAP_START + (HEAP_SIZE * 8) {
+      let new_ptr = bootstrap_allocate(new_size, align);
+      ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
+      new_ptr
+    } else {
+      let new_ptr = __rust_allocate(new_size, align);
+      ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
+      __rust_deallocate(ptr, size, align);
+      new_ptr
+    }
+  }
 }

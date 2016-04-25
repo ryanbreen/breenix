@@ -60,8 +60,6 @@ impl AreaFrameSlabPageProvider {
         page_table().map(page, paging::WRITABLE, allocator);
 
         let mut slab_page: &'static mut SlabPage = unsafe { transmute(f.start_address() as usize) };
-        slab_page.id = allocator.allocated_frame_count();
-
         return Some(slab_page);
       }
     }
@@ -265,12 +263,14 @@ impl fmt::Debug for SlabAllocator {
   #[allow(unused_must_use)]
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}\n", self.size, self.slabs.len());
-
+/*
     for idx in 0..self.slabs.len() {
-      let ref slab = self.slabs[idx];
-      write!(f, "{:?}\n", slab);
+      let ref mut slab = self.slabs[idx];
+      slab.take().map(|s| {
+        write!(f, "{:?}\n", s);
+      });
     }
-
+*/
     Ok(())
   }
 }
@@ -282,7 +282,7 @@ impl SlabAllocator {
         SlabAllocator{
             size: size,
             pager: AreaFrameSlabPageProvider{},
-            slabs: Vec::with_capacity(1000),
+            slabs: Vec::with_capacity(10),
         }
     }
 
@@ -376,7 +376,7 @@ impl SlabAllocator {
 
             candidate_page_option.as_ref().map(|candidate| {
 
-              if slab_page.id == candidate.id {
+              if &slab_page.data as *const _ as u64 == &candidate.data as *const _ as u64 {
                 target = i as isize;
               }
             });
@@ -411,7 +411,6 @@ pub struct SlabPage {
     /// * With only 48 bits we do waste some space at the end of every page for 8 bytes allocations.
     ///   but 12 bytes on-wards is okay.
     bitfield: [u8; CACHE_LINE_SIZE - 16],
-    id: usize,
 }
 
 unsafe impl Send for SlabPage { }
@@ -419,7 +418,7 @@ unsafe impl Sync for SlabPage { }
 
 impl fmt::Debug for SlabPage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "      {}", self.id)
+        write!(f, "      {:?}", self.is_allocated(0))
     }
 }
 
@@ -459,7 +458,7 @@ impl SlabPage {
     /// # Notes
     /// In case `idx` is 3 and allocation size of slab is
     /// 8. The corresponding object would start at &data + 3 * 8.
-    fn is_allocated(&mut self, idx: usize) -> bool {
+    fn is_allocated(&self, idx: usize) -> bool {
         let base_idx = idx / 8;
         let bit_idx = idx % 8;
 
