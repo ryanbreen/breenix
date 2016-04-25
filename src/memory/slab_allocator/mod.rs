@@ -263,14 +263,17 @@ impl fmt::Debug for SlabAllocator {
   #[allow(unused_must_use)]
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}\n", self.size, self.slabs.len());
-/*
     for idx in 0..self.slabs.len() {
-      let ref mut slab = self.slabs[idx];
-      slab.take().map(|s| {
-        write!(f, "{:?}\n", s);
-      });
+
+      let mut p = || {
+        match self.slabs[idx] {
+          None => panic!("Invalid slab"),
+          Some(s) => write!(f, "{:?}", s),
+        };
+      };
+      p();
+      
     }
-*/
     Ok(())
   }
 }
