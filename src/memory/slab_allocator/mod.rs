@@ -88,10 +88,8 @@ impl fmt::Debug for ZoneAllocator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "ZoneAllocator slab_count: {}\n", self.slabs.len());
 
-        let mut idx = 0;
         for slab_allocator in self.slabs.into_iter() {
-          write!(f, "SlabAllocator {} (size per slab: {}, total slabs: {})\n", idx, slab_allocator.size, slab_allocator.slabs.len());
-          idx += 1;
+          write!(f, "{:?}", slab_allocator);
         }
 
         Ok(())
@@ -263,6 +261,20 @@ pub struct SlabAllocator {
     slabs: Vec<Option<&'static mut SlabPage>>,
 }
 
+impl fmt::Debug for SlabAllocator {
+  #[allow(unused_must_use)]
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}\n", self.size, self.slabs.len());
+
+    for idx in 0..self.slabs.len() {
+      let ref slab = self.slabs[idx];
+      write!(f, "{:?}\n", slab);
+    }
+
+    Ok(())
+  }
+}
+
 impl SlabAllocator {
 
     /// Create a new SlabAllocator.
@@ -307,19 +319,6 @@ impl SlabAllocator {
         let size = self.size;
 
         for (_, slab_page) in self.slabs.iter_mut().enumerate() {
-
-            /*
-            let rvalue:Option<*mut u8> = slab_page.take().map(|page| {
-              match page.allocate(size, alignment) {
-                None => { return None; },
-                Some(obj) => {
-                    return Some(obj as *mut u8);
-                }
-              };
-            });
-
-            return rvalue;
-            */
 
             match *slab_page {
               None => { panic!("Invalid slab page"); },
@@ -420,7 +419,7 @@ unsafe impl Sync for SlabPage { }
 
 impl fmt::Debug for SlabPage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "SlabPage {}", self.id)
+        write!(f, "      {}", self.id)
     }
 }
 
@@ -437,9 +436,9 @@ impl SlabPage {
                 let idx: usize = base_idx * 8 + bit_idx;
                 let offset = idx * size;
 
-                let offset_iniside_data_area = offset <=
+                let offset_inside_data_area = offset <=
                     (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE as usize - size);
-                if !offset_iniside_data_area {
+                if !offset_inside_data_area {
                     return None;
                 }
 
