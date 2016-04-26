@@ -124,10 +124,10 @@ impl ZoneAllocator{
             SlabAllocator::new(1024),
             SlabAllocator::new(2048),
             SlabAllocator::new(4032),
-            SlabAllocator::new(8128),
-            SlabAllocator::new(16320),
-            SlabAllocator::new(65472),
-            SlabAllocator::new(131008),
+            SlabAllocator::new(8192),
+            SlabAllocator::new(16384),
+            SlabAllocator::new(65536),
+            SlabAllocator::new(131072),
         ]
       }
     }
@@ -147,10 +147,10 @@ impl ZoneAllocator{
             513...1024 => Some(1024),
             1025...2048 => Some(2048),
             2049...4032 => Some(4032),
-            4033...8128 => Some(8128),
-            8129...16320 => Some(16320),
-            16321...65472 => Some(65472),
-            65473...131008 => Some(131008),
+            4033...8192 => Some(8192),
+            8193...16384 => Some(16384),
+            16385...65536 => Some(65536),
+            65537...131072 => Some(131072),
             _ => None,
         }
     }
@@ -168,10 +168,10 @@ impl ZoneAllocator{
             513...1024 => Some(7),
             1025...2048 => Some(8),
             2049...4032 => Some(9),
-            4033...8128 => Some(10),
-            8129...16320 => Some(11),
-            16321...65472 => Some(12),
-            65473...131008 => Some(13),
+            4033...8192 => Some(10),
+            8192...16384 => Some(11),
+            16384...65536 => Some(12),
+            65536...131072 => Some(13),
             _ => None,
         }
     }
@@ -302,7 +302,7 @@ impl fmt::Debug for SlabAllocator {
       let slabs:&[Option<&'static mut SlabPage>] = self.slabs.as_slice();
       match slabs[idx] {
         None => panic!("Invalid slab"),
-        Some(_) => write!(f, "      idx {} is in use\n", idx),
+        Some(ref s) => write!(f, "      {} {:?}\n", idx, s),
       };
     }
     Ok(())
@@ -456,7 +456,13 @@ unsafe impl Sync for SlabPage { }
 
 impl fmt::Debug for SlabPage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "      {:?}", self.is_allocated(0))
+      for i in 0..8  {
+        if self.is_allocated(i) {
+          write!(f, "      {} {}", i, self.is_allocated(i));
+        }
+      }
+
+      Ok(())
     }
 }
 
@@ -468,12 +474,17 @@ impl SlabPage {
     /// * We pass size here to be able to calculate the resulting address within `data`.
     fn first_fit(&self, size: usize, alignment: usize) -> Option<(usize, usize)> {
         assert!(alignment.is_power_of_two());
+
+        if size > 4032 {
+          // If this is a jumbo slab page, the bitfield doesn't help us.  Assume unused for now.
+          let addr: usize = ((self as *const SlabPage) as usize);
+          return Some((0, addr));
+        }
+
         for (base_idx, b) in self.bitfield.iter().enumerate() {
             for bit_idx in 0..8 {
                 let idx: usize = base_idx * 8 + bit_idx;
                 let offset = idx * size;
-
-                //println!("\n{}\n{}", BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE as usize, size);
 
                 let offset_inside_data_area = offset <=
                     (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE as usize - size);
