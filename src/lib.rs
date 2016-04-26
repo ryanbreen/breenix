@@ -98,17 +98,15 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   let scheduler = task::scheduler::Scheduler::new();
   println!("allocated frames: {}", memory::frame_allocator().allocated_frame_count());
 
-  println!("{:?}", memory::slab_allocator::zone_allocator());
+  //println!("{:?}", memory::slab_allocator::zone_allocator());
 
-  println!("{:?}", memory::frame_allocator());
+  //println!("{:?}", memory::frame_allocator());
 
   // TODO: this will work once you have the ability to allocate > a page at a time.
-  /*
-  let vec = vec!();
-  for _ in 0..1000 {
+  let mut vec = vec!();
+  for _ in 0..10000 {
     vec.push("happy days");
   }
-  */
 
   scheduler.idle();
 }

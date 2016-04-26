@@ -80,7 +80,7 @@ pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
 }
 
 fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
-  HEAP.lock().allocate_first_fit(size, align).expect("out of memory")
+  HEAP.lock().allocate_first_fit(size, align).expect("out of bootstrap memory")
 }
 
 fn slab_allocate(size: usize, align: usize) -> *mut u8 {

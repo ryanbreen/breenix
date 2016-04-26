@@ -19,7 +19,7 @@ const BASE_PAGE_SIZE: usize = 4096;
 
 const MAX_SLABS: usize = 14;
 
-const VIRT_START: usize = 0o_000_001_000_031_0000;
+const VIRT_START: usize = 0o_000_001_000_310_0000;
 
 static mut VIRT_OFFSET: usize = 0;
 
@@ -51,28 +51,31 @@ pub fn allocate(size: usize, align: usize) -> *mut u8 {
 pub struct AreaFrameSlabPageProvider {}
 
 impl AreaFrameSlabPageProvider {
-  fn allocate_slabpage(&mut self) -> Option<&'static mut SlabPage> {
+  fn allocate_slabpage(&mut self, frames_per_slabpage:usize) -> Option<&'static mut SlabPage> {
     
     let allocator = frame_allocator();
-    let frame:Option<Frame> = allocator.allocate_frame();
-    match frame {
-      None => return None,
-      Some(f) => {
-        use core::mem::transmute;
 
-        unsafe {
-          let page = Page::containing_address(VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET));
-          page_table().map_to(page, f.clone(), paging::WRITABLE, allocator);
+    unsafe {
+      let start_page_address:VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
 
-          println!("Mapping frame {:x} to virtual page starting at {:o}", f.start_address(), page.start_address());
+      for i in 0..frames_per_slabpage {
+        let frame:Option<Frame> = allocator.allocate_frame();
+        match frame {
+          None => return None,
+          Some(f) => {
+            let page = Page::containing_address(start_page_address + (BASE_PAGE_SIZE * i));
+            page_table().map_to(page, f.clone(), paging::WRITABLE, allocator);
 
-          VIRT_OFFSET += 1;
-
-          let mut slab_page: &'static mut SlabPage = unsafe { transmute(page.start_address() as usize) };
-
-          return Some(slab_page);
+            println!("Mapping frame {:x} to virtual page starting at {:o}", f.start_address(), page.start_address());
+          }
         }
+
+        VIRT_OFFSET += 1;
       }
+
+      use core::mem::transmute;
+      let mut slab_page: &'static mut SlabPage = transmute(start_page_address);
+      return Some(slab_page);
     }
   }
 
@@ -124,7 +127,7 @@ impl ZoneAllocator{
             SlabAllocator::new(8128),
             SlabAllocator::new(16320),
             SlabAllocator::new(65472),
-            SlabAllocator::new(1048512),
+            SlabAllocator::new(131008),
         ]
       }
     }
@@ -147,7 +150,7 @@ impl ZoneAllocator{
             4033...8128 => Some(8128),
             8129...16320 => Some(16320),
             16321...65472 => Some(65472),
-            65473...1048512 => Some(1048512),
+            65473...131008 => Some(131008),
             _ => None,
         }
     }
@@ -168,7 +171,7 @@ impl ZoneAllocator{
             4033...8128 => Some(10),
             8129...16320 => Some(11),
             16321...65472 => Some(12),
-            65473...1048512 => Some(13),
+            65473...131008 => Some(13),
             _ => None,
         }
     }
@@ -192,7 +195,14 @@ impl ZoneAllocator{
     /// # TODO
     ///  * Panics in case we're OOM (should probably return error).
     fn refill_slab_allocator<'b>(&'b mut self, idx: usize) {
-      match self.pager.allocate_slabpage() {
+      let frames_per_slabpage:usize = match idx {
+        10 => 2,
+        11 => 4,
+        12 => 16,
+        13 => 32,
+        _ => 1,
+      };
+      match self.pager.allocate_slabpage(frames_per_slabpage) {
           Some(new_head) => {
               self.slabs[idx].insert_slab(new_head);
           },
@@ -322,7 +332,13 @@ impl SlabAllocator {
     ///  * Panics on OOM (should return error!)
     #[allow(unused_variables)]
     fn refill_slab<'b>(&'b mut self, amount: usize) {
-      match self.pager.allocate_slabpage() {
+
+      let frames_per_slabpage = match self.size {
+        4033...131008 => (self.size + 64) / BASE_PAGE_SIZE,
+        _ => 1,
+      };
+
+      match self.pager.allocate_slabpage(frames_per_slabpage) {
           Some(new_head) => {
               self.insert_slab(new_head);
           },
@@ -368,8 +384,6 @@ impl SlabAllocator {
 
         let size = self.size;
         println!("Allocating {}", size);
-
-        assert!(self.size <= (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE));
 
         match self.allocate_in_existing_slabs(alignment) {
             None => {
@@ -458,6 +472,8 @@ impl SlabPage {
             for bit_idx in 0..8 {
                 let idx: usize = base_idx * 8 + bit_idx;
                 let offset = idx * size;
+
+                //println!("\n{}\n{}", BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE as usize, size);
 
                 let offset_inside_data_area = offset <=
                     (BASE_PAGE_SIZE as usize - CACHE_LINE_SIZE as usize - size);
