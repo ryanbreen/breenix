@@ -455,6 +455,7 @@ unsafe impl Send for SlabPage { }
 unsafe impl Sync for SlabPage { }
 
 impl fmt::Debug for SlabPage {
+    #[allow(unused_must_use)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
       for i in 0..8  {
         if self.is_allocated(i) {
@@ -477,7 +478,8 @@ impl SlabPage {
 
         if size > 4032 {
           // If this is a jumbo slab page, the bitfield doesn't help us.  Assume unused for now.
-          let addr: usize = ((self as *const SlabPage) as usize);
+          // TODO: How should we handle reuse of existing slabs?
+          let addr: usize = (self as *const SlabPage) as usize;
           return Some((0, addr));
         }
 
