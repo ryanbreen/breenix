@@ -17,7 +17,7 @@ const CACHE_LINE_SIZE: usize = 64;
 #[cfg(target_arch="x86_64")]
 const BASE_PAGE_SIZE: usize = 4096;
 
-const MAX_SLABS: usize = 10;
+const MAX_SLABS: usize = 14;
 
 #[cfg(target_arch="x86_64")]
 type VAddr = usize;
@@ -110,6 +110,10 @@ impl ZoneAllocator{
             SlabAllocator::new(1024),
             SlabAllocator::new(2048),
             SlabAllocator::new(4032),
+            SlabAllocator::new(8128),
+            SlabAllocator::new(16320),
+            SlabAllocator::new(65472),
+            SlabAllocator::new(1048512),
         ]
       }
     }
@@ -129,6 +133,10 @@ impl ZoneAllocator{
             513...1024 => Some(1024),
             1025...2048 => Some(2048),
             2049...4032 => Some(4032),
+            4033...8128 => Some(8128),
+            8129...16320 => Some(16320),
+            16321...65472 => Some(65472),
+            65473...1048512 => Some(1048512),
             _ => None,
         }
     }
@@ -146,6 +154,10 @@ impl ZoneAllocator{
             513...1024 => Some(7),
             1025...2048 => Some(8),
             2049...4032 => Some(9),
+            4033...8128 => Some(10),
+            8129...16320 => Some(11),
+            16321...65472 => Some(12),
+            65473...1048512 => Some(13),
             _ => None,
         }
     }
@@ -173,7 +185,7 @@ impl ZoneAllocator{
           Some(new_head) => {
               self.slabs[idx].insert_slab(new_head);
           },
-          None => panic!("OOM")
+          None => panic!("OOM refilling slab {}", idx),
       }
     }
 
@@ -187,7 +199,6 @@ impl ZoneAllocator{
 
         match self.try_acquire_slab(size) {
             Some(idx) => {
-
                 let mut p = self.slabs[idx].allocate(align);
                 if p.is_none() {
                     self.refill_slab_allocator(idx);
@@ -195,7 +206,10 @@ impl ZoneAllocator{
                 }
                 return p;
             },
-            None => None
+            None => {
+              println!("Failed to acquire slab of size {}", size);
+              return None;
+            }
         }
     }
 
@@ -301,7 +315,7 @@ impl SlabAllocator {
           Some(new_head) => {
               self.insert_slab(new_head);
           },
-          None => panic!("OOM"),
+          None => panic!("OOM when allocating a new slab of size {}", self.size),
       }
     }
 

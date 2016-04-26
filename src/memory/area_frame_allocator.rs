@@ -1,3 +1,4 @@
+use core::fmt;
 use memory::Frame;
 use memory::frame_allocator::FrameAllocator;
 use multiboot2::{MemoryAreaIter, MemoryArea};
@@ -31,6 +32,7 @@ impl AreaFrameAllocator {
       multiboot_end: Frame::containing_address(multiboot_end),
       allocated_frame_count: 0,
     };
+
     allocator.choose_next_area();
     allocator
   }
@@ -54,11 +56,22 @@ impl AreaFrameAllocator {
   }
 }
 
+impl fmt::Debug for AreaFrameAllocator {
+  #[allow(unused_must_use)]
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+
+    write!(f, "{}", self.areas.clone().count());
+    for area in self.areas.clone() {
+      write!(f, "{:x} to {:x}, {} kB\n", area.base_addr, area.base_addr + area.length - 1, area.length / 1024 / 8);
+    };
+
+    Ok(())
+  }
+}
+
 impl FrameAllocator for AreaFrameAllocator {
   fn allocate_frame(&mut self) -> Option<Frame> {
 
-    //println!("am i even me? {:x}", &self as *const _ as u64);
-    //println!("time to get a frame from area {} {:x}", self.allocated_frame_count, &self.current_area as *const _ as u64);
     if let Some(area) = self.current_area {
       // "clone" the frame to return it if it's free. Frame doesn't
       // implement Clone, but we can construct an identical frame.
