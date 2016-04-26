@@ -19,6 +19,10 @@ const BASE_PAGE_SIZE: usize = 4096;
 
 const MAX_SLABS: usize = 14;
 
+const VIRT_START: usize = 0o_000_001_000_031_0000;
+
+static mut VIRT_OFFSET: usize = 0;
+
 #[cfg(target_arch="x86_64")]
 type VAddr = usize;
 
@@ -56,11 +60,18 @@ impl AreaFrameSlabPageProvider {
       Some(f) => {
         use core::mem::transmute;
 
-        let page = Page::containing_address(f.start_address());
-        page_table().map(page, paging::WRITABLE, allocator);
+        unsafe {
+          let page = Page::containing_address(VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET));
+          page_table().map_to(page, f.clone(), paging::WRITABLE, allocator);
 
-        let mut slab_page: &'static mut SlabPage = unsafe { transmute(f.start_address() as usize) };
-        return Some(slab_page);
+          println!("Mapping frame {:x} to virtual page starting at {:o}", f.start_address(), page.start_address());
+
+          VIRT_OFFSET += 1;
+
+          let mut slab_page: &'static mut SlabPage = unsafe { transmute(page.start_address() as usize) };
+
+          return Some(slab_page);
+        }
       }
     }
   }
