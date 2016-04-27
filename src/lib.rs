@@ -102,8 +102,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   let scheduler = task::scheduler::Scheduler::new();
 
-  println!("{:?}", memory::slab_allocator::zone_allocator());
-
   scheduler.idle();
 }
 
