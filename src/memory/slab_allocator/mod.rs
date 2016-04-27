@@ -298,13 +298,17 @@ impl fmt::Debug for SlabAllocator {
   #[allow(unused_must_use)]
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}\n", self.size, self.slabs.len());
-    for slab in self.slabs.iter() {
-      match slab {
-        &None => panic!("Invalid slab"),
-        &Some(ref s) => write!(f, "      {:?}", s),
-      };
+
+    if self.size < BASE_PAGE_SIZE {
+      for slab in self.slabs.iter() {
+        match slab {
+          &None => panic!("Invalid slab"),
+          &Some(ref s) => write!(f, "      {:?}", s),
+        };
+      }
+      write!(f, "\n");
     }
-    write!(f, "\n")
+    Ok(())
   }
 }
 
@@ -441,7 +445,7 @@ impl fmt::Debug for SlabPage {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
       for i in 0..8  {
         if self.is_allocated(i) {
-          write!(f, "      {} {}", i, self.is_allocated(i));
+          write!(f, "{}", if self.is_allocated(i) { "1" } else { "0" } );
         }
       }
 
