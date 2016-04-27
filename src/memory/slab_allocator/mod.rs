@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
-use collections::vec::Vec;
+use collections::VecDeque;
 
 use core::fmt;
 use core::mem;
@@ -291,21 +291,20 @@ pub struct SlabAllocator {
     /// Memory backing store, to request new SlabPages.
     pager: AreaFrameSlabPageProvider,
     /// List of SlabPages.
-    slabs: Vec<Option<&'static mut SlabPage>>,
+    slabs: VecDeque<Option<&'static mut SlabPage>>,
 }
 
 impl fmt::Debug for SlabAllocator {
   #[allow(unused_must_use)]
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}\n", self.size, self.slabs.len());
-    for idx in 0..self.slabs.len() {
-      let slabs:&[Option<&'static mut SlabPage>] = self.slabs.as_slice();
-      match slabs[idx] {
-        None => panic!("Invalid slab"),
-        Some(ref s) => write!(f, "      {} {:?}\n", idx, s),
+    for slab in self.slabs.iter() {
+      match slab {
+        &None => panic!("Invalid slab"),
+        &Some(ref s) => write!(f, "      {:?}", s),
       };
     }
-    Ok(())
+    write!(f, "\n")
   }
 }
 
@@ -316,7 +315,7 @@ impl SlabAllocator {
         SlabAllocator{
             size: size,
             pager: AreaFrameSlabPageProvider{},
-            slabs: Vec::with_capacity(10),
+            slabs: VecDeque::new(),
         }
     }
 
@@ -348,7 +347,7 @@ impl SlabAllocator {
 
     /// Add a new SlabPage.
     pub fn insert_slab<'b>(&'b mut self, new_head: &'static mut SlabPage) {
-      self.slabs.insert(0, Some(new_head));
+      self.slabs.push_front(Some(new_head));
     }
 
     /// Tries to allocate a block of memory with respect to the `alignment`.
@@ -407,29 +406,12 @@ impl SlabAllocator {
         slab_page.deallocate(ptr, self.size);
 
         if slab_page.is_empty() {
-          let mut target:isize = -1;
-
-          for i in 0..self.slabs.len() {
-            let ref candidate_page_option = self.slabs[i];
-
-            candidate_page_option.as_ref().map(|candidate| {
-
-              if &slab_page.data as *const _ as u64 == &candidate.data as *const _ as u64 {
-                target = i as isize;
-              }
-            });
-
-            if target != -1 {
-              break;
-            }
-          }
-
-          if target == -1 {
-            panic!("Failed to find slab page to evict");
-          }
-
-          self.slabs.remove(target as usize);
-          self.pager.release_slabpage(slab_page);
+          self.slabs.retain(|candidate| {
+            match candidate {
+              &None => panic!("Invalid slab page"),
+              &Some(ref c) => return &slab_page.data as *const _ as u64 != &c.data as *const _ as u64,
+            };
+          });
         }
     }
 
