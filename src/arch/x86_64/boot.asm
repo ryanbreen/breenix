@@ -158,5 +158,5 @@ p3_table:
 p2_table:
     resb 4096
 stack_bottom:
-    resb 8192
+    resb 8192*2
 stack_top:

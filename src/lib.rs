@@ -93,10 +93,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   println!("Time is {}", io::timer::real_time().secs);
 
-  //println!("{:?}", memory::frame_allocator());
+  println!("{:?}", memory::frame_allocator());
 
   let mut vec = vec!();
-  for _ in 0..1000 {
+  for _ in 0..10000 {
     vec.push("happy days");
   }
 

@@ -11,6 +11,8 @@ use memory::frame_allocator::FrameAllocator;
 use memory::paging;
 use memory::paging::Page;
 
+use spin::Mutex;
+
 #[cfg(target_arch="x86_64")]
 const CACHE_LINE_SIZE: usize = 64;
 
@@ -26,12 +28,12 @@ static mut VIRT_OFFSET: usize = 0;
 #[cfg(target_arch="x86_64")]
 type VAddr = usize;
 
-static mut ZONE_ALLOCATOR_PTR:Option<&'static mut ZoneAllocator> = None;
+static mut ZONE_ALLOCATOR_PTR:Option<Mutex<&'static mut ZoneAllocator>> = None;
 
-pub fn zone_allocator() -> &'static mut ZoneAllocator {
+pub fn zone_allocator() -> &'static Mutex<&'static mut ZoneAllocator> {
   unsafe {
     match ZONE_ALLOCATOR_PTR {
-      Some(ref mut za) => za,
+      Some(ref za) => za,
       None => { panic!("zone_allocator called before init"); },
     }
   }
@@ -39,13 +41,13 @@ pub fn zone_allocator() -> &'static mut ZoneAllocator {
 
 pub fn init() {
   unsafe {
-    ZONE_ALLOCATOR_PTR = Some(&mut *Box::into_raw(Box::new(ZoneAllocator::new())));
+    ZONE_ALLOCATOR_PTR = Some(Mutex::new(&mut *Box::into_raw(Box::new(ZoneAllocator::new()))));
   }
 }
 
 pub fn allocate(size: usize, align: usize) -> *mut u8 {
   // Use the static zone allocator to find this.
-  zone_allocator().allocate(size, align).expect("OOM")
+  zone_allocator().lock().allocate(size, align).expect("OOM")
 }
 
 pub struct AreaFrameSlabPageProvider {}
@@ -58,15 +60,19 @@ impl AreaFrameSlabPageProvider {
     unsafe {
       let start_page_address:VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
 
+      println!("Allocating {} frames for page starting at {:o}", frames_per_slabpage, start_page_address);
+
       for i in 0..frames_per_slabpage {
         let frame:Option<Frame> = allocator.allocate_frame();
         match frame {
           None => return None,
           Some(f) => {
             let page = Page::containing_address(start_page_address + (BASE_PAGE_SIZE * i));
-            page_table().map_to(page, f.clone(), paging::WRITABLE, allocator);
 
-            println!("Mapping frame {:x} to virtual page starting at {:o}", f.start_address(), page.start_address());
+            println!("Mapping frame {} o{:o} x{:x} {} to virtual page starting at o{:o} x{:x} {}",
+              i, f.start_address(), f.start_address(), f.start_address(), page.start_address(), page.start_address(), page.start_address());
+
+            page_table().map_to(page, f.clone(), paging::WRITABLE, allocator);
           }
         }
 
@@ -360,6 +366,11 @@ impl SlabAllocator {
     fn allocate_in_existing_slabs<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
         let size = self.size;
+
+        // For big slabs, always assume used.
+        if size > BASE_PAGE_SIZE {
+          return None;
+        }
 
         for (_, slab_page) in self.slabs.iter_mut().enumerate() {
 
