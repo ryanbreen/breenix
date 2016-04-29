@@ -116,15 +116,9 @@ pub extern fn __rust_reallocate(ptr: *mut u8, size: usize, new_size: usize,
   //     src/liballoc_system/lib.rs#L98-L101
 
   unsafe {
-    if ptr as usize >= HEAP_START && ptr as usize <= HEAP_START + (HEAP_SIZE * 8) {
-      let new_ptr = bootstrap_allocate(new_size, align);
-      ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
-      new_ptr
-    } else {
-      let new_ptr = __rust_allocate(new_size, align);
-      ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
-      __rust_deallocate(ptr, size, align);
-      new_ptr
-    }
+    let new_ptr = __rust_allocate(new_size, align);
+    ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
+    __rust_deallocate(ptr, size, align);
+    new_ptr
   }
 }
