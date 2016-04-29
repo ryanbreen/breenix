@@ -13,6 +13,8 @@ use memory::paging::Page;
 
 use spin::Mutex;
 
+use tiered_allocator;
+
 #[cfg(target_arch="x86_64")]
 const CACHE_LINE_SIZE: usize = 64;
 
@@ -21,7 +23,7 @@ const BASE_PAGE_SIZE: usize = 4096;
 
 const MAX_SLABS: usize = 14;
 
-const VIRT_START: usize = 0o_000_001_000_310_0000;
+const VIRT_START: usize = tiered_allocator::HEAP_START + tiered_allocator::HEAP_SIZE;
 
 static mut VIRT_OFFSET: usize = 0;
 
@@ -397,7 +399,7 @@ impl SlabAllocator {
     /// additional pages and re-try the allocation once more before we give up.
     pub fn allocate<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
-        let size = self.size;
+        //let size = self.size;
         //println!("Allocating {}", size);
 
         match self.allocate_in_existing_slabs(alignment) {
