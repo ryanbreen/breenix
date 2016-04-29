@@ -60,7 +60,7 @@ impl AreaFrameSlabPageProvider {
     unsafe {
       let start_page_address:VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
 
-      println!("Allocating {} frames for page starting at {:o}", frames_per_slabpage, start_page_address);
+      //println!("Allocating {} frames for page starting at {:o}", frames_per_slabpage, start_page_address);
 
       for i in 0..frames_per_slabpage {
         let frame:Option<Frame> = allocator.allocate_frame();
@@ -69,8 +69,8 @@ impl AreaFrameSlabPageProvider {
           Some(f) => {
             let page = Page::containing_address(start_page_address + (BASE_PAGE_SIZE * i));
 
-            println!("Mapping frame {} o{:o} x{:x} {} to virtual page starting at o{:o} x{:x} {}",
-              i, f.start_address(), f.start_address(), f.start_address(), page.start_address(), page.start_address(), page.start_address());
+            //println!("Mapping frame {} o{:o} x{:x} {} to virtual page starting at o{:o} x{:x} {}",
+            //  i, f.start_address(), f.start_address(), f.start_address(), page.start_address(), page.start_address(), page.start_address());
 
             page_table().map_to(page, f.clone(), paging::WRITABLE, allocator);
           }
@@ -87,6 +87,7 @@ impl AreaFrameSlabPageProvider {
 
   #[allow(unused_variables)]
   fn release_slabpage(&mut self, page: &mut SlabPage) {
+    println!("Trying to release page");
     // TODO: Let's maybe release memory at some point.
   }
 }
@@ -397,7 +398,7 @@ impl SlabAllocator {
     pub fn allocate<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
         let size = self.size;
-        println!("Allocating {}", size);
+        //println!("Allocating {}", size);
 
         match self.allocate_in_existing_slabs(alignment) {
             None => {
