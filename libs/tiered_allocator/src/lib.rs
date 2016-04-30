@@ -33,7 +33,7 @@ mod heap;
 mod hole;
 
 pub const HEAP_START: usize = 0o_000_001_000_000_0000;
-pub const HEAP_SIZE: usize = 1024 * 1024; // 1MiB
+pub const HEAP_SIZE: usize = 100 * 1024; // 1KB
 
 lazy_static! {
     static ref HEAP: Mutex<Heap> = Mutex::new(unsafe {
@@ -80,7 +80,14 @@ pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
 }
 
 fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
-  HEAP.lock().allocate_first_fit(size, align).expect("out of bootstrap memory")
+  //HEAP.lock().allocate_first_fit(size, align).expect("out of bootstrap memory")
+  let rvalue:Option<*mut u8> = HEAP.lock().allocate_first_fit(size, align);
+  match rvalue {
+    Some(p) => p,
+    None => {
+      panic!("Bootstrap memory exceeded in request for {} {}", size, align);
+    }
+  }
 }
 
 fn slab_allocate(size: usize, align: usize) -> *mut u8 {
@@ -116,9 +123,15 @@ pub extern fn __rust_reallocate(ptr: *mut u8, size: usize, new_size: usize,
   //     src/liballoc_system/lib.rs#L98-L101
 
   unsafe {
-    let new_ptr = __rust_allocate(new_size, align);
-    ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
-    __rust_deallocate(ptr, size, align);
-    new_ptr
+    if ptr as usize >= HEAP_START && ptr as usize <= HEAP_START + (HEAP_SIZE * 8) {
+      let new_ptr = bootstrap_allocate(new_size, align);
+      ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
+      new_ptr
+    } else {
+      let new_ptr = __rust_allocate(new_size, align);
+      ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
+      __rust_deallocate(ptr, size, align);
+      new_ptr
+    }
   }
 }

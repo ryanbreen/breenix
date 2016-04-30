@@ -49,13 +49,19 @@ pub fn init() {
 
 pub fn allocate(size: usize, align: usize) -> *mut u8 {
   // Use the static zone allocator to find this.
-  zone_allocator().lock().allocate(size, align).expect("OOM")
+  // Note: since we lock here and the lock is not reentrant, we must make sure that no allocations
+  // happen from inside the allocator.
+  let tag = unsafe { VIRT_OFFSET };
+  println!("Entering allocate of size {} {}", size, tag);
+  let rvalue:*mut u8 = zone_allocator().lock().allocate(size, align).expect("OOM");
+  println!("Leaving allocate of size {} {}", size, tag);
+  rvalue
 }
 
 pub struct AreaFrameSlabPageProvider {}
 
 impl AreaFrameSlabPageProvider {
-  fn allocate_slabpage(&mut self, frames_per_slabpage:usize) -> Option<&'static mut SlabPage> {
+  fn allocate_slabpage(&mut self, frames_per_slabpage:usize) -> Option<SlabPage> {
     
     let allocator = frame_allocator();
 
@@ -81,8 +87,7 @@ impl AreaFrameSlabPageProvider {
         VIRT_OFFSET += 1;
       }
 
-      use core::mem::transmute;
-      let mut slab_page: &'static mut SlabPage = transmute(start_page_address);
+      let slab_page:SlabPage = SlabPage { data: start_page_address as *mut u8, bitfield: [0;CACHE_LINE_SIZE - 16] };
       return Some(slab_page);
     }
   }
@@ -300,7 +305,7 @@ pub struct SlabAllocator {
     /// Memory backing store, to request new SlabPages.
     pager: AreaFrameSlabPageProvider,
     /// List of SlabPages.
-    slabs: VecDeque<Option<&'static mut SlabPage>>,
+    slabs: VecDeque<Option<SlabPage>>,
 }
 
 impl fmt::Debug for SlabAllocator {
@@ -359,8 +364,13 @@ impl SlabAllocator {
     }
 
     /// Add a new SlabPage.
-    pub fn insert_slab<'b>(&'b mut self, new_head: &'static mut SlabPage) {
-      self.slabs.push_front(Some(new_head));
+    pub fn insert_slab<'b>(&'b mut self, new_slab:SlabPage) {
+      // This operation may attempt to allocate new memory on the heap because slabs is a heap-allocated
+      // structure.
+      let tag = unsafe { VIRT_OFFSET };
+      println!("Enterring push_front on slab allocator of size {} {}", self.size, tag);
+      self.slabs.push_front(Some(new_slab));
+      println!("Leaving push_front on slab allocator of size {} {}", self.size, tag);
     }
 
     /// Tries to allocate a block of memory with respect to the `alignment`.
@@ -435,13 +445,13 @@ impl SlabAllocator {
 
 }
 
-/// Holds allocated data.
+/// Holds a reference to allocated data.
 ///
 /// Objects life within data and meta tracks the objects status.
 /// Currently, `bitfield` and `id`
 pub struct SlabPage {
-    /// Holds memory objects.
-    data: [u8; 4096 - 64],
+    /// Pointer to page.
+    data: * mut u8,
 
     /// A bit-field to track free/allocated memory within `data`.
     ///
