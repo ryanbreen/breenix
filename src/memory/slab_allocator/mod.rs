@@ -54,7 +54,7 @@ pub fn allocate(size: usize, align: usize) -> *mut u8 {
   let tag = unsafe { VIRT_OFFSET };
   println!("Entering allocate of size {} {}", size, tag);
   let rvalue:*mut u8 = zone_allocator().lock().allocate(size, align).expect("OOM");
-  println!("Leaving allocate of size {} {}", size, tag);
+  println!("Leaving allocate of size {} {} with rvalue {:o}", size, tag, rvalue as *const _ as u64);
   rvalue
 }
 
@@ -68,7 +68,7 @@ impl AreaFrameSlabPageProvider {
     unsafe {
       let start_page_address:VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
 
-      //println!("Allocating {} frames for page starting at {:o}", frames_per_slabpage, start_page_address);
+      println!("Allocating {} frames for page starting at {:o}", frames_per_slabpage, start_page_address);
 
       for i in 0..frames_per_slabpage {
         let frame:Option<Frame> = allocator.allocate_frame();
@@ -77,8 +77,8 @@ impl AreaFrameSlabPageProvider {
           Some(f) => {
             let page = Page::containing_address(start_page_address + (BASE_PAGE_SIZE * i));
 
-            //println!("Mapping frame {} o{:o} x{:x} {} to virtual page starting at o{:o} x{:x} {}",
-            //  i, f.start_address(), f.start_address(), f.start_address(), page.start_address(), page.start_address(), page.start_address());
+            println!("Mapping frame {} o{:o} x{:x} {} to virtual page starting at o{:o} x{:x} {}",
+              i, f.start_address(), f.start_address(), f.start_address(), page.start_address(), page.start_address(), page.start_address());
 
             page_table().map_to(page, f.clone(), paging::WRITABLE, allocator);
           }
@@ -87,7 +87,7 @@ impl AreaFrameSlabPageProvider {
         VIRT_OFFSET += 1;
       }
 
-      let slab_page:SlabPage = SlabPage { data: start_page_address as *mut u8, bitfield: [0;CACHE_LINE_SIZE - 16] };
+      let slab_page:SlabPage = SlabPage { data: start_page_address as u64, bitfield: [0;CACHE_LINE_SIZE - 16] };
       return Some(slab_page);
     }
   }
@@ -368,7 +368,7 @@ impl SlabAllocator {
       // This operation may attempt to allocate new memory on the heap because slabs is a heap-allocated
       // structure.
       let tag = unsafe { VIRT_OFFSET };
-      println!("Enterring push_front on slab allocator of size {} {}", self.size, tag);
+      println!("Entering push_front on slab allocator of size {} {}", self.size, tag);
       self.slabs.push_front(Some(new_slab));
       println!("Leaving push_front on slab allocator of size {} {}", self.size, tag);
     }
@@ -451,7 +451,7 @@ impl SlabAllocator {
 /// Currently, `bitfield` and `id`
 pub struct SlabPage {
     /// Pointer to page.
-    data: * mut u8,
+    data: u64,
 
     /// A bit-field to track free/allocated memory within `data`.
     ///
@@ -489,7 +489,7 @@ impl SlabPage {
         if size > 4032 {
           // If this is a jumbo slab page, the bitfield doesn't help us.  Assume unused for now.
           // TODO: How should we handle reuse of existing slabs?
-          let addr: usize = (self as *const SlabPage) as usize;
+          let addr: usize = self.data as usize;
           return Some((0, addr));
         }
 
@@ -504,7 +504,7 @@ impl SlabPage {
                     return None;
                 }
 
-                let addr: usize = ((self as *const SlabPage) as usize) + offset;
+                let addr: usize = self.data as usize + offset;
                 let alignment_ok = addr % alignment == 0;
                 let block_is_free = b & (1 << bit_idx) == 0;
 
@@ -559,6 +559,7 @@ impl SlabPage {
         match self.first_fit(size, alignment) {
             Some((idx, addr)) => {
                 self.set_bit(idx);
+                println!("base addr is {:o}", addr);
                 Some(unsafe { mem::transmute::<usize, *mut u8>(addr) })
             }
             None => None

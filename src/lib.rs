@@ -96,6 +96,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   println!("{:?}", memory::frame_allocator());
 
   let mut vec = vec!();
+  println!("Allocated vec at {:o}", &vec as *const _ as u64);
   for _ in 0..10000 {
     vec.push("happy days");
   }

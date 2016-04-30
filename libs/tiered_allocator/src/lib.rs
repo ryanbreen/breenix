@@ -72,9 +72,11 @@ pub fn init(allocate: fn(usize, usize) -> *mut u8) {
 pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
   unsafe {
     if SLAB_ALLOCATE.is_none() {
-      bootstrap_allocate(size, align)
+      let rvalue = bootstrap_allocate(size, align);
+      rvalue
     } else {
-      slab_allocate(size, align)
+      let rvalue = slab_allocate(size, align);
+      rvalue
     }
   }
 }
@@ -123,8 +125,9 @@ pub extern fn __rust_reallocate(ptr: *mut u8, size: usize, new_size: usize,
   //     src/liballoc_system/lib.rs#L98-L101
 
   unsafe {
-    if ptr as usize >= HEAP_START && ptr as usize <= HEAP_START + (HEAP_SIZE * 8) {
+    if ptr as usize >= HEAP_START && ptr as usize <= HEAP_START + HEAP_SIZE {
       let new_ptr = bootstrap_allocate(new_size, align);
+      //panic!("\n{:o}\n{:o}\n{:o}", ptr as usize, HEAP_START, HEAP_START + HEAP_SIZE);
       ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
       new_ptr
     } else {
