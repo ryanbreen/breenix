@@ -33,7 +33,7 @@ mod heap;
 mod hole;
 
 pub const HEAP_START: usize = 0o_000_001_000_000_0000;
-pub const HEAP_SIZE: usize = 100 * 1024; // 1KB
+pub const HEAP_SIZE: usize = 1024 * 1024; // 1MB
 
 lazy_static! {
     static ref HEAP: Mutex<Heap> = Mutex::new(unsafe {

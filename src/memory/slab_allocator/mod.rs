@@ -137,7 +137,7 @@ impl ZoneAllocator{
             SlabAllocator::new(512),
             SlabAllocator::new(1024),
             SlabAllocator::new(2048),
-            SlabAllocator::new(4032),
+            SlabAllocator::new(4096),
             SlabAllocator::new(8192),
             SlabAllocator::new(16384),
             SlabAllocator::new(65536),
@@ -160,8 +160,8 @@ impl ZoneAllocator{
             257...512 => Some(512),
             513...1024 => Some(1024),
             1025...2048 => Some(2048),
-            2049...4032 => Some(4032),
-            4033...8192 => Some(8192),
+            2049...4096 => Some(4096),
+            4097...8192 => Some(8192),
             8193...16384 => Some(16384),
             16385...65536 => Some(65536),
             65537...131072 => Some(131072),
@@ -181,8 +181,8 @@ impl ZoneAllocator{
             257...512 => Some(6),
             513...1024 => Some(7),
             1025...2048 => Some(8),
-            2049...4032 => Some(9),
-            4033...8192 => Some(10),
+            2049...4096 => Some(9),
+            4097...8192 => Some(10),
             8192...16384 => Some(11),
             16384...65536 => Some(12),
             65536...131072 => Some(13),
@@ -333,7 +333,7 @@ impl SlabAllocator {
         SlabAllocator{
             size: size,
             pager: AreaFrameSlabPageProvider{},
-            slabs: VecDeque::new(),
+            slabs: VecDeque::with_capacity(50),
         }
     }
 
@@ -351,7 +351,7 @@ impl SlabAllocator {
     fn refill_slab<'b>(&'b mut self, amount: usize) {
 
       let frames_per_slabpage = match self.size {
-        4033...131008 => (self.size + 64) / BASE_PAGE_SIZE,
+        4096...131008 => (self.size + 64) / BASE_PAGE_SIZE,
         _ => 1,
       };
 
@@ -490,6 +490,7 @@ impl SlabPage {
           // If this is a jumbo slab page, the bitfield doesn't help us.  Assume unused for now.
           // TODO: How should we handle reuse of existing slabs?
           let addr: usize = self.data as usize;
+          //let addr: usize = (self as *const SlabPage) as usize;
           return Some((0, addr));
         }
 
@@ -505,6 +506,7 @@ impl SlabPage {
                 }
 
                 let addr: usize = self.data as usize + offset;
+                //let addr: usize = self.data as usize + offset;
                 let alignment_ok = addr % alignment == 0;
                 let block_is_free = b & (1 << bit_idx) == 0;
 
