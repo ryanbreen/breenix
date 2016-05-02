@@ -112,11 +112,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   println!("Created a vector with {} items?  Bananas. {}", vec.len(), vec[127]);
   
-  //debug!();
+  debug!();
 
-  //let scheduler = task::scheduler::Scheduler::new();
-  //scheduler.idle();
-  loop {}
+  let scheduler = task::scheduler::Scheduler::new();
+  scheduler.idle();
 }
 
 /// Provide an easy, globally accessible function to get access to State
