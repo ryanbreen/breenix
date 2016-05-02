@@ -105,7 +105,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
 
   let my_str = "happy";
-  for _ in 0..129 {
+  for _ in 0..256 {
     vec.push(my_str);
     //println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
   }
