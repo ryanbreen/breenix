@@ -105,7 +105,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
 
   let my_str = "happy";
-  for _ in 0..256 {
+  for _ in 0..1000 {
     vec.push(my_str);
     //println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
   }
@@ -129,4 +129,3 @@ pub extern "C" fn rust_interrupt_handler(ctx: &io::interrupts::InterruptContext)
 }
 
 #[lang = "eh_personality"] extern fn eh_personality() {}
-

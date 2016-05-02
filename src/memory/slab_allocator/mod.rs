@@ -50,7 +50,7 @@ pub fn init() {
 pub fn allocate(size: usize, align: usize) -> *mut u8 {
   // Use the static zone allocator to find this.
   // Note: since we lock here and the lock is not reentrant, we must make sure that no allocations
-  // happen from inside the allocator.
+  // happen from inside the allocator or that they occur in the bootstrap allocator.
   let rvalue:*mut u8 = zone_allocator().lock().allocate(size, align).expect("OOM");
   rvalue
 }
@@ -348,7 +348,7 @@ impl SlabAllocator {
     fn refill_slab<'b>(&'b mut self, amount: usize) {
 
       let frames_per_slabpage = match self.size {
-        4096...131008 => (self.size + 64) / BASE_PAGE_SIZE,
+        4096...131008 => self.size / BASE_PAGE_SIZE,
         _ => 1,
       };
 
@@ -373,11 +373,6 @@ impl SlabAllocator {
     fn allocate_in_existing_slabs<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
         let size = self.size;
-
-        // For big slabs, always assume used.
-        if size > BASE_PAGE_SIZE {
-          return None;
-        }
 
         for (_, slab_page) in self.slabs.iter_mut().enumerate() {
 

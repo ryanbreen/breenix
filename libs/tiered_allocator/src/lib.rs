@@ -89,6 +89,10 @@ fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
   unsafe {
     BOOTSTRAP_ALLOCS += 1;
     BOOTSTRAP_ALLOC_SIZE += size;
+
+    if size > 128000 {
+      BOOTSTRAP_ALLOC_SIZE += 0;
+    }
   }
   
   let rvalue:Option<*mut u8> = HEAP.lock().allocate_first_fit(size, align);
