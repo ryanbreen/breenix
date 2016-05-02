@@ -47,6 +47,7 @@ pub fn register_key_event_listener(listener: Box<IsListener<KeyEvent>>) {
 }
 
 pub fn dispatch_key_event(ev: &KeyEvent) {
+
   let listeners = &(state().key_listeners);
   for listener in listeners {
     if listener.handles_event(ev) {

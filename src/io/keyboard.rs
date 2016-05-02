@@ -136,6 +136,7 @@ static STATE: Mutex<State> = Mutex::new(State {
 
 /// Try to read a single input character
 pub fn read() {
+
   let mut state = STATE.lock();
 
   // Read a single scancode off our keyboard port.
@@ -145,7 +146,6 @@ pub fn read() {
 
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
-
   // We don't map any keys > 127.
   if scancode > 127 {
     return;

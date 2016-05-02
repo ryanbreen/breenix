@@ -81,8 +81,16 @@ pub extern fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
   }
 }
 
+pub static mut BOOTSTRAP_ALLOCS:usize = 0;
+pub static mut BOOTSTRAP_ALLOC_SIZE:usize = 0;
+
 fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
   //HEAP.lock().allocate_first_fit(size, align).expect("out of bootstrap memory")
+  unsafe {
+    BOOTSTRAP_ALLOCS += 1;
+    BOOTSTRAP_ALLOC_SIZE += size;
+  }
+  
   let rvalue:Option<*mut u8> = HEAP.lock().allocate_first_fit(size, align);
   match rvalue {
     Some(p) => p,

@@ -87,7 +87,7 @@ impl AreaFrameSlabPageProvider {
         VIRT_OFFSET += 1;
       }
 
-      let slab_page:SlabPage = SlabPage { data: start_page_address as u64, bitfield: [0;CACHE_LINE_SIZE - 16] };
+      let slab_page:SlabPage = SlabPage { data: start_page_address as u64, allocated: false, size:frames_per_slabpage*BASE_PAGE_SIZE, bitfield: [0;CACHE_LINE_SIZE - 16] };
       return Some(slab_page);
     }
   }
@@ -302,6 +302,7 @@ impl ZoneAllocator{
 pub struct SlabAllocator {
     /// Allocation size.
     size: usize,
+
     /// Memory backing store, to request new SlabPages.
     pager: AreaFrameSlabPageProvider,
     /// List of SlabPages.
@@ -333,7 +334,7 @@ impl SlabAllocator {
         SlabAllocator{
             size: size,
             pager: AreaFrameSlabPageProvider{},
-            slabs: VecDeque::with_capacity(50),
+            slabs: VecDeque::new(),
         }
     }
 
@@ -453,6 +454,10 @@ pub struct SlabPage {
     /// Pointer to page.
     data: u64,
 
+    size: usize,
+
+    allocated: bool,
+
     /// A bit-field to track free/allocated memory within `data`.
     ///
     /// # Notes
@@ -483,15 +488,19 @@ impl SlabPage {
     ///
     /// # Notes
     /// * We pass size here to be able to calculate the resulting address within `data`.
-    fn first_fit(&self, size: usize, alignment: usize) -> Option<(usize, usize)> {
+    fn first_fit(&mut self, size: usize, alignment: usize) -> Option<(usize, usize)> {
         assert!(alignment.is_power_of_two());
 
-        if size > 4032 {
-          // If this is a jumbo slab page, the bitfield doesn't help us.  Assume unused for now.
+        if self.size >= BASE_PAGE_SIZE {
+          // If this is a jumbo slab page, the bitfield doesn't help us.
           // TODO: How should we handle reuse of existing slabs?
-          let addr: usize = self.data as usize;
-          //let addr: usize = (self as *const SlabPage) as usize;
-          return Some((0, addr));
+          match self.allocated {
+            true => return None,
+            false => {
+              self.allocated = true;
+              return Some((0, self.data as usize));
+            },
+          };
         }
 
         for (base_idx, b) in self.bitfield.iter().enumerate() {

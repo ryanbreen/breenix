@@ -95,18 +95,28 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   println!("{:?}", memory::frame_allocator());
 
-  let mut vec = vec!();
-  println!("Allocated vec at {:o}", &vec as *const _ as u64);
-  for _ in 0..10000 {
-    vec.push("happy days");
+  println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
+
+  use alloc::boxed::Box;
+  use collections::Vec;
+  let mut vec:Box<Vec<&'static str>> = Box::new(Vec::new());
+  //println!("Allocated vec at {:o}", Box::into_raw(vec) as *const _ as u64);
+
+  println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
+
+  let my_str = "happy";
+  for _ in 0..129 {
+    vec.push(my_str);
+    //println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
   }
 
-  println!("Created a vector with {} items?  Bananas.", vec.len());
+  println!("Created a vector with {} items?  Bananas. {}", vec.len(), vec[127]);
+  
+  //debug!();
 
-  debug!();
-
-  let scheduler = task::scheduler::Scheduler::new();
-  scheduler.idle();
+  //let scheduler = task::scheduler::Scheduler::new();
+  //scheduler.idle();
+  loop {}
 }
 
 /// Provide an easy, globally accessible function to get access to State
