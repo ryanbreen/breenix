@@ -83,7 +83,8 @@ impl AreaFrameSlabPageProvider {
         VIRT_OFFSET += 1;
       }
 
-      let slab_page:SlabPage = SlabPage { data: start_page_address as u64, allocated: false, size:frames_per_slabpage*BASE_PAGE_SIZE, bitfield: [0;CACHE_LINE_SIZE - 16] };
+      let slab_page:SlabPage =
+        SlabPage { data: start_page_address as u64, allocated: false, size:frames_per_slabpage*BASE_PAGE_SIZE, bitfield: [0;CACHE_LINE_SIZE - 16] };
       return Some(slab_page);
     }
   }
@@ -348,7 +349,7 @@ impl SlabAllocator {
     fn refill_slab<'b>(&'b mut self, amount: usize) {
 
       let frames_per_slabpage = match self.size {
-        4096...131008 => self.size / BASE_PAGE_SIZE,
+        4096...131072 => self.size / BASE_PAGE_SIZE,
         _ => 1,
       };
 
@@ -558,7 +559,7 @@ impl SlabPage {
         match self.first_fit(size, alignment) {
             Some((idx, addr)) => {
                 self.set_bit(idx);
-                println!("base addr is {:o}", addr);
+                println!("base addr is {:o} for {} of {}", addr, size, self.size);
                 Some(unsafe { mem::transmute::<usize, *mut u8>(addr) })
             }
             None => None
