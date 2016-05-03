@@ -49,14 +49,14 @@ use core::fmt::Write;
 #[allow(non_snake_case)]
 pub fn _Unwind_Resume() {
   println!("UNWIND!");
-  loop {}
+  state().scheduler.idle();
 }
 
 #[lang = "panic_fmt"]
 extern fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
   println!("\n\nPANIC in {} at line {}:", file, line);
   println!("    {}", fmt);
-  loop{}
+  state().scheduler.idle();
 }
 
 fn enable_nxe_bit() {
