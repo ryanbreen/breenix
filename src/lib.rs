@@ -102,7 +102,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
   println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
 
-  let my_str = "happy";
+  let my_str = "happy days are here";
   // Fails with PF if push count > 8192 because we don't support slabs that large.
   for _ in 0..8192 {
     vec.push(my_str);

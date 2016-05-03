@@ -58,9 +58,14 @@ pub fn allocate(size: usize, align: usize) -> *mut u8 {
 pub struct AreaFrameSlabPageProvider {}
 
 impl AreaFrameSlabPageProvider {
-  fn allocate_slabpage(&mut self, frames_per_slabpage:usize) -> Option<SlabPage> {
+  fn allocate_slabpage(&mut self, size:usize) -> Option<SlabPage> {
     
     let allocator = frame_allocator();
+
+    let mut frames_per_slabpage = 1;
+    if size > BASE_PAGE_SIZE {
+      frames_per_slabpage = size / BASE_PAGE_SIZE;
+    }
 
     unsafe {
       let start_page_address:VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
@@ -84,7 +89,7 @@ impl AreaFrameSlabPageProvider {
       }
 
       let slab_page:SlabPage =
-        SlabPage { data: start_page_address as u64, allocated: false, size:frames_per_slabpage*BASE_PAGE_SIZE, bitfield: [0;CACHE_LINE_SIZE - 16] };
+        SlabPage { start_page_address: start_page_address as u64, size:size as u64, bitfield: [0;CACHE_LINE_SIZE - 16] };
       return Some(slab_page);
     }
   }
@@ -348,12 +353,7 @@ impl SlabAllocator {
     #[allow(unused_variables)]
     fn refill_slab<'b>(&'b mut self, amount: usize) {
 
-      let frames_per_slabpage = match self.size {
-        4096...131072 => self.size / BASE_PAGE_SIZE,
-        _ => 1,
-      };
-
-      match self.pager.allocate_slabpage(frames_per_slabpage) {
+      match self.pager.allocate_slabpage(self.size) {
           Some(new_head) => {
               self.insert_slab(new_head);
           },
@@ -427,7 +427,7 @@ impl SlabAllocator {
           self.slabs.retain(|candidate| {
             match candidate {
               &None => panic!("Invalid slab page"),
-              &Some(ref c) => return &slab_page.data as *const _ as u64 != &c.data as *const _ as u64,
+              &Some(ref c) => return &slab_page.start_page_address as *const _ as u64 != &c.start_page_address as *const _ as u64,
             };
           });
         }
@@ -441,17 +441,12 @@ impl SlabAllocator {
 /// Currently, `bitfield` and `id`
 pub struct SlabPage {
     /// Pointer to page.
-    data: u64,
+    start_page_address: u64,
 
-    size: usize,
+    size: u64,
 
-    allocated: bool,
-
-    /// A bit-field to track free/allocated memory within `data`.
-    ///
-    /// # Notes
-    /// * With only 48 bits we do waste some space at the end of every page for 8 bytes allocations.
-    ///   but 12 bytes on-wards is okay.
+    /// A bit-field to track free/allocated memory within `data`.  This should pad otu the struct to
+    /// exactly the cache line size of 64 bytes (64 - (64/8 + 64/8))
     bitfield: [u8; CACHE_LINE_SIZE - 16],
 }
 
@@ -461,12 +456,8 @@ unsafe impl Sync for SlabPage { }
 impl fmt::Debug for SlabPage {
     #[allow(unused_must_use)]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-      for i in 0..8  {
-        if self.is_allocated(i) {
-          write!(f, "{}", if self.is_allocated(i) { "1" } else { "0" } );
-        }
-      }
-
+      write!(f, "{} {:o} ", self.size, self.start_page_address);
+      self.bitfield.iter().map(|b| write!(f, "{:02X}", b));
       Ok(())
     }
 }
@@ -480,14 +471,13 @@ impl SlabPage {
     fn first_fit(&mut self, size: usize, alignment: usize) -> Option<(usize, usize)> {
         assert!(alignment.is_power_of_two());
 
-        if self.size >= BASE_PAGE_SIZE {
-          // If this is a jumbo slab page, the bitfield doesn't help us.
-          // TODO: How should we handle reuse of existing slabs?
-          match self.allocated {
-            true => return None,
-            false => {
-              self.allocated = true;
-              return Some((0, self.data as usize));
+        if self.size as usize >= BASE_PAGE_SIZE {
+          // If this is a jumbo slab page, we just store a single value in the bitfield.
+          match self.bitfield[0] {
+            1 => return None,
+            _ => {
+              self.bitfield[0] = 1;
+              return Some((0, self.start_page_address as usize));
             },
           };
         }
@@ -503,7 +493,7 @@ impl SlabPage {
                     return None;
                 }
 
-                let addr: usize = self.data as usize + offset;
+                let addr: usize = self.start_page_address as usize + offset;
                 //let addr: usize = self.data as usize + offset;
                 let alignment_ok = addr % alignment == 0;
                 let block_is_free = b & (1 << bit_idx) == 0;
