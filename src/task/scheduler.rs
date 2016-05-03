@@ -25,7 +25,7 @@ impl Scheduler {
 
   }
 
-  pub fn idle(&self) {
+  pub fn idle(&self) -> ! {
     loop {
       self.halt();
     }
