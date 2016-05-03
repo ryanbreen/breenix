@@ -66,7 +66,7 @@ fn cpu_exception_handler(ctx: &InterruptContext) {
       _ => {}
   }
 
-  loop {}
+  ::state().scheduler.idle();
 }
 
 /// Called from our assembly-language interrupt handlers to dispatch an

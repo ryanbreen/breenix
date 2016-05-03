@@ -5,9 +5,12 @@ use collections::vec::Vec;
 use event::IsListener;
 use event::keyboard::KeyEvent;
 
+use task::scheduler::Scheduler;
+
 pub struct State {
   pub key_listeners: Vec<Box<IsListener<KeyEvent>>>,
   pub interrupt_count: [u64; 256],
+  pub scheduler: Scheduler,
 }
 
 impl State {
@@ -15,6 +18,7 @@ impl State {
     box State {
       key_listeners: Vec::new(),
       interrupt_count: [0; 256],
+      scheduler: Scheduler::new(),
     }
   }
 }
