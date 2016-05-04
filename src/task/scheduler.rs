@@ -25,6 +25,14 @@ impl Scheduler {
 
   }
 
+  pub fn disable_interrupts(&self) {
+    asm!("cli");
+  }
+
+  pub fn enable_interrupts(&self) {
+    asm!("sti");
+  }
+
   pub fn idle(&self) -> ! {
     loop {
       self.halt();
