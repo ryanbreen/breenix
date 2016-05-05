@@ -26,11 +26,15 @@ impl Scheduler {
   }
 
   pub fn disable_interrupts(&self) {
-    asm!("cli");
+    unsafe {
+      asm!("cli");
+    }
   }
 
   pub fn enable_interrupts(&self) {
-    asm!("sti");
+    unsafe {
+      asm!("sti");
+    }
   }
 
   pub fn idle(&self) -> ! {
