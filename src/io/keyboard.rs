@@ -161,6 +161,6 @@ pub fn read() {
     }
   }
 
-  state::dispatch_key_event(&KeyEvent::new(scancode, 0 as char, &state.modifiers));
+  state::dispatch_key_event(&KeyEvent::new(scancode, '0', &state.modifiers));
 }
 
