@@ -314,18 +314,18 @@ pub struct SlabAllocator {
 impl fmt::Debug for SlabAllocator {
   #[allow(unused_must_use)]
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}\n", self.size, self.slabs.len());
+    write!(f, "   Slab Allocator allocation size: {}, allocated slabs: {}", self.size, self.slabs.len());
 
     if self.size < BASE_PAGE_SIZE {
       for slab in self.slabs.iter() {
         match slab {
           &None => panic!("Invalid slab"),
-          &Some(ref s) => write!(f, "      {:?}", s),
+          &Some(ref s) => write!(f, "\n      {:?}", s),
         };
       }
-      write!(f, "\n");
     }
-    Ok(())
+
+    write!(f, "\n")
   }
 }
 
