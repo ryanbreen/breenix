@@ -21,6 +21,8 @@ pub mod interrupts;
 
 pub mod pci;
 
+pub mod serial;
+
 pub mod timer;
 
 /// This trait is defined for any type which can be read or written over a
@@ -165,6 +167,7 @@ impl ChainedPics {
 
 pub fn initialize() {
   interrupts::initialize();
+  serial::initialize();
   timer::initialize();
   pci::initialize();
   event::keyboard::initialize();
