@@ -17,10 +17,10 @@ clean:
 	@rm -r target
 
 run: $(iso)
-	@qemu-system-x86_64 -hda $(iso) -m 5G -serial stdio
+	@qemu-system-x86_64 -hda $(iso) -m 5G -serial stdio 2>&1
 
 run_once: $(iso)
-	@qemu-system-x86_64 -hda $(iso) -m 5G -no-shutdown -no-reboot -d int -serial stdio
+	@qemu-system-x86_64 -hda $(iso) -m 5G -no-shutdown -no-reboot -d int -serial stdio 2>&1
 
 debug: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G -d int -no-reboot -s -S

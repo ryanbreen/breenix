@@ -12,7 +12,7 @@ unsafe fn write_serial(c: char) {
   outb(COM1, c as u8);
 }
 
-pub fn write(s: &'static str) {
+pub fn write(s: &str) {
   for c in s.chars() {
     unsafe { write_serial(c); }
   }
@@ -28,6 +28,6 @@ pub fn initialize() {
     outb(COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
     outb(COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
 
-    write("hello world\n");
+    write("serial port initialized\n");
   }
 }

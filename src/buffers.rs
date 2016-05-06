@@ -5,6 +5,7 @@ use vga_writer::{ScreenChar, ColorCode, Color};
 
 use constants::vga::{GREEN_BLANK,GRAY_BLANK,RED_BLANK,BUFFER_WIDTH,BUFFER_HEIGHT};
 
+use io::serial;
 use io::timer;
 
 pub struct Buffer {
@@ -101,6 +102,8 @@ impl ::core::fmt::Write for Buffer {
     for byte in s.bytes() {
       self.write_byte(byte)
     }
+
+    serial::write(s);
 
     Ok(())
   }
