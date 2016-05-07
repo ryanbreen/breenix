@@ -17,6 +17,16 @@ pub fn write(s: &str) {
   }
 }
 
+unsafe fn serial_received() -> u8 {
+  return inb(COM1 + 5) & 1;
+}
+
+unsafe fn read_serial() -> char {
+  while serial_received() == 0 {}
+
+  return inb(COM1) as char;
+}
+
 pub fn initialize() {
   unsafe {
     outb(COM1 + 1, 0x00);    // Disable all interrupts
@@ -28,5 +38,7 @@ pub fn initialize() {
     outb(COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
 
     write("serial port initialized\n");
+
+    //println!("Input seen: {}", read_serial());
   }
 }

@@ -83,6 +83,24 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
     0x21 => {
       keyboard::read();
     }
+    0x2B => {
+      println!("Beans");
+    }
+    0x2A => {
+      println!("Beans");
+    }
+    0x29 => {
+      println!("Beans");
+    }
+    0x28 => {
+      println!("Beans");
+    }
+    0x27 => {
+      println!("Beans");
+    }
+    0x26 => {
+      println!("Beans");
+    }
     /* On Linux, this is used for syscalls.  Good enough for me. */
     0x80 => {
       unsafe {
