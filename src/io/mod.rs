@@ -148,15 +148,6 @@ impl ChainedPics {
     wait();
     self.pics[1].data.write(MODE_8086);
     wait();
-
-    self.pics[0].data.write(0);
-    //self.pics[0].data.write(saved_mask1);
-    self.pics[1].data.write(saved_mask2);
-
-    wait();
-
-    let saved_mask1 = self.pics[0].data.read();
-    println!("saved_mask1: {:b} {:o} {} {:x}", saved_mask1, saved_mask1, saved_mask1, saved_mask1);
   }
 
   pub fn handles_interrupt(&self, interrupt_id: u8) -> bool {

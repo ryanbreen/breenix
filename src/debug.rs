@@ -41,11 +41,11 @@ pub fn handle_serial_input(c:u8) {
         handle_serial_input(c);
       },
       Some(ref mut buf) => {
-        buf.push(c as u8);
-
         if c == 0xD {
           interpret_command(str::from_utf8(buf).unwrap());
           COMMAND_BUFFER = Some(&mut *Box::into_raw(box vec!()));
+        } else {
+          buf.push(c as u8);
         }
       }
     }
@@ -54,4 +54,10 @@ pub fn handle_serial_input(c:u8) {
 
 fn interpret_command(cmd: &'static str) {
   println!("Serial Input: {}", cmd);
+
+  match cmd {
+    "help" => println!("Commands:"),
+    "debug" => debug(),
+    _ => println!("Unknown command {}", cmd),
+  }
 }
