@@ -6,15 +6,17 @@ unsafe fn is_transmit_empty() -> u8 {
   return inb(COM1 + 5) & 0x20;
 }
  
-unsafe fn write_serial(c: char) {
-  while is_transmit_empty() == 0 {}
+pub fn write_char(c: char) {
+  unsafe {
+    while is_transmit_empty() == 0 {}
 
-  outb(COM1, c as u8);
+    outb(COM1, c as u8);
+  }
 }
 
 pub fn write(s: &str) {
   for c in s.chars() {
-    unsafe { write_serial(c); }
+    write_char(c);
   }
 }
 
@@ -22,16 +24,16 @@ unsafe fn serial_received() -> u8 {
   return inb(COM1 + 5) & 1;
 }
 
-unsafe fn read_serial() -> char {
-  while serial_received() == 0 {}
+fn read_char() -> char {
+  unsafe {
+    while serial_received() == 0 {}
 
-  return inb(COM1) as char;
+    inb(COM1) as char
+  }
 }
 
 pub fn read() {
-  unsafe {
-    debug::handle_serial_input(read_serial() as u8);
-  }
+  debug::handle_serial_input(read_char() as u8);
 }
 
 pub fn initialize() {

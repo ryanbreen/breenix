@@ -3,6 +3,7 @@ use buffers::DEBUG_BUFFER;
 use collections::vec::Vec;
 use core::fmt::Write;
 use core::str;
+use io::serial;
 use x86::msr::{IA32_EFER,TSC,MSR_MCG_RFLAGS};
 use x86::msr::rdmsr;
 use x86::time::rdtsc;
@@ -45,19 +46,42 @@ pub fn handle_serial_input(c:u8) {
           interpret_command(str::from_utf8(buf).unwrap());
           COMMAND_BUFFER = Some(&mut *Box::into_raw(box vec!()));
         } else {
-          buf.push(c as u8);
+          // Echo to the serial terminal so we aren't typing blind.
+          serial::write_char(c as char);
+          buf.push(c);
         }
       }
     }
   }
 }
 
-fn interpret_command(cmd: &'static str) {
-  println!("Serial Input: {}", cmd);
+const HELP_COMMAND:&'static str = "help";
+const HELP_MNEMONIC:&'static str = "h";
+const HELP_DESCRIPTION:&'static str = "Print this help message.";
+const DEBUG_COMMAND:&'static str = "debug";
+const DEBUG_MNEMOIC:&'static str = "d";
+const DEBUG_DESCRIPTION:&'static str = "Dump debug output.";
 
+const COMMANDS:[&'static str;2] = [HELP_COMMAND, DEBUG_COMMAND];
+const MNEMONICS:[&'static str;2] = [HELP_MNEMONIC, DEBUG_MNEMOIC];
+const DESCRIPTIONS:[&'static str;2] = [HELP_DESCRIPTION, DEBUG_DESCRIPTION];
+
+fn usage() {
+  println!("Commands:");
+  for i in 0..COMMANDS.len() {
+    println!("\t{} ({}) - {}", COMMANDS[i], MNEMONICS[i], DESCRIPTIONS[i]);
+  }
+}
+
+fn interpret_command(cmd: &'static str) {
   match cmd {
-    "help" => println!("Commands:"),
-    "debug" => debug(),
-    _ => println!("Unknown command {}", cmd),
+    HELP_COMMAND | HELP_MNEMONIC => {
+      usage();
+    },
+    DEBUG_COMMAND | DEBUG_MNEMOIC => debug(),
+    _ => {
+      println!("Unknown command {}", cmd);
+      usage();
+    },
   }
 }
