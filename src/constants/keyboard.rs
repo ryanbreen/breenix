@@ -1,3 +1,5 @@
+pub const PORT:u16 = 0x60;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Key {
   pub lower: char,

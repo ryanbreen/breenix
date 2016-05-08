@@ -4,7 +4,7 @@ use io::Port;
 
 use state;
 
-use constants::keyboard::{Key, KEYS};
+use constants::keyboard::{Key, KEYS, PORT};
 
 use event::{EventType,IsEvent};
 
@@ -130,7 +130,7 @@ impl Modifiers {
 
 /// Our global keyboard state, protected by a mutex.
 static STATE: Mutex<State> = Mutex::new(State {
-  port: unsafe { Port::new(0x60) },
+  port: unsafe { Port::new(PORT) },
   modifiers: Modifiers::new(),
 });
 

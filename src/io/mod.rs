@@ -83,8 +83,8 @@ struct Pic {
 }
 
 impl Pic {
-  fn handles_interrupt(&self, interupt_id: u8) -> bool {
-    self.offset <= interupt_id && interupt_id < self.offset + 8
+  fn handles_interrupt(&self, interrupt_id: u8) -> bool {
+    self.offset <= interrupt_id && interrupt_id < self.offset + 8
   }
 
   unsafe fn end_of_interrupt(&mut self) {
@@ -122,6 +122,8 @@ impl ChainedPics {
     let saved_mask1 = self.pics[0].data.read();
     let saved_mask2 = self.pics[1].data.read();
 
+    println!("saved_mask1: {:b} {:o} {} {:x}", saved_mask1, saved_mask1, saved_mask1, saved_mask1);
+
      // Tell each PIC that we're going to send it a three-byte
     // initialization sequence on its data port.
     self.pics[0].command.write(CMD_INIT);
@@ -147,8 +149,14 @@ impl ChainedPics {
     self.pics[1].data.write(MODE_8086);
     wait();
 
-    self.pics[0].data.write(saved_mask1);
+    self.pics[0].data.write(0);
+    //self.pics[0].data.write(saved_mask1);
     self.pics[1].data.write(saved_mask2);
+
+    wait();
+
+    let saved_mask1 = self.pics[0].data.read();
+    println!("saved_mask1: {:b} {:o} {} {:x}", saved_mask1, saved_mask1, saved_mask1, saved_mask1);
   }
 
   pub fn handles_interrupt(&self, interrupt_id: u8) -> bool {

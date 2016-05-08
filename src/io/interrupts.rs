@@ -3,9 +3,7 @@ use core::ptr;
 use spin::Mutex;
 use x86;
 use x86::irq::IdtEntry;
-use io::{keyboard,timer,ChainedPics};
-
-use constants::timer::{TIMER_INTERRUPT};
+use io::{keyboard,serial,timer,ChainedPics};
 
 const IDT_SIZE: usize = 256;
 
@@ -77,29 +75,14 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
 
   match ctx.int_id {
     0x00...0x0F => cpu_exception_handler(ctx),
-    TIMER_INTERRUPT => {
+    0x20 => {
       timer::timer_interrupt();
     }
     0x21 => {
       keyboard::read();
     }
-    0x2B => {
-      println!("Beans");
-    }
-    0x2A => {
-      println!("Beans");
-    }
-    0x29 => {
-      println!("Beans");
-    }
-    0x28 => {
-      println!("Beans");
-    }
-    0x27 => {
-      println!("Beans");
-    }
-    0x26 => {
-      println!("Beans");
+    0x24 => {
+      serial::read();
     }
     /* On Linux, this is used for syscalls.  Good enough for me. */
     0x80 => {
@@ -113,7 +96,8 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
       println!("Syscall {:?}", ctx)
     },
     _ => {
-      println!("UNKNOWN INTERRUPT #{}", ctx.int_id);
+      //println!("UNKNOWN INTERRUPT #{}", ctx.int_id);
+      ::state().interrupt_count[0 as usize] += 1;
     }
   }
 

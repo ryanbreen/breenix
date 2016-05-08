@@ -27,6 +27,12 @@ unsafe fn read_serial() -> char {
   return inb(COM1) as char;
 }
 
+pub fn read() {
+  unsafe {
+    let c = read_serial();
+  }
+}
+
 pub fn initialize() {
   unsafe {
     outb(COM1 + 1, 0x00);    // Disable all interrupts
@@ -36,9 +42,8 @@ pub fn initialize() {
     outb(COM1 + 3, 0x03);    // 8 bits, no parity, one stop bit
     outb(COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
     outb(COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
+    outb(COM1 + 1, 0x01);    // Disable all interrupts
 
     write("serial port initialized\n");
-
-    //println!("Input seen: {}", read_serial());
   }
 }
