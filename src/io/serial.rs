@@ -1,3 +1,4 @@
+use debug;
 use constants::serial::COM1;
 use x86::io::{inb,outb};
 
@@ -29,8 +30,7 @@ unsafe fn read_serial() -> char {
 
 pub fn read() {
   unsafe {
-    let c = read_serial();
-    println!("{}", c as u8);
+    debug::handle_serial_input(read_serial() as u8);
   }
 }
 

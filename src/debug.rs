@@ -1,7 +1,8 @@
-
+use alloc::boxed::Box;
 use buffers::DEBUG_BUFFER;
-
+use collections::vec::Vec;
 use core::fmt::Write;
+use core::str;
 use x86::msr::{IA32_EFER,TSC,MSR_MCG_RFLAGS};
 use x86::msr::rdmsr;
 use x86::time::rdtsc;
@@ -27,4 +28,30 @@ pub fn debug() {
       memory::frame_allocator().allocated_frame_count()));
     buffer.write_fmt(format_args!("{:?}\n", memory::slab_allocator::zone_allocator()));
   }
+}
+
+static mut COMMAND_BUFFER:Option<&'static mut Vec<u8>> = None;
+
+pub fn handle_serial_input(c:u8) {
+
+  unsafe {
+    match COMMAND_BUFFER {
+      None => {
+        COMMAND_BUFFER = Some(&mut *Box::into_raw(box vec!()));
+        handle_serial_input(c);
+      },
+      Some(ref mut buf) => {
+        buf.push(c as u8);
+
+        if c == 0xD {
+          interpret_command(str::from_utf8(buf).unwrap());
+          COMMAND_BUFFER = Some(&mut *Box::into_raw(box vec!()));
+        }
+      }
+    }
+  }
+}
+
+fn interpret_command(cmd: &'static str) {
+  println!("Serial Input: {}", cmd);
 }

@@ -549,7 +549,7 @@ impl SlabPage {
         match self.first_fit(size, alignment) {
             Some((idx, addr)) => {
                 self.set_bit(idx);
-                println!("base addr is {:o} for {} of {}", addr, size, self.size);
+                //println!("base addr is {:o} for {} of {}", addr, size, self.size);
                 Some(unsafe { mem::transmute::<usize, *mut u8>(addr) })
             }
             None => None
