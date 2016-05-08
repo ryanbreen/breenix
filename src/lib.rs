@@ -33,6 +33,7 @@ extern crate x86;
 
 mod buffers;
 mod constants;
+mod debug;
 mod event;
 mod memory;
 mod vga_writer;

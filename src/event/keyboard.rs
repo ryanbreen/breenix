@@ -1,5 +1,6 @@
 use buffers;
 use buffers::KEYBOARD_BUFFER;
+use debug;
 
 use constants;
 use event::{EventType,IsListener};
@@ -72,7 +73,7 @@ impl IsListener<KeyEvent> for DebugWatcher {
   #[allow(unused_variables)]
   fn notify(&self, ev: &KeyEvent) {
     // Switch buffers
-    buffers::debug();
+    debug::debug();
   }
 }
 

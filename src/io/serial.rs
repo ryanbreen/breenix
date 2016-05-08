@@ -30,6 +30,7 @@ unsafe fn read_serial() -> char {
 pub fn read() {
   unsafe {
     let c = read_serial();
+    println!("{}", c as u8);
   }
 }
 

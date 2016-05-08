@@ -6,7 +6,6 @@ use vga_writer::{ScreenChar, ColorCode, Color};
 use constants::vga::{GREEN_BLANK,GRAY_BLANK,RED_BLANK,BUFFER_WIDTH,BUFFER_HEIGHT};
 
 use io::serial;
-use io::timer;
 
 pub struct Buffer {
   pub chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
@@ -132,32 +131,6 @@ pub static DEBUG_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
   chars: [[GRAY_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
   active: false,
 });
-
-#[allow(unused_must_use)]
-pub fn debug() {
-  use core::fmt::Write;
-  use x86::msr::{IA32_EFER,TSC,MSR_MCG_RFLAGS};
-  use x86::msr::rdmsr;
-  use x86::time::rdtsc;
-
-  use memory;
-
-  let mut buffer = DEBUG_BUFFER.lock();
-  unsafe {
-    let time = timer::time_since_start();
-    buffer.write_fmt(format_args!("-------------------------------\n"));
-    buffer.write_fmt(format_args!("Time: {}.{}\n", time.secs, time.nanos));
-    buffer.write_fmt(format_args!("rdtsc: 0x{:x}\n", rdtsc()));
-    buffer.write_fmt(format_args!("msr IA32_EFER: 0x{:x}\n", rdmsr(IA32_EFER)));
-    buffer.write_fmt(format_args!("msr TSC: 0x{:x}\n", rdmsr(TSC)));
-    buffer.write_fmt(format_args!("msr MSR_MCG_RFLAGS: 0x{:x}\n", rdmsr(MSR_MCG_RFLAGS)));
-    buffer.write_fmt(format_args!("interrupt count: 0x20={}, 0x21={}, 0x80={}\n",
-      ::state().interrupt_count[0x20], ::state().interrupt_count[0x21], ::state().interrupt_count[0x80]));
-    buffer.write_fmt(format_args!("allocated frame count: 0={}\n",
-      memory::frame_allocator().allocated_frame_count()));
-    buffer.write_fmt(format_args!("{:?}\n", memory::slab_allocator::zone_allocator()));
-  }
-}
 
 pub static mut ACTIVE_BUFFER:&'static Mutex<Buffer> = &PRINT_BUFFER;
 static mut INACTIVE_BUFFERS:[&'static Mutex<Buffer>;2] = [&DEBUG_BUFFER, &KEYBOARD_BUFFER];

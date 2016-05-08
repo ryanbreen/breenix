@@ -23,6 +23,6 @@ macro_rules! format {
 
 macro_rules! debug {
   ($($arg:tt)*) => ({
-    $crate::buffers::debug();
+    $crate::debug::debug();
   });
 }
