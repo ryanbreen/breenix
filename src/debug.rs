@@ -47,7 +47,9 @@ pub fn handle_serial_input(c:u8) {
           COMMAND_BUFFER = Some(&mut *Box::into_raw(box vec!()));
         } else {
           // Echo to the serial terminal so we aren't typing blind.
+          // TODO: Figure out why this requires a newline to flush.
           serial::write_char(c as char);
+          serial::write_char('\n');
           buf.push(c);
         }
       }

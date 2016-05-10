@@ -22,7 +22,36 @@ impl Scheduler {
   }
 
   pub fn schedule(&mut self) {
+    unsafe {
+      self.disable_interrupts();
 
+      println!("Test call is at 0x{:x}", &::test_call as * const _ as usize);
+
+      asm!("push %rax" ::: "{rax}");
+      asm!("push %rcx" ::: "{rcx}");
+      asm!("push %rdx" ::: "{rdx}");
+      asm!("push %r8" ::: "{r8}");
+      asm!("push %r9" ::: "{r9}");
+      asm!("push %r10" ::: "{r10}");
+      asm!("push %r11" ::: "{r11}");
+      asm!("push %rdi" ::: "{rdi}");
+      asm!("push %rsi" ::: "{rsi}");
+
+      let addr = 0x107810;
+      asm!("callq $a" :: "a"(addr));
+
+      asm!("pop %rsi" ::: "{rsi}");
+      asm!("pop %rdi" ::: "{rdi}");
+      asm!("pop %r11" ::: "{r11}");
+      asm!("pop %r10" ::: "{r10}");
+      asm!("pop %r9" ::: "{r9}");
+      asm!("pop %r8" ::: "{r8}");
+      asm!("pop %rdx" ::: "{rdx}");
+      asm!("pop %rcx" ::: "{rcx}");
+      asm!("pop %rax" ::: "{rax}");
+
+      self.enable_interrupts();
+    }
   }
 
   pub fn disable_interrupts(&self) {
