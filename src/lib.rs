@@ -77,7 +77,6 @@ fn enable_write_protect_bit() {
   unsafe { cr0_write(cr0() | wp_bit) };
 }
 
-#[inline(never)]
 pub fn test_call() {
   println!("I am a function");
   println!("I got called!");
@@ -118,8 +117,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   println!("Created a vector with {} items?  Bananas. {}", vec.len(), vec[127]);
   
   debug!();
-
-  test_call();
 
   state().scheduler.schedule();
 

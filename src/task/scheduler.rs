@@ -25,7 +25,8 @@ impl Scheduler {
     unsafe {
       self.disable_interrupts();
 
-      println!("Test call is at 0x{:x}", &::test_call as * const _ as usize);
+      let addr = ::test_call as * const () as usize;
+      println!("Test call is at 0x{:x}", addr);
 
       asm!("push %rax" ::: "{rax}");
       asm!("push %rcx" ::: "{rcx}");
@@ -37,8 +38,7 @@ impl Scheduler {
       asm!("push %rdi" ::: "{rdi}");
       asm!("push %rsi" ::: "{rsi}");
 
-      let addr = 0x107810;
-      asm!("callq $a" :: "a"(addr));
+      asm!("jmpq $a" :: "a"(addr));
 
       asm!("pop %rsi" ::: "{rsi}");
       asm!("pop %rdi" ::: "{rdi}");
