@@ -104,7 +104,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
   use alloc::boxed::Box;
   use collections::Vec;
   let mut vec:Box<Vec<&'static str>> = Box::new(Vec::new());
-  //println!("Allocated vec at {:o}", Box::into_raw(vec) as *const _ as u64);
 
   println!("{} {}", unsafe { tiered_allocator::BOOTSTRAP_ALLOCS }, unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE } );
 

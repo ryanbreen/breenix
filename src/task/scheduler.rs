@@ -38,7 +38,7 @@ impl Scheduler {
       asm!("push %rdi" ::: "{rdi}");
       asm!("push %rsi" ::: "{rsi}");
 
-      asm!("jmpq $a" :: "a"(addr));
+      asm!("call $a" :: "a"(addr));
 
       asm!("pop %rsi" ::: "{rsi}");
       asm!("pop %rdi" ::: "{rdi}");
