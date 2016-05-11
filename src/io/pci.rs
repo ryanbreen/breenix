@@ -123,14 +123,14 @@ impl FunctionInfo {
   }
 
   /// Read
-  pub unsafe fn read(&mut self, offset: u8) -> u32 {
+  pub unsafe fn read(&self, offset: u8) -> u32 {
     let address = self.address(offset);
     PCI.lock().address.write(address);
     return PCI.lock().data.read();
   }
 
   /// Write
-  pub unsafe fn write(&mut self, offset: u8, value: u32) {
+  pub unsafe fn write(&self, offset: u8, value: u32) {
     let address = self.address(offset);
     PCI.lock().address.write(address);
     PCI.lock().data.write(value);
@@ -144,13 +144,13 @@ static PCI: Mutex<Pci> = Mutex::new(Pci {
 
 /// Iterator over all functions on our PCI bus.
 pub struct FunctionIterator {
-    // Invariant: The fields in this struct point at the _next_ device to
-    // probe our PCI bus for.
-    done: bool,
-    bus: u8,
-    device: u8,
-    multifunction: bool,
-    function: u8,
+  // Invariant: The fields in this struct point at the _next_ device to
+  // probe our PCI bus for.
+  done: bool,
+  bus: u8,
+  device: u8,
+  multifunction: bool,
+  function: u8,
 }
 
 const MAX_BUS: u8 = 255;
@@ -221,6 +221,22 @@ pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<FunctionInfo> {
     let functions = functions();
     for function in functions {
       if function.device_id == device_id && function.vendor_id == vendor_id {
+
+        unsafe {
+          for i in 0..6 {
+            let bar = function.read(i * 4 + 0x10);
+            if bar > 0 {
+              println!(" BAR{}: {:X}", i, bar);
+              function.write(i * 4 + 0x10, 0xFFFFFFFF);
+              let size = (0xFFFFFFFF - (function.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
+              function.write(i * 4 + 0x10, bar);
+              if size > 0 {
+                println!(" {}", size);
+              }
+            }
+          }
+        }
+
         return Some(function);
       }
     }
