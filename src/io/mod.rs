@@ -25,6 +25,8 @@ pub mod serial;
 
 pub mod timer;
 
+mod drivers;
+
 /// This trait is defined for any type which can be read or written over a
 /// port.  The processor supports I/O with `u8`, `u16` and `u32`.  The
 /// functions in this trait are all unsafe because they can write to
@@ -170,4 +172,6 @@ pub fn initialize() {
   timer::initialize();
   pci::initialize();
   event::keyboard::initialize();
+
+  drivers::network::e1000::initialize();
 }

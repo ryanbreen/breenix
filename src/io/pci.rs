@@ -58,7 +58,7 @@ impl Pci {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum DeviceClass {
@@ -93,7 +93,7 @@ impl DeviceClass {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct FunctionInfo {
     bus: u8,
     device: u8,
@@ -194,6 +194,17 @@ pub fn functions() -> FunctionIterator {
         multifunction: false,
         function: 0,
     }
+}
+
+pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<FunctionInfo> {
+    let functions = functions();
+    for function in functions {
+      if function.device_id == device_id && function.vendor_id == vendor_id {
+        return Some(function);
+      }
+    }
+
+    None
 }
 
 /// NOTE: Does not initialize anything.  I'm an asshole.
