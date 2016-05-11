@@ -116,9 +116,30 @@ impl fmt::Display for FunctionInfo {
     }
 }
 
+impl FunctionInfo {
+  fn address(&self, offset: u8) -> u32 {
+    return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
+           (self.function as u32) << 8 | (offset as u32 & 0xFC);
+  }
+
+  /// Read
+  pub unsafe fn read(&mut self, offset: u8) -> u32 {
+    let address = self.address(offset);
+    PCI.lock().address.write(address);
+    return PCI.lock().data.read();
+  }
+
+  /// Write
+  pub unsafe fn write(&mut self, offset: u8, value: u32) {
+    let address = self.address(offset);
+    PCI.lock().address.write(address);
+    PCI.lock().data.write(value);
+  }
+}
+
 static PCI: Mutex<Pci> = Mutex::new(Pci {
-    address: unsafe { Port::new(0xCF8) },
-    data: unsafe { Port::new(0xCFC) },
+  address: unsafe { Port::new(0xCF8) },
+  data: unsafe { Port::new(0xCFC) },
 });
 
 /// Iterator over all functions on our PCI bus.

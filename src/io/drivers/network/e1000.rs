@@ -7,10 +7,10 @@ pub fn initialize() {
   let network_device:Option<pci::FunctionInfo> = pci::pci_find_device(VENDOR_ID, DEVICE_ID);
 
   if !network_device.is_some() {
-    println!("net::e1000 not found");
+    println!("NET - e1000 not found");
     return;
   }
 
-  println!("net::{:?}", network_device);
+  println!("NET - Found network device {:?}", network_device);
 
 }
