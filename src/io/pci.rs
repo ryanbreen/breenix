@@ -135,6 +135,24 @@ impl FunctionInfo {
     PCI.lock().address.write(address);
     PCI.lock().data.write(value);
   }
+
+  pub fn space_needed(&self) -> u32 {
+    unsafe {
+      for i in 0..6 {
+        let bar = self.read(i * 4 + 0x10);
+        if bar > 0 {
+          self.write(i * 4 + 0x10, 0xFFFFFFFF);
+          let size = (0xFFFFFFFF - (self.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
+          self.write(i * 4 + 0x10, bar);
+          if size > 0 {
+            return size;
+          }
+        }
+      }
+
+      return 0;
+    }
+  }
 }
 
 static PCI: Mutex<Pci> = Mutex::new(Pci {
@@ -221,22 +239,6 @@ pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<FunctionInfo> {
     let functions = functions();
     for function in functions {
       if function.device_id == device_id && function.vendor_id == vendor_id {
-
-        unsafe {
-          for i in 0..6 {
-            let bar = function.read(i * 4 + 0x10);
-            if bar > 0 {
-              println!(" BAR{}: {:X}", i, bar);
-              function.write(i * 4 + 0x10, 0xFFFFFFFF);
-              let size = (0xFFFFFFFF - (function.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
-              function.write(i * 4 + 0x10, bar);
-              if size > 0 {
-                println!(" {}", size);
-              }
-            }
-          }
-        }
-
         return Some(function);
       }
     }
