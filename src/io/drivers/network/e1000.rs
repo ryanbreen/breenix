@@ -14,6 +14,10 @@ pub fn initialize() {
   }
 
   let e1000 = network_device.unwrap();
-  println!("NET - Found network device that needs {} of space", e1000.space_needed());
+  let irq = unsafe { e1000.read(0x3C) as u8 & 0xF };
+  let interrupt_pin = unsafe { e1000.read(0x3D) as u8 & 0xF };
+  let cmd = unsafe { e1000.read(0x04) };
+  println!("NET - Found network device that needs {} of space, irq is {}, interrupt pin {}, command {}",
+    e1000.space_needed(), irq, interrupt_pin, cmd);
 
 }
