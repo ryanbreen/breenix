@@ -25,7 +25,8 @@ impl KeyEvent {
       scancode: scancode,
       character: character,
       controls: ControlKeyState {
-        ctrl: modifiers.l_cmd || modifiers.r_cmd,
+        cmd: modifiers.l_cmd || modifiers.r_cmd,
+        ctrl: modifiers.l_ctrl,
         alt: modifiers.l_alt || modifiers.r_alt,
         shift: modifiers.l_shift || modifiers.r_shift,
         caps_lock: modifiers.caps_lock,
@@ -53,6 +54,7 @@ struct State {
 
 #[allow(dead_code)]
 struct Modifiers {
+  l_ctrl: bool,
   l_shift: bool,
   r_shift: bool,
   caps_lock: bool,
@@ -66,6 +68,7 @@ struct Modifiers {
 impl Modifiers {
   const fn new() -> Modifiers {
     Modifiers {
+      l_ctrl: false,
       l_shift: false,
       r_shift: false,
       caps_lock: false,
@@ -96,10 +99,13 @@ impl Modifiers {
       }
     } else {
       match scancode {
+
         0x2A => self.l_shift = true,
         0xAA => self.l_shift = false,
         0x36 => self.r_shift = true,
         0xB6 => self.r_shift = false,
+        0x1D => self.l_ctrl = true,
+        0x9D => self.l_ctrl = false,
         0x3A => self.caps_lock = !self.caps_lock,
         _ => {},
       }
@@ -142,10 +148,11 @@ pub fn read() {
   // Read a single scancode off our keyboard port.
   let scancode:u8 = state.port.read();
 
-  //println!("{:x}", scancode);
-
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
+
+  println!("{:x}", scancode);
+
   // We don't map any keys > 127.
   if scancode > 127 {
     return;

@@ -8,6 +8,7 @@ use event::{EventType,IsListener};
 #[derive(Clone, Copy)]
 pub struct ControlKeyState {
   pub ctrl: bool,
+  pub cmd: bool,
   pub alt: bool,
   pub shift: bool,
   pub caps_lock: bool,
@@ -53,7 +54,8 @@ pub struct ToggleWatcher{}
 
 impl IsListener<KeyEvent> for ToggleWatcher {
   fn handles_event(&self, ev: &KeyEvent) -> bool {
-    ev.scancode == constants::keyboard::S_KEY.scancode && ev.controls.ctrl
+    println!("{:x} {:x} {}", ev.scancode, constants::keyboard::S_KEY.scancode, ev.controls.ctrl);
+    ev.scancode == constants::keyboard::S_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
   }
 
   #[allow(unused_variables)]

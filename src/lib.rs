@@ -113,7 +113,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     vec.push(my_str);
   }
 
-  println!("Created a vector with {} items?  Bananas. {}", vec.len(), vec[127]);
+  println!("Created a vector with {} items?  Great work. {}", vec.len(), vec[127]);
   
   debug!();
 
