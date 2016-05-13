@@ -89,26 +89,19 @@ impl Modifiers {
 
     //println!("{:x} {:x}", self.last_key, scancode);
 
-    if self.last_key == 0xE0 {
-      match scancode {
-        0x5B => self.l_cmd = true,
-        0xDB => self.l_cmd = false,
-        0x5C => self.r_cmd = true,
-        0xDC => self.r_cmd = false,
-        _ => {},
-      }
-    } else {
-      match scancode {
-
-        0x2A => self.l_shift = true,
-        0xAA => self.l_shift = false,
-        0x36 => self.r_shift = true,
-        0xB6 => self.r_shift = false,
-        0x1D => self.l_ctrl = true,
-        0x9D => self.l_ctrl = false,
-        0x3A => self.caps_lock = !self.caps_lock,
-        _ => {},
-      }
+    match scancode {
+      0x5B => self.l_cmd = true,
+      0xDB => self.l_cmd = false,
+      0x5C => self.r_cmd = true,
+      0xDC => self.r_cmd = false,
+      0x2A => self.l_shift = true,
+      0xAA => self.l_shift = false,
+      0x36 => self.r_shift = true,
+      0xB6 => self.r_shift = false,
+      0x1D => self.l_ctrl = true,
+      0x9D => self.l_ctrl = false,
+      0x3A => self.caps_lock = !self.caps_lock,
+      _ => {},
     }
 
     self.last_key = scancode;
@@ -147,6 +140,16 @@ pub fn read() {
 
   // Read a single scancode off our keyboard port.
   let scancode:u8 = state.port.read();
+
+  if scancode == 0xE0 {
+    // Ignore
+    return;
+  }
+
+  if scancode == state.modifiers.last_key {
+    // Ignore repeats.
+    return;
+  }
 
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
