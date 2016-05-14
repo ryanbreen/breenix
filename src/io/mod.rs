@@ -121,12 +121,7 @@ impl ChainedPics {
     let mut wait_port: Port<u8> = Port::new(0x80);
     let mut wait = || { wait_port.write(0) };
 
-    let saved_mask1 = self.pics[0].data.read();
-    let saved_mask2 = self.pics[1].data.read();
-
-    println!("saved_mask1: {:b} {:o} {} {:x}", saved_mask1, saved_mask1, saved_mask1, saved_mask1);
-
-     // Tell each PIC that we're going to send it a three-byte
+    // Tell each PIC that we're going to send it a three-byte
     // initialization sequence on its data port.
     self.pics[0].command.write(CMD_INIT);
     wait();
