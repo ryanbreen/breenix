@@ -146,15 +146,10 @@ pub fn read() {
     return;
   }
 
-  if scancode == state.modifiers.last_key {
-    // Ignore repeats.
-    return;
-  }
-
   // Give our modifiers first crack at this.
   state.modifiers.update(scancode);
 
-  println!("{:x}", scancode);
+  // println!("{:x}", scancode);
 
   // We don't map any keys > 127.
   if scancode > 127 {

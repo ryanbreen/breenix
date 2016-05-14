@@ -54,7 +54,7 @@ pub struct ToggleWatcher{}
 
 impl IsListener<KeyEvent> for ToggleWatcher {
   fn handles_event(&self, ev: &KeyEvent) -> bool {
-    println!("{:x} {:x} {}", ev.scancode, constants::keyboard::S_KEY.scancode, ev.controls.ctrl);
+    // println!("{:x} {:x} {}", ev.scancode, constants::keyboard::S_KEY.scancode, ev.controls.ctrl);
     ev.scancode == constants::keyboard::S_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
   }
 
@@ -69,7 +69,7 @@ pub struct DebugWatcher{}
 
 impl IsListener<KeyEvent> for DebugWatcher {
   fn handles_event(&self, ev: &KeyEvent) -> bool {
-    ev.scancode == constants::keyboard::D_KEY.scancode && ev.controls.ctrl
+    ev.scancode == constants::keyboard::D_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
   }
 
   #[allow(unused_variables)]
