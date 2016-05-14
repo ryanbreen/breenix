@@ -170,7 +170,5 @@ pub fn read() {
       return;
     }
   }
-
-  state::dispatch_key_event(&KeyEvent::new(scancode, '0', &state.modifiers));
 }
 
