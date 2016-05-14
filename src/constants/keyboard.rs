@@ -1,3 +1,4 @@
+pub const KEYBOARD_INTERRUPT:u32 = 0x21;
 pub const PORT:u16 = 0x60;
 
 #[derive(Debug, Clone, Copy)]

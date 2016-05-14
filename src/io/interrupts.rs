@@ -3,6 +3,10 @@ use core::ptr;
 use spin::Mutex;
 use x86;
 use x86::irq::IdtEntry;
+
+use constants::keyboard::KEYBOARD_INTERRUPT;
+use constants::serial::SERIAL_INTERRUPT;
+use constants::timer::TIMER_INTERRUPT;
 use io::{keyboard,serial,timer,ChainedPics};
 
 const IDT_SIZE: usize = 256;
@@ -75,13 +79,13 @@ pub fn rust_interrupt_handler(ctx: &InterruptContext) {
 
   match ctx.int_id {
     0x00...0x0F => cpu_exception_handler(ctx),
-    0x20 => {
+    TIMER_INTERRUPT => {
       timer::timer_interrupt();
     }
-    0x21 => {
+    KEYBOARD_INTERRUPT => {
       keyboard::read();
     }
-    0x24 => {
+    SERIAL_INTERRUPT => {
       serial::read();
     }
     /* On Linux, this is used for syscalls.  Good enough for me. */
