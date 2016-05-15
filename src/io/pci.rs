@@ -19,27 +19,21 @@ impl Pci {
     /// This is marked as `unsafe` because passing in out-of-range
     /// parameters probably does excitingly horrible things to the
     /// hardware.
-    unsafe fn read_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8)
-        -> u32
-    {
-        let address: u32 =
-            0x80000000
-            | (bus as u32) << 16
-            | (slot as u32) << 11
-            | (function as u32) << 8
-            | (offset & 0b1111_1100) as u32;
+    unsafe fn read_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8) -> u32 {
+        let address: u32 = 0x80000000 | (bus as u32) << 16 | (slot as u32) << 11 |
+                           (function as u32) << 8 |
+                           (offset & 0b1111_1100) as u32;
         self.address.write(address);
         self.data.read()
     }
 
     /// Check for a PCI device, and return information about it if present.
-    unsafe fn probe(
-        &mut self, bus: u8, slot: u8, function: u8)
-        -> Option<FunctionInfo>
-    {
+    unsafe fn probe(&mut self, bus: u8, slot: u8, function: u8) -> Option<FunctionInfo> {
         let config_0 = self.read_config(bus, slot, function, 0);
         // We'll receive all 1's if no device is present.
-        if config_0 == 0xFFFFFFFF { return None }
+        if config_0 == 0xFFFFFFFF {
+            return None;
+        }
 
         let config_4 = self.read_config(bus, slot, function, 0x8);
         let config_c = self.read_config(bus, slot, function, 0xC);
@@ -109,66 +103,71 @@ pub struct FunctionInfo {
 
 impl fmt::Display for FunctionInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}.{}.{}: {:04x} {:04x} {:?} {:02x}",
-               self.bus, self.device, self.function,
-               self.vendor_id, self.device_id,
-               self.class_code, self.subclass)
+        write!(f,
+               "{}.{}.{}: {:04x} {:04x} {:?} {:02x}",
+               self.bus,
+               self.device,
+               self.function,
+               self.vendor_id,
+               self.device_id,
+               self.class_code,
+               self.subclass)
     }
 }
 
 impl FunctionInfo {
-  fn address(&self, offset: u8) -> u32 {
-    return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
-           (self.function as u32) << 8 | (offset as u32 & 0xFC);
-  }
-
-  /// Read
-  pub unsafe fn read(&self, offset: u8) -> u32 {
-    let address = self.address(offset);
-    PCI.lock().address.write(address);
-    return PCI.lock().data.read();
-  }
-
-  /// Write
-  pub unsafe fn write(&self, offset: u8, value: u32) {
-    let address = self.address(offset);
-    PCI.lock().address.write(address);
-    PCI.lock().data.write(value);
-  }
-
-  pub fn space_needed(&self) -> u32 {
-    unsafe {
-      for i in 0..6 {
-        let bar = self.read(i * 4 + 0x10);
-        if bar > 0 {
-          self.write(i * 4 + 0x10, 0xFFFFFFFF);
-          let size = (0xFFFFFFFF - (self.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
-          self.write(i * 4 + 0x10, bar);
-          if size > 0 {
-            return size;
-          }
-        }
-      }
-
-      return 0;
+    fn address(&self, offset: u8) -> u32 {
+        return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
+               (self.function as u32) << 8 | (offset as u32 & 0xFC);
     }
-  }
+
+    /// Read
+    pub unsafe fn read(&self, offset: u8) -> u32 {
+        let address = self.address(offset);
+        PCI.lock().address.write(address);
+        return PCI.lock().data.read();
+    }
+
+    /// Write
+    pub unsafe fn write(&self, offset: u8, value: u32) {
+        let address = self.address(offset);
+        PCI.lock().address.write(address);
+        PCI.lock().data.write(value);
+    }
+
+    pub fn space_needed(&self) -> u32 {
+        unsafe {
+            for i in 0..6 {
+                let bar = self.read(i * 4 + 0x10);
+                if bar > 0 {
+                    self.write(i * 4 + 0x10, 0xFFFFFFFF);
+                    let size = (0xFFFFFFFF - (self.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
+                    self.write(i * 4 + 0x10, bar);
+                    if size > 0 {
+                        return size;
+                    }
+                }
+            }
+
+            return 0;
+        }
+    }
 }
 
 static PCI: Mutex<Pci> = Mutex::new(Pci {
-  address: unsafe { Port::new(0xCF8) },
-  data: unsafe { Port::new(0xCFC) },
+    address: unsafe { Port::new(0xCF8) },
+    data: unsafe { Port::new(0xCFC) },
 });
 
 /// Iterator over all functions on our PCI bus.
 pub struct FunctionIterator {
-  // Invariant: The fields in this struct point at the _next_ device to
-  // probe our PCI bus for.
-  done: bool,
-  bus: u8,
-  device: u8,
-  multifunction: bool,
-  function: u8,
+    // Invariant: The fields in this struct point at the _next_ device to
+    // probe our PCI bus for.
+    done: bool,
+    bus: u8,
+    device: u8,
+    multifunction: bool,
+    function: u8,
 }
 
 const MAX_BUS: u8 = 255;
@@ -180,21 +179,22 @@ impl Iterator for FunctionIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Give up if we've hit the end of the bus.
-        if self.done { return None; }
+        if self.done {
+            return None;
+        }
 
         // Scan until we hit the next entry.
         let mut pci = PCI.lock();
         loop {
             // Check for something at the current bus/device/function.
-            let result = unsafe {
-                pci.probe(self.bus, self.device, self.function)
-            };
+            let result = unsafe { pci.probe(self.bus, self.device, self.function) };
 
             // If we found a multifunction flag at function 0, prepare to
             // enumerate all the functions of this device.
             match result {
-                Some(FunctionInfo { function: 0, multifunction: true, .. }) =>
-                    self.multifunction = true,
+                Some(FunctionInfo { function: 0, multifunction: true, .. }) => {
+                    self.multifunction = true
+                }
                 _ => {}
             }
 
@@ -238,9 +238,9 @@ pub fn functions() -> FunctionIterator {
 pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<FunctionInfo> {
     let functions = functions();
     for function in functions {
-      if function.device_id == device_id && function.vendor_id == vendor_id {
-        return Some(function);
-      }
+        if function.device_id == device_id && function.vendor_id == vendor_id {
+            return Some(function);
+        }
     }
 
     None
@@ -248,16 +248,46 @@ pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<FunctionInfo> {
 
 /// NOTE: Does not initialize anything.  I'm an asshole.
 pub fn initialize() {
-  let functions = functions();
-  for function in functions {
-    match function.device_id {
-      4369 => println!("{}-{} VGA {:?}", function.bus, function.device, function.class_code),
-      4663 => println!("{}-{} 82440LX/EX {:?}", function.bus, function.device, function.class_code),
-      4110 => println!("{}-{} Intel Pro 1000/MT {:?}", function.bus, function.device, function.class_code),
-      28672=> println!("{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}", function.bus, function.device, function.class_code),
-      28688=> println!("{}-{} PIIX3 IDE Interface (Triton II) {:?}", function.bus, function.device, function.class_code),
-      28947=> println!("{}-{} PIIX4/4E/4M Power Management Controller {:?}", function.bus, function.device, function.class_code),
-      _ => println!("{:?}", function),
+    let functions = functions();
+    for function in functions {
+        match function.device_id {
+            4369 => {
+                println!("{}-{} VGA {:?}",
+                         function.bus,
+                         function.device,
+                         function.class_code)
+            }
+            4663 => {
+                println!("{}-{} 82440LX/EX {:?}",
+                         function.bus,
+                         function.device,
+                         function.class_code)
+            }
+            4110 => {
+                println!("{}-{} Intel Pro 1000/MT {:?}",
+                         function.bus,
+                         function.device,
+                         function.class_code)
+            }
+            28672 => {
+                println!("{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
+                         function.bus,
+                         function.device,
+                         function.class_code)
+            }
+            28688 => {
+                println!("{}-{} PIIX3 IDE Interface (Triton II) {:?}",
+                         function.bus,
+                         function.device,
+                         function.class_code)
+            }
+            28947 => {
+                println!("{}-{} PIIX4/4E/4M Power Management Controller {:?}",
+                         function.bus,
+                         function.device,
+                         function.class_code)
+            }
+            _ => println!("{:?}", function),
+        }
     }
-  }
 }

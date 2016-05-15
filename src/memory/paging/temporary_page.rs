@@ -23,9 +23,7 @@ impl TemporaryPage {
 
     /// Maps the temporary page to the given frame in the active table.
     /// Returns the start address of the temporary page.
-    pub fn map(&mut self, frame: Frame, active_table: &mut ActivePageTable)
-        -> VirtualAddress
-    {
+    pub fn map(&mut self, frame: Frame, active_table: &mut ActivePageTable) -> VirtualAddress {
         use super::entry::WRITABLE;
 
         assert!(active_table.translate_page(self.page).is_none(),
@@ -81,4 +79,3 @@ impl TinyAllocator {
         TinyAllocator(frames)
     }
 }
-

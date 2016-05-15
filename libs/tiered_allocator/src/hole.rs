@@ -43,8 +43,9 @@ impl HoleList {
     /// Searches the list for a big enough hole. A hole is big enough if it can hold an allocation
     /// of `size` bytes with the given `align`. If such a hole is found in the list, a block of the
     /// required size is allocated from it. Then the start address of that block is returned.
-    /// This function uses the “first fit” strategy, so it uses the first hole that is big enough.
-    /// Thus the runtime is in O(n) but it should be reasonably fast for small allocations.
+    /// This function uses the “first fit” strategy, so it uses the first hole that is big
+    /// enough. Thus the runtime is in O(n) but it should be reasonably fast for small
+    /// allocations.
     pub fn allocate_first_fit(&mut self, size: usize, align: usize) -> Option<*mut u8> {
         assert!(size >= Self::min_size());
 
@@ -184,13 +185,13 @@ fn split_hole(hole: HoleInfo, required_size: usize, required_align: usize) -> Op
 /// enough if it can hold an allocation of `size` bytes with the given `align`. When a hole is used
 /// for an allocation, there may be some needed padding before and/or after the allocation. This
 /// padding is returned as part of the `Allocation`. The caller must take care of freeing it again.
-/// This function uses the “first fit” strategy, so it breaks as soon as a big enough hole is found
-/// (and returns it).
+/// This function uses the “first fit” strategy, so it breaks as soon as a big enough hole is
+/// found (and returns it).
 fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Option<Allocation> {
     loop {
-        let allocation: Option<Allocation> = previous.next.as_mut().and_then(|current| {
-            split_hole(unsafe { current.get() }.info(), size, align)
-        });
+        let allocation: Option<Allocation> = previous.next
+            .as_mut()
+            .and_then(|current| split_hole(unsafe { current.get() }.info(), size, align));
         match allocation {
             Some(allocation) => {
                 // hole is big enough, so remove it from the list by updating the previous pointer
