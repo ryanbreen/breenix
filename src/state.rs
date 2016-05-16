@@ -4,12 +4,15 @@ use collections::vec::Vec;
 use event::IsListener;
 use event::keyboard::KeyEvent;
 
+use io::pci::Device;
+
 use task::scheduler::Scheduler;
 
 pub struct State {
     pub key_listeners: Vec<Box<IsListener<KeyEvent>>>,
     pub interrupt_count: [u64; 256],
     pub scheduler: Scheduler,
+    pub devices: Vec<Box<Device>>,
 }
 
 impl State {
@@ -18,6 +21,7 @@ impl State {
             key_listeners: Vec::new(),
             interrupt_count: [0; 256],
             scheduler: Scheduler::new(),
+            devices: Vec::new(),
         }
     }
 }

@@ -9,6 +9,8 @@ use core::iter::Iterator;
 use spin::Mutex;
 use io::Port;
 
+use collections::vec::Vec;
+
 struct Pci {
     address: Port<u32>,
     data: Port<u32>,
@@ -28,17 +30,19 @@ impl Pci {
     }
 
     /// Check for a PCI device, and return information about it if present.
-    unsafe fn probe(&mut self, bus: u8, slot: u8, function: u8) -> Option<FunctionInfo> {
+    unsafe fn probe(&mut self, bus: u8, slot: u8, function: u8) -> Option<Device> {
         let config_0 = self.read_config(bus, slot, function, 0);
         // We'll receive all 1's if no device is present.
         if config_0 == 0xFFFFFFFF {
             return None;
         }
 
+        println!("Probing on bus {}", bus);
+
         let config_4 = self.read_config(bus, slot, function, 0x8);
         let config_c = self.read_config(bus, slot, function, 0xC);
 
-        Some(FunctionInfo {
+        Some(Device {
             bus: bus,
             device: slot,
             function: function,
@@ -88,7 +92,7 @@ impl DeviceClass {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct FunctionInfo {
+pub struct Device {
     bus: u8,
     device: u8,
     function: u8,
@@ -101,7 +105,7 @@ pub struct FunctionInfo {
     multifunction: bool,
 }
 
-impl fmt::Display for FunctionInfo {
+impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f,
                "{}.{}.{}: {:04x} {:04x} {:?} {:02x}",
@@ -115,7 +119,7 @@ impl fmt::Display for FunctionInfo {
     }
 }
 
-impl FunctionInfo {
+impl Device {
     fn address(&self, offset: u8) -> u32 {
         return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
                (self.function as u32) << 8 | (offset as u32 & 0xFC);
@@ -159,135 +163,74 @@ static PCI: Mutex<Pci> = Mutex::new(Pci {
     data: unsafe { Port::new(0xCFC) },
 });
 
-/// Iterator over all functions on our PCI bus.
-pub struct FunctionIterator {
-    // Invariant: The fields in this struct point at the _next_ device to
-    // probe our PCI bus for.
-    done: bool,
-    bus: u8,
-    device: u8,
-    multifunction: bool,
-    function: u8,
-}
-
 const MAX_BUS: u8 = 255;
 const MAX_DEVICE: u8 = 31;
 const MAX_FUNCTION: u8 = 7;
 
-impl Iterator for FunctionIterator {
-    type Item = FunctionInfo;
+// pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
+// let devices = devices();
+// for function in functions {
+// if function.device_id == device_id && function.vendor_id == vendor_id {
+// return Some(function);
+// }
+// }
+//
+// None
+// }
+//
 
-    fn next(&mut self) -> Option<Self::Item> {
-        // Give up if we've hit the end of the bus.
-        if self.done {
-            return None;
-        }
-
-        // Scan until we hit the next entry.
-        let mut pci = PCI.lock();
-        loop {
-            // Check for something at the current bus/device/function.
-            let result = unsafe { pci.probe(self.bus, self.device, self.function) };
-
-            // If we found a multifunction flag at function 0, prepare to
-            // enumerate all the functions of this device.
-            match result {
-                Some(FunctionInfo { function: 0, multifunction: true, .. }) => {
-                    self.multifunction = true
-                }
-                _ => {}
-            }
-
-            // Update our state for the next probe.
-            if self.multifunction && self.function < MAX_FUNCTION {
-                self.function += 1;
-            } else if self.device < MAX_DEVICE {
-                self.function = 0;
-                self.multifunction = false;
-                self.device += 1;
-            } else if self.bus < MAX_BUS {
-                self.function = 0;
-                self.multifunction = false;
-                self.device = 0;
-                self.bus += 1;
-            } else {
-                self.done = true;
-                return None;
-            }
-
-            // If we found anything above, abort out of our loop and
-            // return it.
-            if let Some(_) = result {
-                return result;
-            }
-        }
-    }
-}
-
-/// Brute-force PCI bus probing.
-pub fn functions() -> FunctionIterator {
-    FunctionIterator {
-        done: false,
-        bus: 0,
-        device: 0,
-        multifunction: false,
-        function: 0,
-    }
-}
-
-pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<FunctionInfo> {
-    let functions = functions();
-    for function in functions {
-        if function.device_id == device_id && function.vendor_id == vendor_id {
-            return Some(function);
-        }
-    }
-
-    None
-}
-
-/// NOTE: Does not initialize anything.  I'm an asshole.
 pub fn initialize() {
-    let functions = functions();
-    for function in functions {
-        match function.device_id {
-            4369 => {
-                println!("{}-{} VGA {:?}",
-                         function.bus,
-                         function.device,
-                         function.class_code)
-            }
-            4663 => {
-                println!("{}-{} 82440LX/EX {:?}",
-                         function.bus,
-                         function.device,
-                         function.class_code)
-            }
-            4110 => {
-                println!("{}-{} Intel Pro 1000/MT {:?}",
-                         function.bus,
-                         function.device,
-                         function.class_code)
-            }
-            28672 => {
-                println!("{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
-                         function.bus,
-                         function.device,
-                         function.class_code)
-            }
-            28688 => {
-                println!("{}-{} PIIX3 IDE Interface (Triton II) {:?}",
-                         function.bus,
-                         function.device,
-                         function.class_code)
-            }
-            28947 => {
-                println!("{}-{} PIIX4/4E/4M Power Management Controller {:?}",
-                         function.bus,
-                         function.device,
-                         function.class_code)
-            }
-            _ => println!("{:?}", function),
-        }
-    }
+
+    let mut i: u8 = 0;
+    let mut r: u8 = 0;
+    let mut s: u8 = 0;
+
+    let mut bus: u8 = 0;
+    let mut dev: u8 = 0;
+    let mut func: u8 = 0;
+
+    // let functions = functions();
+    // for function in functions {
+    // match function.device_id {
+    // 4369 => {
+    // println!("{}-{} VGA {:?}",
+    // function.bus,
+    // function.device,
+    // function.class_code)
+    // }
+    // 4663 => {
+    // println!("{}-{} 82440LX/EX {:?}",
+    // function.bus,
+    // function.device,
+    // function.class_code)
+    // }
+    // 4110 => {
+    // println!("{}-{} Intel Pro 1000/MT {:?}",
+    // function.bus,
+    // function.device,
+    // function.class_code)
+    // }
+    // 28672 => {
+    // println!("{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
+    // function.bus,
+    // function.device,
+    // function.class_code)
+    // }
+    // 28688 => {
+    // println!("{}-{} PIIX3 IDE Interface (Triton II) {:?}",
+    // function.bus,
+    // function.device,
+    // function.class_code)
+    // }
+    // 28947 => {
+    // println!("{}-{} PIIX4/4E/4M Power Management Controller {:?}",
+    // function.bus,
+    // function.device,
+    // function.class_code)
+    // }
+    // _ => println!("{:?}", function),
+    // }
+    // }
+    //
+
 }
