@@ -37,15 +37,10 @@ impl Pci {
             return None;
         }
 
-        println!("Probing on bus {}", bus);
+        println!("Found device {}-{}-{}", bus, slot, function);
 
         let config_4 = self.read_config(bus, slot, function, 0x8);
         let config_c = self.read_config(bus, slot, function, 0xC);
-
-        let config_head = self.read_config(bus, slot, function, 0x0E);
-        println!("{:b}", config_head >> 20);
-        println!("{:b}", 0x7F);
-        println!("{:x}", (config_head >> 20) & 0x7F);
 
         Some(Device {
             bus: bus,
@@ -184,88 +179,88 @@ const MAX_FUNCTION: u8 = 7;
 // }
 //
 
-fn initialize_bus(bus: u8) {
+fn initialize_device(bus: u8, dev: u8) {
 
-    if bus > MAX_BUS {
-        return;
-    }
-
-    let mut dev: u8 = 0;
     let mut func: u8 = 0;
 
-    loop {
+    for func in 0..MAX_FUNCTION {
 
         unsafe {
             let device = PCI.lock().probe(bus, dev, func);
 
             match device {
                 Some(d) => {
-                    if d.class_code == DeviceClass::BridgeDevice {
-                        println!("Found bridge device {:?}", d);
-                        /*
-                        let secondary_bus_idx = sbusn= pci_attr_r8_u(devind, PPB_SECBN);
-                        initialize_bus(secondary_bus_idx);
-                        */
-                    }
+                    println!("Found device {:?}", device);
+                    ::state().devices.push(d);
                 }
                 None => {}
             }
         }
+    }
 
-        if dev >= MAX_DEVICE {
-            break;
-        }
+}
 
-        dev += 1;
+fn initialize_bus(bus: u8) {
+    for dev in 0..MAX_DEVICE {
+        initialize_device(bus, dev);
     }
 }
 
 pub fn initialize() {
 
-    initialize_bus(0);
+    for bus in 0..MAX_BUS {
+        initialize_bus(bus);
+    }
 
-    // let functions = functions();
-    // for function in functions {
-    // match function.device_id {
-    // 4369 => {
-    // println!("{}-{} VGA {:?}",
-    // function.bus,
-    // function.device,
-    // function.class_code)
-    // }
-    // 4663 => {
-    // println!("{}-{} 82440LX/EX {:?}",
-    // function.bus,
-    // function.device,
-    // function.class_code)
-    // }
-    // 4110 => {
-    // println!("{}-{} Intel Pro 1000/MT {:?}",
-    // function.bus,
-    // function.device,
-    // function.class_code)
-    // }
-    // 28672 => {
-    // println!("{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
-    // function.bus,
-    // function.device,
-    // function.class_code)
-    // }
-    // 28688 => {
-    // println!("{}-{} PIIX3 IDE Interface (Triton II) {:?}",
-    // function.bus,
-    // function.device,
-    // function.class_code)
-    // }
-    // 28947 => {
-    // println!("{}-{} PIIX4/4E/4M Power Management Controller {:?}",
-    // function.bus,
-    // function.device,
-    // function.class_code)
-    // }
-    // _ => println!("{:?}", function),
-    // }
-    // }
-    //
+    println!("Discovered {} devices", ::state().devices.len());
+
+    for dev in &::state().devices {
+        match dev.device_id {
+            4369 => {
+                println!("{}-{}-{} VGA {:?}",
+                         dev.bus,
+                         dev.device,
+                         dev.function,
+                         dev.class_code)
+            }
+            4663 => {
+                println!("{}-{}-{} 82440LX/EX {:?}",
+                         dev.bus,
+                         dev.device,
+                         dev.function,
+                         dev.class_code)
+            }
+            4110 => {
+                println!("{}-{}-{} Intel Pro 1000/MT {:?}",
+                         dev.bus,
+                         dev.device,
+                         dev.function,
+                         dev.class_code)
+            }
+            28672 => {
+                println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
+                         dev.bus,
+                         dev.device,
+                         dev.function,
+                         dev.class_code)
+            }
+            28688 => {
+                println!("{}-{}-{} PIIX3 IDE Interface (Triton II) {:?}",
+                         dev.bus,
+                         dev.device,
+                         dev.function,
+                         dev.class_code)
+            }
+            28947 => {
+                println!("{}-{}-{} PIIX4/4E/4M Power Management Controller {:?}",
+                         dev.bus,
+                         dev.device,
+                         dev.function,
+                         dev.class_code)
+            }
+            _ => println!("{:?}", dev),
+        }
+    }
+
 
 }

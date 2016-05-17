@@ -12,7 +12,7 @@ pub struct State {
     pub key_listeners: Vec<Box<IsListener<KeyEvent>>>,
     pub interrupt_count: [u64; 256],
     pub scheduler: Scheduler,
-    pub devices: Vec<Box<Device>>,
+    pub devices: Vec<Device>,
 }
 
 impl State {
