@@ -9,7 +9,7 @@ use core::iter::Iterator;
 use spin::Mutex;
 use io::Port;
 
-use collections::vec::Vec;
+use collections::Vec;
 
 struct Pci {
     address: Port<u32>,
@@ -24,7 +24,7 @@ impl Pci {
     unsafe fn read_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8) -> u32 {
         let address: u32 = 0x80000000 | (bus as u32) << 16 | (slot as u32) << 11 |
                            (function as u32) << 8 |
-                           (offset & 0b1111_1100) as u32;
+                           (offset & 0xFC) as u32;
         self.address.write(address);
         self.data.read()
     }
@@ -42,6 +42,11 @@ impl Pci {
         let config_4 = self.read_config(bus, slot, function, 0x8);
         let config_c = self.read_config(bus, slot, function, 0xC);
 
+        let config_head = self.read_config(bus, slot, function, 0x0E);
+        println!("{:b}", config_head >> 20);
+        println!("{:b}", 0x7F);
+        println!("{:x}", (config_head >> 20) & 0x7F);
+
         Some(Device {
             bus: bus,
             device: slot,
@@ -56,7 +61,7 @@ impl Pci {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum DeviceClass {
@@ -179,15 +184,45 @@ const MAX_FUNCTION: u8 = 7;
 // }
 //
 
-pub fn initialize() {
+fn initialize_bus(bus: u8) {
 
-    let mut i: u8 = 0;
-    let mut r: u8 = 0;
-    let mut s: u8 = 0;
+    if bus > MAX_BUS {
+        return;
+    }
 
-    let mut bus: u8 = 0;
     let mut dev: u8 = 0;
     let mut func: u8 = 0;
+
+    loop {
+
+        unsafe {
+            let device = PCI.lock().probe(bus, dev, func);
+
+            match device {
+                Some(d) => {
+                    if d.class_code == DeviceClass::BridgeDevice {
+                        println!("Found bridge device {:?}", d);
+                        /*
+                        let secondary_bus_idx = sbusn= pci_attr_r8_u(devind, PPB_SECBN);
+                        initialize_bus(secondary_bus_idx);
+                        */
+                    }
+                }
+                None => {}
+            }
+        }
+
+        if dev >= MAX_DEVICE {
+            break;
+        }
+
+        dev += 1;
+    }
+}
+
+pub fn initialize() {
+
+    initialize_bus(0);
 
     // let functions = functions();
     // for function in functions {
