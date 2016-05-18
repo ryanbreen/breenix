@@ -52,6 +52,7 @@ impl Pci {
             subclass: (config_4 >> 16) as u8,
             class_code: DeviceClass::from_u8((config_4 >> 24) as u8),
             multifunction: config_c & 0x800000 != 0,
+            bars: [0;6],
         })
     }
 }
@@ -103,6 +104,7 @@ pub struct Device {
     subclass: u8,
     class_code: DeviceClass,
     multifunction: bool,
+    bars: [u32;6]
 }
 
 impl fmt::Display for Device {
@@ -214,7 +216,8 @@ pub fn initialize() {
 
     println!("Discovered {} devices", ::state().devices.len());
 
-    for dev in &::state().devices {
+    for dev in ::state().devices.iter_mut() {
+
         match dev.device_id {
             4369 => {
                 println!("{}-{}-{} VGA {:?}",
@@ -260,7 +263,25 @@ pub fn initialize() {
             }
             _ => println!("{:?}", dev),
         }
-    }
 
+
+
+        unsafe {
+            for i in 0..6 {
+                let bar = dev.read(i * 4 + 0x10);
+                if bar > 0 {
+                    println!(" BAR{}: {:x}", i, bar);
+                    dev.bars[i as usize] = bar;
+                    dev.write(i * 4 + 0x10, 0xFFFFFFFF);
+                    let size = (0xFFFFFFFF - (dev.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
+                    dev.write(i * 4 + 0x10, bar);
+                    if size > 0 {
+                        println!(" size: {}", size);
+                        dev.bars[i as usize] = size;
+                    }
+                }
+            }
+        }
+    }
 
 }
