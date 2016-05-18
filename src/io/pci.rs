@@ -122,20 +122,20 @@ impl fmt::Display for Device {
 }
 
 impl Device {
-    fn address(&self, offset: u8) -> u32 {
+    fn address(&self, offset: u32) -> u32 {
         return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
                (self.function as u32) << 8 | (offset as u32 & 0xFC);
     }
 
     /// Read
-    pub unsafe fn read(&self, offset: u8) -> u32 {
+    pub unsafe fn read(&self, offset: u32) -> u32 {
         let address = self.address(offset);
         PCI.lock().address.write(address);
         return PCI.lock().data.read();
     }
 
     /// Write
-    pub unsafe fn write(&self, offset: u8, value: u32) {
+    pub unsafe fn write(&self, offset: u32, value: u32) {
         let address = self.address(offset);
         PCI.lock().address.write(address);
         PCI.lock().data.write(value);
@@ -262,8 +262,6 @@ pub fn initialize() {
             }
             _ => println!("{:?}", dev),
         }
-
-
 
         unsafe {
             for i in 0..6 {
