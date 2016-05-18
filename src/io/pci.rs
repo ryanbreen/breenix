@@ -52,7 +52,7 @@ impl Pci {
             subclass: (config_4 >> 16) as u8,
             class_code: DeviceClass::from_u8((config_4 >> 24) as u8),
             multifunction: config_c & 0x800000 != 0,
-            bars: [0;6],
+            bars: [0; 6],
         })
     }
 }
@@ -104,7 +104,7 @@ pub struct Device {
     subclass: u8,
     class_code: DeviceClass,
     multifunction: bool,
-    bars: [u32;6]
+    bars: [u32; 6],
 }
 
 impl fmt::Display for Device {
@@ -169,17 +169,16 @@ const MAX_BUS: u8 = 255;
 const MAX_DEVICE: u8 = 31;
 const MAX_FUNCTION: u8 = 7;
 
-// pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
-// let devices = devices();
-// for function in functions {
-// if function.device_id == device_id && function.vendor_id == vendor_id {
-// return Some(function);
-// }
-// }
-//
-// None
-// }
-//
+pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
+    for dev in ::state().devices.iter() {
+        if dev.device_id == device_id && dev.vendor_id == vendor_id {
+            return Some(*dev);
+        }
+    }
+
+    None
+}
+
 
 fn initialize_device(bus: u8, dev: u8) {
 
@@ -270,7 +269,7 @@ pub fn initialize() {
             for i in 0..6 {
                 let bar = dev.read(i * 4 + 0x10);
                 if bar > 0 {
-                    println!(" BAR{}: {:x}", i, bar);
+                    println!(" BAR{}: {:x} {:b}", i, bar, bar);
                     dev.bars[i as usize] = bar;
                     dev.write(i * 4 + 0x10, 0xFFFFFFFF);
                     let size = (0xFFFFFFFF - (dev.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
