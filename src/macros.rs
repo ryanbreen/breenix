@@ -1,4 +1,6 @@
 
+use collections::String;
+
 macro_rules! println {
     ($fmt:expr) => (print!(concat!("{:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start()));
     ($fmt:expr, $($arg:tt)*) =>
@@ -15,7 +17,7 @@ macro_rules! print {
 macro_rules! format {
   ($($arg:tt)*) => ({
     use core::fmt::Write;
-    let mut output = collections::string::String::new();
+    let mut output = String::new();
     #[allow(unused_must_use)]
     let _ = output.write_fmt(format_args!($($arg)*));
     output

@@ -2,6 +2,8 @@ use core::fmt;
 
 pub mod e1000;
 
+use collections::String;
+
 /*
  * Boosted from redox
  */
@@ -20,17 +22,20 @@ impl MacAddr {
         }
         true
     }
+
+    pub fn to_string(&self) -> String {
+      format!("{:02x}::{:02x}::{:02x}::{:02x}::{:02x}::{:02x}",
+        self.bytes[0],
+        self.bytes[1],
+        self.bytes[2],
+        self.bytes[3],
+        self.bytes[4],
+        self.bytes[5])
+    }
 }
 
 impl fmt::Display for MacAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
-               "{:02x}::{:02x}::{:02x}::{:02x}::{:02x}::{:02x}",
-               self.bytes[0],
-               self.bytes[1],
-               self.bytes[2],
-               self.bytes[3],
-               self.bytes[4],
-               self.bytes[5])
+        write!(f, "{}", self.to_string())
     }
 }
