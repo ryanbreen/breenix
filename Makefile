@@ -17,7 +17,7 @@ clean:
 	@rm -r target
 
 run: $(iso)
-	@qemu-system-x86_64 -hda $(iso) -m 5G -serial stdio 2>&1
+	@qemu-system-x86_64 -hda $(iso) -m 5G -net nic,macaddr=52:54:be:36:42:a9 -serial stdio 2>&1
 
 run_once: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G -no-shutdown -no-reboot -d int -serial stdio 2>&1

@@ -182,6 +182,4 @@ pub fn initialize() {
     timer::initialize();
     pci::initialize();
     event::keyboard::initialize();
-
-    drivers::network::e1000::initialize();
 }

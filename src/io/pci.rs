@@ -213,6 +213,24 @@ pub fn initialize() {
 
     for dev in ::state().devices.iter_mut() {
 
+        // Populate BARs for each device.
+        unsafe {
+            for i in 0..6 {
+                let bar = dev.read(i * 4 + 0x10);
+                if bar > 0 {
+                    println!(" BAR{}: {:x} {:b}", i, bar, bar);
+                    dev.bars[i as usize] = bar;
+                    dev.write(i * 4 + 0x10, 0xFFFFFFFF);
+                    let size = (0xFFFFFFFF - (dev.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
+                    dev.write(i * 4 + 0x10, bar);
+                    if size > 0 {
+                        println!(" size: {}", size);
+                        dev.bars[i as usize] = size;
+                    }
+                }
+            }
+        }
+
         match dev.device_id {
             4369 => {
                 println!("{}-{}-{} VGA {:?}",
@@ -233,7 +251,9 @@ pub fn initialize() {
                          dev.bus,
                          dev.device,
                          dev.function,
-                         dev.class_code)
+                         dev.class_code);
+                use io::drivers::network::e1000::E1000;
+                E1000::new(*dev);
             }
             28672 => {
                 println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
@@ -257,23 +277,6 @@ pub fn initialize() {
                          dev.class_code)
             }
             _ => println!("{:?}", dev),
-        }
-
-        unsafe {
-            for i in 0..6 {
-                let bar = dev.read(i * 4 + 0x10);
-                if bar > 0 {
-                    println!(" BAR{}: {:x} {:b}", i, bar, bar);
-                    dev.bars[i as usize] = bar;
-                    dev.write(i * 4 + 0x10, 0xFFFFFFFF);
-                    let size = (0xFFFFFFFF - (dev.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
-                    dev.write(i * 4 + 0x10, bar);
-                    if size > 0 {
-                        println!(" size: {}", size);
-                        dev.bars[i as usize] = size;
-                    }
-                }
-            }
         }
     }
 
