@@ -151,22 +151,8 @@ impl Device {
         self.write(offset, value);
     }
 
-    pub fn space_needed(&self) -> u32 {
-        unsafe {
-            for i in 0..6 {
-                let bar = self.read(i * 4 + 0x10);
-                if bar > 0 {
-                    self.write(i * 4 + 0x10, 0xFFFFFFFF);
-                    let size = (0xFFFFFFFF - (self.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
-                    self.write(i * 4 + 0x10, bar);
-                    if size > 0 {
-                        return size;
-                    }
-                }
-            }
-
-            return 0;
-        }
+    pub fn bar(&self, idx:usize) -> u32 {
+        self.bars[idx]
     }
 }
 

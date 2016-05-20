@@ -38,7 +38,7 @@ pub fn initialize() {
 
     println!("NET - Found network device that needs {} of space, irq is {}, interrupt pin {}, \
         command {}, MAC: {}",
-             e1000.space_needed(),
+             e1000.bar(0),
              irq,
              interrupt_pin,
              cmd,
