@@ -141,6 +141,16 @@ impl Device {
         PCI.lock().data.write(value);
     }
 
+    pub unsafe fn flag(&self, offset: u32, flag: u32, toggle: bool) {
+        let mut value = self.read(offset);
+        if toggle {
+            value |= flag;
+        } else {
+            value &= 0xFFFFFFFF - flag;
+        }
+        self.write(offset, value);
+    }
+
     pub fn space_needed(&self) -> u32 {
         unsafe {
             for i in 0..6 {
