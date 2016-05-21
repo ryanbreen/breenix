@@ -190,7 +190,6 @@ fn initialize_device(bus: u8, dev: u8) {
 
             match device {
                 Some(d) => {
-                    println!("Found device {:?}", device);
                     ::state().devices.push(d);
                 }
                 None => {}
@@ -221,13 +220,11 @@ pub fn initialize() {
             for i in 0..6 {
                 let bar = dev.read(i * 4 + 0x10);
                 if bar > 0 {
-                    println!(" BAR{}: {:x} {:b}", i, bar, bar);
                     dev.bars[i as usize] = bar;
                     dev.write(i * 4 + 0x10, 0xFFFFFFFF);
                     let size = (0xFFFFFFFF - (dev.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
                     dev.write(i * 4 + 0x10, bar);
                     if size > 0 {
-                        println!(" size: {}", size);
                         dev.bars[i as usize] = size;
                     }
                 }
@@ -240,21 +237,21 @@ pub fn initialize() {
                          dev.bus,
                          dev.device,
                          dev.function,
-                         dev.class_code)
+                         dev)
             }
             4663 => {
                 println!("{}-{}-{} 82440LX/EX {:?}",
                          dev.bus,
                          dev.device,
                          dev.function,
-                         dev.class_code)
+                         dev)
             }
             4110 => {
                 println!("{}-{}-{} Intel Pro 1000/MT {:?}",
                          dev.bus,
                          dev.device,
                          dev.function,
-                         dev.class_code);
+                         dev);
                 use io::drivers::network::e1000::E1000;
                 let e1000 = E1000::new(*dev);
                 let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
@@ -266,21 +263,21 @@ pub fn initialize() {
                          dev.bus,
                          dev.device,
                          dev.function,
-                         dev.class_code)
+                         dev)
             }
             28688 => {
                 println!("{}-{}-{} PIIX3 IDE Interface (Triton II) {:?}",
                          dev.bus,
                          dev.device,
                          dev.function,
-                         dev.class_code)
+                         dev)
             }
             28947 => {
                 println!("{}-{}-{} PIIX4/4E/4M Power Management Controller {:?}",
                          dev.bus,
                          dev.device,
                          dev.function,
-                         dev.class_code)
+                         dev)
             }
             _ => println!("{:?}", dev),
         }
