@@ -1,5 +1,6 @@
 
 use io::pci;
+use io::drivers::DeviceDriver;
 use io::drivers::network::MacAddr;
 
 const VENDOR_ID: u16 = 32902;
@@ -23,7 +24,9 @@ impl E1000 {
         e1000.initialize();
         e1000
     }
+}
 
+impl DeviceDriver for E1000 {
     fn initialize(&mut self) {
 
         let e1000 = self.pci_device;

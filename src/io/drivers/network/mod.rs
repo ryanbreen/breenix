@@ -2,7 +2,11 @@ use core::fmt;
 
 pub mod e1000;
 
+use alloc::boxed::Box;
 use collections::String;
+
+use io::pci::Device;
+use io::drivers::DeviceDriver;
 
 /*
  * Boosted from redox
@@ -38,4 +42,10 @@ impl fmt::Display for MacAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.to_string())
     }
+}
+
+struct NetworkInterface<T: DeviceDriver> {
+    identifier: &'static str,
+    device: Device,
+    device_driver: T,
 }
