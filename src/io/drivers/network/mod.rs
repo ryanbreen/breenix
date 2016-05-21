@@ -44,16 +44,37 @@ impl fmt::Display for MacAddr {
     }
 }
 
+#[derive(Clone,Copy,Debug,PartialEq)]
+pub enum NetworkInterfaceType {
+    Loopback,
+    Ethernet,
+    Wireless,
+}
+
 pub struct NetworkInterface {
-    identifier: &'static str,
+    interface_type: NetworkInterfaceType,
+    name: String,
     device_driver: Box<DeviceDriver>,
 }
 
 impl NetworkInterface {
-    pub fn new(name: &'static str, driver: Box<DeviceDriver>) -> NetworkInterface {
+    pub fn new(nic_type:NetworkInterfaceType, driver: Box<DeviceDriver>) -> NetworkInterface {
         NetworkInterface {
-            identifier: name,
+            interface_type: nic_type,
+            name: getNetworkInterfaceName(nic_type),
             device_driver: driver,
         }
     }
+}
+
+impl fmt::Display for NetworkInterface {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+pub fn getNetworkInterfaceName(nic_type: NetworkInterfaceType) -> String {
+    let count:usize = ::state().network_interfaces.iter().filter(
+        |nic| nic.interface_type == nic_type).count();
+    format!("{:?}{}", nic_type, count)
 }

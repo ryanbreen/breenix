@@ -10,7 +10,7 @@ use core::iter::Iterator;
 use spin::Mutex;
 use io::Port;
 use io::drivers::DeviceDriver;
-use io::drivers::network::NetworkInterface;
+use io::drivers::network::{NetworkInterface,NetworkInterfaceType};
 
 use collections::Vec;
 
@@ -257,7 +257,8 @@ pub fn initialize() {
                          dev.class_code);
                 use io::drivers::network::e1000::E1000;
                 let e1000 = E1000::new(*dev);
-                let nic:NetworkInterface = NetworkInterface::new("eth0", Box::new(e1000));
+                let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
+                println!("Registered as {}", nic);
                 ::state().network_interfaces.push(nic);
             }
             28672 => {
