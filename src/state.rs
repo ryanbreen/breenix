@@ -5,6 +5,8 @@ use event::IsListener;
 use event::keyboard::KeyEvent;
 
 use io::pci::Device;
+use io::drivers::DeviceDriver;
+use io::drivers::network::NetworkInterface;
 
 use task::scheduler::Scheduler;
 
@@ -13,6 +15,7 @@ pub struct State {
     pub interrupt_count: [u64; 256],
     pub scheduler: Scheduler,
     pub devices: Vec<Device>,
+    pub network_interfaces: Vec<NetworkInterface>,
 }
 
 impl State {
@@ -22,6 +25,7 @@ impl State {
             interrupt_count: [0; 256],
             scheduler: Scheduler::new(),
             devices: Vec::new(),
+            network_interfaces: Vec::new(),
         }
     }
 }

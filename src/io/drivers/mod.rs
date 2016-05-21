@@ -1,5 +1,5 @@
 pub mod network;
 
-trait DeviceDriver {
+pub trait DeviceDriver {
     fn initialize(&mut self);
 }

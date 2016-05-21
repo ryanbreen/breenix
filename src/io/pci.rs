@@ -3,11 +3,14 @@
 //!
 //! As usual, this is heavily inspired by http://wiki.osdev.org/Pci
 
+use alloc::boxed::Box;
 use core::fmt;
 use core::intrinsics::transmute;
 use core::iter::Iterator;
 use spin::Mutex;
 use io::Port;
+use io::drivers::DeviceDriver;
+use io::drivers::network::NetworkInterface;
 
 use collections::Vec;
 
@@ -253,7 +256,9 @@ pub fn initialize() {
                          dev.function,
                          dev.class_code);
                 use io::drivers::network::e1000::E1000;
-                E1000::new(*dev);
+                let e1000 = E1000::new(*dev);
+                let nic:NetworkInterface = NetworkInterface::new("eth0", Box::new(e1000));
+                ::state().network_interfaces.push(nic);
             }
             28672 => {
                 println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
