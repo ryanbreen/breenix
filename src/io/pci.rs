@@ -154,6 +154,22 @@ impl Device {
         self.write(offset, value);
     }
 
+    unsafe fn load_bars(&mut self) {
+        // Populate BARs
+        for i in 0..6 {
+            let bar = self.read(i * 4 + 0x10);
+            if bar > 0 {
+                self.bars[i as usize] = bar;
+                self.write(i * 4 + 0x10, 0xFFFFFFFF);
+                let size = (0xFFFFFFFF - (self.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
+                self.write(i * 4 + 0x10, bar);
+                if size > 0 {
+                    self.bars[i as usize] = size;
+                }
+            }
+        }
+    }
+
     pub fn bar(&self, idx:usize) -> u32 {
         self.bars[idx]
     }
@@ -189,7 +205,8 @@ fn initialize_device(bus: u8, dev: u8) {
             let device = PCI.lock().probe(bus, dev, func);
 
             match device {
-                Some(d) => {
+                Some(mut d) => {
+                    d.load_bars();
                     ::state().devices.push(d);
                 }
                 None => {}
@@ -214,22 +231,6 @@ pub fn initialize() {
     println!("Discovered {} devices", ::state().devices.len());
 
     for dev in ::state().devices.iter_mut() {
-
-        // Populate BARs for each device.
-        unsafe {
-            for i in 0..6 {
-                let bar = dev.read(i * 4 + 0x10);
-                if bar > 0 {
-                    dev.bars[i as usize] = bar;
-                    dev.write(i * 4 + 0x10, 0xFFFFFFFF);
-                    let size = (0xFFFFFFFF - (dev.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
-                    dev.write(i * 4 + 0x10, bar);
-                    if size > 0 {
-                        dev.bars[i as usize] = size;
-                    }
-                }
-            }
-        }
 
         match dev.device_id {
             4369 => {
