@@ -24,7 +24,7 @@
 extern crate spin;
 
 #[macro_use]
-extern crate once;
+extern crate lazy_static;
 
 use heap::Heap;
 

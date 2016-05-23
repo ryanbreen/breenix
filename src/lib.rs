@@ -18,9 +18,10 @@ extern crate alloc;
 extern crate rlibc;
 
 #[macro_use]
-extern crate once;
-
 extern crate spin;
+
+#[macro_use]
+extern crate once;
 
 extern crate multiboot2;
 

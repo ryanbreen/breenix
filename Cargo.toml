@@ -19,6 +19,10 @@ branch = "no_std"
 [dependencies.x86]
 git = "https://github.com/gz/rust-x86.git"
 
+[dependencies.lazy_static]
+version = "0.2.1"
+features = ["spin_no_std"]
+
 [dependencies.tiered_allocator]
 path = "libs/tiered_allocator"
 

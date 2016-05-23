@@ -5,4 +5,7 @@ authors = ["Ryan Breen <rbreen@cimpress.com>"]
 
 [dependencies]
 spin = "0.3.4"
-once = "*"
+
+[dependencies.lazy_static]
+version = "0.2.1"
+features = ["spin_no_std"]
