@@ -63,9 +63,11 @@ libcollections:
 	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone collections/src/lib.rs	
 	mv libcollections.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcollections.rlib
 
-rust_libs: $(rust_libs)
-
-$(rust_libs): $(libcore) $(liballoc) $(librustc_unicode) $(libcollections)
+rust_libs:
+	make libcore
+	make liballoc
+	make librustc_unicode
+	make libcollections
 
 # compile assembly files
 build/arch/$(arch)/%.o: src/arch/$(arch)/%.asm
