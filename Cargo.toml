@@ -8,13 +8,10 @@ rlibc = "0.1.4"
 spin = "0.3.4"
 once = "*"
 cpuio = "*"
+bitflags = "0.7.0"
 
 [dependencies.multiboot2]
 git = "https://github.com/phil-opp/multiboot2-elf64"
-
-[dependencies.bitflags]
-git = "https://github.com/phil-opp/bitflags.git"
-branch = "no_std"
 
 [dependencies.x86]
 git = "https://github.com/gz/rust-x86.git"
