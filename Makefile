@@ -9,7 +9,7 @@ grub_cfg := src/arch/$(arch)/grub.cfg
 assembly_source_files := $(wildcard src/arch/$(arch)/*.asm)
 assembly_object_files := $(patsubst src/arch/$(arch)/%.asm, build/arch/$(arch)/%.o, $(assembly_source_files))
 
-.PHONY: all clean run iso kernel isovagrant libcore patch_libcore libs liballoc librustc_unicode libcollections
+.PHONY: all clean run iso kernel libcore patch_libcore rust_libs liballoc librustc_unicode libcollections
 
 all: $(iso)
 
@@ -44,28 +44,28 @@ cargo:
 	@cargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone
 
 patch_libcore:
-	@cp libcore_nofp.patch core/src
-	@cd core/src
-	@patch -p1 <libcore_nofp.patch
-	@cd -
+	cp libcore_nofp.patch core/src
+	cd core/src ; git stash ; git pull; patch -p1 < ./libcore_nofp.patch
 
 libcore: $(patch_libcore)
 	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone core/src/lib.rs	
-	@mv libcore.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcore.rlib
+	mv libcore.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcore.rlib
 
 liballoc:
 	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone alloc/src/lib.rs	
-	@mv liballoc.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/liballoc.rlib
+	mv liballoc.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/liballoc.rlib
 
 librustc_unicode:
 	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone rustc_unicode/src/lib.rs	
-	@mv librustc_unicode.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/librustc_unicode.rlib
+	mv librustc_unicode.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/librustc_unicode.rlib
 
 libcollections:
 	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone collections/src/lib.rs	
-	@mv libcollections.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcollections.rlib
+	mv libcollections.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcollections.rlib
 
-libs: $(libcore) $(liballoc) $(librustc_unicode) $(libcollections)
+rust_libs: $(rust_libs)
+
+$(rust_libs): $(libcore) $(liballoc) $(librustc_unicode) $(libcollections)
 
 # compile assembly files
 build/arch/$(arch)/%.o: src/arch/$(arch)/%.asm
