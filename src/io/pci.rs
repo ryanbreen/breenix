@@ -247,7 +247,7 @@ pub fn initialize() {
                          dev.function,
                          dev)
             }
-            4110 => {
+            4110 | 4111 => {
                 println!("{}-{}-{} Intel Pro 1000/MT {:?}",
                          dev.bus,
                          dev.device,
