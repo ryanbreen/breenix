@@ -1,5 +1,5 @@
 #![feature(alloc, allocator, box_syntax, box_patterns, macro_reexport, lang_items,
-          const_fn, unique, asm, collections, trace_macros, stmt_expr_attributes)]
+          heap_api, const_fn, unique, asm, collections, trace_macros, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]

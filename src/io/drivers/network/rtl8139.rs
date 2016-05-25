@@ -72,8 +72,11 @@ impl DeviceDriver for Rtl8139 {
             let base = unsafe { rtl8139.read(0x10) as usize };
             let mut port = Rtl8139Port::new((base & 0xFFFFFFF0) as u16);
 
+            // power on!
             port.config1.write(0);
             port.cr.write(RTL8139_CR_RST);
+
+            // reset loop
             while port.cr.read() & RTL8139_CR_RST != 0 {}
 
             mac = MacAddr {
@@ -84,6 +87,11 @@ impl DeviceDriver for Rtl8139 {
                     port.idr[4].read(),
                     port.idr[5].read()]
             };
+
+            use alloc::heap;
+            let heap_addr:*mut u8 = heap::allocate(8192+16, 8);
+            port.rbstart.write(heap_addr as u32);
+            println!("Performing DMA at a {} sized buffer starting at 0x{:x}", 8192+16, heap_addr as u32);
         }
 
         println!("NET - Found network device that needs {} of space, irq is {}, interrupt pin \
