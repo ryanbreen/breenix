@@ -113,7 +113,7 @@ pub struct Device {
 impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f,
-               "{}.{}.{}: {:04x} {:04x} {:?} {:02x}",
+               "{}.{}.{}: 0x{:04x} 0x{:04x} {:?} {:02x}",
                self.bus,
                self.device,
                self.function,
@@ -233,14 +233,14 @@ pub fn initialize() {
     for dev in ::state().devices.iter_mut() {
 
         match dev.device_id {
-            4369 => {
+            0x1111 => {
                 println!("{}-{}-{} VGA {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
-            4663 => {
+            0x1237 => {
                 println!("{}-{}-{} 82440LX/EX {}",
                          dev.bus,
                          dev.device,
@@ -271,21 +271,21 @@ pub fn initialize() {
                 println!("Registered as {}", nic);
                 ::state().network_interfaces.push(nic);
             }
-            28672 => {
+            0x7000 => {
                 println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
-            28688 => {
+            0x7010 => {
                 println!("{}-{}-{} PIIX3 IDE Interface (Triton II) {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
-            28947 => {
+            0x7113 => {
                 println!("{}-{}-{} PIIX4/4E/4M Power Management Controller {}",
                          dev.bus,
                          dev.device,
