@@ -1,6 +1,7 @@
 use core::fmt;
 
 pub mod e1000;
+pub mod rtl8139;
 
 use alloc::boxed::Box;
 use collections::String;

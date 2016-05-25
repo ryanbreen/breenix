@@ -234,21 +234,21 @@ pub fn initialize() {
 
         match dev.device_id {
             4369 => {
-                println!("{}-{}-{} VGA {:?}",
+                println!("{}-{}-{} VGA {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
             4663 => {
-                println!("{}-{}-{} 82440LX/EX {:?}",
+                println!("{}-{}-{} 82440LX/EX {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
-            4110 | 4111 => {
-                println!("{}-{}-{} Intel Pro 1000/MT {:?}",
+            0x100E | 0x100F => {
+                println!("{}-{}-{} Intel Pro 1000/MT {}",
                          dev.bus,
                          dev.device,
                          dev.function,
@@ -259,28 +259,40 @@ pub fn initialize() {
                 println!("Registered as {}", nic);
                 ::state().network_interfaces.push(nic);
             }
+            0x8139 => {
+                println!("{}-{}-{} RTL8139 Fast Ethernet NIC {}",
+                         dev.bus,
+                         dev.device,
+                         dev.function,
+                         dev);
+                use io::drivers::network::rtl8139::Rtl8139;
+                let rtl = Rtl8139::new(*dev);
+                let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(rtl));
+                println!("Registered as {}", nic);
+                ::state().network_interfaces.push(nic);
+            }
             28672 => {
-                println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {:?}",
+                println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
             28688 => {
-                println!("{}-{}-{} PIIX3 IDE Interface (Triton II) {:?}",
+                println!("{}-{}-{} PIIX3 IDE Interface (Triton II) {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
             28947 => {
-                println!("{}-{}-{} PIIX4/4E/4M Power Management Controller {:?}",
+                println!("{}-{}-{} PIIX4/4E/4M Power Management Controller {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
-            _ => println!("{:?}", dev),
+            _ => println!("{}", dev),
         }
     }
 
