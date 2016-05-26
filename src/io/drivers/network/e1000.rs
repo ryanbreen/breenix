@@ -12,7 +12,8 @@ const REG_EEPROM: usize = 0x0014;
 
 pub struct E1000 {
     pci_device: pci::Device,
-    base: usize,
+    io_base: usize,
+    mem_base: usize,
     mmio: bool,
     initialized: bool,
 }
@@ -20,16 +21,25 @@ pub struct E1000 {
 impl E1000 {
     pub fn new(device: pci::Device) -> E1000 {
         unsafe {
-            let base = device.read(0x10) as usize;
+            let bar0 = device.bar(0);
+            let bar0_type = bar0 & 1;
+            println!("bar0 type: {}", bar0_type);
+            if bar0_type == 0 {
+                let mem_type = (bar0 >> 1) & 0x03;
+                println!("Mem type: {:x}", mem_type);
+            }
+
             let mut e1000: E1000 = E1000 {
                 pci_device: device,
-                base: base & 0xFFFFFFF0,
-                mmio: base & 0x1 == 0,
+                io_base: (device.bar(0x1) & !1) as usize,
+                mem_base: (device.bar(0x0) & !3) as usize,
+                mmio: device.bar(0x0) & 0x1 == 0,
                 initialized: false,
             };
 
             // We need to memory map base.
-            ::memory::identity_map_range(base, base + 8192);
+            ::memory::identity_map_range(e1000.io_base, e1000.io_base + 8192);
+            ::memory::identity_map_range(e1000.mem_base, e1000.mem_base + 8192);
 
             e1000.initialize();
             e1000
@@ -38,8 +48,8 @@ impl E1000 {
 
     unsafe fn write_command(&self, offset: usize, val: u32) {
         if self.mmio {
-            println!("Attempting to write {} to 0x{:x}", val, (self.base + offset));
-            ptr::write((self.base + offset) as *mut u32, val);
+            println!("Attempting to write {} to 0x{:x}", val, self.io_base + offset);
+            ptr::write_volatile((self.io_base + offset) as *const u32 as *mut _, val);
         } else {
             println!("Write failed because we only know how to party MMIO style");
         }
@@ -47,7 +57,7 @@ impl E1000 {
 
     unsafe fn read_command(&self, offset: usize) -> u32 {
         if self.mmio {
-            ptr::read((self.base + offset) as *mut u32)
+            ptr::read_volatile((self.io_base + offset) as *const u32)
         } else {
             println!("Write failed because we only know how to party MMIO style");
             0
@@ -67,6 +77,57 @@ impl E1000 {
                 }
             }
             return false;
+        }
+    }
+
+    unsafe fn eeprom_read(&mut self, addr: u8) -> u32 {
+        let mut tmp:u32 = 0;
+        if self.detect_eeprom() {
+            self.write_command( REG_EEPROM, (1) | (addr as u32) << 8) ;
+            loop {
+                tmp = self.read_command(REG_EEPROM);
+                if tmp & (1 << 4) != 0 {
+                    break;
+                }
+            }
+        }
+        else
+        {
+            self.write_command( REG_EEPROM, (1) | (addr as u32) << 2);
+            loop {
+                tmp = self.read_command(REG_EEPROM);
+                if tmp & (1 << 1) != 0 {
+                    break;
+                }
+            }
+        }
+        ((tmp >> 16) as u32) & 0xFFFF
+    }
+
+    fn read_mac(&mut self) -> MacAddr {
+        if self.detect_eeprom() {
+            unsafe {
+                let mut temp:u32;
+                temp = self.eeprom_read(0);
+                let mut mac:[u8;6] = [0;6];
+                mac[0] = (temp & 0xff) as u8;
+                mac[1] = (temp >> 8) as u8;
+                temp = self.eeprom_read(1);
+                mac[2] = (temp & 0xff) as u8;
+                mac[3] = (temp >> 8) as u8;
+                temp = self.eeprom_read(2);
+                mac[4] = (temp & 0xff) as u8;
+                mac[5] = (temp >> 8) as u8;
+
+                MacAddr {
+                    bytes: mac
+                }
+            }
+        } else {
+            let mut mac:[u8;6] = [0;6];
+            MacAddr {
+                bytes: mac
+            }
         }
     }
 }
@@ -113,15 +174,18 @@ impl DeviceDriver for E1000 {
         }
 
         let eeprom = self.detect_eeprom();
+        let mac = self.read_mac();
 
         println!("NET - Found network device that needs {} of space, irq is {}, interrupt pin \
-                  {}, command {}, MMIO: {}, base: {:x}, eeprom?: {}",
+                  {}, command {}, MMIO: {}, mem_base: 0x{:x}, io_base: 0x{:x}, eeprom?: {}: MAC: {}",
                  e1000.bar(0),
                  irq,
                  interrupt_pin,
                  cmd,
                  self.mmio,
-                 self.base,
-                 eeprom);
+                 self.mem_base,
+                 self.io_base,
+                 eeprom,
+                 mac);
     }
 }
