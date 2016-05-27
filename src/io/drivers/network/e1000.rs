@@ -12,28 +12,29 @@ const REG_EEPROM: usize = 0x0014;
 
 pub struct E1000 {
     pci_device: pci::Device,
+    bar0_type: u8,
+    mem_type: u8,
     io_base: usize,
     mem_base: usize,
-    mmio: bool,
     initialized: bool,
 }
 
 impl E1000 {
     pub fn new(device: pci::Device) -> E1000 {
         unsafe {
-            let bar0 = device.bar(0);
-            let bar0_type = bar0 & 1;
-            println!("bar0 type: {}", bar0_type);
+            let bar0:u8 = device.bar(0) as u8;
+            let bar0_type:u8 = bar0 & 1;
+            let mut mem_type:u8 = 0;
             if bar0_type == 0 {
-                let mem_type = (bar0 >> 1) & 0x03;
-                println!("Mem type: {:x}", mem_type);
+                mem_type = (bar0 >> 1) & 0x03;
             }
 
             let mut e1000: E1000 = E1000 {
+                bar0_type: bar0_type,
+                mem_type: mem_type,
                 pci_device: device,
                 io_base: (device.bar(0x1) & !1) as usize,
                 mem_base: (device.bar(0x0) & !3) as usize,
-                mmio: device.bar(0x0) & 0x1 == 0,
                 initialized: false,
             };
 
@@ -47,7 +48,7 @@ impl E1000 {
     }
 
     unsafe fn write_command(&self, offset: usize, val: u32) {
-        if self.mmio {
+        if self.bar0_type == 0 {
             println!("Attempting to write {} to 0x{:x}", val, self.io_base + offset);
             ptr::write_volatile((self.io_base + offset) as *const u32 as *mut _, val);
         } else {
@@ -56,7 +57,7 @@ impl E1000 {
     }
 
     unsafe fn read_command(&self, offset: usize) -> u32 {
-        if self.mmio {
+        if self.bar0_type == 0 {
             ptr::read_volatile((self.io_base + offset) as *const u32)
         } else {
             println!("Write failed because we only know how to party MMIO style");
@@ -182,7 +183,7 @@ impl DeviceDriver for E1000 {
                  irq,
                  interrupt_pin,
                  cmd,
-                 self.mmio,
+                 self.bar0_type,
                  self.mem_base,
                  self.io_base,
                  eeprom,
