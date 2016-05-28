@@ -3,6 +3,32 @@ use x86::segmentation::{self, SegmentSelector};
 
 pub struct Idt([Entry; 16]);
 
+pub type HandlerFunc = extern "C" fn() -> !;
+
+impl Idt {
+    pub fn new() -> Idt {
+        Idt([Entry::missing(); 16])
+    }
+
+    pub fn set_handler(&mut self, entry: u8, handler: HandlerFunc) -> &mut EntryOptions
+    {
+        self.0[entry as usize] = Entry::new(segmentation::cs(), handler);
+        &mut self.0[entry as usize].options
+    }
+
+    pub fn load(&'static self) {
+        use x86::dtables::{DescriptorTablePointer, lidt};
+        use core::mem::size_of;
+
+        let ptr = DescriptorTablePointer {
+            base: self as *const _ as u64,
+            limit: (size_of::<Self>() - 1) as u16,
+        };
+
+        unsafe { lidt(&ptr) };
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct Entry {
@@ -23,6 +49,17 @@ impl Entry {
             pointer_middle: (pointer >> 16) as u16,
             pointer_high: (pointer >> 32) as u32,
             options: EntryOptions::new(),
+            reserved: 0,
+        }
+    }
+
+    fn missing() -> Self {
+        Entry {
+            gdt_selector: SegmentSelector::new(0),
+            pointer_low: 0,
+            pointer_middle: 0,
+            pointer_high: 0,
+            options: EntryOptions::minimal(),
             reserved: 0,
         }
     }

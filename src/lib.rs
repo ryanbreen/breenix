@@ -32,6 +32,9 @@ extern crate bit_field;
 #[macro_use]
 extern crate bitflags;
 
+#[macro_use]
+extern crate lazy_static;
+
 #[macro_use(int)]
 extern crate x86;
 
@@ -98,6 +101,13 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // set up guard page and map the heap pages
     memory::init(boot_info);
 
+    // initialize our IDT
+    interrupts::init();
+
+    // provoke a page fault by writing to some random address
+    unsafe{ *(0xdeadbeaf as *mut u64) = 42 };
+
+    /*
     io::initialize();
 
     println!("Time is {}", io::timer::real_time().secs);
@@ -127,6 +137,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     state().scheduler.schedule();
 
     state().scheduler.idle();
+    */
 }
 
 /// Provide an easy, globally accessible function to get access to State

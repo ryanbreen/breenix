@@ -10,12 +10,10 @@ once = "*"
 cpuio = "*"
 bitflags = "0.7.0"
 bit_field = "*"
+x86 = "0.7.0"
 
 [dependencies.multiboot2]
 git = "https://github.com/phil-opp/multiboot2-elf64"
-
-[dependencies.x86]
-git = "https://github.com/gz/rust-x86.git"
 
 [dependencies.lazy_static]
 version = "0.2.1"
