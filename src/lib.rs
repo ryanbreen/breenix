@@ -27,6 +27,8 @@ extern crate multiboot2;
 
 extern crate cpuio;
 
+extern crate bit_field;
+
 #[macro_use]
 extern crate bitflags;
 
@@ -40,6 +42,7 @@ mod event;
 mod memory;
 mod vga_writer;
 
+mod interrupts;
 mod io;
 
 mod state;
