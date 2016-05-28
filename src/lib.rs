@@ -105,7 +105,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     interrupts::init();
 
     // provoke a page fault by writing to some random address
-    unsafe{ *(0xdeadbeaf as *mut u64) = 42 };
+    //unsafe{ *(0xdeadbeaf as *mut u64) = 42 };
+
+    // provoke a page fault inside println, potentially leading to deadlock
+    println!("{:?}", unsafe{ *(0xdeadbeaf as *mut u64) = 42 });
 
     /*
     io::initialize();

@@ -1,7 +1,10 @@
 mod idt;
 
+use buffers::print_error;
+
 extern "C" fn page_fault_handler() -> ! {
-    println!("EXCEPTION: PAGE FAULT");
+    unsafe { print_error(format_args!("EXCEPTION: PAGE FAULT")) };
+
     loop {}
 }
 

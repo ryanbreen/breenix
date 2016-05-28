@@ -43,7 +43,7 @@ pub struct ScreenChar {
 }
 
 pub struct VgaWriter {
-    buffer: Unique<Buffer>,
+    pub buffer: Unique<Buffer>,
 }
 
 impl VgaWriter {

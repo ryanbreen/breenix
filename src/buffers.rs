@@ -1,3 +1,5 @@
+use core::fmt;
+
 use spin::Mutex;
 
 use vga_writer;
@@ -154,4 +156,25 @@ pub fn toggle() {
         vga_writer::update_cursor(BUFFER_HEIGHT as u8 - 1,
                                   ACTIVE_BUFFER.lock().column_position as u8);
     }
+}
+
+/// Our printer of last resort.  This is guaranteed to write without trying to grab a lock that
+/// may be held by someone else.
+pub unsafe fn print_error(fmt: fmt::Arguments) {
+    use core::fmt::Write;
+    use core::ptr::Unique;
+
+    let mut error_buffer = Buffer {
+        column_position: 0,
+        color_code: ColorCode::new(Color::Red, Color::Black),
+        blank_char: RED_BLANK,
+        chars: [[RED_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+        active: true,
+    };
+
+    let mut writer = vga_writer::VgaWriter {
+        buffer: unsafe { Unique::new(0xb8000 as *mut _) },
+    };
+    error_buffer.new_line();
+    error_buffer.write_fmt(fmt);
 }
