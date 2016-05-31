@@ -12,6 +12,13 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
 
   unsafe {
     asm!("" : "={rax}"(ic.rax));
+
+    // We have rax copied to IC, so we use rax to pop the error_code
+    // off the stack.
+    asm!("pop %rax");
+    asm!("pop %rax");
+    asm!("" : "={rax}"(ic.error_code));
+
     asm!("push %rax");
     asm!("" : "={rcx}"(ic.rcx));
     asm!("push %rcx");

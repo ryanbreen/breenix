@@ -101,9 +101,11 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // set up guard page and map the heap pages
     memory::init(boot_info);
 
-    // Phil-Opp idt, disabled for now because it doesn't have parity with what we
-    // had previously.
+    // Phil-Opp idt
     interrupts::init();
+
+    // toy-os idt
+    //io::initialize();
 
     // provoke a page fault inside println
     println!("{:?}", unsafe{ *(0xdeadbeaf as *mut u64) = 42 });
