@@ -8,37 +8,41 @@ use spin::Mutex;
 
 extern "C" fn page_fault_handler_wrapper() -> ! {
 
+  let mut ic:InterruptContext = InterruptContext::empty();
+
   unsafe {
+    asm!("" : "={rax}"(ic.rax));
     asm!("push %rax");
+    asm!("" : "={rcx}"(ic.rcx));
     asm!("push %rcx");
+    asm!("" : "={rdx}"(ic.rdx));
     asm!("push %rdx");
+    asm!("" : "={r8}"(ic.r8));
     asm!("push %r8");
+    asm!("" : "={r9}"(ic.r9));
     asm!("push %r9");
+    asm!("" : "={r10}"(ic.r10));
     asm!("push %r10");
+    asm!("" : "={r11}"(ic.r11));
     asm!("push %r11");
+    asm!("" : "={rdi}"(ic.rdi));
     asm!("push %rdi");
+    asm!("" : "={rdi}"(ic.rsi));
     asm!("push %rsi");
-    /*
-    asm!("push 0");
-    print_error(format_args!("Beans"));
-    asm!("push 0");
-    asm!("push 0");
-    asm!("push 0");
-    asm!("push 0");
-    asm!("push 0");
-    asm!("push 0");
-    asm!("push 0");
-    asm!("push 0");
-    asm!("push 0");
-    asm!("mov %rdi, %rsp");
-    */
 
-    let sp:usize;
-    asm!("" : "={sp}"(sp));
-    print_error(format_args!("Reading from stack {:x}", sp));
-    let ref ic:InterruptContext = *(sp as *const InterruptContext);
-
+    ic.int_id = 14;
     page_fault_handler(&ic);
+
+    // Now pop everything back off the stack and to the registers.
+    asm!("pop rsi");
+    asm!("pop rdi");
+    asm!("pop r11");
+    asm!("pop r10");
+    asm!("pop r9");
+    asm!("pop r8");
+    asm!("pop rdx");
+    asm!("pop rcx");
+    asm!("pop rax");
   }
 
 }
@@ -85,4 +89,23 @@ struct InterruptContext {
     _pad_1: u32,
     error_code: u32,
     _pad_2: u32,
+}
+
+impl InterruptContext {
+  fn empty() -> InterruptContext {
+    InterruptContext {
+      rsi: 0,
+      rdi: 0,
+      r11: 0,
+      r9: 0,
+      r8: 0,
+      rdx: 0,
+      rcx: 0,
+      rax: 0,
+      int_id: 0,
+      _pad_1: 0,
+      error_code: 0,
+      _pad_2: 0,
+    }
+  }
 }
