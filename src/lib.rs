@@ -103,8 +103,12 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     // Phil-Opp idt, disabled for now because it doesn't have parity with what we
     // had previously.
-    // interrupts::init();
+    interrupts::init();
 
+    // provoke a page fault inside println
+    println!("{:?}", unsafe{ *(0xdeadbeaf as *mut u64) = 42 });
+
+/*
     io::initialize();
 
     println!("Time is {}", io::timer::real_time().secs);
@@ -134,6 +138,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     state().scheduler.schedule();
 
     state().scheduler.idle();
+    */
 }
 
 /// Provide an easy, globally accessible function to get access to State

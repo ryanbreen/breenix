@@ -1,13 +1,13 @@
 use bit_field::BitField;
 use x86::segmentation::{self, SegmentSelector};
 
-pub struct Idt([Entry; 16]);
+pub struct Idt([Entry; 256]);
 
 pub type HandlerFunc = extern "C" fn() -> !;
 
 impl Idt {
     pub fn new() -> Idt {
-        Idt([Entry::missing(); 16])
+        Idt([Entry::missing(); 256])
     }
 
     pub fn set_handler(&mut self, entry: u8, handler: HandlerFunc) -> &mut EntryOptions

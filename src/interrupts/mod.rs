@@ -6,8 +6,46 @@ use io::ChainedPics;
 
 use spin::Mutex;
 
-extern "C" fn page_fault_handler() -> ! {
-    unsafe { print_error(format_args!("EXCEPTION: PAGE FAULT")) };
+extern "C" fn page_fault_handler_wrapper() -> ! {
+
+  unsafe {
+    asm!("push %rax");
+    asm!("push %rcx");
+    asm!("push %rdx");
+    asm!("push %r8");
+    asm!("push %r9");
+    asm!("push %r10");
+    asm!("push %r11");
+    asm!("push %rdi");
+    asm!("push %rsi");
+    /*
+    asm!("push 0");
+    print_error(format_args!("Beans"));
+    asm!("push 0");
+    asm!("push 0");
+    asm!("push 0");
+    asm!("push 0");
+    asm!("push 0");
+    asm!("push 0");
+    asm!("push 0");
+    asm!("push 0");
+    asm!("push 0");
+    asm!("mov %rdi, %rsp");
+    */
+
+    let sp:usize;
+    asm!("" : "={sp}"(sp));
+    print_error(format_args!("Reading from stack {:x}", sp));
+    let ref ic:InterruptContext = *(sp as *const InterruptContext);
+
+    page_fault_handler(&ic);
+  }
+
+}
+
+extern "C" fn page_fault_handler(ctx: &InterruptContext) -> ! {
+
+    unsafe { print_error(format_args!("EXCEPTION: PAGE FAULT {:?}", ctx)) };
 
     loop {}
 }
@@ -16,7 +54,7 @@ lazy_static! {
     static ref IDT: idt::Idt = {
         let mut idt = idt::Idt::new();
 
-        idt.set_handler(14, page_fault_handler);
+        idt.set_handler(14, page_fault_handler_wrapper);
 
         idt
     };
