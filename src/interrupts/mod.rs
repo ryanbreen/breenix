@@ -97,6 +97,7 @@ impl InterruptContext {
       rsi: 0,
       rdi: 0,
       r11: 0,
+      r10: 0,
       r9: 0,
       r8: 0,
       rdx: 0,
