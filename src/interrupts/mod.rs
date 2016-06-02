@@ -13,13 +13,18 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
   unsafe {
     asm!("" : "={rax}"(ic.rax));
 
+    println!("RAX was {:x}", ic.rax);
+
     // We have rax copied to IC, so we use rax to pop the error_code
     // off the stack.
     asm!("pop %rax");
     asm!("pop %rax");
-    asm!("" : "={rax}"(ic.error_code));
 
-    asm!("push %rax");
+    let mut tmp:u64;
+    asm!("" : "={rax}"(tmp));
+    ic.error_code = (tmp >> 32) as u32;
+    println!("RAX is {:x} {}", tmp, ic.error_code);
+
     asm!("" : "={rcx}"(ic.rcx));
     asm!("push %rcx");
     asm!("" : "={rdx}"(ic.rdx));
@@ -34,27 +39,27 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
     asm!("push %r11");
     asm!("" : "={rdi}"(ic.rdi));
     asm!("push %rdi");
-    asm!("" : "={rdi}"(ic.rsi));
+    asm!("" : "={rsi}"(ic.rsi));
     asm!("push %rsi");
 
     ic.int_id = 14;
-    page_fault_handler(&ic);
+    interrupt_handler(&ic);
 
     // Now pop everything back off the stack and to the registers.
-    asm!("pop rsi");
-    asm!("pop rdi");
-    asm!("pop r11");
-    asm!("pop r10");
-    asm!("pop r9");
-    asm!("pop r8");
-    asm!("pop rdx");
-    asm!("pop rcx");
-    asm!("pop rax");
+    asm!("pop %rsi");
+    asm!("pop %rdi");
+    asm!("pop %r11");
+    asm!("pop %r10");
+    asm!("pop %r9");
+    asm!("pop %r8");
+    asm!("pop %rdx");
+    asm!("pop %rcx");
+    asm!("pop %rax");
   }
 
 }
 
-extern "C" fn page_fault_handler(ctx: &InterruptContext) -> ! {
+extern "C" fn interrupt_handler(ctx: &InterruptContext) -> ! {
 
     unsafe { print_error(format_args!("EXCEPTION: PAGE FAULT {:?}", ctx)) };
 
@@ -72,7 +77,7 @@ lazy_static! {
 }
 
 pub fn init() {
-    IDT.load();
+  IDT.load();
 }
 
 /// Interface to our PIC (programmable interrupt controller) chips.  We

@@ -105,10 +105,11 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     interrupts::init();
 
     // toy-os idt
-    //io::initialize();
+    //io::interrupts::initialize();
+    io::initialize();
 
     // provoke a page fault inside println
-    println!("{:?}", unsafe{ *(0xdeadbeaf as *mut u64) = 42 });
+    //println!("{:?}", unsafe{ *(0x00aa00aa as *mut u64) = 42 });
 
 /*
     io::initialize();

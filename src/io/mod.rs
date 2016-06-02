@@ -177,9 +177,8 @@ impl ChainedPics {
 }
 
 pub fn initialize() {
-    interrupts::initialize();
+    pci::initialize();
     serial::initialize();
     timer::initialize();
-    pci::initialize();
     event::keyboard::initialize();
 }
