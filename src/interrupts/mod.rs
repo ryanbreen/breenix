@@ -13,7 +13,18 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
   unsafe {
     asm!("" : "={rax}"(ic.rax));
 
-    println!("RAX was {:x}", ic.rax);
+    //println!("RAX was {:x}", ic.rax);
+
+    let mut tmp:u64;
+
+    //asm!("mov $2, %rdi"::"2"(69));
+    asm!("mov $$69, %r11");
+    asm!("" : "={r11}"(tmp));
+    asm!("push %r11");
+    asm!("pop %r11");
+
+    asm!("" : "={r11}"(tmp));
+    println!("R11 is {}", tmp);
 
     // We have rax copied to IC, so we use rax to pop the error_code
     // off the stack.
@@ -23,7 +34,7 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
     let mut tmp:u64;
     asm!("" : "={rax}"(tmp));
     ic.error_code = (tmp >> 32) as u32;
-    println!("RAX is {:x} {}", tmp, ic.error_code);
+    println!("RAX is {} {}", tmp, ic.error_code);
 
     asm!("" : "={rcx}"(ic.rcx));
     asm!("push %rcx");
