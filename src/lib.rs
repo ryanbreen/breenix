@@ -1,5 +1,6 @@
 #![feature(alloc, allocator, box_syntax, box_patterns, macro_reexport, lang_items,
-          heap_api, const_fn, unique, asm, collections, trace_macros, stmt_expr_attributes)]
+          heap_api, const_fn, unique, asm, collections, trace_macros,
+          naked_functions, stmt_expr_attributes)]
 #![allocator]
 
 #![no_std]
@@ -106,6 +107,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     // toy-os idt
     //io::interrupts::initialize();
+    
     io::initialize();
 
     // provoke a page fault inside println

@@ -6,6 +6,7 @@ use io::ChainedPics;
 
 use spin::Mutex;
 
+#[naked]
 extern "C" fn page_fault_handler_wrapper() -> ! {
 
   let mut ic:InterruptContext = InterruptContext::empty();
@@ -18,54 +19,55 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
     let mut tmp:u64;
 
     //asm!("mov $2, %rdi"::"2"(69));
-    asm!("mov $$69, %r11");
+    asm!("mov $$69, %r11":::"{r11}");
     asm!("" : "={r11}"(tmp));
-    asm!("push %r11");
-    asm!("pop %r11");
+    asm!("push %r11":::"memory" "{r11}");
+    asm!("pop %r11":::"memory" "{r11}");
 
     asm!("" : "={r11}"(tmp));
-    println!("R11 is {}", tmp);
+    //println!("R11 is {}", tmp);
 
     // We have rax copied to IC, so we use rax to pop the error_code
     // off the stack.
-    asm!("pop %rax");
-    asm!("pop %rax");
+    asm!("pop %rax":::"memory" "{rax}");
 
     let mut tmp:u64;
     asm!("" : "={rax}"(tmp));
     ic.error_code = (tmp >> 32) as u32;
     println!("RAX is {} {}", tmp, ic.error_code);
+    asm!("pop %rax":::"memory" "{rax}");
 
     asm!("" : "={rcx}"(ic.rcx));
-    asm!("push %rcx");
+    asm!("push %rcx":::"memory" "{rcx}");
     asm!("" : "={rdx}"(ic.rdx));
-    asm!("push %rdx");
+    asm!("push %rdx":::"memory" "{rdx}");
     asm!("" : "={r8}"(ic.r8));
-    asm!("push %r8");
+    asm!("push %r8":::"memory" "{r8}");
     asm!("" : "={r9}"(ic.r9));
-    asm!("push %r9");
+    asm!("push %r9":::"memory" "{r9}");
     asm!("" : "={r10}"(ic.r10));
-    asm!("push %r10");
+    asm!("push %r10":::"memory" "{r10}");
     asm!("" : "={r11}"(ic.r11));
-    asm!("push %r11");
+    asm!("push %r11":::"memory" "{r11}");
     asm!("" : "={rdi}"(ic.rdi));
-    asm!("push %rdi");
+    asm!("push %rdi":::"memory" "{rdi}");
     asm!("" : "={rsi}"(ic.rsi));
-    asm!("push %rsi");
+    asm!("push %rsi":::"memory" "{rsi}");
 
     ic.int_id = 14;
     interrupt_handler(&ic);
 
     // Now pop everything back off the stack and to the registers.
-    asm!("pop %rsi");
-    asm!("pop %rdi");
-    asm!("pop %r11");
-    asm!("pop %r10");
-    asm!("pop %r9");
-    asm!("pop %r8");
-    asm!("pop %rdx");
-    asm!("pop %rcx");
-    asm!("pop %rax");
+    asm!("pop %rsi;
+      pop %rdi;
+      pop %r11;
+      pop %r10;
+      pop %r9;
+      pop %r8;
+      pop %rdx;
+      pop %rcx;
+      pop %rax;
+      iretq;");
   }
 
 }
