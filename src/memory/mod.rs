@@ -47,7 +47,7 @@ pub fn identity_map_range(start:usize, end: usize) {
     let mut allocator:&'static mut AreaFrameAllocator = frame_allocator();
     let mut active_table:&'static mut ActivePageTable = page_table();
     for page in Page::range_inclusive(Page::containing_address(start), Page::containing_address(end)) {
-        //active_table.map(page, paging::WRITABLE, allocator);
+        active_table.map(page, paging::WRITABLE, allocator);
     }
 }
 

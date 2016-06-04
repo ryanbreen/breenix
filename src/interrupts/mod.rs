@@ -2,21 +2,27 @@ mod idt;
 
 use buffers::print_error;
 
-use io::ChainedPics;
+use constants::keyboard::KEYBOARD_INTERRUPT;
+use constants::serial::SERIAL_INTERRUPT;
+use constants::syscall::SYSCALL_INTERRUPT;
+use constants::timer::TIMER_INTERRUPT;
+use io::{keyboard, serial, timer, ChainedPics};
 
 use spin::Mutex;
 
-#[naked]
-extern "C" fn page_fault_handler_wrapper() -> ! {
+use x86;
 
-  let mut ic:InterruptContext = InterruptContext::empty();
+#[naked]
+extern "C" fn page_fault_handler_wrapper() {
 
   unsafe {
-    asm!("" : "={rax}"(ic.rax));
-
-    //println!("RAX was {:x}", ic.rax);
 
     let mut tmp:u64;
+    asm!("" : "={rax}"(tmp));
+
+    let mut ic:InterruptContext = InterruptContext::empty();
+
+    //println!("RAX was {:x}", ic.rax);
 
     //asm!("mov $2, %rdi"::"2"(69));
     asm!("mov $$69, %r11":::"{r11}");
@@ -25,16 +31,14 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
     asm!("pop %r11":::"memory" "{r11}");
 
     asm!("" : "={r11}"(tmp));
-    //println!("R11 is {}", tmp);
 
     // We have rax copied to IC, so we use rax to pop the error_code
     // off the stack.
-    asm!("pop %rax":::"memory" "{rax}");
+    //asm!("pop %rax":::"memory" "{rax}");
 
     let mut tmp:u64;
     asm!("" : "={rax}"(tmp));
     ic.error_code = (tmp >> 32) as u32;
-    println!("RAX is {} {}", tmp, ic.error_code);
     asm!("pop %rax":::"memory" "{rax}");
 
     asm!("" : "={rcx}"(ic.rcx));
@@ -54,7 +58,8 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
     asm!("" : "={rsi}"(ic.rsi));
     asm!("push %rsi":::"memory" "{rsi}");
 
-    ic.int_id = 14;
+    ic.int_id = SYSCALL_INTERRUPT;
+
     interrupt_handler(&ic);
 
     // Now pop everything back off the stack and to the registers.
@@ -72,18 +77,51 @@ extern "C" fn page_fault_handler_wrapper() -> ! {
 
 }
 
-extern "C" fn interrupt_handler(ctx: &InterruptContext) -> ! {
+static mut test_passed:bool = false;
 
-    unsafe { print_error(format_args!("EXCEPTION: PAGE FAULT {:?}", ctx)) };
+extern "C" fn interrupt_handler(ctx: &InterruptContext) {
+    ::state().interrupt_count[ctx.int_id as usize] += 1;
 
-    loop {}
+    match ctx.int_id {
+        //0x00...0x0F => cpu_exception_handler(ctx),
+        TIMER_INTERRUPT => {
+            timer::timer_interrupt();
+        }
+        KEYBOARD_INTERRUPT => {
+            keyboard::read();
+        }
+        SERIAL_INTERRUPT => {
+            serial::read();
+        }
+        // On Linux, this is used for syscalls.  Good enough for me.
+        SYSCALL_INTERRUPT => {
+            unsafe {
+                if !test_passed {
+                    test_passed = true;
+                    return;
+                }
+            }
+
+            println!("Syscall {:?}", ctx)
+        }
+        _ => {
+            // println!("UNKNOWN INTERRUPT #{}", ctx.int_id);
+            ::state().interrupt_count[0 as usize] += 1;
+        }
+    }
+
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(ctx.int_id as u8);
+    }
 }
 
 lazy_static! {
     static ref IDT: idt::Idt = {
         let mut idt = idt::Idt::new();
 
-        idt.set_handler(14, page_fault_handler_wrapper);
+        for i in 0..255 {
+          idt.set_handler(i as u8, page_fault_handler_wrapper);
+        }
 
         idt
     };
@@ -91,6 +129,17 @@ lazy_static! {
 
 pub fn init() {
   IDT.load();
+
+  unsafe {
+    PICS.lock().initialize();
+
+    int!(0x80);
+
+    if test_passed {
+      println!("Party on");
+      x86::irq::enable();
+    }
+  }
 }
 
 /// Interface to our PIC (programmable interrupt controller) chips.  We
