@@ -15,36 +15,17 @@ use x86;
 macro_rules! caller_save {
     ( $( $x:expr ),* ) => {
         {
-          let mut ic:InterruptContext = InterruptContext::empty();
-          asm!("" : "={rax}"(ic.rax));
-
-          //println!("RAX was {:x}", ic.rax);
-
           // We have rax copied to IC, so we use rax to pop the error_code
           // off the stack.
           //asm!("pop %rax":::"memory" "{rax}");
-
-          let mut tmp:u64;
-          asm!("" : "={rax}"(tmp));
-          ic.error_code = (tmp >> 32) as u32;
-
-          asm!("" : "={rcx}"(ic.rcx));
           asm!("push %rcx":::"memory" "{rcx}");
-          asm!("" : "={rdx}"(ic.rdx));
           asm!("push %rdx":::"memory" "{rdx}");
-          asm!("" : "={r8}"(ic.r8));
           asm!("push %r8":::"memory" "{r8}");
-          asm!("" : "={r9}"(ic.r9));
           asm!("push %r9":::"memory" "{r9}");
-          asm!("" : "={r10}"(ic.r10));
           asm!("push %r10":::"memory" "{r10}");
-          asm!("" : "={r11}"(ic.r11));
           asm!("push %r11":::"memory" "{r11}");
-          asm!("" : "={rdi}"(ic.rdi));
           asm!("push %rdi":::"memory" "{rdi}");
-          asm!("" : "={rsi}"(ic.rsi));
           asm!("push %rsi":::"memory" "{rsi}");
-          ic
         }
     };
 }
@@ -71,9 +52,17 @@ macro_rules! caller_restore {
 extern "C" fn page_fault_handler_wrapper() {
 
   unsafe {
-    let mut ic:InterruptContext = caller_save!();
 
-    ic.int_id = SYSCALL_INTERRUPT;
+    caller_save!();
+
+    asm!("push $$0x80":::"memory");
+
+    // TODO: This is only necessary in the non-error case.  In the case of error, it would mess things up.
+    asm!("push $$0x0":::"memory");
+
+    let sp:usize;
+    asm!("" : "={rsp}"(sp));
+    let ref ic:InterruptContext = *((sp - 64) as *const InterruptContext);
 
     interrupt_handler(&ic);
 
