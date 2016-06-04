@@ -49,35 +49,57 @@ macro_rules! caller_restore {
 }
 
 #[naked]
-extern "C" fn page_fault_handler_wrapper() {
+fn non_error_handler(id: u64) {
+    unsafe {
+        caller_save!();
 
-  unsafe {
+        asm!("push $0"::"r"(id):"memory");
 
-    caller_save!();
+        // Note: This is only necessary in the non-error case.  In the case of error, it would mess things up.
+        asm!("push $$0x0":::"memory");
 
-    asm!("push $$0x80":::"memory");
+        let sp: usize;
+        asm!("" : "={rsp}"(sp));
+        let ref ic: InterruptContext = *((sp - 64) as *const InterruptContext);
 
-    // TODO: This is only necessary in the non-error case.  In the case of error, it would mess things up.
-    asm!("push $$0x0":::"memory");
+        interrupt_handler(&ic);
 
-    let sp:usize;
-    asm!("" : "={rsp}"(sp));
-    let ref ic:InterruptContext = *((sp - 64) as *const InterruptContext);
-
-    interrupt_handler(&ic);
-
-    caller_restore!();
-  }
-
+        caller_restore!();
+    }
 }
 
-static mut test_passed:bool = false;
+#[naked]
+extern "C" fn noop_wrapper() {
+    unsafe {
+        caller_save!();
+
+        asm!("push $$0xFF":::"memory");
+
+        // Note: This is only necessary in the non-error case.  In the case of error, it would mess things up.
+        asm!("push $$0x0":::"memory");
+
+        let sp: usize;
+        asm!("" : "={rsp}"(sp));
+        let ref ic: InterruptContext = *((sp - 64) as *const InterruptContext);
+
+        interrupt_handler(&ic);
+
+        caller_restore!();
+    }
+}
+
+#[naked]
+extern "C" fn syscall_wrapper() {
+    non_error_handler(SYSCALL_INTERRUPT as u64);
+}
+
+static mut test_passed: bool = false;
 
 extern "C" fn interrupt_handler(ctx: &InterruptContext) {
     ::state().interrupt_count[ctx.int_id as usize] += 1;
 
     match ctx.int_id {
-        //0x00...0x0F => cpu_exception_handler(ctx),
+        // 0x00...0x0F => cpu_exception_handler(ctx),
         TIMER_INTERRUPT => {
             timer::timer_interrupt();
         }
@@ -114,26 +136,28 @@ lazy_static! {
         let mut idt = idt::Idt::new();
 
         for i in 0..255 {
-          idt.set_handler(i as u8, page_fault_handler_wrapper);
+          idt.set_handler(i as u8, syscall_wrapper);
         }
+
+        idt.set_handler(SYSCALL_INTERRUPT as u8, syscall_wrapper);
 
         idt
     };
 }
 
 pub fn init() {
-  IDT.load();
+    IDT.load();
 
-  unsafe {
-    PICS.lock().initialize();
+    unsafe {
+        PICS.lock().initialize();
 
-    int!(0x80);
+        int!(0x80);
 
-    if test_passed {
-      println!("Party on");
-      x86::irq::enable();
+        if test_passed {
+            println!("Party on");
+            x86::irq::enable();
+        }
     }
-  }
 }
 
 /// Interface to our PIC (programmable interrupt controller) chips.  We
@@ -160,21 +184,21 @@ struct InterruptContext {
 }
 
 impl InterruptContext {
-  fn empty() -> InterruptContext {
-    InterruptContext {
-      rsi: 0,
-      rdi: 0,
-      r11: 0,
-      r10: 0,
-      r9: 0,
-      r8: 0,
-      rdx: 0,
-      rcx: 0,
-      rax: 0,
-      int_id: 0,
-      _pad_1: 0,
-      error_code: 0,
-      _pad_2: 0,
+    fn empty() -> InterruptContext {
+        InterruptContext {
+            rsi: 0,
+            rdi: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rdx: 0,
+            rcx: 0,
+            rax: 0,
+            int_id: 0,
+            _pad_1: 0,
+            error_code: 0,
+            _pad_2: 0,
+        }
     }
-  }
 }

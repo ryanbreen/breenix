@@ -10,8 +10,7 @@ impl Idt {
         Idt([Entry::missing(); 256])
     }
 
-    pub fn set_handler(&mut self, entry: u8, handler: HandlerFunc) -> &mut EntryOptions
-    {
+    pub fn set_handler(&mut self, entry: u8, handler: HandlerFunc) -> &mut EntryOptions {
         self.0[entry as usize] = Entry::new(segmentation::cs(), handler);
         &mut self.0[entry as usize].options
     }
