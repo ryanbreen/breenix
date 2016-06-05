@@ -16,8 +16,8 @@ macro_rules! caller_save {
     ( $( $x:expr ),* ) => {
         {
           // We have rax copied to IC, so we use rax to pop the error_code
-          // off the stack.
-          //asm!("pop %rax":::"memory" "{rax}");
+          // off the stack.;
+          asm!("push %rax":::"memory" "{rax}");
           asm!("push %rcx":::"memory" "{rcx}");
           asm!("push %rdx":::"memory" "{rdx}");
           asm!("push %r8":::"memory" "{r8}");
@@ -49,14 +49,11 @@ macro_rules! caller_restore {
 }
 
 #[naked]
-fn non_error_handler(id: u64) {
+fn error_handler(id: u64) {
     unsafe {
         caller_save!();
 
-        asm!("push $0"::"r"(id):"memory");
-
-        // Note: This is only necessary in the non-error case.  In the case of error, it would mess things up.
-        asm!("push $$0x0":::"memory");
+        asm!("push $0"::"r"(id << 32):"memory");
 
         let sp: usize;
         asm!("" : "={rsp}"(sp));
@@ -64,23 +61,30 @@ fn non_error_handler(id: u64) {
 
         interrupt_handler(&ic);
 
+        // Extra pop to get the error code off the stack.
+        asm!("pop %rsi");
+
         caller_restore!();
     }
 }
 
 #[naked]
-extern "C" fn noop_wrapper() {
+fn non_error_handler(id: u64) {
     unsafe {
         caller_save!();
 
-        asm!("push $$0xFF":::"memory");
+        asm!("push $0"::"r"(id << 32):"memory");
 
-        // Note: This is only necessary in the non-error case.  In the case of error, it would mess things up.
+        // Note: This is only necessary in the non-error case.  In the case of error,
+        // it would mess things up.
         asm!("push $$0x0":::"memory");
 
         let sp: usize;
         asm!("" : "={rsp}"(sp));
+
         let ref ic: InterruptContext = *((sp - 64) as *const InterruptContext);
+
+        print_error(format_args!("{} {:?}", id, ic));
 
         interrupt_handler(&ic);
 
@@ -91,6 +95,176 @@ extern "C" fn noop_wrapper() {
 #[naked]
 extern "C" fn syscall_wrapper() {
     non_error_handler(SYSCALL_INTERRUPT as u64);
+}
+
+#[naked]
+extern "C" fn noop_wrapper() {
+    non_error_handler(0xFF);
+}
+
+#[naked]
+extern "C" fn noop_wrapper0() {
+    non_error_handler(0);
+}
+
+#[naked]
+extern "C" fn noop_wrapper1() {
+    non_error_handler(1);
+}
+
+#[naked]
+extern "C" fn noop_wrapper2() {
+    non_error_handler(2);
+}
+
+#[naked]
+extern "C" fn noop_wrapper3() {
+    non_error_handler(3);
+}
+
+#[naked]
+extern "C" fn noop_wrapper4() {
+    non_error_handler(4);
+}
+
+#[naked]
+extern "C" fn noop_wrapper5() {
+    non_error_handler(5);
+}
+
+#[naked]
+extern "C" fn noop_wrapper6() {
+    non_error_handler(6);
+}
+
+#[naked]
+extern "C" fn noop_wrapper7() {
+    non_error_handler(7);
+}
+
+#[naked]
+extern "C" fn noop_wrapper8() {
+    non_error_handler(8);
+}
+
+#[naked]
+extern "C" fn noop_wrapper9() {
+    non_error_handler(9);
+}
+
+#[naked]
+extern "C" fn noop_wrapper10() {
+    non_error_handler(10);
+}
+
+#[naked]
+extern "C" fn noop_wrapper11() {
+    non_error_handler(11);
+}
+
+#[naked]
+extern "C" fn noop_wrapper12() {
+    non_error_handler(12);
+}
+
+#[naked]
+extern "C" fn noop_wrapper13() {
+    non_error_handler(13);
+}
+
+#[naked]
+extern "C" fn noop_wrapper14() {
+    non_error_handler(14);
+}
+
+#[naked]
+extern "C" fn noop_wrapper15() {
+    non_error_handler(15);
+}
+
+#[naked]
+extern "C" fn noop_wrapper16() {
+    non_error_handler(16);
+}
+
+#[naked]
+extern "C" fn noop_wrapper17() {
+    non_error_handler(17);
+}
+
+#[naked]
+extern "C" fn noop_wrapper18() {
+    non_error_handler(18);
+}
+
+#[naked]
+extern "C" fn noop_wrapper19() {
+    non_error_handler(19);
+}
+
+#[naked]
+extern "C" fn noop_wrapper20() {
+    non_error_handler(20);
+}
+
+#[naked]
+extern "C" fn noop_wrapper21() {
+    non_error_handler(21);
+}
+
+#[naked]
+extern "C" fn noop_wrapper22() {
+    non_error_handler(22);
+}
+
+#[naked]
+extern "C" fn noop_wrapper23() {
+    non_error_handler(23);
+}
+
+#[naked]
+extern "C" fn noop_wrapper24() {
+    non_error_handler(24);
+}
+
+#[naked]
+extern "C" fn noop_wrapper25() {
+    non_error_handler(25);
+}
+
+#[naked]
+extern "C" fn noop_wrapper26() {
+    non_error_handler(26);
+}
+
+#[naked]
+extern "C" fn noop_wrapper27() {
+    non_error_handler(27);
+}
+
+#[naked]
+extern "C" fn noop_wrapper28() {
+    non_error_handler(28);
+}
+
+#[naked]
+extern "C" fn noop_wrapper29() {
+    non_error_handler(29);
+}
+
+#[naked]
+extern "C" fn noop_wrapper30() {
+    non_error_handler(30);
+}
+
+#[naked]
+extern "C" fn noop_wrapper31() {
+    non_error_handler(31);
+}
+
+#[naked]
+extern "C" fn noop_wrapper32() {
+    non_error_handler(32);
 }
 
 static mut test_passed: bool = false;
@@ -136,8 +310,44 @@ lazy_static! {
         let mut idt = idt::Idt::new();
 
         for i in 0..255 {
-          idt.set_handler(i as u8, syscall_wrapper);
+          if i != SYSCALL_INTERRUPT {
+              idt.set_handler(i as u8, noop_wrapper);
+          }
         }
+
+        idt.set_handler(0, noop_wrapper0);
+        idt.set_handler(1, noop_wrapper1);
+        idt.set_handler(2, noop_wrapper2);
+        idt.set_handler(3, noop_wrapper3);
+        idt.set_handler(4, noop_wrapper4);
+        idt.set_handler(5, noop_wrapper5);
+        idt.set_handler(6, noop_wrapper6);
+        idt.set_handler(7, noop_wrapper7);
+        idt.set_handler(8, noop_wrapper8);
+        idt.set_handler(9, noop_wrapper9);
+        idt.set_handler(10, noop_wrapper10);
+        idt.set_handler(11, noop_wrapper11);
+        idt.set_handler(12, noop_wrapper12);
+        idt.set_handler(13, noop_wrapper13);
+        idt.set_handler(14, noop_wrapper14);
+        idt.set_handler(15, noop_wrapper15);
+        idt.set_handler(16, noop_wrapper16);
+        idt.set_handler(17, noop_wrapper17);
+        idt.set_handler(18, noop_wrapper18);
+        idt.set_handler(19, noop_wrapper19);
+        idt.set_handler(20, noop_wrapper20);
+        idt.set_handler(21, noop_wrapper21);
+        idt.set_handler(22, noop_wrapper22);
+        idt.set_handler(23, noop_wrapper23);
+        idt.set_handler(24, noop_wrapper24);
+        idt.set_handler(25, noop_wrapper25);
+        idt.set_handler(26, noop_wrapper26);
+        idt.set_handler(27, noop_wrapper27);
+        idt.set_handler(28, noop_wrapper28);
+        idt.set_handler(29, noop_wrapper29);
+        idt.set_handler(30, noop_wrapper30);
+        idt.set_handler(31, noop_wrapper31);
+        idt.set_handler(32, noop_wrapper32);
 
         idt.set_handler(SYSCALL_INTERRUPT as u8, syscall_wrapper);
 
@@ -151,10 +361,9 @@ pub fn init() {
     unsafe {
         PICS.lock().initialize();
 
-        int!(0x80);
+        int!(SYSCALL_INTERRUPT);
 
         if test_passed {
-            println!("Party on");
             x86::irq::enable();
         }
     }
@@ -181,24 +390,4 @@ struct InterruptContext {
     _pad_1: u32,
     error_code: u32,
     _pad_2: u32,
-}
-
-impl InterruptContext {
-    fn empty() -> InterruptContext {
-        InterruptContext {
-            rsi: 0,
-            rdi: 0,
-            r11: 0,
-            r10: 0,
-            r9: 0,
-            r8: 0,
-            rdx: 0,
-            rcx: 0,
-            rax: 0,
-            int_id: 0,
-            _pad_1: 0,
-            error_code: 0,
-            _pad_2: 0,
-        }
-    }
 }
