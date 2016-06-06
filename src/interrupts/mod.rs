@@ -40,8 +40,7 @@ macro_rules! caller_restore {
             pop %r8;
             pop %rdx;
             pop %rcx;
-            pop %rax;
-            iretq;");
+            pop %rax;");
         }
     };
 }
@@ -53,10 +52,11 @@ fn error_handler(id: u8) {
 
         interrupt_handler(id);
 
-        // Extra pop to get the error code off the stack.
-        asm!("pop %rsi");
-
         caller_restore!();
+
+        asm!("addq $$8, %rsp");
+
+        //asm!("iretq");
     }
 }
 
@@ -65,10 +65,15 @@ fn non_error_handler(id: u8) {
     unsafe {
         caller_save!();
 
-        print_error(format_args!("{}", id));
         interrupt_handler(id);
 
+        print_error(format_args!("interrupt handled\n"));
+
         caller_restore!();
+
+        print_error(format_args!("caller restored\n"));
+
+        asm!("iretq");
     }
 }
 
@@ -149,12 +154,12 @@ extern "C" fn noop_wrapper12() {
 
 #[naked]
 extern "C" fn noop_wrapper13() {
-    non_error_handler(13);
+    error_handler(13);
 }
 
 #[naked]
 extern "C" fn noop_wrapper14() {
-    non_error_handler(14);
+    error_handler(14);
 }
 
 #[naked]
@@ -265,13 +270,7 @@ extern "C" fn interrupt_handler(int_id: u8) {
         }
         // On Linux, this is used for syscalls.  Good enough for me.
         SYSCALL_INTERRUPT => {
-            unsafe {
-                if !test_passed {
-                    test_passed = true;
-                }
-            }
-
-            println!("Syscall {}", int_id)
+            // Handle syscall
         }
         _ => {
             ::state().interrupt_count[0 as usize] += 1;
@@ -333,13 +332,18 @@ lazy_static! {
     };
 }
 
+pub unsafe fn test_interrupt() {
+    int!(SYSCALL_INTERRUPT);
+    test_passed = true;
+}
+
 pub fn init() {
-    IDT.load();
-
     unsafe {
-        PICS.lock().initialize();
 
-        int!(SYSCALL_INTERRUPT);
+        PICS.lock().initialize();
+        IDT.load();
+
+        test_interrupt();
 
         if test_passed {
             x86::irq::enable();
