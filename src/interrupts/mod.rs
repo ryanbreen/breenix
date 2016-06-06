@@ -15,8 +15,6 @@ use x86;
 macro_rules! caller_save {
     ( $( $x:expr ),* ) => {
         {
-          // We have rax copied to IC, so we use rax to pop the error_code
-          // off the stack.;
           asm!("push %rax":::"memory" "{rax}");
           asm!("push %rcx":::"memory" "{rcx}");
           asm!("push %rdx":::"memory" "{rdx}");
@@ -49,17 +47,11 @@ macro_rules! caller_restore {
 }
 
 #[naked]
-fn error_handler(id: u64) {
+fn error_handler(id: u8) {
     unsafe {
         caller_save!();
 
-        asm!("push $0"::"r"(id << 32):"memory");
-
-        let sp: usize;
-        asm!("" : "={rsp}"(sp));
-        let ref ic: InterruptContext = *((sp - 64) as *const InterruptContext);
-
-        interrupt_handler(&ic);
+        interrupt_handler(id);
 
         // Extra pop to get the error code off the stack.
         asm!("pop %rsi");
@@ -69,24 +61,12 @@ fn error_handler(id: u64) {
 }
 
 #[naked]
-fn non_error_handler(id: u64) {
+fn non_error_handler(id: u8) {
     unsafe {
         caller_save!();
 
-        asm!("push $0"::"r"(id << 32):"memory");
-
-        // Note: This is only necessary in the non-error case.  In the case of error,
-        // it would mess things up.
-        asm!("push $$0x0":::"memory");
-
-        let sp: usize;
-        asm!("" : "={rsp}"(sp));
-
-        let ref ic: InterruptContext = *((sp - 64) as *const InterruptContext);
-
-        print_error(format_args!("{} {:?}", id, ic));
-
-        interrupt_handler(&ic);
+        print_error(format_args!("{}", id));
+        interrupt_handler(id);
 
         caller_restore!();
     }
@@ -94,7 +74,7 @@ fn non_error_handler(id: u64) {
 
 #[naked]
 extern "C" fn syscall_wrapper() {
-    non_error_handler(SYSCALL_INTERRUPT as u64);
+    non_error_handler(SYSCALL_INTERRUPT);
 }
 
 #[naked]
@@ -269,11 +249,11 @@ extern "C" fn noop_wrapper32() {
 
 static mut test_passed: bool = false;
 
-extern "C" fn interrupt_handler(ctx: &InterruptContext) {
-    ::state().interrupt_count[ctx.int_id as usize] += 1;
+extern "C" fn interrupt_handler(int_id: u8) {
+    ::state().interrupt_count[int_id as usize] += 1;
 
-    match ctx.int_id {
-        // 0x00...0x0F => cpu_exception_handler(ctx),
+    match int_id {
+        //0x00...0x0F => println!("error: {}", int_id),
         TIMER_INTERRUPT => {
             timer::timer_interrupt();
         }
@@ -288,20 +268,18 @@ extern "C" fn interrupt_handler(ctx: &InterruptContext) {
             unsafe {
                 if !test_passed {
                     test_passed = true;
-                    return;
                 }
             }
 
-            println!("Syscall {:?}", ctx)
+            println!("Syscall {}", int_id)
         }
         _ => {
-            // println!("UNKNOWN INTERRUPT #{}", ctx.int_id);
             ::state().interrupt_count[0 as usize] += 1;
         }
     }
 
     unsafe {
-        PICS.lock().notify_end_of_interrupt(ctx.int_id as u8);
+        PICS.lock().notify_end_of_interrupt(int_id as u8);
     }
 }
 
@@ -372,22 +350,3 @@ pub fn init() {
 /// Interface to our PIC (programmable interrupt controller) chips.  We
 /// want to map hardware interrupts to 0x20 (for PIC1) or 0x28 (for PIC2).
 pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe { ChainedPics::new(0x20, 0x28) });
-
-/// Various data available on our stack when handling an interrupt.
-#[repr(C, packed)]
-#[derive(Debug)]
-struct InterruptContext {
-    rsi: u64,
-    rdi: u64,
-    r11: u64,
-    r10: u64,
-    r9: u64,
-    r8: u64,
-    rdx: u64,
-    rcx: u64,
-    rax: u64,
-    int_id: u32,
-    _pad_1: u32,
-    error_code: u32,
-    _pad_2: u32,
-}

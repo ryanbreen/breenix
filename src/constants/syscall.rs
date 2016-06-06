@@ -1,1 +1,1 @@
-pub const SYSCALL_INTERRUPT: u32 = 0x80;
+pub const SYSCALL_INTERRUPT: u8 = 0x80;
