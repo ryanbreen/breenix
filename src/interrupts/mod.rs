@@ -56,7 +56,7 @@ fn error_handler(id: u8) {
 
         asm!("addq $$8, %rsp");
 
-        //asm!("iretq");
+        asm!("iretq");
     }
 }
 
