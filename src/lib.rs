@@ -103,10 +103,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     memory::init(boot_info);
 
     // Phil-Opp idt
-    interrupts::init();
+    //interrupts::init();
 
     // toy-os idt
-    //io::interrupts::initialize();
+    io::interrupts::initialize();
     
     io::initialize();
 

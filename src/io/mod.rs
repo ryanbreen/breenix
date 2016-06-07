@@ -167,10 +167,6 @@ impl ChainedPics {
     }
 
     pub unsafe fn notify_end_of_interrupt(&mut self, interrupt_id: u8) {
-        unsafe {
-            use buffers::print_error;
-            print_error(format_args!("End of interrupt {}\n", interrupt_id));
-        }
         if self.handles_interrupt(interrupt_id) {
             if self.pics[1].handles_interrupt(interrupt_id) {
                 self.pics[1].end_of_interrupt();
@@ -181,8 +177,8 @@ impl ChainedPics {
 }
 
 pub fn initialize() {
-    pci::initialize();
     serial::initialize();
     timer::initialize();
     event::keyboard::initialize();
+    pci::initialize();
 }
