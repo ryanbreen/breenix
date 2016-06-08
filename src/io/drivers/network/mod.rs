@@ -5,9 +5,7 @@ pub mod rtl8139;
 
 use alloc::boxed::Box;
 use collections::String;
-use core::any::Any;
 
-use io::pci::Device;
 use io::drivers::DeviceDriver;
 
 // Boosted from redox
@@ -65,6 +63,10 @@ impl NetworkInterface {
             name: getNetworkInterfaceName(nic_type),
             device_driver: driver,
         }
+    }
+
+    pub fn getDevice(&self) -> &DeviceDriver {
+        self.device_driver.as_ref()
     }
 }
 

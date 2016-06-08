@@ -5,7 +5,6 @@ use event::IsListener;
 use event::keyboard::KeyEvent;
 
 use io::pci::Device;
-use io::drivers::DeviceDriver;
 use io::drivers::network::NetworkInterface;
 
 use task::scheduler::Scheduler;
