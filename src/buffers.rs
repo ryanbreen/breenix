@@ -172,7 +172,7 @@ pub unsafe fn print_error(fmt: fmt::Arguments) {
         active: true,
     };
 
-    let mut writer = vga_writer::VgaWriter {
+    vga_writer::VgaWriter {
         buffer: unsafe { Unique::new(0xb8000 as *mut _) },
     };
     error_buffer.new_line();

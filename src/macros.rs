@@ -1,6 +1,4 @@
 
-use collections::String;
-
 macro_rules! println {
     ($fmt:expr) => (print!(concat!("{:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start()));
     ($fmt:expr, $($arg:tt)*) =>

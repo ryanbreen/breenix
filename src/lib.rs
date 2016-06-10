@@ -53,8 +53,6 @@ mod state;
 mod task;
 mod util;
 
-use core::fmt::Write;
-
 #[no_mangle]
 #[allow(non_snake_case)]
 pub fn _Unwind_Resume() {
@@ -113,8 +111,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // provoke a page fault inside println
     //println!("{:?}", unsafe{ *(0x00aa00aa as *mut u64) = 42 });
 
-/*
-
     println!("Time is {}", io::timer::real_time().secs);
 
     println!("{:?}", memory::frame_allocator());
@@ -140,7 +136,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     debug!();
 
     state().scheduler.schedule();
-**/
     state().scheduler.idle();
 }
 

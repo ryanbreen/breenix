@@ -60,7 +60,7 @@ impl NetworkInterface {
     pub fn new(nic_type:NetworkInterfaceType, driver: Box<DeviceDriver>) -> NetworkInterface {
         NetworkInterface {
             interface_type: nic_type,
-            name: getNetworkInterfaceName(nic_type),
+            name: create_network_interface_name(nic_type),
             device_driver: driver,
         }
     }
@@ -76,7 +76,7 @@ impl fmt::Display for NetworkInterface {
     }
 }
 
-pub fn getNetworkInterfaceName(nic_type: NetworkInterfaceType) -> String {
+pub fn create_network_interface_name(nic_type: NetworkInterfaceType) -> String {
     let count:usize = ::state().network_interfaces.iter().filter(
         |nic| nic.interface_type == nic_type).count();
     format!("{:?}{}", nic_type, count)
