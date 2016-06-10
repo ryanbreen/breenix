@@ -6,13 +6,9 @@
 use alloc::boxed::Box;
 use core::fmt;
 use core::intrinsics::transmute;
-use core::iter::Iterator;
 use spin::Mutex;
 use io::Port;
-use io::drivers::DeviceDriver;
 use io::drivers::network::{NetworkInterface,NetworkInterfaceType};
-
-use collections::Vec;
 
 struct Pci {
     address: Port<u32>,
@@ -184,6 +180,7 @@ const MAX_BUS: u8 = 255;
 const MAX_DEVICE: u8 = 31;
 const MAX_FUNCTION: u8 = 7;
 
+#[allow(dead_code)]
 pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
     for dev in ::state().devices.iter() {
         if dev.device_id == device_id && dev.vendor_id == vendor_id {
@@ -196,8 +193,6 @@ pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
 
 
 fn initialize_device(bus: u8, dev: u8) {
-
-    let mut func: u8 = 0;
 
     for func in 0..MAX_FUNCTION {
 
