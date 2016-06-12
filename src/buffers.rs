@@ -160,6 +160,7 @@ pub fn toggle() {
 
 /// Our printer of last resort.  This is guaranteed to write without trying to grab a lock that
 /// may be held by someone else.
+#[allow(unused_must_use)]
 pub unsafe fn print_error(fmt: fmt::Arguments) {
     use core::fmt::Write;
     use core::ptr::Unique;
@@ -173,7 +174,7 @@ pub unsafe fn print_error(fmt: fmt::Arguments) {
     };
 
     vga_writer::VgaWriter {
-        buffer: unsafe { Unique::new(0xb8000 as *mut _) },
+        buffer: Unique::new(0xb8000 as *mut _),
     };
     error_buffer.new_line();
     error_buffer.write_fmt(fmt);
