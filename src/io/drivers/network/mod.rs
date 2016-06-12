@@ -16,6 +16,7 @@ pub struct MacAddr {
     pub bytes: [u8; 6],
 }
 
+#[allow(dead_code)]
 impl MacAddr {
     pub fn equals(&self, other: Self) -> bool {
         for i in 0..6 {
@@ -56,6 +57,7 @@ pub struct NetworkInterface {
     device_driver: Box<DeviceDriver>,
 }
 
+#[allow(dead_code)]
 impl NetworkInterface {
     pub fn new(nic_type:NetworkInterfaceType, driver: Box<DeviceDriver>) -> NetworkInterface {
         NetworkInterface {
@@ -65,7 +67,7 @@ impl NetworkInterface {
         }
     }
 
-    pub fn getDevice(&self) -> &DeviceDriver {
+    pub fn get_device(&self) -> &DeviceDriver {
         self.device_driver.as_ref()
     }
 }
