@@ -67,6 +67,7 @@ impl Entry {
 #[derive(Debug, Clone, Copy)]
 pub struct EntryOptions(BitField<u16>);
 
+#[allow(dead_code)]
 impl EntryOptions {
     fn minimal() -> Self {
         let mut options = BitField::new(0);
