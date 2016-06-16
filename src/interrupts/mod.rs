@@ -46,21 +46,6 @@ macro_rules! caller_restore {
 }
 
 #[naked]
-fn error_handler(id: u8) {
-    unsafe {
-        caller_save!();
-
-        interrupt_handler(id);
-
-        caller_restore!();
-
-        asm!("addq $$8, %rsp");
-
-        asm!("iretq");
-    }
-}
-
-#[naked]
 fn non_error_handler(id: u8) {
     unsafe {
         caller_save!();
