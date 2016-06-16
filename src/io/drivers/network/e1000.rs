@@ -133,6 +133,7 @@ impl E1000 {
     }
 }
 
+#[allow(non_snake_case)]
 impl DeviceDriver for E1000 {
     fn initialize(&mut self) {
 
