@@ -5,9 +5,6 @@ use io::pci;
 use io::drivers::DeviceDriver;
 use io::drivers::network::MacAddr;
 
-const VENDOR_ID: u16 = 32902;
-const DEVICE_ID: u16 = 4110;
-
 const REG_EEPROM: usize = 0x0014;
 
 pub struct E1000 {
