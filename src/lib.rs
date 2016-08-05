@@ -108,11 +108,10 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     
     io::initialize();
 
-    println!("It did not crash");
+    // provoke a page fault
+    unsafe { *(0xdeadbeaf as *mut u64) = 42 };
 
-    unsafe {
-        asm!("mov dx, 0; div dx" ::: "ax", "dx" : "volatile", "intel")
-    }
+    println!("It did not crash");
 
     // provoke a page fault inside println
     //println!("{:?}", unsafe{ *(0x00aa00aa as *mut u64) = 42 });

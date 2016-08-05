@@ -20,7 +20,7 @@ run: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G -net nic,macaddr=52:54:be:36:42:a9 -device rtl8139,mac=02:00:00:11:11:11 -serial stdio 2>&1
 
 run_once: $(iso)
-	@qemu-system-x86_64 -hda $(iso) -m 5G -no-shutdown -no-reboot -d int -serial stdio 2>&1
+	@qemu-system-x86_64 -hda $(iso) -m 5G -no-shutdown -no-reboot -serial stdio -d int 2>&1
 
 debug: $(iso)
 	@qemu-system-x86_64 -hda $(iso) -m 5G -d int -no-reboot -s -S
