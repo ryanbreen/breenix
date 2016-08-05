@@ -101,12 +101,16 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     memory::init(boot_info);
 
     // Phil-Opp idt
-    //interrupts::init();
+    interrupts::init();
 
     // toy-os idt
-    io::interrupts::initialize();
+    //io::interrupts::initialize();
     
     io::initialize();
+
+    println!("It did not crash");
+
+    42 / 0;
 
     // provoke a page fault inside println
     //println!("{:?}", unsafe{ *(0x00aa00aa as *mut u64) = 42 });

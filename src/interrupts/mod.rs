@@ -6,71 +6,23 @@ use constants::keyboard::KEYBOARD_INTERRUPT;
 use constants::serial::SERIAL_INTERRUPT;
 use constants::syscall::SYSCALL_INTERRUPT;
 use constants::timer::TIMER_INTERRUPT;
+use interrupts::idt::HandlerFunc;
 use io::{keyboard, serial, timer, ChainedPics};
 
 use spin::Mutex;
 
 use x86;
 
-macro_rules! caller_save {
-    ( $( $x:expr ),* ) => {
-        {
-          asm!("push %rax":::"memory" "{rax}");
-          asm!("push %rcx":::"memory" "{rcx}");
-          asm!("push %rdx":::"memory" "{rdx}");
-          asm!("push %r8":::"memory" "{r8}");
-          asm!("push %r9":::"memory" "{r9}");
-          asm!("push %r10":::"memory" "{r10}");
-          asm!("push %r11":::"memory" "{r11}");
-          asm!("push %rdi":::"memory" "{rdi}");
-          asm!("push %rsi":::"memory" "{rsi}");
-        }
-    };
+#[derive(Debug)]
+#[repr(C)]
+struct ExceptionStackFrame {
+    instruction_pointer: u64,
+    code_segment: u64,
+    cpu_flags: u64,
+    stack_pointer: u64,
+    stack_segment: u64,
 }
 
-macro_rules! caller_restore {
-    ( $( $x:expr ),* ) => {
-        {
-          // Now pop everything back off the stack and to the registers.
-          asm!("pop %rsi;
-            pop %rdi;
-            pop %r11;
-            pop %r10;
-            pop %r9;
-            pop %r8;
-            pop %rdx;
-            pop %rcx;
-            pop %rax;");
-        }
-    };
-}
-
-#[naked]
-fn non_error_handler(id: u8) {
-    unsafe {
-        caller_save!();
-
-        interrupt_handler(id);
-
-        print_error(format_args!("interrupt handled\n"));
-
-        caller_restore!();
-
-        print_error(format_args!("caller restored\n"));
-
-        asm!("iretq");
-    }
-}
-
-#[naked]
-extern "C" fn syscall_wrapper() {
-    non_error_handler(SYSCALL_INTERRUPT);
-}
-
-#[naked]
-extern "C" fn noop_wrapper() {
-    non_error_handler(0xFF);
-}
 
 static mut test_passed: bool = false;
 
@@ -108,11 +60,13 @@ lazy_static! {
 
         for i in 0..255 {
           if i != SYSCALL_INTERRUPT {
-              idt.set_handler(i as u8, noop_wrapper);
+              //idt.set_handler(i as u8, noop_wrapper);
           }
         }
 
-        idt.set_handler(SYSCALL_INTERRUPT as u8, syscall_wrapper);
+        idt.set_handler(0, divide_by_zero_handler);
+
+        //idt.set_handler(SYSCALL_INTERRUPT as u8, syscall_wrapper);
 
         idt
     };
@@ -130,12 +84,22 @@ pub fn init() {
         PICS.lock().initialize();
         IDT.load();
 
-        test_interrupt();
+        //test_interrupt();
 
         if test_passed {
             x86::irq::enable();
         }
     }
+}
+
+extern "C" fn divide_by_zero_handler() -> ! {
+    let stack_frame: *const ExceptionStackFrame;
+    unsafe {
+        asm!("mov $0, rsp" : "=r"(stack_frame) ::: "intel");
+        print_error(format_args!("EXCEPTION: DIVIDE BY ZERO\n{:#?}",
+            *stack_frame));
+    };
+    loop {}
 }
 
 /// Interface to our PIC (programmable interrupt controller) chips.  We

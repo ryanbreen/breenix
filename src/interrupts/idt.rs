@@ -3,7 +3,7 @@ use x86::segmentation::{self, SegmentSelector};
 
 pub struct Idt([Entry; 256]);
 
-pub type HandlerFunc = extern "C" fn();
+pub type HandlerFunc = extern "C" fn() -> !;
 
 impl Idt {
     pub fn new() -> Idt {
