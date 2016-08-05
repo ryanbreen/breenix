@@ -64,7 +64,7 @@ lazy_static! {
           }
         }
 
-        idt.set_handler(0, divide_by_zero_handler);
+        idt.set_handler(0, divide_by_zero_wrapper);
 
         //idt.set_handler(SYSCALL_INTERRUPT as u8, syscall_wrapper);
 
@@ -89,6 +89,16 @@ pub fn init() {
         if test_passed {
             x86::irq::enable();
         }
+    }
+}
+
+#[naked]
+extern "C" fn divide_by_zero_wrapper() -> ! {
+    unsafe {
+        asm!("mov rdi, rsp; call $0"
+             :: "i"(divide_by_zero_handler as extern "C" fn(_) -> !)
+             : "rdi" : "intel");
+        ::core::intrinsics::unreachable();
     }
 }
 

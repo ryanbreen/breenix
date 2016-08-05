@@ -1,6 +1,6 @@
 #![feature(alloc, allocator, box_syntax, box_patterns, macro_reexport, lang_items,
           heap_api, const_fn, unique, asm, collections, trace_macros,
-          naked_functions, stmt_expr_attributes)]
+          naked_functions, stmt_expr_attributes, core_intrinsics)]
 #![allocator]
 
 #![no_std]
@@ -110,7 +110,9 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     println!("It did not crash");
 
-    42 / 0;
+    unsafe {
+        asm!("mov dx, 0; div dx" ::: "ax", "dx" : "volatile", "intel")
+    }
 
     // provoke a page fault inside println
     //println!("{:?}", unsafe{ *(0x00aa00aa as *mut u64) = 42 });

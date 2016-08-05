@@ -41,26 +41,26 @@ $(kernel): cargo $(rust_os) $(assembly_object_files) $(linker_script)
 	@x86_64-elf-ld -n --gc-sections -T $(linker_script) -o $(kernel) $(assembly_object_files) $(rust_os)
 
 cargo:
-	@cargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone
+	@cargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone -C soft-float
 
 patch_libcore:
 	cp libcore_nofp.patch core/src
 	cd core/src ; git stash ; git pull; patch -p1 < ./libcore_nofp.patch
 
 libcore: $(patch_libcore)
-	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone core/src/lib.rs	
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone -C soft-float core/src/lib.rs
 	mv libcore.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcore.rlib
 
 liballoc:
-	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone alloc/src/lib.rs	
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone -C soft-float alloc/src/lib.rs
 	mv liballoc.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/liballoc.rlib
 
 librustc_unicode:
-	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone rustc_unicode/src/lib.rs	
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone -C soft-float rustc_unicode/src/lib.rs
 	mv librustc_unicode.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/librustc_unicode.rlib
 
 libcollections:
-	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone collections/src/lib.rs	
+	@rustc --target x86_64-unknown-none-gnu --cfg disable_float -Z no-landing-pads -C no-redzone -C soft-float collections/src/lib.rs
 	mv libcollections.rlib ~/.multirust/toolchains/nightly/lib/rustlib/x86_64-unknown-none-gnu/lib/libcollections.rlib
 
 rust_libs:
