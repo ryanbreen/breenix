@@ -103,14 +103,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // Phil-Opp idt
     interrupts::init();
 
-    // toy-os idt
-    //io::interrupts::initialize();
-    
-    // trigger a breakpoint exception
-    unsafe { int!(3) };
-
-    unsafe { int!(0x80) };
-
     io::initialize();
 
     // provoke a page fault
