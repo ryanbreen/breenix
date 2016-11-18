@@ -106,15 +106,17 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // toy-os idt
     //io::interrupts::initialize();
     
+    // trigger a breakpoint exception
+    unsafe { int!(3) };
+
+    unsafe { int!(0x80) };
+
     io::initialize();
 
     // provoke a page fault
-    unsafe { *(0xdeadbeaf as *mut u64) = 42 };
+    // unsafe { *(0xdeadbeaf as *mut u64) = 42 };
 
     println!("It did not crash");
-
-    // provoke a page fault inside println
-    //println!("{:?}", unsafe{ *(0x00aa00aa as *mut u64) = 42 });
 
     println!("Time is {}", io::timer::real_time().secs);
 
@@ -140,7 +142,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     debug!();
 
-    state().scheduler.schedule();
+    //state().scheduler.schedule();
     state().scheduler.idle();
 }
 

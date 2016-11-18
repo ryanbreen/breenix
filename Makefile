@@ -1,5 +1,5 @@
 arch ?= x86_64
-target ?= $(arch)-unknown-none-gnu
+target ?= $(arch)-breenix
 rust_os := target/$(target)/debug/libbreenix.a
 kernel := build/kernel-$(arch).bin
 iso := build/os-$(arch).iso
