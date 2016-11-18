@@ -127,8 +127,6 @@ static mut test_passed: bool = false;
 extern "C" fn interrupt_handler(stack_frame: &ExceptionStackFrame, int_id: u64) {
     ::state().interrupt_count[int_id as usize] += 1;
 
-    println!("Got interrupt 0x{:x}\n{:#?}", int_id, stack_frame);
-
     match int_id as u8 {
         //0x00...0x0F => println!("error: {}", int_id),
         TIMER_INTERRUPT => {
@@ -138,10 +136,12 @@ extern "C" fn interrupt_handler(stack_frame: &ExceptionStackFrame, int_id: u64) 
             keyboard::read();
         }
         SERIAL_INTERRUPT => {
+            println!("serial read\n{:#?}", stack_frame);
             serial::read();
         }
         // On Linux, this is used for syscalls.  Good enough for me.
         SYSCALL_INTERRUPT => {
+            println!("Got syscall\n{:#?}", stack_frame);
             // Handle syscall
         }
         _ => {
@@ -159,16 +159,18 @@ lazy_static! {
         let mut idt = idt::Idt::new();
 
         for i in 0..255 {
-          if i != SYSCALL_INTERRUPT {
-              //idt.set_handler(i as u8, noop_wrapper);
-          }
+            // Install a dummy handler if we don't care about the interrupt
+            idt.set_handler(i, handler!(dummy_error_handler));
         }
 
         idt.set_handler(0, handler!(divide_by_zero_handler));
-        idt.set_handler(3, handler!(breakpoint_handler)); 
+        idt.set_handler(1, handler!(dummy_error_handler));
+        idt.set_handler(3, handler!(breakpoint_handler));
         idt.set_handler(6, handler!(invalid_opcode_handler));
         idt.set_handler(14, handler_with_error_code!(page_fault_handler));
-
+        idt.set_handler(TIMER_INTERRUPT as u8, interrupt!(TIMER_INTERRUPT, interrupt_handler));
+        idt.set_handler(KEYBOARD_INTERRUPT as u8, interrupt!(KEYBOARD_INTERRUPT, interrupt_handler));
+        idt.set_handler(SERIAL_INTERRUPT as u8, interrupt!(SERIAL_INTERRUPT, interrupt_handler));
         idt.set_handler(SYSCALL_INTERRUPT as u8, interrupt!(SYSCALL_INTERRUPT, interrupt_handler));
 
         idt
@@ -187,12 +189,19 @@ pub fn init() {
         PICS.lock().initialize();
         IDT.load();
 
-        //test_interrupt();
+        test_interrupt();
 
         if test_passed {
             x86::irq::enable();
         }
     }
+}
+
+extern "C" fn dummy_error_handler(stack_frame: &ExceptionStackFrame)
+{
+    let stack_frame = unsafe { &*stack_frame };
+    println!("\nEXCEPTION: UNHANDLED at {:#x}\n{:#?}",
+        stack_frame.instruction_pointer, stack_frame);
 }
 
 extern "C" fn breakpoint_handler(stack_frame: &ExceptionStackFrame)
