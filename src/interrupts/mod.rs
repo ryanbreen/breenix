@@ -21,6 +21,15 @@ struct ExceptionStackFrame {
     cpu_flags: u64,
     stack_pointer: u64,
     stack_segment: u64,
+    rsi: u64,
+    rdi: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rdx: u64,
+    rcx: u64,
+    rax: u64,
 }
 
 macro_rules! save_scratch_registers {
@@ -193,6 +202,8 @@ pub fn init() {
 
         if test_passed {
             x86::irq::enable();
+
+            syscall!(69);
         }
     }
 }

@@ -16,9 +16,6 @@ const MODE_8086: u8 = 0x01;
 #[macro_use]
 pub mod keyboard;
 
-#[macro_use]
-pub mod interrupts;
-
 pub mod pci;
 
 pub mod serial;

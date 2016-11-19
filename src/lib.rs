@@ -39,6 +39,9 @@ extern crate lazy_static;
 #[macro_use(int)]
 extern crate x86;
 
+#[macro_use]
+mod util;
+
 mod buffers;
 mod constants;
 mod debug;
@@ -51,7 +54,6 @@ mod io;
 
 mod state;
 mod task;
-mod util;
 
 #[no_mangle]
 #[allow(non_snake_case)]
@@ -134,18 +136,13 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     debug!();
 
-    //state().scheduler.schedule();
+    state().scheduler.schedule();
     state().scheduler.idle();
 }
 
 /// Provide an easy, globally accessible function to get access to State
 pub fn state() -> &'static mut state::State {
     state::state()
-}
-
-#[no_mangle]
-pub extern "C" fn rust_interrupt_handler(ctx: &io::interrupts::InterruptContext) {
-    io::interrupts::rust_interrupt_handler(ctx);
 }
 
 #[lang = "eh_personality"]
