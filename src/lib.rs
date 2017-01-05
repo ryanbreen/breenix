@@ -63,7 +63,8 @@ pub fn _Unwind_Resume() {
 }
 
 #[lang = "panic_fmt"]
-extern "C" fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
+#[no_mangle]
+pub extern "C" fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
     println!("\n\nPANIC in {} at line {}:", file, line);
     println!("    {}", fmt);
     state().scheduler.idle();

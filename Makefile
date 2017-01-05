@@ -41,7 +41,7 @@ $(kernel): cargo $(rust_os) $(assembly_object_files) $(linker_script)
 	@x86_64-elf-ld -n --gc-sections -T $(linker_script) -o $(kernel) $(assembly_object_files) $(rust_os)
 
 cargo:
-	xargo rustc --target $(target) -- -Z no-landing-pads -C no-redzone -C soft-float
+	xargo build --target $(target)
 
 # compile assembly files
 build/arch/$(arch)/%.o: src/arch/$(arch)/%.asm

@@ -21,15 +21,15 @@ struct ExceptionStackFrame {
     cpu_flags: u64,
     stack_pointer: u64,
     stack_segment: u64,
+    rax: u64,
+    rcx: u64,
+    rdx: u64,
     rsi: u64,
     rdi: u64,
-    r11: u64,
-    r10: u64,
-    r9: u64,
     r8: u64,
-    rdx: u64,
-    rcx: u64,
-    rax: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
 }
 
 macro_rules! save_scratch_registers {
@@ -68,6 +68,7 @@ macro_rules! handler {
         extern "C" fn wrapper() -> ! {
             unsafe {
                 save_scratch_registers!();
+
                 asm!("mov rdi, rsp
                       add rdi, 9*8 // calculate exception stack frame pointer
                       call $0"
@@ -77,28 +78,6 @@ macro_rules! handler {
 
                 restore_scratch_registers!();
                 asm!("iretq":::: "intel", "volatile");
-                ::core::intrinsics::unreachable();
-            }
-        }
-        wrapper
-    }}
-}
-
-macro_rules! interrupt {
-    ($id: ident, $name: ident) => {{
-        #[naked]
-        extern "C" fn wrapper() -> ! {
-            unsafe {
-                save_scratch_registers!();
-                asm!("mov rsi, $0
-                      mov rdi, rsp
-                      add rdi, 9*8 // calculate exception stack frame pointer
-                      call $1"
-                      :: "i"($id as u64), "i"($name as extern "C" fn(&ExceptionStackFrame, u64))
-                      : "rdi" : "intel");
-
-                restore_scratch_registers!();
-                asm!("iretq" :::: "intel", "volatile");
                 ::core::intrinsics::unreachable();
             }
         }
@@ -131,6 +110,28 @@ macro_rules! handler_with_error_code {
     }}
 }
 
+macro_rules! interrupt {
+    ($id: ident, $name: ident) => {{
+        #[naked]
+        extern "C" fn wrapper() -> ! {
+            unsafe {
+                save_scratch_registers!();
+                asm!("mov rsi, $0
+                      mov rdi, rsp
+                      add rdi, 8*8 // calculate exception stack frame pointer
+                      call $1"
+                      :: "i"($id as u64), "i"($name as extern "C" fn(&ExceptionStackFrame, u64))
+                      : "rdi" : "intel");
+
+                restore_scratch_registers!();
+                asm!("iretq" :::: "intel", "volatile");
+                ::core::intrinsics::unreachable();
+            }
+        }
+        wrapper
+    }}
+}
+// Was 0x1c57c8 and then i set it to 0x1c5758
 static mut test_passed: bool = false;
 
 extern "C" fn interrupt_handler(stack_frame: &ExceptionStackFrame, int_id: u64) {
@@ -151,6 +152,7 @@ extern "C" fn interrupt_handler(stack_frame: &ExceptionStackFrame, int_id: u64) 
         // On Linux, this is used for syscalls.  Good enough for me.
         SYSCALL_INTERRUPT => {
             println!("Got syscall\n{:#?}", stack_frame);
+            syscall_handler(stack_frame, stack_frame.rax);
             // Handle syscall
         }
         _ => {
@@ -203,7 +205,8 @@ pub fn init() {
         if test_passed {
             x86::irq::enable();
 
-            syscall!(69);
+            let ret:u64 = syscall!(69, 12, 13);
+            println!("Got return value {}", ret);
         }
     }
 }
@@ -222,12 +225,27 @@ extern "C" fn breakpoint_handler(stack_frame: &ExceptionStackFrame)
         stack_frame.instruction_pointer, stack_frame);
 }
 
+extern "C" fn where_we_at(addr: u64, addr2: u64) {
+    println!("We are at {:x} {:x}", addr, addr2);
+}
+
 extern "C" fn syscall_handler(stack_frame: &ExceptionStackFrame,
     syscall_id: u64)
 {
     let stack_frame = unsafe { &*stack_frame };
     println!("\nEXCEPTION: SYSCALL at {:#x}\n{:#?}",
         stack_frame.instruction_pointer, stack_frame);
+
+    let mut blah:u64 = 0xdeadbeef;
+    blah += 8;
+
+    unsafe {
+        asm!("mov rdi, rip
+              mov rsi, 0
+              call $0"
+              :: "i"(where_we_at as extern "C" fn(u64, u64))
+              : "rip", "rdi" : "intel", "volatile");
+    }
 }
 
 extern "C" fn divide_by_zero_handler(stack_frame: &ExceptionStackFrame)

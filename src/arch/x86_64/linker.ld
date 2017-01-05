@@ -1,5 +1,5 @@
 /*
-Copyright 2015 Philipp Oppermann. See the README.md
+Copyright 2016 Philipp Oppermann. See the README.md
 file at the top-level directory of this distribution.
 
 Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
@@ -22,12 +22,6 @@ SECTIONS {
     . = ALIGN(4K);
   }
 
-  .got :
-  {
-    *(.got .got.plt)
-    . = ALIGN(4K);
-  }
-
   .text :
   {
     *(.text .text.*)
@@ -43,6 +37,18 @@ SECTIONS {
   .bss :
   {
     *(.bss .bss.*)
+    . = ALIGN(4K);
+  }
+
+  .got :
+  {
+    *(.got)
+    . = ALIGN(4K);
+  }
+
+  .got.plt :
+  {
+    *(.got.plt)
     . = ALIGN(4K);
   }
 
