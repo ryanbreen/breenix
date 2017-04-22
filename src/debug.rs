@@ -4,9 +4,9 @@ use collections::vec::Vec;
 use core::fmt::Write;
 use core::str;
 use io::serial;
-use x86::msr::{IA32_EFER, TSC, MSR_MCG_RFLAGS};
-use x86::msr::rdmsr;
-use x86::time::rdtsc;
+use x86::shared::msr::{IA32_EFER, TSC, MSR_MCG_RFLAGS};
+use x86::shared::msr::rdmsr;
+use x86::bits64::time::rdtsc;
 
 use memory;
 use io::timer;
@@ -28,7 +28,7 @@ pub fn debug() {
                                       ::state().interrupt_count[0x21],
                                       ::state().interrupt_count[0x80]));
         buffer.write_fmt(format_args!("allocated frame count: 0={}\n",
-                                      memory::frame_allocator().allocated_frame_count()));
+                                      memory::area_frame_allocator().allocated_frame_count()));
         buffer.write_fmt(format_args!("{:?}\n", memory::slab_allocator::zone_allocator()));
     }
 }
@@ -36,6 +36,8 @@ pub fn debug() {
 static mut COMMAND_BUFFER: Option<&'static mut Vec<u8>> = None;
 
 pub fn handle_serial_input(c: u8) {
+
+    println!("BESNS");
 
     unsafe {
         match COMMAND_BUFFER {

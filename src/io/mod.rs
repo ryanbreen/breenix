@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use x86::io::{inl, outl, outw, inw, outb, inb};
+use x86::shared::io::{inl, outl, outw, inw, outb, inb};
 
 use event;
 
@@ -177,5 +177,5 @@ pub fn initialize() {
     serial::initialize();
     timer::initialize();
     event::keyboard::initialize();
-    pci::initialize();
+    //pci::initialize();
 }

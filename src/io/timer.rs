@@ -1,7 +1,7 @@
 
 use constants::timer::{PIT_SCALE, PIT_CONTROL, PIT_SET, PIT_A, PIT_MASK, SUBTICKS_PER_TICK};
 
-use x86::io::outb;
+use x86::shared::io::outb;
 use io::Port;
 use util::time::Time;
 

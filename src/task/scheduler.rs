@@ -21,8 +21,8 @@ impl Scheduler {
 
     pub fn schedule(&mut self) {
         unsafe {
-            self.disable_interrupts();
-
+            //self.disable_interrupts();
+/*
             let addr = ::test_call as *const () as usize;
             println!("Test call is at 0x{:x}", addr);
 
@@ -47,8 +47,8 @@ impl Scheduler {
             asm!("pop %rdx" ::: "rdx");
             asm!("pop %rcx" ::: "rcx");
             asm!("pop %rax" ::: "rax");
-
-            self.enable_interrupts();
+*/
+            //self.enable_interrupts();
         }
     }
 

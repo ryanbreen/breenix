@@ -1,6 +1,6 @@
 #![feature(alloc, allocator, box_syntax, box_patterns, macro_reexport, lang_items,
           heap_api, const_fn, unique, asm, collections, trace_macros,
-          naked_functions, stmt_expr_attributes, core_intrinsics)]
+          naked_functions, stmt_expr_attributes, core_intrinsics, abi_x86_interrupt)]
 #![allocator]
 
 #![no_std]
@@ -39,6 +39,8 @@ extern crate lazy_static;
 #[macro_use(int)]
 extern crate x86;
 
+extern crate x86_64;
+
 #[macro_use]
 mod util;
 
@@ -71,7 +73,7 @@ pub extern "C" fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) ->
 }
 
 fn enable_nxe_bit() {
-    use x86::msr::{IA32_EFER, rdmsr, wrmsr};
+    use x86::shared::msr::{IA32_EFER, rdmsr, wrmsr};
 
     let nxe_bit = 1 << 11;
     unsafe {
@@ -81,10 +83,9 @@ fn enable_nxe_bit() {
 }
 
 fn enable_write_protect_bit() {
-    use x86::controlregs::{cr0, cr0_write};
+    use x86::shared::control_regs::{cr0, cr0_write, CR0_WRITE_PROTECT};
 
-    let wp_bit = 1 << 16;
-    unsafe { cr0_write(cr0() | wp_bit) };
+    unsafe { cr0_write(cr0() | CR0_WRITE_PROTECT) };
 }
 
 pub fn test_call() {
@@ -101,21 +102,30 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     enable_write_protect_bit();
 
     // set up guard page and map the heap pages
-    memory::init(boot_info);
+    let mut memory_controller = memory::init(boot_info);
 
     // Phil-Opp idt
-    interrupts::init();
+    interrupts::init(&mut memory_controller);
+
+    x86_64::instructions::interrupts::int3();
+
+    fn stack_overflow() {
+        stack_overflow(); // for each recursion, the return address is pushed
+    }
+
+    // trigger a stack overflow
+    stack_overflow();
 
     io::initialize();
 
     // provoke a page fault
-    // unsafe { *(0xdeadbeaf as *mut u64) = 42 };
+    //unsafe { *(0xdeadbeaf as *mut u64) = 42 };
 
     println!("It did not crash");
 
     println!("Time is {}", io::timer::real_time().secs);
 
-    println!("{:?}", memory::frame_allocator());
+    println!("{:?}", memory::area_frame_allocator());
 
     use alloc::boxed::Box;
     use collections::Vec;
@@ -137,7 +147,8 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     debug!();
 
-    state().scheduler.schedule();
+    // state().scheduler.schedule();
+    println!("idling");
     state().scheduler.idle();
 }
 

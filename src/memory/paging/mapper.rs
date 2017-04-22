@@ -1,8 +1,7 @@
 use super::{VirtualAddress, PhysicalAddress, Page, ENTRY_COUNT};
 use super::entry::*;
 use super::table::{self, Table, Level4};
-use memory::{PAGE_SIZE, Frame};
-use memory::frame_allocator::FrameAllocator;
+use memory::{PAGE_SIZE, Frame, FrameAllocator};
 use core::ptr::Unique;
 
 pub struct Mapper {
@@ -73,6 +72,8 @@ impl Mapper {
         let mut p2 = p3.next_table_create(page.p3_index(), allocator);
         let mut p1 = p2.next_table_create(page.p2_index(), allocator);
 
+        // println!("Mapping page {:?} ({:?}) to {:x}", page, page.p1_index(), frame.start_address());
+
         assert!(p1[page.p1_index()].is_unused());
         p1[page.p1_index()].set(frame, flags | PRESENT);
     }
@@ -82,6 +83,9 @@ impl Mapper {
         where A: FrameAllocator
     {
         let frame = allocator.allocate_frame().expect("out of memory");
+
+        // println!("Mapping page {:?} to frame {:x}", page, frame.start_address());
+
         self.map_to(page, frame, flags, allocator)
     }
 
@@ -105,7 +109,7 @@ impl Mapper {
             .expect("mapping code does not support huge pages");
         let frame = p1[page.p1_index()].pointed_frame().unwrap();
         p1[page.p1_index()].set_unused();
-        unsafe { ::x86::tlb::flush(page.start_address()) };
+        unsafe { ::x86::shared::tlb::flush(page.start_address()) };
         // TODO free p(1,2,3) table if empty
         // allocator.deallocate_frame(frame);
     }

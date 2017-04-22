@@ -1,6 +1,6 @@
 use debug;
 use constants::serial::COM1;
-use x86::io::{inb, outb};
+use x86::shared::io::{inb, outb};
 
 unsafe fn is_transmit_empty() -> u8 {
     return inb(COM1 + 5) & 0x20;

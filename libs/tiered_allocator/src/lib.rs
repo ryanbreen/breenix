@@ -28,6 +28,8 @@ extern crate lazy_static;
 
 use heap::Heap;
 
+use core::ptr;
+
 use spin::Mutex;
 
 mod heap;
@@ -40,6 +42,15 @@ lazy_static! {
     static ref HEAP: Mutex<Heap> = Mutex::new(unsafe {
         Heap::new(HEAP_START, HEAP_SIZE)
     });
+}
+
+#[no_mangle]
+pub extern fn __rust_allocate_zeroed(size: usize, align: usize) -> *mut u8 {
+    let ptr = __rust_allocate(size, align);
+    unsafe {
+        ptr::write_bytes(ptr, 0, size);
+    }
+    ptr
 }
 
 /// Align downwards. Returns the greatest x with alignment `align`

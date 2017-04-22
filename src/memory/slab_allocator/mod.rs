@@ -6,8 +6,7 @@ use collections::VecDeque;
 use core::fmt;
 use core::mem;
 
-use memory::{Frame, frame_allocator, page_table};
-use memory::frame_allocator::FrameAllocator;
+use memory::{Frame, FrameAllocator, area_frame_allocator, page_table};
 use memory::paging;
 use memory::paging::Page;
 
@@ -62,7 +61,7 @@ pub struct AreaFrameSlabPageProvider {}
 impl AreaFrameSlabPageProvider {
     fn allocate_slabpage(&mut self, size: usize) -> Option<SlabPage> {
 
-        let allocator = frame_allocator();
+        let allocator = area_frame_allocator();
 
         let mut frames_per_slabpage = 1;
         if size > BASE_PAGE_SIZE {
@@ -71,6 +70,8 @@ impl AreaFrameSlabPageProvider {
 
         unsafe {
             let start_page_address: VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
+
+            println!("Allocating slabpage {:x}", VIRT_START);
 
             for i in 0..frames_per_slabpage {
                 let frame: Option<Frame> = allocator.allocate_frame();

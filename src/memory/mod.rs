@@ -4,9 +4,9 @@ pub use self::paging::remap_the_kernel;
 use self::paging::PhysicalAddress;
 
 mod area_frame_allocator;
-mod frame_allocator;
 mod paging;
 pub mod slab_allocator;
+mod stack_allocator;
 
 use multiboot2::BootInformation;
 
@@ -16,12 +16,25 @@ use tiered_allocator;
 
 use self::paging::{ActivePageTable, Page};
 
+pub use self::stack_allocator::Stack;
+
 pub const PAGE_SIZE: usize = 4096;
 
 static mut AREA_FRAME_ALLOCATOR_PTR: Option<&'static mut AreaFrameAllocator> = None;
 static mut ACTIVE_TABLE_PTR: Option<&'static mut ActivePageTable> = None;
 
-pub fn frame_allocator() -> &'static mut AreaFrameAllocator {
+pub struct MemoryController {
+    stack_allocator: stack_allocator::StackAllocator,
+}
+
+impl MemoryController {
+    pub fn alloc_stack(&mut self, size_in_pages: usize) -> Option<Stack> {
+        let &mut MemoryController { ref mut stack_allocator } = self;
+        stack_allocator.alloc_stack(size_in_pages)
+    }
+}
+
+pub fn area_frame_allocator() -> &'static mut AreaFrameAllocator {
     unsafe {
         match AREA_FRAME_ALLOCATOR_PTR {
             Some(ref mut a) => a,
@@ -44,14 +57,14 @@ pub fn page_table() -> &'static mut ActivePageTable {
 }
 
 pub fn identity_map_range(start:usize, end: usize) {
-    let mut allocator:&'static mut AreaFrameAllocator = frame_allocator();
+    let mut allocator:&'static mut AreaFrameAllocator = area_frame_allocator();
     let mut active_table:&'static mut ActivePageTable = page_table();
     for page in Page::range_inclusive(Page::containing_address(start), Page::containing_address(end)) {
         active_table.map(page, paging::WRITABLE, allocator);
     }
 }
 
-pub fn init(boot_info: &BootInformation) {
+pub fn init(boot_info: &BootInformation) -> MemoryController {
     assert_has_not_been_called!("memory::init must be called only once");
 
     let memory_map_tag = boot_info.memory_map_tag().expect("Memory map tag required");
@@ -59,12 +72,12 @@ pub fn init(boot_info: &BootInformation) {
 
     let kernel_start = elf_sections_tag.sections()
         .filter(|s| s.is_allocated())
-        .map(|s| s.addr)
+        .map(|s| s.start_address())
         .min()
         .unwrap();
     let kernel_end = elf_sections_tag.sections()
         .filter(|s| s.is_allocated())
-        .map(|s| s.addr + s.size)
+        .map(|s| s.end_address())
         .max()
         .unwrap();
 
@@ -105,6 +118,18 @@ pub fn init(boot_info: &BootInformation) {
         slab_allocator::init();
 
         tiered_allocator::init(slab_allocator::allocate);
+
+        let stack_allocator = {
+            let stack_alloc_start = heap_end_page + 1;
+            let stack_alloc_end = stack_alloc_start + 100;
+            let stack_alloc_range = Page::range_inclusive(stack_alloc_start,
+                                                          stack_alloc_end);
+            stack_allocator::StackAllocator::new(stack_alloc_range)
+        };
+
+        MemoryController {
+            stack_allocator: stack_allocator,
+        }
     }
 }
 
@@ -151,4 +176,9 @@ impl Iterator for FrameIter {
             None
         }
     }
+}
+
+pub trait FrameAllocator {
+    fn allocate_frame(&mut self) -> Option<Frame>;
+    fn deallocate_frame(&mut self, frame: Frame);
 }
