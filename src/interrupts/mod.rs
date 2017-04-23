@@ -15,6 +15,8 @@ use x86::shared::irq;
 
 use spin::Once;
 
+use util::syscall::syscall0;
+
 use x86_64::structures::idt::ExceptionStackFrame;
 use x86_64::structures::idt::Idt;
 use x86_64::structures::tss::TaskStateSegment;
@@ -25,10 +27,10 @@ static GDT: Once<gdt::Gdt> = Once::new();
 
 const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
-// Was 0x1c57c8 and then i set it to 0x1c5758
 static mut test_passed: bool = false;
 
-extern "x86-interrupt" fn interrupt_handler(stack_frame: &mut ExceptionStackFrame, int_id: u64) {
+/*
+extern "C" fn interrupt_handler(stack_frame: &mut ExceptionStackFrame, int_id: u64) {
     ::state().interrupt_count[int_id as usize] += 1;
 
     match int_id as u8 {
@@ -46,7 +48,7 @@ extern "x86-interrupt" fn interrupt_handler(stack_frame: &mut ExceptionStackFram
         // On Linux, this is used for syscalls.  Good enough for me.
         SYSCALL_INTERRUPT => {
             println!("Got syscall\n{:#?}", stack_frame);
-            syscall_handler(stack_frame, 0);
+            syscall_handler(stack_frame);
             // Handle syscall
         }
         _ => {
@@ -58,6 +60,7 @@ extern "x86-interrupt" fn interrupt_handler(stack_frame: &mut ExceptionStackFram
         PICS.lock().notify_end_of_interrupt(int_id as u8);
     }
 }
+*/
 
 pub unsafe fn test_interrupt() {
     int!(SYSCALL_INTERRUPT);
@@ -71,7 +74,9 @@ lazy_static! {
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX as u16);
-            }
+        }
+        idt.interrupts[(SYSCALL_INTERRUPT - 32) as usize].set_handler_fn(syscall_handler);
+
         idt
     };
 }
@@ -110,21 +115,11 @@ pub fn init(memory_controller: &mut MemoryController) {
         load_tss(tss_selector);
     }
 
-
     IDT.load();
 
-/*
     unsafe {
 
-        //println!("Happy to here: {:?}", code_selector);
-
-        // reload code segment register
- //       set_cs(code_selector);
-
-        // load TSS
-  //      load_tr(tss_selector);
-
-        PICS.lock().initialize();
+        // PICS.lock().initialize();
 
         test_interrupt();
 
@@ -138,21 +133,18 @@ pub fn init(memory_controller: &mut MemoryController) {
             //println!("Got return value {}", ret);
         }
     }
-    */
 }
 
 extern "x86-interrupt" fn dummy_error_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    let stack_frame = unsafe { &*stack_frame };
     println!("\nEXCEPTION: UNHANDLED at {:#x}\n{:#?}",
         stack_frame.instruction_pointer, stack_frame);
 }
 
-extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut ExceptionStackFrame)
-{
-    let stack_frame = unsafe { &*stack_frame };
+extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut ExceptionStackFrame) {
     println!("\nEXCEPTION: BREAKPOINT at {:#x}\n{:#?}",
-        stack_frame.instruction_pointer, stack_frame);
+             stack_frame.instruction_pointer,
+             stack_frame);
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackFrame,
@@ -162,30 +154,30 @@ extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackF
     loop {}
 }
 
-extern fn syscall_handler(stack_frame: &mut ExceptionStackFrame, syscall_no: u64)
+extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
     println!("SYSCALL:\n{:#?}", stack_frame);
 }
 
-extern "C" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
         print_error(format_args!("EXCEPTION: DIVIDE BY ZERO\n{:#?}",
-            *stack_frame));
+            stack_frame));
         loop {}
     };
 }
 
-extern "C" fn invalid_opcode_handler(stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
         print_error(format_args!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
-            (*stack_frame).instruction_pointer, *stack_frame));
+            stack_frame.instruction_pointer, stack_frame));
         loop {}
     }
 }
 
-extern "C" fn page_fault_handler(stack_frame: &mut ExceptionStackFrame,
+extern "x86-interrupt" fn page_fault_handler(stack_frame: &mut ExceptionStackFrame,
                                  error_code: u64)
 {
     use x86::shared::control_regs;
@@ -195,7 +187,7 @@ extern "C" fn page_fault_handler(stack_frame: &mut ExceptionStackFrame,
             \nerror code: {:?}\n{:#?}",
             control_regs::cr2(),
             PageFaultErrorCode::from_bits(error_code).unwrap(),
-            *stack_frame));
+            stack_frame));
     }
 }
 

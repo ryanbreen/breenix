@@ -106,7 +106,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     // Phil-Opp idt
     interrupts::init(&mut memory_controller);
-
+    
     x86_64::instructions::interrupts::int3();
 
     fn stack_overflow() {
@@ -114,7 +114,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     }
 
     // trigger a stack overflow
-    stack_overflow();
+    //stack_overflow();
 
     io::initialize();
 
