@@ -72,7 +72,7 @@ impl Mapper {
         let mut p2 = p3.next_table_create(page.p3_index(), allocator);
         let mut p1 = p2.next_table_create(page.p2_index(), allocator);
 
-        // println!("Mapping page {:?} ({:?}) to {:x}", page, page.p1_index(), frame.start_address());
+        //println!("Mapping page {:?} ({:?}) to {:x}", page, page.p1_index(), frame.start_address());
 
         assert!(p1[page.p1_index()].is_unused());
         p1[page.p1_index()].set(frame, flags | PRESENT);
@@ -82,9 +82,11 @@ impl Mapper {
     pub fn map<A>(&mut self, page: Page, flags: EntryFlags, allocator: &mut A)
         where A: FrameAllocator
     {
+        let cur = allocator.allocated_frame_count();
         let frame = allocator.allocate_frame().expect("out of memory");
+        //println!("{}->{}", cur, allocator.allocated_frame_count());
 
-        // println!("Mapping page {:?} to frame {:x}", page, frame.start_address());
+        //println!("Mapping page {:?}, p1_index {:?}, to frame {:x}", page, page.p1_index(), frame.start_address());
 
         self.map_to(page, frame, flags, allocator)
     }
@@ -93,6 +95,7 @@ impl Mapper {
         where A: FrameAllocator
     {
         let page = Page::containing_address(frame.start_address());
+        //println!("Identity mapping page {:?}, p1_index {:?}, to frame {:x}", page, page.p1_index(), frame.start_address());
         self.map_to(page, frame, flags, allocator)
     }
 

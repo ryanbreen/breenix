@@ -24,7 +24,7 @@ const MAX_SLABS: usize = 14;
 
 const VIRT_START: usize = tiered_allocator::HEAP_START + tiered_allocator::HEAP_SIZE;
 
-static mut VIRT_OFFSET: usize = 0;
+static mut VIRT_OFFSET: usize = 64;
 
 #[cfg(target_arch="x86_64")]
 type VAddr = usize;
@@ -71,7 +71,7 @@ impl AreaFrameSlabPageProvider {
         unsafe {
             let start_page_address: VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
 
-            println!("Allocating slabpage {:x}", VIRT_START);
+            println!("Allocating slabpage {:x}, {} frames have already been allocated", VIRT_START, allocator.allocated_frame_count());
 
             for i in 0..frames_per_slabpage {
                 let frame: Option<Frame> = allocator.allocate_frame();

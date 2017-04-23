@@ -75,6 +75,11 @@ lazy_static! {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX as u16);
         }
+
+        for i in 0..256-32 {
+            idt.interrupts[i].set_handler_fn(dummy_error_handler);
+        }
+
         idt.interrupts[(SYSCALL_INTERRUPT - 32) as usize].set_handler_fn(syscall_handler);
 
         idt
@@ -119,13 +124,15 @@ pub fn init(memory_controller: &mut MemoryController) {
 
     unsafe {
 
-        // PICS.lock().initialize();
+        PICS.lock().initialize();
 
         test_interrupt();
 
         if test_passed {
 
             println!("Enabling irqs");
+            //use x86_64::instructions::interrupts;
+            //interrupts::enable();
             irq::enable();
             println!("Enabled irqs");
 
@@ -157,6 +164,10 @@ extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackF
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
     println!("SYSCALL:\n{:#?}", stack_frame);
+
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
+    }
 }
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)

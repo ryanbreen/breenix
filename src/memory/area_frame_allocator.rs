@@ -54,10 +54,6 @@ impl AreaFrameAllocator {
             }
         }
     }
-
-    pub fn allocated_frame_count(&self) -> usize {
-        self.allocated_frame_count
-    }
 }
 
 impl fmt::Debug for AreaFrameAllocator {
@@ -117,4 +113,8 @@ impl FrameAllocator for AreaFrameAllocator {
     }
 
     fn deallocate_frame(&mut self, _frame: Frame) {}
+
+    fn allocated_frame_count(&self) -> usize {
+        self.allocated_frame_count
+    }
 }

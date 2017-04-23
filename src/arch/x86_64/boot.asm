@@ -1,84 +1,38 @@
-global start
-global gdt64_code_offset
+; Copyright 2016 Philipp Oppermann. See the README.md
+; file at the top-level directory of this distribution.
+;
+; Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+; http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+; <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+; option. This file may not be copied, modified, or distributed
+; except according to those terms.
 
+global start
 extern long_mode_start
 
 section .text
 bits 32
 start:
-    ; Initialize stack pointer
     mov esp, stack_top
-    mov edi, ebx       ; Move Multiboot info pointer to edi
+    ; Move Multiboot info pointer to edi to pass it to the kernel. We must not
+    ; modify the `edi` register until the kernel it called.
+    mov edi, ebx
 
-    call test_multiboot
-    call test_cpuid
-    call test_long_mode
+    call check_multiboot
+    call check_cpuid
+    call check_long_mode
 
-    call setup_page_tables
+    call set_up_page_tables
     call enable_paging
+    call set_up_SSE
 
     ; load the 64-bit GDT
     lgdt [gdt64.pointer]
 
-    ; update selectors
-    mov ax, gdt64.data
-    mov ss, ax
-    mov ds, ax
-    mov es, ax
-
     jmp gdt64.code:long_mode_start
 
-; Prints `ERR: ` and the given error code to screen and hangs.
-; parameter: error code (in ascii) in al
-error:
-    mov dword [0xb8000], 0x4f524f45
-    mov dword [0xb8004], 0x4f3a4f52
-    mov dword [0xb8008], 0x4f204f20
-    mov byte  [0xb800a], al
-    hlt
-
-test_multiboot:
-    cmp eax, 0x36d76289
-    jne .no_multiboot
-    ret
-.no_multiboot:
-    mov al, "0"
-    jmp error
-
-test_cpuid:
-    pushfd               ; Store the FLAGS-register.
-    pop eax              ; Restore the A-register.
-    mov ecx, eax         ; Set the C-register to the A-register.
-    xor eax, 1 << 21     ; Flip the ID-bit, which is bit 21.
-    push eax             ; Store the A-register.
-    popfd                ; Restore the FLAGS-register.
-    pushfd               ; Store the FLAGS-register.
-    pop eax              ; Restore the A-register.
-    push ecx             ; Store the C-register.
-    popfd                ; Restore the FLAGS-register.
-    xor eax, ecx         ; Do a XOR-operation on the A-register and the C-register.
-    jz .no_cpuid         ; The zero flag is set, no CPUID.
-    ret                  ; CPUID is available for use.
-.no_cpuid:
-    mov al, "1"
-    jmp error
-
-test_long_mode:
-    mov eax, 0x80000000    ; Set the A-register to 0x80000000.
-    cpuid                  ; CPU identification.
-    cmp eax, 0x80000001    ; Compare the A-register with 0x80000001.
-    jb .no_long_mode       ; It is less, there is no long mode.
-    mov eax, 0x80000001    ; Set the A-register to 0x80000001.
-    cpuid                  ; CPU identification.
-    test edx, 1 << 29      ; Test if the LM-bit, which is bit 29, is set in the D-register.
-    jz .no_long_mode       ; They aren't, there is no long mode.
-    ret
-.no_long_mode:
-    mov al, "2"
-    jmp error
-
-setup_page_tables:
-    ; setup recursive p4
+set_up_page_tables:
+    ; recursive map P4
     mov eax, p4_table
     or eax, 0b11 ; present + writable
     mov [p4_table + 511 * 8], eax
@@ -94,10 +48,9 @@ setup_page_tables:
     mov [p3_table], eax
 
     ; map each P2 entry to a huge 2MiB page
-    mov ecx, 0         ; counter variable
-
+    mov ecx, 0 ; counter variable
 .map_p2_table:
-    ; map ecx-th P2 entry to a huge page that starts at address 2MiB*ecx
+    ; map ecx-th P2 entry to a huge page that starts at address (2MiB * ecx)
     mov eax, 0x200000  ; 2MiB
     mul ecx            ; start address of ecx-th page
     or eax, 0b10000011 ; present + writable + huge
@@ -132,22 +85,100 @@ enable_paging:
 
     ret
 
-;;; Export selectors so Rust can access them.
-gdt64_code_offset:
-    dw gdt64.code
-    
-;;; Global Description Table.  Used to set segmentation to the restricted
-;;; values needed for 64-bit mode.
-section .rodata
-gdt64:
-    dq 0                                                ; Mandatory 0.
-.code: equ $ - gdt64
-    dq (1<<44) | (1<<47) | (1<<41) | (1<<43) | (1<<53)  ; Code segment.
-.data: equ $ - gdt64
-    dq (1<<44) | (1<<47) | (1<<41)                      ; Data segment.
-.pointer:
-    dw $ - gdt64 - 1
-    dq gdt64
+; Prints `ERR: ` and the given error code to screen and hangs.
+; parameter: error code (in ascii) in al
+error:
+    mov dword [0xb8000], 0x4f524f45
+    mov dword [0xb8004], 0x4f3a4f52
+    mov dword [0xb8008], 0x4f204f20
+    mov byte  [0xb800a], al
+    hlt
+
+; Throw error 0 if eax doesn't contain the Multiboot 2 magic value (0x36d76289).
+check_multiboot:
+    cmp eax, 0x36d76289
+    jne .no_multiboot
+    ret
+.no_multiboot:
+    mov al, "0"
+    jmp error
+
+; Throw error 1 if the CPU doesn't support the CPUID command.
+check_cpuid:
+    ; Check if CPUID is supported by attempting to flip the ID bit (bit 21) in
+    ; the FLAGS register. If we can flip it, CPUID is available.
+
+    ; Copy FLAGS in to EAX via stack
+    pushfd
+    pop eax
+
+    ; Copy to ECX as well for comparing later on
+    mov ecx, eax
+
+    ; Flip the ID bit
+    xor eax, 1 << 21
+
+    ; Copy EAX to FLAGS via the stack
+    push eax
+    popfd
+
+    ; Copy FLAGS back to EAX (with the flipped bit if CPUID is supported)
+    pushfd
+    pop eax
+
+    ; Restore FLAGS from the old version stored in ECX (i.e. flipping the ID bit
+    ; back if it was ever flipped).
+    push ecx
+    popfd
+
+    ; Compare EAX and ECX. If they are equal then that means the bit wasn't
+    ; flipped, and CPUID isn't supported.
+    cmp eax, ecx
+    je .no_cpuid
+    ret
+.no_cpuid:
+    mov al, "1"
+    jmp error
+
+; Throw error 2 if the CPU doesn't support Long Mode.
+check_long_mode:
+    ; test if extended processor info in available
+    mov eax, 0x80000000    ; implicit argument for cpuid
+    cpuid                  ; get highest supported argument
+    cmp eax, 0x80000001    ; it needs to be at least 0x80000001
+    jb .no_long_mode       ; if it's less, the CPU is too old for long mode
+
+    ; use extended info to test if long mode is available
+    mov eax, 0x80000001    ; argument for extended processor info
+    cpuid                  ; returns various feature bits in ecx and edx
+    test edx, 1 << 29      ; test if the LM-bit is set in the D-register
+    jz .no_long_mode       ; If it's not set, there is no long mode
+    ret
+.no_long_mode:
+    mov al, "2"
+    jmp error
+
+; Check for SSE and enable it. If it's not supported throw error "a".
+set_up_SSE:
+    ; check for SSE
+    mov eax, 0x1
+    cpuid
+    test edx, 1<<25
+    jz .no_SSE
+
+    ; enable SSE
+    mov eax, cr0
+    and ax, 0xFFFB      ; clear coprocessor emulation CR0.EM
+    or ax, 0x2          ; set coprocessor monitoring  CR0.MP
+    mov cr0, eax
+    mov eax, cr4
+    or ax, 3 << 9       ; set CR4.OSFXSR and CR4.OSXMMEXCPT at the same time
+    mov cr4, eax
+
+    ret
+.no_SSE:
+    mov al, "a"
+    jmp error
 
 section .bss
 align 4096
@@ -158,5 +189,14 @@ p3_table:
 p2_table:
     resb 4096
 stack_bottom:
-    resb 4096*64
+    resb 4096 * 4
 stack_top:
+
+section .rodata
+gdt64:
+    dq 0 ; zero entry
+.code: equ $ - gdt64 ; new
+    dq (1<<44) | (1<<47) | (1<<43) | (1<<53) ; code segment
+.pointer:
+    dw $ - gdt64 - 1
+    dq gdt64

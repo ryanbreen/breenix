@@ -27,8 +27,8 @@ pub fn debug() {
                                       ::state().interrupt_count[0x20],
                                       ::state().interrupt_count[0x21],
                                       ::state().interrupt_count[0x80]));
-        buffer.write_fmt(format_args!("allocated frame count: 0={}\n",
-                                      memory::area_frame_allocator().allocated_frame_count()));
+        //buffer.write_fmt(format_args!("allocated frame count: 0={}\n",
+        //                              memory::area_frame_allocator().allocated_frame_count()));
         buffer.write_fmt(format_args!("{:?}\n", memory::slab_allocator::zone_allocator()));
     }
 }

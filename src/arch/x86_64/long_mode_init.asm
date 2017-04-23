@@ -1,53 +1,34 @@
+; Copyright 2016 Philipp Oppermann. See the README.md
+; file at the top-level directory of this distribution.
+;
+; Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+; http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+; <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+; option. This file may not be copied, modified, or distributed
+; except according to those terms.
+
 global long_mode_start
+extern rust_main
 
 section .text
 bits 64
-
 long_mode_start:
-    ; call the rust main
-    extern rust_main
-    call setup_SSE
+    ; load 0 into all data segment registers
+    mov ax, 0
+    mov ss, ax
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
+    ; call rust main (with multiboot pointer in rdi)
     call rust_main
-
-    .os_returned:
-        ; rust main returned, print `OS returned!`
-        mov rax, 0x4f724f204f534f4f
-        mov [0xb8000], rax
-        mov rax, 0x4f724f754f744f65
-        mov [0xb8008], rax
-        mov rax, 0x4f214f644f654f6e
-        mov [0xb8010], rax
-        hlt
-
-; Prints `ERROR: ` and the given error code to screen and hangs.
-; parameter: error code (in ascii) in al
-error:
-    mov rbx, 0x4f4f4f524f524f45
-    mov [0xb8000], rbx
-    mov rbx, 0x4f204f204f3a4f52
-    mov [0xb8008], rbx
-    mov byte [0xb800e], al
+.os_returned:
+    ; rust main returned, print `OS returned!`
+    mov rax, 0x4f724f204f534f4f
+    mov [0xb8000], rax
+    mov rax, 0x4f724f754f744f65
+    mov [0xb8008], rax
+    mov rax, 0x4f214f644f654f6e
+    mov [0xb8010], rax
     hlt
-    jmp error
-
-; Check for SSE and enable it. If it's not supported throw error "a".
-setup_SSE:
-    ; check for SSE
-    mov rax, 0x1
-    cpuid
-    test edx, 1<<25
-    jz .no_SSE
-
-    ; enable SSE
-    mov rax, cr0
-    and ax, 0xFFFB      ; clear coprocessor emulation CR0.EM
-    or ax, 0x2          ; set coprocessor monitoring  CR0.MP
-    mov cr0, rax
-    mov rax, cr4
-    or ax, 3 << 9       ; set CR4.OSFXSR and CR4.OSXMMEXCPT at the same time
-    mov cr4, rax
-
-    ret
-.no_SSE:
-    mov al, "a"
-    jmp error

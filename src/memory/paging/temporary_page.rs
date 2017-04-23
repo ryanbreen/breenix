@@ -67,6 +67,10 @@ impl FrameAllocator for TinyAllocator {
         }
         panic!("Tiny allocator can hold only 3 frames.");
     }
+
+    fn allocated_frame_count(&self) -> usize {
+        3
+    }
 }
 
 impl TinyAllocator {
