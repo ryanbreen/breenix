@@ -17,8 +17,7 @@ use spin::Once;
 
 use util::syscall::syscall0;
 
-use x86_64::structures::idt::ExceptionStackFrame;
-use x86_64::structures::idt::Idt;
+use x86_64::structures::idt::{Idt, ExceptionStackFrame, PageFaultErrorCode};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtualAddress;
 
@@ -29,39 +28,6 @@ const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
 static mut test_passed: bool = false;
 
-/*
-extern "C" fn interrupt_handler(stack_frame: &mut ExceptionStackFrame, int_id: u64) {
-    ::state().interrupt_count[int_id as usize] += 1;
-
-    match int_id as u8 {
-        //0x00...0x0F => println!("error: {}", int_id),
-        TIMER_INTERRUPT => {
-            timer::timer_interrupt();
-        }
-        KEYBOARD_INTERRUPT => {
-            keyboard::read();
-        }
-        SERIAL_INTERRUPT => {
-            println!("serial read\n{:#?}", stack_frame);
-            serial::read();
-        }
-        // On Linux, this is used for syscalls.  Good enough for me.
-        SYSCALL_INTERRUPT => {
-            println!("Got syscall\n{:#?}", stack_frame);
-            syscall_handler(stack_frame);
-            // Handle syscall
-        }
-        _ => {
-            ::state().interrupt_count[0 as usize] += 1;
-        }
-    }
-
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(int_id as u8);
-    }
-}
-*/
-
 pub unsafe fn test_interrupt() {
     int!(SYSCALL_INTERRUPT);
     test_passed = true;
@@ -70,7 +36,10 @@ pub unsafe fn test_interrupt() {
 lazy_static! {
     static ref IDT: Idt = {
         let mut idt = Idt::new();
+        idt.divide_by_zero.set_handler_fn(divide_by_zero_handler);
         idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX as u16);
@@ -80,7 +49,10 @@ lazy_static! {
             idt.interrupts[i].set_handler_fn(dummy_error_handler);
         }
 
+        idt.interrupts[(SERIAL_INTERRUPT - 32) as usize].set_handler_fn(serial_handler);
         idt.interrupts[(SYSCALL_INTERRUPT - 32) as usize].set_handler_fn(syscall_handler);
+        idt.interrupts[(TIMER_INTERRUPT - 32) as usize].set_handler_fn(timer_handler);
+        idt.interrupts[(KEYBOARD_INTERRUPT - 32) as usize].set_handler_fn(keyboard_handler);
 
         idt
     };
@@ -135,9 +107,6 @@ pub fn init(memory_controller: &mut MemoryController) {
             //interrupts::enable();
             irq::enable();
             println!("Enabled irqs");
-
-            //let ret:u64 = syscall!(69, 12, 13);
-            //println!("Got return value {}", ret);
         }
     }
 }
@@ -161,15 +130,6 @@ extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackF
     loop {}
 }
 
-extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
-{
-    println!("SYSCALL:\n{:#?}", stack_frame);
-
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
-    }
-}
-
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
@@ -188,28 +148,59 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStac
     }
 }
 
-extern "x86-interrupt" fn page_fault_handler(stack_frame: &mut ExceptionStackFrame,
-                                 error_code: u64)
+extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    use x86::shared::control_regs;
+    println!("SYSCALL:\n{:#?}", stack_frame);
+
+    ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
+
     unsafe {
-        print_error(format_args!(
-            "EXCEPTION: PAGE FAULT while accessing {:#x}\
-            \nerror code: {:?}\n{:#?}",
-            control_regs::cr2(),
-            PageFaultErrorCode::from_bits(error_code).unwrap(),
-            stack_frame));
+        PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
     }
 }
 
-bitflags! {
-    flags PageFaultErrorCode: u64 {
-        const PROTECTION_VIOLATION = 1 << 0,
-        const CAUSED_BY_WRITE = 1 << 1,
-        const USER_MODE = 1 << 2,
-        const MALFORMED_TABLE = 1 << 3,
-        const INSTRUCTION_FETCH = 1 << 4,
+extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
+{
+    ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
+
+    timer::timer_interrupt();
+
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
     }
+}
+
+extern "x86-interrupt" fn keyboard_handler(stack_frame: &mut ExceptionStackFrame)
+{
+    ::state().interrupt_count[KEYBOARD_INTERRUPT as usize] += 1;
+
+    keyboard::read();
+
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
+    }
+}
+
+extern "x86-interrupt" fn serial_handler(stack_frame: &mut ExceptionStackFrame)
+{
+    ::state().interrupt_count[SERIAL_INTERRUPT as usize] += 1;
+
+    println!("serial read\n{:#?}", stack_frame);
+    serial::read();
+
+    unsafe {
+        PICS.lock().notify_end_of_interrupt(SERIAL_INTERRUPT);
+    }
+}
+
+extern "x86-interrupt" fn page_fault_handler(stack_frame: &mut ExceptionStackFrame, error_code: PageFaultErrorCode) {
+    use x86_64::registers::control_regs;
+    println!("\nEXCEPTION: PAGE FAULT while accessing {:#x}\nerror code: \
+                                  {:?}\n{:#?}",
+             control_regs::cr2(),
+             error_code,
+             stack_frame);
+    loop {}
 }
 
 /// Interface to our PIC (programmable interrupt controller) chips.  We

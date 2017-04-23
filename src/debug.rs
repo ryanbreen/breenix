@@ -37,8 +37,6 @@ static mut COMMAND_BUFFER: Option<&'static mut Vec<u8>> = None;
 
 pub fn handle_serial_input(c: u8) {
 
-    println!("BESNS");
-
     unsafe {
         match COMMAND_BUFFER {
             None => {
