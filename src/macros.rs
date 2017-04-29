@@ -14,10 +14,10 @@ macro_rules! print {
 
 macro_rules! format {
   ($($arg:tt)*) => ({
-    use core::fmt::Write;
+    use collections::string::String;
+    use core::fmt;
     let mut output = String::new();
-    #[allow(unused_must_use)]
-    let _ = output.write_fmt(format_args!($($arg)*));
+    fmt::write(&mut output, format_args!($($arg)*));
     output
   });
 }

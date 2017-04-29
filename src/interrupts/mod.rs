@@ -6,6 +6,9 @@ use constants::keyboard::KEYBOARD_INTERRUPT;
 use constants::serial::SERIAL_INTERRUPT;
 use constants::syscall::SYSCALL_INTERRUPT;
 use constants::timer::TIMER_INTERRUPT;
+
+use core::fmt;
+
 use io::{keyboard, serial, timer, ChainedPics};
 use memory::MemoryController;
 
@@ -14,8 +17,6 @@ use spin::Mutex;
 use x86::shared::irq;
 
 use spin::Once;
-
-use util::syscall::syscall0;
 
 use x86_64::structures::idt::{Idt, ExceptionStackFrame, PageFaultErrorCode};
 use x86_64::structures::tss::TaskStateSegment;
@@ -28,8 +29,50 @@ const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
 static mut test_passed: bool = false;
 
+#[repr(C, packed)]
+struct InterruptContext {
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+ }
+
+impl fmt::Debug for InterruptContext {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+
+        write!(f, "\tr15: {} 0x{:x}\n", self.r15, self.r15);
+        write!(f, "\tr14: {} 0x{:x}\n", self.r14, self.r14);
+        write!(f, "\tr13: {} 0x{:x}\n", self.r13, self.r13);
+        write!(f, "\tr12: {} 0x{:x}\n", self.r12, self.r12);
+        write!(f, "\tr11: {} 0x{:x}\n", self.r11, self.r11);
+        write!(f, "\trbx: {} 0x{:x}\n", self.rbx, self.rbx);
+        write!(f, "\trcx: {} 0x{:x}\n", self.rcx, self.rcx);
+
+        write!(f, "\trax: {} 0x{:x}\n", self.rax, self.rax);
+        write!(f, "\trdi: {} 0x{:x}\n", self.rdi, self.rdi);
+        write!(f, "\trsi: {} 0x{:x}\n", self.rsi, self.rsi);
+        write!(f, "\trdx: {} 0x{:x}\n", self.rdi, self.rdi);
+        write!(f, "\tr10: {} 0x{:x}\n", self.r10, self.r10);
+        write!(f, "\tr8: {} 0x{:x}\n", self.r8, self.r8);
+        write!(f, "\tr9: {} 0x{:x}\n", self.r9, self.r9)
+    }
+}
+
+
 pub unsafe fn test_interrupt() {
-    int!(SYSCALL_INTERRUPT);
+    use util::syscall;
+    let res = syscall::syscall6(16, 32, 64, 128, 256, 512, 1024);
+    println!("Syscall result is {}", res);
     test_passed = true;
 }
 
@@ -101,12 +144,7 @@ pub fn init(memory_controller: &mut MemoryController) {
         test_interrupt();
 
         if test_passed {
-
-            println!("Enabling irqs");
-            //use x86_64::instructions::interrupts;
-            //interrupts::enable();
             irq::enable();
-            println!("Enabled irqs");
         }
     }
 }
@@ -154,8 +192,36 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 
     ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
 
+    // Write output to register rax
     unsafe {
+        use core::fmt;
+
+        // Hack because I don't know a better way to grab the number from the x86_64 lib
+        let sp = format!("{}", stack_frame.stack_pointer).parse::<usize>().unwrap() - 160;
+        println!("Syscall rsp is {:x}", sp);
+
+        let ref ic:InterruptContext = *(sp as * const InterruptContext);
+        println!("Syscall IC at offset is\n{:?}", ic);
+
+        let num = ic.rax;
+        let a = ic.rdi;
+        let b = ic.rsi;
+        let c = ic.rdx;
+        let d = ic.r10;
+        let e = ic.r8;
+        let f = ic.r9;
+
+        let res = a + b + c + d + e + f;
+
+        println!("syscall params {} {} {} {} {} {} {}, res {}", num, a, b, c, d, e, f, res);
+
         PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
+
+        asm!("movq %rsp, %rcx
+              movq $0, %rsp
+              movq $1, %rax
+              push %rax
+              movq %rcx, %rsp" : /* no outputs */ : "r"(sp + 8), "r"(res) : "rax", "rcx");
     }
 }
 
@@ -185,7 +251,6 @@ extern "x86-interrupt" fn serial_handler(stack_frame: &mut ExceptionStackFrame)
 {
     ::state().interrupt_count[SERIAL_INTERRUPT as usize] += 1;
 
-    println!("serial read\n{:#?}", stack_frame);
     serial::read();
 
     unsafe {
