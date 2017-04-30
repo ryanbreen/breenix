@@ -196,8 +196,7 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
     unsafe {
         use core::fmt;
 
-        // Hack because I don't know a better way to grab the number from the x86_64 lib
-        let sp = format!("{}", stack_frame.stack_pointer).parse::<usize>().unwrap() - 160;
+        let sp = stack_frame.stack_pointer.0 - 160;
         println!("Syscall rsp is {:x}", sp);
 
         let ref ic:InterruptContext = *(sp as * const InterruptContext);
