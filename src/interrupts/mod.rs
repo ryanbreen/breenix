@@ -1,4 +1,5 @@
 mod gdt;
+mod syscall;
 
 use buffers::print_error;
 
@@ -197,10 +198,10 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         use core::fmt;
 
         let sp = stack_frame.stack_pointer.0 - 160;
-        println!("Syscall rsp is {:x}", sp);
+        //println!("Syscall rsp is {:x}", sp);
 
         let ref ic:InterruptContext = *(sp as * const InterruptContext);
-        println!("Syscall IC at offset is\n{:?}", ic);
+        //println!("Syscall IC at offset is\n{:?}", ic);
 
         let num = ic.rax;
         let a = ic.rdi;
@@ -210,9 +211,9 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         let e = ic.r8;
         let f = ic.r9;
 
-        let res = a + b + c + d + e + f;
+        println!("syscall params {} {} {} {} {} {} {}", num, a, b, c, d, e, f);
 
-        println!("syscall params {} {} {} {} {} {} {}, res {}", num, a, b, c, d, e, f, res);
+        let res = syscall::handle(num, a, b, c, d, e, f);
 
         PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
 
