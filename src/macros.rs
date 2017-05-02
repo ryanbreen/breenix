@@ -8,7 +8,8 @@ macro_rules! println {
 macro_rules! print {
    ($($arg:tt)*) => ({
      use core::fmt::Write;
-     $crate::buffers::PRINT_BUFFER.lock().write_fmt(format_args!($($arg)*)).unwrap();
+     $crate::writers::print(format_args!($($arg)*));
+     //$crate::writers::VGA_WRITER.lock().write_fmt(format_args!($($arg)*)).unwrap();
    });
 }
 

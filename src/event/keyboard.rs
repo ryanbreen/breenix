@@ -1,5 +1,3 @@
-use buffers;
-use buffers::KEYBOARD_BUFFER;
 use debug;
 
 use constants;
@@ -32,7 +30,7 @@ impl IsListener<KeyEvent> for KeyEventScreenWriter {
     }
 
     fn notify(&self, ev: &KeyEvent) {
-
+/*
         if ev.scancode == constants::keyboard::ENTER_KEY.scancode {
             KEYBOARD_BUFFER.lock().new_line();
             return;
@@ -46,7 +44,7 @@ impl IsListener<KeyEvent> for KeyEventScreenWriter {
         if ev.character as u8 != 0 {
             KEYBOARD_BUFFER.lock().write_byte(ev.character as u8);
         }
-
+*/
     }
 }
 
@@ -60,7 +58,7 @@ impl IsListener<KeyEvent> for ToggleWatcher {
     #[allow(unused_variables)]
     fn notify(&self, ev: &KeyEvent) {
         // Switch buffers
-        buffers::toggle();
+        //buffers::toggle();
     }
 }
 

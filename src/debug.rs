@@ -1,5 +1,4 @@
 use alloc::boxed::Box;
-use buffers::DEBUG_BUFFER;
 use collections::vec::Vec;
 use core::fmt::Write;
 use core::str;
@@ -13,7 +12,7 @@ use io::timer;
 
 #[allow(unused_must_use)]
 pub fn debug() {
-
+    /*
     let mut buffer = DEBUG_BUFFER.lock();
     unsafe {
         let time = timer::time_since_start();
@@ -31,6 +30,7 @@ pub fn debug() {
         //                              memory::area_frame_allocator().allocated_frame_count()));
         buffer.write_fmt(format_args!("{:?}\n", memory::slab_allocator::zone_allocator()));
     }
+    */
 }
 
 static mut COMMAND_BUFFER: Option<&'static mut Vec<u8>> = None;

@@ -1,8 +1,6 @@
 mod gdt;
 mod syscall;
 
-use buffers::print_error;
-
 use constants::keyboard::KEYBOARD_INTERRUPT;
 use constants::serial::SERIAL_INTERRUPT;
 use constants::syscall::SYSCALL_INTERRUPT;
@@ -74,7 +72,10 @@ pub unsafe fn test_interrupt() {
     use util::syscall;
     let res = syscall::syscall6(16, 32, 64, 128, 256, 512, 1024);
     println!("Syscall result is {}", res);
-    test_passed = true;
+    test_passed = res == 2016;
+    if !test_passed {
+        panic!("test SYSCALL failed");
+    }
 }
 
 lazy_static! {
@@ -171,20 +172,23 @@ extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackF
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
 {
+    /*
     unsafe {
         print_error(format_args!("EXCEPTION: DIVIDE BY ZERO\n{:#?}",
             stack_frame));
         loop {}
-    };
+    };*/
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStackFrame)
 {
+    /*
     unsafe {
         print_error(format_args!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
             stack_frame.instruction_pointer, stack_frame));
         loop {}
     }
+    */
 }
 
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)

@@ -30,6 +30,8 @@ extern crate cpuio;
 
 extern crate bit_field;
 
+extern crate volatile;
+
 #[macro_use]
 extern crate bitflags;
 
@@ -44,12 +46,12 @@ extern crate x86_64;
 #[macro_use]
 mod util;
 
-mod buffers;
+mod writers;
 mod constants;
 mod debug;
 mod event;
 mod memory;
-mod vga_writer;
+//mod vga_writer;
 
 mod interrupts;
 mod io;
@@ -67,8 +69,8 @@ pub fn _Unwind_Resume() {
 #[lang = "panic_fmt"]
 #[no_mangle]
 pub extern "C" fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
-    println!("\n\nPANIC in {} at line {}:", file, line);
-    println!("    {}", fmt);
+//    println!("\n\nPANIC in {} at line {}:", file, line);
+//    println!("    {}", fmt);
     state().scheduler.idle();
 }
 
@@ -86,11 +88,6 @@ fn enable_write_protect_bit() {
     use x86::shared::control_regs::{cr0, cr0_write, CR0_WRITE_PROTECT};
 
     unsafe { cr0_write(cr0() | CR0_WRITE_PROTECT) };
-}
-
-pub fn test_call() {
-    println!("I am a function");
-    println!("I got called!");
 }
 
 #[no_mangle]
@@ -115,7 +112,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     // trigger a stack overflow
     //stack_overflow();
-
     io::initialize();
 
     // provoke a page fault
