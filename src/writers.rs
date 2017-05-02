@@ -1,0 +1,178 @@
+use core::fmt;
+
+use spin::Mutex;
+
+use io::drivers::display::vga;
+use io::drivers::display::vga::ColorCode;
+
+use io::serial;
+
+use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
+
+struct Buffer {
+    chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],
+}
+
+pub struct Writer {
+    column_position: usize,
+    color_code: ColorCode,
+    buffer: Buffer,
+}
+
+pub fn print(args: fmt::Arguments) {
+    vga::print(args);
+}
+
+impl Writer {
+    pub fn activate(&mut self) {
+        //self.active = true;
+        unsafe {
+            //VGA_WRITER.lock().write_buffer(&self);
+        }
+    }
+
+    pub fn deactivate(&mut self) {
+        //self.active = false;
+    }
+
+    pub fn write_byte(&mut self, byte: u8) {
+        match byte {
+            b'\n' => self.new_line(),
+            byte => {
+            }
+        }
+    }
+
+    pub fn delete_byte(&mut self) {
+        if self.column_position == 0 {
+            return;
+        }
+
+        let col = self.column_position - 1;
+
+        //self.write_to_buffers(BUFFER_HEIGHT - 1, col, blank);
+        self.column_position -= 1;
+
+        //if self.active {
+        //vga_writer::update_cursor(BUFFER_HEIGHT as u8 - 1, self.column_position as u8);
+        //}
+    }
+
+    /*
+    fn write_to_buffers(&mut self, row: usize, col: usize, sc: ScreenChar) {
+        if self.active {
+            unsafe {
+                vga_writer::VGA_WRITER.lock().write_char(row, col, sc);
+            }
+        }
+
+        self.chars[row][col] = sc;
+    }
+    */
+
+    pub fn new_line(&mut self) {
+        for row in 1..BUFFER_HEIGHT {
+            for col in 0..BUFFER_WIDTH {
+                self.buffer.chars[row - 1][col] = self.buffer.chars[row][col];
+                //self.write_to_buffers(row, col, sc);
+            }
+        }
+
+        self.clear_row(BUFFER_HEIGHT - 1);
+        self.column_position = 0;
+    }
+
+    #[allow(dead_code)]
+    pub fn clear(&mut self) {
+        for _ in 0..BUFFER_HEIGHT {
+            self.new_line();
+        }
+    }
+
+    fn clear_row(&mut self, row: usize) {
+        for col in 0..BUFFER_WIDTH {
+            self.buffer.chars[row][col] = b' ';
+        }
+    }
+}
+
+/*
+impl ::core::fmt::Write for Buffer {
+    fn write_str(&mut self, s: &str) -> ::core::fmt::Result {
+        for byte in s.bytes() {
+            self.write_byte(byte)
+        }
+
+        serial::write(s);
+
+        Ok(())
+    }
+}
+*/
+
+/*
+pub static PRINT_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
+    column_position: 0,
+    color_code: ColorCode::new(Color::LightGreen, Color::Black),
+    blank_char: GREEN_BLANK,
+    chars: [[GREEN_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    active: true,
+});
+
+pub static KEYBOARD_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
+    column_position: 0,
+    color_code: ColorCode::new(Color::LightRed, Color::Black),
+    blank_char: RED_BLANK,
+    chars: [[RED_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    active: false,
+});
+
+pub static DEBUG_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
+    column_position: 0,
+    color_code: ColorCode::new(Color::LightGray, Color::Black),
+    blank_char: GRAY_BLANK,
+    chars: [[GRAY_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    active: false,
+});
+
+pub static mut ACTIVE_BUFFER: &'static Mutex<Buffer> = &PRINT_BUFFER;
+static mut INACTIVE_BUFFERS: [&'static Mutex<Buffer>; 2] = [&DEBUG_BUFFER, &KEYBOARD_BUFFER];
+
+pub fn toggle() {
+    unsafe {
+        ACTIVE_BUFFER.lock().deactivate();
+
+        let new_active = INACTIVE_BUFFERS[0];
+        INACTIVE_BUFFERS[0] = INACTIVE_BUFFERS[1];
+        INACTIVE_BUFFERS[1] = ACTIVE_BUFFER;
+        ACTIVE_BUFFER = new_active;
+        ACTIVE_BUFFER.lock().activate();
+
+        vga_writer::update_cursor(BUFFER_HEIGHT as u8 - 1,
+                                  ACTIVE_BUFFER.lock().column_position as u8);
+    }
+}
+*/
+
+/// Our printer of last resort.  This is guaranteed to write without trying to grab a lock that
+/// may be held by someone else.
+#[allow(unused_must_use)]
+pub unsafe fn print_error(fmt: fmt::Arguments) {
+    use core::fmt::Write;
+    use core::ptr::Unique;
+/*
+    let mut error_buffer = Buffer {
+        column_position: 0,
+        color_code: ColorCode::new(Color::Red, Color::Black),
+        blank_char: RED_BLANK,
+        chars: [[RED_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+        active: true,
+    };
+
+    vga_writer::VgaWriter {
+        buffer: Unique::new(0xb8000 as *mut _),
+    };
+    error_buffer.new_line();
+    error_buffer.write_fmt(fmt);
+    */
+}
