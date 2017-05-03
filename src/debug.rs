@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use collections::vec::Vec;
 use core::fmt::Write;
 use core::str;
+use io::drivers::display::text_buffer::DEBUG_BUFFER;
 use io::serial;
 use x86::shared::msr::{IA32_EFER, TSC, MSR_MCG_RFLAGS};
 use x86::shared::msr::rdmsr;
@@ -12,7 +13,6 @@ use io::timer;
 
 #[allow(unused_must_use)]
 pub fn debug() {
-    /*
     let mut buffer = DEBUG_BUFFER.lock();
     unsafe {
         let time = timer::time_since_start();
@@ -30,7 +30,6 @@ pub fn debug() {
         //                              memory::area_frame_allocator().allocated_frame_count()));
         buffer.write_fmt(format_args!("{:?}\n", memory::slab_allocator::zone_allocator()));
     }
-    */
 }
 
 static mut COMMAND_BUFFER: Option<&'static mut Vec<u8>> = None;

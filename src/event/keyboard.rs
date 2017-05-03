@@ -71,7 +71,6 @@ impl IsListener<KeyEvent> for DebugWatcher {
 
     #[allow(unused_variables)]
     fn notify(&self, ev: &KeyEvent) {
-        // Switch buffers
         debug::debug();
     }
 }

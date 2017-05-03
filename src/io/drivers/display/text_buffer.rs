@@ -38,7 +38,10 @@ impl TextBuffer {
 
     fn sync(&self) {
         if self.active {
-            unsafe { VGA.lock().sync_buffer(&self); }
+            unsafe {
+                VGA.lock().sync_buffer(&self);
+                VGA.lock().update_cursor(BUFFER_HEIGHT - 1, self.column_position);
+            }
         }
     }
 
@@ -158,9 +161,7 @@ pub fn toggle() {
         INACTIVE_BUFFERS[1] = ACTIVE_BUFFER;
         ACTIVE_BUFFER = new_active;
         ACTIVE_BUFFER.lock().activate();
-
-//        vga_writer::update_cursor(BUFFER_HEIGHT as u8 - 1,
-//                                  ACTIVE_BUFFER.lock().column_position as u8);
+        ACTIVE_BUFFER.lock().sync();
     }
 }
 

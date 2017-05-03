@@ -76,4 +76,22 @@ impl VGA {
             }
         }
     }
+
+    #[allow(exceeding_bitshifts)]
+    pub fn update_cursor(&self, row: usize, col: usize) {
+        let position: u16 = (row as u16 * (BUFFER_WIDTH as u16)) + col as u16;
+        use io::Port;
+
+        unsafe {
+            let mut cursor_control_port: Port<u8> = Port::new(0x3D4);
+            let mut cursor_value_port: Port<u8> = Port::new(0x3D5);
+
+            // cursor HIGH port to vga INDEX register
+            cursor_control_port.write(0x0E);
+            cursor_value_port.write(((position >> 8) & 0xFF) as u8);
+            // cursor LOW port to vga INDEX register
+            cursor_control_port.write(0x0F);
+            cursor_value_port.write((position & 0xFF) as u8);
+        }
+    }
 }
