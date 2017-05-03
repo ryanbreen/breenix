@@ -7,7 +7,7 @@ macro_rules! println {
 
 macro_rules! print {
    ($($arg:tt)*) => ({
-     $crate::writers::print(format_args!($($arg)*));
+     $crate::io::drivers::display::text_buffer::print(format_args!($($arg)*));
      //$crate::writers::VGA_WRITER.lock().write_fmt(format_args!($($arg)*)).unwrap();
    });
 }

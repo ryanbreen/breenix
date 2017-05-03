@@ -46,7 +46,6 @@ extern crate x86_64;
 #[macro_use]
 mod util;
 
-mod writers;
 mod constants;
 mod debug;
 mod event;

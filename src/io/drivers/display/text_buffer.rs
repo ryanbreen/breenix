@@ -3,44 +3,61 @@ use core::fmt;
 use spin::Mutex;
 
 use io::drivers::display::vga;
-use io::drivers::display::vga::ColorCode;
+use io::drivers::display::vga::{VGA, Color, ScreenChar, ColorCode};
 
 use io::serial;
 
-use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
+use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, GREEN_BLANK};
 
-struct Buffer {
+pub struct TextBuffer {
     chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],
-}
-
-pub struct Writer {
     column_position: usize,
     color_code: ColorCode,
-    buffer: Buffer,
+    blank_char: ScreenChar,
+    active: bool,
 }
 
-pub fn print(args: fmt::Arguments) {
-    vga::print(args);
-}
-
-impl Writer {
+impl TextBuffer {
     pub fn activate(&mut self) {
-        //self.active = true;
-        unsafe {
-            //VGA_WRITER.lock().write_buffer(&self);
-        }
+        self.active = true;
+        self.sync();
     }
 
     pub fn deactivate(&mut self) {
-        //self.active = false;
+        self.active = false;
+    }
+
+    pub fn chars(&self) -> &[[u8; BUFFER_WIDTH]; BUFFER_HEIGHT] {
+        &self.chars
+    }
+
+    pub fn color_code(&self) -> ColorCode {
+        self.color_code
+    }
+
+    fn sync(&self) {
+        if self.active {
+            unsafe { VGA.lock().sync_buffer(&self); }
+        }
     }
 
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.new_line(),
             byte => {
+                if self.column_position >= BUFFER_WIDTH {
+                    self.new_line();
+                }
+
+                let row = BUFFER_HEIGHT - 1;
+                let col = self.column_position;
+                let cc = self.color_code;
+                self.chars[row][col] = byte;
+                self.column_position += 1;
             }
         }
+
+        self.sync();
     }
 
     pub fn delete_byte(&mut self) {
@@ -50,36 +67,22 @@ impl Writer {
 
         let col = self.column_position - 1;
 
-        //self.write_to_buffers(BUFFER_HEIGHT - 1, col, blank);
+        self.chars[BUFFER_HEIGHT - 1][col] = b' ';
         self.column_position -= 1;
-
-        //if self.active {
-        //vga_writer::update_cursor(BUFFER_HEIGHT as u8 - 1, self.column_position as u8);
-        //}
+        self.sync();
     }
-
-    /*
-    fn write_to_buffers(&mut self, row: usize, col: usize, sc: ScreenChar) {
-        if self.active {
-            unsafe {
-                vga_writer::VGA_WRITER.lock().write_char(row, col, sc);
-            }
-        }
-
-        self.chars[row][col] = sc;
-    }
-    */
 
     pub fn new_line(&mut self) {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
-                self.buffer.chars[row - 1][col] = self.buffer.chars[row][col];
-                //self.write_to_buffers(row, col, sc);
+                self.chars[row - 1][col] = self.chars[row][col];
             }
         }
 
         self.clear_row(BUFFER_HEIGHT - 1);
         self.column_position = 0;
+
+        self.sync();
     }
 
     #[allow(dead_code)]
@@ -91,13 +94,12 @@ impl Writer {
 
     fn clear_row(&mut self, row: usize) {
         for col in 0..BUFFER_WIDTH {
-            self.buffer.chars[row][col] = b' ';
+            self.chars[row][col] = b' ';
         }
     }
 }
 
-/*
-impl ::core::fmt::Write for Buffer {
+impl ::core::fmt::Write for TextBuffer {
     fn write_str(&mut self, s: &str) -> ::core::fmt::Result {
         for byte in s.bytes() {
             self.write_byte(byte)
@@ -108,17 +110,21 @@ impl ::core::fmt::Write for Buffer {
         Ok(())
     }
 }
-*/
 
-/*
-pub static PRINT_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
+pub static PRINT_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightGreen, Color::Black),
     blank_char: GREEN_BLANK,
-    chars: [[GREEN_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    chars: [[b' '; BUFFER_WIDTH]; BUFFER_HEIGHT],
     active: true,
 });
 
+pub fn print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    PRINT_BUFFER.lock().write_fmt(args).unwrap();
+}
+
+/*
 pub static KEYBOARD_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightRed, Color::Black),
