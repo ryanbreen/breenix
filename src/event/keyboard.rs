@@ -3,6 +3,8 @@ use debug;
 use constants;
 use event::{EventType, IsListener};
 
+use io::drivers::display::text_buffer;
+
 #[derive(Clone, Copy)]
 pub struct ControlKeyState {
     pub ctrl: bool,
@@ -30,21 +32,19 @@ impl IsListener<KeyEvent> for KeyEventScreenWriter {
     }
 
     fn notify(&self, ev: &KeyEvent) {
-/*
         if ev.scancode == constants::keyboard::ENTER_KEY.scancode {
-            KEYBOARD_BUFFER.lock().new_line();
+            text_buffer::KEYBOARD_BUFFER.lock().new_line();
             return;
         }
 
         if ev.scancode == constants::keyboard::DELETE_KEY.scancode {
-            KEYBOARD_BUFFER.lock().delete_byte();
+            text_buffer::KEYBOARD_BUFFER.lock().delete_byte();
             return;
         }
 
         if ev.character as u8 != 0 {
-            KEYBOARD_BUFFER.lock().write_byte(ev.character as u8);
+            text_buffer::KEYBOARD_BUFFER.lock().write_byte(ev.character as u8);
         }
-*/
     }
 }
 
@@ -58,7 +58,7 @@ impl IsListener<KeyEvent> for ToggleWatcher {
     #[allow(unused_variables)]
     fn notify(&self, ev: &KeyEvent) {
         // Switch buffers
-        //buffers::toggle();
+        text_buffer::toggle();
     }
 }
 

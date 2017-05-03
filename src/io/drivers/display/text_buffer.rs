@@ -7,7 +7,7 @@ use io::drivers::display::vga::{VGA, Color, ScreenChar, ColorCode};
 
 use io::serial;
 
-use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, GREEN_BLANK};
+use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, GREEN_BLANK, RED_BLANK, GRAY_BLANK};
 
 pub struct TextBuffer {
     chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],
@@ -15,6 +15,7 @@ pub struct TextBuffer {
     color_code: ColorCode,
     blank_char: ScreenChar,
     active: bool,
+    interactive: bool,
 }
 
 impl TextBuffer {
@@ -57,7 +58,9 @@ impl TextBuffer {
             }
         }
 
-        self.sync();
+        if self.interactive {
+            self.sync();
+        }
     }
 
     pub fn delete_byte(&mut self) {
@@ -117,6 +120,7 @@ pub static PRINT_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     blank_char: GREEN_BLANK,
     chars: [[b' '; BUFFER_WIDTH]; BUFFER_HEIGHT],
     active: true,
+    interactive: false,
 });
 
 pub fn print(args: fmt::Arguments) {
@@ -124,25 +128,26 @@ pub fn print(args: fmt::Arguments) {
     PRINT_BUFFER.lock().write_fmt(args).unwrap();
 }
 
-/*
-pub static KEYBOARD_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
+pub static KEYBOARD_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightRed, Color::Black),
     blank_char: RED_BLANK,
-    chars: [[RED_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    chars: [[b' '; BUFFER_WIDTH]; BUFFER_HEIGHT],
     active: false,
+    interactive: true,
 });
 
-pub static DEBUG_BUFFER: Mutex<Buffer> = Mutex::new(Buffer {
+pub static DEBUG_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightGray, Color::Black),
     blank_char: GRAY_BLANK,
-    chars: [[GRAY_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    chars: [[b' '; BUFFER_WIDTH]; BUFFER_HEIGHT],
     active: false,
+    interactive: false,
 });
 
-pub static mut ACTIVE_BUFFER: &'static Mutex<Buffer> = &PRINT_BUFFER;
-static mut INACTIVE_BUFFERS: [&'static Mutex<Buffer>; 2] = [&DEBUG_BUFFER, &KEYBOARD_BUFFER];
+pub static mut ACTIVE_BUFFER: &'static Mutex<TextBuffer> = &PRINT_BUFFER;
+static mut INACTIVE_BUFFERS: [&'static Mutex<TextBuffer>; 2] = [&DEBUG_BUFFER, &KEYBOARD_BUFFER];
 
 pub fn toggle() {
     unsafe {
@@ -154,11 +159,10 @@ pub fn toggle() {
         ACTIVE_BUFFER = new_active;
         ACTIVE_BUFFER.lock().activate();
 
-        vga_writer::update_cursor(BUFFER_HEIGHT as u8 - 1,
-                                  ACTIVE_BUFFER.lock().column_position as u8);
+//        vga_writer::update_cursor(BUFFER_HEIGHT as u8 - 1,
+//                                  ACTIVE_BUFFER.lock().column_position as u8);
     }
 }
-*/
 
 /// Our printer of last resort.  This is guaranteed to write without trying to grab a lock that
 /// may be held by someone else.
