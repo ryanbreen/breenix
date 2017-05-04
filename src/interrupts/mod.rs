@@ -172,23 +172,17 @@ extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackF
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    /*
-    unsafe {
-        print_error(format_args!("EXCEPTION: DIVIDE BY ZERO\n{:#?}",
-            stack_frame));
-        loop {}
-    };*/
+    println!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
+    loop {}
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    /*
     unsafe {
-        print_error(format_args!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
-            stack_frame.instruction_pointer, stack_frame));
+        println!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
+            stack_frame.instruction_pointer, stack_frame);
         loop {}
     }
-    */
 }
 
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)

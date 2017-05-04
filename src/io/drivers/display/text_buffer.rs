@@ -164,26 +164,3 @@ pub fn toggle() {
         ACTIVE_BUFFER.lock().sync();
     }
 }
-
-/// Our printer of last resort.  This is guaranteed to write without trying to grab a lock that
-/// may be held by someone else.
-#[allow(unused_must_use)]
-pub unsafe fn print_error(fmt: fmt::Arguments) {
-    use core::fmt::Write;
-    use core::ptr::Unique;
-/*
-    let mut error_buffer = Buffer {
-        column_position: 0,
-        color_code: ColorCode::new(Color::Red, Color::Black),
-        blank_char: RED_BLANK,
-        chars: [[RED_BLANK; BUFFER_WIDTH]; BUFFER_HEIGHT],
-        active: true,
-    };
-
-    vga_writer::VgaWriter {
-        buffer: Unique::new(0xb8000 as *mut _),
-    };
-    error_buffer.new_line();
-    error_buffer.write_fmt(fmt);
-    */
-}
