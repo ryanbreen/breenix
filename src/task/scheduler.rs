@@ -45,8 +45,15 @@ impl Scheduler {
         }
     }
 
+    unsafe fn test(&self) {
+
+    }
+
     fn halt(&self) {
         unsafe {
+
+            self.test();
+
             asm!("hlt");
             asm!("pause");
         }

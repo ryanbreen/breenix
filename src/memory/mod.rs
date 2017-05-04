@@ -20,9 +20,6 @@ pub use self::stack_allocator::Stack;
 
 pub const PAGE_SIZE: usize = 4096;
 
-static mut AREA_FRAME_ALLOCATOR_PTR: Option<&'static mut AreaFrameAllocator> = None;
-static mut ACTIVE_TABLE_PTR: Option<&'static mut ActivePageTable> = None;
-
 pub struct MemoryController {
     stack_allocator: stack_allocator::StackAllocator,
 }
@@ -33,6 +30,10 @@ impl MemoryController {
         stack_allocator.alloc_stack(size_in_pages)
     }
 }
+
+static mut MEMORY_CONTROLLER: Option<&'static mut MemoryController> = None;
+static mut AREA_FRAME_ALLOCATOR_PTR: Option<&'static mut AreaFrameAllocator> = None;
+static mut ACTIVE_TABLE_PTR: Option<&'static mut ActivePageTable> = None;
 
 pub fn area_frame_allocator() -> &'static mut AreaFrameAllocator {
     unsafe {
@@ -56,6 +57,17 @@ pub fn page_table() -> &'static mut ActivePageTable {
     }
 }
 
+pub fn memory_controller() -> &'static mut MemoryController {
+    unsafe {
+        match MEMORY_CONTROLLER {
+            Some(ref mut a) => a,
+            None => {
+                panic!("stack allocator called before init");
+            }
+        }
+    }
+}
+
 pub fn identity_map_range(start:usize, end: usize) {
     let mut allocator:&'static mut AreaFrameAllocator = area_frame_allocator();
     let mut active_table:&'static mut ActivePageTable = page_table();
@@ -64,7 +76,7 @@ pub fn identity_map_range(start:usize, end: usize) {
     }
 }
 
-pub fn init(boot_info: &BootInformation) -> MemoryController {
+pub fn init(boot_info: &BootInformation) {
     assert_has_not_been_called!("memory::init must be called only once");
 
     let memory_map_tag = boot_info.memory_map_tag().expect("Memory map tag required");
@@ -121,15 +133,17 @@ pub fn init(boot_info: &BootInformation) -> MemoryController {
 
         let stack_allocator = {
             let stack_alloc_start = heap_end_page + 1;
-            let stack_alloc_end = stack_alloc_start + 100;
+            let stack_alloc_end = stack_alloc_start + 10000;
             let stack_alloc_range = Page::range_inclusive(stack_alloc_start,
                                                           stack_alloc_end);
             stack_allocator::StackAllocator::new(stack_alloc_range)
         };
 
-        MemoryController {
+        let mc = MemoryController {
             stack_allocator: stack_allocator,
-        }
+        };
+
+        MEMORY_CONTROLLER = Some(&mut *Box::into_raw(Box::new(mc)));
     }
 }
 

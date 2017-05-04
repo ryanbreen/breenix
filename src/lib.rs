@@ -68,9 +68,9 @@ pub fn _Unwind_Resume() {
 #[lang = "panic_fmt"]
 #[no_mangle]
 pub extern "C" fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
-//    println!("\n\nPANIC in {} at line {}:", file, line);
-//    println!("    {}", fmt);
-    state().scheduler.idle();
+    println!("\n\nPANIC in {} at line {}:", file, line);
+    println!("    {}", fmt);
+    loop {}
 }
 
 fn enable_nxe_bit() {
@@ -98,10 +98,9 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     enable_write_protect_bit();
 
     // set up guard page and map the heap pages
-    let mut memory_controller = memory::init(boot_info);
+    memory::init(boot_info);
 
-    // Phil-Opp idt
-    interrupts::init(&mut memory_controller);
+    interrupts::init();
     
     x86_64::instructions::interrupts::int3();
 
