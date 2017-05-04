@@ -24,7 +24,7 @@ const MAX_SLABS: usize = 14;
 
 const VIRT_START: usize = tiered_allocator::HEAP_START + tiered_allocator::HEAP_SIZE;
 
-static mut VIRT_OFFSET: usize = 64;
+static mut VIRT_OFFSET: usize = 1024 * 1024;
 
 #[cfg(target_arch="x86_64")]
 type VAddr = usize;

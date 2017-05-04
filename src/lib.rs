@@ -102,20 +102,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     interrupts::init();
     
-    x86_64::instructions::interrupts::int3();
-
-    fn stack_overflow() {
-        stack_overflow(); // for each recursion, the return address is pushed
-    }
-
-    // trigger a stack overflow
-    //stack_overflow();
     io::initialize();
-
-    // provoke a page fault
-    //unsafe { *(0xdeadbeaf as *mut u64) = 42 };
-
-    println!("It did not crash");
 
     println!("Time is {}", io::timer::real_time().secs);
 
@@ -130,6 +117,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
              unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE });
 
     let my_str = "happy days are here";
+
     // Fails with PF if push count > 8192 because we don't support slabs that large.
     for _ in 0..8192 {
         vec.push(my_str);
@@ -139,9 +127,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
              vec.len(),
              vec[127]);
 
-    debug!();
-
-    // state().scheduler.schedule();
+    state().scheduler.schedule();
     println!("idling");
     state().scheduler.idle();
 }

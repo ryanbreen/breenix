@@ -2,6 +2,8 @@
 use alloc::boxed::Box;
 use collections::Vec;
 
+use memory;
+
 use task::Task;
 
 #[allow(dead_code)]
@@ -21,9 +23,9 @@ impl Scheduler {
 
     pub fn schedule(&mut self) {
         unsafe {
-            //self.disable_interrupts();
-
-            //self.enable_interrupts();
+            self.disable_interrupts();
+            self.test();
+            self.enable_interrupts();
         }
     }
 
@@ -46,14 +48,14 @@ impl Scheduler {
     }
 
     unsafe fn test(&self) {
-
+        // Create a new stack
+        let new_stack = memory::memory_controller().alloc_stack(64)
+            .expect("could not allocate new proc stack");
+        println!("Top of new stack: {:x}", new_stack.top());
     }
 
     fn halt(&self) {
         unsafe {
-
-            self.test();
-
             asm!("hlt");
             asm!("pause");
         }
