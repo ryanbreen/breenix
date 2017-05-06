@@ -4,29 +4,69 @@ use collections::Vec;
 
 use memory;
 
-use task::Task;
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Process {
+    pid: usize,
+    frame: usize, // physical address of this process's pml4
+    allocated_pages: usize, // number of allocated pages
+
+    state: usize, // -1 unrunnable, 0 runnable, >0 stopped
+    stack: usize,
+    usage: usize,
+}
+
+impl Process {
+    fn new(pid: usize, frame:usize, stack: usize) -> Self {
+        Process {
+            pid: pid,
+            frame: frame,
+            allocated_pages: 0,
+            state: stack,
+            stack: 0,
+            usage: 0,
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub struct Scheduler {
-    tasks: Box<Vec<Box<Task>>>,
+    procs: Vec<Process>,
+    pid_counter: usize,
 }
 
 #[allow(dead_code)]
 impl Scheduler {
     pub fn new() -> Self {
-        Scheduler { tasks: Box::new(Vec::new()) }
+        let mut scheduler = Scheduler {
+            procs: Vec::new(),
+            pid_counter: 0,
+        };
+
+        scheduler.create_process(0, 0);
+
+        scheduler
     }
 
-    pub fn add_task(&mut self, task: Task) {
-        self.tasks.push(Box::new(task));
+    pub fn create_process(&mut self, memory_frame: usize, stack_pointer: usize) -> usize {
+
+        self.pid_counter += 1;
+
+        // Init proc 1 for the main kernel thread
+        self.procs.push(Process::new(self.pid_counter, memory_frame, stack_pointer));
+
+        println!("initialized proc {}", self.pid_counter);
+
+        self.pid_counter
     }
 
-    pub fn schedule(&mut self) {
+    pub fn schedule(&mut self) -> usize {
         unsafe {
             self.disable_interrupts();
             self.test();
             self.enable_interrupts();
         }
+
+        0
     }
 
     pub fn disable_interrupts(&self) {
