@@ -79,6 +79,17 @@ pub unsafe fn test_interrupt() {
     }
 }
 
+
+pub unsafe fn test_interrupt2() {
+    use util::syscall;
+    let res = syscall::syscall6(16, 32, 64, 128, 256, 512, 1024);
+    println!("Syscall result 2 is {}", res);
+    test_passed = res == 2016;
+    if !test_passed {
+        panic!("test SYSCALL failed");
+    }
+}
+
 lazy_static! {
     static ref IDT: Idt = {
         let mut idt = Idt::new();
@@ -145,6 +156,7 @@ pub fn init() {
         PICS.lock().initialize();
 
         test_interrupt();
+        test_interrupt2();
 
         if test_passed {
             irq::enable();
@@ -188,15 +200,17 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStac
 
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
+    ::state().scheduler.disable_interrupts();
+
     println!("SYSCALL:\n{:#?}", stack_frame);
 
     ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
 
     // Write output to register rax
     unsafe {
-        use core::fmt;
-
         let sp = stack_frame.stack_pointer.0 - 160;
+
+        ::state().scheduler.update_trap_frame(sp);
         //println!("Syscall rsp is {:x}", sp);
 
         let ref ic:InterruptContext = *(sp as * const InterruptContext);
@@ -215,6 +229,8 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         let res = syscall::handle(num, a, b, c, d, e, f);
 
         PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
+
+        ::state().scheduler.enable_interrupts();
 
         asm!("movq %rsp, %rcx
               movq $0, %rsp
