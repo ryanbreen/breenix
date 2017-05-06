@@ -47,11 +47,40 @@ impl Scheduler {
         }
     }
 
+    fn super_inner(&self) -> usize {
+        let mut beans = 0;
+
+        for i in 0..1000 {
+            beans += 1;
+        }
+
+        beans
+    }
+
+    #[inline(never)]
+    fn inner(&self) {
+        let mut x = 0;
+        x += 100;
+        println!("From new stack: {}", x);
+
+        println!("{}", self.super_inner());
+    }
+
     unsafe fn test(&self) {
         // Create a new stack
         let new_stack = memory::memory_controller().alloc_stack(64)
             .expect("could not allocate new proc stack");
         println!("Top of new stack: {:x}", new_stack.top());
+
+        let sp:usize;
+
+        // Jump to new stack
+        asm!("movq %rsp, %rcx
+              movq $1, %rsp" : "={rcx}"(sp) : "r"(new_stack.top()) : "rcx");
+        
+        self.inner();
+
+        asm!("movq $0, %rsp" :: "r"(sp) : );
     }
 
     fn halt(&self) {
