@@ -11,6 +11,8 @@ pub struct Process {
     frame: usize, // physical address of this process's pml4
     allocated_pages: usize, // number of allocated pages
 
+    started: bool,
+    start_pointer: usize,
     state: usize, // -1 unrunnable, 0 runnable, >0 stopped
     stack: usize,
     trap_frame: usize,
@@ -23,6 +25,8 @@ impl Process {
             pid: pid,
             frame: frame,
             allocated_pages: 0,
+            started: false,
+            start_pointer: 0,
             state: stack,
             trap_frame: 0,
             stack: 0,
@@ -38,7 +42,6 @@ pub struct Scheduler {
     pid_counter: usize,
 }
 
-#[naked]
 unsafe fn test() {
     
 /*
@@ -51,7 +54,7 @@ unsafe fn test() {
 
     println!("{}", beans);
 
-    ::state().scheduler.idle();
+    //::state().scheduler.idle();
 
     //asm!("movq $0, %rsp" :: "r"(sp) : );
 }
@@ -65,7 +68,14 @@ impl Scheduler {
             pid_counter: 0,
         };
 
-        scheduler.current = scheduler.create_process(0, 0);
+        let pid = scheduler.create_process(0, 0);
+        scheduler.current = 0;
+
+        {
+            let process = scheduler.get_process(pid);
+            process.started = true;
+            process.state = 1;
+        }
 
         scheduler
     }
@@ -73,46 +83,94 @@ impl Scheduler {
     pub fn create_process(&mut self, memory_frame: usize, stack_pointer: usize) -> usize {
 
         // Init proc 0 for the main kernel thread
-        self.procs.insert(self.pid_counter, Process::new(self.pid_counter, memory_frame, stack_pointer));
-
+        let p = Process::new(self.pid_counter, memory_frame, stack_pointer);
+        self.procs.insert(self.pid_counter, p);
         let pid = self.pid_counter;
-        bootstrap_println!("initialized proc {}", pid);
-
         self.pid_counter += 1;
-
         pid
     }
 
-    pub unsafe fn start_new_process(&mut self, fn_ptr: usize) {
-        let pid = self.create_process(fn_ptr, 0);
+    pub fn get_current_process(&mut self) -> &mut Process {
+        let pid = self.current;
+        self.get_process(pid)
+    }
 
-        self.current = pid;
+    pub fn get_process(&mut self, pid: usize) -> &mut Process {
+        self.procs.get_mut(&pid).unwrap()
+    }
+
+    pub fn start_new_process(&mut self, fn_ptr: usize) {
+        let pid = self.create_process(fn_ptr, 0);
+        let mut process = self.get_process(pid);
 
         // Create a new stack
         let new_stack = memory::memory_controller().alloc_stack(64)
             .expect("could not allocate new proc stack");
         println!("Top of new stack: {:x}", new_stack.top());
 
-        let sp:usize;
+        // Set process to have pointer to its stack and function
+        process.stack = new_stack.top();
+        process.start_pointer = fn_ptr;
+
+        // Then jump back to the original thread's stack and continue
+
+        /*
+        let orig_sp:usize;
+        asm!("movq %rsp, %rcx
+              movq $0, %rsp" : "={rcx}"(orig_sp): "r"(new_stack.top()) : "rcx" );
+              */
 
         // Jump to new stack and pc;
-        println!("Attempting to start process at {:x}", fn_ptr);
-        asm!("movq $0, %rsp
-              call *$1" :: "r"(new_stack.top()), "r"(fn_ptr) : );
 
-        println!("Fell back to pid 0");
+        println!("Fell back to pid 0, so frobbing the wumpus");
+        //asm!("movq $0, %rsp" :: "r"(orig_sp) : "rcx" );
+    }
+
+    fn switch(&mut self) {
+
+        {
+            self.current = 1;
+        }
+
+        // Find a new process to run
+        let mut process = self.get_process(1);
+
+        if process.started {
+            // jump to trap frame
+            unsafe {
+                asm!("movq $0, %rip
+                      iretq" : /* no outputs */ : "r"(process.trap_frame) : );
+            }
+        } else {
+            // call init fn
+            println!("Attempting to start process at {:x}", process.start_pointer);
+
+            unsafe {
+                asm!("call *$0" :: "r"(process.start_pointer) : );
+
+                // if we fall through to here, the proc has exited
+
+                // TODO: free stack
+
+                use util::syscall;
+                syscall::syscall0(/* exit */ 60);
+            }
+        }
     }
 
     pub fn update_trap_frame(&mut self, pointer: usize) {
-        self.procs.get_mut(&self.current).unwrap().trap_frame = pointer;
+        self.get_current_process().trap_frame = pointer;
 
         println!("Updated trap frame pointer for proc {} to {:x}", self.current, pointer);
     }
 
+    pub fn create_test_process(&mut self) {
+        self.start_new_process(test as usize);
+    }
+
     pub fn schedule(&mut self) -> usize {
         unsafe {
-            //self.test();
-            self.start_new_process(test as usize);
+            self.switch();
         }
 
         0
@@ -134,25 +192,6 @@ impl Scheduler {
         loop {
             self.halt();
         }
-    }
-
-    fn super_inner(&self) -> usize {
-        let mut beans = 0;
-
-        for i in 0..1000 {
-            beans += 1;
-        }
-
-        beans
-    }
-
-    #[inline(never)]
-    fn inner(&self) {
-        let mut x = 0;
-        x += 100;
-        println!("From new stack: {}", x);
-
-        println!("{}", self.super_inner());
     }
 
     fn halt(&self) {

@@ -128,6 +128,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
              vec.len(),
              vec[127]);
 
+    state().scheduler.create_test_process();
     state().scheduler.schedule();
     println!("idling");
     state().scheduler.idle();

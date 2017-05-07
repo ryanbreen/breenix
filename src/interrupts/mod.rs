@@ -72,7 +72,7 @@ impl fmt::Debug for InterruptContext {
 pub unsafe fn test_interrupt() {
     use util::syscall;
     let res = syscall::syscall6(16, 32, 64, 128, 256, 512, 1024);
-    bootstrap_println!("Syscall result is {}", res);
+    println!("Syscall result is {}", res);
     test_passed = res == 2016;
     if !test_passed {
         panic!("test SYSCALL failed");
@@ -147,8 +147,6 @@ pub fn init() {
 
         test_interrupt();
 
-        bootstrap_println!("GOT HERE");
-
         if test_passed {
             irq::enable();
         }
@@ -170,7 +168,7 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut ExceptionStackFra
 extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackFrame,
     _error_code: u64)
 {
-    bootstrap_println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+    println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
     loop {}
 }
 
@@ -191,9 +189,7 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStac
 
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    ::state().scheduler.disable_interrupts();
-
-    bootstrap_println!("SYSCALL:\n{:#?}", stack_frame);
+    println!("SYSCALL:\n{:#?}", stack_frame);
 
     ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
 
@@ -215,13 +211,11 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         let e = ic.r8;
         let f = ic.r9;
 
-        bootstrap_println!("syscall params {} {} {} {} {} {} {}", num, a, b, c, d, e, f);
+        println!("syscall params {} {} {} {} {} {} {}", num, a, b, c, d, e, f);
 
         let res = syscall::handle(num, a, b, c, d, e, f);
 
         PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
-
-        ::state().scheduler.enable_interrupts();
 
         asm!("movq %rsp, %rcx
               movq $0, %rsp
@@ -248,9 +242,14 @@ extern "x86-interrupt" fn keyboard_handler(stack_frame: &mut ExceptionStackFrame
 
     keyboard::read();
 
+    let sp = stack_frame.stack_pointer.0 - 160;
+    ::state().scheduler.update_trap_frame(sp);
+
     unsafe {
         PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
     }
+
+    ::state().scheduler.schedule();
 }
 
 extern "x86-interrupt" fn serial_handler(stack_frame: &mut ExceptionStackFrame)
