@@ -198,16 +198,16 @@ pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation) -> Ac
             }
 
             if section.start_address() % PAGE_SIZE != 0 {
-                println!("section with flags {:?} at 0x{:x} is not aligned",
-                         section.flags(),
-                         section.start_address());
+                bootstrap_println!("section with flags {:?} at 0x{:x} is not aligned",
+                                    section.flags(),
+                                    section.start_address());
             }
 
             assert!(section.start_address() % PAGE_SIZE == 0,
                     "sections need to be page aligned");
-            println!("mapping section at addr: {:#x}, size: {:#x}",
-                     section.start_address(),
-                     section.size());
+            bootstrap_println!("mapping section at addr: {:#x}, size: {:#x}",
+                                section.start_address(),
+                                section.size());
 
             let flags = EntryFlags::from_elf_section_flags(section);
 
@@ -238,7 +238,7 @@ pub fn remap_the_kernel<A>(allocator: &mut A, boot_info: &BootInformation) -> Ac
 
     let old_p4_page = Page::containing_address(old_table.p4_frame.start_address());
     active_table.unmap(old_p4_page, allocator);
-    println!("guard page at {:#x}", old_p4_page.start_address());
+    bootstrap_println!("guard page at {:#x}", old_p4_page.start_address());
 
     active_table
 }

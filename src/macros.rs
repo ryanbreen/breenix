@@ -1,8 +1,20 @@
 
-macro_rules! println {
-    ($fmt:expr) => (print!(concat!("{:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start()));
+macro_rules! get_current_pid {
+  ($($arg:tt)*) => ({
+    $crate::state().scheduler.current
+  });
+}
+
+macro_rules! bootstrap_println {
+    ($fmt:expr) => (print!(concat!("[0] {:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start()));
     ($fmt:expr, $($arg:tt)*) =>
-      (print!(concat!("{:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start(), $($arg)*));
+      (print!(concat!("[0] {:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start(), $($arg)*));
+}
+
+macro_rules! println {
+    ($fmt:expr) => (print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::time_since_start()));
+    ($fmt:expr, $($arg:tt)*) =>
+      (print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::time_since_start(), $($arg)*));
 }
 
 macro_rules! print {

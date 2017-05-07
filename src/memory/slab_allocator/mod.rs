@@ -71,7 +71,7 @@ impl AreaFrameSlabPageProvider {
         unsafe {
             let start_page_address: VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
 
-            println!("Allocating slabpage {:x}, {} frames have already been allocated", VIRT_START, allocator.allocated_frame_count());
+            bootstrap_println!("Allocating slabpage {:x}, {} frames have already been allocated", VIRT_START, allocator.allocated_frame_count());
 
             for i in 0..frames_per_slabpage {
                 let frame: Option<Frame> = allocator.allocate_frame();

@@ -100,13 +100,14 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // set up guard page and map the heap pages
     memory::init(boot_info);
 
+    //bootstrap_println!("{:?}", memory::area_frame_allocator());
+    state();
+
     interrupts::init();
-    
+
     io::initialize();
 
     println!("Time is {}", io::timer::real_time().secs);
-
-    println!("{:?}", memory::area_frame_allocator());
 
     use alloc::boxed::Box;
     use collections::Vec;

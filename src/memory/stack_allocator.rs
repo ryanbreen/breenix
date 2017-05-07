@@ -29,7 +29,7 @@ impl StackAllocator {
             range.nth(size_in_pages - 2)
         };
 
-        println!("Trying to allocate new stack of size {}", size_in_pages);
+        bootstrap_println!("Trying to allocate new stack of size {}", size_in_pages);
 
         match (guard_page, stack_start, stack_end) {
             (Some(_), Some(start), Some(end)) => {

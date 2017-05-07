@@ -34,7 +34,7 @@ impl Process {
 #[allow(dead_code)]
 pub struct Scheduler {
     procs: BTreeMap<usize, Process>,
-    current: usize,
+    pub current: usize,
     pid_counter: usize,
 }
 
@@ -76,11 +76,31 @@ impl Scheduler {
         self.procs.insert(self.pid_counter, Process::new(self.pid_counter, memory_frame, stack_pointer));
 
         let pid = self.pid_counter;
-        println!("initialized proc {}", pid);
+        bootstrap_println!("initialized proc {}", pid);
 
         self.pid_counter += 1;
 
         pid
+    }
+
+    pub unsafe fn start_new_process(&mut self, fn_ptr: usize) {
+        let pid = self.create_process(fn_ptr, 0);
+
+        self.current = pid;
+
+        // Create a new stack
+        let new_stack = memory::memory_controller().alloc_stack(64)
+            .expect("could not allocate new proc stack");
+        println!("Top of new stack: {:x}", new_stack.top());
+
+        let sp:usize;
+
+        // Jump to new stack and pc;
+        println!("Attempting to start process at {:x}", fn_ptr);
+        asm!("movq $0, %rsp
+              call *$1" :: "r"(new_stack.top()), "r"(fn_ptr) : );
+
+        println!("Fell back to pid 0");
     }
 
     pub fn update_trap_frame(&mut self, pointer: usize) {
@@ -92,22 +112,7 @@ impl Scheduler {
     pub fn schedule(&mut self) -> usize {
         unsafe {
             //self.test();
-            let pid = self.create_process(test as usize, 0);
-
-            self.current = pid;
-
-            // Create a new stack
-            let new_stack = memory::memory_controller().alloc_stack(64)
-                .expect("could not allocate new proc stack");
-            println!("Top of new stack: {:x}", new_stack.top());
-
-            let sp:usize;
-
-            // Jump to new stack and pc
-            let pc = test as usize;
-            println!("Attempting to load {:x}", pc);
-            asm!("movq $0, %rsp
-                  jmpq *$1" :: "r"(new_stack.top()), "r"(pc) : );
+            self.start_new_process(test as usize);
         }
 
         0

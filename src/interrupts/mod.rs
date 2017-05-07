@@ -72,18 +72,7 @@ impl fmt::Debug for InterruptContext {
 pub unsafe fn test_interrupt() {
     use util::syscall;
     let res = syscall::syscall6(16, 32, 64, 128, 256, 512, 1024);
-    println!("Syscall result is {}", res);
-    test_passed = res == 2016;
-    if !test_passed {
-        panic!("test SYSCALL failed");
-    }
-}
-
-
-pub unsafe fn test_interrupt2() {
-    use util::syscall;
-    let res = syscall::syscall6(16, 32, 64, 128, 256, 512, 1024);
-    println!("Syscall result 2 is {}", res);
+    bootstrap_println!("Syscall result is {}", res);
     test_passed = res == 2016;
     if !test_passed {
         panic!("test SYSCALL failed");
@@ -142,7 +131,8 @@ pub fn init() {
     });
     gdt.load();
 
-     unsafe {
+
+    unsafe {
         // reload code segment register
         set_cs(code_selector);
         // load TSS
@@ -156,7 +146,8 @@ pub fn init() {
         PICS.lock().initialize();
 
         test_interrupt();
-        test_interrupt2();
+
+        bootstrap_println!("GOT HERE");
 
         if test_passed {
             irq::enable();
@@ -179,7 +170,7 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut ExceptionStackFra
 extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackFrame,
     _error_code: u64)
 {
-    println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+    bootstrap_println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
     loop {}
 }
 
@@ -202,7 +193,7 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
     ::state().scheduler.disable_interrupts();
 
-    println!("SYSCALL:\n{:#?}", stack_frame);
+    bootstrap_println!("SYSCALL:\n{:#?}", stack_frame);
 
     ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
 
@@ -224,7 +215,7 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         let e = ic.r8;
         let f = ic.r9;
 
-        println!("syscall params {} {} {} {} {} {} {}", num, a, b, c, d, e, f);
+        bootstrap_println!("syscall params {} {} {} {} {} {} {}", num, a, b, c, d, e, f);
 
         let res = syscall::handle(num, a, b, c, d, e, f);
 
