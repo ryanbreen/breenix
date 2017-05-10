@@ -43,7 +43,7 @@ impl StackAllocator {
                 }
 
                 // create a new stack
-                let top_of_stack = end.start_address() + PAGE_SIZE;
+                let top_of_stack = end.start_address() + size_in_pages * PAGE_SIZE;
                 Some(Stack::new(top_of_stack, start.start_address()))
             }
             _ => None, /* not enough pages */

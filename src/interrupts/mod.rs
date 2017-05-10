@@ -227,12 +227,36 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 
 extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 {
+    unsafe {
+    let my_sp:usize;
+    asm!("" : "={rsp}"(my_sp));
+
     ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
 
     timer::timer_interrupt();
 
-    unsafe {
         PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
+
+    // let sp = stack_frame.stack_pointer.0 - 232;
+    let sp = stack_frame.stack_pointer.0 - 224;
+    ::state().scheduler.update_trap_frame(my_sp);
+
+    ::state().scheduler.schedule();
+    return;
+    asm!("movq $0, %rsp
+          add  $$0x78, %rsp
+          pop    %rax
+          pop    %rcx
+          pop    %rdx
+          pop    %rsi
+          pop    %rdi
+          pop    %r8
+          pop    %r9
+          pop    %r10
+          pop    %r11
+          pop    %rbp
+          sti
+          iretq" : /* no outputs */ : "r"(my_sp) : );
     }
 }
 
@@ -242,14 +266,14 @@ extern "x86-interrupt" fn keyboard_handler(stack_frame: &mut ExceptionStackFrame
 
     keyboard::read();
 
-    let sp = stack_frame.stack_pointer.0 - 160;
-    ::state().scheduler.update_trap_frame(sp);
+    //let sp = stack_frame.stack_pointer.0 - 160;
+    //::state().scheduler.update_trap_frame(sp);
 
     unsafe {
         PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
     }
 
-    ::state().scheduler.schedule();
+    //::state().scheduler.schedule();
 }
 
 extern "x86-interrupt" fn serial_handler(stack_frame: &mut ExceptionStackFrame)
