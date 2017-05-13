@@ -189,15 +189,22 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStac
 
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    println!("SYSCALL:\n{:#?}", stack_frame);
+    unsafe {
+        let mut my_sp:usize;
+        asm!("" : "={rbp}"(my_sp));
+        // x86-interrupt pushes 14 u64s to the stack, the last of which is RAX, but since we
+        // plan to return rax from this function, we will set that register directly rather
+        // than pop it from the stack.
+        my_sp -= 8 * 13;
 
-    ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
+        println!("SYSCALL:\n{:#?}", stack_frame);
+
+        ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
 
     // Write output to register rax
-    unsafe {
         let sp = stack_frame.stack_pointer.0 - 160;
 
-        ::state().scheduler.update_trap_frame(sp);
+        //::state().scheduler.update_trap_frame(sp);
         //println!("Syscall rsp is {:x}", sp);
 
         let ref ic:InterruptContext = *(sp as * const InterruptContext);
@@ -211,25 +218,51 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         let e = ic.r8;
         let f = ic.r9;
 
-        println!("syscall params {} {} {} {} {} {} {}", num, a, b, c, d, e, f);
+        println!("syscall params {} {} {} {} {} {} {} 0x{:x}, 0x{:x}, 0x{:x}", num, a, b, c, d, e, f, my_sp, stack_frame.stack_pointer, stack_frame as *const _ as usize);
 
         let res = syscall::handle(num, a, b, c, d, e, f);
 
         PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
 
+        /* *
+            add    $$0x480,%rsp
         asm!("movq %rsp, %rcx
               movq $0, %rsp
               movq $1, %rax
               push %rax
               movq %rcx, %rsp" : /* no outputs */ : "r"(sp + 8), "r"(res) : "rax", "rcx");
+             / */
+
+    asm!(  "movq $0, %rsp
+            movq $1, %rax
+            pop    %rbx
+            pop    %rcx
+            pop    %rdx
+            pop    %rsi
+            pop    %rdi
+            pop    %r8
+            pop    %r9
+            pop    %r10
+            pop    %r11
+            pop    %r12
+            pop    %r13
+            pop    %r14
+            pop    %r15
+            pop    %rbp
+            iretq" : /* no outputs */ : "r"(my_sp), "r"(res) : );
+            
     }
 }
 
 extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
-    let my_sp:usize;
-    asm!("" : "={rsp}"(my_sp));
+    let mut my_sp:usize;
+    asm!("" : "={rbp}"(my_sp));
+    // x86-interrupt pushes 14 u64s to the stack, the last of which is RAX, so we want
+    // our stack pointer at the end of this function to point to where RAX lives on the
+    // stack.
+    my_sp -= 8 * 14;
 
     ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
 
@@ -237,26 +270,46 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 
         PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
 
+    //let sp = stack_frame.stack_pointer.0 - 160;
+
     // let sp = stack_frame.stack_pointer.0 - 232;
-    let sp = stack_frame.stack_pointer.0 - 224;
+    //let sp = stack_frame.stack_pointer.0 - 224;
     ::state().scheduler.update_trap_frame(my_sp);
 
-    ::state().scheduler.schedule();
-    return;
+    if ::state().scheduler.current != 0 {
+        println!("{}", ::state().scheduler.current);
+    }
+
+    //let my_sp = stack_frame as *const _ as usize;
+
+    //::state().scheduler.schedule();
+    //return;
+    // add    $$0x490,%rsp
+
+    /* */
+    asm!(  "movq $0, %rsp
+            pop    %rax
+            pop    %rbx
+            pop    %rcx
+            pop    %rdx
+            pop    %rsi
+            pop    %rdi
+            pop    %r8
+            pop    %r9
+            pop    %r10
+            pop    %r11
+            pop    %r12
+            pop    %r13
+            pop    %r14
+            pop    %r15
+            pop    %rbp
+            sti
+            iretq" : /* no outputs */ : "r"(my_sp) : );
+        /*
     asm!("movq $0, %rsp
-          add  $$0x78, %rsp
-          pop    %rax
-          pop    %rcx
-          pop    %rdx
-          pop    %rsi
-          pop    %rdi
-          pop    %r8
-          pop    %r9
-          pop    %r10
-          pop    %r11
-          pop    %rbp
           sti
           iretq" : /* no outputs */ : "r"(my_sp) : );
+          */
     }
 }
 

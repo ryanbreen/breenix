@@ -52,17 +52,17 @@ fn test() {
                   movq $1, %rsp" : "={rcx}"(sp) : "r"(new_stack.top()) : "rcx");
 */
 
-    unsafe {
-        asm!("sti" ::: );
-    }
-
     let mut beans = 0;
 
     loop {
         beans += 1;
 
-        if beans % 10000000 == 0 {
+        if beans % 100000 == 0 {
             println!("{} {}", beans, ::state().scheduler.procs.len());
+
+                unsafe {
+                    asm!("sti" ::: );
+                }
         }
     }
 
@@ -148,10 +148,10 @@ impl Scheduler {
         // Create a new stack
         let new_stack = memory::memory_controller().alloc_stack(1)
             .expect("could not allocate new proc stack");
-        println!("Bottom of new stack: {:x}", new_stack.bottom());
+        println!("Bottom of new stack: {:x}", new_stack.top());
 
         // Set process to have pointer to its stack and function
-        process.stack = new_stack.bottom();
+        process.stack = new_stack.top();
         process.start_pointer = fn_ptr;
     }
 
@@ -169,9 +169,14 @@ impl Scheduler {
 
         if process.started {
             // jump to trap frame
+            if pid != 1 {
+                println!("Jump back");
+            }
+
+            // add  $$0x78, %rsp
+
             unsafe {
                 asm!("movq $0, %rsp
-                      add  $$0x88, %rsp
                       pop    %rax
                       pop    %rcx
                       pop    %rdx
@@ -213,7 +218,7 @@ impl Scheduler {
         self.get_current_process().trap_frame = pointer;
 
         if self.current != 0 {
-            println!("Updated trap frame pointer for proc {} to {:x}", self.current, pointer);
+            //println!("Updated trap frame pointer for proc {} to {:x}", self.current, pointer);
         }
     }
 
