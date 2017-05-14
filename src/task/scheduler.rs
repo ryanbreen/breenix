@@ -46,10 +46,6 @@ pub struct Scheduler {
 #[inline(never)]
 fn test() {
 
-    unsafe {
-        asm!("sti");
-    }
-
     let mut beans = 0;
 
     loop {
@@ -163,7 +159,7 @@ impl Scheduler {
 
         if process.started {
             // jump to trap frame
-            //println!("Jumping to 0x{:x}", process.trap_frame);
+            println!("Jumping to 0x{:x}", process.trap_frame);
             unsafe {
                 asm!(  "movq $0, %rsp
                         pop    %rax
@@ -188,6 +184,7 @@ impl Scheduler {
                 process.started = true;
 
                 asm!("movq $0, %rsp
+                      sti
                       jmpq *$1" :: "r"(process.stack), "r"(test as usize) : );
 
                 // TODO: free stack
@@ -221,7 +218,9 @@ impl Scheduler {
     }
 
     pub fn schedule(&mut self) -> usize {
+        self.disable_interrupts();
         self.switch();
+        self.enable_interrupts();
 
         0
     }

@@ -259,62 +259,24 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
+        asm!("cli");
+        
+        let mut my_sp:usize;
+        asm!("" : "={rbp}"(my_sp));
 
-    asm!("cli");
+        // x86-interrupt pushes 11 u64s to the stack, the last of which is RAX, so we want
+        // our stack pointer at the end of this function to point to where RAX lives on the
+        // stack.
+        my_sp -= 8 * 10;
 
-    if ::state().scheduler.current != 0 {
-        //println!("{}", ::state().scheduler.current);
-    }
-    
-    let mut my_sp:usize;
-    asm!("" : "={rbp}"(my_sp));
-    // x86-interrupt pushes 11 u64s to the stack, the last of which is RAX, so we want
-    // our stack pointer at the end of this function to point to where RAX lives on the
-    // stack.
-    my_sp -= 8 * 10;
+        ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
 
-    ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
-
-    timer::timer_interrupt();
+        timer::timer_interrupt();
 
         PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
 
-    //let sp = stack_frame.stack_pointer.0 - 160;
-
-    // let sp = stack_frame.stack_pointer.0 - 232;
-    //let sp = stack_frame.stack_pointer.0 - 224;
-    ::state().scheduler.update_trap_frame(my_sp);
-
-    if ::state().scheduler.current != 0 {
-        //println!("{}", ::state().scheduler.current);
-    }
-
-    //let my_sp = stack_frame as *const _ as usize;
-
-    ::state().scheduler.schedule();
-    //return;
-    // add    $$0x490,%rsp
-
-    /* *
-    asm!(  "movq $0, %rsp
-            pop    %rax
-            pop    %rbx
-            pop    %rcx
-            pop    %rdx
-            pop    %rsi
-            pop    %rdi
-            pop    %r8
-            pop    %r9
-            pop    %r10
-            pop    %r11
-            pop    %rbp
-            sti
-            iretq" : /* no outputs */ : "r"(my_sp) : );
-        
-    asm!("movq $0, %rsp
-          sti
-          iretq" : /* no outputs */ : "r"(my_sp) : );
-          */
+        ::state().scheduler.update_trap_frame(my_sp);
+        ::state().scheduler.schedule();
     }
 }
 

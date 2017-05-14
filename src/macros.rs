@@ -13,14 +13,14 @@ macro_rules! bootstrap_println {
 
 macro_rules! println {
     ($fmt:expr) => ({
-      unsafe { asm!("cli"); }
+      //unsafe { asm!("cli"); }
       print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::time_since_start());
-      unsafe { asm!("sti"); }
+      //unsafe { asm!("sti"); }
     });
     ($fmt:expr, $($arg:tt)*) => ({
-      unsafe { asm!("cli"); }
+      //unsafe { asm!("cli"); }
       print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::time_since_start(), $($arg)*);
-      unsafe { asm!("sti"); }
+      //unsafe { asm!("sti"); }
     });
 }
 
