@@ -57,7 +57,7 @@ fn test() {
     loop {
         beans += 1;
 
-        if beans % 100000 == 0 {
+        if beans % 10000000 == 0 {
             println!("{} {}", beans, ::state().scheduler.procs.len());
 
                 unsafe {
@@ -169,26 +169,21 @@ impl Scheduler {
 
         if process.started {
             // jump to trap frame
-            if pid != 1 {
-                println!("Jump back");
-            }
-
-            // add  $$0x78, %rsp
-
             unsafe {
-                asm!("movq $0, %rsp
-                      pop    %rax
-                      pop    %rcx
-                      pop    %rdx
-                      pop    %rsi
-                      pop    %rdi
-                      pop    %r8
-                      pop    %r9
-                      pop    %r10
-                      pop    %r11
-                      pop    %rbp
-                      sti
-                      iretq" : /* no outputs */ : "r"(process.trap_frame) : );
+                asm!(  "movq $0, %rsp
+                        pop    %rax
+                        pop    %rbx
+                        pop    %rcx
+                        pop    %rdx
+                        pop    %rsi
+                        pop    %rdi
+                        pop    %r8
+                        pop    %r9
+                        pop    %r10
+                        pop    %r11
+                        pop    %rbp
+                        sti
+                        iretq" : /* no outputs */ : "r"(process.trap_frame) : );
             }
         } else {
             // call init fn
@@ -227,12 +222,9 @@ impl Scheduler {
         self.disable_interrupts();
 
         self.start_new_process(test as usize);
-
-        /*
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
-        */
 
         self.enable_interrupts();
     }

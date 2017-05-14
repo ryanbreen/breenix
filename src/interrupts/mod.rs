@@ -77,6 +77,8 @@ pub unsafe fn test_interrupt() {
     if !test_passed {
         panic!("test SYSCALL failed");
     }
+
+    asm!("int 0x20" : : : : "intel", "volatile");
 }
 
 lazy_static! {
@@ -259,10 +261,10 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
     unsafe {
     let mut my_sp:usize;
     asm!("" : "={rbp}"(my_sp));
-    // x86-interrupt pushes 14 u64s to the stack, the last of which is RAX, so we want
+    // x86-interrupt pushes 11 u64s to the stack, the last of which is RAX, so we want
     // our stack pointer at the end of this function to point to where RAX lives on the
     // stack.
-    my_sp -= 8 * 14;
+    my_sp -= 8 * 10;
 
     ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
 
@@ -276,17 +278,13 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
     //let sp = stack_frame.stack_pointer.0 - 224;
     ::state().scheduler.update_trap_frame(my_sp);
 
-    if ::state().scheduler.current != 0 {
-        println!("{}", ::state().scheduler.current);
-    }
-
     //let my_sp = stack_frame as *const _ as usize;
 
-    //::state().scheduler.schedule();
+    ::state().scheduler.schedule();
     //return;
     // add    $$0x490,%rsp
 
-    /* */
+    /* *
     asm!(  "movq $0, %rsp
             pop    %rax
             pop    %rbx
@@ -298,14 +296,10 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
             pop    %r9
             pop    %r10
             pop    %r11
-            pop    %r12
-            pop    %r13
-            pop    %r14
-            pop    %r15
             pop    %rbp
             sti
             iretq" : /* no outputs */ : "r"(my_sp) : );
-        /*
+        
     asm!("movq $0, %rsp
           sti
           iretq" : /* no outputs */ : "r"(my_sp) : );
