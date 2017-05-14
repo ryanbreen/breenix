@@ -38,12 +38,12 @@ impl StackAllocator {
 
                 // map stack pages to physical frames
                 for page in Page::range_inclusive(start, end) {
-                    //println!("Request to map {:?} came from stack allocator", page);
+                    //println!("Request to map {:x} came from stack allocator", page.start_address());
                     page_table().map(page, paging::WRITABLE, area_frame_allocator());
                 }
 
                 // create a new stack
-                let top_of_stack = end.start_address() + size_in_pages * PAGE_SIZE;
+                let top_of_stack = end.start_address() + PAGE_SIZE;
                 Some(Stack::new(top_of_stack, start.start_address()))
             }
             _ => None, /* not enough pages */

@@ -260,7 +260,6 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
         asm!("cli");
-        
         let mut my_sp:usize;
         asm!("" : "={rbp}"(my_sp));
 
@@ -273,10 +272,11 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 
         timer::timer_interrupt();
 
+        ::state().scheduler.update_trap_frame(my_sp);
         PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
 
-        ::state().scheduler.update_trap_frame(my_sp);
         ::state().scheduler.schedule();
+
     }
 }
 

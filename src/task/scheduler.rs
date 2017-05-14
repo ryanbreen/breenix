@@ -51,8 +51,9 @@ fn test() {
     loop {
         beans += 1;
 
-        if beans % 10000000 == 0 {
-            println!("{} {}", beans, ::state().scheduler.procs.len());
+        if beans % 1000 == 0 {
+            println!("{}", beans);
+            unsafe { asm!("sti"); }
         }
     }
 
@@ -136,7 +137,7 @@ impl Scheduler {
         let mut process = self.get_process(pid);
 
         // Create a new stack
-        let new_stack = memory::memory_controller().alloc_stack(1)
+        let new_stack = memory::memory_controller().alloc_stack(64)
             .expect("could not allocate new proc stack");
         println!("Top of new stack: {:x}", new_stack.top());
 
@@ -159,7 +160,12 @@ impl Scheduler {
 
         if process.started {
             // jump to trap frame
-            println!("Jumping to 0x{:x}", process.trap_frame);
+            //println!("Jumping to 0x{:x}", process.trap_frame);
+
+            if process.pid == 0 {
+                println!("pidiful");
+            }
+
             unsafe {
                 asm!(  "movq $0, %rsp
                         pop    %rax
@@ -173,7 +179,6 @@ impl Scheduler {
                         pop    %r10
                         pop    %r11
                         pop    %rbp
-                        sti
                         iretq" : /* no outputs */ : "r"(process.trap_frame) : );
             }
         } else {
@@ -184,7 +189,6 @@ impl Scheduler {
                 process.started = true;
 
                 asm!("movq $0, %rsp
-                      sti
                       jmpq *$1" :: "r"(process.stack), "r"(test as usize) : );
 
                 // TODO: free stack
@@ -210,17 +214,16 @@ impl Scheduler {
         self.disable_interrupts();
 
         self.start_new_process(test as usize);
+        /*
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
-        
+        */
         self.enable_interrupts();
     }
 
     pub fn schedule(&mut self) -> usize {
-        self.disable_interrupts();
         self.switch();
-        self.enable_interrupts();
 
         0
     }
