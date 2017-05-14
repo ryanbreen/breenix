@@ -259,6 +259,13 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
+
+    asm!("cli");
+
+    if ::state().scheduler.current != 0 {
+        //println!("{}", ::state().scheduler.current);
+    }
+    
     let mut my_sp:usize;
     asm!("" : "={rbp}"(my_sp));
     // x86-interrupt pushes 11 u64s to the stack, the last of which is RAX, so we want
@@ -277,6 +284,10 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
     // let sp = stack_frame.stack_pointer.0 - 232;
     //let sp = stack_frame.stack_pointer.0 - 224;
     ::state().scheduler.update_trap_frame(my_sp);
+
+    if ::state().scheduler.current != 0 {
+        //println!("{}", ::state().scheduler.current);
+    }
 
     //let my_sp = stack_frame as *const _ as usize;
 

@@ -45,12 +45,10 @@ pub struct Scheduler {
 
 #[inline(never)]
 fn test() {
-    
-/*
-            // Jump to new stack and pc
-            asm!("movq %rsp, %rcx
-                  movq $1, %rsp" : "={rcx}"(sp) : "r"(new_stack.top()) : "rcx");
-*/
+
+    unsafe {
+        asm!("sti");
+    }
 
     let mut beans = 0;
 
@@ -59,10 +57,6 @@ fn test() {
 
         if beans % 10000000 == 0 {
             println!("{} {}", beans, ::state().scheduler.procs.len());
-
-                unsafe {
-                    asm!("sti" ::: );
-                }
         }
     }
 
@@ -127,7 +121,7 @@ impl Scheduler {
 
             i += 1;
 
-            if pid == self.current {
+            if pid == self.current { // || /* testing */ pid == 0 {
                 continue;
             }
 
@@ -148,7 +142,7 @@ impl Scheduler {
         // Create a new stack
         let new_stack = memory::memory_controller().alloc_stack(1)
             .expect("could not allocate new proc stack");
-        println!("Bottom of new stack: {:x}", new_stack.top());
+        println!("Top of new stack: {:x}", new_stack.top());
 
         // Set process to have pointer to its stack and function
         process.stack = new_stack.top();
@@ -169,6 +163,7 @@ impl Scheduler {
 
         if process.started {
             // jump to trap frame
+            //println!("Jumping to 0x{:x}", process.trap_frame);
             unsafe {
                 asm!(  "movq $0, %rsp
                         pop    %rax
@@ -194,10 +189,6 @@ impl Scheduler {
 
                 asm!("movq $0, %rsp
                       jmpq *$1" :: "r"(process.stack), "r"(test as usize) : );
-
-                //(*(process.start_pointer as * const fn()))();
-
-                //test();
 
                 // TODO: free stack
 
@@ -225,7 +216,7 @@ impl Scheduler {
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
-
+        
         self.enable_interrupts();
     }
 
@@ -255,6 +246,7 @@ impl Scheduler {
 
     fn halt(&self) {
         unsafe {
+            println!("halt");
             asm!("hlt");
             asm!("pause");
         }
