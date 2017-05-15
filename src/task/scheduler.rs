@@ -51,7 +51,7 @@ fn test() {
     loop {
         beans += 1;
 
-        if beans % 1000 == 0 {
+        if beans % 100 == 0 {
             println!("{}", beans);
             unsafe { asm!("sti"); }
         }
@@ -162,7 +162,7 @@ impl Scheduler {
             // jump to trap frame
             //println!("Jumping to 0x{:x}", process.trap_frame);
 
-            if process.pid == 0 {
+            if process.pid == 1 {
                 println!("pidiful");
             }
 
