@@ -53,9 +53,13 @@ fn test() {
         beans += 1;
 
         if beans % 10000000 == 0 {
-            unsafe { asm!("cli"); }
-            println!("{}", beans);
-            unsafe { asm!("sti"); }
+            unsafe {
+                asm!("cli");
+                use util::syscall;
+                let res = syscall::syscall0(201);
+                println!("{} {}", res, beans);
+                asm!("sti");
+            }
         }
     }
 

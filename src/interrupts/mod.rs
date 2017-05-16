@@ -149,7 +149,6 @@ pub fn init() {
 
         if test_passed {
             println!("Test passed");
-            //::state().scheduler.enable_interrupts();
         }
     }
 }
