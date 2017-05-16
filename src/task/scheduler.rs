@@ -47,13 +47,15 @@ pub struct Scheduler {
 #[inline(never)]
 fn test() {
 
-    let mut beans = 0;
+    let mut beans:u64 = 0;
 
     loop {
         beans += 1;
 
         if beans % 10000000 == 0 {
+            unsafe { asm!("cli"); }
             println!("{}", beans);
+            unsafe { asm!("sti"); }
         }
     }
 
@@ -88,7 +90,7 @@ impl Scheduler {
 
     pub fn start_new_process(&mut self, fn_ptr: usize) {
         // Create a new stack
-        let new_stack = memory::memory_controller().alloc_stack(64)
+        let new_stack = memory::memory_controller().alloc_stack(256)
             .expect("could not allocate new proc stack");
         bootstrap_println!("Top of new stack: {:x}", new_stack.top());
         self.create_process(fn_ptr, new_stack.top());
