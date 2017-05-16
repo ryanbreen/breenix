@@ -27,7 +27,7 @@ static GDT: Once<gdt::Gdt> = Once::new();
 
 const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
-static mut test_passed: bool = false;
+pub static mut test_passed: bool = false;
 
 #[repr(C, packed)]
 struct InterruptContext {
@@ -77,8 +77,6 @@ pub unsafe fn test_interrupt() {
     if !test_passed {
         panic!("test SYSCALL failed");
     }
-
-    asm!("int 0x20" : : : : "intel", "volatile");
 }
 
 lazy_static! {
@@ -150,7 +148,8 @@ pub fn init() {
         test_interrupt();
 
         if test_passed {
-            irq::enable();
+            //irq::enable();
+            println!("Test passed");
         }
     }
 }
@@ -192,6 +191,8 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStac
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
+        asm!("cli");
+
         let mut my_sp:usize;
         asm!("" : "={rbp}"(my_sp));
         // x86-interrupt pushes 14 u64s to the stack, the last of which is RAX, but since we
@@ -226,32 +227,24 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
 
         PICS.lock().notify_end_of_interrupt(SYSCALL_INTERRUPT);
 
-        /* *
-            add    $$0x480,%rsp
-        asm!("movq %rsp, %rcx
-              movq $0, %rsp
-              movq $1, %rax
-              push %rax
-              movq %rcx, %rsp" : /* no outputs */ : "r"(sp + 8), "r"(res) : "rax", "rcx");
-             / */
-
-    asm!(  "movq $0, %rsp
-            movq $1, %rax
-            pop    %rbx
-            pop    %rcx
-            pop    %rdx
-            pop    %rsi
-            pop    %rdi
-            pop    %r8
-            pop    %r9
-            pop    %r10
-            pop    %r11
-            pop    %r12
-            pop    %r13
-            pop    %r14
-            pop    %r15
-            pop    %rbp
-            iretq" : /* no outputs */ : "r"(my_sp), "r"(res) : );
+        asm!(  "movq $0, %rsp
+                movq $1, %rax
+                pop    %rbx
+                pop    %rcx
+                pop    %rdx
+                pop    %rsi
+                pop    %rdi
+                pop    %r8
+                pop    %r9
+                pop    %r10
+                pop    %r11
+                pop    %r12
+                pop    %r13
+                pop    %r14
+                pop    %r15
+                pop    %rbp
+                sti
+                iretq" : /* no outputs */ : "r"(my_sp), "r"(res) : );
             
     }
 }
@@ -260,6 +253,7 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
         asm!("cli");
+
         let mut my_sp:usize;
         asm!("" : "={rbp}"(my_sp));
 
@@ -276,7 +270,6 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
         PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
 
         ::state().scheduler.schedule();
-
     }
 }
 
