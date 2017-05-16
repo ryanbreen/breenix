@@ -5,6 +5,7 @@ use x86::shared::io::outb;
 use io::Port;
 use util::time::Time;
 
+static mut timer_start: u64 = 0;
 static mut timer_ticks: u64 = 0;
 static mut timer_seconds: u64 = 0;
 static mut timer_millis: u16 = 0;
@@ -15,6 +16,8 @@ pub fn initialize() {
         outb(PIT_CONTROL, PIT_SET);
         outb(PIT_A, (divisor & (PIT_MASK as u32)) as u8);
         outb(PIT_A, ((divisor >> 8) & (PIT_MASK as u32)) as u8);
+
+        timer_start = RealTimeClock::new().time().secs;
     }
 }
 
@@ -27,9 +30,6 @@ pub fn timer_interrupt() {
             timer_millis = 0;
         }
     }
-
-    // wakeup_sleepers(timer_ticks, timer_subticks);
-    // switch_task(1);
 }
 
 pub fn time_since_start() -> Time {
@@ -41,8 +41,8 @@ pub fn monotonic_clock() -> u64 {
     unsafe { timer_ticks }
 }
 
-pub fn real_time() -> Time {
-    RealTimeClock::new().time()
+pub fn real_time() -> u64 {
+    unsafe { timer_start + timer_seconds }
 }
 
 fn cvt_bcd(value: usize) -> usize {
@@ -94,7 +94,7 @@ impl RealTimeClock {
             day = self.read(7) as usize;
             month = self.read(8) as usize;
             year = self.read(9) as usize;
-            century = self.read(0x32) as usize;
+            century = self.read(0x32) as usize - 1;
             register_b = self.read(0xB);
         }
 
@@ -105,7 +105,7 @@ impl RealTimeClock {
             day = cvt_bcd(day);
             month = cvt_bcd(month);
             year = cvt_bcd(year);
-            century = cvt_bcd(year);
+            century = cvt_bcd(year) - 1;
         }
 
         if register_b & 2 != 2 || hour & 0x80 == 0x80 {
@@ -144,6 +144,10 @@ impl RealTimeClock {
         secs += hour as u64 * 3600;
         secs += minute as u64 * 60;
         secs += second as u64;
+
+        unsafe {
+            secs += (timer_millis / 1000) as u64;
+        }
 
         Time::new(secs, 0, 0)
     }

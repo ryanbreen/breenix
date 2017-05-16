@@ -108,7 +108,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
     io::initialize();
 
-    println!("Time is {}", io::timer::real_time().secs);
+    println!("Time is {}", io::timer::real_time());
 
     use alloc::boxed::Box;
     use collections::Vec;

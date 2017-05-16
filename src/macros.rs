@@ -13,10 +13,10 @@ macro_rules! bootstrap_println {
 
 macro_rules! println {
     ($fmt:expr) => ({
-      print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::time_since_start());
+      print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::real_time());
     });
     ($fmt:expr, $($arg:tt)*) => ({
-      print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::time_since_start(), $($arg)*);
+      print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::real_time(), $($arg)*);
     });
 }
 

@@ -24,6 +24,6 @@ impl Time {
 
 impl fmt::Debug for Time {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}.{}", self.secs, self.millis)
+        write!(f, "{}", self.secs)
     }
 }
