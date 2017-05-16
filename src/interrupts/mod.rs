@@ -148,8 +148,8 @@ pub fn init() {
         test_interrupt();
 
         if test_passed {
-            //irq::enable();
             println!("Test passed");
+            //::state().scheduler.enable_interrupts();
         }
     }
 }
@@ -200,19 +200,13 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         // than pop it from the stack.
         my_sp -= 8 * 13;
 
-        println!("SYSCALL:\n{:#?}", stack_frame);
+        //println!("SYSCALL:\n{:#?}", stack_frame);
 
         ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
 
-    // Write output to register rax
-        let sp = stack_frame.stack_pointer.0 - 160;
-
-        //::state().scheduler.update_trap_frame(sp);
-        //println!("Syscall rsp is {:x}", sp);
+        let sp = my_sp + 0x18;
 
         let ref ic:InterruptContext = *(sp as * const InterruptContext);
-        //println!("Syscall IC at offset is\n{:?}", ic);
-
         let num = ic.rax;
         let a = ic.rdi;
         let b = ic.rsi;
@@ -220,8 +214,6 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
         let d = ic.r10;
         let e = ic.r8;
         let f = ic.r9;
-
-        println!("syscall params {} {} {} {} {} {} {} 0x{:x}, 0x{:x}, 0x{:x}", num, a, b, c, d, e, f, my_sp, stack_frame.stack_pointer, stack_frame as *const _ as usize);
 
         let res = syscall::handle(num, a, b, c, d, e, f);
 
@@ -279,14 +271,9 @@ extern "x86-interrupt" fn keyboard_handler(stack_frame: &mut ExceptionStackFrame
 
     keyboard::read();
 
-    //let sp = stack_frame.stack_pointer.0 - 160;
-    //::state().scheduler.update_trap_frame(sp);
-
     unsafe {
         PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
     }
-
-    //::state().scheduler.schedule();
 }
 
 extern "x86-interrupt" fn serial_handler(stack_frame: &mut ExceptionStackFrame)

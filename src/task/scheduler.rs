@@ -147,10 +147,8 @@ impl Scheduler {
             }
 
             pid = match self.current {
-                0 => Some(1),
-                1 => Some(2),
-                2 => Some(1),
-                _ => panic!("Oh no!")
+                4 => Some(0),
+                _ => Some(self.current + 1),
             };
         }
         pid
@@ -230,13 +228,10 @@ impl Scheduler {
     }
 
     pub fn create_test_process(&mut self) {
-
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
-        /*
         self.start_new_process(test as usize);
         self.start_new_process(test as usize);
-        */
     }
 
     pub fn schedule(&mut self) -> usize {
@@ -271,7 +266,6 @@ impl Scheduler {
 
     fn halt(&self) {
         unsafe {
-            println!("halt");
             asm!("hlt");
             asm!("pause");
         }
