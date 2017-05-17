@@ -55,9 +55,11 @@ fn test() {
         if beans % 10000000 == 0 {
             unsafe {
                 asm!("cli");
-                use util::syscall;
-                let res = syscall::syscall0(201);
+
+                use libbreenix;
+                let res = libbreenix::sys_time();
                 println!("{} {}", res, beans);
+
                 asm!("sti");
             }
         }
@@ -225,8 +227,8 @@ impl Scheduler {
 
                 // If we fell through to here, the process is over.
 
-                use util::syscall;
-                syscall::syscall0(/* exit */ 60);
+                use libbreenix;
+                libbreenix::sys_exit(/* exit */ process.pid);
             }
         }
     }

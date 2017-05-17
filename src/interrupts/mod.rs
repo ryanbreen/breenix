@@ -70,8 +70,8 @@ impl fmt::Debug for InterruptContext {
 
 
 pub unsafe fn test_interrupt() {
-    use util::syscall;
-    let res = syscall::syscall6(16, 32, 64, 128, 256, 512, 1024);
+    use libbreenix;
+    let res = libbreenix::sys_test();
     println!("Syscall result is {}", res);
     test_passed = res == 2016;
     if !test_passed {

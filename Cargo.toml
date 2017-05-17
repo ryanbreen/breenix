@@ -29,5 +29,8 @@ features = ["spin_no_std"]
 [dependencies.tiered_allocator]
 path = "libs/tiered_allocator"
 
+[dependencies.libbreenix]
+path = "libs/libbreenix"
+
 [lib]
 crate-type = ["staticlib"]
