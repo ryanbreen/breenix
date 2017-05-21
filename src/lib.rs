@@ -106,7 +106,6 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     memory::init(boot_info);
 
     state();
-
     unsafe { MEMORY_SAFE = true; }
 
     // Now that we have a heap, allow printk.
