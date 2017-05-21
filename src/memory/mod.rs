@@ -93,10 +93,10 @@ pub fn init(boot_info: &BootInformation) {
         .max()
         .unwrap();
 
-    bootstrap_println!("kernel start: {:#x}, kernel end: {:#x}",
+    printk!("kernel start: {:#x}, kernel end: {:#x}",
                        kernel_start,
                        kernel_end);
-    bootstrap_println!("multiboot start: {:#x}, multiboot end: {:#x}",
+    printk!("multiboot start: {:#x}, multiboot end: {:#x}",
                        boot_info.start_address(),
                        boot_info.end_address());
 

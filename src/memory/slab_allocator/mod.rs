@@ -71,7 +71,7 @@ impl AreaFrameSlabPageProvider {
         unsafe {
             let start_page_address: VAddr = VIRT_START + (BASE_PAGE_SIZE * VIRT_OFFSET);
 
-            bootstrap_println!("Allocating slabpage {:x}, {} frames have already been allocated", VIRT_START, allocator.allocated_frame_count());
+            //printk!("Allocating slabpage {:x}, {} frames have already been allocated", VIRT_START, allocator.allocated_frame_count());
 
             for i in 0..frames_per_slabpage {
                 let frame: Option<Frame> = allocator.allocate_frame();
@@ -98,7 +98,7 @@ impl AreaFrameSlabPageProvider {
 
     #[allow(unused_variables)]
     fn release_slabpage(&mut self, page: &mut SlabPage) {
-        println!("Trying to release page");
+        printk!("Trying to release page");
         // TODO: Let's maybe release memory at some point.
     }
 }
@@ -243,7 +243,7 @@ impl ZoneAllocator {
                 return p;
             }
             None => {
-                println!("Failed to acquire slab of size {}", size);
+                printk!("Failed to acquire slab of size {}", size);
                 return None;
             }
         }
@@ -411,7 +411,7 @@ impl SlabAllocator {
     pub fn allocate<'b>(&'b mut self, alignment: usize) -> Option<*mut u8> {
 
         // let size = self.size;
-        // println!("Allocating {}", size);
+        // printk!("Allocating {}", size);
 
         match self.allocate_in_existing_slabs(alignment) {
             None => {
@@ -559,7 +559,7 @@ impl SlabPage {
         match self.first_fit(size, alignment) {
             Some((idx, addr)) => {
                 self.set_bit(idx);
-                // println!("base addr is {:o} for {} of {}", addr, size, self.size);
+                // printk!("base addr is {:o} for {} of {}", addr, size, self.size);
                 Some(unsafe { mem::transmute::<usize, *mut u8>(addr) })
             }
             None => None,

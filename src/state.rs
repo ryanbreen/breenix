@@ -53,7 +53,7 @@ pub fn state() -> &'static mut State {
 
 pub fn register_key_event_listener(listener: Box<IsListener<KeyEvent>>) {
     state().key_listeners.push(listener);
-    println!("There are now {} key listeners",
+    printk!("There are now {} key listeners",
              state().key_listeners.len());
 }
 

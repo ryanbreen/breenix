@@ -18,6 +18,8 @@ pub mod keyboard;
 
 pub mod pci;
 
+pub mod printk;
+
 pub mod serial;
 
 pub mod timer;

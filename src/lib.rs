@@ -1,11 +1,11 @@
 #![feature(alloc, allocator, box_syntax, box_patterns, macro_reexport, lang_items,
           heap_api, const_fn, unique, asm, collections, trace_macros,
-          naked_functions, stmt_expr_attributes, core_intrinsics, abi_x86_interrupt)]
+          naked_functions, drop_types_in_const, stmt_expr_attributes, core_intrinsics, abi_x86_interrupt)]
 #![allocator]
 
 #![no_std]
 
-// Note: We must define macros first since it declared println!  Otherwise, no
+// Note: We must define macros first since it declared printk!  Otherwise, no
 // other mod can print.
 #[macro_use]
 mod macros;
@@ -59,18 +59,20 @@ mod io;
 mod state;
 mod task;
 
+static mut MEMORY_SAFE:bool = false;
+
 #[no_mangle]
 #[allow(non_snake_case)]
 pub fn _Unwind_Resume() {
-    println!("UNWIND!");
+    printk!("UNWIND!");
     state().scheduler.idle();
 }
 
 #[lang = "panic_fmt"]
 #[no_mangle]
 pub extern "C" fn panic_fmt(fmt: core::fmt::Arguments, file: &str, line: u32) -> ! {
-    println!("\n\nPANIC in {} at line {}:", file, line);
-    println!("    {}", fmt);
+    printk!("\n\nPANIC in {} at line {}:", file, line);
+    printk!("    {}", fmt);
     loop {}
 }
 
@@ -93,6 +95,8 @@ fn enable_write_protect_bit() {
 #[no_mangle]
 pub extern "C" fn rust_main(multiboot_information_address: usize) {
 
+    printk!("burr check what we got");
+
     let boot_info = unsafe { multiboot2::load(multiboot_information_address) };
 
     enable_nxe_bit();
@@ -101,21 +105,27 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     // set up guard page and map the heap pages
     memory::init(boot_info);
 
-    //bootstrap_println!("{:?}", memory::area_frame_allocator());
-    state().scheduler.init();
+    state();
+
+    unsafe { MEMORY_SAFE = true; }
+
+    // Now that we have a heap, allow printk.
+    io::printk::init();
+
+    //printk!("{:?}", memory::area_frame_allocator());
     state().scheduler.create_test_process();
 
     interrupts::init();
 
     io::initialize();
 
-    println!("Time is {}", io::timer::real_time());
+    printk!("Time is {}", io::timer::real_time());
 
     use alloc::boxed::Box;
     use collections::Vec;
     let mut vec: Box<Vec<&'static str>> = Box::new(Vec::new());
 
-    println!("{} {}",
+    printk!("{} {}",
              unsafe { tiered_allocator::BOOTSTRAP_ALLOCS },
              unsafe { tiered_allocator::BOOTSTRAP_ALLOC_SIZE });
 
@@ -126,15 +136,19 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
         vec.push(my_str);
     }
 
-    println!("Created a vector with {} items?  Great work. {}",
+    printk!("Created a vector with {} items?  Great work. {}",
              vec.len(),
              vec[127]);
 
     state().scheduler.enable_interrupts();
 
     //state().scheduler.schedule();
-    println!("idling");
+    printk!("idling");
     state().scheduler.idle();
+}
+
+pub fn memory_safe() -> bool {
+    unsafe { MEMORY_SAFE }
 }
 
 /// Provide an easy, globally accessible function to get access to State

@@ -29,7 +29,7 @@ impl StackAllocator {
             range.nth(size_in_pages - 2)
         };
 
-        bootstrap_println!("Trying to allocate new stack of size {}", size_in_pages);
+        printk!("Trying to allocate new stack of size {}", size_in_pages);
 
         match (guard_page, stack_start, stack_end) {
             (Some(_), Some(start), Some(end)) => {
@@ -38,7 +38,7 @@ impl StackAllocator {
 
                 // map stack pages to physical frames
                 for page in Page::range_inclusive(start, end) {
-                    //println!("Request to map {:x} came from stack allocator", page.start_address());
+                    //printk!("Request to map {:x} came from stack allocator", page.start_address());
                     page_table().map(page, paging::WRITABLE, area_frame_allocator());
                 }
 

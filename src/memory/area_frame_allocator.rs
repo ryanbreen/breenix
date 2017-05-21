@@ -107,7 +107,7 @@ impl FrameAllocator for AreaFrameAllocator {
             // `frame` was not valid, try it again with the updated `next_free_frame`
             self.allocate_frame()
         } else {
-            println!("No free frames left!");
+            printk!("No free frames left!");
             None // no free frames left
         }
     }

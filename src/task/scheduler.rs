@@ -58,7 +58,7 @@ fn test() {
 
                 use libbreenix;
                 let res = libbreenix::sys_time();
-                println!("{} {}", res, beans);
+                printk!("{} {}", res, beans);
 
                 asm!("sti");
             }
@@ -78,10 +78,11 @@ impl Scheduler {
             skip_count: 0,
         };
 
+        scheduler.init();
         scheduler
     }
 
-    pub fn init(&mut self) {
+    fn init(&mut self) {
 
         let pid = self.create_process(0, 0);
         self.current = 0;
@@ -90,7 +91,7 @@ impl Scheduler {
         {
             let procs = self.procs.lock();
             let process = procs.get(&pid);
-            bootstrap_println!("Initted proc 0 to {:?}", process);
+            printk!("Initted proc 0 to {:?}", process);
         }
     }
 
@@ -98,7 +99,7 @@ impl Scheduler {
         // Create a new stack
         let new_stack = memory::memory_controller().alloc_stack(256)
             .expect("could not allocate new proc stack");
-        bootstrap_println!("Top of new stack: {:x}", new_stack.top());
+        printk!("Top of new stack: {:x}", new_stack.top());
         self.create_process(fn_ptr, new_stack.top());
     }
 
@@ -110,7 +111,7 @@ impl Scheduler {
             // Init proc 0 for the main kernel thread
             let p = Process::new(self.pid_counter, start_fn, stack_pointer);
             self.procs.lock().insert(self.pid_counter, p);
-            bootstrap_println!("inserted proc {}, there are {} procs", self.pid_counter, self.procs.lock().len());
+            printk!("inserted proc {}, there are {} procs", self.pid_counter, self.procs.lock().len());
             pid = self.pid_counter;
             self.pid_counter += 1;
         }
@@ -190,10 +191,10 @@ impl Scheduler {
 
         if process.started {
             // jump to trap frame
-            //println!("Jumping to 0x{:x}", process.trap_frame);
+            //printk!("Jumping to 0x{:x}", process.trap_frame);
 
             if process.pid == 1 {
-                //println!("pidiful");
+                //printk!("pidiful");
             }
 
             unsafe {
@@ -215,7 +216,7 @@ impl Scheduler {
         } else {
             // call init fn
             
-            println!("Attempting to start process at {:x} {}", process.start_pointer, process.pid);
+            printk!("Attempting to start process at {:x} {}", process.start_pointer, process.pid);
 
             unsafe {
 

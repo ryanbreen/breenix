@@ -42,10 +42,10 @@ impl E1000 {
 
     unsafe fn write_command(&self, offset: usize, val: u32) {
         if self.bar0_type == 0 {
-            println!("Attempting to write {} to 0x{:x}", val, self.io_base + offset);
+            printk!("Attempting to write {} to 0x{:x}", val, self.io_base + offset);
             ptr::write_volatile((self.io_base + offset) as *const u32 as *mut _, val);
         } else {
-            println!("Write failed because we only know how to party MMIO style");
+            printk!("Write failed because we only know how to party MMIO style");
         }
     }
 
@@ -53,7 +53,7 @@ impl E1000 {
         if self.bar0_type == 0 {
             ptr::read_volatile((self.io_base + offset) as *const u32)
         } else {
-            println!("Write failed because we only know how to party MMIO style");
+            printk!("Write failed because we only know how to party MMIO style");
             0
         }
     }
@@ -171,7 +171,7 @@ impl DeviceDriver for E1000 {
         let eeprom = self.detect_eeprom();
         let mac = self.read_mac();
 
-        println!("NET - Found network device that needs {} of space, irq is {}, interrupt pin \
+        printk!("NET - Found network device that needs {} of space, irq is {}, interrupt pin \
                   {}, command {}, MMIO: {}, mem_base: 0x{:x}, io_base: 0x{:x}, eeprom?: {}: MAC: {}",
                  e1000.bar(0),
                  irq,

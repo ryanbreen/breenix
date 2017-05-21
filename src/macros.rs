@@ -1,28 +1,26 @@
 
 macro_rules! get_current_pid {
   ($($arg:tt)*) => ({
-    $crate::state().scheduler.current
+    match $crate::memory_safe() {
+      true => $crate::state().scheduler.current,
+      false => 0,
+    }
   });
 }
 
-macro_rules! bootstrap_println {
-    ($fmt:expr) => (print!(concat!("[0] {:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start()));
-    ($fmt:expr, $($arg:tt)*) =>
-      (print!(concat!("[0] {:?} - ", $fmt, "\n"), $crate::io::timer::time_since_start(), $($arg)*));
-}
-
-macro_rules! println {
+macro_rules! printk {
     ($fmt:expr) => ({
-      print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::real_time());
+      print!(concat!("[{:?}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::real_time());
     });
     ($fmt:expr, $($arg:tt)*) => ({
-      print!(concat!("[{}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::real_time(), $($arg)*);
+      print!(concat!("[{:?}] {:?} - ", $fmt, "\n"), get_current_pid!(), $crate::io::timer::real_time(), $($arg)*);
     });
 }
 
 macro_rules! print {
    ($($arg:tt)*) => ({
-      $crate::io::drivers::display::text_buffer::print(format_args!($($arg)*));
+      //$crate::io::drivers::display::text_buffer::print(format_args!($($arg)*));
+      $crate::io::printk::print(format_args!($($arg)*));
    });
 }
 

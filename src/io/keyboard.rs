@@ -87,7 +87,7 @@ impl Modifiers {
 
     fn update(&mut self, scancode: u8) {
 
-        // println!("{:x} {:x}", self.last_key, scancode);
+        // printk!("{:x} {:x}", self.last_key, scancode);
 
         match scancode {
             0x5B => self.l_cmd = true,
@@ -149,7 +149,7 @@ pub fn read() {
     // Give our modifiers first crack at this.
     state.modifiers.update(scancode);
 
-    // println!("{:x}", scancode);
+    // printk!("{:x}", scancode);
 
     // We don't map any keys > 127.
     if scancode > 127 {

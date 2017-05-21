@@ -70,9 +70,9 @@ const MNEMONICS: [&'static str; 2] = [HELP_MNEMONIC, DEBUG_MNEMOIC];
 const DESCRIPTIONS: [&'static str; 2] = [HELP_DESCRIPTION, DEBUG_DESCRIPTION];
 
 fn usage() {
-    println!("Commands:");
+    printk!("Commands:");
     for i in 0..COMMANDS.len() {
-        println!("\t{} ({}) - {}", COMMANDS[i], MNEMONICS[i], DESCRIPTIONS[i]);
+        printk!("\t{} ({}) - {}", COMMANDS[i], MNEMONICS[i], DESCRIPTIONS[i]);
     }
 }
 
@@ -83,7 +83,7 @@ fn interpret_command(cmd: &'static str) {
         }
         DEBUG_COMMAND | DEBUG_MNEMOIC => debug(),
         _ => {
-            println!("Unknown command {}", cmd);
+            printk!("Unknown command {}", cmd);
             usage();
         }
     }

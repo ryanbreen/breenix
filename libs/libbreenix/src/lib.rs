@@ -5,6 +5,7 @@
 
 extern crate spin;
 
+mod rand;
 mod syscall;
 
 #[no_mangle]
@@ -12,10 +13,12 @@ pub extern fn sys_time() -> u64 {
   unsafe { syscall::syscall0(201) }
 }
 
+#[no_mangle]
 pub fn sys_test() -> u64 {
   unsafe { syscall::syscall6(16, 32, 64, 128, 256, 512, 1024) }
 }
 
+#[no_mangle]
 pub fn sys_exit(pid: usize) {
   panic!("unimplemented");
 }

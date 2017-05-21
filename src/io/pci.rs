@@ -36,7 +36,7 @@ impl Pci {
             return None;
         }
 
-        println!("Found device {}-{}-{}", bus, slot, function);
+        printk!("Found device {}-{}-{}", bus, slot, function);
 
         let config_4 = self.read_config(bus, slot, function, 0x8);
         let config_c = self.read_config(bus, slot, function, 0xC);
@@ -223,27 +223,27 @@ pub fn initialize() {
         initialize_bus(bus);
     }
 
-    println!("Discovered {} devices", ::state().devices.len());
+    printk!("Discovered {} devices", ::state().devices.len());
 
     for dev in ::state().devices.iter_mut() {
 
         match dev.device_id {
             0x1111 => {
-                println!("{}-{}-{} VGA {}",
+                printk!("{}-{}-{} VGA {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
             0x1237 => {
-                println!("{}-{}-{} 82440LX/EX {}",
+                printk!("{}-{}-{} 82440LX/EX {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
             0x100E | 0x100F => {
-                println!("{}-{}-{} Intel Pro 1000/MT {}",
+                printk!("{}-{}-{} Intel Pro 1000/MT {}",
                          dev.bus,
                          dev.device,
                          dev.function,
@@ -251,11 +251,11 @@ pub fn initialize() {
                 use io::drivers::network::e1000::E1000;
                 let e1000 = E1000::new(*dev);
                 let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
-                println!("Registered as {}", nic);
+                printk!("Registered as {}", nic);
                 ::state().network_interfaces.push(nic);
             }
             0x8139 => {
-                println!("{}-{}-{} RTL8139 Fast Ethernet NIC {}",
+                printk!("{}-{}-{} RTL8139 Fast Ethernet NIC {}",
                          dev.bus,
                          dev.device,
                          dev.function,
@@ -263,31 +263,31 @@ pub fn initialize() {
                 use io::drivers::network::rtl8139::Rtl8139;
                 let rtl = Rtl8139::new(*dev);
                 let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(rtl));
-                println!("Registered as {}", nic);
+                printk!("Registered as {}", nic);
                 ::state().network_interfaces.push(nic);
             }
             0x7000 => {
-                println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {}",
+                printk!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
             0x7010 => {
-                println!("{}-{}-{} PIIX3 IDE Interface (Triton II) {}",
+                printk!("{}-{}-{} PIIX3 IDE Interface (Triton II) {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
             0x7113 => {
-                println!("{}-{}-{} PIIX4/4E/4M Power Management Controller {}",
+                printk!("{}-{}-{} PIIX4/4E/4M Power Management Controller {}",
                          dev.bus,
                          dev.device,
                          dev.function,
                          dev)
             }
-            _ => println!("{}", dev),
+            _ => printk!("{}", dev),
         }
     }
 
