@@ -14,12 +14,10 @@
 //!  * A `SlabPageProvider` is provided by the client and used by the
 //!    SlabAllocator to allocate SlabPages.
 //!
-#![feature(allocator)]
 #![allow(unused_features, dead_code, unused_variables)]
-#![feature(const_fn, prelude_import, test, raw, ptr_as_ref,
+#![feature(const_fn, prelude_import, test, raw, ptr_as_ref, const_unsafe_cell_new,
            core_prelude, core_slice_ext, libc, unique)]
 #![no_std]
-#![allocator]
 
 extern crate spin;
 

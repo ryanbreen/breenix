@@ -48,17 +48,32 @@ pub struct Scheduler {
 fn test() {
 
     let mut beans:u64 = 0;
+    let mut i:u64 = 0;
 
     loop {
-        beans += 1;
+        {
+            i += 1;
+            beans += 1;
+        }
 
-        if beans % 10000000 == 0 {
+        if beans % 100000 == 0 {    
+            unsafe {
+                asm!("cli");        
+                use libbreenix;
+                let res = libbreenix::sys_time();
+                printk!("{} {} {}", res, beans, i);
+
+                asm!("sti");
+            }
+        }
+
+        if beans != i {
             unsafe {
                 asm!("cli");
 
                 use libbreenix;
                 let res = libbreenix::sys_time();
-                printk!("{} {}", res, beans);
+                printk!("ERRRRRRRRRRRRRRRRRRRROOOOOOOOOOOOOOORRRRRRRR {} {} {}", res, beans, i);
 
                 asm!("sti");
             }

@@ -3,9 +3,10 @@ name = "tiered_allocator"
 version = "0.1.0"
 authors = ["Ryan Breen <rbreen@cimpress.com>"]
 
-[dependencies]
-spin = "0.3.4"
-
 [dependencies.lazy_static]
 version = "0.2.1"
+path = "../../../lazy-static.rs"
 features = ["spin_no_std"]
+
+[dependencies.spin]
+path = "../../../spin-rs"
