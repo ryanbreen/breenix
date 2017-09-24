@@ -38,10 +38,8 @@ impl TextBuffer {
 
     fn sync(&self) {
         if self.active {
-            unsafe {
-                VGA.lock().sync_buffer(&self);
-                VGA.lock().update_cursor(BUFFER_HEIGHT - 1, self.column_position);
-            }
+            VGA.lock().sync_buffer(&self);
+            VGA.lock().update_cursor(BUFFER_HEIGHT - 1, self.column_position);
         }
     }
 
@@ -55,7 +53,6 @@ impl TextBuffer {
 
                 let row = BUFFER_HEIGHT - 1;
                 let col = self.column_position;
-                let cc = self.color_code;
                 self.chars[row][col] = byte;
                 self.column_position += 1;
             }
@@ -111,7 +108,7 @@ impl ::core::fmt::Write for TextBuffer {
             self.write_byte(byte)
         }
 
-        serial::write(s);
+        //serial::write(s);
 
         Ok(())
     }
@@ -126,9 +123,9 @@ pub static PRINT_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     interactive: false,
 });
 
-pub fn print(args: fmt::Arguments) {
+pub fn print(s: &str) {
     use core::fmt::Write;
-    PRINT_BUFFER.lock().write_fmt(args).unwrap();
+    PRINT_BUFFER.lock().write_str(s).unwrap();
 }
 
 pub static KEYBOARD_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {

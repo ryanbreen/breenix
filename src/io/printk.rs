@@ -1,7 +1,6 @@
 use alloc::boxed::Box;
 use collections::Vec;
 use core::fmt;
-use core::mem;
 use collections::string::String;
 
 use io::serial;
@@ -15,6 +14,9 @@ pub struct PrintkBuffer {
 
 impl ::core::fmt::Write for PrintkBuffer {
   fn write_str(&mut self, ss: &str) -> ::core::fmt::Result {
+
+      use io::drivers::display::text_buffer;
+      text_buffer::print(ss);
 
       let mut s = String::from(ss);
       let endline = s.find('\n').unwrap_or(255);
@@ -39,6 +41,8 @@ impl ::core::fmt::Write for PrintkBuffer {
 }
 
 static mut PRINTK_BUFFER: Option<Mutex<PrintkBuffer>> = None;
+
+
 
 pub fn init() {
   unsafe {
