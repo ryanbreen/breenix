@@ -1,7 +1,6 @@
-#![feature(alloc, allocator, box_syntax, box_patterns, macro_reexport, lang_items,
-          heap_api, const_fn, unique, asm, collections, trace_macros, const_unsafe_cell_new,
+#![feature(alloc, allocator_api, box_syntax, box_patterns, macro_reexport, lang_items,
+          heap_api, const_fn, const_unique_new, unique, asm, collections, trace_macros, const_unsafe_cell_new,
           naked_functions, drop_types_in_const, stmt_expr_attributes, core_intrinsics, abi_x86_interrupt)]
-#![allocator]
 
 #![no_std]
 
@@ -139,7 +138,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
              vec.len(),
              vec[127]);
 
-    state().scheduler.enable_interrupts();
+    //state().scheduler.enable_interrupts();
 
     //state().scheduler.schedule();
     printk!("idling");

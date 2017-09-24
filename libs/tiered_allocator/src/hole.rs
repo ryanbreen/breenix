@@ -1,4 +1,5 @@
 use core::ptr::Unique;
+use alloc::allocator::{Layout, AllocErr};
 use core::mem::{self, size_of};
 
 use super::align_up;
@@ -35,7 +36,7 @@ impl HoleList {
         HoleList {
             first: Hole {
                 size: 0,
-                next: Some(Unique::new(ptr)),
+                next: Some(Unique::new(ptr).unwrap()),
             },
         }
     }
@@ -46,7 +47,7 @@ impl HoleList {
     /// This function uses the “first fit” strategy, so it uses the first hole that is big
     /// enough. Thus the runtime is in O(n) but it should be reasonably fast for small
     /// allocations.
-    pub fn allocate_first_fit(&mut self, size: usize, align: usize) -> Option<*mut u8> {
+    pub fn allocate_first_fit(&mut self, size: usize, align: usize) -> Result<*mut u8, AllocErr> {
         assert!(size >= Self::min_size());
 
         allocate_first_fit(&mut self.first, size, align).map(|allocation| {
@@ -106,7 +107,7 @@ impl Hole {
 
     /// Returns a reference to the next hole. Panics if this is the last hole.
     fn next_unwrap(&mut self) -> &mut Hole {
-        unsafe { self.next.as_mut().unwrap().get_mut() }
+        unsafe { self.next.as_mut().unwrap().as_mut() }
     }
 }
 
@@ -187,16 +188,16 @@ fn split_hole(hole: HoleInfo, required_size: usize, required_align: usize) -> Op
 /// padding is returned as part of the `Allocation`. The caller must take care of freeing it again.
 /// This function uses the “first fit” strategy, so it breaks as soon as a big enough hole is
 /// found (and returns it).
-fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Option<Allocation> {
+fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Result<Allocation, AllocErr> {
     loop {
         let allocation: Option<Allocation> = previous.next
             .as_mut()
-            .and_then(|current| split_hole(unsafe { current.get() }.info(), size, align));
+            .and_then(|current| split_hole(unsafe { current.as_ref() }.info(), size, align));
         match allocation {
             Some(allocation) => {
                 // hole is big enough, so remove it from the list by updating the previous pointer
                 previous.next = previous.next_unwrap().next.take();
-                return Some(allocation);
+                return Ok(allocation);
             }
             None if previous.next.is_some() => {
                 // try next hole
@@ -204,7 +205,7 @@ fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Opt
             }
             None => {
                 // this was the last hole, so no hole is big enough -> allocation not possible
-                return None;
+                return Err(AllocErr::Exhausted { request: Layout::from_size_align(size, align).unwrap() })
             }
         }
     }
@@ -231,7 +232,7 @@ fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
         assert!(hole_addr + hole.size <= addr);
 
         // get information about the next block
-        let next_hole_info = hole.next.as_ref().map(|next| unsafe { next.get().info() });
+        let next_hole_info = hole.next.as_ref().map(|next| unsafe { next.as_ref().info() });
 
         match next_hole_info {
             Some(next) if hole_addr + hole.size == addr && addr + size == next.addr => {
@@ -283,7 +284,7 @@ fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
                 let ptr = addr as *mut Hole;
                 mem::forget(mem::replace(unsafe { &mut *ptr }, new_hole));
                 // add the F block as the next block of the X block
-                hole.next = Some(unsafe { Unique::new(ptr) });
+                hole.next = Some(unsafe { Unique::new(ptr).unwrap() });
             }
         }
         break;

@@ -10,15 +10,15 @@ pub struct Mapper {
 
 impl Mapper {
     pub unsafe fn new() -> Mapper {
-        Mapper { p4: Unique::new(table::P4) }
+        Mapper { p4: Unique::new(table::P4).unwrap() }
     }
 
     pub fn p4(&self) -> &Table<Level4> {
-        unsafe { self.p4.get() }
+        unsafe { self.p4.as_ref() }
     }
 
     pub fn p4_mut(&mut self) -> &mut Table<Level4> {
-        unsafe { self.p4.get_mut() }
+        unsafe { self.p4.as_mut() }
     }
 
     pub fn translate(&self, virtual_address: VirtualAddress) -> Option<PhysicalAddress> {

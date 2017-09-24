@@ -56,12 +56,12 @@ pub struct VGA {
     frame: Unique<ScreenBuffer>,
 }
 
-pub static VGA: Mutex<VGA> = Mutex::new(VGA { frame: unsafe { Unique::new(0xb8000 as *mut _) } });
+pub static VGA: Mutex<VGA> = Mutex::new(VGA { frame: unsafe { Unique::new_unchecked(0xb8000 as *mut _) } });
 
 impl VGA {
 
     fn frame(&mut self) -> &mut ScreenBuffer {
-        unsafe { self.frame.get_mut() }
+        unsafe { self.frame.as_mut() }
     }
 
     pub fn sync_buffer(&mut self, buffer: &TextBuffer) {

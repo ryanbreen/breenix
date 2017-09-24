@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use alloc::allocator::AllocErr;
 use alloc::boxed::Box;
 use collections::VecDeque;
 
@@ -48,12 +49,11 @@ pub fn init() {
     }
 }
 
-pub fn allocate(size: usize, align: usize) -> *mut u8 {
+pub fn allocate(size: usize, align: usize) -> Result<*mut u8, AllocErr> {
     // Use the static zone allocator to find this.
     // Note: since we lock here and the lock is not reentrant, we must make sure that no allocations
     // happen from inside the allocator or that they occur in the bootstrap allocator.
-    let rvalue: *mut u8 = zone_allocator().lock().allocate(size, align).expect("OOM");
-    rvalue
+    Ok(zone_allocator().lock().allocate(size, align).expect("OOM"))
 }
 
 pub struct AreaFrameSlabPageProvider {}

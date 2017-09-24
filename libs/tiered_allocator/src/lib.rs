@@ -14,11 +14,14 @@
 //!  * A `SlabPageProvider` is provided by the client and used by the
 //!    SlabAllocator to allocate SlabPages.
 //!
-#![allow(unused_features, dead_code, unused_variables)]
-#![feature(const_fn, prelude_import, test, raw, ptr_as_ref, const_unsafe_cell_new,
-           core_prelude, core_slice_ext, libc, unique)]
+#![feature(const_fn)]
+#![feature(allocator_api)]
+#![feature(alloc)]
+#![feature(global_allocator)]
+#![feature(unique)]
 #![no_std]
 
+extern crate alloc;
 extern crate spin;
 
 #[macro_use]
@@ -26,7 +29,7 @@ extern crate lazy_static;
 
 use heap::Heap;
 
-use core::ptr;
+use alloc::heap::{Alloc, AllocErr, Layout};
 
 use spin::Mutex;
 
@@ -40,15 +43,6 @@ lazy_static! {
     static ref HEAP: Mutex<Heap> = Mutex::new(unsafe {
         Heap::new(HEAP_START, HEAP_SIZE)
     });
-}
-
-#[no_mangle]
-pub extern fn __rust_allocate_zeroed(size: usize, align: usize) -> *mut u8 {
-    let ptr = __rust_allocate(size, align);
-    unsafe {
-        ptr::write_bytes(ptr, 0, size);
-    }
-    ptr
 }
 
 /// Align downwards. Returns the greatest x with alignment `align`
@@ -69,32 +63,39 @@ pub fn align_up(addr: usize, align: usize) -> usize {
     align_down(addr + align - 1, align)
 }
 
-static mut SLAB_ALLOCATE: Option<fn(usize, usize) -> *mut u8> = None;
+static mut SLAB_ALLOCATE: Option<fn(usize, usize) -> Result<*mut u8, AllocErr>> = None;
 static mut SLAB_DEALLOCATE: Option<fn()> = None;
 
-pub fn init(allocate: fn(usize, usize) -> *mut u8) {
+pub fn init(allocate: fn(usize, usize) -> Result<*mut u8, AllocErr>) {
     unsafe {
         SLAB_ALLOCATE = Some(allocate);
     }
 }
 
-#[no_mangle]
-pub extern "C" fn __rust_allocate(size: usize, align: usize) -> *mut u8 {
-    unsafe {
+pub struct Allocator;
+
+unsafe impl<'a> Alloc for &'a Allocator {
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
         if SLAB_ALLOCATE.is_none() {
-            let rvalue = bootstrap_allocate(size, align);
-            rvalue
+            bootstrap_allocate(layout.size(), layout.align())
         } else {
-            let rvalue = slab_allocate(size, align);
-            rvalue
+            slab_allocate(layout.size(), layout.align())
         }
     }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        
+    }
 }
+
+//Our allocator static
+#[global_allocator]
+static GLOBAL_ALLOC: Allocator = Allocator;
 
 pub static mut BOOTSTRAP_ALLOCS: usize = 0;
 pub static mut BOOTSTRAP_ALLOC_SIZE: usize = 0;
 
-fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
+fn bootstrap_allocate(size: usize, align: usize) -> Result<*mut u8, AllocErr> {
     // HEAP.lock().allocate_first_fit(size, align).expect("out of bootstrap memory")
     unsafe {
         BOOTSTRAP_ALLOCS += 1;
@@ -105,61 +106,9 @@ fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
         }
     }
 
-    let rvalue: Option<*mut u8> = HEAP.lock().allocate_first_fit(size, align);
-    match rvalue {
-        Some(p) => p,
-        None => {
-            panic!("Bootstrap memory exceeded in request for {} {}",
-                   size,
-                   align);
-        }
-    }
+    HEAP.lock().allocate_first_fit(size, align)
 }
 
-fn slab_allocate(size: usize, align: usize) -> *mut u8 {
-    unsafe { SLAB_ALLOCATE.expect("invalid allocate")(size, align) }
-}
-
-#[no_mangle]
-pub extern "C" fn __rust_deallocate(ptr: *mut u8, size: usize, align: usize) {}
-
-#[no_mangle]
-pub extern "C" fn __rust_usable_size(size: usize, _align: usize) -> usize {
-    size
-}
-
-#[no_mangle]
-pub extern "C" fn __rust_reallocate_inplace(_ptr: *mut u8,
-                                            size: usize,
-                                            _new_size: usize,
-                                            _align: usize)
-                                            -> usize {
-    size
-}
-
-#[no_mangle]
-pub extern "C" fn __rust_reallocate(ptr: *mut u8,
-                                    size: usize,
-                                    new_size: usize,
-                                    align: usize)
-                                    -> *mut u8 {
-    use core::{ptr, cmp};
-
-    // from: https://github.com/rust-lang/rust/blob/
-    //     c66d2380a810c9a2b3dbb4f93a830b101ee49cc2/
-    //     src/liballoc_system/lib.rs#L98-L101
-
-    unsafe {
-        if ptr as usize >= HEAP_START && ptr as usize <= HEAP_START + HEAP_SIZE {
-            let new_ptr = bootstrap_allocate(new_size, align);
-            // panic!("\n{:o}\n{:o}\n{:o}", ptr as usize, HEAP_START, HEAP_START + HEAP_SIZE);
-            ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
-            new_ptr
-        } else {
-            let new_ptr = __rust_allocate(new_size, align);
-            ptr::copy(ptr, new_ptr, cmp::min(size, new_size));
-            __rust_deallocate(ptr, size, align);
-            new_ptr
-        }
-    }
+unsafe fn slab_allocate(size: usize, align: usize) -> Result<*mut u8, AllocErr> {
+    SLAB_ALLOCATE.expect("invalid allocate")(size, align)
 }

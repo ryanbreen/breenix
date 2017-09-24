@@ -89,9 +89,11 @@ impl DeviceDriver for Rtl8139 {
             };
 
             use alloc::heap;
+            /*
             let heap_addr:*mut u8 = heap::allocate(8192+16, 8);
             port.rbstart.write(heap_addr as u32);
             printk!("Performing DMA at a {} sized buffer starting at 0x{:x}", 8192+16, heap_addr as u32);
+            */
         }
 
         self.initialized = true;
