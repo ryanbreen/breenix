@@ -111,7 +111,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     io::printk::init();
 
     //printk!("{:?}", memory::area_frame_allocator());
-    state().scheduler.create_test_process();
+    //state().scheduler.create_test_process();
 
     interrupts::init();
 
@@ -138,7 +138,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
              vec.len(),
              vec[127]);
 
-    //state().scheduler.enable_interrupts();
+    state().scheduler.enable_interrupts();
 
     //state().scheduler.schedule();
     printk!("idling");

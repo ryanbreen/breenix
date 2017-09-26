@@ -47,6 +47,7 @@ struct InterruptContext {
     r15: u64,
  }
 
+#[allow(unused_must_use)]
 impl fmt::Debug for InterruptContext {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 
@@ -180,11 +181,9 @@ extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStac
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    unsafe {
-        printk!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
+    printk!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
             stack_frame.instruction_pointer, stack_frame);
-        loop {}
-    }
+    loop {}
 }
 
 extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
