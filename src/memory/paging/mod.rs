@@ -7,9 +7,7 @@ mod table;
 mod temporary_page;
 
 pub use self::entry::*;
-use self::table::{Table, Level4};
 use self::temporary_page::TemporaryPage;
-use core::ptr::Unique;
 
 const ENTRY_COUNT: usize = 512;
 

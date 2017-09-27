@@ -5,10 +5,10 @@ use x86::shared::io::outb;
 use io::Port;
 use util::time::Time;
 
-static mut timer_start: u64 = 0;
-static mut timer_ticks: u64 = 0;
-static mut timer_seconds: u64 = 0;
-static mut timer_millis: u16 = 0;
+static mut TIMER_START: u64 = 0;
+static mut TIMER_TICKS: u64 = 0;
+static mut TIMER_SECONDS: u64 = 0;
+static mut TIMER_MILLIS: u16 = 0;
 
 pub fn initialize() {
     let divisor: u32 = PIT_SCALE / SUBTICKS_PER_TICK as u32;
@@ -17,32 +17,32 @@ pub fn initialize() {
         outb(PIT_A, (divisor & (PIT_MASK as u32)) as u8);
         outb(PIT_A, ((divisor >> 8) & (PIT_MASK as u32)) as u8);
 
-        timer_start = RealTimeClock::new().time().secs;
+        TIMER_START = RealTimeClock::new().time().secs;
     }
 }
 
 pub fn timer_interrupt() {
     unsafe {
-        timer_ticks += 1;
-        timer_millis += 1;
-        if timer_millis == SUBTICKS_PER_TICK {
-            timer_seconds += 1;
-            timer_millis = 0;
+        TIMER_TICKS += 1;
+        TIMER_MILLIS += 1;
+        if TIMER_MILLIS == SUBTICKS_PER_TICK {
+            TIMER_SECONDS += 1;
+            TIMER_MILLIS = 0;
         }
     }
 }
 
 pub fn time_since_start() -> Time {
-    unsafe { Time::new(timer_seconds, timer_millis as u32 * 1000, 0) }
+    unsafe { Time::new(TIMER_SECONDS, TIMER_MILLIS as u32 * 1000, 0) }
 }
 
 #[allow(dead_code)]
 pub fn monotonic_clock() -> u64 {
-    unsafe { timer_ticks }
+    unsafe { TIMER_TICKS }
 }
 
 pub fn real_time() -> u64 {
-    unsafe { timer_start + timer_seconds }
+    unsafe { TIMER_START + TIMER_SECONDS }
 }
 
 fn cvt_bcd(value: usize) -> usize {
@@ -146,7 +146,7 @@ impl RealTimeClock {
         secs += second as u64;
 
         unsafe {
-            secs += (timer_millis / 1000) as u64;
+            secs += (TIMER_MILLIS / 1000) as u64;
         }
 
         Time::new(secs, 0, 0)

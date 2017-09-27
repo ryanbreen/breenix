@@ -428,7 +428,7 @@ impl SlabAllocator {
     /// This never releases memory in case the SlabPages are provided by the zone.
     pub fn deallocate<'b>(&'b mut self, ptr: *mut u8) {
         let page = (ptr as usize) & !(BASE_PAGE_SIZE - 1) as usize;
-        let mut slab_page = unsafe { mem::transmute::<VAddr, &'static mut SlabPage>(page) };
+        let slab_page = unsafe { mem::transmute::<VAddr, &'static mut SlabPage>(page) };
 
         slab_page.deallocate(ptr, self.size);
 

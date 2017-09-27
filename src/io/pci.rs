@@ -15,6 +15,7 @@ struct Pci {
     data: Port<u32>,
 }
 
+#[allow(dead_code)]
 impl Pci {
     /// Read a 32-bit aligned word from PCI Configuration Address Space.
     /// This is marked as `unsafe` because passing in out-of-range
@@ -120,6 +121,7 @@ impl fmt::Display for Device {
     }
 }
 
+#[allow(dead_code)]
 impl Device {
     fn address(&self, offset: u32) -> u32 {
         return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
@@ -176,8 +178,13 @@ static PCI: Mutex<Pci> = Mutex::new(Pci {
     data: unsafe { Port::new(0xCFC) },
 });
 
+#[allow(dead_code)]
 const MAX_BUS: u8 = 255;
+
+#[allow(dead_code)]
 const MAX_DEVICE: u8 = 31;
+
+#[allow(dead_code)]
 const MAX_FUNCTION: u8 = 7;
 
 #[allow(dead_code)]
@@ -211,12 +218,14 @@ fn initialize_device(bus: u8, dev: u8) {
 
 }
 
+#[allow(dead_code)]
 fn initialize_bus(bus: u8) {
     for dev in 0..MAX_DEVICE {
         initialize_device(bus, dev);
     }
 }
 
+#[allow(dead_code)]
 pub fn initialize() {
 
     for bus in 0..MAX_BUS {

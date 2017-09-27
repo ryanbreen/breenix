@@ -68,9 +68,9 @@ impl Mapper {
     pub fn map_to<A>(&mut self, page: Page, frame: Frame, flags: EntryFlags, allocator: &mut A)
         where A: FrameAllocator
     {
-        let mut p3 = self.p4_mut().next_table_create(page.p4_index(), allocator);
-        let mut p2 = p3.next_table_create(page.p3_index(), allocator);
-        let mut p1 = p2.next_table_create(page.p2_index(), allocator);
+        let p3 = self.p4_mut().next_table_create(page.p4_index(), allocator);
+        let p2 = p3.next_table_create(page.p3_index(), allocator);
+        let p1 = p2.next_table_create(page.p2_index(), allocator);
 
         //printk!("Mapping page {:?} ({:?}) to {:x}", page, page.p1_index(), frame.start_address());
 
@@ -82,7 +82,7 @@ impl Mapper {
     pub fn map<A>(&mut self, page: Page, flags: EntryFlags, allocator: &mut A)
         where A: FrameAllocator
     {
-        let cur = allocator.allocated_frame_count();
+        //let cur = allocator.allocated_frame_count();
         let frame = allocator.allocate_frame().expect("out of memory");
         //printk!("{}->{}", cur, allocator.allocated_frame_count());
 

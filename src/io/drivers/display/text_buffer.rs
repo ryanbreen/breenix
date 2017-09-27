@@ -1,11 +1,5 @@
-use core::fmt;
-
 use spin::Mutex;
-
-use io::drivers::display::vga;
 use io::drivers::display::vga::{VGA, Color, ScreenChar, ColorCode};
-
-use io::serial;
 
 use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, GREEN_BLANK, RED_BLANK, GRAY_BLANK};
 
@@ -13,7 +7,6 @@ pub struct TextBuffer {
     chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],
     column_position: usize,
     color_code: ColorCode,
-    blank_char: ScreenChar,
     active: bool,
     interactive: bool,
 }
@@ -117,7 +110,6 @@ impl ::core::fmt::Write for TextBuffer {
 pub static PRINT_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightGreen, Color::Black),
-    blank_char: GREEN_BLANK,
     chars: [[b' '; BUFFER_WIDTH]; BUFFER_HEIGHT],
     active: true,
     interactive: false,
@@ -131,7 +123,6 @@ pub fn print(s: &str) {
 pub static KEYBOARD_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightRed, Color::Black),
-    blank_char: RED_BLANK,
     chars: [[b' '; BUFFER_WIDTH]; BUFFER_HEIGHT],
     active: false,
     interactive: true,
@@ -140,7 +131,6 @@ pub static KEYBOARD_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
 pub static DEBUG_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightGray, Color::Black),
-    blank_char: GRAY_BLANK,
     chars: [[b' '; BUFFER_WIDTH]; BUFFER_HEIGHT],
     active: false,
     interactive: false,

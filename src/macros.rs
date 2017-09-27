@@ -29,11 +29,12 @@ macro_rules! format {
     use collections::string::String;
     use core::fmt;
     let mut output = String::new();
-    fmt::write(&mut output, format_args!($($arg)*));
+    let _ = fmt::write(&mut output, format_args!($($arg)*));
     output
   });
 }
 
+#[allow(unused_macros)]
 macro_rules! debug {
   ($($arg:tt)*) => ({
     $crate::debug::debug();

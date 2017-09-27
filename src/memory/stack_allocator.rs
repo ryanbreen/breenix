@@ -1,5 +1,5 @@
-use memory::paging::{self, Page, PageIter, ActivePageTable};
-use memory::{PAGE_SIZE, FrameAllocator, area_frame_allocator, page_table};
+use memory::paging::{self, Page, PageIter};
+use memory::{PAGE_SIZE, area_frame_allocator, page_table};
 
 pub struct StackAllocator {
     range: PageIter,
@@ -70,6 +70,7 @@ impl Stack {
         self.top
     }
 
+    #[allow(dead_code)]
     pub fn bottom(&self) -> usize {
         self.bottom
     }

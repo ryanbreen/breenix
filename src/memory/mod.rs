@@ -68,9 +68,10 @@ pub fn memory_controller() -> &'static mut MemoryController {
     }
 }
 
+#[allow(dead_code)]
 pub fn identity_map_range(start:usize, end: usize) {
-    let mut allocator:&'static mut AreaFrameAllocator = area_frame_allocator();
-    let mut active_table:&'static mut ActivePageTable = page_table();
+    let allocator:&'static mut AreaFrameAllocator = area_frame_allocator();
+    let active_table:&'static mut ActivePageTable = page_table();
     for page in Page::range_inclusive(Page::containing_address(start), Page::containing_address(end)) {
         active_table.map(page, paging::WRITABLE, allocator);
     }

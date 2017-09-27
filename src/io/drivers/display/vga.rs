@@ -1,9 +1,7 @@
 use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
-use constants::vga::{GREEN_BLANK, RED_BLANK};
 
 use io::drivers::display::text_buffer::TextBuffer;
 
-use core::fmt;
 use core::ptr::Unique;
 
 use spin::Mutex;
