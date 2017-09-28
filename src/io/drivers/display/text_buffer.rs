@@ -1,7 +1,7 @@
 use spin::Mutex;
-use io::drivers::display::vga::{VGA, Color, ScreenChar, ColorCode};
+use io::drivers::display::vga::{VGA, Color, ColorCode};
 
-use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, GREEN_BLANK, RED_BLANK, GRAY_BLANK};
+use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
 
 pub struct TextBuffer {
     chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],

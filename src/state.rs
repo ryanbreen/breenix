@@ -39,7 +39,7 @@ pub fn state() -> &'static mut State {
                 STATE_PTR = Some(&mut *Box::into_raw(State::new()));
                 match STATE_PTR {
                     Some(ref mut s) => {
-                        /// Do any sort of state init we need beyond new().
+                        //Do any sort of state init we need beyond new().
                         s
                     }
                     None => {

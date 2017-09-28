@@ -262,7 +262,7 @@ impl Scheduler {
     pub fn disable_interrupts(&self) {
         unsafe {
             use interrupts;
-            if interrupts::test_passed {
+            if interrupts::TEST_PASSED {
                 asm!("cli");
             }
         }
@@ -271,7 +271,7 @@ impl Scheduler {
     pub fn enable_interrupts(&self) {
         unsafe {
             use interrupts;
-            if interrupts::test_passed {
+            if interrupts::TEST_PASSED {
                 asm!("sti");
             }
         }

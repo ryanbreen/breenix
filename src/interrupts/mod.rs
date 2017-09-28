@@ -10,12 +10,8 @@ use core::fmt;
 
 use io::{keyboard, serial, timer, ChainedPics};
 use memory;
-use memory::MemoryController;
 
 use spin::Mutex;
-
-use x86::shared::irq;
-
 use spin::Once;
 
 use x86_64::structures::idt::{Idt, ExceptionStackFrame, PageFaultErrorCode};
@@ -27,7 +23,7 @@ static GDT: Once<gdt::Gdt> = Once::new();
 
 const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
-pub static mut test_passed: bool = false;
+pub static mut TEST_PASSED: bool = false;
 
 #[repr(C, packed)]
 struct InterruptContext {
@@ -74,8 +70,8 @@ pub unsafe fn test_interrupt() {
     use libbreenix;
     let res = libbreenix::sys_test();
     printk!("Syscall result is {}", res);
-    test_passed = res == 2016;
-    if !test_passed {
+    TEST_PASSED = res == 2016;
+    if !TEST_PASSED {
         panic!("test SYSCALL failed");
     }
 }
@@ -148,7 +144,7 @@ pub fn init() {
 
         test_interrupt();
 
-        if test_passed {
+        if TEST_PASSED {
             printk!("Test passed");
         }
     }
