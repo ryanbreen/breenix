@@ -2,7 +2,7 @@
 
 use alloc::allocator::AllocErr;
 use alloc::boxed::Box;
-use collections::VecDeque;
+use alloc::VecDeque;
 
 use core::fmt;
 use core::mem;

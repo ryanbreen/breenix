@@ -18,7 +18,7 @@ fn time() -> u64 {
   io::timer::real_time()
 }
 
-fn err(num: u64, a:u64, b:u64, c:u64, d:u64, e:u64, f:u64) -> u64 {
+fn err(num: u64, _a:u64, _b:u64, _c:u64, _d:u64, _e:u64, _f:u64) -> u64 {
   printk!("Unknown syscall of type {}", num);
   0
 }

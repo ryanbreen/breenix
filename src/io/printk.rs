@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
-use collections::Vec;
+use alloc::Vec;
 use core::fmt;
-use collections::string::String;
+use alloc::string::String;
 
 use io::serial;
 

@@ -1,6 +1,6 @@
 #![feature(alloc, allocator_api, box_syntax, box_patterns, macro_reexport, lang_items,
           heap_api, const_fn, const_unique_new, unique, asm, collections, trace_macros, const_unsafe_cell_new,
-          naked_functions, drop_types_in_const, stmt_expr_attributes, core_intrinsics, abi_x86_interrupt)]
+          naked_functions, stmt_expr_attributes, core_intrinsics, abi_x86_interrupt)]
 
 #![no_std]
 
@@ -14,19 +14,17 @@ extern crate tiered_allocator;
 extern crate libbreenix;
 
 #[macro_use]
-extern crate collections;
 extern crate alloc;
+
+#[allow(unused_extern_crates)]
 extern crate rlibc;
 
-#[macro_use]
 extern crate spin;
 
 #[macro_use]
 extern crate once;
 
 extern crate multiboot2;
-
-extern crate cpuio;
 
 extern crate bit_field;
 
@@ -38,7 +36,6 @@ extern crate bitflags;
 #[macro_use]
 extern crate lazy_static;
 
-#[macro_use(int)]
 extern crate x86;
 
 extern crate x86_64;
@@ -120,7 +117,7 @@ pub extern "C" fn rust_main(multiboot_information_address: usize) {
     printk!("Time is {}", io::timer::real_time());
 
     use alloc::boxed::Box;
-    use collections::Vec;
+    use alloc::Vec;
     let mut vec: Box<Vec<&'static str>> = Box::new(Vec::new());
 
     printk!("{} {}",

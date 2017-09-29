@@ -26,7 +26,7 @@ macro_rules! print {
 
 macro_rules! format {
   ($($arg:tt)*) => ({
-    use collections::string::String;
+    use alloc::string::String;
     use core::fmt;
     let mut output = String::new();
     let _ = fmt::write(&mut output, format_args!($($arg)*));

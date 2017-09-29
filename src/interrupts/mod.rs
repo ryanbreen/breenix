@@ -182,7 +182,7 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStac
     loop {}
 }
 
-extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
         asm!("cli");
@@ -235,7 +235,7 @@ extern "x86-interrupt" fn syscall_handler(stack_frame: &mut ExceptionStackFrame)
     }
 }
 
-extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn timer_handler(_stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
         asm!("cli");
@@ -259,7 +259,7 @@ extern "x86-interrupt" fn timer_handler(stack_frame: &mut ExceptionStackFrame)
     }
 }
 
-extern "x86-interrupt" fn keyboard_handler(stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut ExceptionStackFrame)
 {
     ::state().interrupt_count[KEYBOARD_INTERRUPT as usize] += 1;
 
@@ -270,7 +270,7 @@ extern "x86-interrupt" fn keyboard_handler(stack_frame: &mut ExceptionStackFrame
     }
 }
 
-extern "x86-interrupt" fn serial_handler(stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn serial_handler(_stack_frame: &mut ExceptionStackFrame)
 {
     ::state().interrupt_count[SERIAL_INTERRUPT as usize] += 1;
 
