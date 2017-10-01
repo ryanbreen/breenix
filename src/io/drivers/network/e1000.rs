@@ -7,6 +7,7 @@ use io::drivers::network::MacAddr;
 
 const REG_EEPROM: usize = 0x0014;
 
+#[allow(dead_code)]
 pub struct E1000 {
     pci_device: pci::Device,
     bar0_type: u8,
@@ -15,6 +16,7 @@ pub struct E1000 {
     mem_base: usize,
 }
 
+#[allow(unused_mut, unused_assignments)]
 impl E1000 {
     pub fn new(device: pci::Device) -> E1000 {
         let bar0:u8 = device.bar(0) as u8;
