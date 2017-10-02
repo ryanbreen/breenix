@@ -98,7 +98,7 @@ impl DeviceDriver for Rtl8139 {
 
         self.initialized = true;
 
-        printk!("NET - Found network device that needs {} of space, irq is {}, interrupt pin \
+        printk!("NET - Found RTL network device that needs {} of space, irq is {}, interrupt pin \
                   {}, command {}, MAC: {}",
                  rtl8139.bar(0),
                  0,
