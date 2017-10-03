@@ -43,6 +43,7 @@ impl Rtl8139Port {
 
 pub struct Rtl8139 {
     pci_device: pci::Device,
+    rx_ring: *mut [u8;8192],
     initialized: bool,
 }
 
@@ -50,6 +51,7 @@ impl Rtl8139 {
     pub fn new(device: pci::Device) -> Rtl8139 {
         let mut rtl8139: Rtl8139 = Rtl8139 {
             pci_device: device,
+            rx_ring:0x0 as *mut [u8;8192],
             initialized: false,
         };
 
@@ -88,12 +90,16 @@ impl DeviceDriver for Rtl8139 {
                     port.idr[5].read()]
             };
 
-            /*
-            use alloc::heap;
-            let heap_addr:*mut u8 = heap::allocate(8192+16, 8);
-            port.rbstart.write(heap_addr as u32);
-            printk!("Performing DMA at a {} sized buffer starting at 0x{:x}", 8192+16, heap_addr as u32);
-            */
+            use memory::slab_allocator::allocate;
+            let rx_ring_addr:*mut u8 = allocate(8192, 8).expect("Failed to allocate memory for network controller");
+            self.rx_ring = *rx_ring_addr as *mut [u8; 8192];
+            port.rbstart.write(rx_ring_addr as u32);
+
+            for i in 0..16 {
+                printk!("{} == {:x}", i, (*self.rx_ring)[i]);
+            }
+
+            printk!("Performing DMA at a {} sized buffer starting at 0x{:x}", 8192, rx_ring_addr as u32);
         }
 
         self.initialized = true;
