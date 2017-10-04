@@ -97,6 +97,9 @@ lazy_static! {
         idt.interrupts[(TIMER_INTERRUPT - 32) as usize].set_handler_fn(timer_handler);
         idt.interrupts[(KEYBOARD_INTERRUPT - 32) as usize].set_handler_fn(keyboard_handler);
 
+        idt.interrupts[32 + 11].set_handler_fn(nic_interrupt_handler);
+        idt.interrupts[11].set_handler_fn(nic_interrupt_handler);
+
         idt
     };
 }
@@ -160,6 +163,10 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut ExceptionStackFra
     printk!("\nEXCEPTION: BREAKPOINT at {:#x}\n{:#?}",
              stack_frame.instruction_pointer,
              stack_frame);
+}
+
+extern "x86-interrupt" fn nic_interrupt_handler(_stack_frame: &mut ExceptionStackFrame) {
+    printk!("Packet received!!!");
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackFrame,

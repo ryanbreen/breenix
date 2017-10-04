@@ -104,11 +104,12 @@ impl Rtl8139 {
             };
 
             rtl8139.initialize();        
-            rtl8139.listen();
+            //rtl8139.listen();
             rtl8139
         }
     }
 
+    #[allow(dead_code)]
     unsafe fn listen(&mut self) {
         while self.port.command_register.read() & RxBufEmpty as u8 != RxBufEmpty as u8 {
             let mut port:Port<u8> = Port::new(0x80);
@@ -119,6 +120,8 @@ impl Rtl8139 {
             } 
         }
         printk!("Something happened!!");
+
+        self.port.isr.write(0x1);
     }
 }
 
@@ -131,6 +134,11 @@ impl DeviceDriver for Rtl8139 {
 
         let mac:MacAddr;
         unsafe {
+
+            let irq = rtl8139.read(0x3C) as u8 & 0xF;
+            let interrupt_pin = rtl8139.read(0x3D) as u8 & 0xF;
+
+            printk!("{} {}", irq, interrupt_pin);
 
             // power on!
             self.port.config1.write(0);
@@ -166,12 +174,19 @@ impl DeviceDriver for Rtl8139 {
             let mulint_mask = self.port.mulint.read() & 0xf000;
             self.port.mulint.write(mulint_mask); 
 
-            //Enable all possible interrupts by setting the interrupt mask. 
-            self.port.imr.write(INT_MASK); 
+            // Enable all possible interrupts by setting the interrupt mask. 
+            self.port.imr.write(INT_MASK);
 
+            // Interrupt Status - Clears the Rx OK bit, acknowledging a packet has been received, 
+            // and is now in rx_buffer
+            self.port.isr.write(0x1);
+
+            let mut sum:u64 = 0;
             for i in 0..32 {
-                printk!("{} == {:x}", i, (*self.rx_ring)[i]);
+                //printk!("{} == {:x}", i, (*self.rx_ring)[i]);
+                //sum += (*self.rx_ring)[i] as u64;
             }
+            //printk!("Sum: {}", sum);
 
             printk!("Performing DMA at a {} sized buffer starting at 0x{:x}", 8192, rx_ring_addr as u32);
         }
@@ -185,5 +200,7 @@ impl DeviceDriver for Rtl8139 {
                  0,
                  0,
                  mac);
+
+            self.port.isr.write(0x1);
     }
 }
