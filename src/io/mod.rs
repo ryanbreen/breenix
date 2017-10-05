@@ -102,6 +102,9 @@ struct Pic {
 
 impl Pic {
     fn handles_interrupt(&self, interrupt_id: u8) -> bool {
+        if interrupt_id != 32 {
+            printk!("{:x}", interrupt_id);
+        }
         self.offset <= interrupt_id && interrupt_id < self.offset + 8
     }
 
@@ -159,6 +162,31 @@ impl ChainedPics {
         wait();
         self.pics[1].data.write(MODE_8086);
         wait();
+    }
+
+    pub fn get_irq_mask(&mut self, irq_line:u8) -> u8 {
+        
+        let mut irq = irq_line;
+        let mut pic_idx = 0;
+        if irq_line >= 8 {
+            pic_idx = 1;
+            irq -= 8;
+        }
+
+        self.pics[pic_idx].data.read() & (1 << irq)
+    }
+
+    pub fn clear_irq_mask(&mut self, irq_line:u8) {
+        
+        let mut irq = irq_line;
+        let mut pic_idx = 0;
+        if irq_line >= 8 {
+            pic_idx = 1;
+            irq -= 8;
+        }
+
+        let value = self.pics[pic_idx].data.read() & !(1 << irq);
+        self.pics[pic_idx].data.write(value); 
     }
 
     pub fn handles_interrupt(&self, interrupt_id: u8) -> bool {

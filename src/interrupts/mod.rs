@@ -97,8 +97,8 @@ lazy_static! {
         idt.interrupts[(TIMER_INTERRUPT - 32) as usize].set_handler_fn(timer_handler);
         idt.interrupts[(KEYBOARD_INTERRUPT - 32) as usize].set_handler_fn(keyboard_handler);
 
-        idt.interrupts[32 + 11].set_handler_fn(nic_interrupt_handler);
         idt.interrupts[11].set_handler_fn(nic_interrupt_handler);
+        idt.interrupts[15].set_handler_fn(nic_interrupt_handler);
 
         idt
     };
@@ -149,6 +149,9 @@ pub fn init() {
 
         if TEST_PASSED {
             printk!("Test passed");
+
+            let irq_base = (0x20 as usize + 16) & 0xfffffff0;
+            printk!("irq: {:x}", irq_base);
         }
     }
 }

@@ -174,6 +174,11 @@ impl DeviceDriver for Rtl8139 {
             let mulint_mask = self.port.mulint.read() & 0xf000;
             self.port.mulint.write(mulint_mask); 
 
+            // Clear IRQ mask
+            use interrupts::PICS;
+            printk!("{:x}", PICS.lock().get_irq_mask(irq));
+            PICS.lock().clear_irq_mask(irq);
+
             // Enable all possible interrupts by setting the interrupt mask. 
             self.port.imr.write(INT_MASK);
 
