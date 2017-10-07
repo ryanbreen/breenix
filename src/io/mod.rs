@@ -82,7 +82,7 @@ impl<T: InOut> Port<T> {
     /// Read data from the port.  This is nominally safe, because you
     /// shouldn't be able to get hold of a port object unless somebody
     /// thinks it's safe to give you one.
-    pub fn read(&mut self) -> T {
+    pub fn read(&self) -> T {
         unsafe { T::port_in(self.port) }
     }
 

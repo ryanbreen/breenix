@@ -1,4 +1,6 @@
 
+use core::fmt;
+
 use io::Port;
 use io::pci;
 use io::drivers::DeviceDriver;
@@ -80,6 +82,28 @@ impl Rtl8139Port {
     }
 }
 
+impl fmt::Debug for Rtl8139Port {
+
+    #[allow(unused_must_use)]
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Rtl8139 Ports:\n");
+        write!(f, "\tidr0: {:x}, idr1: {:x}, idr2: {:x}\n", self.idr[0].read(), self.idr[1].read(), self.idr[2].read());
+        write!(f, "\tidr3: {:x}, idr4: {:x}, idr5: {:x}\n", self.idr[3].read(), self.idr[4].read(), self.idr[5].read());
+        write!(f, "\trbstart: {:x}\n", self.rbstart.read());
+        write!(f, "\tcommand_register: {:x}\n", self.command_register.read());
+        write!(f, "\tcapr: {:x}\n", self.capr.read());
+        write!(f, "\tcbr: {:x}\n", self.cbr.read());
+        write!(f, "\timr: {:x}\n", self.imr.read());
+        write!(f, "\tisr: {:x}\n", self.isr.read());
+        write!(f, "\ttcr: {:x}\n", self.tcr.read());
+        write!(f, "\trcr: {:x}\n", self.rcr.read());
+        write!(f, "\tmpc: {:x}\n", self.mpc.read());
+        write!(f, "\tconfig: {:x}\n", self.config1.read());
+        write!(f, "\tmulint: {:x}\n", self.mulint.read())
+    }
+
+}
+
 pub struct Rtl8139 {
     pci_device: pci::Device,
     rx_ring: *mut [u8;8192],
@@ -103,7 +127,10 @@ impl Rtl8139 {
                 initialized: false,
             };
 
-            rtl8139.initialize();        
+            printk!("{:?}", rtl8139);
+            rtl8139.initialize();
+            printk!("{:?}", rtl8139);
+
             //rtl8139.listen();
             rtl8139
         }
@@ -123,6 +150,14 @@ impl Rtl8139 {
 
         self.port.isr.write(0x1);
     }
+}
+
+impl fmt::Debug for Rtl8139 {
+
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self.port)
+    }
+
 }
 
 const RTL8139_CR_RST: u8 = 1 << 4;
@@ -185,6 +220,17 @@ impl DeviceDriver for Rtl8139 {
             // Interrupt Status - Clears the Rx OK bit, acknowledging a packet has been received, 
             // and is now in rx_buffer
             self.port.isr.write(0x1);
+
+            self.port.command_register.write(0x5);
+
+            for _ in 0..100 {
+                let isr = self.port.isr.read();
+                if isr & 0x20 != 0 {
+                    self.port.isr.write(0x20);
+                    printk!("isr {:x}", isr);
+                    break;
+                }
+            }
 
             let mut sum:u64 = 0;
             for i in 0..32 {
