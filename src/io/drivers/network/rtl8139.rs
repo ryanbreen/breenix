@@ -51,8 +51,10 @@ pub struct Rtl8139Port {
     pub isr: Port<u16>,
     pub tcr: Port<u32>,
     pub rcr: Port<u32>,
+    pub time_count: Port<u32>,
     pub mpc: Port<u16>,
     pub config1: Port<u8>,
+    pub config2: Port<u16>,
     pub mulint: Port<u32>,
 }
 
@@ -74,8 +76,10 @@ impl Rtl8139Port {
                 isr: Port::new(base + 0x3E),
                 tcr: Port::new(base + 0x40),
                 rcr: Port::new(base + 0x44),
+                time_count: Port::new(base + 0x48),
                 mpc: Port::new(base + 0x4C),
                 config1: Port::new(base + 0x52),
+                config2: Port::new(base + 0x54),
                 mulint: Port::new(base + 0x5C),
             };
         }
@@ -96,9 +100,11 @@ impl fmt::Debug for Rtl8139Port {
         write!(f, "\timr: {:x}\n", self.imr.read());
         write!(f, "\tisr: {:x}\n", self.isr.read());
         write!(f, "\ttcr: {:x}\n", self.tcr.read());
+        write!(f, "\ttime_count: {:x}\n", self.time_count.read());
         write!(f, "\trcr: {:x}\n", self.rcr.read());
         write!(f, "\tmpc: {:x}\n", self.mpc.read());
         write!(f, "\tconfig: {:x}\n", self.config1.read());
+        write!(f, "\tconfig2: {:x}\n", self.config2.read());
         write!(f, "\tmulint: {:x}\n", self.mulint.read())
     }
 
@@ -207,12 +213,18 @@ impl DeviceDriver for Rtl8139 {
 
             // No early rx-interrupts
             let mulint_mask = self.port.mulint.read() & 0xf000;
-            self.port.mulint.write(mulint_mask); 
+            self.port.mulint.write(mulint_mask);
 
             // Clear IRQ mask
             use interrupts::PICS;
+            let _ = PICS.lock().get_irr();
+            let _ = PICS.lock().get_isr();
+            printk!("{:?}", PICS);
             printk!("{:x}", PICS.lock().get_irq_mask(irq));
             PICS.lock().clear_irq_mask(irq);
+            let _ = PICS.lock().get_irr();
+            let _ = PICS.lock().get_isr();
+            printk!("{:?}", PICS);
 
             // Enable all possible interrupts by setting the interrupt mask. 
             self.port.imr.write(INT_MASK);
@@ -252,6 +264,10 @@ impl DeviceDriver for Rtl8139 {
                  0,
                  mac);
 
-            self.port.isr.write(0x1);
+        self.port.isr.write(0x1);
+
+        // Attempting to see some interrupts by enabling timer
+        self.port.config2.write(32768);//set rate ~1ms
+        self.port.time_count.write(0); //set timer count to 0
     }
 }

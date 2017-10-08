@@ -4,17 +4,10 @@ use x86::shared::io::{inl, outl, outw, inw, outb, inb};
 
 use event;
 
-/// Command sent to begin PIC initialization.
-const CMD_INIT: u8 = 0x11;
-
-/// Command sent to acknowledge an interrupt.
-const CMD_END_OF_INTERRUPT: u8 = 0x20;
-
-// The mode in which we want to run our PICs.
-const MODE_8086: u8 = 0x01;
-
 #[macro_use]
 pub mod keyboard;
+
+pub mod pic;
 
 pub mod pci;
 
@@ -90,115 +83,6 @@ impl<T: InOut> Port<T> {
     pub fn write(&mut self, value: T) {
         unsafe {
             T::port_out(self.port, value);
-        }
-    }
-}
-
-struct Pic {
-    offset: u8,
-    command: Port<u8>,
-    data: Port<u8>,
-}
-
-impl Pic {
-    fn handles_interrupt(&self, interrupt_id: u8) -> bool {
-        if interrupt_id != 32 {
-            printk!("{:x}", interrupt_id);
-        }
-        self.offset <= interrupt_id && interrupt_id < self.offset + 8
-    }
-
-    unsafe fn end_of_interrupt(&mut self) {
-        self.command.write(CMD_END_OF_INTERRUPT);
-    }
-}
-
-pub struct ChainedPics {
-    pics: [Pic; 2],
-}
-
-impl ChainedPics {
-    pub const unsafe fn new(offset1: u8, offset2: u8) -> ChainedPics {
-        ChainedPics {
-            pics: [Pic {
-                       offset: offset1,
-                       command: Port::new(0x20),
-                       data: Port::new(0x21),
-                   },
-                   Pic {
-                       offset: offset2,
-                       command: Port::new(0xA0),
-                       data: Port::new(0xA1),
-                   }],
-        }
-    }
-
-    pub unsafe fn initialize(&mut self) {
-
-        let mut wait_port: Port<u8> = Port::new(0x80);
-        let mut wait = || wait_port.write(0);
-
-        // Tell each PIC that we're going to send it a three-byte
-        // initialization sequence on its data port.
-        self.pics[0].command.write(CMD_INIT);
-        wait();
-        self.pics[1].command.write(CMD_INIT);
-        wait();
-
-        // Byte 1: Set up our base offsets.
-        self.pics[0].data.write(self.pics[0].offset);
-        wait();
-        self.pics[1].data.write(self.pics[1].offset);
-        wait();
-
-        // Byte 2: Configure chaining between PIC1 and PIC2.
-        self.pics[0].data.write(4);
-        wait();
-        self.pics[1].data.write(2);
-        wait();
-
-        // Byte 3: Set our mode.
-        self.pics[0].data.write(MODE_8086);
-        wait();
-        self.pics[1].data.write(MODE_8086);
-        wait();
-    }
-
-    pub fn get_irq_mask(&mut self, irq_line:u8) -> u8 {
-        
-        let mut irq = irq_line;
-        let mut pic_idx = 0;
-        if irq_line >= 8 {
-            pic_idx = 1;
-            irq -= 8;
-        }
-
-        self.pics[pic_idx].data.read() & (1 << irq)
-    }
-
-    pub fn clear_irq_mask(&mut self, irq_line:u8) {
-        
-        let mut irq = irq_line;
-        let mut pic_idx = 0;
-        if irq_line >= 8 {
-            pic_idx = 1;
-            irq -= 8;
-        }
-
-        let value = self.pics[pic_idx].data.read() & !(1 << irq);
-        self.pics[pic_idx].data.write(value); 
-    }
-
-    pub fn handles_interrupt(&self, interrupt_id: u8) -> bool {
-        self.pics.iter().any(|p| p.handles_interrupt(interrupt_id))
-    }
-
-    pub unsafe fn notify_end_of_interrupt(&mut self, interrupt_id: u8) {
-        if self.handles_interrupt(interrupt_id) {
-            if self.pics[1].handles_interrupt(interrupt_id) {
-                self.pics[1].end_of_interrupt();
-            }
-            self.pics[0].end_of_interrupt();
         }
     }
 }

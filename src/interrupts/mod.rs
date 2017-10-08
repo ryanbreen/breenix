@@ -8,7 +8,8 @@ use constants::timer::TIMER_INTERRUPT;
 
 use core::fmt;
 
-use io::{keyboard, serial, timer, ChainedPics};
+use io::{keyboard, serial, timer};
+use io::pic::ChainedPics;
 use memory;
 
 use spin::Mutex;
