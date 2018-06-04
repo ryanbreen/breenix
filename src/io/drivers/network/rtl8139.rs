@@ -231,7 +231,7 @@ impl DeviceDriver for Rtl8139 {
 
             // Interrupt Status - Clears the Rx OK bit, acknowledging a packet has been received, 
             // and is now in rx_buffer
-            self.port.isr.write(0x1);
+            //self.port.isr.write(0x1);
 
             self.port.command_register.write(0x5);
 

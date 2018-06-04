@@ -25,7 +25,7 @@ struct Pic {
 
 impl Pic {
     fn handles_interrupt(&self, interrupt_id: u8) -> bool {
-        if interrupt_id != 32 {
+        if interrupt_id != 32 && interrupt_id != 21 {
             printk!("{:x}", interrupt_id);
         }
         self.offset <= interrupt_id && interrupt_id < self.offset + 8
