@@ -1,21 +1,21 @@
 use core::marker::PhantomData;
 
-use x86::shared::io::{inl, outl, outw, inw, outb, inb};
+use x86::io::{inl, outl, outw, inw, outb, inb};
 
-use event;
+//use event;
 
-#[macro_use]
-pub mod keyboard;
+//#[macro_use]
+//pub mod keyboard;
 
-pub mod pic;
+//pub mod pic;
 
-pub mod pci;
+//pub mod pci;
 
-pub mod printk;
+//pub mod printk;
 
-pub mod serial;
+//pub mod serial;
 
-pub mod timer;
+//pub mod timer;
 
 pub mod drivers;
 
@@ -87,9 +87,11 @@ impl<T: InOut> Port<T> {
     }
 }
 
+/*
 pub fn initialize() {
     serial::initialize();
     timer::initialize();
     event::keyboard::initialize();
     pci::initialize();
 }
+*/

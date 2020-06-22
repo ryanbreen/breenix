@@ -1,7 +1,10 @@
 use spin::Mutex;
-use io::drivers::display::vga::{VGA, Color, ColorCode};
 
-use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
+use core::fmt;
+
+use crate::io::drivers::display::vga::{VGA, Color, ColorCode};
+
+use crate::constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
 
 pub struct TextBuffer {
     chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],
@@ -149,5 +152,24 @@ pub fn toggle() {
         ACTIVE_BUFFER = new_active;
         ACTIVE_BUFFER.lock().activate();
         ACTIVE_BUFFER.lock().sync();
+    }
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::io::drivers::display::text_buffer::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    unsafe {
+        ACTIVE_BUFFER.lock().write_fmt(args).unwrap();
     }
 }

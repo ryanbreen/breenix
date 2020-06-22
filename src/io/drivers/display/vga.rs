@@ -1,6 +1,6 @@
-use constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
+use crate::constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
 
-use io::drivers::display::text_buffer::TextBuffer;
+use crate::io::drivers::display::text_buffer::TextBuffer;
 
 use core::ptr::Unique;
 
@@ -75,10 +75,10 @@ impl VGA {
         }
     }
 
-    #[allow(exceeding_bitshifts)]
+    #[allow(arithmetic_overflow)]
     pub fn update_cursor(&self, row: usize, col: usize) {
         let position: u16 = (row as u16 * (BUFFER_WIDTH as u16)) + col as u16;
-        use io::Port;
+        use crate::io::Port;
 
         unsafe {
             let mut cursor_control_port: Port<u8> = Port::new(0x3D4);
