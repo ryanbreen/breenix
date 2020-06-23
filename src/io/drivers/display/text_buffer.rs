@@ -1,3 +1,4 @@
+use lazy_static::lazy_static;
 use spin::Mutex;
 
 use core::fmt;
@@ -118,11 +119,6 @@ pub static PRINT_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     interactive: false,
 });
 
-pub fn print(s: &str) {
-    use core::fmt::Write;
-    PRINT_BUFFER.lock().write_str(s).unwrap();
-}
-
 pub static KEYBOARD_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     column_position: 0,
     color_code: ColorCode::new(Color::LightRed, Color::Black),
@@ -139,25 +135,29 @@ pub static DEBUG_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
     interactive: false,
 });
 
-pub static mut ACTIVE_BUFFER: &'static Mutex<TextBuffer> = &PRINT_BUFFER;
-static mut INACTIVE_BUFFERS: [&'static Mutex<TextBuffer>; 2] = [&DEBUG_BUFFER, &KEYBOARD_BUFFER];
+lazy_static! {
+    pub static ref BUFFERS: [&'static Mutex<TextBuffer>; 3] = [&PRINT_BUFFER, &DEBUG_BUFFER, &KEYBOARD_BUFFER];
+    pub static ref ACTIVE_BUFFER: Mutex<usize> = Mutex::new(0);
+}
 
 pub fn toggle() {
-    unsafe {
-        ACTIVE_BUFFER.lock().deactivate();
 
-        let new_active = INACTIVE_BUFFERS[0];
-        INACTIVE_BUFFERS[0] = INACTIVE_BUFFERS[1];
-        INACTIVE_BUFFERS[1] = ACTIVE_BUFFER;
-        ACTIVE_BUFFER = new_active;
-        ACTIVE_BUFFER.lock().activate();
-        ACTIVE_BUFFER.lock().sync();
-    }
+    let mut active = ACTIVE_BUFFER.lock();
+
+    BUFFERS[*active].lock().deactivate();
+
+    *active = match *active {
+        2 => 0,
+        _ => *active + 1
+    };
+
+    BUFFERS[*active].lock().activate();
+    BUFFERS[*active].lock().sync();
 }
 
 #[macro_export]
 macro_rules! print {
-    ($($arg:tt)*) => ($crate::io::drivers::display::text_buffer::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::io::drivers::display::text_buffer::print(format_args!($($arg)*)));
 }
 
 #[macro_export]
@@ -167,9 +167,7 @@ macro_rules! println {
 }
 
 #[doc(hidden)]
-pub fn _print(args: fmt::Arguments) {
+pub fn print(args: fmt::Arguments) {
     use core::fmt::Write;
-    unsafe {
-        ACTIVE_BUFFER.lock().write_fmt(args).unwrap();
-    }
+    BUFFERS[*ACTIVE_BUFFER.lock()].lock().write_fmt(args).unwrap();
 }
