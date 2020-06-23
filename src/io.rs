@@ -13,7 +13,7 @@ use x86::io::{inl, outl, outw, inw, outb, inb};
 
 //pub mod printk;
 
-//pub mod serial;
+pub mod serial;
 
 //pub mod timer;
 
@@ -87,11 +87,10 @@ impl<T: InOut> Port<T> {
     }
 }
 
-/*
 pub fn initialize() {
     serial::initialize();
-    timer::initialize();
-    event::keyboard::initialize();
-    pci::initialize();
+    //timer::initialize();
+    //event::keyboard::initialize();
+    //pci::initialize();
 }
-*/
+

@@ -1,52 +1,38 @@
-use debug;
-use constants::serial::COM1;
-use x86::shared::io::{inb, outb};
+use uart_16550::SerialPort;
+use spin::Mutex;
+use lazy_static::lazy_static;
 
-unsafe fn is_transmit_empty() -> u8 {
-    return inb(COM1 + 5) & 0x20;
+lazy_static! {
+    pub static ref SERIAL1: Mutex<SerialPort> = {
+        let mut serial_port = unsafe { SerialPort::new(0x3F8) };
+        serial_port.init();
+        Mutex::new(serial_port)
+    };
 }
 
-pub fn write_char(c: char) {
-    unsafe {
-        while is_transmit_empty() == 0 {}
-
-        outb(COM1, c as u8);
-    }
+#[doc(hidden)]
+pub fn _print(args: ::core::fmt::Arguments) {
+    use core::fmt::Write;
+    SERIAL1.lock().write_fmt(args).expect("Printing to serial failed");
 }
 
-pub fn write(s: &str) {
-    for c in s.chars() {
-        write_char(c);
-    }
+/// Prints to the host through the serial interface.
+#[macro_export]
+macro_rules! serial_print {
+    ($($arg:tt)*) => {
+        $crate::io::serial::_print(format_args!($($arg)*));
+    };
 }
 
-unsafe fn serial_received() -> u8 {
-    return inb(COM1 + 5) & 1;
-}
-
-fn read_char() -> char {
-    unsafe {
-        while serial_received() == 0 {}
-
-        inb(COM1) as char
-    }
-}
-
-pub fn read() {
-    debug::handle_serial_input(read_char() as u8);
+/// Prints to the host through the serial interface, appending a newline.
+#[macro_export]
+macro_rules! serial_println {
+    () => ($crate::serial_print!("\n"));
+    ($fmt:expr) => ($crate::serial_print!(concat!($fmt, "\n")));
+    ($fmt:expr, $($arg:tt)*) => ($crate::serial_print!(
+        concat!($fmt, "\n"), $($arg)*));
 }
 
 pub fn initialize() {
-    unsafe {
-        outb(COM1 + 1, 0x00);    // Disable all interrupts
-        outb(COM1 + 3, 0x80);    // Enable DLAB (set baud rate divisor)
-        outb(COM1 + 0, 0x03);    // Set divisor to 3 (lo byte) 38400 baud
-        outb(COM1 + 1, 0x00);    //                  (hi byte)
-        outb(COM1 + 3, 0x03);    // 8 bits, no parity, one stop bit
-        outb(COM1 + 2, 0xC7);    // Enable FIFO, clear them, with 14-byte threshold
-        outb(COM1 + 4, 0x0B);    // IRQs enabled, RTS/DSR set
-        outb(COM1 + 1, 0x01);    // Disable all interrupts
-
-        write("serial port initialized\n");
-    }
+    serial_println!("serial port initialized");
 }
