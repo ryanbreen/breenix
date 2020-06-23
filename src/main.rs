@@ -1,7 +1,7 @@
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
 
-#![feature(ptr_internals, const_fn, custom_test_frameworks)]
+#![feature(ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks)]
 
 #![test_runner(breenix::test_runner)]
 #![reexport_test_harness_main = "test_main"]
@@ -10,6 +10,7 @@ use core::panic::PanicInfo;
 
 pub mod constants;
 pub mod io;
+pub mod interrupts;
 
 /// This function is called on panic.
 #[cfg(not(test))]
@@ -35,6 +36,10 @@ pub extern "C" fn _start() {
     println!("We're back{}", "!");
 
     io::initialize();
+    interrupts::initialize();
+
+    // invoke a breakpoint exception
+    x86_64::instructions::interrupts::int3();
 
     #[cfg(test)]
     test_main();

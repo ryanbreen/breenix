@@ -1,6 +1,6 @@
 #![no_std]
 #![cfg_attr(test, no_main)]
-#![feature(ptr_internals, const_fn, custom_test_frameworks)]
+#![feature(ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks)]
 
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
@@ -8,6 +8,7 @@
 use core::panic::PanicInfo;
 
 pub mod constants;
+pub mod interrupts;
 pub mod io;
 
 pub trait Testable {
@@ -67,6 +68,10 @@ fn panic(info: &PanicInfo) -> ! {
 #[cfg(test)]
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+
+    io::initialize();
+    interrupts::initialize();
+
     test_main();
     loop {}
 }

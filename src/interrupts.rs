@@ -1,27 +1,27 @@
-mod gdt;
-mod syscall;
-
-use constants::keyboard::KEYBOARD_INTERRUPT;
-use constants::serial::SERIAL_INTERRUPT;
-use constants::syscall::SYSCALL_INTERRUPT;
-use constants::timer::TIMER_INTERRUPT;
+use crate::println;
+use crate::constants::keyboard::KEYBOARD_INTERRUPT;
+use crate::constants::serial::SERIAL_INTERRUPT;
+use crate::constants::syscall::SYSCALL_INTERRUPT;
+use crate::constants::timer::TIMER_INTERRUPT;
 
 use core::fmt;
 
-use io::{keyboard, serial, timer};
-use io::pic::ChainedPics;
-use memory;
+//use crate::io::{keyboard, serial, timer};
+//use crate::io::pic::ChainedPics;
+//use crate::memory;
+
+use lazy_static::lazy_static;
 
 use spin::Mutex;
 use spin::Once;
 
-use x86_64::structures::idt::{Idt, ExceptionStackFrame, PageFaultErrorCode};
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use x86_64::structures::tss::TaskStateSegment;
-use x86_64::VirtualAddress;
-
+//use x86_64::VirtualAddress;
+/*
 static TSS: Once<TaskStateSegment> = Once::new();
 static GDT: Once<gdt::Gdt> = Once::new();
-
+*/
 const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
 pub static mut TEST_PASSED: bool = false;
@@ -66,48 +66,56 @@ impl fmt::Debug for InterruptContext {
     }
 }
 
-
+/*
 pub unsafe fn test_interrupt() {
     use libbreenix;
     let res = libbreenix::sys_test();
-    printk!("Syscall result is {}", res);
+    println!("Syscall result is {}", res);
     TEST_PASSED = res == 2016;
     if !TEST_PASSED {
         panic!("test SYSCALL failed");
     }
 }
+*/
 
 lazy_static! {
-    static ref IDT: Idt = {
-        let mut idt = Idt::new();
-        idt.divide_by_zero.set_handler_fn(divide_by_zero_handler);
+    static ref IDT: InterruptDescriptorTable = {
+
+        let mut idt = InterruptDescriptorTable::new();
+        //idt.divide_by_zero.set_handler_fn(divide_by_zero_handler);
         idt.breakpoint.set_handler_fn(breakpoint_handler);
-        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-        idt.page_fault.set_handler_fn(page_fault_handler);
+        //idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        //idt.page_fault.set_handler_fn(page_fault_handler);
+        /*
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX as u16);
         }
-
+    
         for i in 0..256-32 {
             idt.interrupts[i].set_handler_fn(dummy_error_handler);
         }
-
+        */
+    
+        /*
         idt.interrupts[(SERIAL_INTERRUPT - 32) as usize].set_handler_fn(serial_handler);
         idt.interrupts[(SYSCALL_INTERRUPT - 32) as usize].set_handler_fn(syscall_handler);
         idt.interrupts[(TIMER_INTERRUPT - 32) as usize].set_handler_fn(timer_handler);
         idt.interrupts[(KEYBOARD_INTERRUPT - 32) as usize].set_handler_fn(keyboard_handler);
-
+        
         idt.interrupts[11].set_handler_fn(nic_interrupt_handler);
         idt.interrupts[15].set_handler_fn(nic_interrupt_handler);
+        **/
 
         idt
     };
 }
 
 #[allow(dead_code)]
-pub fn init() {
+pub fn initialize() {
 
+
+    /*
     use x86_64::structures::gdt::SegmentSelector;
     use x86_64::instructions::segmentation::set_cs;
     use x86_64::instructions::tables::load_tss;
@@ -139,9 +147,11 @@ pub fn init() {
         // load TSS
         load_tss(tss_selector);
     }
+    */
 
     IDT.load();
 
+    /*
     unsafe {
 
         PICS.lock().initialize();
@@ -149,46 +159,51 @@ pub fn init() {
         test_interrupt();
 
         if TEST_PASSED {
-            printk!("Test passed");
+            println!("Test passed");
 
             let irq_base = (0x20 as usize + 16) & 0xfffffff0;
-            printk!("irq: {:x}", irq_base);
+            println!("irq: {:x}", irq_base);
         }
     }
+    */
 }
 
-extern "x86-interrupt" fn dummy_error_handler(stack_frame: &mut ExceptionStackFrame)
+
+extern "x86-interrupt" fn dummy_error_handler(stack_frame: &mut InterruptStackFrame)
 {
-    printk!("\nEXCEPTION: UNHANDLED at {:#x}\n{:#?}",
-        stack_frame.instruction_pointer, stack_frame);
+    println!("EXCEPTION: UNHANDLED\n{:#?}", stack_frame);
 }
 
-extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut ExceptionStackFrame) {
-    printk!("\nEXCEPTION: BREAKPOINT at {:#x}\n{:#?}",
-             stack_frame.instruction_pointer,
-             stack_frame);
+#[test_case]
+fn test_breakpoint_exception() {
+    // invoke a breakpoint exception
+    x86_64::instructions::interrupts::int3();
 }
 
+extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut InterruptStackFrame) {
+    println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+}
+/*
 extern "x86-interrupt" fn nic_interrupt_handler(_stack_frame: &mut ExceptionStackFrame) {
-    printk!("Packet received!!!");
+    println!("Packet received!!!");
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackFrame,
     _error_code: u64)
 {
-    printk!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+    println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
     loop {}
 }
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    printk!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
+    println!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
     loop {}
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStackFrame)
 {
-    printk!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
+    println!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
             stack_frame.instruction_pointer, stack_frame);
     loop {}
 }
@@ -205,7 +220,7 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame
         // than pop it from the stack.
         my_sp -= 8 * 13;
 
-        //printk!("SYSCALL:\n{:#?}", stack_frame);
+        //println!("SYSCALL:\n{:#?}", stack_frame);
 
         ::state().interrupt_count[SYSCALL_INTERRUPT as usize] += 1;
 
@@ -241,7 +256,7 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame
                 pop    %r15
                 pop    %rbp
                 sti
-                iretq" : /* no outputs */ : "r"(my_sp), "r"(res) : );
+                iretq" :  : "r"(my_sp), "r"(res) : );
             
     }
 }
@@ -294,7 +309,7 @@ extern "x86-interrupt" fn serial_handler(_stack_frame: &mut ExceptionStackFrame)
 
 extern "x86-interrupt" fn page_fault_handler(stack_frame: &mut ExceptionStackFrame, error_code: PageFaultErrorCode) {
     use x86_64::registers::control_regs;
-    printk!("\nEXCEPTION: PAGE FAULT while accessing {:#x}\nerror code: \
+    println!("\nEXCEPTION: PAGE FAULT while accessing {:#x}\nerror code: \
                                   {:?}\n{:#?}",
              control_regs::cr2(),
              error_code,
@@ -305,3 +320,4 @@ extern "x86-interrupt" fn page_fault_handler(stack_frame: &mut ExceptionStackFra
 /// Interface to our PIC (programmable interrupt controller) chips.  We
 /// want to map hardware interrupts to 0x20 (for PIC1) or 0x28 (for PIC2).
 pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe { ChainedPics::new(0x20, 0x28) });
+*/
