@@ -1,4 +1,5 @@
 pub mod display;
+pub mod qemu;
 //pub mod network;
 /*
 pub trait DeviceDriver {

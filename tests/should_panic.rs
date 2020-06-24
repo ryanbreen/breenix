@@ -2,7 +2,8 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use breenix::{QemuExitCode, exit_qemu, serial_println, serial_print};
+use breenix::{serial_println, serial_print};
+use breenix::io::drivers::qemu::{exit_qemu, QemuExitCode};
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {

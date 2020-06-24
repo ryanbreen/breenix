@@ -6,7 +6,7 @@
 use core::panic::PanicInfo;
 
 use breenix::{serial_print, serial_println};
-use breenix::{exit_qemu, QemuExitCode};
+use breenix::io::drivers::qemu::{exit_qemu, QemuExitCode};
 use x86_64::structures::idt::InterruptStackFrame;
 
 use lazy_static::lazy_static;
