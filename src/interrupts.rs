@@ -1,5 +1,6 @@
 use crate::println;
 use crate::constants::keyboard::KEYBOARD_INTERRUPT;
+use crate::constants::interrupts::DOUBLE_FAULT_IST_INDEX;
 use crate::constants::serial::SERIAL_INTERRUPT;
 use crate::constants::syscall::SYSCALL_INTERRUPT;
 use crate::constants::timer::TIMER_INTERRUPT;
@@ -15,14 +16,15 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 use spin::Once;
 
+pub mod gdt;
+
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
-use x86_64::structures::tss::TaskStateSegment;
-//use x86_64::VirtualAddress;
 /*
+
+use x86_64::structures::tss::TaskStateSegment;
 static TSS: Once<TaskStateSegment> = Once::new();
 static GDT: Once<gdt::Gdt> = Once::new();
 */
-const DOUBLE_FAULT_IST_INDEX: usize = 0;
 
 pub static mut TEST_PASSED: bool = false;
 
@@ -86,12 +88,12 @@ lazy_static! {
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         //idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         //idt.page_fault.set_handler_fn(page_fault_handler);
-        /*
+        
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX as u16);
         }
-    
+        /*
         for i in 0..256-32 {
             idt.interrupts[i].set_handler_fn(dummy_error_handler);
         }
@@ -114,41 +116,7 @@ lazy_static! {
 #[allow(dead_code)]
 pub fn initialize() {
 
-
-    /*
-    use x86_64::structures::gdt::SegmentSelector;
-    use x86_64::instructions::segmentation::set_cs;
-    use x86_64::instructions::tables::load_tss;
-
-    let double_fault_stack = memory::memory_controller().alloc_stack(1)
-        .expect("could not allocate double fault stack");
-
-    let tss = TSS.call_once(|| {
-        let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX] = VirtualAddress(
-            double_fault_stack.top());
-        tss
-    });
-
-    let mut code_selector = SegmentSelector(0);
-    let mut tss_selector = SegmentSelector(0);
-    let gdt = GDT.call_once(|| {
-        let mut gdt = gdt::Gdt::new();
-        code_selector = gdt.add_entry(gdt::Descriptor::kernel_code_segment());
-        tss_selector = gdt.add_entry(gdt::Descriptor::tss_segment(&tss));
-        gdt
-    });
-    gdt.load();
-
-
-    unsafe {
-        // reload code segment register
-        set_cs(code_selector);
-        // load TSS
-        load_tss(tss_selector);
-    }
-    */
-
+    gdt::init();
     IDT.load();
 
     /*
@@ -187,14 +155,14 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: &mut InterruptStackFra
 extern "x86-interrupt" fn nic_interrupt_handler(_stack_frame: &mut ExceptionStackFrame) {
     println!("Packet received!!!");
 }
-
-extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut ExceptionStackFrame,
-    _error_code: u64)
+*/
+extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut InterruptStackFrame,
+    _error_code: u64) -> !
 {
     println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
     loop {}
 }
-
+/*
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
 {
     println!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
