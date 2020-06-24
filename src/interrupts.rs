@@ -1,72 +1,25 @@
-use crate::println;
+use crate::{print,println};
 use crate::constants::keyboard::KEYBOARD_INTERRUPT;
-use crate::constants::interrupts::DOUBLE_FAULT_IST_INDEX;
+use crate::constants::interrupts::{PIC_1_OFFSET, PIC_2_OFFSET, DOUBLE_FAULT_IST_INDEX};
 use crate::constants::serial::SERIAL_INTERRUPT;
 use crate::constants::syscall::SYSCALL_INTERRUPT;
 use crate::constants::timer::TIMER_INTERRUPT;
 
 use core::fmt;
 
-//use crate::io::{keyboard, serial, timer};
-//use crate::io::pic::ChainedPics;
+use crate::io::timer;
 //use crate::memory;
 
 use lazy_static::lazy_static;
+use pic8259_simple::ChainedPics;
+use spin;
 
-use spin::Mutex;
-use spin::Once;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub mod gdt;
 
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
-/*
-
-use x86_64::structures::tss::TaskStateSegment;
-static TSS: Once<TaskStateSegment> = Once::new();
-static GDT: Once<gdt::Gdt> = Once::new();
-*/
-
-pub static mut TEST_PASSED: bool = false;
-
-#[repr(C, packed)]
-struct InterruptContext {
-    rax: u64,
-    rbx: u64,
-    rcx: u64,
-    rdx: u64,
-    rsi: u64,
-    rdi: u64,
-    r8: u64,
-    r9: u64,
-    r10: u64,
-    r11: u64,
-    r12: u64,
-    r13: u64,
-    r14: u64,
-    r15: u64,
- }
-
-#[allow(unused_must_use)]
-impl fmt::Debug for InterruptContext {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-
-        write!(f, "\tr15: {} 0x{:x}\n", self.r15, self.r15);
-        write!(f, "\tr14: {} 0x{:x}\n", self.r14, self.r14);
-        write!(f, "\tr13: {} 0x{:x}\n", self.r13, self.r13);
-        write!(f, "\tr12: {} 0x{:x}\n", self.r12, self.r12);
-        write!(f, "\tr11: {} 0x{:x}\n", self.r11, self.r11);
-        write!(f, "\trbx: {} 0x{:x}\n", self.rbx, self.rbx);
-        write!(f, "\trcx: {} 0x{:x}\n", self.rcx, self.rcx);
-
-        write!(f, "\trax: {} 0x{:x}\n", self.rax, self.rax);
-        write!(f, "\trdi: {} 0x{:x}\n", self.rdi, self.rdi);
-        write!(f, "\trsi: {} 0x{:x}\n", self.rsi, self.rsi);
-        write!(f, "\trdx: {} 0x{:x}\n", self.rdi, self.rdi);
-        write!(f, "\tr10: {} 0x{:x}\n", self.r10, self.r10);
-        write!(f, "\tr8: {} 0x{:x}\n", self.r8, self.r8);
-        write!(f, "\tr9: {} 0x{:x}\n", self.r9, self.r9)
-    }
-}
+pub static PICS: spin::Mutex<ChainedPics> =
+    spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 /*
 pub unsafe fn test_interrupt() {
@@ -102,7 +55,9 @@ lazy_static! {
         /*
         idt.interrupts[(SERIAL_INTERRUPT - 32) as usize].set_handler_fn(serial_handler);
         idt.interrupts[(SYSCALL_INTERRUPT - 32) as usize].set_handler_fn(syscall_handler);
-        idt.interrupts[(TIMER_INTERRUPT - 32) as usize].set_handler_fn(timer_handler);
+        */
+        idt[TIMER_INTERRUPT as usize].set_handler_fn(timer_handler);
+        /*
         idt.interrupts[(KEYBOARD_INTERRUPT - 32) as usize].set_handler_fn(keyboard_handler);
         
         idt.interrupts[11].set_handler_fn(nic_interrupt_handler);
@@ -118,6 +73,10 @@ pub fn initialize() {
 
     gdt::init();
     IDT.load();
+
+    unsafe { PICS.lock().initialize() };
+
+    x86_64::instructions::interrupts::enable();
 
     /*
     unsafe {
@@ -228,20 +187,16 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame
             
     }
 }
+*/
 
-extern "x86-interrupt" fn timer_handler(_stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
 {
+    timer::timer_interrupt();
+
     unsafe {
-        asm!("cli");
-
-        let mut my_sp:usize;
-        asm!("" : "={rbp}"(my_sp));
-
-        // x86-interrupt pushes 11 u64s to the stack, the last of which is RAX, so we want
-        // our stack pointer at the end of this function to point to where RAX lives on the
-        // stack.
-        my_sp -= 8 * 10;
-
+        PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
+    }
+    /*
         ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
 
         timer::timer_interrupt();
@@ -251,8 +206,10 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: &mut ExceptionStackFrame)
 
         ::state().scheduler.schedule();
     }
+    */
 }
 
+/*
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut ExceptionStackFrame)
 {
     ::state().interrupt_count[KEYBOARD_INTERRUPT as usize] += 1;

@@ -10,6 +10,7 @@ use core::panic::PanicInfo;
 pub mod constants;
 pub mod interrupts;
 pub mod io;
+pub mod util;
 
 pub trait Testable {
     fn run(&self) -> ();

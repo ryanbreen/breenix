@@ -11,6 +11,7 @@ use core::panic::PanicInfo;
 pub mod constants;
 pub mod io;
 pub mod interrupts;
+pub mod util;
 
 /// This function is called on panic.
 #[cfg(not(test))]
@@ -37,14 +38,6 @@ pub extern "C" fn _start() {
 
     io::initialize();
     interrupts::initialize();
-
-    // invoke a breakpoint exception
-    x86_64::instructions::interrupts::int3();
-
-    // trigger a page fault
-    unsafe {
-        *(0xdeadbeef as *mut u64) = 42;
-    };
 
     #[cfg(test)]
     test_main();

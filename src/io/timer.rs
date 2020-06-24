@@ -1,9 +1,8 @@
+use crate::constants::timer::{PIT_SCALE, PIT_CONTROL, PIT_SET, PIT_A, PIT_MASK, SUBTICKS_PER_TICK};
 
-use constants::timer::{PIT_SCALE, PIT_CONTROL, PIT_SET, PIT_A, PIT_MASK, SUBTICKS_PER_TICK};
-
-use x86::shared::io::outb;
-use io::Port;
-use util::time::Time;
+use x86::io::outb;
+use crate::io::Port;
+use crate::util::time::Time;
 
 static mut TIMER_START: u64 = 0;
 static mut TIMER_TICKS: u64 = 0;
