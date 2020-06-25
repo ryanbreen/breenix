@@ -32,6 +32,8 @@ impl IsListener<KeyEvent> for KeyEventScreenWriter {
     }
 
     fn notify(&self, ev: &KeyEvent) {
+        use crate::println;
+
         if ev.scancode == constants::keyboard::ENTER_KEY.scancode {
             text_buffer::KEYBOARD_BUFFER.lock().new_line();
             return;

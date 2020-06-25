@@ -1,3 +1,5 @@
+
+use lazy_static::lazy_static;
 use spin::Mutex;
 
 use crate::io::Port;
@@ -6,11 +8,14 @@ use crate::io::Port;
 
 use crate::constants::keyboard::{Key, KEYS, PORT};
 
-use crate::event::{EventType, IsEvent};
+use crate::event::{EventType, IsEvent, IsListener};
 
-use crate::event::keyboard::{KeyEvent, ControlKeyState};
+use crate::event::keyboard::{KeyEvent, ControlKeyState, KeyEventScreenWriter, ToggleWatcher};
 
-/// Event framework
+lazy_static! {
+    static ref KEY_EVENT_HANDLER: KeyEventScreenWriter = KeyEventScreenWriter {};
+    static ref TOGGLE_WATCHER: ToggleWatcher = ToggleWatcher {};
+}
 
 impl IsEvent for KeyEvent {
     fn event_type(&self) -> EventType {
@@ -39,7 +44,7 @@ impl KeyEvent {
 
 /// Our keyboard state, including our I/O port, our currently pressed
 /// modifiers, etc.
-struct State {
+struct KeyState {
     /// The PS/2 serial IO port for the keyboard.  There's a huge amount of
     /// emulation going on at the hardware level to allow us to pretend to
     /// be an early-80s IBM PC.
@@ -128,7 +133,7 @@ impl Modifiers {
 }
 
 /// Our global keyboard state, protected by a mutex.
-static STATE: Mutex<State> = Mutex::new(State {
+static KEYSTATE: Mutex<KeyState> = Mutex::new(KeyState {
     port: unsafe { Port::new(PORT) },
     modifiers: Modifiers::new(),
 });
@@ -136,7 +141,7 @@ static STATE: Mutex<State> = Mutex::new(State {
 /// Try to read a single input character
 pub fn read() {
 
-    let mut state = STATE.lock();
+    let mut state = KEYSTATE.lock();
 
     // Read a single scancode off our keyboard port.
     let scancode: u8 = state.port.read();
@@ -161,8 +166,18 @@ pub fn read() {
         // The `as char` converts our ASCII data to Unicode, which is
         // correct as long as we're only using 7-bit ASCII.
         if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-            use crate::println;
-            println!("{}", transformed_ascii);
+            let ke:KeyEvent = KeyEvent::new(scancode,
+                transformed_ascii,
+                &state.modifiers);
+
+            if (KEY_EVENT_HANDLER.handles_event(&ke)) {
+                KEY_EVENT_HANDLER.notify(&ke);
+            }
+
+            if (TOGGLE_WATCHER.handles_event(&ke)) {
+                TOGGLE_WATCHER.notify(&ke);
+            }
+
             /*
             state::dispatch_key_event(&KeyEvent::new(scancode,
                                                      transformed_ascii,
