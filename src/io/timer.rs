@@ -21,8 +21,6 @@ pub fn initialize() {
 }
 
 pub fn timer_interrupt() {
-    use crate::print;
-    print!(".");
 
     unsafe {
         TIMER_TICKS += 1;

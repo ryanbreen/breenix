@@ -8,6 +8,7 @@
 use core::panic::PanicInfo;
 
 pub mod constants;
+pub mod event;
 pub mod interrupts;
 pub mod io;
 pub mod util;

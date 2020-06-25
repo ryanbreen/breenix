@@ -7,6 +7,7 @@ use crate::constants::timer::TIMER_INTERRUPT;
 
 use core::fmt;
 
+use crate::io::keyboard;
 use crate::io::timer;
 //use crate::memory;
 
@@ -57,9 +58,9 @@ lazy_static! {
         idt.interrupts[(SYSCALL_INTERRUPT - 32) as usize].set_handler_fn(syscall_handler);
         */
         idt[TIMER_INTERRUPT as usize].set_handler_fn(timer_handler);
-        /*
-        idt.interrupts[(KEYBOARD_INTERRUPT - 32) as usize].set_handler_fn(keyboard_handler);
         
+        idt[KEYBOARD_INTERRUPT as usize].set_handler_fn(keyboard_handler);
+        /*
         idt.interrupts[11].set_handler_fn(nic_interrupt_handler);
         idt.interrupts[15].set_handler_fn(nic_interrupt_handler);
         **/
@@ -209,10 +210,9 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
     */
 }
 
-/*
-extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut InterruptStackFrame)
 {
-    ::state().interrupt_count[KEYBOARD_INTERRUPT as usize] += 1;
+    //::state().interrupt_count[KEYBOARD_INTERRUPT as usize] += 1;
 
     keyboard::read();
 
@@ -220,7 +220,7 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut ExceptionStackFram
         PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
     }
 }
-
+/*
 extern "x86-interrupt" fn serial_handler(_stack_frame: &mut ExceptionStackFrame)
 {
     ::state().interrupt_count[SERIAL_INTERRUPT as usize] += 1;

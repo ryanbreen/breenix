@@ -1,9 +1,9 @@
-use debug;
+//use debug;
 
-use constants;
-use event::{EventType, IsListener};
+use crate::constants;
+use crate::event::{EventType, IsListener};
 
-use io::drivers::display::text_buffer;
+use crate::io::drivers::display::text_buffer;
 
 #[derive(Clone, Copy)]
 pub struct ControlKeyState {
@@ -71,15 +71,17 @@ impl IsListener<KeyEvent> for DebugWatcher {
 
     #[allow(unused_variables)]
     fn notify(&self, ev: &KeyEvent) {
-        debug::debug();
+        //debug::debug();
     }
 }
 
 pub fn initialize() {
+    /*
     use alloc::boxed::Box;
     use state;
 
     state::register_key_event_listener(Box::new(KeyEventScreenWriter {}));
     state::register_key_event_listener(Box::new(ToggleWatcher {}));
     state::register_key_event_listener(Box::new(DebugWatcher {}));
+    */
 }

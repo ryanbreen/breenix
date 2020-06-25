@@ -1,14 +1,14 @@
 use spin::Mutex;
 
-use io::Port;
+use crate::io::Port;
 
-use state;
+//use state;
 
-use constants::keyboard::{Key, KEYS, PORT};
+use crate::constants::keyboard::{Key, KEYS, PORT};
 
-use event::{EventType, IsEvent};
+use crate::event::{EventType, IsEvent};
 
-use event::keyboard::{KeyEvent, ControlKeyState};
+use crate::event::keyboard::{KeyEvent, ControlKeyState};
 
 /// Event framework
 
@@ -161,9 +161,13 @@ pub fn read() {
         // The `as char` converts our ASCII data to Unicode, which is
         // correct as long as we're only using 7-bit ASCII.
         if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
+            use crate::println;
+            println!("{}", transformed_ascii);
+            /*
             state::dispatch_key_event(&KeyEvent::new(scancode,
                                                      transformed_ascii,
                                                      &state.modifiers));
+            */
             return;
         }
     }
