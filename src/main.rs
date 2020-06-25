@@ -34,6 +34,7 @@ fn trivial_assertion() {
 
 #[no_mangle]
 pub extern "C" fn _start() {
+
     println!("We're back{}", "!");
 
     io::initialize();
@@ -42,5 +43,6 @@ pub extern "C" fn _start() {
     #[cfg(test)]
     test_main();
 
-    loop {}
+    loop {
+    }
 }

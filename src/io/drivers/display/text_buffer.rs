@@ -3,9 +3,9 @@ use spin::Mutex;
 
 use core::fmt;
 
-use crate::io::drivers::display::vga::{VGA, Color, ColorCode};
+use crate::io::drivers::display::vga::{VGA, ColorCode};
 
-use crate::constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT};
+use crate::constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, Color};
 
 pub struct TextBuffer {
     chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],
@@ -169,7 +169,11 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn print(args: fmt::Arguments) {
     use core::fmt::Write;
-    BUFFERS[*ACTIVE_BUFFER.lock()].lock().write_fmt(args).unwrap();
+    use x86_64::instructions::interrupts;
+
+    interrupts::without_interrupts(|| {
+        BUFFERS[*ACTIVE_BUFFER.lock()].lock().write_fmt(args).unwrap();
+    });
 }
 
 #[test_case]
@@ -186,10 +190,16 @@ fn test_println_many() {
 
 #[test_case]
 fn test_println_output() {
+    use core::fmt::Write;
+    use x86_64::instructions::interrupts;
+
     let s = "Some test string that fits on a single line";
-    println!("{}", s);
-    for (i, c) in s.chars().enumerate() {
-        let screen_char = BUFFERS[*ACTIVE_BUFFER.lock()].lock().chars[BUFFER_HEIGHT - 2][i];
-        assert_eq!(char::from(screen_char), c);
-    }
+    interrupts::without_interrupts(|| {
+        let mut writer = PRINT_BUFFER.lock();
+        writeln!(writer, "\n{}", s).expect("writeln failed");
+        for (i, c) in s.chars().enumerate() {
+            let screen_char = writer.chars[BUFFER_HEIGHT - 2][i];
+            assert_eq!(char::from(screen_char), c);
+        }
+    });
 }
