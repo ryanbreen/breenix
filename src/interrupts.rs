@@ -41,7 +41,7 @@ lazy_static! {
         //idt.divide_by_zero.set_handler_fn(divide_by_zero_handler);
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         //idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-        //idt.page_fault.set_handler_fn(page_fault_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
         
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
@@ -231,18 +231,20 @@ extern "x86-interrupt" fn serial_handler(_stack_frame: &mut ExceptionStackFrame)
         PICS.lock().notify_end_of_interrupt(SERIAL_INTERRUPT);
     }
 }
-
-extern "x86-interrupt" fn page_fault_handler(stack_frame: &mut ExceptionStackFrame, error_code: PageFaultErrorCode) {
-    use x86_64::registers::control_regs;
-    println!("\nEXCEPTION: PAGE FAULT while accessing {:#x}\nerror code: \
-                                  {:?}\n{:#?}",
-             control_regs::cr2(),
-             error_code,
-             stack_frame);
-    loop {}
-}
-
-/// Interface to our PIC (programmable interrupt controller) chips.  We
-/// want to map hardware interrupts to 0x20 (for PIC1) or 0x28 (for PIC2).
-pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe { ChainedPics::new(0x20, 0x28) });
 */
+
+use x86_64::structures::idt::PageFaultErrorCode;
+use crate::hlt_loop;
+
+extern "x86-interrupt" fn page_fault_handler(
+    stack_frame: &mut InterruptStackFrame,
+    error_code: PageFaultErrorCode,
+) {
+    use x86_64::registers::control::Cr2;
+
+    println!("EXCEPTION: PAGE FAULT");
+    println!("Accessed Address: {:?}", Cr2::read());
+    println!("Error Code: {:?}", error_code);
+    println!("{:#?}", stack_frame);
+    hlt_loop();
+}
