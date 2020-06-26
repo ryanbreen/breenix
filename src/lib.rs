@@ -1,11 +1,14 @@
 #![no_std]
 #![cfg_attr(test, no_main)]
-#![feature(ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks)]
+#![feature(alloc_error_handler, ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks)]
 
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
 use core::panic::PanicInfo;
+
 #[cfg(test)]
 use bootloader::{entry_point, BootInfo};
 
@@ -51,6 +54,11 @@ pub fn test_panic_handler(info: &PanicInfo) -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     test_panic_handler(info)
+}
+
+#[alloc_error_handler]
+fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
+    panic!("allocation error: {:?}", layout)
 }
 
 pub fn hlt_loop() -> ! {
