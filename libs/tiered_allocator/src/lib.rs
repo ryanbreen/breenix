@@ -14,11 +14,7 @@
 //!  * A `SlabPageProvider` is provided by the client and used by the
 //!    SlabAllocator to allocate SlabPages.
 //!
-#![feature(const_fn)]
-#![feature(allocator_api)]
-#![feature(alloc)]
-#![feature(global_allocator)]
-#![feature(unique)]
+#![feature(const_fn, allocator_api, alloc, global_allocator, ptr_internals, unique)]
 #![no_std]
 
 extern crate alloc;
@@ -29,7 +25,7 @@ extern crate lazy_static;
 
 use heap::Heap;
 
-use alloc::heap::{Alloc, AllocErr, Layout};
+use alloc::alloc::{GlobalAlloc, Layout};
 
 use spin::Mutex;
 
@@ -63,10 +59,10 @@ pub fn align_up(addr: usize, align: usize) -> usize {
     align_down(addr + align - 1, align)
 }
 
-static mut SLAB_ALLOCATE: Option<fn(usize, usize) -> Result<*mut u8, AllocErr>> = None;
+static mut SLAB_ALLOCATE: Option<fn(usize, usize) -> *mut u8> = None;
 static mut SLAB_DEALLOCATE: Option<fn()> = None;
 
-pub fn init(allocate: fn(usize, usize) -> Result<*mut u8, AllocErr>) {
+pub fn init(allocate: fn(usize, usize) -> *mut u8) {
     unsafe {
         SLAB_ALLOCATE = Some(allocate);
     }
@@ -74,8 +70,8 @@ pub fn init(allocate: fn(usize, usize) -> Result<*mut u8, AllocErr>) {
 
 pub struct Allocator;
 
-unsafe impl<'a> Alloc for &'a Allocator {
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+unsafe impl GlobalAlloc for & Allocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if SLAB_ALLOCATE.is_none() {
             bootstrap_allocate(layout.size(), layout.align())
         } else {
@@ -83,7 +79,7 @@ unsafe impl<'a> Alloc for &'a Allocator {
         }
     }
 
-    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         
     }
 }
@@ -95,7 +91,7 @@ static GLOBAL_ALLOC: Allocator = Allocator;
 pub static mut BOOTSTRAP_ALLOCS: usize = 0;
 pub static mut BOOTSTRAP_ALLOC_SIZE: usize = 0;
 
-fn bootstrap_allocate(size: usize, align: usize) -> Result<*mut u8, AllocErr> {
+fn bootstrap_allocate(size: usize, align: usize) -> *mut u8 {
     // HEAP.lock().allocate_first_fit(size, align).expect("out of bootstrap memory")
     unsafe {
         BOOTSTRAP_ALLOCS += 1;
@@ -109,6 +105,6 @@ fn bootstrap_allocate(size: usize, align: usize) -> Result<*mut u8, AllocErr> {
     HEAP.lock().allocate_first_fit(size, align)
 }
 
-unsafe fn slab_allocate(size: usize, align: usize) -> Result<*mut u8, AllocErr> {
+unsafe fn slab_allocate(size: usize, align: usize) -> *mut u8 {
     SLAB_ALLOCATE.expect("invalid allocate")(size, align)
 }

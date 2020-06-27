@@ -43,12 +43,13 @@ fn trivial_assertion() {
 entry_point!(kernel_main);
 
 pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
-
-    println!("We're back{}", "!");
     
+    println!("We're back!");
+
     use x86_64::{structures::paging::Page, VirtAddr};
 
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+
     let mut mapper = unsafe { breenix::memory::init(phys_mem_offset) };
 
     let mut frame_allocator = unsafe {

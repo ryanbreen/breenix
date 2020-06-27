@@ -1,6 +1,6 @@
 
 use hole::HoleList;
-use alloc::allocator::{AllocErr};
+use alloc::alloc::{AllocErr};
 
 /// A fixed size heap backed by a linked list of free memory blocks.
 pub struct Heap {
@@ -36,7 +36,7 @@ impl Heap {
     /// This function scans the list of free memory blocks and uses the first block that is big
     /// enough. The runtime is in O(n) where n is the number of free blocks, but it should be
     /// reasonably fast for small allocations.
-    pub fn allocate_first_fit(&mut self, mut size: usize, align: usize) -> Result<*mut u8, AllocErr> {
+    pub fn allocate_first_fit(&mut self, mut size: usize, align: usize) -> *mut u8 {
         if size < HoleList::min_size() {
             size = HoleList::min_size();
         }

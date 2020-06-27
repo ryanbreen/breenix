@@ -21,7 +21,6 @@ volatile = "0.2.6"
 x86_64 = "0.11.0"
 uart_16550 = "0.2.0"
 pic8259_simple = "0.2.0"
-linked_list_allocator = "0.8.0"
 
 [dependencies.x86]
 

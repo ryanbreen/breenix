@@ -1,5 +1,5 @@
 use core::ptr::Unique;
-use alloc::allocator::{Layout, AllocErr};
+use alloc::alloc::{Layout, AllocErr};
 use core::mem::{self, size_of};
 
 use super::align_up;
@@ -47,7 +47,7 @@ impl HoleList {
     /// This function uses the “first fit” strategy, so it uses the first hole that is big
     /// enough. Thus the runtime is in O(n) but it should be reasonably fast for small
     /// allocations.
-    pub fn allocate_first_fit(&mut self, size: usize, align: usize) -> Result<*mut u8, AllocErr> {
+    pub fn allocate_first_fit(&mut self, size: usize, align: usize) -> *mut u8 {
         assert!(size >= Self::min_size());
 
         allocate_first_fit(&mut self.first, size, align).map(|allocation| {
@@ -58,7 +58,7 @@ impl HoleList {
                 deallocate(&mut self.first, padding.addr, padding.size);
             }
             allocation.info.addr as *mut u8
-        })
+        }).unwrap()
     }
 
     /// Frees the allocation given by `ptr` and `size`. `ptr` must be a pointer returned by a call
@@ -205,7 +205,7 @@ fn allocate_first_fit(mut previous: &mut Hole, size: usize, align: usize) -> Res
             }
             None => {
                 // this was the last hole, so no hole is big enough -> allocation not possible
-                return Err(AllocErr::Exhausted { request: Layout::from_size_align(size, align).unwrap() })
+                return Err(<alloc::alloc::AllocErr as Trait>::Exhausted { request: Layout::from_size_align(size, align).unwrap() })
             }
         }
     }

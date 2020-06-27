@@ -4,9 +4,8 @@ version = "0.1.0"
 authors = ["Ryan Breen <rbreen@cimpress.com>"]
 
 [dependencies.lazy_static]
-version = "0.2.1"
-path = "../../../lazy-static.rs"
+version = "1.0"
 features = ["spin_no_std"]
 
-[dependencies.spin]
-path = "../../../spin-rs"
+[dependencies]
+spin = "0.5.2"
