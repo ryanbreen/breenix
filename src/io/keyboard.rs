@@ -4,24 +4,13 @@ use spin::Mutex;
 
 use crate::io::Port;
 
-//use state;
+use crate::state;
 
 use crate::constants::keyboard::{Key, KEYS, PORT};
 
-use crate::event::{EventType, IsEvent, IsListener};
+use crate::event::EventType;
 
-use crate::event::keyboard::{KeyEvent, ControlKeyState, KeyEventScreenWriter, ToggleWatcher};
-
-lazy_static! {
-    static ref KEY_EVENT_HANDLER: KeyEventScreenWriter = KeyEventScreenWriter {};
-    static ref TOGGLE_WATCHER: ToggleWatcher = ToggleWatcher {};
-}
-
-impl IsEvent for KeyEvent {
-    fn event_type(&self) -> EventType {
-        self.event_type
-    }
-}
+use crate::event::keyboard::{KeyEvent, ControlKeyState};
 
 impl KeyEvent {
     const fn new(scancode: u8, character: char, modifiers: &Modifiers) -> KeyEvent {
@@ -166,23 +155,9 @@ pub fn read() {
         // The `as char` converts our ASCII data to Unicode, which is
         // correct as long as we're only using 7-bit ASCII.
         if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-            let ke:KeyEvent = KeyEvent::new(scancode,
-                transformed_ascii,
-                &state.modifiers);
-
-            if (KEY_EVENT_HANDLER.handles_event(&ke)) {
-                KEY_EVENT_HANDLER.notify(&ke);
-            }
-
-            if (TOGGLE_WATCHER.handles_event(&ke)) {
-                TOGGLE_WATCHER.notify(&ke);
-            }
-
-            /*
             state::dispatch_key_event(&KeyEvent::new(scancode,
                                                      transformed_ascii,
                                                      &state.modifiers));
-            */
             return;
         }
     }

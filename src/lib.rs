@@ -17,6 +17,7 @@ pub mod event;
 pub mod interrupts;
 pub mod io;
 pub mod memory;
+pub mod state;
 pub mod util;
 
 pub trait Testable {

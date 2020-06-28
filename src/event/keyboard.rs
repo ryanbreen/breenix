@@ -1,9 +1,11 @@
 //use debug;
 
 use crate::constants;
-use crate::event::{EventType, IsListener};
+use crate::event::EventType;
 
 use crate::io::drivers::display::text_buffer;
+
+use crate::state;
 
 #[derive(Clone, Copy)]
 pub struct ControlKeyState {
@@ -24,16 +26,17 @@ pub struct KeyEvent {
     pub controls: ControlKeyState,
 }
 
-pub struct KeyEventScreenWriter {}
+pub struct KeyEventHandler {
+    pub handles_event: &'static (dyn Fn(&KeyEvent) -> bool + Sync),
+    pub notify: &'static (dyn Fn(&KeyEvent) + Sync),
+}
 
-impl IsListener<KeyEvent> for KeyEventScreenWriter {
-    fn handles_event(&self, ev: &KeyEvent) -> bool {
+const KEY_EVENT_SCREEN_WRITER:KeyEventHandler = KeyEventHandler {
+    handles_event: &|ev:&KeyEvent| -> bool {
         !ev.controls.ctrl && !ev.controls.alt
-    }
-
-    fn notify(&self, ev: &KeyEvent) {
-        use crate::println;
-
+    },
+    
+    notify: &|ev:&KeyEvent| {
         if ev.scancode == constants::keyboard::ENTER_KEY.scancode {
             text_buffer::KEYBOARD_BUFFER.lock().new_line();
             return;
@@ -47,43 +50,32 @@ impl IsListener<KeyEvent> for KeyEventScreenWriter {
         if ev.character as u8 != 0 {
             text_buffer::KEYBOARD_BUFFER.lock().write_byte(ev.character as u8);
         }
-    }
-}
+    },
+};
 
-pub struct ToggleWatcher {}
-
-impl IsListener<KeyEvent> for ToggleWatcher {
-    fn handles_event(&self, ev: &KeyEvent) -> bool {
+const KEY_EVENT_TOGGLE_WATCHER:KeyEventHandler = KeyEventHandler {
+    handles_event: &|ev:&KeyEvent| -> bool {;
         ev.scancode == constants::keyboard::S_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
-    }
+    },
 
-    #[allow(unused_variables)]
-    fn notify(&self, ev: &KeyEvent) {
+    notify: &|ev:&KeyEvent| {
         // Switch buffers
         text_buffer::toggle();
     }
-}
+};
 
-pub struct DebugWatcher {}
-
-impl IsListener<KeyEvent> for DebugWatcher {
-    fn handles_event(&self, ev: &KeyEvent) -> bool {
+const DEBUG_WATCHER:KeyEventHandler = KeyEventHandler {
+    handles_event: &|ev:&KeyEvent| -> bool {
         ev.scancode == constants::keyboard::D_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
-    }
+    },
 
-    #[allow(unused_variables)]
-    fn notify(&self, ev: &KeyEvent) {
+    notify: &|ev:&KeyEvent| {
         //debug::debug();
     }
-}
+};
 
-pub fn initialize() {
-    /*
-    use alloc::boxed::Box;
-    use state;
-
-    state::register_key_event_listener(Box::new(KeyEventScreenWriter {}));
-    state::register_key_event_listener(Box::new(ToggleWatcher {}));
-    state::register_key_event_listener(Box::new(DebugWatcher {}));
-    */
+pub fn initialize() {    
+    state::register_key_event_listener(KEY_EVENT_SCREEN_WRITER);
+    state::register_key_event_listener(KEY_EVENT_TOGGLE_WATCHER);
+    state::register_key_event_listener(DEBUG_WATCHER);
 }

@@ -1,68 +1,55 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use event::IsListener;
-use event::keyboard::KeyEvent;
+use crate::event::keyboard::KeyEvent;
+use crate::event::keyboard::KeyEventHandler;
 
-use io::pci::Device;
-use io::drivers::network::NetworkInterface;
+use lazy_static::lazy_static;
+use spin::Mutex;
 
-use task::scheduler::Scheduler;
+//use io::pci::Device;
+//use io::drivers::network::NetworkInterface;
+
+//use task::scheduler::Scheduler;
 
 pub struct State {
-    pub key_listeners: Vec<Box<IsListener<KeyEvent>>>,
+    pub key_listeners: Vec<KeyEventHandler>,
     pub interrupt_count: [u64; 256],
-    pub scheduler: Scheduler,
-    pub devices: Vec<Device>,
-    pub network_interfaces: Vec<NetworkInterface>,
+//    pub scheduler: Scheduler,
+//    pub devices: Vec<Device>,
+//    pub network_interfaces: Vec<NetworkInterface>,
 }
 
-impl State {
-    fn new() -> Box<State> {
-        box State {
+lazy_static! {
+
+    pub static ref STATE: Mutex<State> = {
+        let mut state = State {
             key_listeners: Vec::new(),
             interrupt_count: [0; 256],
-            scheduler: Scheduler::new(),
-            devices: Vec::new(),
-            network_interfaces: Vec::new(),
-        }
-    }
+            //scheduler: Scheduler::new(),
+            //devices: Vec::new(),
+            //network_interfaces: Vec::new(),
+        };
+
+        Mutex::new(state)
+    };
 }
 
-static mut STATE_PTR: Option<&'static mut State> = None;
-
-pub fn state() -> &'static mut State {
-    unsafe {
-        match STATE_PTR {
-            Some(ref mut p) => p,
-            None => {
-                STATE_PTR = Some(&mut *Box::into_raw(State::new()));
-                match STATE_PTR {
-                    Some(ref mut s) => {
-                        //Do any sort of state init we need beyond new().
-                        s
-                    }
-                    None => {
-                        panic!("Failed to init state");
-                    }
-                }
-            }
-        }
-    }
-}
-
-pub fn register_key_event_listener(listener: Box<IsListener<KeyEvent>>) {
-    state().key_listeners.push(listener);
-    printk!("There are now {} key listeners",
-             state().key_listeners.len());
+pub fn register_key_event_listener(listener: KeyEventHandler) {
+    STATE.lock().key_listeners.push(listener);
+    crate::println!("There are now {} key listeners",
+             STATE.lock().key_listeners.len());
 }
 
 pub fn dispatch_key_event(ev: &KeyEvent) {
-
-    let listeners = &(state().key_listeners);
+    let listeners = &(STATE.lock().key_listeners);
     for listener in listeners {
-        if listener.handles_event(ev) {
-            listener.notify(ev);
+        if (&listener.handles_event)(ev) {
+            (&listener.notify)(ev);
         }
     }
+}
+
+pub fn debug() {
+    crate::println!("There are {} key listeners", STATE.lock().key_listeners.len());
 }

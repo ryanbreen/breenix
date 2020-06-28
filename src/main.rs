@@ -17,6 +17,7 @@ pub mod constants;
 pub mod event;
 pub mod io;
 pub mod interrupts;
+pub mod state;
 pub mod util;
 
 pub use breenix::hlt_loop;
@@ -82,6 +83,8 @@ pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     #[cfg(test)]
     test_main();
+
+    state::debug();
 
     hlt_loop();
 }
