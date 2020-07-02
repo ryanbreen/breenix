@@ -84,7 +84,5 @@ pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
     #[cfg(test)]
     test_main();
 
-    state::debug();
-
     hlt_loop();
 }

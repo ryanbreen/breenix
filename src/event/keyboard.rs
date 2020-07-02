@@ -54,7 +54,7 @@ const KEY_EVENT_SCREEN_WRITER:KeyEventHandler = KeyEventHandler {
 };
 
 const KEY_EVENT_TOGGLE_WATCHER:KeyEventHandler = KeyEventHandler {
-    handles_event: &|ev:&KeyEvent| -> bool {;
+    handles_event: &|ev:&KeyEvent| -> bool {
         ev.scancode == constants::keyboard::S_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
     },
 
@@ -70,7 +70,8 @@ const DEBUG_WATCHER:KeyEventHandler = KeyEventHandler {
     },
 
     notify: &|ev:&KeyEvent| {
-        //debug::debug();
+        // FIXME: this deadlocks
+        //state::debug();
     }
 };
 

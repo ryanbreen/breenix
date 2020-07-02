@@ -4,6 +4,7 @@ use crate::constants::interrupts::{PIC_1_OFFSET, PIC_2_OFFSET, DOUBLE_FAULT_IST_
 use crate::constants::serial::SERIAL_INTERRUPT;
 use crate::constants::syscall::SYSCALL_INTERRUPT;
 use crate::constants::timer::TIMER_INTERRUPT;
+use crate::state;
 
 use core::fmt;
 
@@ -38,20 +39,19 @@ lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
 
         let mut idt = InterruptDescriptorTable::new();
-        //idt.divide_by_zero.set_handler_fn(divide_by_zero_handler);
+        idt.divide_error.set_handler_fn(divide_by_zero_handler);
         idt.breakpoint.set_handler_fn(breakpoint_handler);
-        //idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
         
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX as u16);
         }
-        /*
-        for i in 0..256-32 {
-            idt.interrupts[i].set_handler_fn(dummy_error_handler);
+
+        for i in 32..256 {
+            idt[i].set_handler_fn(dummy_error_handler);
         }
-        */
     
         /*
         idt.interrupts[(SERIAL_INTERRUPT - 32) as usize].set_handler_fn(serial_handler);
@@ -122,20 +122,21 @@ extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut InterruptStackF
     println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
     loop {}
 }
-/*
-extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut ExceptionStackFrame)
+
+extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut InterruptStackFrame)
 {
     println!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
     loop {}
 }
 
-extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut ExceptionStackFrame)
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut InterruptStackFrame)
 {
-    println!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
+    println!("EXCEPTION: INVALID OPCODE at {:?}\n{:#?}",
             stack_frame.instruction_pointer, stack_frame);
     loop {}
 }
 
+/*
 extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame)
 {
     unsafe {
@@ -192,28 +193,17 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
 {
+    state::increment_interrupt_count(TIMER_INTERRUPT as usize);
     timer::timer_interrupt();
 
     unsafe {
         PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
     }
-    /*
-        ::state().interrupt_count[TIMER_INTERRUPT as usize] += 1;
-
-        timer::timer_interrupt();
-
-        ::state().scheduler.update_trap_frame(my_sp);
-        PICS.lock().notify_end_of_interrupt(TIMER_INTERRUPT);
-
-        ::state().scheduler.schedule();
-    }
-    */
 }
 
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut InterruptStackFrame)
 {
-    //::state().interrupt_count[KEYBOARD_INTERRUPT as usize] += 1;
-
+    state::increment_interrupt_count(KEYBOARD_INTERRUPT as usize);
     keyboard::read();
 
     unsafe {

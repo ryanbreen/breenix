@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::event::keyboard::KeyEvent;
@@ -6,6 +5,8 @@ use crate::event::keyboard::KeyEventHandler;
 
 use lazy_static::lazy_static;
 use spin::Mutex;
+
+use crate::println;
 
 //use io::pci::Device;
 //use io::drivers::network::NetworkInterface;
@@ -20,10 +21,24 @@ pub struct State {
 //    pub network_interfaces: Vec<NetworkInterface>,
 }
 
+impl core::fmt::Debug for State {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+
+        write!(f, "State");
+        for i in 0..256 {
+            if (self.interrupt_count[i] > 0) {
+                write!(f, "\n\tInterrupt {} count == {}", i, self.interrupt_count[i]);
+            }
+        }
+
+        Ok(())
+    }
+}
+
 lazy_static! {
 
     pub static ref STATE: Mutex<State> = {
-        let mut state = State {
+        let state = State {
             key_listeners: Vec::new(),
             interrupt_count: [0; 256],
             //scheduler: Scheduler::new(),
@@ -33,6 +48,10 @@ lazy_static! {
 
         Mutex::new(state)
     };
+}
+
+pub fn increment_interrupt_count(interrupt:usize) {
+    STATE.lock().interrupt_count[interrupt] += 1;
 }
 
 pub fn register_key_event_listener(listener: KeyEventHandler) {
@@ -51,5 +70,8 @@ pub fn dispatch_key_event(ev: &KeyEvent) {
 }
 
 pub fn debug() {
-    crate::println!("There are {} key listeners", STATE.lock().key_listeners.len());
+    use x86_64::instructions::interrupts;
+    interrupts::without_interrupts(|| {
+        crate::println!("{:?}", *(STATE.lock()));
+    });
 }
