@@ -1,7 +1,7 @@
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
 
-#![feature(ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks)]
+#![feature(ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks, wake_trait)]
 
 #![test_runner(breenix::test_runner)]
 #![reexport_test_harness_main = "test_main"]
@@ -18,6 +18,7 @@ pub mod event;
 pub mod io;
 pub mod interrupts;
 pub mod state;
+pub mod task;
 pub mod util;
 
 pub use breenix::hlt_loop;
@@ -44,10 +45,12 @@ fn trivial_assertion() {
 entry_point!(kernel_main);
 
 pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
-    
-    println!("We're back!");
 
     use x86_64::{structures::paging::Page, VirtAddr};
+
+    println!("We're back!");
+
+    breenix::init();
 
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
 
@@ -60,29 +63,12 @@ pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
     breenix::memory::allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
 
-    // allocate a number on the heap
-    let heap_value = Box::new(41);
-    println!("heap_value at {:p}", heap_value);
 
-    // create a dynamically sized vector
-    let mut vec = Vec::new();
-    for i in 0..500 {
-        vec.push(i);
-    }
-    println!("vec at {:p}", vec.as_slice());
-
-    // create a reference counted vector -> will be freed when count reaches 0
-    let reference_counted = Rc::new(vec![1, 2, 3]);
-    let cloned_reference = reference_counted.clone();
-    println!("current reference count is {}", Rc::strong_count(&cloned_reference));
-    core::mem::drop(reference_counted);
-    println!("reference count is {} now", Rc::strong_count(&cloned_reference));
-
-    io::initialize();
-    interrupts::initialize();
+    use breenix::task::{Task, executor::Executor};
+    let mut executor = Executor::new();
+    executor.spawn(Task::new(breenix::io::keyboard::read()));
+    executor.run();
 
     #[cfg(test)]
     test_main();
-
-    hlt_loop();
 }

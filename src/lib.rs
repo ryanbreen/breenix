@@ -1,6 +1,6 @@
 #![no_std]
 #![cfg_attr(test, no_main)]
-#![feature(alloc_error_handler, ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks)]
+#![feature(alloc_error_handler, ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks, wake_trait)]
 
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
@@ -18,7 +18,13 @@ pub mod interrupts;
 pub mod io;
 pub mod memory;
 pub mod state;
+pub mod task;
 pub mod util;
+
+pub fn init() {
+    interrupts::initialize();
+    io::initialize();
+}
 
 pub trait Testable {
     fn run(&self) -> ();

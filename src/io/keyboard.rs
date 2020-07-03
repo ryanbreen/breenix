@@ -1,4 +1,11 @@
 
+use conquer_once::spin::OnceCell;
+use crossbeam_queue::ArrayQueue;
+use core::{pin::Pin, task::{Poll, Context}};
+
+use futures_util::stream::{Stream, StreamExt};
+use futures_util::task::AtomicWaker;
+
 use lazy_static::lazy_static;
 use spin::Mutex;
 
@@ -11,6 +18,12 @@ use crate::constants::keyboard::{Key, KEYS, PORT};
 use crate::event::EventType;
 
 use crate::event::keyboard::{KeyEvent, ControlKeyState};
+
+use crate::println;
+
+static SCANCODE_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
+
+static WAKER: AtomicWaker = AtomicWaker::new();
 
 impl KeyEvent {
     const fn new(scancode: u8, character: char, modifiers: &Modifiers) -> KeyEvent {
@@ -128,37 +141,96 @@ static KEYSTATE: Mutex<KeyState> = Mutex::new(KeyState {
 });
 
 /// Try to read a single input character
-pub fn read() {
+pub async fn read() {
 
-    let mut state = KEYSTATE.lock();
+    println!("Starting read");
 
-    // Read a single scancode off our keyboard port.
-    let scancode: u8 = state.port.read();
+    let mut scancodes = ScancodeStream::new();
 
-    if scancode == 0xE0 {
-        // Ignore
-        return;
+    while let Some(scancode) = scancodes.next().await {
+        let mut state = KEYSTATE.lock();
+
+        if scancode == 0xE0 {
+            // Ignore
+            continue;
+        }
+
+        // Give our modifiers first crack at this.
+        state.modifiers.update(scancode);
+
+        // printk!("{:x}", scancode);
+
+        // We don't map any keys > 127.
+        if scancode > 127 {
+            continue;
+        }
+
+        // Look up the ASCII keycode.
+        if let Some(key) = KEYS[scancode as usize] {
+            // The `as char` converts our ASCII data to Unicode, which is
+            // correct as long as we're only using 7-bit ASCII.
+            if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
+                println!("{}", transformed_ascii);
+                /*
+                state::dispatch_key_event(&KeyEvent::new(scancode,
+                                                        transformed_ascii,
+                                                        &state.modifiers));
+                                                        */
+                continue;
+            }
+        }
     }
+}
 
-    // Give our modifiers first crack at this.
-    state.modifiers.update(scancode);
+/// Called by the keyboard interrupt handler
+///
+/// Must not block or allocate.
+pub(crate) fn add_scancode(scancode: u8) {
 
-    // printk!("{:x}", scancode);
-
-    // We don't map any keys > 127.
-    if scancode > 127 {
-        return;
+    if let Ok(queue) = SCANCODE_QUEUE.try_get() {
+        if let Err(_) = queue.push(scancode) {
+            println!("WARNING: scancode queue full; dropping keyboard input");
+        } else {
+            WAKER.wake();
+        }
+    } else {
+        println!("WARNING: scancode queue uninitialized");
     }
+}
 
-    // Look up the ASCII keycode.
-    if let Some(key) = KEYS[scancode as usize] {
-        // The `as char` converts our ASCII data to Unicode, which is
-        // correct as long as we're only using 7-bit ASCII.
-        if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-            state::dispatch_key_event(&KeyEvent::new(scancode,
-                                                     transformed_ascii,
-                                                     &state.modifiers));
-            return;
+pub struct ScancodeStream {
+    _private: (),
+}
+
+impl ScancodeStream {
+    pub fn new() -> Self {
+        SCANCODE_QUEUE.try_init_once(|| ArrayQueue::new(100))
+            .expect("ScancodeStream::new should only be called once");
+        
+        ScancodeStream { _private: () }
+    }
+}
+
+impl Stream for ScancodeStream {
+    type Item = u8;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
+        let queue = SCANCODE_QUEUE
+            .try_get()
+            .expect("scancode queue not initialized");
+
+        // fast path
+        if let Ok(scancode) = queue.pop() {
+            return Poll::Ready(Some(scancode));
+        }
+
+        WAKER.register(&cx.waker());
+        match queue.pop() {
+            Ok(scancode) => {
+                WAKER.take();
+                Poll::Ready(Some(scancode))
+            }
+            Err(crossbeam_queue::PopError) => Poll::Pending,
         }
     }
 }

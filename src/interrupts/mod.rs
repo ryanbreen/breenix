@@ -204,7 +204,13 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut InterruptStackFrame)
 {
     state::increment_interrupt_count(KEYBOARD_INTERRUPT as usize);
-    keyboard::read();
+
+    use x86_64::instructions::port::Port;
+
+    let mut port = Port::new(0x60);
+    let scancode: u8 = unsafe { port.read() };
+    crate::io::keyboard::add_scancode(scancode);
+    // keyboard::read();
 
     unsafe {
         PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
