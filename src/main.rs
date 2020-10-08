@@ -62,8 +62,7 @@ pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     breenix::memory::allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
-
-
+    
     use breenix::task::{Task, executor::Executor};
     let mut executor = Executor::new();
     executor.spawn(Task::new(breenix::io::keyboard::read()));

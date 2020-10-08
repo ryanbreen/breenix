@@ -15,11 +15,11 @@ panic = "abort"
 panic = "abort"
 
 [dependencies]
-bootloader = { version = "0.9.3", features = ["map_physical_memory"]}
+bootloader = { version = "0.9.11", features = ["map_physical_memory"]}
 spin = "0.5.2"
 volatile = "0.2.6"
-x86_64 = "0.11.0"
-uart_16550 = "0.2.0"
+x86_64 = "0.12.2"
+uart_16550 = "0.2.10"
 pic8259_simple = "0.2.0"
 
 [dependencies.x86]
