@@ -171,9 +171,9 @@ pub async fn read() {
             // correct as long as we're only using 7-bit ASCII.
             if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
                 //println!("{}", transformed_ascii);
-                state::dispatch_key_event(&KeyEvent::new(scancode,
-                                                        transformed_ascii,
-                                                        &state.modifiers));
+                crate::event::keyboard::dispatch_key_event(&KeyEvent::new(scancode,
+                                                           transformed_ascii,
+                                                           &state.modifiers));
                 continue;
             }
         }

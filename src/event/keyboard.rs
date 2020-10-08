@@ -1,4 +1,7 @@
-//use debug;
+use alloc::vec::Vec;
+
+use spin::Mutex;
+use lazy_static::lazy_static;
 
 use crate::constants;
 use crate::event::EventType;
@@ -6,6 +9,40 @@ use crate::event::EventType;
 use crate::io::drivers::display::text_buffer;
 
 use crate::state;
+
+pub struct KeyEventListeners {
+    list: Vec<KeyEventHandler>,
+}
+
+lazy_static! {
+
+    pub static ref KEY_EVENT_LISTENERS: Mutex<KeyEventListeners> = {
+        let event_listeners = KeyEventListeners {
+            list: Vec::new(),
+        };
+
+        Mutex::new(event_listeners)
+    };
+}
+
+pub fn register_key_event_listener(listener: KeyEventHandler) {
+    use x86_64::instructions::interrupts;
+    interrupts::without_interrupts(|| {
+        KEY_EVENT_LISTENERS.lock().list.push(listener);
+    });
+}
+
+pub fn dispatch_key_event(ev: &KeyEvent) {
+    use x86_64::instructions::interrupts;
+    interrupts::without_interrupts(|| {
+        let listeners = &(KEY_EVENT_LISTENERS.lock().list);
+        for listener in listeners {
+            if (&listener.handles_event)(ev) {
+                (&listener.notify)(ev);
+            }
+        }
+    });
+}
 
 #[derive(Clone, Copy)]
 pub struct ControlKeyState {
@@ -70,13 +107,12 @@ const DEBUG_WATCHER:KeyEventHandler = KeyEventHandler {
     },
 
     notify: &|ev:&KeyEvent| {
-        // FIXME: this deadlocks
-        //state::debug();
+        state::debug();
     }
 };
 
 pub fn initialize() {
-    state::register_key_event_listener(KEY_EVENT_SCREEN_WRITER);
-    state::register_key_event_listener(KEY_EVENT_TOGGLE_WATCHER);
-    state::register_key_event_listener(DEBUG_WATCHER);
+    register_key_event_listener(KEY_EVENT_SCREEN_WRITER);
+    register_key_event_listener(KEY_EVENT_TOGGLE_WATCHER);
+    register_key_event_listener(DEBUG_WATCHER);
 }
