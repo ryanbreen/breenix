@@ -50,8 +50,6 @@ pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     println!("We're back!");
 
-    breenix::init();
-
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
 
     let mut mapper = unsafe { breenix::memory::init(phys_mem_offset) };
@@ -63,6 +61,8 @@ pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
     breenix::memory::allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
     
+    breenix::init();
+
     use breenix::task::{Task, executor::Executor};
     let mut executor = Executor::new();
     executor.spawn(Task::new(breenix::io::keyboard::read()));

@@ -170,12 +170,10 @@ pub async fn read() {
             // The `as char` converts our ASCII data to Unicode, which is
             // correct as long as we're only using 7-bit ASCII.
             if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-                println!("{}", transformed_ascii);
-                /*
+                //println!("{}", transformed_ascii);
                 state::dispatch_key_event(&KeyEvent::new(scancode,
                                                         transformed_ascii,
                                                         &state.modifiers));
-                                                        */
                 continue;
             }
         }

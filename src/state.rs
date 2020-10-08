@@ -13,9 +13,10 @@ use crate::println;
 
 //use task::scheduler::Scheduler;
 
+const interrupt_count: [u64; 256] = [0; 256];
+
 pub struct State {
     pub key_listeners: Vec<KeyEventHandler>,
-    pub interrupt_count: [u64; 256],
 //    pub scheduler: Scheduler,
 //    pub devices: Vec<Device>,
 //    pub network_interfaces: Vec<NetworkInterface>,
@@ -26,8 +27,8 @@ impl core::fmt::Debug for State {
 
         write!(f, "State");
         for i in 0..256 {
-            if (self.interrupt_count[i] > 0) {
-                write!(f, "\n\tInterrupt {} count == {}", i, self.interrupt_count[i]);
+            if (interrupt_count[i] > 0) {
+                write!(f, "\n\tInterrupt {} count == {}", i, interrupt_count[i]);
             }
         }
 
@@ -40,7 +41,6 @@ lazy_static! {
     pub static ref STATE: Mutex<State> = {
         let state = State {
             key_listeners: Vec::new(),
-            interrupt_count: [0; 256],
             //scheduler: Scheduler::new(),
             //devices: Vec::new(),
             //network_interfaces: Vec::new(),
@@ -51,7 +51,7 @@ lazy_static! {
 }
 
 pub fn increment_interrupt_count(interrupt:usize) {
-    STATE.lock().interrupt_count[interrupt] += 1;
+    interrupt_count[interrupt] += 1;
 }
 
 pub fn register_key_event_listener(listener: KeyEventHandler) {

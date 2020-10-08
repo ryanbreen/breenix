@@ -76,9 +76,7 @@ const DEBUG_WATCHER:KeyEventHandler = KeyEventHandler {
 };
 
 pub fn initialize() {
-    /*
     state::register_key_event_listener(KEY_EVENT_SCREEN_WRITER);
     state::register_key_event_listener(KEY_EVENT_TOGGLE_WATCHER);
     state::register_key_event_listener(DEBUG_WATCHER);
-    */
 }
