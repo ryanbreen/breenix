@@ -33,15 +33,12 @@ pub fn register_key_event_listener(listener: KeyEventHandler) {
 }
 
 pub fn dispatch_key_event(ev: &KeyEvent) {
-    use x86_64::instructions::interrupts;
-    interrupts::without_interrupts(|| {
-        let listeners = &(KEY_EVENT_LISTENERS.lock().list);
-        for listener in listeners {
-            if (&listener.handles_event)(ev) {
-                (&listener.notify)(ev);
-            }
+    let listeners = &(KEY_EVENT_LISTENERS.lock().list);
+    for listener in listeners {
+        if (&listener.handles_event)(ev) {
+            (&listener.notify)(ev);
         }
-    });
+    }
 }
 
 #[derive(Clone, Copy)]

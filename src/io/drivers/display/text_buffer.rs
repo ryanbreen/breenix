@@ -163,7 +163,18 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::print!("{} - {}\n", $crate::io::timer::real_time(), format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! debug {
+    ($($arg:tt)*) => ($crate::io::drivers::display::text_buffer::debug(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! debugln {
+    () => ($crate::debug!("\n"));
+    ($($arg:tt)*) => ($crate::debug!("{}\n", format_args!($($arg)*)));
 }
 
 #[doc(hidden)]
@@ -173,6 +184,16 @@ pub fn print(args: fmt::Arguments) {
 
     interrupts::without_interrupts(|| {
         BUFFERS[*ACTIVE_BUFFER.lock()].lock().write_fmt(args).unwrap();
+    });
+}
+
+#[doc(hidden)]
+pub fn debug(args: fmt::Arguments) {
+    use core::fmt::Write;
+    use x86_64::instructions::interrupts;
+
+    interrupts::without_interrupts(|| {
+        DEBUG_BUFFER.lock().write_fmt(args).unwrap();
     });
 }
 

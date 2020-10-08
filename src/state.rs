@@ -56,6 +56,6 @@ pub fn increment_interrupt_count(interrupt:usize) {
 pub fn debug() {
     use x86_64::instructions::interrupts;
     interrupts::without_interrupts(|| {
-        crate::println!("{:?}", *(STATE.lock()));
+        crate::debugln!("{:?}", *(STATE.lock()));
     });
 }
