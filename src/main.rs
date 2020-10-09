@@ -1,7 +1,7 @@
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
 
-#![feature(ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks, wake_trait)]
+#![feature(alloc_error_handler, ptr_internals, abi_x86_interrupt, const_fn, custom_test_frameworks, wake_trait)]
 
 #![test_runner(breenix::test_runner)]
 #![reexport_test_harness_main = "test_main"]
@@ -17,11 +17,24 @@ pub mod constants;
 pub mod event;
 pub mod io;
 pub mod interrupts;
+pub mod memory;
 pub mod state;
 pub mod task;
 pub mod util;
 
-pub use breenix::hlt_loop;
+#[macro_export]
+pub mod macros;
+
+pub fn hlt_loop() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
+
+#[alloc_error_handler]
+fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
+    panic!("allocation error: {:?}", layout)
+}
 
 /// This function is called on panic.
 #[cfg(not(test))]
@@ -31,41 +44,31 @@ fn panic(info: &PanicInfo) -> ! {
     hlt_loop();
 }
 
-#[cfg(test)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    breenix::test_panic_handler(info)
-}
-
-#[test_case]
-fn trivial_assertion() {
-    assert_eq!(1, 1);
-}
-
 entry_point!(kernel_main);
 
 pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
-    use x86_64::{structures::paging::Page, VirtAddr};
-
     println!("We're back!");
+
+    use x86_64::{structures::paging::Page, VirtAddr};
 
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
 
-    let mut mapper = unsafe { breenix::memory::init(phys_mem_offset) };
+    let mut mapper = unsafe { memory::init(phys_mem_offset) };
 
     let mut frame_allocator = unsafe {
-        breenix::memory::BootInfoFrameAllocator::init(&boot_info.memory_map)
+        memory::BootInfoFrameAllocator::init(&boot_info.memory_map)
     };
 
-    breenix::memory::allocator::init_heap(&mut mapper, &mut frame_allocator)
+    memory::allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
-    
-    breenix::init();
 
-    use breenix::task::{Task, executor::Executor};
+    interrupts::initialize();
+    io::initialize();
+
+    use task::{Task, executor::Executor};
     let mut executor = Executor::new();
-    executor.spawn(Task::new(breenix::io::keyboard::read()));
+    executor.spawn(Task::new(io::keyboard::read()));
     executor.run();
 
     #[cfg(test)]

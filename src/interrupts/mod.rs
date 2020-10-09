@@ -193,6 +193,7 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
 {
+    use x86_64::instructions::interrupts;
     state::increment_interrupt_count(TIMER_INTERRUPT as usize);
     timer::timer_interrupt();
 
@@ -203,18 +204,22 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
 
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut InterruptStackFrame)
 {
-    state::increment_interrupt_count(KEYBOARD_INTERRUPT as usize);
+    use x86_64::instructions::interrupts;
 
-    use x86_64::instructions::port::Port;
+    interrupts::without_interrupts(|| {
+        state::increment_interrupt_count(KEYBOARD_INTERRUPT as usize);
 
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
-    crate::io::keyboard::add_scancode(scancode);
-    // keyboard::read();
+        use x86_64::instructions::port::Port;
 
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
-    }
+        let mut port = Port::new(0x60);
+        let scancode: u8 = unsafe { port.read() };
+        crate::io::keyboard::add_scancode(scancode);
+        // keyboard::read();
+
+        unsafe {
+            PICS.lock().notify_end_of_interrupt(KEYBOARD_INTERRUPT);
+        }
+    });
 }
 /*
 extern "x86-interrupt" fn serial_handler(_stack_frame: &mut ExceptionStackFrame)

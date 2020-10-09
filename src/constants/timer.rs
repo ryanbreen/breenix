@@ -8,4 +8,4 @@ pub const PIT_SET: u8 = 0x36;
 
 pub const TIMER_INTERRUPT: u8 = 0x20;
 
-pub const SUBTICKS_PER_TICK: u16 = 1000;
+pub const SUBTICKS_PER_TICK: u64 = 1000;

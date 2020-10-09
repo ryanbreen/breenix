@@ -158,8 +158,6 @@ pub async fn read() {
         // Give our modifiers first crack at this.
         state.modifiers.update(scancode);
 
-        // printk!("{:x}", scancode);
-
         // We don't map any keys > 127.
         if scancode > 127 {
             continue;
@@ -170,7 +168,6 @@ pub async fn read() {
             // The `as char` converts our ASCII data to Unicode, which is
             // correct as long as we're only using 7-bit ASCII.
             if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-                //println!("{}", transformed_ascii);
                 crate::event::keyboard::dispatch_key_event(&KeyEvent::new(scancode,
                                                            transformed_ascii,
                                                            &state.modifiers));

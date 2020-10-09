@@ -87,7 +87,6 @@ impl<T: InOut> Port<T> {
 
 pub fn initialize() {
     serial::initialize();
-    timer::initialize();
     event::keyboard::initialize();
     //pci::initialize();
 }

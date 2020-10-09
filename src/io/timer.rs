@@ -1,48 +1,64 @@
 use crate::constants::timer::{PIT_SCALE, PIT_CONTROL, PIT_SET, PIT_A, PIT_MASK, SUBTICKS_PER_TICK};
 
 use x86::io::outb;
+
 use crate::io::Port;
 use crate::util::time::Time;
 
-static mut TIMER_START: u64 = 0;
-static mut TIMER_TICKS: u64 = 0;
-static mut TIMER_SECONDS: u64 = 0;
-static mut TIMER_MILLIS: u16 = 0;
+use core::sync::atomic::{AtomicU64, Ordering};
+use lazy_static::lazy_static;
 
-pub fn initialize() {
-    let divisor: u32 = PIT_SCALE / SUBTICKS_PER_TICK as u32;
-    unsafe {
-        outb(PIT_CONTROL, PIT_SET);
-        outb(PIT_A, (divisor & (PIT_MASK as u32)) as u8);
-        outb(PIT_A, ((divisor >> 8) & (PIT_MASK as u32)) as u8);
-
-        TIMER_START = RealTimeClock::new().time().secs;
-    }
+pub struct Timer {
+    start: AtomicU64,
+    ticks: AtomicU64,
+    seconds: AtomicU64,
+    millis: AtomicU64,
 }
 
-pub fn timer_interrupt() {
+impl Timer {
+    pub fn new() -> Timer {
+        let divisor: u32 = PIT_SCALE / SUBTICKS_PER_TICK as u32;
+        unsafe {
+            outb(PIT_CONTROL, PIT_SET);
+            outb(PIT_A, (divisor & (PIT_MASK as u32)) as u8);
+            outb(PIT_A, ((divisor >> 8) & (PIT_MASK as u32)) as u8);
+        }
 
-    unsafe {
-        TIMER_TICKS += 1;
-        TIMER_MILLIS += 1;
-        if TIMER_MILLIS == SUBTICKS_PER_TICK {
-            TIMER_SECONDS += 1;
-            TIMER_MILLIS = 0;
+        Timer {
+            start: AtomicU64::new(RealTimeClock::new().time().secs),
+            ticks: AtomicU64::new(0),
+            seconds: AtomicU64::new(0),
+            millis: AtomicU64::new(0),
         }
     }
 }
 
+lazy_static! {
+    pub static ref TIMER: Timer = {
+        Timer::new()
+    };
+}
+
+pub fn timer_interrupt() {
+    TIMER.ticks.fetch_add(1, Ordering::Relaxed);
+    TIMER.millis.fetch_add(1, Ordering::Relaxed);
+    if (TIMER.millis.load(Ordering::Relaxed) == SUBTICKS_PER_TICK) {
+        TIMER.seconds.fetch_add(1, Ordering::Relaxed);
+        TIMER.millis.store(0, Ordering::Relaxed);
+    }
+}
+
 pub fn time_since_start() -> Time {
-    unsafe { Time::new(TIMER_SECONDS, TIMER_MILLIS as u32 * 1000, 0) }
+    Time::new(TIMER.seconds.load(Ordering::Relaxed), TIMER.millis.load(Ordering::Relaxed) as u32 * 1000, 0)
 }
 
 #[allow(dead_code)]
 pub fn monotonic_clock() -> u64 {
-    unsafe { TIMER_TICKS }
+    TIMER.ticks.load(Ordering::Relaxed)
 }
 
 pub fn real_time() -> u64 {
-    unsafe { TIMER_START + TIMER_SECONDS }
+    TIMER.start.load(Ordering::Relaxed) + TIMER.seconds.load(Ordering::Relaxed)
 }
 
 fn cvt_bcd(value: usize) -> usize {
@@ -78,6 +94,7 @@ impl RealTimeClock {
 
     /// Get time
     pub fn time(&mut self) -> Time {
+
         let mut second;
         let mut minute;
         let mut hour;
@@ -144,10 +161,6 @@ impl RealTimeClock {
         secs += hour as u64 * 3600;
         secs += minute as u64 * 60;
         secs += second as u64;
-
-        unsafe {
-            secs += (TIMER_MILLIS / 1000) as u64;
-        }
 
         Time::new(secs, 0, 0)
     }
