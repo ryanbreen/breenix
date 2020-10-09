@@ -21,6 +21,7 @@ volatile = "0.2.6"
 x86_64 = "0.12.2"
 uart_16550 = "0.2.10"
 pic8259_simple = "0.2.0"
+arr_macro = "0.1.3"
 
 [dependencies.x86]
 
