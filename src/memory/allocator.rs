@@ -1,17 +1,17 @@
-
 pub mod bump;
 
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
-use crate::constants::memory::{HEAP_START,HEAP_SIZE};
+use crate::constants::memory::{HEAP_SIZE, HEAP_START};
 
 use x86_64::{
+    addr::PhysAddr,
     structures::paging::{
-        mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
-        frame::PhysFrame, frame::PhysFrameRange
+        frame::PhysFrame, frame::PhysFrameRange, mapper::MapToError, FrameAllocator, Mapper, Page,
+        PageTableFlags, Size4KiB,
     },
-    VirtAddr, addr::PhysAddr
+    VirtAddr,
 };
 
 use bump::BumpAllocator;
@@ -43,41 +43,19 @@ fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
 
-pub fn init_heap(
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-) -> Result<(), MapToError<Size4KiB>> {
+pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     let page_range = {
         let heap_start = VirtAddr::new(HEAP_START as u64);
         let heap_end = heap_start + HEAP_SIZE - 1u64;
-        let heap_start_page:Page = Page::containing_address(heap_start);
-        let heap_end_page:Page = Page::containing_address(heap_end);
+        let heap_start_page: Page = Page::containing_address(heap_start);
+        let heap_end_page: Page = Page::containing_address(heap_end);
         Page::range_inclusive(heap_start_page, heap_end_page)
     };
 
     for page in page_range {
-        let frame = frame_allocator
-            .allocate_frame()
-            .ok_or(MapToError::FrameAllocationFailed)?;
+        let frame = crate::memory::allocate_frame().ok_or(MapToError::FrameAllocationFailed)?;
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        unsafe {
-            crate::memory::map_to(page, frame, flags, frame_allocator)
-        };
-    }
-
-    let ioreg = PhysFrame::range_inclusive(
-        PhysFrame::containing_address(PhysAddr::new(0xfebc0000)),
-        PhysFrame::containing_address(PhysAddr::new(0xfebc0000 + 0x2000))
-    );
-    crate::println!("Range is {:?}", ioreg);
-    for frame in ioreg {
-        //let frame = frame_allocator
-        //    .allocate_frame()
-        //    .ok_or(MapToError::FrameAllocationFailed)?;
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        crate::println!("Looking to map {:?}", frame);
-        unsafe {
-            crate::memory::identity_map(frame, flags, frame_allocator)
-        };
+        unsafe { crate::memory::map_to(page, frame, flags) };
     }
 
     unsafe {

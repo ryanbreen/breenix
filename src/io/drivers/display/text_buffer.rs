@@ -3,9 +3,9 @@ use spin::Mutex;
 
 use core::fmt;
 
-use crate::io::drivers::display::vga::{VGA, ColorCode};
+use crate::io::drivers::display::vga::{ColorCode, VGA};
 
-use crate::constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, Color};
+use crate::constants::vga::{Color, BUFFER_HEIGHT, BUFFER_WIDTH};
 
 pub struct TextBuffer {
     chars: [[u8; BUFFER_WIDTH]; BUFFER_HEIGHT],
@@ -36,7 +36,8 @@ impl TextBuffer {
     fn sync(&self) {
         if self.active {
             VGA.lock().sync_buffer(&self);
-            VGA.lock().update_cursor(BUFFER_HEIGHT - 1, self.column_position);
+            VGA.lock()
+                .update_cursor(BUFFER_HEIGHT - 1, self.column_position);
         }
     }
 
@@ -136,19 +137,19 @@ pub static DEBUG_BUFFER: Mutex<TextBuffer> = Mutex::new(TextBuffer {
 });
 
 lazy_static! {
-    pub static ref BUFFERS: [&'static Mutex<TextBuffer>; 3] = [&PRINT_BUFFER, &DEBUG_BUFFER, &KEYBOARD_BUFFER];
+    pub static ref BUFFERS: [&'static Mutex<TextBuffer>; 3] =
+        [&PRINT_BUFFER, &DEBUG_BUFFER, &KEYBOARD_BUFFER];
     pub static ref ACTIVE_BUFFER: Mutex<usize> = Mutex::new(0);
 }
 
 pub fn toggle() {
-
     let mut active = ACTIVE_BUFFER.lock();
 
     BUFFERS[*active].lock().deactivate();
 
     *active = match *active {
         2 => 0,
-        _ => *active + 1
+        _ => *active + 1,
     };
 
     BUFFERS[*active].lock().activate();
@@ -161,7 +162,10 @@ pub fn print(args: fmt::Arguments) {
     use x86_64::instructions::interrupts;
 
     interrupts::without_interrupts(|| {
-        BUFFERS[*ACTIVE_BUFFER.lock()].lock().write_fmt(args).unwrap();
+        BUFFERS[*ACTIVE_BUFFER.lock()]
+            .lock()
+            .write_fmt(args)
+            .unwrap();
     });
 }
 

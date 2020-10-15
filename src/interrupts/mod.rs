@@ -1,10 +1,10 @@
-use crate::{print,println};
+use crate::constants::interrupts::{DOUBLE_FAULT_IST_INDEX, PIC_1_OFFSET, PIC_2_OFFSET};
 use crate::constants::keyboard::KEYBOARD_INTERRUPT;
-use crate::constants::interrupts::{PIC_1_OFFSET, PIC_2_OFFSET, DOUBLE_FAULT_IST_INDEX};
 use crate::constants::serial::SERIAL_INTERRUPT;
 use crate::constants::syscall::SYSCALL_INTERRUPT;
 use crate::constants::timer::TIMER_INTERRUPT;
 use crate::state;
+use crate::{print, println};
 
 use core::fmt;
 
@@ -43,7 +43,7 @@ lazy_static! {
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
-        
+
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX as u16);
@@ -52,13 +52,13 @@ lazy_static! {
         for i in 32..256 {
             idt[i].set_handler_fn(dummy_error_handler);
         }
-    
+
         /*
         idt.interrupts[(SERIAL_INTERRUPT - 32) as usize].set_handler_fn(serial_handler);
         idt.interrupts[(SYSCALL_INTERRUPT - 32) as usize].set_handler_fn(syscall_handler);
         */
         idt[TIMER_INTERRUPT as usize].set_handler_fn(timer_handler);
-        
+
         idt[KEYBOARD_INTERRUPT as usize].set_handler_fn(keyboard_handler);
         /*
         idt.interrupts[11].set_handler_fn(nic_interrupt_handler);
@@ -71,7 +71,6 @@ lazy_static! {
 
 #[allow(dead_code)]
 pub fn initialize() {
-
     gdt::init();
     IDT.load();
 
@@ -96,9 +95,7 @@ pub fn initialize() {
     */
 }
 
-
-extern "x86-interrupt" fn dummy_error_handler(stack_frame: &mut InterruptStackFrame)
-{
+extern "x86-interrupt" fn dummy_error_handler(stack_frame: &mut InterruptStackFrame) {
     println!("EXCEPTION: UNHANDLED\n{:#?}", stack_frame);
 }
 
@@ -116,23 +113,24 @@ extern "x86-interrupt" fn nic_interrupt_handler(_stack_frame: &mut ExceptionStac
     println!("Packet received!!!");
 }
 */
-extern "x86-interrupt" fn double_fault_handler(stack_frame: &mut InterruptStackFrame,
-    _error_code: u64) -> !
-{
+extern "x86-interrupt" fn double_fault_handler(
+    stack_frame: &mut InterruptStackFrame,
+    _error_code: u64,
+) -> ! {
     println!("\nEXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
     loop {}
 }
 
-extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut InterruptStackFrame)
-{
+extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: &mut InterruptStackFrame) {
     println!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
     loop {}
 }
 
-extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut InterruptStackFrame)
-{
-    println!("EXCEPTION: INVALID OPCODE at {:?}\n{:#?}",
-            stack_frame.instruction_pointer, stack_frame);
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: &mut InterruptStackFrame) {
+    println!(
+        "EXCEPTION: INVALID OPCODE at {:?}\n{:#?}",
+        stack_frame.instruction_pointer, stack_frame
+    );
     loop {}
 }
 
@@ -186,13 +184,12 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame
                 pop    %rbp
                 sti
                 iretq" :  : "r"(my_sp), "r"(res) : );
-            
+
     }
 }
 */
 
-extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
-{
+extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame) {
     use x86_64::instructions::interrupts;
     state::increment_interrupt_count(TIMER_INTERRUPT as usize);
     timer::timer_interrupt();
@@ -202,8 +199,7 @@ extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame)
     }
 }
 
-extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut InterruptStackFrame)
-{
+extern "x86-interrupt" fn keyboard_handler(_stack_frame: &mut InterruptStackFrame) {
     use x86_64::instructions::interrupts;
 
     interrupts::without_interrupts(|| {
@@ -234,8 +230,8 @@ extern "x86-interrupt" fn serial_handler(_stack_frame: &mut ExceptionStackFrame)
 }
 */
 
-use x86_64::structures::idt::PageFaultErrorCode;
 use crate::hlt_loop;
+use x86_64::structures::idt::PageFaultErrorCode;
 
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: &mut InterruptStackFrame,

@@ -1,7 +1,9 @@
-
 use conquer_once::spin::OnceCell;
+use core::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 use crossbeam_queue::ArrayQueue;
-use core::{pin::Pin, task::{Poll, Context}};
 
 use futures_util::stream::{Stream, StreamExt};
 use futures_util::task::AtomicWaker;
@@ -17,7 +19,7 @@ use crate::constants::keyboard::{Key, KEYS, PORT};
 
 use crate::event::EventType;
 
-use crate::event::keyboard::{KeyEvent, ControlKeyState};
+use crate::event::keyboard::{ControlKeyState, KeyEvent};
 
 use crate::println;
 
@@ -93,7 +95,6 @@ impl Modifiers {
     }
 
     fn update(&mut self, scancode: u8) {
-
         // printk!("{:x} {:x}", self.last_key, scancode);
 
         match scancode {
@@ -115,12 +116,12 @@ impl Modifiers {
     }
 
     fn apply_to(&self, key: Key) -> Option<char> {
-
         // Only alphabetic keys honor caps lock, so first distinguish between
         // alphabetic and non alphabetic keys.
-        if (0x10 <= key.scancode && key.scancode <= 0x19) ||
-           (0x1E <= key.scancode && key.scancode <= 0x26) ||
-           (0x2C <= key.scancode && key.scancode <= 0x32) {
+        if (0x10 <= key.scancode && key.scancode <= 0x19)
+            || (0x1E <= key.scancode && key.scancode <= 0x26)
+            || (0x2C <= key.scancode && key.scancode <= 0x32)
+        {
             if (self.l_shift || self.r_shift) ^ self.caps_lock {
                 return Some(key.upper);
             }
@@ -142,7 +143,6 @@ static KEYSTATE: Mutex<KeyState> = Mutex::new(KeyState {
 
 /// Try to read a single input character
 pub async fn read() {
-
     println!("Starting read");
 
     let mut scancodes = ScancodeStream::new();
@@ -168,9 +168,11 @@ pub async fn read() {
             // The `as char` converts our ASCII data to Unicode, which is
             // correct as long as we're only using 7-bit ASCII.
             if let Some(transformed_ascii) = state.modifiers.apply_to(key) {
-                crate::event::keyboard::dispatch_key_event(&KeyEvent::new(scancode,
-                                                           transformed_ascii,
-                                                           &state.modifiers));
+                crate::event::keyboard::dispatch_key_event(&KeyEvent::new(
+                    scancode,
+                    transformed_ascii,
+                    &state.modifiers,
+                ));
                 continue;
             }
         }
@@ -181,7 +183,6 @@ pub async fn read() {
 ///
 /// Must not block or allocate.
 pub(crate) fn add_scancode(scancode: u8) {
-
     if let Ok(queue) = SCANCODE_QUEUE.try_get() {
         if let Err(_) = queue.push(scancode) {
             println!("WARNING: scancode queue full; dropping keyboard input");
@@ -199,9 +200,10 @@ pub struct ScancodeStream {
 
 impl ScancodeStream {
     pub fn new() -> Self {
-        SCANCODE_QUEUE.try_init_once(|| ArrayQueue::new(100))
+        SCANCODE_QUEUE
+            .try_init_once(|| ArrayQueue::new(100))
             .expect("ScancodeStream::new should only be called once");
-        
+
         ScancodeStream { _private: () }
     }
 }

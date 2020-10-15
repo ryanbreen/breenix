@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use x86::io::{inl, outl, outw, inw, outb, inb};
+use x86::io::{inb, inl, inw, outb, outl, outw};
 
 use crate::event;
 
@@ -87,4 +87,3 @@ pub fn initialize() {
     event::keyboard::initialize();
     pci::initialize();
 }
-

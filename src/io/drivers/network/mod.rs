@@ -9,7 +9,7 @@ use alloc::string::String;
 use crate::format;
 use crate::io::drivers::DeviceDriver;
 
-#[derive(Clone,Copy,Debug,PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NetworkInterfaceType {
     Loopback,
     Ethernet,
@@ -24,7 +24,7 @@ pub struct NetworkInterface {
 
 #[allow(dead_code)]
 impl NetworkInterface {
-    pub fn new(nic_type:NetworkInterfaceType, driver: Box<DeviceDriver>) -> NetworkInterface {
+    pub fn new(nic_type: NetworkInterfaceType, driver: Box<DeviceDriver>) -> NetworkInterface {
         NetworkInterface {
             interface_type: nic_type,
             name: create_network_interface_name(nic_type),

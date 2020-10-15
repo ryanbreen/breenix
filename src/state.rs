@@ -2,8 +2,8 @@ use crate::event::keyboard::KeyEvent;
 use crate::event::keyboard::KeyEventHandler;
 use crate::println;
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use arr_macro::arr;
+use core::sync::atomic::{AtomicU64, Ordering};
 use lazy_static::lazy_static;
 
 //use io::pci::Device;
@@ -13,18 +13,22 @@ use lazy_static::lazy_static;
 
 pub struct State {
     interrupt_count: [AtomicU64; 256],
-//    pub scheduler: Scheduler,
-//    pub devices: Vec<Device>,
-//    pub network_interfaces: Vec<NetworkInterface>,
+    //    pub scheduler: Scheduler,
+    //    pub devices: Vec<Device>,
+    //    pub network_interfaces: Vec<NetworkInterface>,
 }
 
 impl core::fmt::Debug for State {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-
         write!(f, "State");
         for i in 0..256 {
             if (self.interrupt_count[i].load(Ordering::Relaxed) > 0) {
-                write!(f, "\n\tInterrupt {} count == {}", i, self.interrupt_count[i].load(Ordering::Relaxed));
+                write!(
+                    f,
+                    "\n\tInterrupt {} count == {}",
+                    i,
+                    self.interrupt_count[i].load(Ordering::Relaxed)
+                );
             }
         }
 
@@ -44,7 +48,7 @@ lazy_static! {
     };
 }
 
-pub fn increment_interrupt_count(interrupt:usize) {
+pub fn increment_interrupt_count(interrupt: usize) {
     STATE.interrupt_count[interrupt].fetch_add(1, Ordering::Relaxed);
 }
 

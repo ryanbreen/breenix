@@ -1,4 +1,3 @@
-
 use core::ptr;
 
 use crate::println;
@@ -16,18 +15,19 @@ pub struct Hardware {
 #[allow(unused_mut, unused_assignments)]
 impl Hardware {
     pub fn new(device: pci::Device) -> Hardware {
-
-        Hardware {
+        let hardware = Hardware {
             io_base: device.bar(0x1).addr as usize,
             mem_base: device.bar(0x0).addr as usize,
-        }
+        };
 
-        // We need to memory map base and io.
-        //println!("Need to map from {:x} to {:x}", e1000.io_base, e1000.io_base + 8192);
+        use x86_64::structures::paging::PageTableFlags;
+        crate::memory::identity_map_range(
+            device.bar(0x0).addr,
+            device.bar(0x0).size,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+        );
 
-        //println!("Need to map from {:x} to {:x}", e1000.mem_base, e1000.mem_base + 8192);
-        //crate::memory::identity_map_range(e1000.io_base, e1000.io_base + 8192);
-        //crate::memory::identity_map_range(e1000.mem_base, e1000.mem_base + 8192);
+        hardware
     }
 
     pub unsafe fn write_command(&self, offset: usize, val: u32) {
@@ -47,7 +47,7 @@ impl Hardware {
     }
 
     pub unsafe fn acquire_eeprom(&self) {
-        let mut eecd:u32 = 0;
+        let mut eecd: u32 = 0;
         let mut i = 0;
 
         eecd = self.read_mem(CTRL_EECD);
@@ -56,8 +56,7 @@ impl Hardware {
         eecd |= E1000_EECD_REQ;
         self.write_mem(CTRL_EECD, eecd);
         eecd = self.read_mem(CTRL_EECD);
-        while (eecd & E1000_EECD_GNT == 0 &&
-            (i < E1000_EEPROM_GRANT_ATTEMPTS)) {
+        while (eecd & E1000_EECD_GNT == 0 && (i < E1000_EEPROM_GRANT_ATTEMPTS)) {
             i += 1;
             // udelay(5);
             eecd = self.read_mem(CTRL_EECD);
@@ -68,7 +67,7 @@ impl Hardware {
         }
 
         /* Setup EEPROM for Read/Write */
-        
+
         /* Clear SK and DI */
         eecd = eecd & !(E1000_EECD_DI | E1000_EECD_SK);
         self.write_mem(CTRL_EECD, eecd);
@@ -92,8 +91,7 @@ impl Hardware {
     }
 
     unsafe fn standby_eeprom(&self) {
-
-        let mut eecd:u32 = self.read_mem(CTRL_EECD);
+        let mut eecd: u32 = self.read_mem(CTRL_EECD);
 
         eecd &= !(E1000_EECD_CS | E1000_EECD_SK);
         self.write_mem(CTRL_EECD, eecd);
@@ -146,10 +144,10 @@ impl Hardware {
     }
 
     unsafe fn shift_in_ee_bits(&self, count: u16) -> u16 {
-	    let mut eecd:u32;
-        let mut data:u16 = 0;
+        let mut eecd: u32;
+        let mut data: u16 = 0;
 
-        /* 
+        /*
          * In order to read a register from the EEPROM, we need to shift 'count'
          * bits in from the EEPROM. Bits are "shifted in" by raising the clock
          * input to the EEPROM (setting the SK bit), and then reading the value
@@ -158,29 +156,29 @@ impl Hardware {
          */
         eecd = self.read_mem(CTRL_EECD);
 
-    	eecd &= !(E1000_EECD_DO | E1000_EECD_DI);
-    
-	    for i in 0..count {
-		    data = data << 1;
-		    self.raise_ee_clk(eecd);
+        eecd &= !(E1000_EECD_DO | E1000_EECD_DI);
+
+        for i in 0..count {
+            data = data << 1;
+            self.raise_ee_clk(eecd);
 
             eecd = self.read_mem(CTRL_EECD);
 
-	    	eecd &= !(E1000_EECD_DI);
-		    if (eecd & E1000_EECD_DO != 0) {
+            eecd &= !(E1000_EECD_DI);
+            if (eecd & E1000_EECD_DO != 0) {
                 data |= 1;
             }
 
-    		self.lower_ee_clk(eecd);
-	    }
+            self.lower_ee_clk(eecd);
+        }
 
-    	data
+        data
     }
 
     unsafe fn shift_out_ee_bits(&self, data: u32, count: u32) {
-        let mut eecd:u32;
-        let mut mask:u32;
-    
+        let mut eecd: u32;
+        let mut mask: u32;
+
         /*
          * We need to shift "count" bits out to the EEPROM. So, value in the
          * "data" parameter will be shifted out to the EEPROM one bit at a time.
@@ -188,11 +186,11 @@ impl Hardware {
          */
         mask = 0x01 << (count - 1);
         eecd = self.read_mem(CTRL_EECD);
-        
+
         eecd = eecd & !E1000_EECD_DO;
-        
+
         while (mask != 0) {
-            /* 
+            /*
              * A "1" is shifted out to the EEPROM by setting bit "DI" to a
              * "1", and then raising and then lowering the clock (the SK bit
              * controls the clock input to the EEPROM).  A "0" is shifted
@@ -200,42 +198,42 @@ impl Hardware {
              * then lowering the clock.
              */
             eecd &= !E1000_EECD_DI;
-    
+
             if (data & mask != 0) {
                 eecd = eecd | E1000_EECD_DI;
             }
-    
+
             self.write_mem(CTRL_EECD, eecd);
-            
+
             // write flush
             self.read_mem(STATUS);
-    
+
             eecd = self.raise_ee_clk(eecd);
             eecd = self.lower_ee_clk(eecd);
-    
+
             mask = mask >> 1;
         }
-    
+
         /* We leave the "DI" bit set to "0" when we leave this routine. */
         eecd &= !E1000_EECD_DI;
         self.write_mem(CTRL_EECD, eecd);
-    
+
         eecd = self.read_mem(CTRL_EECD);
     }
 
     unsafe fn read_eeprom(&self, offset: u16, words: u16) -> u16 {
-        let mut data:u16 = 0;
+        let mut data: u16 = 0;
         for i in 0..words {
-			/* Send the READ command (opcode + addr)  */
-			self.shift_out_ee_bits(EEPROM_READ_OPCODE_MICROWIRE, 3);
-            
-			self.shift_out_ee_bits(offset as u32 + i as u32, 6);
+            /* Send the READ command (opcode + addr)  */
+            self.shift_out_ee_bits(EEPROM_READ_OPCODE_MICROWIRE, 3);
 
-            /* 
+            self.shift_out_ee_bits(offset as u32 + i as u32, 6);
+
+            /*
              * Read the data.  For microwire, each word requires the
-			 * overhead of eeprom setup and tear-down.
+             * overhead of eeprom setup and tear-down.
              */
-			data = data | (self.shift_in_ee_bits(16) << (8 * i));
+            data = data | (self.shift_in_ee_bits(16) << (8 * i));
             self.standby_eeprom();
         }
         data
@@ -243,33 +241,33 @@ impl Hardware {
 
     /**
      * Verifies that the EEPROM has a valid checksum
-     * 
+     *
      * Reads the first 64 16 bit words of the EEPROM and sums the values read.
      * If the the sum of the 64 16 bit words is 0xBABA, the EEPROM's checksum is
      * valid.
      */
     pub unsafe fn checksum_eeprom(&self) -> bool {
-    	let mut checksum:u16 = 0;
-    	for i in 0..EEPROM_CHECKSUM_REG + 1 {
-            let data:u16 = self.read_eeprom(i, 1);
+        let mut checksum: u16 = 0;
+        for i in 0..EEPROM_CHECKSUM_REG + 1 {
+            let data: u16 = self.read_eeprom(i, 1);
             // crate::println!("data at {} is {:x}", i, data);
-		    checksum = checksum.wrapping_add(data);
+            checksum = checksum.wrapping_add(data);
         }
-        
+
         crate::println!("eeprom checksum is {:x}", checksum);
 
-    	(checksum == EEPROM_SUM)
+        (checksum == EEPROM_SUM)
     }
 
     /*
      * Reads the adapter's MAC address from the EEPROM and inverts the LSB for the
      * second function of dual function devices
      */
-    pub unsafe fn read_mac_addr(&self) -> [u8;6] {
-        let mut mac:[u8;6] = [0;6];
+    pub unsafe fn read_mac_addr(&self) -> [u8; 6] {
+        let mut mac: [u8; 6] = [0; 6];
 
-        let mut offset:u16 = 0;
-        let mut eeprom_data:u16 = 0;
+        let mut offset: u16 = 0;
+        let mut eeprom_data: u16 = 0;
 
         for i in (0..NODE_ADDRESS_SIZE).step_by(2) {
             offset = i as u16 >> 1;

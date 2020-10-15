@@ -1,16 +1,16 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
-use breenix::{serial_println, serial_print};
 use breenix::io::drivers::qemu::{exit_qemu, QemuExitCode};
+use breenix::{serial_print, serial_println};
+use core::panic::PanicInfo;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     should_fail();
     serial_println!("[test did not panic]");
     exit_qemu(QemuExitCode::Failed);
-    loop{}
+    loop {}
 }
 
 fn should_fail() {

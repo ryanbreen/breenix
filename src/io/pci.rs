@@ -3,13 +3,13 @@
 //!
 //! As usual, this is heavily inspired by http://wiki.osdev.org/Pci
 
+use crate::io::drivers::network::{NetworkInterface, NetworkInterfaceType};
+use crate::io::Port;
+use crate::println;
 use alloc::boxed::Box;
 use core::fmt;
 use core::intrinsics::transmute;
 use spin::Mutex;
-use crate::println;
-use crate::io::Port;
-use crate::io::drivers::network::{NetworkInterface,NetworkInterfaceType};
 
 struct Pci {
     address: Port<u32>,
@@ -23,9 +23,11 @@ impl Pci {
     /// parameters probably does excitingly horrible things to the
     /// hardware.
     unsafe fn read_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8) -> u32 {
-        let address: u32 = 0x80000000 | (bus as u32) << 16 | (slot as u32) << 11 |
-                           (function as u32) << 8 |
-                           (offset & 0xFC) as u32;
+        let address: u32 = 0x80000000
+            | (bus as u32) << 16
+            | (slot as u32) << 11
+            | (function as u32) << 8
+            | (offset & 0xFC) as u32;
         self.address.write(address);
         self.data.read()
     }
@@ -114,15 +116,17 @@ pub struct Device {
 
 impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
-               "{}.{}.{}: 0x{:04x} 0x{:04x} {:?} {:02x}",
-               self.bus,
-               self.device,
-               self.function,
-               self.vendor_id,
-               self.device_id,
-               self.class_code,
-               self.subclass)
+        write!(
+            f,
+            "{}.{}.{}: 0x{:04x} 0x{:04x} {:?} {:02x}",
+            self.bus,
+            self.device,
+            self.function,
+            self.vendor_id,
+            self.device_id,
+            self.class_code,
+            self.subclass
+        )
     }
 }
 
@@ -172,8 +176,8 @@ impl Device {
         let lfunc = u32::from(self.function);
         let lregister = u32::from(register);
 
-        return ((lbus << 16) | (lslot << 11) |
-            (lfunc << 8) | (lregister << 2) | 0x80000000) as u32;
+        return ((lbus << 16) | (lslot << 11) | (lfunc << 8) | (lregister << 2) | 0x80000000)
+            as u32;
         //return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
         //       (self.function as u32) << 8 | (offset as u32 & 0xFC);
     }
@@ -215,12 +219,12 @@ impl Device {
         match addr & 0x01 {
             0 => {
                 // memory space bar
-                BAR { 
+                BAR {
                     addr: (addr & 0xFFFF_FFF0) as u64,
                     size: (!(length & 0xFFFF_FFF0)).wrapping_add(1) as u64,
                     is_io: false,
                 }
-            },
+            }
             _ => {
                 // io space bar
                 BAR {
@@ -244,7 +248,7 @@ impl Device {
         }
     }
 
-    pub fn bar(&self, idx:usize) -> BAR {
+    pub fn bar(&self, idx: usize) -> BAR {
         self.bars[idx]
     }
 }
@@ -277,7 +281,6 @@ pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
 }
 
 fn device_specific_init(dev: &mut Device) {
-
     match dev.device_id {
         0x1111 => {
             /*
@@ -298,23 +301,22 @@ fn device_specific_init(dev: &mut Device) {
                         */
         }
         0x100E | 0x100F => {
-            println!("{}-{}-{} Intel Pro 1000/MT {}",
-                        dev.bus,
-                        dev.device,
-                        dev.function,
-                        dev);
+            println!(
+                "{}-{}-{} Intel Pro 1000/MT {}",
+                dev.bus, dev.device, dev.function, dev
+            );
             use crate::io::drivers::network::e1000::E1000;
             let e1000 = E1000::new(*dev);
-            let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
+            let nic: NetworkInterface =
+                NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
             println!("Registered as {}", nic);
             //::state().network_interfaces.push(nic);
         }
         0x8139 => {
-            println!("{}-{}-{} RTL8139 Fast Ethernet NIC {}",
-                        dev.bus,
-                        dev.device,
-                        dev.function,
-                        dev);
+            println!(
+                "{}-{}-{} RTL8139 Fast Ethernet NIC {}",
+                dev.bus, dev.device, dev.function, dev
+            );
             /*
             use crate::io::drivers::network::rtl8139::Rtl8139;
             let rtl = Rtl8139::new(*dev);
@@ -355,14 +357,12 @@ fn device_specific_init(dev: &mut Device) {
 }
 
 pub fn initialize() {
-
     for bus in 0..MAX_BUS {
         for dev in 0..MAX_DEVICE {
             for func in 0..MAX_FUNCTION {
-
                 unsafe {
                     let device = PCI.lock().probe(bus, dev, func);
-        
+
                     match device {
                         Some(mut d) => {
                             d.load_bars();
@@ -375,5 +375,4 @@ pub fn initialize() {
             }
         }
     }
-
 }

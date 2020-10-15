@@ -1,4 +1,3 @@
-
 pub const PIT_A: u16 = 0x40;
 pub const PIT_CONTROL: u16 = 0x43;
 

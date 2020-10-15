@@ -1,8 +1,7 @@
 pub mod display;
-pub mod qemu;
 pub mod network;
+pub mod qemu;
 
 pub trait DeviceDriver {
     fn initialize(&mut self);
 }
-

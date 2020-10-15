@@ -1,6 +1,6 @@
 use super::{Task, TaskId};
-use alloc::{collections::BTreeMap, sync::Arc};
 use alloc::task::Wake;
+use alloc::{collections::BTreeMap, sync::Arc};
 use core::task::{Context, Poll, Waker};
 use crossbeam_queue::ArrayQueue;
 
@@ -26,7 +26,7 @@ impl Executor {
         }
         self.task_queue.push(task_id).expect("queue full");
     }
-    
+
     fn sleep_if_idle(&self) {
         use x86_64::instructions::interrupts::{self, enable_interrupts_and_hlt};
 

@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
-use spin::Mutex;
 use lazy_static::lazy_static;
+use spin::Mutex;
 
 use crate::constants;
 use crate::event::EventType;
@@ -15,11 +15,8 @@ pub struct KeyEventListeners {
 }
 
 lazy_static! {
-
     pub static ref KEY_EVENT_LISTENERS: Mutex<KeyEventListeners> = {
-        let event_listeners = KeyEventListeners {
-            list: Vec::new(),
-        };
+        let event_listeners = KeyEventListeners { list: Vec::new() };
 
         Mutex::new(event_listeners)
     };
@@ -65,12 +62,10 @@ pub struct KeyEventHandler {
     pub notify: &'static (dyn Fn(&KeyEvent) + Sync),
 }
 
-const KEY_EVENT_SCREEN_WRITER:KeyEventHandler = KeyEventHandler {
-    handles_event: &|ev:&KeyEvent| -> bool {
-        !ev.controls.ctrl && !ev.controls.alt
-    },
-    
-    notify: &|ev:&KeyEvent| {
+const KEY_EVENT_SCREEN_WRITER: KeyEventHandler = KeyEventHandler {
+    handles_event: &|ev: &KeyEvent| -> bool { !ev.controls.ctrl && !ev.controls.alt },
+
+    notify: &|ev: &KeyEvent| {
         if ev.scancode == constants::keyboard::ENTER_KEY.scancode {
             text_buffer::KEYBOARD_BUFFER.lock().new_line();
             return;
@@ -82,30 +77,32 @@ const KEY_EVENT_SCREEN_WRITER:KeyEventHandler = KeyEventHandler {
         }
 
         if ev.character as u8 != 0 {
-            text_buffer::KEYBOARD_BUFFER.lock().write_byte(ev.character as u8);
+            text_buffer::KEYBOARD_BUFFER
+                .lock()
+                .write_byte(ev.character as u8);
         }
     },
 };
 
-const KEY_EVENT_TOGGLE_WATCHER:KeyEventHandler = KeyEventHandler {
-    handles_event: &|ev:&KeyEvent| -> bool {
+const KEY_EVENT_TOGGLE_WATCHER: KeyEventHandler = KeyEventHandler {
+    handles_event: &|ev: &KeyEvent| -> bool {
         ev.scancode == constants::keyboard::S_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
     },
 
-    notify: &|ev:&KeyEvent| {
+    notify: &|ev: &KeyEvent| {
         // Switch buffers
         text_buffer::toggle();
-    }
+    },
 };
 
-const DEBUG_WATCHER:KeyEventHandler = KeyEventHandler {
-    handles_event: &|ev:&KeyEvent| -> bool {
+const DEBUG_WATCHER: KeyEventHandler = KeyEventHandler {
+    handles_event: &|ev: &KeyEvent| -> bool {
         ev.scancode == constants::keyboard::D_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
     },
 
-    notify: &|ev:&KeyEvent| {
+    notify: &|ev: &KeyEvent| {
         state::debug();
-    }
+    },
 };
 
 pub fn initialize() {

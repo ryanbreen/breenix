@@ -256,147 +256,149 @@ pub const SPACE_KEY: Key = Key {
     scancode: 0x39,
 };
 
-pub const KEYS: [Option<Key>; 128] = [// 0x0
-                                      None,
-                                      None,
-                                      Some(ONE_KEY),
-                                      Some(TWO_KEY),
-                                      Some(THREE_KEY),
-                                      Some(FOUR_KEY),
-                                      Some(FIVE_KEY),
-                                      Some(SIX_KEY), // 0x7
-                                      // 0x8
-                                      Some(SEVEN_KEY),
-                                      Some(EIGHT_KEY),
-                                      Some(NINE_KEY),
-                                      Some(ZERO_KEY),
-                                      Some(DASH_KEY),
-                                      Some(EQUAL_KEY),
-                                      Some(DELETE_KEY),
-                                      Some(TAB_KEY), // 0xF
-                                      // 0x10
-                                      Some(Q_KEY),
-                                      Some(W_KEY),
-                                      Some(E_KEY),
-                                      Some(R_KEY),
-                                      Some(T_KEY),
-                                      Some(Y_KEY),
-                                      Some(U_KEY),
-                                      Some(I_KEY), // 0x17
-                                      // 0x18
-                                      Some(O_KEY),
-                                      Some(P_KEY),
-                                      Some(LB_KEY),
-                                      Some(RB_KEY),
-                                      Some(ENTER_KEY),
-                                      None,
-                                      Some(A_KEY),
-                                      Some(S_KEY), // 0x1F
-                                      // 0x20
-                                      Some(D_KEY),
-                                      Some(F_KEY),
-                                      Some(G_KEY),
-                                      Some(H_KEY),
-                                      Some(J_KEY),
-                                      Some(K_KEY),
-                                      Some(L_KEY),
-                                      None, // 0x27
-                                      // 0x28
-                                      None,
-                                      Some(TILDE_KEY),
-                                      None,
-                                      Some(BACKSLASH_KEY),
-                                      Some(Z_KEY),
-                                      Some(X_KEY),
-                                      Some(C_KEY),
-                                      Some(V_KEY), // 0x2F
-                                      // 0x30
-                                      Some(B_KEY),
-                                      Some(N_KEY),
-                                      Some(M_KEY),
-                                      Some(COMMA_KEY),
-                                      Some(DOT_KEY),
-                                      Some(SLASH_KEY),
-                                      None,
-                                      None, // 0x37
-                                      // 0x38
-                                      None,
-                                      Some(SPACE_KEY),
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x3F
-                                      // 0x40
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x47
-                                      // 0x48
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x4F
-                                      // 0x50
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x57
-                                      // 0x58
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x5F
-                                      // 0x60
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x67
-                                      // 0x68
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x6F
-                                      // 0x70
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None, // 0x77
-                                      // 0x78
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None,
-                                      None /* 0x7F */];
+pub const KEYS: [Option<Key>; 128] = [
+    // 0x0
+    None,
+    None,
+    Some(ONE_KEY),
+    Some(TWO_KEY),
+    Some(THREE_KEY),
+    Some(FOUR_KEY),
+    Some(FIVE_KEY),
+    Some(SIX_KEY), // 0x7
+    // 0x8
+    Some(SEVEN_KEY),
+    Some(EIGHT_KEY),
+    Some(NINE_KEY),
+    Some(ZERO_KEY),
+    Some(DASH_KEY),
+    Some(EQUAL_KEY),
+    Some(DELETE_KEY),
+    Some(TAB_KEY), // 0xF
+    // 0x10
+    Some(Q_KEY),
+    Some(W_KEY),
+    Some(E_KEY),
+    Some(R_KEY),
+    Some(T_KEY),
+    Some(Y_KEY),
+    Some(U_KEY),
+    Some(I_KEY), // 0x17
+    // 0x18
+    Some(O_KEY),
+    Some(P_KEY),
+    Some(LB_KEY),
+    Some(RB_KEY),
+    Some(ENTER_KEY),
+    None,
+    Some(A_KEY),
+    Some(S_KEY), // 0x1F
+    // 0x20
+    Some(D_KEY),
+    Some(F_KEY),
+    Some(G_KEY),
+    Some(H_KEY),
+    Some(J_KEY),
+    Some(K_KEY),
+    Some(L_KEY),
+    None, // 0x27
+    // 0x28
+    None,
+    Some(TILDE_KEY),
+    None,
+    Some(BACKSLASH_KEY),
+    Some(Z_KEY),
+    Some(X_KEY),
+    Some(C_KEY),
+    Some(V_KEY), // 0x2F
+    // 0x30
+    Some(B_KEY),
+    Some(N_KEY),
+    Some(M_KEY),
+    Some(COMMA_KEY),
+    Some(DOT_KEY),
+    Some(SLASH_KEY),
+    None,
+    None, // 0x37
+    // 0x38
+    None,
+    Some(SPACE_KEY),
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x3F
+    // 0x40
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x47
+    // 0x48
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x4F
+    // 0x50
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x57
+    // 0x58
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x5F
+    // 0x60
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x67
+    // 0x68
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x6F
+    // 0x70
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, // 0x77
+    // 0x78
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None, /* 0x7F */
+];

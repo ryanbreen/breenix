@@ -2,9 +2,9 @@ use core::ptr;
 
 use crate::println;
 
+use crate::io::drivers::DeviceDriver;
 use crate::io::pci;
 use crate::io::pci::BAR;
-use crate::io::drivers::DeviceDriver;
 
 mod constants;
 mod hardware;
@@ -19,9 +19,8 @@ pub struct E1000 {
 #[allow(unused_mut, unused_assignments)]
 impl E1000 {
     pub fn new(device: pci::Device) -> E1000 {
-
         let mut e1000: E1000 = E1000 {
-            hardware: self::hardware::Hardware::new(device)
+            hardware: self::hardware::Hardware::new(device),
         };
 
         // We need to memory map base and io.
@@ -34,16 +33,20 @@ impl E1000 {
         e1000.initialize();
         e1000
     }
- }
+}
 
 #[allow(non_snake_case)]
 impl DeviceDriver for E1000 {
     fn initialize(&mut self) {
-
         unsafe {
-
-            crate::println!("Read ctrl: {:x}", self.hardware.read_mem(self::constants::CTRL as usize));
-            crate::println!("Read status: {:x}", self.hardware.read_mem(self::constants::STATUS as usize));
+            crate::println!(
+                "Read ctrl: {:x}",
+                self.hardware.read_mem(self::constants::CTRL as usize)
+            );
+            crate::println!(
+                "Read status: {:x}",
+                self.hardware.read_mem(self::constants::STATUS as usize)
+            );
 
             self.hardware.write_command(0, 0x4140240);
 

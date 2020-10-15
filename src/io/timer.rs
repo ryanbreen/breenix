@@ -1,4 +1,6 @@
-use crate::constants::timer::{PIT_SCALE, PIT_CONTROL, PIT_SET, PIT_A, PIT_MASK, SUBTICKS_PER_TICK};
+use crate::constants::timer::{
+    PIT_A, PIT_CONTROL, PIT_MASK, PIT_SCALE, PIT_SET, SUBTICKS_PER_TICK,
+};
 
 use x86::io::outb;
 
@@ -34,9 +36,7 @@ impl Timer {
 }
 
 lazy_static! {
-    pub static ref TIMER: Timer = {
-        Timer::new()
-    };
+    pub static ref TIMER: Timer = { Timer::new() };
 }
 
 pub fn timer_interrupt() {
@@ -49,7 +49,11 @@ pub fn timer_interrupt() {
 }
 
 pub fn time_since_start() -> Time {
-    Time::new(TIMER.seconds.load(Ordering::Relaxed), TIMER.millis.load(Ordering::Relaxed) as u32 * 1000, 0)
+    Time::new(
+        TIMER.seconds.load(Ordering::Relaxed),
+        TIMER.millis.load(Ordering::Relaxed) as u32 * 1000,
+        0,
+    )
 }
 
 #[allow(dead_code)]
@@ -94,7 +98,6 @@ impl RealTimeClock {
 
     /// Get time
     pub fn time(&mut self) -> Time {
-
         let mut second;
         let mut minute;
         let mut hour;

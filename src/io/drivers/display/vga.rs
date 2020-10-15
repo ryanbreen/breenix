@@ -1,4 +1,4 @@
-use crate::constants::vga::{BUFFER_WIDTH, BUFFER_HEIGHT, Color};
+use crate::constants::vga::{Color, BUFFER_HEIGHT, BUFFER_WIDTH};
 
 use crate::io::drivers::display::text_buffer::TextBuffer;
 
@@ -32,10 +32,11 @@ pub struct VGA {
     frame: Unique<ScreenBuffer>,
 }
 
-pub static VGA: Mutex<VGA> = Mutex::new(VGA { frame: unsafe { Unique::new_unchecked(0xb8000 as *mut _) } });
+pub static VGA: Mutex<VGA> = Mutex::new(VGA {
+    frame: unsafe { Unique::new_unchecked(0xb8000 as *mut _) },
+});
 
 impl VGA {
-
     fn frame(&mut self) -> &mut ScreenBuffer {
         unsafe { self.frame.as_mut() }
     }
