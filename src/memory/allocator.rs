@@ -44,7 +44,6 @@ fn align_up(addr: usize, align: usize) -> usize {
 }
 
 pub fn init_heap(
-    mapper: &mut impl Mapper<Size4KiB>,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
 ) -> Result<(), MapToError<Size4KiB>> {
     let page_range = {
@@ -61,7 +60,7 @@ pub fn init_heap(
             .ok_or(MapToError::FrameAllocationFailed)?;
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         unsafe {
-            mapper.map_to(page, frame, flags, frame_allocator)?.flush()
+            crate::memory::map_to(page, frame, flags, frame_allocator)
         };
     }
 
@@ -77,7 +76,7 @@ pub fn init_heap(
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         crate::println!("Looking to map {:?}", frame);
         unsafe {
-            mapper.identity_map(frame, flags, frame_allocator)?.flush()
+            crate::memory::identity_map(frame, flags, frame_allocator)
         };
     }
 

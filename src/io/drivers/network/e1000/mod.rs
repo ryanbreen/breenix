@@ -40,11 +40,6 @@ impl E1000 {
 impl DeviceDriver for E1000 {
     fn initialize(&mut self) {
 
-        //let e1000 = self.pci_device;
-        // let irq = unsafe { e1000.read(0x3C) as u8 & 0xF };
-        // let interrupt_pin = unsafe { e1000.read(0x3D) as u8 & 0xF };
-        // let cmd = unsafe { e1000.read(0x04) };
-
         unsafe {
 
             crate::println!("Read ctrl: {:x}", self.hardware.read_mem(self::constants::CTRL as usize));

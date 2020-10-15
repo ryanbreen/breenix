@@ -1,17 +1,22 @@
-use x86_64::structures::paging::OffsetPageTable;
 
+
+use bootloader::BootInfo;
 use bootloader::bootinfo::MemoryMap;
 use bootloader::bootinfo::MemoryRegionType;
 
 use x86_64::{
-    structures::paging::PageTable,
-    VirtAddr,
+    structures::paging::{
+        mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+        frame::PhysFrame, frame::PhysFrameRange, OffsetPageTable, PageTable,
+    },
+    VirtAddr, addr::PhysAddr
 };
 
-use x86_64::{
-    PhysAddr,
-    structures::paging::{Page, PhysFrame, Mapper, Size4KiB, FrameAllocator}
-};
+use conquer_once::spin::OnceCell;
+
+use spin::Mutex;
+
+use crate::println;
 
 pub mod allocator;
 
@@ -64,7 +69,7 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
 /// complete physical memory is mapped to virtual memory at the passed
 /// `physical_memory_offset`. Also, this function must be only called once
 /// to avoid aliasing `&mut` references (which is undefined behavior).
-pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {
+unsafe fn init_page_table(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {
     let level_4_table = active_level_4_table(physical_memory_offset);
     OffsetPageTable::new(level_4_table, physical_memory_offset)
 }
@@ -87,4 +92,55 @@ pub unsafe fn active_level_4_table(physical_memory_offset: VirtAddr)
     let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
 
     &mut *page_table_ptr // unsafe
+}
+
+pub unsafe fn map_to(page: Page, frame: PhysFrame, flags: PageTableFlags, frame_allocator: &mut impl FrameAllocator<Size4KiB>) ->
+    Result<(), MapToError<Size4KiB>> {
+    let mut map = MEMORY_MAPPER
+            .try_get()
+            .expect("memory mapper not initialized").lock();
+    map.map_to(page, frame, flags, frame_allocator)?.flush();
+    Ok(())
+}
+
+pub unsafe fn identity_map(frame: PhysFrame, flags: PageTableFlags, frame_allocator: &mut impl FrameAllocator<Size4KiB>) ->
+    Result<(), MapToError<Size4KiB>> {
+    let mut map = MEMORY_MAPPER
+            .try_get()
+            .expect("memory mapper not initialized").lock();
+    map.identity_map(frame, flags, frame_allocator)?.flush();
+    Ok(())
+}
+
+static MEMORY_MAPPER: OnceCell<Mutex<OffsetPageTable<'static>>> = OnceCell::uninit();
+
+pub struct MemoryMapper {
+    _private: (),
+}
+
+impl MemoryMapper {
+    pub fn new(boot_info: &'static BootInfo) -> Self {
+        let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+
+        let mapper = unsafe { init_page_table(phys_mem_offset) };
+
+        MEMORY_MAPPER.try_init_once(|| Mutex::new(mapper))
+            .expect("MemoryMapper should only be called once!");
+        
+        MemoryMapper { _private: () }
+    }
+}
+
+pub fn init(boot_info: &'static BootInfo) {
+
+    let mapper = MemoryMapper::new(&boot_info);
+
+    println!("{:?}", &boot_info.memory_map);
+
+    let mut frame_allocator = unsafe {
+        BootInfoFrameAllocator::init(&boot_info.memory_map)
+    };
+
+    allocator::init_heap(&mut frame_allocator)
+        .expect("heap initialization failed");
 }
