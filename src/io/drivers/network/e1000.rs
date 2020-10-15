@@ -46,6 +46,8 @@ const EEPROM_CHECKSUM_REG: u16 = 0x003F;
 /* For checksumming, the sum of all words in the EEPROM should equal 0xBABA. */
 const EEPROM_SUM: u16 = 0xBABA;
 
+const NODE_ADDRESS_SIZE: usize = 6;
+
 #[allow(unused_mut, unused_assignments)]
 impl E1000 {
     pub fn new(device: pci::Device) -> E1000 {
@@ -313,6 +315,26 @@ impl E1000 {
 
     	(checksum == EEPROM_SUM)
     }
+
+    /*
+     * Reads the adapter's MAC address from the EEPROM and inverts the LSB for the
+     * second function of dual function devices
+     */
+    unsafe fn read_mac_addr(&self) -> [u8;6] {
+        let mut mac:[u8;6] = [0;6];
+
+        let mut offset:u16 = 0;
+        let mut eeprom_data:u16 = 0;
+
+        for i in (0..NODE_ADDRESS_SIZE).step_by(2) {
+            offset = i as u16 >> 1;
+            eeprom_data = self.read_eeprom(offset, 1);
+            mac[i] = eeprom_data as u8 & 0x00FF;
+            mac[i + 1] = eeprom_data.wrapping_shr(8) as u8;
+        }
+
+        mac
+    }
  }
 
 #[allow(non_snake_case)]
@@ -334,7 +356,10 @@ impl DeviceDriver for E1000 {
             self.acquire_eeprom();
 
             if self.checksum_eeprom() {
-                crate::println!("Valid eeprom!");
+                let macbytes = self.read_mac_addr();
+                use macaddr::MacAddr;
+                let mac = MacAddr::from(macbytes);
+                crate::println!("MAC is {}", mac);
             }
             
             //crate::println!("{:x}", self.read_eeprom(0, 1));

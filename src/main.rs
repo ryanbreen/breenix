@@ -7,6 +7,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
+extern crate num_traits;
 
 use bootloader::{BootInfo, entry_point};
 
