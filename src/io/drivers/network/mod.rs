@@ -1,12 +1,13 @@
 use core::fmt;
 
 pub mod e1000;
-pub mod rtl8139;
+//pub mod rtl8139;
 
 use alloc::boxed::Box;
-use alloc::String;
+use alloc::string::String;
 
-use io::drivers::DeviceDriver;
+use crate::format;
+use crate::io::drivers::DeviceDriver;
 
 // Boosted from redox
 //
@@ -79,7 +80,9 @@ impl fmt::Display for NetworkInterface {
 }
 
 pub fn create_network_interface_name(nic_type: NetworkInterfaceType) -> String {
+    /*
     let count:usize = ::state().network_interfaces.iter().filter(
         |nic| nic.interface_type == nic_type).count();
-    format!("{:?}{}", nic_type, count)
+    */
+    format!("{:?}{}", 0, 0)
 }

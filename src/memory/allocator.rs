@@ -9,8 +9,9 @@ use crate::constants::memory::{HEAP_START,HEAP_SIZE};
 use x86_64::{
     structures::paging::{
         mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
+        frame::PhysFrame, frame::PhysFrameRange
     },
-    VirtAddr,
+    VirtAddr, addr::PhysAddr
 };
 
 use bump::BumpAllocator;
@@ -61,6 +62,22 @@ pub fn init_heap(
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         unsafe {
             mapper.map_to(page, frame, flags, frame_allocator)?.flush()
+        };
+    }
+
+    let ioreg = PhysFrame::range_inclusive(
+        PhysFrame::containing_address(PhysAddr::new(0xfebc0000)),
+        PhysFrame::containing_address(PhysAddr::new(0xfebc0000 + 0x2000))
+    );
+    crate::println!("Range is {:?}", ioreg);
+    for frame in ioreg {
+        //let frame = frame_allocator
+        //    .allocate_frame()
+        //    .ok_or(MapToError::FrameAllocationFailed)?;
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        crate::println!("Looking to map {:?}", frame);
+        unsafe {
+            mapper.identity_map(frame, flags, frame_allocator)?.flush()
         };
     }
 

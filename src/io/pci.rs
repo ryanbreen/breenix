@@ -7,8 +7,9 @@ use alloc::boxed::Box;
 use core::fmt;
 use core::intrinsics::transmute;
 use spin::Mutex;
-use io::Port;
-use io::drivers::network::{NetworkInterface,NetworkInterfaceType};
+use crate::println;
+use crate::io::Port;
+use crate::io::drivers::network::{NetworkInterface,NetworkInterfaceType};
 
 struct Pci {
     address: Port<u32>,
@@ -37,7 +38,7 @@ impl Pci {
             return None;
         }
 
-        printk!("Found device {}-{}-{}", bus, slot, function);
+        // println!("Found device {}-{}-{}", bus, slot, function);
 
         let config_4 = self.read_config(bus, slot, function, 0x8);
         let config_c = self.read_config(bus, slot, function, 0xC);
@@ -52,7 +53,11 @@ impl Pci {
             subclass: (config_4 >> 16) as u8,
             class_code: DeviceClass::from_u8((config_4 >> 24) as u8),
             multifunction: config_c & 0x800000 != 0,
-            bars: [0; 6],
+            bars: [BAR {
+                addr: 0,
+                size: 0,
+                is_io: false,
+            }; 6],
         })
     }
 }
@@ -104,7 +109,7 @@ pub struct Device {
     subclass: u8,
     class_code: DeviceClass,
     multifunction: bool,
-    bars: [u32; 6],
+    bars: [BAR; 6],
 }
 
 impl fmt::Display for Device {
@@ -121,28 +126,73 @@ impl fmt::Display for Device {
     }
 }
 
+pub const PCI_MAX_BUS_NUMBER: u8 = 32;
+pub const PCI_MAX_DEVICE_NUMBER: u8 = 32;
+
+pub const PCI_CONFIG_ADDRESS_PORT: u16 = 0xCF8;
+pub const PCI_CONFIG_ADDRESS_ENABLE: u32 = 1 << 31;
+
+pub const PCI_CONFIG_DATA_PORT: u16 = 0xCFC;
+pub const PCI_COMMAND_BUSMASTER: u32 = 1 << 2;
+
+pub const PCI_ID_REGISTER: u32 = 0x00;
+pub const PCI_COMMAND_REGISTER: u32 = 0x04;
+pub const PCI_CLASS_REGISTER: u32 = 0x08;
+pub const PCI_HEADER_REGISTER: u32 = 0x0C;
+pub const PCI_BAR0_REGISTER: u32 = 0x10;
+pub const PCI_CAPABILITY_LIST_REGISTER: u32 = 0x34;
+pub const PCI_INTERRUPT_REGISTER: u32 = 0x3C;
+
+pub const PCI_STATUS_CAPABILITIES_LIST: u32 = 1 << 4;
+
+pub const PCI_BASE_ADDRESS_IO_SPACE: u32 = 1 << 0;
+pub const PCI_MEM_BASE_ADDRESS_64BIT: u32 = 1 << 2;
+pub const PCI_MEM_PREFETCHABLE: u32 = 1 << 3;
+pub const PCI_MEM_BASE_ADDRESS_MASK: u32 = 0xFFFF_FFF0;
+pub const PCI_IO_BASE_ADDRESS_MASK: u32 = 0xFFFF_FFFC;
+
+pub const PCI_HEADER_TYPE_MASK: u32 = 0x007F_0000;
+pub const PCI_MULTIFUNCTION_MASK: u32 = 0x0080_0000;
+
+pub const PCI_CAP_ID_VNDR: u32 = 0x09;
+
+#[derive(Copy, Clone, Debug)]
+pub struct BAR {
+    /// a memory space address and its size
+    pub size: u64,
+    pub addr: u64,
+    pub is_io: bool,
+}
+
 #[allow(dead_code)]
 impl Device {
-    fn address(&self, offset: u32) -> u32 {
-        return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
-               (self.function as u32) << 8 | (offset as u32 & 0xFC);
+    fn address(&self, register: u8) -> u32 {
+        let lbus = u32::from(self.bus);
+        let lslot = u32::from(self.device);
+        let lfunc = u32::from(self.function);
+        let lregister = u32::from(register);
+
+        return ((lbus << 16) | (lslot << 11) |
+            (lfunc << 8) | (lregister << 2) | 0x80000000) as u32;
+        //return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
+        //       (self.function as u32) << 8 | (offset as u32 & 0xFC);
     }
 
     /// Read
-    pub unsafe fn read(&self, offset: u32) -> u32 {
-        let address = self.address(offset);
+    pub unsafe fn read(&self, register: u8) -> u32 {
+        let address = self.address(register);
         PCI.lock().address.write(address);
         return PCI.lock().data.read();
     }
 
     /// Write
-    pub unsafe fn write(&self, offset: u32, value: u32) {
+    pub unsafe fn write(&self, offset: u8, value: u32) {
         let address = self.address(offset);
         PCI.lock().address.write(address);
         PCI.lock().data.write(value);
     }
 
-    pub unsafe fn flag(&self, offset: u32, flag: u32, toggle: bool) {
+    pub unsafe fn flag(&self, offset: u8, flag: u32, toggle: bool) {
         let mut value = self.read(offset);
         if toggle {
             value |= flag;
@@ -152,23 +202,49 @@ impl Device {
         self.write(offset, value);
     }
 
-    unsafe fn load_bars(&mut self) {
-        // Populate BARs
-        for i in 0..6 {
-            let bar = self.read(i * 4 + 0x10);
-            if bar > 0 {
-                self.bars[i as usize] = bar;
-                self.write(i * 4 + 0x10, 0xFFFFFFFF);
-                let size = (0xFFFFFFFF - (self.read(i * 4 + 0x10) & 0xFFFFFFF0)) + 1;
-                self.write(i * 4 + 0x10, bar);
-                if size > 0 {
-                    self.bars[i as usize] = size;
+    /// Decode an u32 to BAR.
+    unsafe fn decode_bar(&self, register: u8) -> BAR {
+        // read bar address
+        let addr = self.read(register);
+        // write to get length
+        self.write(register, 0xFFFF_FFFF);
+        // read back length
+        let length = self.read(register);
+        // restore original value
+        self.write(register, addr);
+        match addr & 0x01 {
+            0 => {
+                // memory space bar
+                BAR { 
+                    addr: (addr & 0xFFFF_FFF0) as u64,
+                    size: (!(length & 0xFFFF_FFF0)).wrapping_add(1) as u64,
+                    is_io: false,
+                }
+            },
+            _ => {
+                // io space bar
+                BAR {
+                    addr: (addr & 0xFFFF_FFFC) as u64,
+                    size: (!(length & 0xFFFF_FFFC)).wrapping_add(1) as u64,
+                    is_io: true,
                 }
             }
         }
     }
 
-    pub fn bar(&self, idx:usize) -> u32 {
+    fn load_bars(&mut self) {
+        unsafe {
+            // Populate BARs
+            self.bars[0] = self.decode_bar(4);
+            self.bars[1] = self.decode_bar(5);
+            self.bars[2] = self.decode_bar(6);
+            self.bars[3] = self.decode_bar(7);
+            self.bars[4] = self.decode_bar(8);
+            self.bars[5] = self.decode_bar(9);
+        }
+    }
+
+    pub fn bar(&self, idx:usize) -> BAR {
         self.bars[idx]
     }
 }
@@ -189,114 +265,114 @@ const MAX_FUNCTION: u8 = 7;
 
 #[allow(dead_code)]
 pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
+    /*
     for dev in ::state().devices.iter() {
         if dev.device_id == device_id && dev.vendor_id == vendor_id {
             return Some(*dev);
         }
     }
+    */
 
     None
 }
 
+fn device_specific_init(dev: &mut Device) {
 
-fn initialize_device(bus: u8, dev: u8) {
-
-    for func in 0..MAX_FUNCTION {
-
-        unsafe {
-            let device = PCI.lock().probe(bus, dev, func);
-
-            match device {
-                Some(mut d) => {
-                    d.load_bars();
-                    ::state().devices.push(d);
-                }
-                None => {}
-            }
+    match dev.device_id {
+        0x1111 => {
+            /*
+            println!("{}-{}-{} VGA {}",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev)
+                        */
         }
+        0x1237 => {
+            /*
+            println!("{}-{}-{} 82440LX/EX {}",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev)
+                        */
+        }
+        0x100E | 0x100F => {
+            println!("{}-{}-{} Intel Pro 1000/MT {}",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev);
+            use crate::io::drivers::network::e1000::E1000;
+            let e1000 = E1000::new(*dev);
+            let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
+            println!("Registered as {}", nic);
+            //::state().network_interfaces.push(nic);
+        }
+        0x8139 => {
+            println!("{}-{}-{} RTL8139 Fast Ethernet NIC {}",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev);
+            /*
+            use crate::io::drivers::network::rtl8139::Rtl8139;
+            let rtl = Rtl8139::new(*dev);
+            let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(rtl));
+            */
+            //println!("Registered as {}", nic);
+            //::state().network_interfaces.push(nic);
+        }
+        0x7000 => {
+            /*
+            println!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {}",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev)
+                        */
+        }
+        0x7010 => {
+            /*
+            println!("{}-{}-{} PIIX3 IDE Interface (Triton II) {}",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev)
+                        */
+        }
+        0x7113 => {
+            /*
+            println!("{}-{}-{} PIIX4/4E/4M Power Management Controller {}",
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev)
+                        */
+        }
+        _ => println!("{}", dev),
     }
-
 }
 
-#[allow(dead_code)]
-fn initialize_bus(bus: u8) {
-    for dev in 0..MAX_DEVICE {
-        initialize_device(bus, dev);
-    }
-}
-
-#[allow(dead_code)]
 pub fn initialize() {
 
     for bus in 0..MAX_BUS {
-        initialize_bus(bus);
-    }
+        for dev in 0..MAX_DEVICE {
+            for func in 0..MAX_FUNCTION {
 
-    printk!("Discovered {} devices", ::state().devices.len());
-
-    for dev in ::state().devices.iter_mut() {
-
-        match dev.device_id {
-            0x1111 => {
-                printk!("{}-{}-{} VGA {}",
-                         dev.bus,
-                         dev.device,
-                         dev.function,
-                         dev)
+                unsafe {
+                    let device = PCI.lock().probe(bus, dev, func);
+        
+                    match device {
+                        Some(mut d) => {
+                            d.load_bars();
+                            device_specific_init(&mut d);
+                            //println!("Loaded device {}", d);
+                        }
+                        None => {}
+                    }
+                }
             }
-            0x1237 => {
-                printk!("{}-{}-{} 82440LX/EX {}",
-                         dev.bus,
-                         dev.device,
-                         dev.function,
-                         dev)
-            }
-            0x100E | 0x100F => {
-                printk!("{}-{}-{} Intel Pro 1000/MT {}",
-                         dev.bus,
-                         dev.device,
-                         dev.function,
-                         dev);
-                use io::drivers::network::e1000::E1000;
-                let e1000 = E1000::new(*dev);
-                let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
-                printk!("Registered as {}", nic);
-                ::state().network_interfaces.push(nic);
-            }
-            0x8139 => {
-                printk!("{}-{}-{} RTL8139 Fast Ethernet NIC {}",
-                         dev.bus,
-                         dev.device,
-                         dev.function,
-                         dev);
-                use io::drivers::network::rtl8139::Rtl8139;
-                let rtl = Rtl8139::new(*dev);
-                let nic:NetworkInterface = NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(rtl));
-                printk!("Registered as {}", nic);
-                ::state().network_interfaces.push(nic);
-            }
-            0x7000 => {
-                printk!("{}-{}-{} PIIX3 PCI-to-ISA Bridge (Triton II) {}",
-                         dev.bus,
-                         dev.device,
-                         dev.function,
-                         dev)
-            }
-            0x7010 => {
-                printk!("{}-{}-{} PIIX3 IDE Interface (Triton II) {}",
-                         dev.bus,
-                         dev.device,
-                         dev.function,
-                         dev)
-            }
-            0x7113 => {
-                printk!("{}-{}-{} PIIX4/4E/4M Power Management Controller {}",
-                         dev.bus,
-                         dev.device,
-                         dev.function,
-                         dev)
-            }
-            _ => printk!("{}", dev),
         }
     }
 

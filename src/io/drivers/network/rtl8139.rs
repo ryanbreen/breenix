@@ -1,10 +1,12 @@
 
 use core::fmt;
 
-use io::Port;
-use io::pci;
-use io::drivers::DeviceDriver;
-use io::drivers::network::MacAddr;
+use crate::println;
+
+use crate::io::Port;
+use crate::io::pci;
+use crate::io::drivers::DeviceDriver;
+use crate::io::drivers::network::MacAddr;
 
 /* TSD register commands */
 const TxHostOwns:u32  = 0x2000 ; 
@@ -133,9 +135,9 @@ impl Rtl8139 {
                 initialized: false,
             };
 
-            printk!("{:?}", rtl8139);
+            println!("{:?}", rtl8139);
             rtl8139.initialize();
-            printk!("{:?}", rtl8139);
+            println!("{:?}", rtl8139);
 
             //rtl8139.listen();
             rtl8139
@@ -152,7 +154,7 @@ impl Rtl8139 {
                 i = i+1 ; 
             } 
         }
-        printk!("Something happened!!");
+        println!("Something happened!!");
 
         self.port.isr.write(0x1);
     }
@@ -179,7 +181,7 @@ impl DeviceDriver for Rtl8139 {
             let irq = rtl8139.read(0x3C) as u8 & 0xF;
             let interrupt_pin = rtl8139.read(0x3D) as u8 & 0xF;
 
-            printk!("{} {}", irq, interrupt_pin);
+            println!("{} {}", irq, interrupt_pin);
 
             // power on!
             self.port.config1.write(0);
@@ -203,6 +205,8 @@ impl DeviceDriver for Rtl8139 {
             //config receive.
             self.port.rcr.write(((1 << 12) | (7 << 8) | (1 << 7) | (1 << 3) | (1 << 2) | (1 << 1))) ; 
 
+            /*
+
             use memory::slab_allocator::allocate;
             let rx_ring_addr:*mut u8 = allocate(8192, 8).expect("Failed to allocate memory for network controller");
             self.rx_ring = *rx_ring_addr as *mut [u8; 8192];
@@ -219,12 +223,12 @@ impl DeviceDriver for Rtl8139 {
             use interrupts::PICS;
             let _ = PICS.lock().get_irr();
             let _ = PICS.lock().get_isr();
-            printk!("{:?}", PICS);
-            printk!("{:x}", PICS.lock().get_irq_mask(irq));
+            println!("{:?}", PICS);
+            println!("{:x}", PICS.lock().get_irq_mask(irq));
             PICS.lock().clear_irq_mask(irq);
             let _ = PICS.lock().get_irr();
             let _ = PICS.lock().get_isr();
-            printk!("{:?}", PICS);
+            println!("{:?}", PICS);
 
             // Enable all possible interrupts by setting the interrupt mask. 
             self.port.imr.write(INT_MASK);
@@ -239,24 +243,25 @@ impl DeviceDriver for Rtl8139 {
                 let isr = self.port.isr.read();
                 if isr & 0x20 != 0 {
                     self.port.isr.write(0x20);
-                    printk!("isr {:x}", isr);
+                    println!("isr {:x}", isr);
                     break;
                 }
             }
 
             let mut sum:u64 = 0;
             for i in 0..32 {
-                //printk!("{} == {:x}", i, (*self.rx_ring)[i]);
+                //println!("{} == {:x}", i, (*self.rx_ring)[i]);
                 //sum += (*self.rx_ring)[i] as u64;
             }
-            //printk!("Sum: {}", sum);
+            //println!("Sum: {}", sum);
 
-            printk!("Performing DMA at a {} sized buffer starting at 0x{:x}", 8192, rx_ring_addr as u32);
+            println!("Performing DMA at a {} sized buffer starting at 0x{:x}", 8192, rx_ring_addr as u32);
+            */
         }
 
         self.initialized = true;
 
-        printk!("NET - Found RTL network device that needs {} of space, irq is {}, interrupt pin \
+        println!("NET - Found RTL network device that needs {} of space, irq is {}, interrupt pin \
                   {}, command {}, MAC: {}",
                  rtl8139.bar(0),
                  0,

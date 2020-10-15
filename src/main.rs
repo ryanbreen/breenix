@@ -56,6 +56,8 @@ pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     let mut mapper = unsafe { memory::init(phys_mem_offset) };
 
+    println!("{:?}", &boot_info.memory_map);
+
     let mut frame_allocator = unsafe {
         memory::BootInfoFrameAllocator::init(&boot_info.memory_map)
     };

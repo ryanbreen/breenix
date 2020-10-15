@@ -4,12 +4,9 @@ use x86::io::{inl, outl, outw, inw, outb, inb};
 
 use crate::event;
 
-//#[macro_use]
 pub mod keyboard;
 
-//pub mod pci;
-
-//pub mod printk;
+pub mod pci;
 
 pub mod serial;
 
@@ -88,6 +85,6 @@ impl<T: InOut> Port<T> {
 pub fn initialize() {
     serial::initialize();
     event::keyboard::initialize();
-    //pci::initialize();
+    pci::initialize();
 }
 
