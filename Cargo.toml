@@ -17,8 +17,8 @@ panic = "abort"
 
 [dependencies]
 bootloader = { version = "0.9.11", features = ["map_physical_memory"]}
-spin = "0.5.2"
-volatile = "0.2.6"
+spin = "0.6.0"
+volatile = "0.3.0"
 x86_64 = "0.12.2"
 uart_16550 = "0.2.10"
 pic8259_simple = "0.2.0"
@@ -35,11 +35,11 @@ version = "0.2"
 default-features = false
 
 [dependencies.lazy_static]
-version = "1.0"
+version = "1.4.0"
 features = ["spin_no_std"]
 
 [dependencies.crossbeam-queue]
-version = "0.2.1"
+version = "0.3.0"
 default-features = false
 features = ["alloc"]
 
