@@ -1,3 +1,24 @@
+/* Register Set. (82543, 82544)
+ *
+ * Registers are defined to be 32 bits and  should be accessed as 32 bit values.
+ * These registers are physically located on the NIC, but are mapped into the
+ * host memory address space.
+ *
+ * RW - register is both readable and writable
+ * RO - register is read only
+ * WO - register is write only
+ * R/clr - register is read only and is cleared when read
+ * A - register array
+ */
+pub const E1000_CTRL: u32 = 0x00000; /* Device Control - RW */
+pub const E1000_CTRL_DUP: u32 = 0x00004; /* Device Control Duplicate (Shadow) - RW */
+pub const E1000_STATUS: u32 = 0x00008; /* Device Status - RO */
+pub const E1000_EECD: u32 = 0x00010; /* EEPROM/Flash Control - RW */
+pub const E1000_EERD: u32 = 0x00014; /* EEPROM Read - RW */
+pub const E1000_CTRL_EXT: u32 = 0x00018; /* Extended Device Control - RW */
+pub const E1000_FLA: u32 = 0x0001C; /* Flash Access - RW */
+pub const E1000_MDIC: u32 = 0x00020; /* MDI Control - RW */
+
 pub const CTRL: u32 = 0x00;
 pub const STATUS: u32 = 0x00008;
 pub const CTRL_EECD: u32 = 0x00010;
@@ -20,7 +41,7 @@ pub const E1000_IMC: u32 = 0x000D8; /* Interrupt Mask Clear - WO */
 pub const E1000_IAM: u32 = 0x000E0; /* Interrupt Acknowledge Auto Mask */
 
 /* PCI bus types */
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusType {
     e1000_bus_type_unknown = 0,
     e1000_bus_type_pci,
@@ -29,6 +50,7 @@ pub enum BusType {
 }
 
 /* PCI bus speeds */
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusSpeed {
     e1000_bus_speed_unknown = 0,
     e1000_bus_speed_33,
@@ -40,6 +62,7 @@ pub enum BusSpeed {
 }
 
 /* PCI bus widths */
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusWidth {
     e1000_bus_width_unknown = 0,
     e1000_bus_width_32,
@@ -175,6 +198,7 @@ pub const MAX_FRAME_SIZE: u64 = 0x5ee;
 
 /* Enumerated types specific to the e1000 hardware */
 /* Media Access Controllers */
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MacType {
     e1000_undefined = 0,
     e1000_82542_rev2_0,
@@ -194,6 +218,7 @@ pub enum MacType {
     e1000_num_macs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MediaType {
     e1000_media_type_copper = 0,
     e1000_media_type_fiber = 1,
@@ -202,6 +227,7 @@ pub enum MediaType {
 }
 
 /* Flow Control Settings */
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FlowControlSettings {
     E1000_FC_NONE = 0,
     E1000_FC_RX_PAUSE = 1,
@@ -210,6 +236,7 @@ pub enum FlowControlSettings {
     E1000_FC_DEFAULT = 0xFF,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MasterSlaveType {
     e1000_ms_hw_default = 0,
     e1000_ms_force_master,
@@ -400,6 +427,13 @@ pub const E1000_FWSM: u32 = 0x05B54; /* FW Semaphore */
 pub const E1000_FFLT_DBG: u32 = 0x05F04; /* Debug Register */
 pub const E1000_HICR: u32 = 0x08F00; /* Host Interface Control */
 
+/* Number of high/low register pairs in the RAR. The RAR (Receive Address
+ * Registers) holds the directed and multicast addresses that we monitor. We
+ * reserve one of these spots for our directed address, allowing us room for
+ * E1000_RAR_ENTRIES - 1 multicast addresses.
+ */
+pub const E1000_RAR_ENTRIES: u16 = 15;
+
 /* Transmit Control */
 pub const E1000_TCTL_RST: u32 = 0x00000001; /* software reset */
 pub const E1000_TCTL_EN: u32 = 0x00000002; /* enable tx */
@@ -487,6 +521,165 @@ pub const E1000_LEDCTL_MODE_PAUSED: u8 = 0xD;
 pub const E1000_LEDCTL_MODE_LED_ON: u32 = 0xE;
 pub const E1000_LEDCTL_MODE_LED_OFF: u32 = 0xF;
 
+/* Extended Device Control */
+pub const E1000_CTRL_EXT_GPI0_EN: u32 = 0x00000001; /* Maps SDP4 to GPI0 */
+pub const E1000_CTRL_EXT_GPI1_EN: u32 = 0x00000002; /* Maps SDP5 to GPI1 */
+pub const E1000_CTRL_EXT_PHYINT_EN: u32 = E1000_CTRL_EXT_GPI1_EN;
+pub const E1000_CTRL_EXT_GPI2_EN: u32 = 0x00000004; /* Maps SDP6 to GPI2 */
+pub const E1000_CTRL_EXT_GPI3_EN: u32 = 0x00000008; /* Maps SDP7 to GPI3 */
+pub const E1000_CTRL_EXT_SDP4_DATA: u32 = 0x00000010; /* Value of SW Defineable Pin 4 */
+pub const E1000_CTRL_EXT_SDP5_DATA: u32 = 0x00000020; /* Value of SW Defineable Pin 5 */
+pub const E1000_CTRL_EXT_PHY_INT: u32 = E1000_CTRL_EXT_SDP5_DATA;
+pub const E1000_CTRL_EXT_SDP6_DATA: u32 = 0x00000040; /* Value of SW Defineable Pin 6 */
+pub const E1000_CTRL_EXT_SDP7_DATA: u32 = 0x00000080; /* Value of SW Defineable Pin 7 */
+pub const E1000_CTRL_EXT_SDP4_DIR: u32 = 0x00000100; /* Direction of SDP4 0=in 1=out */
+pub const E1000_CTRL_EXT_SDP5_DIR: u32 = 0x00000200; /* Direction of SDP5 0=in 1=out */
+pub const E1000_CTRL_EXT_SDP6_DIR: u32 = 0x00000400; /* Direction of SDP6 0=in 1=out */
+pub const E1000_CTRL_EXT_SDP7_DIR: u32 = 0x00000800; /* Direction of SDP7 0=in 1=out */
+pub const E1000_CTRL_EXT_ASDCHK: u32 = 0x00001000; /* Initiate an ASD sequence */
+pub const E1000_CTRL_EXT_EE_RST: u32 = 0x00002000; /* Reinitialize from EEPROM */
+pub const E1000_CTRL_EXT_IPS: u32 = 0x00004000; /* Invert Power State */
+pub const E1000_CTRL_EXT_SPD_BYPS: u32 = 0x00008000; /* Speed Select Bypass */
+pub const E1000_CTRL_EXT_RO_DIS: u32 = 0x00020000; /* Relaxed Ordering disable */
+pub const E1000_CTRL_EXT_LINK_MODE_MASK: u32 = 0x00C00000;
+pub const E1000_CTRL_EXT_LINK_MODE_GMII: u32 = 0x00000000;
+pub const E1000_CTRL_EXT_LINK_MODE_TBI: u32 = 0x00C00000;
+pub const E1000_CTRL_EXT_LINK_MODE_KMRN: u32 = 0x00000000;
+pub const E1000_CTRL_EXT_LINK_MODE_SERDES: u32 = 0x00C00000;
+pub const E1000_CTRL_EXT_LINK_MODE_SGMII: u32 = 0x00800000;
+pub const E1000_CTRL_EXT_WR_WMARK_MASK: u32 = 0x03000000;
+pub const E1000_CTRL_EXT_WR_WMARK_256: u32 = 0x00000000;
+pub const E1000_CTRL_EXT_WR_WMARK_320: u32 = 0x01000000;
+pub const E1000_CTRL_EXT_WR_WMARK_384: u32 = 0x02000000;
+pub const E1000_CTRL_EXT_WR_WMARK_448: u32 = 0x03000000;
+pub const E1000_CTRL_EXT_DRV_LOAD: u32 = 0x10000000; /* Driver loaded bit for FW */
+pub const E1000_CTRL_EXT_IAME: u32 = 0x08000000; /* Interrupt acknowledge Auto-mask */
+pub const E1000_CTRL_EXT_INT_TIMER_CLR: u32 = 0x20000000; /* Clear Interrupt timers after IMS clear */
+pub const E1000_CRTL_EXT_PB_PAREN: u32 = 0x01000000; /* packet buffer parity error detection enabled */
+pub const E1000_CTRL_EXT_DF_PAREN: u32 = 0x02000000; /* descriptor FIFO parity error detection enable */
+pub const E1000_CTRL_EXT_GHOST_PAREN: u32 = 0x40000000;
+
+/* MDI Control */
+pub const E1000_MDIC_DATA_MASK: u32 = 0x0000FFFF;
+pub const E1000_MDIC_REG_MASK: u32 = 0x001F0000;
+pub const E1000_MDIC_REG_SHIFT: u32 = 16;
+pub const E1000_MDIC_PHY_MASK: u32 = 0x03E00000;
+pub const E1000_MDIC_PHY_SHIFT: u32 = 21;
+pub const E1000_MDIC_OP_WRITE: u32 = 0x04000000;
+pub const E1000_MDIC_OP_READ: u32 = 0x08000000;
+pub const E1000_MDIC_READY: u32 = 0x10000000;
+pub const E1000_MDIC_INT_EN: u32 = 0x20000000;
+pub const E1000_MDIC_ERROR: u32 = 0x40000000;
+
+pub const INTEL_CE_GBE_MDIC_OP_WRITE: u32 = 0x04000000;
+pub const INTEL_CE_GBE_MDIC_OP_READ: u32 = 0x00000000;
+pub const INTEL_CE_GBE_MDIC_GO: u32 = 0x80000000;
+pub const INTEL_CE_GBE_MDIC_READ_ERROR: u32 = 0x80000000;
+
+pub const E1000_KUMCTRLSTA_MASK: u32 = 0x0000FFFF;
+pub const E1000_KUMCTRLSTA_OFFSET: u32 = 0x001F0000;
+pub const E1000_KUMCTRLSTA_OFFSET_SHIFT: u32 = 16;
+pub const E1000_KUMCTRLSTA_REN: u32 = 0x00200000;
+
+pub const E1000_KUMCTRLSTA_OFFSET_FIFO_CTRL: u32 = 0x00000000;
+pub const E1000_KUMCTRLSTA_OFFSET_CTRL: u32 = 0x00000001;
+pub const E1000_KUMCTRLSTA_OFFSET_INB_CTRL: u32 = 0x00000002;
+pub const E1000_KUMCTRLSTA_OFFSET_DIAG: u32 = 0x00000003;
+pub const E1000_KUMCTRLSTA_OFFSET_TIMEOUTS: u32 = 0x00000004;
+pub const E1000_KUMCTRLSTA_OFFSET_INB_PARAM: u32 = 0x00000009;
+pub const E1000_KUMCTRLSTA_OFFSET_HD_CTRL: u32 = 0x00000010;
+pub const E1000_KUMCTRLSTA_OFFSET_M2P_SERDES: u32 = 0x0000001E;
+pub const E1000_KUMCTRLSTA_OFFSET_M2P_MODES: u32 = 0x0000001F;
+
+/* FIFO Control */
+pub const E1000_KUMCTRLSTA_FIFO_CTRL_RX_BYPASS: u32 = 0x00000008;
+pub const E1000_KUMCTRLSTA_FIFO_CTRL_TX_BYPASS: u32 = 0x00000800;
+
+/* In-Band Control */
+pub const E1000_KUMCTRLSTA_INB_CTRL_LINK_STATUS_TX_TIMEOUT_DEFAULT: u32 = 0x00000500;
+pub const E1000_KUMCTRLSTA_INB_CTRL_DIS_PADDING: u32 = 0x00000010;
+
+/* Half-Duplex Control */
+pub const E1000_KUMCTRLSTA_HD_CTRL_10_100_DEFAULT: u32 = 0x00000004;
+pub const E1000_KUMCTRLSTA_HD_CTRL_1000_DEFAULT: u32 = 0x00000000;
+
+pub const E1000_KUMCTRLSTA_OFFSET_K0S_CTRL: u32 = 0x0000001E;
+
+pub const E1000_KUMCTRLSTA_DIAG_FELPBK: u32 = 0x2000;
+pub const E1000_KUMCTRLSTA_DIAG_NELPBK: u32 = 0x1000;
+
+pub const E1000_KUMCTRLSTA_K0S_100_EN: u32 = 0x2000;
+pub const E1000_KUMCTRLSTA_K0S_GBE_EN: u32 = 0x1000;
+pub const E1000_KUMCTRLSTA_K0S_ENTRY_LATENCY_MASK: u32 = 0x0003;
+
+pub const E1000_KABGTXD_BGSQLBIAS: u32 = 0x00050000;
+
+pub const E1000_PHY_CTRL_SPD_EN: u32 = 0x00000001;
+pub const E1000_PHY_CTRL_D0A_LPLU: u32 = 0x00000002;
+pub const E1000_PHY_CTRL_NOND0A_LPLU: u32 = 0x00000004;
+pub const E1000_PHY_CTRL_NOND0A_GBE_DISABLE: u32 = 0x00000008;
+pub const E1000_PHY_CTRL_GBE_DISABLE: u32 = 0x00000040;
+pub const E1000_PHY_CTRL_B2B_EN: u32 = 0x00000080;
+
+/* Structures, enums, and macros for the PHY */
+
+/* Bit definitions for the Management Data IO (MDIO) and Management Data
+ * Clock (MDC) pins in the Device Control Register.
+ */
+pub const E1000_CTRL_PHY_RESET_DIR: u32 = E1000_CTRL_SWDPIO0;
+pub const E1000_CTRL_PHY_RESET: u32 = E1000_CTRL_SWDPIN0;
+pub const E1000_CTRL_MDIO_DIR: u32 = E1000_CTRL_SWDPIO2;
+pub const E1000_CTRL_MDIO: u32 = E1000_CTRL_SWDPIN2;
+pub const E1000_CTRL_MDC_DIR: u32 = E1000_CTRL_SWDPIO3;
+pub const E1000_CTRL_MDC: u32 = E1000_CTRL_SWDPIN3;
+pub const E1000_CTRL_PHY_RESET_DIR4: u32 = E1000_CTRL_EXT_SDP4_DIR;
+pub const E1000_CTRL_PHY_RESET4: u32 = E1000_CTRL_EXT_SDP4_DATA;
+
+/* PHY 1000 MII Register/Bit Definitions */
+/* PHY Registers defined by IEEE */
+pub const PHY_CTRL: u32 = 0x00; /* Control Register */
+pub const PHY_STATUS: u32 = 0x01; /* Status Register */
+pub const PHY_ID1: u32 = 0x02; /* Phy Id Reg (word 1) */
+pub const PHY_ID2: u32 = 0x03; /* Phy Id Reg (word 2) */
+pub const PHY_AUTONEG_ADV: u32 = 0x04; /* Autoneg Advertisement */
+pub const PHY_LP_ABILITY: u32 = 0x05; /* Link Partner Ability (Base Page) */
+pub const PHY_AUTONEG_EXP: u32 = 0x06; /* Autoneg Expansion Reg */
+pub const PHY_NEXT_PAGE_TX: u32 = 0x07; /* Next Page TX */
+pub const PHY_LP_NEXT_PAGE: u32 = 0x08; /* Link Partner Next Page */
+pub const PHY_1000T_CTRL: u32 = 0x09; /* 1000Base-T Control Reg */
+pub const PHY_1000T_STATUS: u32 = 0x0A; /* 1000Base-T Status Reg */
+pub const PHY_EXT_STATUS: u32 = 0x0F; /* Extended Status Reg */
+
+pub const MAX_PHY_REG_ADDRESS: u32 = 0x1F; /* 5 bit address bus (0-0x1F) */
+pub const MAX_PHY_MULTI_PAGE_REG: u32 = 0xF; /* Registers equal on all pages */
+
+/* Miscellaneous PHY bit definitions. */
+pub const PHY_PREAMBLE: u32 = 0xFFFFFFFF;
+pub const PHY_SOF: u32 = 0x01;
+pub const PHY_OP_READ: u32 = 0x02;
+pub const PHY_OP_WRITE: u32 = 0x01;
+pub const PHY_TURNAROUND: u32 = 0x02;
+pub const PHY_PREAMBLE_SIZE: u32 = 32;
+pub const MII_CR_SPEED_1000: u32 = 0x0040;
+pub const MII_CR_SPEED_100: u32 = 0x2000;
+pub const MII_CR_SPEED_10: u32 = 0x0000;
+pub const E1000_PHY_ADDRESS: u32 = 0x01;
+pub const PHY_AUTO_NEG_TIME: u32 = 45; /* 4.5 Seconds */
+pub const PHY_FORCE_TIME: u32 = 20; /* 2.0 Seconds */
+pub const PHY_REVISION_MASK: u32 = 0xFFFFFFF0;
+pub const DEVICE_SPEED_MASK: u32 = 0x00000300; /* Device Ctrl Reg Speed Mask */
+pub const REG4_SPEED_MASK: u32 = 0x01E0;
+pub const REG9_SPEED_MASK: u32 = 0x0300;
+pub const ADVERTISE_10_HALF: u32 = 0x0001;
+pub const ADVERTISE_10_FULL: u32 = 0x0002;
+pub const ADVERTISE_100_HALF: u32 = 0x0004;
+pub const ADVERTISE_100_FULL: u32 = 0x0008;
+pub const ADVERTISE_1000_HALF: u32 = 0x0010;
+pub const ADVERTISE_1000_FULL: u32 = 0x0020;
+pub const AUTONEG_ADVERTISE_SPEED_DEFAULT: u32 = 0x002F; /* Everything but 1000-Half */
+pub const AUTONEG_ADVERTISE_10_100_ALL: u32 = 0x000F; /* All 10/100 speeds */
+pub const AUTONEG_ADVERTISE_10_ALL: u32 = 0x0003; /* 10Mbps Full & Half speeds */
+
 /* Word definitions for ID LED Settings */
 pub const ID_LED_RESERVED_0000: u16 = 0x0000;
 pub const ID_LED_RESERVED_FFFF: u16 = 0xFFFF;
@@ -505,6 +698,17 @@ pub const ID_LED_OFF1_ON2: u16 = 0x8;
 pub const ID_LED_OFF1_OFF2: u16 = 0x9;
 
 /* Filters */
-pub const E1000_NUM_UNICAST: u32 =          16; 	/* Unicast filter entries */
-pub const E1000_MC_TBL_SIZE: u32 =          128;	/* Multicast Filter Table (4096 bits) */
-pub const E1000_VLAN_FILTER_TBL_SIZE: u32 = 128;	/* VLAN Filter Table (4096 bits) */
+pub const E1000_NUM_UNICAST: u32 = 16; /* Unicast filter entries */
+pub const E1000_MC_TBL_SIZE: u32 = 128; /* Multicast Filter Table (4096 bits) */
+pub const E1000_VLAN_FILTER_TBL_SIZE: u32 = 128; /* VLAN Filter Table (4096 bits) */
+
+/* Receive Address */
+pub const E1000_RAH_AV: u32 = 0x80000000; /* Receive descriptor valid */
+
+/* Mask bits for fields in Word 0x0f of the EEPROM */
+pub const EEPROM_WORD0F_PAUSE_MASK: u16 = 0x3000;
+pub const EEPROM_WORD0F_PAUSE: u16 = 0x1000;
+pub const EEPROM_WORD0F_ASM_DIR: u16 = 0x2000;
+pub const EEPROM_WORD0F_ANE: u16 = 0x0800;
+pub const EEPROM_WORD0F_SWPDIO_EXT: u16 = 0x00F0;
+pub const EEPROM_WORD0F_LPLU: u16 = 0x0001;

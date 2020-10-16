@@ -74,10 +74,8 @@ impl DeviceDriver for E1000 {
         self.hardware.acquire_eeprom()?;
 
         if self.hardware.checksum_eeprom()? {
-            let macbytes = self.hardware.read_mac_addr()?;
-            use macaddr::MacAddr;
-            let mac = MacAddr::from(macbytes);
-            crate::println!("MAC is {}", mac);
+            self.hardware.load_mac_addr()?;
+            crate::println!("MAC is {}", self.hardware.mac);
 
             let control_port = self
                 .hardware
