@@ -503,3 +503,8 @@ pub const ID_LED_ON1_OFF2: u16 = 0x6;
 pub const ID_LED_OFF1_DEF2: u16 = 0x7;
 pub const ID_LED_OFF1_ON2: u16 = 0x8;
 pub const ID_LED_OFF1_OFF2: u16 = 0x9;
+
+/* Filters */
+pub const E1000_NUM_UNICAST: u32 =          16; 	/* Unicast filter entries */
+pub const E1000_MC_TBL_SIZE: u32 =          128;	/* Multicast Filter Table (4096 bits) */
+pub const E1000_VLAN_FILTER_TBL_SIZE: u32 = 128;	/* VLAN Filter Table (4096 bits) */

@@ -488,4 +488,32 @@ impl Hardware {
 
         Ok(())
     }
+
+    /**
+     * e1000_clear_vfta - Clears the VLAN filer table
+     * @hw: Struct containing variables accessed by shared code
+     */
+    fn clear_vfta(&self) -> Result<(), ()> {
+	    let vfta_offset: u32 = 0;
+	    let mut vfta_bit_in_reg: u32 = 0;
+
+        for offset in 0..E1000_VLAN_FILTER_TBL_SIZE {
+            /*
+             * If the offset we want to clear is the same offset of the
+             * manageability VLAN ID, then clear all bits except that of the
+             * manageability unit
+             */
+            let vfta_value:u32 =
+                match offset == vfta_offset {
+                    true => vfta_bit_in_reg,
+                    _ => 0,
+            };
+            
+            println!("Writing {:x} to {:x}", vfta_value, E1000_VFTA + (offset << 2));
+            self.write(E1000_VFTA + (offset << 2), vfta_value)?;
+            self.write_flush()?
+        }
+
+        Ok(());
+    }
 }
