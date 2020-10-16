@@ -24,6 +24,15 @@ macro_rules! debugln {
 }
 
 #[macro_export]
+macro_rules! delay {
+    ($len:expr) => {{
+        use $crate::io::timer;
+        let mut target = timer::monotonic_clock() + $len;
+        while timer::monotonic_clock() < target {}
+    }};
+}
+
+#[macro_export]
 macro_rules! format {
     ($($arg:tt)*) => ({
       use alloc::string::String;
