@@ -15,6 +15,7 @@ use self::constants::*;
 pub struct E1000 {
     //pci_device: pci::Device,
     hardware: self::hardware::Hardware,
+    mng_vlan_id: u16,
 }
 
 #[allow(unused_mut, unused_assignments)]
@@ -22,6 +23,7 @@ impl E1000 {
     pub fn new(device: pci::Device) -> E1000 {
         let mut e1000: E1000 = E1000 {
             hardware: self::hardware::Hardware::new(device),
+            mng_vlan_id: 0,
         };
 
         // We need to memory map base and io.
@@ -31,8 +33,37 @@ impl E1000 {
         //crate::memory::identity_map_range(e1000.io_base, e1000.io_base + 8192);
         //crate::memory::identity_map_range(e1000.mem_base, e1000.mem_base + 8192);
 
-        e1000.initialize();
+        let res = e1000.initialize();
+        println!("Got res {:?}", res);
         e1000
+    }
+
+    fn update_mng_vlan(&self) -> Result<(), ()> {
+        let vid = self.hardware.mng_cookie.vlan_id;
+        let old_vid = self.mng_vlan_id;
+
+        /*
+        if (!e1000_vlan_used(adapter))
+            return;
+
+        if (!test_bit(vid, adapter->active_vlans)) {
+            if (hw->mng_cookie.status &
+                E1000_MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT) {
+                e1000_vlan_rx_add_vid(netdev, htons(ETH_P_8021Q), vid);
+                adapter->mng_vlan_id = vid;
+            } else {
+                adapter->mng_vlan_id = E1000_MNG_VLAN_NONE;
+            }
+            if ((old_vid != (u16)E1000_MNG_VLAN_NONE) &&
+                (vid != old_vid) &&
+                !test_bit(old_vid, adapter->active_vlans))
+                e1000_vlan_rx_kill_vid(netdev, htons(ETH_P_8021Q),
+                            old_vid);
+        } else {
+            adapter->mng_vlan_id = vid;
+        }*/
+
+        Ok(())
     }
 
     fn reset(&mut self) -> Result<(), ()> {
@@ -53,7 +84,7 @@ impl E1000 {
             ((pba << 10) * 9 / 10),
             ((pba << 10) - self.hardware.max_frame_size),
         );
-        self.hardware.fc_high_water = (hwm as u16) & 0xFFF8;
+        self.hardware.fc_high_water = hwm & 0xFFF8;
         self.hardware.fc_low_water = self.hardware.fc_high_water - 8;
         self.hardware.fc_pause_time = FC_PAUSE_TIME;
         self.hardware.fc_send_xon = true;
@@ -62,6 +93,19 @@ impl E1000 {
         self.hardware.reset()?;
 
         self.hardware.init()?;
+
+        self.update_mng_vlan()?;
+
+        /* Enable h/w to recognize an 802.1Q VLAN Ethernet packet */
+        self.hardware.write(E1000_VET, ETHERNET_IEEE_VLAN_TYPE);
+
+        /*
+        e1000_reset_adaptive(hw);
+        e1000_phy_get_info(hw, &adapter->phy_info);
+
+        e1000_release_manageability(adapter);
+        */
+
         Ok(())
     }
 }

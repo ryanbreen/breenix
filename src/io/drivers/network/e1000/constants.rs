@@ -185,13 +185,34 @@ pub const PBA_BYTES_SHIFT: u32 = 0xA;
 pub const TX_HEAD_ADDR_SHIFT: u32 = 7;
 pub const PBA_TX_MASK: u32 = 0xFFFF0000;
 
+/* Flow Control Constants */
+pub const FLOW_CONTROL_ADDRESS_LOW: u32 = 0x00C28001;
+pub const FLOW_CONTROL_ADDRESS_HIGH: u32 = 0x00000100;
+pub const FLOW_CONTROL_TYPE: u32 = 0x8808;
+
 /* Flow Control Watermarks */
 pub const FC_HIGH_DIFF: u16 = 0x1638; /* High: 5688 bytes below Rx FIFO size */
 pub const FC_LOW_DIFF: u16 = 0x1640; /* Low:  5696 bytes below Rx FIFO size */
 
-pub const FC_PAUSE_TIME: u16 = 0xFFFF; /* pause for the max or until send xon */
+pub const FC_PAUSE_TIME: u32 = 0xFFFF; /* pause for the max or until send xon */
 
 pub const NODE_ADDRESS_SIZE: usize = 6;
+
+/* The sizes (in bytes) of a ethernet packet */
+pub const ENET_HEADER_SIZE: u32 = 14;
+pub const MINIMUM_ETHERNET_FRAME_SIZE: u32 = 64; /* With FCS */
+pub const ETHERNET_FCS_SIZE: u32 = 4;
+pub const MINIMUM_ETHERNET_PACKET_SIZE: u32 = (MINIMUM_ETHERNET_FRAME_SIZE - ETHERNET_FCS_SIZE);
+pub const CRC_LENGTH: u32 = ETHERNET_FCS_SIZE;
+pub const MAX_JUMBO_FRAME_SIZE: u32 = 0x3F00;
+
+/* 802.1q VLAN Packet Sizes */
+pub const VLAN_TAG_SIZE: u32 = 4; /* 802.3ac tag (not DMAed) */
+
+/* Ethertype field values */
+pub const ETHERNET_IEEE_VLAN_TYPE: u32 = 0x8100; /* 802.3ac packet */
+pub const ETHERNET_IP_TYPE: u32 = 0x0800; /* IP packets */
+pub const ETHERNET_ARP_TYPE: u32 = 0x0806; /* Address Resolution Protocol (ARP) */
 
 pub const EEPROM_DELAY_USEC: u64 = 50;
 pub const MAX_FRAME_SIZE: u64 = 0x5ee;
@@ -653,6 +674,36 @@ pub const PHY_EXT_STATUS: u32 = 0x0F; /* Extended Status Reg */
 pub const MAX_PHY_REG_ADDRESS: u32 = 0x1F; /* 5 bit address bus (0-0x1F) */
 pub const MAX_PHY_MULTI_PAGE_REG: u32 = 0xF; /* Registers equal on all pages */
 
+/* Bit definitions for valid PHY IDs. */
+/* I = Integrated
+ * E = External
+ */
+pub const M88_VENDOR: u32 = 0x0141;
+pub const M88E1000_E_PHY_ID: u32 = 0x01410C50;
+pub const M88E1000_I_PHY_ID: u32 = 0x01410C30;
+pub const M88E1011_I_PHY_ID: u32 = 0x01410C20;
+pub const IGP01E1000_I_PHY_ID: u32 = 0x02A80380;
+pub const M88E1000_12_PHY_ID: u32 = M88E1000_E_PHY_ID;
+pub const M88E1000_14_PHY_ID: u32 = M88E1000_E_PHY_ID;
+pub const M88E1011_I_REV_4: u32 = 0x04;
+pub const M88E1111_I_PHY_ID: u32 = 0x01410CC0;
+pub const M88E1118_E_PHY_ID: u32 = 0x01410E40;
+pub const L1LXT971A_PHY_ID: u32 = 0x001378E0;
+
+pub const RTL8211B_PHY_ID: u32 = 0x001CC910;
+pub const RTL8201N_PHY_ID: u32 = 0x8200;
+pub const RTL_PHY_CTRL_FD: u32 = 0x0100; /* Full duplex.0=half; 1=full */
+pub const RTL_PHY_CTRL_SPD_100: u32 = 0x200000; /* Force 100Mb */
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PhyType {
+    e1000_phy_m88 = 0,
+    e1000_phy_igp,
+    e1000_phy_8211,
+    e1000_phy_8201,
+    e1000_phy_undefined = 0xFF,
+}
+
 /* Miscellaneous PHY bit definitions. */
 pub const PHY_PREAMBLE: u32 = 0xFFFFFFFF;
 pub const PHY_SOF: u32 = 0x01;
@@ -667,18 +718,154 @@ pub const E1000_PHY_ADDRESS: u32 = 0x01;
 pub const PHY_AUTO_NEG_TIME: u32 = 45; /* 4.5 Seconds */
 pub const PHY_FORCE_TIME: u32 = 20; /* 2.0 Seconds */
 pub const PHY_REVISION_MASK: u32 = 0xFFFFFFF0;
-pub const DEVICE_SPEED_MASK: u32 = 0x00000300; /* Device Ctrl Reg Speed Mask */
-pub const REG4_SPEED_MASK: u32 = 0x01E0;
-pub const REG9_SPEED_MASK: u32 = 0x0300;
-pub const ADVERTISE_10_HALF: u32 = 0x0001;
-pub const ADVERTISE_10_FULL: u32 = 0x0002;
-pub const ADVERTISE_100_HALF: u32 = 0x0004;
-pub const ADVERTISE_100_FULL: u32 = 0x0008;
-pub const ADVERTISE_1000_HALF: u32 = 0x0010;
-pub const ADVERTISE_1000_FULL: u32 = 0x0020;
-pub const AUTONEG_ADVERTISE_SPEED_DEFAULT: u32 = 0x002F; /* Everything but 1000-Half */
-pub const AUTONEG_ADVERTISE_10_100_ALL: u32 = 0x000F; /* All 10/100 speeds */
-pub const AUTONEG_ADVERTISE_10_ALL: u32 = 0x0003; /* 10Mbps Full & Half speeds */
+pub const DEVICE_SPEED_MASK: u16 = 0x00000300; /* Device Ctrl Reg Speed Mask */
+pub const REG4_SPEED_MASK: u16 = 0x01E0;
+pub const REG9_SPEED_MASK: u16 = 0x0300;
+pub const ADVERTISE_10_HALF: u16 = 0x0001;
+pub const ADVERTISE_10_FULL: u16 = 0x0002;
+pub const ADVERTISE_100_HALF: u16 = 0x0004;
+pub const ADVERTISE_100_FULL: u16 = 0x0008;
+pub const ADVERTISE_1000_HALF: u16 = 0x0010;
+pub const ADVERTISE_1000_FULL: u16 = 0x0020;
+pub const AUTONEG_ADVERTISE_SPEED_DEFAULT: u16 = 0x002F; /* Everything but 1000-Half */
+pub const AUTONEG_ADVERTISE_10_100_ALL: u16 = 0x000F; /* All 10/100 speeds */
+pub const AUTONEG_ADVERTISE_10_ALL: u16 = 0x0003; /* 10Mbps Full & Half speeds */
+
+/* PHY Control Register */
+pub const MII_CR_SPEED_SELECT_MSB: u16 = 0x0040; /* bits 6,13: 10=1000, 01=100, 00=10 */
+pub const MII_CR_COLL_TEST_ENABLE: u16 = 0x0080; /* Collision test enable */
+pub const MII_CR_FULL_DUPLEX: u16 = 0x0100; /* FDX =1, half duplex =0 */
+pub const MII_CR_RESTART_AUTO_NEG: u16 = 0x0200; /* Restart auto negotiation */
+pub const MII_CR_ISOLATE: u16 = 0x0400; /* Isolate PHY from MII */
+pub const MII_CR_POWER_DOWN: u16 = 0x0800; /* Power down */
+pub const MII_CR_AUTO_NEG_EN: u16 = 0x1000; /* Auto Neg Enable */
+pub const MII_CR_SPEED_SELECT_LSB: u16 = 0x2000; /* bits 6,13: 10=1000, 01=100, 00=10 */
+pub const MII_CR_LOOPBACK: u16 = 0x4000; /* 0 = normal, 1 = loopback */
+pub const MII_CR_RESET: u16 = 0x8000; /* 0 = normal, 1 = PHY reset */
+
+/* PHY Status Register */
+pub const MII_SR_EXTENDED_CAPS: u16 = 0x0001; /* Extended register capabilities */
+pub const MII_SR_JABBER_DETECT: u16 = 0x0002; /* Jabber Detected */
+pub const MII_SR_LINK_STATUS: u16 = 0x0004; /* Link Status 1 = link */
+pub const MII_SR_AUTONEG_CAPS: u16 = 0x0008; /* Auto Neg Capable */
+pub const MII_SR_REMOTE_FAULT: u16 = 0x0010; /* Remote Fault Detect */
+pub const MII_SR_AUTONEG_COMPLETE: u16 = 0x0020; /* Auto Neg Complete */
+pub const MII_SR_PREAMBLE_SUPPRESS: u16 = 0x0040; /* Preamble may be suppressed */
+pub const MII_SR_EXTENDED_STATUS: u16 = 0x0100; /* Ext. status info in Reg 0x0F */
+pub const MII_SR_100T2_HD_CAPS: u16 = 0x0200; /* 100T2 Half Duplex Capable */
+pub const MII_SR_100T2_FD_CAPS: u16 = 0x0400; /* 100T2 Full Duplex Capable */
+pub const MII_SR_10T_HD_CAPS: u16 = 0x0800; /* 10T   Half Duplex Capable */
+pub const MII_SR_10T_FD_CAPS: u16 = 0x1000; /* 10T   Full Duplex Capable */
+pub const MII_SR_100X_HD_CAPS: u16 = 0x2000; /* 100X  Half Duplex Capable */
+pub const MII_SR_100X_FD_CAPS: u16 = 0x4000; /* 100X  Full Duplex Capable */
+pub const MII_SR_100T4_CAPS: u16 = 0x8000; /* 100T4 Capable */
+
+/* Autoneg Advertisement Register */
+pub const NWAY_AR_SELECTOR_FIELD: u16 = 0x0001; /* indicates IEEE 802.3 CSMA/CD */
+pub const NWAY_AR_10T_HD_CAPS: u16 = 0x0020; /* 10T   Half Duplex Capable */
+pub const NWAY_AR_10T_FD_CAPS: u16 = 0x0040; /* 10T   Full Duplex Capable */
+pub const NWAY_AR_100TX_HD_CAPS: u16 = 0x0080; /* 100TX Half Duplex Capable */
+pub const NWAY_AR_100TX_FD_CAPS: u16 = 0x0100; /* 100TX Full Duplex Capable */
+pub const NWAY_AR_100T4_CAPS: u16 = 0x0200; /* 100T4 Capable */
+pub const NWAY_AR_PAUSE: u16 = 0x0400; /* Pause operation desired */
+pub const NWAY_AR_ASM_DIR: u16 = 0x0800; /* Asymmetric Pause Direction bit */
+pub const NWAY_AR_REMOTE_FAULT: u16 = 0x2000; /* Remote Fault detected */
+pub const NWAY_AR_NEXT_PAGE: u16 = 0x8000; /* Next Page ability supported */
+
+/* 1000BASE-T Control Register */
+pub const CR_1000T_ASYM_PAUSE: u16 = 0x0080; /* Advertise asymmetric pause bit */
+pub const CR_1000T_HD_CAPS: u16 = 0x0100; /* Advertise 1000T HD capability */
+pub const CR_1000T_FD_CAPS: u16 = 0x0200; /* Advertise 1000T FD capability  */
+pub const CR_1000T_REPEATER_DTE: u16 = 0x0400; /* 1=Repeater/switch device port */
+/* 0=DTE device */
+pub const CR_1000T_MS_VALUE: u16 = 0x0800; /* 1=Configure PHY as Master */
+/* 0=Configure PHY as Slave */
+pub const CR_1000T_MS_ENABLE: u16 = 0x1000; /* 1=Master/Slave manual config value */
+/* 0=Automatic Master/Slave config */
+pub const CR_1000T_TEST_MODE_NORMAL: u16 = 0x0000; /* Normal Operation */
+pub const CR_1000T_TEST_MODE_1: u16 = 0x2000; /* Transmit Waveform test */
+pub const CR_1000T_TEST_MODE_2: u16 = 0x4000; /* Master Transmit Jitter test */
+pub const CR_1000T_TEST_MODE_3: u16 = 0x6000; /* Slave Transmit Jitter test */
+pub const CR_1000T_TEST_MODE_4: u16 = 0x8000; /* Transmitter Distortion test */
+
+/* M88E1000 PHY Specific Control Register */
+pub const M88E1000_PSCR_JABBER_DISABLE: u16 = 0x0001; /* 1=Jabber Function disabled */
+pub const M88E1000_PSCR_POLARITY_REVERSAL: u16 = 0x0002; /* 1=Polarity Reversal enabled */
+pub const M88E1000_PSCR_SQE_TEST: u16 = 0x0004; /* 1=SQE Test enabled */
+pub const M88E1000_PSCR_CLK125_DISABLE: u16 = 0x0010; /* 1=CLK125 low, 0=CLK125 toggling */
+pub const M88E1000_PSCR_MDI_MANUAL_MODE: u16 = 0x0000; /* MDI Crossover Mode bits 6:5 */
+pub const M88E1000_PSCR_MDIX_MANUAL_MODE: u16 = 0x0020; /* Manual MDIX configuration */
+pub const M88E1000_PSCR_AUTO_X_1000T: u16 = 0x0040;
+pub const M88E1000_PSCR_AUTO_X_MODE: u16 = 0x0060; /* Auto crossover enabled all speeds. */
+pub const M88E1000_PSCR_10BT_EXT_DIST_ENABLE: u16 = 0x0080;
+pub const M88E1000_PSCR_MII_5BIT_ENABLE: u16 = 0x0100;
+pub const M88E1000_PSCR_SCRAMBLER_DISABLE: u16 = 0x0200; /* 1=Scrambler disable */
+pub const M88E1000_PSCR_FORCE_LINK_GOOD: u16 = 0x0400; /* 1=Force link good */
+pub const M88E1000_PSCR_ASSERT_CRS_ON_TX: u16 = 0x0800; /* 1=Assert CRS on Transmit */
+
+pub const M88E1000_PSCR_POLARITY_REVERSAL_SHIFT: u16 = 1;
+pub const M88E1000_PSCR_AUTO_X_MODE_SHIFT: u16 = 5;
+pub const M88E1000_PSCR_10BT_EXT_DIST_ENABLE_SHIFT: u16 = 7;
+
+/* M88E1000 Specific Registers */
+pub const M88E1000_PHY_SPEC_CTRL: u32 = 0x10; /* PHY Specific Control Register */
+pub const M88E1000_PHY_SPEC_STATUS: u32 = 0x11; /* PHY Specific Status Register */
+pub const M88E1000_INT_ENABLE: u32 = 0x12; /* Interrupt Enable Register */
+pub const M88E1000_INT_STATUS: u32 = 0x13; /* Interrupt Status Register */
+pub const M88E1000_EXT_PHY_SPEC_CTRL: u32 = 0x14; /* Extended PHY Specific Control */
+pub const M88E1000_RX_ERR_CNTR: u32 = 0x15; /* Receive Error Counter */
+
+pub const M88E1000_PHY_EXT_CTRL: u32 = 0x1A; /* PHY extend control register */
+pub const M88E1000_PHY_PAGE_SELECT: u32 = 0x1D; /* Reg 29 for page number setting */
+pub const M88E1000_PHY_GEN_CONTROL: u32 = 0x1E; /* Its meaning depends on reg 29 */
+pub const M88E1000_PHY_VCO_REG_BIT8: u32 = 0x100; /* Bits 8 & 11 are adjusted for */
+pub const M88E1000_PHY_VCO_REG_BIT11: u32 = 0x800; /* improved BER performance */
+
+/* M88E1000 PHY Specific Status Register */
+pub const M88E1000_PSSR_JABBER: u32 = 0x0001; /* 1=Jabber */
+pub const M88E1000_PSSR_REV_POLARITY: u32 = 0x0002; /* 1=Polarity reversed */
+pub const M88E1000_PSSR_DOWNSHIFT: u32 = 0x0020; /* 1=Downshifted */
+pub const M88E1000_PSSR_MDIX: u32 = 0x0040; /* 1=MDIX; 0=MDI */
+pub const M88E1000_PSSR_CABLE_LENGTH: u32 = 0x0380; /* 0=<50M;1=50-80M;2=80-110M;
+                                                     * 3=110-140M;4=>140M */
+pub const M88E1000_PSSR_LINK: u32 = 0x0400; /* 1=Link up, 0=Link down */
+pub const M88E1000_PSSR_SPD_DPLX_RESOLVED: u32 = 0x0800; /* 1=Speed & Duplex resolved */
+pub const M88E1000_PSSR_PAGE_RCVD: u32 = 0x1000; /* 1=Page received */
+pub const M88E1000_PSSR_DPLX: u32 = 0x2000; /* 1=Duplex 0=Half Duplex */
+pub const M88E1000_PSSR_SPEED: u32 = 0xC000; /* Speed, bits 14:15 */
+pub const M88E1000_PSSR_10MBS: u32 = 0x0000; /* 00=10Mbs */
+pub const M88E1000_PSSR_100MBS: u32 = 0x4000; /* 01=100Mbs */
+pub const M88E1000_PSSR_1000MBS: u32 = 0x8000; /* 10=1000Mbs */
+
+pub const M88E1000_PSSR_REV_POLARITY_SHIFT: u32 = 1;
+pub const M88E1000_PSSR_DOWNSHIFT_SHIFT: u32 = 5;
+pub const M88E1000_PSSR_MDIX_SHIFT: u32 = 6;
+pub const M88E1000_PSSR_CABLE_LENGTH_SHIFT: u32 = 7;
+
+/* M88E1000 Extended PHY Specific Control Register */
+pub const M88E1000_EPSCR_FIBER_LOOPBACK: u32 = 0x4000; /* 1=Fiber loopback */
+pub const M88E1000_EPSCR_DOWN_NO_IDLE: u32 = 0x8000; /* 1=Lost lock detect enabled.
+                                                      * Will assert lost lock and bring
+                                                      * link down if idle not seen
+                                                      * within 1ms in 1000BASE-T
+                                                      */
+/* Number of times we will attempt to autonegotiate before downshifting if we
+ * are the master */
+pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_MASK: u16 = 0x0C00;
+pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_1X: u16 = 0x0000;
+pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_2X: u16 = 0x0400;
+pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_3X: u16 = 0x0800;
+pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_4X: u16 = 0x0C00;
+/* Number of times we will attempt to autonegotiate before downshifting if we
+ * are the slave */
+pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_MASK: u16 = 0x0300;
+pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_DIS: u16 = 0x0000;
+pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_1X: u16 = 0x0100;
+pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_2X: u16 = 0x0200;
+pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_3X: u16 = 0x0300;
+pub const M88E1000_EPSCR_TX_CLK_2_5: u16 = 0x0060; /* 2.5 MHz TX_CLK */
+pub const M88E1000_EPSCR_TX_CLK_25: u16 = 0x0070; /* 25  MHz TX_CLK */
+pub const M88E1000_EPSCR_TX_CLK_0: u16 = 0x0000; /* NO  TX_CLK */
 
 /* Word definitions for ID LED Settings */
 pub const ID_LED_RESERVED_0000: u16 = 0x0000;
@@ -712,3 +899,9 @@ pub const EEPROM_WORD0F_ASM_DIR: u16 = 0x2000;
 pub const EEPROM_WORD0F_ANE: u16 = 0x0800;
 pub const EEPROM_WORD0F_SWPDIO_EXT: u16 = 0x00F0;
 pub const EEPROM_WORD0F_LPLU: u16 = 0x0001;
+
+/* Flow Control */
+pub const E1000_FCRTH_RTH: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTH */
+pub const E1000_FCRTH_XFCE: u32 = 0x80000000; /* External Flow Control Enable */
+pub const E1000_FCRTL_RTL: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTL */
+pub const E1000_FCRTL_XONE: u32 = 0x80000000; /* Enable XON frame transmission */
