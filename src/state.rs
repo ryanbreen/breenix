@@ -1,7 +1,3 @@
-use crate::event::keyboard::KeyEvent;
-use crate::event::keyboard::KeyEventHandler;
-use crate::println;
-
 use arr_macro::arr;
 use core::sync::atomic::{AtomicU64, Ordering};
 use lazy_static::lazy_static;
@@ -20,15 +16,15 @@ pub struct State {
 
 impl core::fmt::Debug for State {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        write!(f, "State");
+        write!(f, "State")?;
         for i in 0..256 {
-            if (self.interrupt_count[i].load(Ordering::Relaxed) > 0) {
+            if self.interrupt_count[i].load(Ordering::Relaxed) > 0 {
                 write!(
                     f,
                     "\n\tInterrupt {} count == {}",
                     i,
                     self.interrupt_count[i].load(Ordering::Relaxed)
-                );
+                )?;
             }
         }
 

@@ -1,8 +1,11 @@
 use core::fmt;
 
+#[allow(dead_code)]
 pub mod e1000;
+pub mod vlan;
 //pub mod rtl8139;
 
+/*
 use alloc::boxed::Box;
 use alloc::string::String;
 
@@ -17,7 +20,7 @@ pub enum NetworkInterfaceType {
 }
 
 pub struct NetworkInterface {
-    interface_type: NetworkInterfaceType,
+    //interface_type: NetworkInterfaceType,
     name: String,
     device_driver: Box<DeviceDriver>,
 }
@@ -26,7 +29,7 @@ pub struct NetworkInterface {
 impl NetworkInterface {
     pub fn new(nic_type: NetworkInterfaceType, driver: Box<DeviceDriver>) -> NetworkInterface {
         NetworkInterface {
-            interface_type: nic_type,
+            //interface_type: nic_type,
             name: create_network_interface_name(nic_type),
             device_driver: driver,
         }
@@ -50,3 +53,4 @@ pub fn create_network_interface_name(nic_type: NetworkInterfaceType) -> String {
     */
     format!("{:?}{}", 0, 0)
 }
+*/

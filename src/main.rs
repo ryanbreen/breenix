@@ -16,7 +16,6 @@ extern crate num_traits;
 
 use bootloader::{entry_point, BootInfo};
 
-use alloc::{boxed::Box, rc::Rc, vec, vec::Vec};
 use core::panic::PanicInfo;
 
 pub mod constants;
@@ -28,7 +27,6 @@ pub mod state;
 pub mod task;
 pub mod util;
 
-#[macro_export]
 pub mod macros;
 
 pub fn hlt_loop() -> ! {
@@ -54,8 +52,6 @@ entry_point!(kernel_main);
 
 pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("We're back!");
-
-    use x86_64::{structures::paging::Page, VirtAddr};
 
     memory::init(&boot_info);
 

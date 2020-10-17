@@ -1,14 +1,10 @@
 pub mod bump;
 
-use alloc::alloc::{GlobalAlloc, Layout};
-use core::ptr::null_mut;
-
 use crate::constants::memory::{HEAP_SIZE, HEAP_START};
 
 use x86_64::{
-    addr::PhysAddr,
     structures::paging::{
-        frame::PhysFrame, frame::PhysFrameRange, mapper::MapToError, FrameAllocator, Mapper, Page,
+        mapper::MapToError, Page,
         PageTableFlags, Size4KiB,
     },
     VirtAddr,
@@ -55,7 +51,7 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     for page in page_range {
         let frame = crate::memory::allocate_frame().ok_or(MapToError::FrameAllocationFailed)?;
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        unsafe { crate::memory::map_to(page, frame, flags) };
+        unsafe { crate::memory::map_to(page, frame, flags)? };
     }
 
     unsafe {

@@ -221,48 +221,48 @@ pub const MAX_FRAME_SIZE: u64 = 0x5ee;
 /* Media Access Controllers */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MacType {
-    e1000_undefined = 0,
-    e1000_82542_rev2_0,
-    e1000_82542_rev2_1,
-    e1000_82543,
-    e1000_82544,
-    e1000_82540,
-    e1000_82545,
-    e1000_82545_rev_3,
-    e1000_82546,
-    e1000_ce4100,
-    e1000_82546_rev_3,
-    e1000_82541,
-    e1000_82541_rev_2,
-    e1000_82547,
-    e1000_82547_rev_2,
-    e1000_num_macs,
+    E1000Undefined = 0,
+    E100082542Rev2Point0,
+    E100082542Rev2Point1,
+    E100082543,
+    E100082544,
+    E100082540,
+    E100082545,
+    E100082545Rev3,
+    E100082546,
+    E1000ce4100,
+    E100082546Rev3,
+    E100082541,
+    E100082541Rev2,
+    E100082547,
+    E100082547Rev2,
+    E1000NumMacs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MediaType {
-    e1000_media_type_copper = 0,
-    e1000_media_type_fiber = 1,
-    e1000_media_type_internal_serdes = 2,
-    e1000_num_media_types,
+    E1000MediaTypeCopper = 0,
+    E1000MediaTypeFiber = 1,
+    E1000MediaTypeInternalSerdes = 2,
+    E1000NumMediaTypes,
 }
 
 /* Flow Control Settings */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FlowControlSettings {
-    E1000_FC_NONE = 0,
-    E1000_FC_RX_PAUSE = 1,
-    E1000_FC_TX_PAUSE = 2,
-    E1000_FC_FULL = 3,
-    E1000_FC_DEFAULT = 0xFF,
+    E1000FCNone = 0,
+    E1000FCRXPause = 1,
+    E1000FCTXPause = 2,
+    E1000FCFull = 3,
+    E1000FCDefault = 0xFF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MasterSlaveType {
-    e1000_ms_hw_default = 0,
-    e1000_ms_force_master,
-    e1000_ms_force_slave,
-    e1000_ms_auto,
+    E1000MSHWDefault = 0,
+    E1000MSForceMaster,
+    E1000MSForceSlave,
+    E1000MSAuto,
 }
 
 pub const E1000_RCTL: u32 = 0x00100; /* RX Control - RW */
@@ -697,11 +697,11 @@ pub const RTL_PHY_CTRL_SPD_100: u32 = 0x200000; /* Force 100Mb */
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PhyType {
-    e1000_phy_m88 = 0,
-    e1000_phy_igp,
-    e1000_phy_8211,
-    e1000_phy_8201,
-    e1000_phy_undefined = 0xFF,
+    E1000PhyM88 = 0,
+    E1000PhyIGP,
+    E1000Phy8211,
+    E1000Phy8201,
+    E1000PhyUndefined = 0xFF,
 }
 
 /* Miscellaneous PHY bit definitions. */
@@ -905,3 +905,25 @@ pub const E1000_FCRTH_RTH: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTH */
 pub const E1000_FCRTH_XFCE: u32 = 0x80000000; /* External Flow Control Enable */
 pub const E1000_FCRTL_RTL: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTL */
 pub const E1000_FCRTL_XONE: u32 = 0x80000000; /* Enable XON frame transmission */
+
+/* Adaptive IFS defines */
+pub const TX_THRESHOLD_START: u16 =     8;
+pub const TX_THRESHOLD_INCREMENT: u16 = 10;
+pub const TX_THRESHOLD_DECREMENT: u16 = 1;
+pub const TX_THRESHOLD_STOP: u16 =      190;
+pub const TX_THRESHOLD_DISABLE: u16 =   0;
+pub const TX_THRESHOLD_TIMER_MS: u16 =  10000;
+pub const MIN_NUM_XMITS: u16 =          1000;
+pub const IFS_MAX: u16 =                80;
+pub const IFS_STEP: u16 =               10;
+pub const IFS_MIN: u16 =                40;
+pub const IFS_RATIO: u16 =              4;
+
+pub enum CableLength {
+	E1000CableLength50 = 0,
+	E1000CableLength50To80,
+	E1000CableLength80To110,
+	E1000CableLength110To140,
+    E1000CableLength140,
+	E1000CableLengthUndefined = 0xFF
+}

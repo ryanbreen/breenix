@@ -1,9 +1,3 @@
-//! Everything below shamelessly stolen from emk's toyos-rs
-//! Interface to our PCI devices.
-//!
-//! As usual, this is heavily inspired by http://wiki.osdev.org/Pci
-
-use crate::io::drivers::network::{NetworkInterface, NetworkInterfaceType};
 use crate::io::Port;
 use crate::println;
 use alloc::boxed::Box;
@@ -176,10 +170,7 @@ impl Device {
         let lfunc = u32::from(self.function);
         let lregister = u32::from(register);
 
-        return ((lbus << 16) | (lslot << 11) | (lfunc << 8) | (lregister << 2) | 0x80000000)
-            as u32;
-        //return 1 << 31 | (self.bus as u32) << 16 | (self.device as u32) << 11 |
-        //       (self.function as u32) << 8 | (offset as u32 & 0xFC);
+        return (lbus << 16) | (lslot << 11) | (lfunc << 8) | (lregister << 2) | 0x80000000 as u32;
     }
 
     /// Read
@@ -267,19 +258,6 @@ const MAX_DEVICE: u8 = 31;
 #[allow(dead_code)]
 const MAX_FUNCTION: u8 = 7;
 
-#[allow(dead_code)]
-pub fn pci_find_device(vendor_id: u16, device_id: u16) -> Option<Device> {
-    /*
-    for dev in ::state().devices.iter() {
-        if dev.device_id == device_id && dev.vendor_id == vendor_id {
-            return Some(*dev);
-        }
-    }
-    */
-
-    None
-}
-
 fn device_specific_init(dev: &mut Device) {
     match dev.device_id {
         0x1111 => {
@@ -307,9 +285,10 @@ fn device_specific_init(dev: &mut Device) {
             );
             use crate::io::drivers::network::e1000::E1000;
             let e1000 = E1000::new(*dev);
-            let nic: NetworkInterface =
-                NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
-            println!("Registered as {}", nic);
+            println!("Got good nic? {}", e1000.is_ok());
+            //let nic: NetworkInterface =
+            //    NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
+            //println!("Registered as {}", nic);
             //::state().network_interfaces.push(nic);
         }
         0x8139 => {

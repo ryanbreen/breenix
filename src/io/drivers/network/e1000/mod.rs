@@ -11,41 +11,51 @@ mod hardware;
 mod params;
 
 use self::constants::*;
+use crate::io::drivers::network::vlan::*;
 
 pub struct E1000 {
     //pci_device: pci::Device,
     hardware: self::hardware::Hardware,
     mng_vlan_id: u16,
+    //phy_info: 
 }
 
 #[allow(unused_mut, unused_assignments)]
 impl E1000 {
-    pub fn new(device: pci::Device) -> E1000 {
+    pub fn new(device: pci::Device) -> Result<E1000, ()> {
+
         let mut e1000: E1000 = E1000 {
-            hardware: self::hardware::Hardware::new(device),
+            hardware: self::hardware::Hardware::new(device)?,
             mng_vlan_id: 0,
+            //phy_info: 
         };
 
-        // We need to memory map base and io.
-        //println!("Need to map from {:x} to {:x}", e1000.io_base, e1000.io_base + 8192);
+        e1000.initialize()?;
+        Ok(e1000)
+    }
 
-        //println!("Need to map from {:x} to {:x}", e1000.mem_base, e1000.mem_base + 8192);
-        //crate::memory::identity_map_range(e1000.io_base, e1000.io_base + 8192);
-        //crate::memory::identity_map_range(e1000.mem_base, e1000.mem_base + 8192);
+    fn vlan_used(&self) -> bool {
 
-        let res = e1000.initialize();
-        println!("Got res {:?}", res);
-        e1000
+        /*
+        // FIXME: I will eventually need to support this.
+        u16 vid;
+
+        for_each_set_bit(vid, adapter->active_vlans, VLAN_N_VID)
+            return true;
+            */
+        false
     }
 
     fn update_mng_vlan(&self) -> Result<(), ()> {
         let vid = self.hardware.mng_cookie.vlan_id;
         let old_vid = self.mng_vlan_id;
 
-        /*
-        if (!e1000_vlan_used(adapter))
-            return;
+        if !self.vlan_used() {
+            return Ok(());
+        }
 
+        // FIXME: I will eventually need to support this.
+        /*
         if (!test_bit(vid, adapter->active_vlans)) {
             if (hw->mng_cookie.status &
                 E1000_MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT) {
@@ -81,14 +91,14 @@ impl E1000 {
          */
         use core::cmp;
         let hwm = cmp::min(
-            ((pba << 10) * 9 / 10),
-            ((pba << 10) - self.hardware.max_frame_size),
+            (pba << 10) * 9 / 10,
+            (pba << 10) - self.hardware.max_frame_size,
         );
         self.hardware.fc_high_water = hwm & 0xFFF8;
         self.hardware.fc_low_water = self.hardware.fc_high_water - 8;
         self.hardware.fc_pause_time = FC_PAUSE_TIME;
         self.hardware.fc_send_xon = true;
-        self.hardware.fc = FlowControlSettings::E1000_FC_DEFAULT;
+        self.hardware.fc = FlowControlSettings::E1000FCDefault;
 
         self.hardware.reset()?;
 
@@ -97,11 +107,13 @@ impl E1000 {
         self.update_mng_vlan()?;
 
         /* Enable h/w to recognize an 802.1Q VLAN Ethernet packet */
-        self.hardware.write(E1000_VET, ETHERNET_IEEE_VLAN_TYPE);
+        self.hardware.write(E1000_VET, ETHERNET_IEEE_VLAN_TYPE)?;
 
+        self.hardware.reset_adaptive()?;
+
+        //self.phy_info = self.hardware.phy_get_info()?;
+        
         /*
-        e1000_reset_adaptive(hw);
-        e1000_phy_get_info(hw, &adapter->phy_info);
 
         e1000_release_manageability(adapter);
         */
@@ -129,7 +141,7 @@ impl DeviceDriver for E1000 {
 
             println!("Control port is {:x}", control_port);
 
-            if (control_port & EEPROM_APME != 0) {
+            if control_port & EEPROM_APME != 0 {
                 //pr_info("need to frob the beanflute\n");
                 wol |= WUFC_MAG;
             }

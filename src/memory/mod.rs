@@ -5,7 +5,7 @@ use bootloader::BootInfo;
 use x86_64::{
     addr::PhysAddr,
     structures::paging::{
-        frame::PhysFrame, frame::PhysFrameRange, mapper::MapToError, FrameAllocator, Mapper,
+        frame::PhysFrame, mapper::MapToError, FrameAllocator, Mapper,
         OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB,
     },
     VirtAddr,
@@ -104,12 +104,12 @@ pub unsafe fn map_to(
         .expect("frame allocation not initialized!")
         .lock();
 
-    let mut doMap = || -> Result<(), MapToError<Size4KiB>> {
+    let mut do_map = || -> Result<(), MapToError<Size4KiB>> {
         let frame_allocator = &mut *frame_allocator_guard;
         Ok(map.map_to(page, frame, flags, frame_allocator)?.flush())
     };
 
-    doMap()
+    do_map()
 }
 
 pub unsafe fn identity_map(
@@ -126,42 +126,39 @@ pub unsafe fn identity_map(
         .expect("frame allocation not initialized!")
         .lock();
 
-    let mut doMap = || -> Result<(), MapToError<Size4KiB>> {
+    let mut do_map = || -> Result<(), MapToError<Size4KiB>> {
         let frame_allocator = &mut *frame_allocator_guard;
         Ok(map.identity_map(frame, flags, frame_allocator)?.flush())
     };
 
-    doMap()
+    do_map()
 }
 
-pub fn identity_map_range(addr: u64, len: u64, flags: PageTableFlags) {
+pub fn identity_map_range(addr: u64, len: u64, flags: PageTableFlags) -> Result<(), MapToError<Size4KiB>> {
     let range = PhysFrame::range_inclusive(
         PhysFrame::containing_address(PhysAddr::new(addr)),
         PhysFrame::containing_address(PhysAddr::new(addr + len)),
     );
 
-    crate::println!("Identity map range is {:?}", range);
+    println!("Identity map range is {:?}", range);
     for frame in range {
-        unsafe { identity_map(frame, flags) };
+        unsafe { identity_map(frame, flags)? };
     }
+
+    Ok(())
 }
 
 pub fn allocate_frame() -> Option<PhysFrame<Size4KiB>> {
-    let mut map = MEMORY_MAPPER
-        .try_get()
-        .expect("memory mapper not initialized")
-        .lock();
-
     let mut frame_allocator_guard = FRAME_ALLOCATOR
         .try_get()
         .expect("frame allocation not initialized!")
         .lock();
-    let mut doAllocate = || -> Option<PhysFrame> {
+    let mut do_allocate = || -> Option<PhysFrame> {
         let frame_allocator = &mut frame_allocator_guard;
         frame_allocator.allocate_frame()
     };
 
-    doAllocate()
+    do_allocate()
 }
 
 static MEMORY_MAPPER: OnceCell<Mutex<OffsetPageTable<'static>>> = OnceCell::uninit();
@@ -189,7 +186,7 @@ pub fn init(boot_info: &'static BootInfo) {
 
     let mapper = unsafe { init_page_table(phys_mem_offset) };
 
-    let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
+    let frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_map) };
 
     MEMORY_MAPPER
         .try_init_once(|| Mutex::new(mapper))

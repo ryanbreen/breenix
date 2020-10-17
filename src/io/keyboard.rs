@@ -49,14 +49,6 @@ impl KeyEvent {
 /// Our keyboard state, including our I/O port, our currently pressed
 /// modifiers, etc.
 struct KeyState {
-    /// The PS/2 serial IO port for the keyboard.  There's a huge amount of
-    /// emulation going on at the hardware level to allow us to pretend to
-    /// be an early-80s IBM PC.
-    ///
-    /// We could read the standard keyboard port directly using
-    /// `inb(0x60)`, but it's nicer if we wrap it up in a `Port` object.
-    port: Port<u8>,
-
     /// The collection of currently-pressed modifier keys.
     modifiers: Modifiers,
 }
@@ -137,7 +129,6 @@ impl Modifiers {
 
 /// Our global keyboard state, protected by a mutex.
 static KEYSTATE: Mutex<KeyState> = Mutex::new(KeyState {
-    port: unsafe { Port::new(PORT) },
     modifiers: Modifiers::new(),
 });
 

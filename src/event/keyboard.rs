@@ -89,7 +89,7 @@ const KEY_EVENT_TOGGLE_WATCHER: KeyEventHandler = KeyEventHandler {
         ev.scancode == constants::keyboard::S_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
     },
 
-    notify: &|ev: &KeyEvent| {
+    notify: &|_: &KeyEvent| {
         // Switch buffers
         text_buffer::toggle();
     },
@@ -100,7 +100,7 @@ const DEBUG_WATCHER: KeyEventHandler = KeyEventHandler {
         ev.scancode == constants::keyboard::D_KEY.scancode && (ev.controls.ctrl || ev.controls.cmd)
     },
 
-    notify: &|ev: &KeyEvent| {
+    notify: &|_: &KeyEvent| {
         state::debug();
     },
 };

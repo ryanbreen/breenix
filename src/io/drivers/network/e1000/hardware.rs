@@ -37,6 +37,19 @@ impl DHCPCookie {
     }
 }
 
+/*
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::io::drivers::network::e1000) PhyInfo {
+	e1000_cable_length cable_length;
+	e1000_10bt_ext_dist_enable extended_10bt_distance;
+	e1000_rev_polarity cable_polarity;
+	e1000_downshift downshift;
+	e1000_polarity_reversal polarity_correction;
+	e1000_auto_x_mode mdix_mode;
+	e1000_1000t_rx_status local_rx;
+	e1000_1000t_rx_status remote_rx;
+};*/
+
 pub(in crate::io::drivers::network::e1000) struct Hardware {
     io_base: u64,
     hw_addr: u64,
@@ -62,6 +75,12 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     pub(in crate::io::drivers::network::e1000) fc_send_xon: bool,
     pub(in crate::io::drivers::network::e1000) fc: FlowControlSettings,
     pub(in crate::io::drivers::network::e1000) original_fc: FlowControlSettings,
+    current_ifs_val: u16,
+	ifs_min_val: u16,
+	ifs_max_val: u16,
+	ifs_step_size: u16,
+    ifs_ratio: u16,
+    in_ifs_mode: bool,
     pub(in crate::io::drivers::network::e1000) autoneg_advertised: u16,
     pub(in crate::io::drivers::network::e1000) get_link_status: bool,
     pub(in crate::io::drivers::network::e1000) wait_autoneg_complete: bool,
@@ -78,7 +97,7 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
 
 #[allow(unused_mut, unused_assignments)]
 impl Hardware {
-    pub fn new(device: pci::Device) -> Hardware {
+    pub fn new(device: pci::Device) -> Result<Hardware, ()> {
         let mut hardware = Hardware {
             io_base: device.bar(0x1).addr,
             hw_addr: device.bar(0x0).addr,
@@ -92,10 +111,10 @@ impl Hardware {
             bus_width: BusWidth::e1000_bus_width_unknown,
             phy_id: 0,
             phy_revision: 0,
-            phy_type: PhyType::e1000_phy_undefined,
-            mac_type: MacType::e1000_82540,
+            phy_type: PhyType::E1000PhyUndefined,
+            mac_type: MacType::E100082540,
             mac: MacAddr::from([0, 0, 0, 0, 0, 0]),
-            media_type: MediaType::e1000_media_type_copper,
+            media_type: MediaType::E1000MediaTypeCopper,
             revision_id: 0x3,
             mtu: 0x5dc,
             max_frame_size: 0x5ee,
@@ -103,8 +122,14 @@ impl Hardware {
             fc_low_water: 0,
             fc_pause_time: 0,
             fc_send_xon: false,
-            fc: FlowControlSettings::E1000_FC_DEFAULT,
-            original_fc: FlowControlSettings::E1000_FC_DEFAULT,
+            fc: FlowControlSettings::E1000FCDefault,
+            original_fc: FlowControlSettings::E1000FCDefault,
+            current_ifs_val: 0,
+            ifs_min_val: IFS_MIN,
+            ifs_max_val: IFS_MAX,
+            ifs_step_size: IFS_STEP,
+            ifs_ratio: IFS_RATIO,
+            in_ifs_mode: false,
             autoneg_advertised: 0,
             get_link_status: false,
             wait_autoneg_complete: false,
@@ -112,7 +137,7 @@ impl Hardware {
             adaptive_ifs: true,
             mdix: AUTO_ALL_MODES,
             disable_polarity_correction: false,
-            master_slave: MasterSlaveType::e1000_ms_hw_default,
+            master_slave: MasterSlaveType::E1000MSHWDefault,
             ledctl_default: 0,
             ledctl_mode1: 0,
             ledctl_mode2: 0,
@@ -120,15 +145,19 @@ impl Hardware {
         };
 
         use x86_64::structures::paging::PageTableFlags;
-        crate::memory::identity_map_range(
+        let res = crate::memory::identity_map_range(
             device.bar(0x0).addr,
             device.bar(0x0).size,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
+        
+        if !res.is_ok() {
+            panic!("Failed to map memory");
+        }
 
-        hardware.populate_bus_info();
+        hardware.populate_bus_info()?;
 
-        hardware
+        Ok(hardware)
     }
 
     pub fn populate_bus_info(&mut self) -> Result<(), ()> {
@@ -296,7 +325,7 @@ impl Hardware {
 
         eecd &= !(E1000_EECD_DO | E1000_EECD_DI);
 
-        for i in 0..count {
+        for _ in 0..count {
             data = data << 1;
             self.raise_ee_clk(eecd)?;
 
@@ -512,7 +541,7 @@ impl Hardware {
          * because the symbol error count will increment wildly if there
          * is no link.
          */
-        self.clear_hw_cntrs();
+        self.clear_hw_cntrs()?;
 
         Ok(())
     }
@@ -673,7 +702,7 @@ impl Hardware {
      */
     fn init_rx_addrs(&self) -> Result<(), ()> {
         /* Setup the receive address. */
-        self.rar_set(self.mac.as_bytes(), 0);
+        self.rar_set(self.mac.as_bytes(), 0)?;
 
         /*
          * Zero out the following 14 receive addresses. RAR[15] is for
@@ -728,14 +757,14 @@ impl Hardware {
          * control setting, then the variable hw->fc will
          * be initialized based on a value in the EEPROM.
          */
-        if (self.fc == FlowControlSettings::E1000_FC_DEFAULT) {
+        if self.fc == FlowControlSettings::E1000FCDefault {
             eeprom_data = self.read_eeprom(EEPROM_INIT_CONTROL2_REG, 1)?;
-            if ((eeprom_data & EEPROM_WORD0F_PAUSE_MASK) == 0) {
-                self.fc = FlowControlSettings::E1000_FC_NONE;
-            } else if ((eeprom_data & EEPROM_WORD0F_PAUSE_MASK) == EEPROM_WORD0F_ASM_DIR) {
-                self.fc = FlowControlSettings::E1000_FC_TX_PAUSE;
+            if (eeprom_data & EEPROM_WORD0F_PAUSE_MASK) == 0 {
+                self.fc = FlowControlSettings::E1000FCNone;
+            } else if (eeprom_data & EEPROM_WORD0F_PAUSE_MASK) == EEPROM_WORD0F_ASM_DIR {
+                self.fc = FlowControlSettings::E1000FCTXPause;
             } else {
-                self.fc = FlowControlSettings::E1000_FC_FULL;
+                self.fc = FlowControlSettings::E1000FCFull;
             }
         }
 
@@ -750,7 +779,7 @@ impl Hardware {
 
         /* Call the necessary subroutine to configure the link. */
         match self.media_type {
-            MediaType::e1000_media_type_copper => self.setup_copper_link()?,
+            MediaType::E1000MediaTypeCopper => self.setup_copper_link()?,
             _ => {
                 println!("Unexpected media type");
                 return Err(());
@@ -764,11 +793,11 @@ impl Hardware {
          */
         println!("Initializing the Flow Control address, type and timer regs");
 
-        self.write(E1000_FCT, FLOW_CONTROL_TYPE);
-        self.write(E1000_FCAH, FLOW_CONTROL_ADDRESS_HIGH);
-        self.write(E1000_FCAL, FLOW_CONTROL_ADDRESS_LOW);
+        self.write(E1000_FCT, FLOW_CONTROL_TYPE)?;
+        self.write(E1000_FCAH, FLOW_CONTROL_ADDRESS_HIGH)?;
+        self.write(E1000_FCAL, FLOW_CONTROL_ADDRESS_LOW)?;
 
-        self.write(E1000_FCTTV, self.fc_pause_time as u32);
+        self.write(E1000_FCTTV, self.fc_pause_time as u32)?;
 
         /* Set the flow control receive threshold registers.  Normally,
          * these registers will be set to a default threshold that may be
@@ -776,22 +805,46 @@ impl Hardware {
          * ability to transmit pause frames in not enabled, then these
          * registers will be set to 0.
          */
-        if (((self.fc as u32) & (FlowControlSettings::E1000_FC_TX_PAUSE as u32)) == 0) {
-            self.write(E1000_FCRTL, 0);
-            self.write(E1000_FCRTH, 0);
+        if ((self.fc as u32) & (FlowControlSettings::E1000FCTXPause as u32)) == 0 {
+            self.write(E1000_FCRTL, 0)?;
+            self.write(E1000_FCRTH, 0)?;
         } else {
             /* We need to set up the Receive Threshold high and low water
              * marks as well as (optionally) enabling the transmission of
              * XON frames.
              */
             if (self.fc_send_xon) {
-                self.write(E1000_FCRTL, self.fc_low_water | E1000_FCRTL_XONE);
-                self.write(E1000_FCRTH, self.fc_high_water);
+                self.write(E1000_FCRTL, self.fc_low_water | E1000_FCRTL_XONE)?;
+                self.write(E1000_FCRTH, self.fc_high_water)?;
             } else {
-                self.write(E1000_FCRTL, self.fc_low_water);
-                self.write(E1000_FCRTH, self.fc_high_water);
+                self.write(E1000_FCRTL, self.fc_low_water)?;
+                self.write(E1000_FCRTH, self.fc_high_water)?;
             }
         }
+        Ok(())
+    }
+
+    /**
+      * e1000_reset_adaptive - Resets Adaptive IFS to its default state.
+      *
+      * Call this after init_hw. You may override the IFS defaults by setting
+      * ifs_params_forced to true. However, you must initialize current_ifs_val,
+      * ifs_min_val, ifs_max_val, ifs_step_size, and ifs_ratio before calling
+      * this function.
+      */
+      pub(in crate::io::drivers::network::e1000) fn reset_adaptive(&mut self) -> Result<(), ()> {
+        if (self.adaptive_ifs) {
+            self.current_ifs_val = 0;
+            self.ifs_min_val = IFS_MIN;
+            self.ifs_max_val = IFS_MAX;
+            self.ifs_step_size = IFS_STEP;
+            self.ifs_ratio = IFS_RATIO;
+            self.in_ifs_mode = false;
+            self.write(E1000_AIT, 0)?;
+        } else {
+            println!("Not in Adaptive IFS mode!");
+        }
+
         Ok(())
     }
 
@@ -858,7 +911,6 @@ impl Hardware {
         // Linux does a lock here, but I can't be bothered
         // spin_lock_irqsave(&e1000_phy_lock, flags);
 
-        let address = MAX_PHY_REG_ADDRESS & reg_addr;
         let phy_addr: u32 = 1;
 
         let mut mdic: u32 = ((reg_addr << E1000_MDIC_REG_SHIFT)
@@ -871,21 +923,21 @@ impl Hardware {
          * Poll the ready bit to see if the MDI read
          * completed
          */
-        for i in 0..64 {
+        for _ in 0..64 {
             //udelay(50);
             self.delay();
 
             mdic = self.read(E1000_MDIC)?;
-            if (mdic & E1000_MDIC_READY != 0) {
+            if mdic & E1000_MDIC_READY != 0 {
                 break;
             }
         }
 
-        if ((mdic & E1000_MDIC_READY) == 0) {
+        if (mdic & E1000_MDIC_READY) == 0 {
             println!("MDI Read did not complete");
             return Err(());
         }
-        if ((mdic & E1000_MDIC_ERROR) != 0) {
+        if (mdic & E1000_MDIC_ERROR) != 0 {
             println!("MDI Read error");
             return Err(());
         }
@@ -907,13 +959,12 @@ impl Hardware {
         // Linux does a lock here, but I can't be bothered
         // spin_lock_irqsave(&e1000_phy_lock, flags);
 
-        let address = MAX_PHY_REG_ADDRESS & reg_addr;
         let phy_addr: u32 = 1;
 
-        let mut mdic = ((phy_data as u32)
+        let mut mdic = (phy_data as u32)
             | (reg_addr << E1000_MDIC_REG_SHIFT)
             | (phy_addr << E1000_MDIC_PHY_SHIFT)
-            | (E1000_MDIC_OP_WRITE));
+            | (E1000_MDIC_OP_WRITE);
 
         self.write(E1000_MDIC, mdic)?;
 
@@ -922,7 +973,7 @@ impl Hardware {
          * completed
          */
 
-        for i in 0..641 {
+        for _ in 0..641 {
             //udelay(5);
             self.delay();
             mdic = self.read(E1000_MDIC)?;
@@ -952,8 +1003,6 @@ impl Hardware {
             return Ok(());
         }
 
-        let mut matched: bool = false;
-
         /* Read the PHY ID Registers to identify which PHY is onboard. */
         self.phy_id = (self.read_phy_reg(PHY_ID1)? as u32) << 16;
 
@@ -973,26 +1022,25 @@ impl Hardware {
         match self.phy_id {
             M88E1000_E_PHY_ID | M88E1000_I_PHY_ID | M88E1011_I_PHY_ID | M88E1111_I_PHY_ID
             | M88E1118_E_PHY_ID => {
-                self.phy_type = PhyType::e1000_phy_m88;
+                self.phy_type = PhyType::E1000PhyM88;
             }
             IGP01E1000_I_PHY_ID => {
-                if (self.mac_type == MacType::e1000_82541
-                    || self.mac_type == MacType::e1000_82541_rev_2
-                    || self.mac_type == MacType::e1000_82547
-                    || self.mac_type == MacType::e1000_82547_rev_2)
-                {
-                    self.phy_type = PhyType::e1000_phy_igp;
+                if self.mac_type == MacType::E100082541
+                    || self.mac_type == MacType::E100082541Rev2
+                    || self.mac_type == MacType::E100082547
+                    || self.mac_type == MacType::E100082547Rev2 {
+                    self.phy_type = PhyType::E1000PhyIGP;
                 }
             }
             RTL8211B_PHY_ID => {
-                self.phy_type = PhyType::e1000_phy_8211;
+                self.phy_type = PhyType::E1000Phy8211;
             }
             RTL8201N_PHY_ID => {
-                self.phy_type = PhyType::e1000_phy_8201;
+                self.phy_type = PhyType::E1000Phy8201;
             }
             _ => {
                 /* Should never have loaded on this device */
-                self.phy_type = PhyType::e1000_phy_undefined;
+                self.phy_type = PhyType::E1000PhyUndefined;
                 return Err(()); //-E1000_ERR_PHY_TYPE;
             }
         };
@@ -1016,7 +1064,7 @@ impl Hardware {
     fn copper_link_preconfig(&mut self) -> Result<(), ()> {
         let mut ctrl = self.read(CTRL)?;
         ctrl |= (E1000_CTRL_FRCSPD | E1000_CTRL_FRCDPX | E1000_CTRL_SLU);
-        self.write(CTRL, ctrl);
+        self.write(CTRL, ctrl)?;
 
         self.phy_hw_reset()?;
 
@@ -1102,7 +1150,7 @@ impl Hardware {
         /* Read the MII 1000Base-T Control Register (Address 9). */
         let mut mii_1000t_ctrl_reg = self.read_phy_reg(PHY_1000T_CTRL)?;
 
-        if (self.phy_type == PhyType::e1000_phy_8201) {
+        if self.phy_type == PhyType::E1000Phy8201 {
             mii_1000t_ctrl_reg &= !REG9_SPEED_MASK;
         }
 
@@ -1123,36 +1171,36 @@ impl Hardware {
         println!("autoneg_advertised {:x}", self.autoneg_advertised);
 
         /* Do we want to advertise 10 Mb Half Duplex? */
-        if ((self.autoneg_advertised & ADVERTISE_10_HALF) != 0) {
+        if (self.autoneg_advertised & ADVERTISE_10_HALF) != 0 {
             println!("Advertise 10mb Half duplex");
             mii_autoneg_adv_reg |= NWAY_AR_10T_HD_CAPS;
         }
 
         /* Do we want to advertise 10 Mb Full Duplex? */
-        if ((self.autoneg_advertised & ADVERTISE_10_FULL) != 0) {
+        if (self.autoneg_advertised & ADVERTISE_10_FULL) != 0 {
             println!("Advertise 10mb Full duplex");
             mii_autoneg_adv_reg |= NWAY_AR_10T_FD_CAPS;
         }
 
         /* Do we want to advertise 100 Mb Half Duplex? */
-        if ((self.autoneg_advertised & ADVERTISE_100_HALF) != 0) {
+        if (self.autoneg_advertised & ADVERTISE_100_HALF) != 0 {
             println!("Advertise 100mb Half duplex");
             mii_autoneg_adv_reg |= NWAY_AR_100TX_HD_CAPS;
         }
 
         /* Do we want to advertise 100 Mb Full Duplex? */
-        if ((self.autoneg_advertised & ADVERTISE_100_FULL) != 0) {
+        if (self.autoneg_advertised & ADVERTISE_100_FULL) != 0 {
             println!("Advertise 100mb Full duplex");
             mii_autoneg_adv_reg |= NWAY_AR_100TX_FD_CAPS;
         }
 
         /* We do not allow the Phy to advertise 1000 Mb Half Duplex */
-        if ((self.autoneg_advertised & ADVERTISE_1000_HALF) != 0) {
+        if (self.autoneg_advertised & ADVERTISE_1000_HALF) != 0 {
             println!("Advertise 1000mb Half duplex requested, request denied!");
         }
 
         /* Do we want to advertise 1000 Mb Full Duplex? */
-        if ((self.autoneg_advertised & ADVERTISE_1000_FULL) != 0) {
+        if (self.autoneg_advertised & ADVERTISE_1000_FULL) != 0 {
             println!("Advertise 1000mb Full duplex");
             mii_1000t_ctrl_reg |= CR_1000T_FD_CAPS;
         }
@@ -1175,7 +1223,7 @@ impl Hardware {
          *          in the EEPROM is used.
          */
         match self.fc {
-            FlowControlSettings::E1000_FC_NONE =>
+            FlowControlSettings::E1000FCNone =>
             /* 0 */
             {
                 /* Flow control (RX & TX) is completely disabled by a
@@ -1183,7 +1231,7 @@ impl Hardware {
                  */
                 mii_autoneg_adv_reg &= !(NWAY_AR_ASM_DIR | NWAY_AR_PAUSE);
             }
-            FlowControlSettings::E1000_FC_RX_PAUSE =>
+            FlowControlSettings::E1000FCRXPause =>
             /* 1 */
             {
                 /* RX Flow control is enabled, and TX Flow control is
@@ -1198,7 +1246,7 @@ impl Hardware {
                  */
                 mii_autoneg_adv_reg |= (NWAY_AR_ASM_DIR | NWAY_AR_PAUSE);
             }
-            FlowControlSettings::E1000_FC_TX_PAUSE =>
+            FlowControlSettings::E1000FCTXPause =>
             /* 2 */
             {
                 /* TX Flow control is enabled, and RX Flow control is
@@ -1207,7 +1255,7 @@ impl Hardware {
                 mii_autoneg_adv_reg |= NWAY_AR_ASM_DIR;
                 mii_autoneg_adv_reg &= !NWAY_AR_PAUSE;
             }
-            FlowControlSettings::E1000_FC_FULL =>
+            FlowControlSettings::E1000FCFull =>
             /* 3 */
             {
                 /* Flow control (both RX and TX) is enabled by a software
@@ -1225,7 +1273,7 @@ impl Hardware {
         self.write_phy_reg(PHY_AUTONEG_ADV, mii_autoneg_adv_reg)?;
         println!("Auto-Neg Advertising {:x}", mii_autoneg_adv_reg);
 
-        if (self.phy_type == PhyType::e1000_phy_8201) {
+        if self.phy_type == PhyType::E1000Phy8201 {
             mii_1000t_ctrl_reg = 0;
         } else {
             self.write_phy_reg(PHY_1000T_CTRL, mii_1000t_ctrl_reg)?;
@@ -1243,13 +1291,13 @@ impl Hardware {
         println!("Waiting for Auto-Neg to complete.\n");
 
         /* We will wait for autoneg to complete or 4.5 seconds to expire. */
-        for i in 0..PHY_AUTO_NEG_TIME {
+        for _ in 0..PHY_AUTO_NEG_TIME {
             /* Read the MII Status Register and wait for Auto-Neg
              * Complete bit to be set.
              */
             let _ = self.read_phy_reg(PHY_STATUS)?;
             let phy_data = self.read_phy_reg(PHY_STATUS)?;
-            if ((phy_data & MII_SR_AUTONEG_COMPLETE) != 0) {
+            if (phy_data & MII_SR_AUTONEG_COMPLETE) != 0 {
                 return Ok(());
             }
         }
@@ -1274,12 +1322,12 @@ impl Hardware {
         /* If autoneg_advertised is zero, we assume it was not defaulted
          * by the calling code so we set to advertise full capability.
          */
-        if (self.autoneg_advertised == 0) {
+        if self.autoneg_advertised == 0 {
             self.autoneg_advertised = AUTONEG_ADVERTISE_SPEED_DEFAULT;
         }
 
         /* IFE/RTL8201N PHY only supports 10/100 */
-        if (self.phy_type == PhyType::e1000_phy_8201) {
+        if self.phy_type == PhyType::E1000Phy8201 {
             self.autoneg_advertised &= AUTONEG_ADVERTISE_10_100_ALL;
         }
 
@@ -1291,14 +1339,14 @@ impl Hardware {
          * the Auto Neg Restart bit in the PHY control register.
          */
         let mut phy_data = self.read_phy_reg(PHY_CTRL)?;
-        phy_data |= (MII_CR_AUTO_NEG_EN | MII_CR_RESTART_AUTO_NEG);
+        phy_data |= MII_CR_AUTO_NEG_EN | MII_CR_RESTART_AUTO_NEG;
 
         self.write_phy_reg(PHY_CTRL, phy_data)?;
 
         /* Does the user want to wait for Auto-Neg to complete here, or
          * check at a later time (for example, callback routine).
          */
-        if (self.wait_autoneg_complete) {
+        if self.wait_autoneg_complete {
             self.wait_autoneg()?;
         }
 
@@ -1313,7 +1361,6 @@ impl Hardware {
      * Detects which PHY is present and sets up the speed and duplex
      */
     fn setup_copper_link(&mut self) -> Result<(), ()> {
-        let mut phy_data: u16;
 
         /* Check if it is a valid PHY and set PHY mode if necessary. */
         self.copper_link_preconfig()?;
@@ -1330,7 +1377,7 @@ impl Hardware {
          * Check link status. Wait up to 100 microseconds for link to become
          * valid.
          */
-        for i in 0..10 {
+        for _ in 0..10 {
             let _ = self.read_phy_reg(PHY_STATUS)?;
             let _ = self.read_phy_reg(PHY_STATUS)?;
 
