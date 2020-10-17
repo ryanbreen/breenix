@@ -1,16 +1,10 @@
 use crate::constants::interrupts::{DOUBLE_FAULT_IST_INDEX, PIC_1_OFFSET, PIC_2_OFFSET};
 use crate::constants::keyboard::KEYBOARD_INTERRUPT;
-use crate::constants::serial::SERIAL_INTERRUPT;
-use crate::constants::syscall::SYSCALL_INTERRUPT;
 use crate::constants::timer::TIMER_INTERRUPT;
+use crate::println;
 use crate::state;
-use crate::{print, println};
 
-use core::fmt;
-
-use crate::io::keyboard;
 use crate::io::timer;
-//use crate::memory;
 
 use lazy_static::lazy_static;
 use pic8259_simple::ChainedPics;
@@ -190,7 +184,6 @@ extern "x86-interrupt" fn syscall_handler(_stack_frame: &mut ExceptionStackFrame
 */
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: &mut InterruptStackFrame) {
-    use x86_64::instructions::interrupts;
     state::increment_interrupt_count(TIMER_INTERRUPT as usize);
     timer::timer_interrupt();
 

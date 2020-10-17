@@ -5,8 +5,8 @@ use bootloader::BootInfo;
 use x86_64::{
     addr::PhysAddr,
     structures::paging::{
-        frame::PhysFrame, mapper::MapToError, FrameAllocator, Mapper,
-        OffsetPageTable, Page, PageTable, PageTableFlags, Size4KiB,
+        frame::PhysFrame, mapper::MapToError, FrameAllocator, Mapper, OffsetPageTable, Page,
+        PageTable, PageTableFlags, Size4KiB,
     },
     VirtAddr,
 };
@@ -134,7 +134,11 @@ pub unsafe fn identity_map(
     do_map()
 }
 
-pub fn identity_map_range(addr: u64, len: u64, flags: PageTableFlags) -> Result<(), MapToError<Size4KiB>> {
+pub fn identity_map_range(
+    addr: u64,
+    len: u64,
+    flags: PageTableFlags,
+) -> Result<(), MapToError<Size4KiB>> {
     let range = PhysFrame::range_inclusive(
         PhysFrame::containing_address(PhysAddr::new(addr)),
         PhysFrame::containing_address(PhysAddr::new(addr + len)),

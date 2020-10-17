@@ -8,14 +8,9 @@ use crossbeam_queue::ArrayQueue;
 use futures_util::stream::{Stream, StreamExt};
 use futures_util::task::AtomicWaker;
 
-use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::io::Port;
-
-use crate::state;
-
-use crate::constants::keyboard::{Key, KEYS, PORT};
+use crate::constants::keyboard::{Key, KEYS};
 
 use crate::event::EventType;
 

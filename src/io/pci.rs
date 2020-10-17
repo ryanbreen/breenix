@@ -1,6 +1,5 @@
 use crate::io::Port;
 use crate::println;
-use alloc::boxed::Box;
 use core::fmt;
 use core::intrinsics::transmute;
 use spin::Mutex;

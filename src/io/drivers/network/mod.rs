@@ -1,5 +1,3 @@
-use core::fmt;
-
 #[allow(dead_code)]
 pub mod e1000;
 pub mod vlan;

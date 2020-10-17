@@ -1,10 +1,7 @@
-use core::ptr;
-
 use crate::println;
 
 use crate::io::drivers::DeviceDriver;
 use crate::io::pci;
-use crate::io::pci::BAR;
 
 mod constants;
 mod hardware;
@@ -17,17 +14,16 @@ pub struct E1000 {
     //pci_device: pci::Device,
     hardware: self::hardware::Hardware,
     mng_vlan_id: u16,
-    //phy_info: 
+    //phy_info:
 }
 
 #[allow(unused_mut, unused_assignments)]
 impl E1000 {
     pub fn new(device: pci::Device) -> Result<E1000, ()> {
-
         let mut e1000: E1000 = E1000 {
             hardware: self::hardware::Hardware::new(device)?,
             mng_vlan_id: 0,
-            //phy_info: 
+            //phy_info:
         };
 
         e1000.initialize()?;
@@ -35,7 +31,6 @@ impl E1000 {
     }
 
     fn vlan_used(&self) -> bool {
-
         /*
         // FIXME: I will eventually need to support this.
         u16 vid;
@@ -112,7 +107,7 @@ impl E1000 {
         self.hardware.reset_adaptive()?;
 
         //self.phy_info = self.hardware.phy_get_info()?;
-        
+
         /*
 
         e1000_release_manageability(adapter);
@@ -131,7 +126,7 @@ impl DeviceDriver for E1000 {
 
         if self.hardware.checksum_eeprom()? {
             self.hardware.load_mac_addr()?;
-            crate::println!("MAC is {}", self.hardware.mac);
+            println!("MAC is {}", self.hardware.mac);
 
             let control_port = self
                 .hardware

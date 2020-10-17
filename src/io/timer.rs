@@ -36,13 +36,13 @@ impl Timer {
 }
 
 lazy_static! {
-    pub static ref TIMER: Timer = { Timer::new() };
+    pub static ref TIMER: Timer = Timer::new();
 }
 
 pub fn timer_interrupt() {
     TIMER.ticks.fetch_add(1, Ordering::Relaxed);
     TIMER.millis.fetch_add(1, Ordering::Relaxed);
-    if (TIMER.millis.load(Ordering::Relaxed) == SUBTICKS_PER_TICK) {
+    if TIMER.millis.load(Ordering::Relaxed) == SUBTICKS_PER_TICK {
         TIMER.seconds.fetch_add(1, Ordering::Relaxed);
         TIMER.millis.store(0, Ordering::Relaxed);
     }

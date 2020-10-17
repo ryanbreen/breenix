@@ -43,31 +43,31 @@ pub const E1000_IAM: u32 = 0x000E0; /* Interrupt Acknowledge Auto Mask */
 /* PCI bus types */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusType {
-    e1000_bus_type_unknown = 0,
-    e1000_bus_type_pci,
-    e1000_bus_type_pcix,
-    e1000_bus_type_reserved,
+    E1000BusTypeUnknown = 0,
+    E1000BusTypePCI,
+    E1000BusTypePCIX,
+    E1000BusTypeReserved,
 }
 
 /* PCI bus speeds */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusSpeed {
-    e1000_bus_speed_unknown = 0,
-    e1000_bus_speed_33,
-    e1000_bus_speed_66,
-    e1000_bus_speed_100,
-    e1000_bus_speed_120,
-    e1000_bus_speed_133,
-    e1000_bus_speed_reserved,
+    E1000BusSpeedUnknown = 0,
+    E1000BusSpeed33,
+    E1000BusSpeed66,
+    E1000BusSpeed100,
+    E1000BusSpeed120,
+    E1000BusSpeed133,
+    E1000BusSpeedReserved,
 }
 
 /* PCI bus widths */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusWidth {
-    e1000_bus_width_unknown = 0,
-    e1000_bus_width_32,
-    e1000_bus_width_64,
-    e1000_bus_width_reserved,
+    E1000BusWidthUnknown = 0,
+    E1000BusWidth32,
+    E1000BusWidth64,
+    E1000BusWidthreserved,
 }
 
 /* Device Control */
@@ -202,7 +202,7 @@ pub const NODE_ADDRESS_SIZE: usize = 6;
 pub const ENET_HEADER_SIZE: u32 = 14;
 pub const MINIMUM_ETHERNET_FRAME_SIZE: u32 = 64; /* With FCS */
 pub const ETHERNET_FCS_SIZE: u32 = 4;
-pub const MINIMUM_ETHERNET_PACKET_SIZE: u32 = (MINIMUM_ETHERNET_FRAME_SIZE - ETHERNET_FCS_SIZE);
+pub const MINIMUM_ETHERNET_PACKET_SIZE: u32 = MINIMUM_ETHERNET_FRAME_SIZE - ETHERNET_FCS_SIZE;
 pub const CRC_LENGTH: u32 = ETHERNET_FCS_SIZE;
 pub const MAX_JUMBO_FRAME_SIZE: u32 = 0x3F00;
 
@@ -870,10 +870,8 @@ pub const M88E1000_EPSCR_TX_CLK_0: u16 = 0x0000; /* NO  TX_CLK */
 /* Word definitions for ID LED Settings */
 pub const ID_LED_RESERVED_0000: u16 = 0x0000;
 pub const ID_LED_RESERVED_FFFF: u16 = 0xFFFF;
-pub const ID_LED_DEFAULT: u16 = ((ID_LED_OFF1_ON2 << 12)
-    | (ID_LED_OFF1_OFF2 << 8)
-    | (ID_LED_DEF1_DEF2 << 4)
-    | (ID_LED_DEF1_DEF2));
+pub const ID_LED_DEFAULT: u16 =
+    ID_LED_OFF1_ON2 << 12 | ID_LED_OFF1_OFF2 << 8 | ID_LED_DEF1_DEF2 << 4 | ID_LED_DEF1_DEF2;
 pub const ID_LED_DEF1_DEF2: u16 = 0x1;
 pub const ID_LED_DEF1_ON2: u16 = 0x2;
 pub const ID_LED_DEF1_OFF2: u16 = 0x3;
@@ -907,23 +905,23 @@ pub const E1000_FCRTL_RTL: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTL */
 pub const E1000_FCRTL_XONE: u32 = 0x80000000; /* Enable XON frame transmission */
 
 /* Adaptive IFS defines */
-pub const TX_THRESHOLD_START: u16 =     8;
+pub const TX_THRESHOLD_START: u16 = 8;
 pub const TX_THRESHOLD_INCREMENT: u16 = 10;
 pub const TX_THRESHOLD_DECREMENT: u16 = 1;
-pub const TX_THRESHOLD_STOP: u16 =      190;
-pub const TX_THRESHOLD_DISABLE: u16 =   0;
-pub const TX_THRESHOLD_TIMER_MS: u16 =  10000;
-pub const MIN_NUM_XMITS: u16 =          1000;
-pub const IFS_MAX: u16 =                80;
-pub const IFS_STEP: u16 =               10;
-pub const IFS_MIN: u16 =                40;
-pub const IFS_RATIO: u16 =              4;
+pub const TX_THRESHOLD_STOP: u16 = 190;
+pub const TX_THRESHOLD_DISABLE: u16 = 0;
+pub const TX_THRESHOLD_TIMER_MS: u16 = 10000;
+pub const MIN_NUM_XMITS: u16 = 1000;
+pub const IFS_MAX: u16 = 80;
+pub const IFS_STEP: u16 = 10;
+pub const IFS_MIN: u16 = 40;
+pub const IFS_RATIO: u16 = 4;
 
 pub enum CableLength {
-	E1000CableLength50 = 0,
-	E1000CableLength50To80,
-	E1000CableLength80To110,
-	E1000CableLength110To140,
+    E1000CableLength50 = 0,
+    E1000CableLength50To80,
+    E1000CableLength80To110,
+    E1000CableLength110To140,
     E1000CableLength140,
-	E1000CableLengthUndefined = 0xFF
+    E1000CableLengthUndefined = 0xFF,
 }

@@ -3,10 +3,7 @@ pub mod bump;
 use crate::constants::memory::{HEAP_SIZE, HEAP_START};
 
 use x86_64::{
-    structures::paging::{
-        mapper::MapToError, Page,
-        PageTableFlags, Size4KiB,
-    },
+    structures::paging::{mapper::MapToError, Page, PageTableFlags, Size4KiB},
     VirtAddr,
 };
 

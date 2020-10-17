@@ -27,6 +27,7 @@ impl Executor {
         self.task_queue.push(task_id).expect("queue full");
     }
 
+    #[allow(dead_code)]
     fn sleep_if_idle(&self) {
         use x86_64::instructions::interrupts::{self, enable_interrupts_and_hlt};
 
