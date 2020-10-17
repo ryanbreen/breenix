@@ -5,6 +5,7 @@ use macaddr::MacAddr;
 use crate::println;
 
 use crate::io::pci;
+use crate::io::pci::BAR;
 
 use crate::io::drivers::network::e1000::constants::*;
 
@@ -36,22 +37,36 @@ impl DHCPCookie {
     }
 }
 
-/*
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(in crate::io::drivers::network::e1000) PhyInfo {
-    e1000_cable_length cable_length;
-    e1000_10bt_ext_dist_enable extended_10bt_distance;
-    e1000_rev_polarity cable_polarity;
-    e1000_downshift downshift;
-    e1000_polarity_reversal polarity_correction;
-    e1000_auto_x_mode mdix_mode;
-    e1000_1000t_rx_status local_rx;
-    e1000_1000t_rx_status remote_rx;
-};*/
+pub(in crate::io::drivers::network::e1000) struct PhyInfo {
+    pub(in crate::io::drivers::network::e1000) cable_length: CableLength,
+    pub(in crate::io::drivers::network::e1000) extended_10bt_distance: TenBTExtDistEnable,
+    pub(in crate::io::drivers::network::e1000) cable_polarity: RevPolarity,
+    pub(in crate::io::drivers::network::e1000) downshift: Downshift,
+    pub(in crate::io::drivers::network::e1000) polarity_correction: PolarityReversal,
+    pub(in crate::io::drivers::network::e1000) mdix_mode: AutoXMode,
+    pub(in crate::io::drivers::network::e1000) local_rx: RXStatus,
+    pub(in crate::io::drivers::network::e1000) remote_rx: RXStatus,
+}
+
+impl PhyInfo {
+    pub fn defaults() -> PhyInfo {
+        PhyInfo {
+            cable_length: CableLength::Undefined,
+            extended_10bt_distance: TenBTExtDistEnable::Undefined,
+            cable_polarity: RevPolarity::Undefined,
+            downshift: Downshift::Undefined,
+            polarity_correction: PolarityReversal::Undefined,
+            mdix_mode: AutoXMode::Undefined,
+            local_rx: RXStatus::Undefined,
+            remote_rx: RXStatus::Undefined,
+        }
+    }
+}
 
 pub(in crate::io::drivers::network::e1000) struct Hardware {
-    io_base: u64,
-    hw_addr: u64,
+    io_base: BAR,
+    hw_addr: BAR,
     pub(in crate::io::drivers::network::e1000) vendor_id: u16,
     pub(in crate::io::drivers::network::e1000) device_id: u16,
     pub(in crate::io::drivers::network::e1000) subsystem_vendor_id: u16,
@@ -92,14 +107,15 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     pub(in crate::io::drivers::network::e1000) ledctl_mode1: u32,
     pub(in crate::io::drivers::network::e1000) ledctl_mode2: u32,
     pub(in crate::io::drivers::network::e1000) mng_cookie: DHCPCookie,
+    speed_downgraded: bool,
 }
 
 #[allow(unused_mut, unused_assignments)]
 impl Hardware {
-    pub fn new(device: pci::Device) -> Result<Hardware, ()> {
-        let mut hardware = Hardware {
-            io_base: device.bar(0x1).addr,
-            hw_addr: device.bar(0x0).addr,
+    pub fn new(device: pci::Device) -> Hardware {
+        Hardware {
+            io_base: device.bar(0x1),
+            hw_addr: device.bar(0x0),
             /* below vendor fields are pulled from Linux running on Qemu */
             vendor_id: 0x8086, /* Intel */
             device_id: 0x100e, /* e1000 */
@@ -141,12 +157,15 @@ impl Hardware {
             ledctl_mode1: 0,
             ledctl_mode2: 0,
             mng_cookie: DHCPCookie::empty(),
-        };
+            speed_downgraded: true,
+        }
+    }
 
+    pub(in crate::io::drivers::network::e1000) fn init_data(&mut self) -> Result<(), ()> {
         use x86_64::structures::paging::PageTableFlags;
         let res = crate::memory::identity_map_range(
-            device.bar(0x0).addr,
-            device.bar(0x0).size,
+            self.hw_addr.addr,
+            self.hw_addr.size,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
 
@@ -154,12 +173,14 @@ impl Hardware {
             panic!("Failed to map memory");
         }
 
-        hardware.populate_bus_info()?;
+        // Make this more real because we're just hardcoding a lot of this
 
-        Ok(hardware)
+        self.populate_bus_info()?;
+
+        Ok(())
     }
 
-    pub fn populate_bus_info(&mut self) -> Result<(), ()> {
+    fn populate_bus_info(&mut self) -> Result<(), ()> {
         let status = self.read(STATUS)?;
 
         self.bus_type = match status & E1000_STATUS_PCIX_MODE {
@@ -181,18 +202,27 @@ impl Hardware {
     }
 
     pub fn write_command(&self, offset: u32, val: u32) {
+        // TODO: Check for invalid ranges to make sure this is safe.
         unsafe {
-            ptr::write_volatile((self.io_base + offset as u64) as *const u32 as *mut _, val);
+            ptr::write_volatile(
+                (self.io_base.addr + offset as u64) as *const u32 as *mut _,
+                val,
+            );
         }
     }
 
     pub fn read_command(&self, offset: u32) -> u32 {
-        unsafe { ptr::read_volatile((self.io_base + offset as u64) as *const u32) }
+        // TODO: Check for invalid ranges to make sure this is safe.
+        unsafe { ptr::read_volatile((self.io_base.addr + offset as u64) as *const u32) }
     }
 
     pub fn write(&self, offset: u32, val: u32) -> Result<(), ()> {
+        // TODO: Check for invalid ranges to make sure this is safe.
         unsafe {
-            ptr::write_volatile((self.hw_addr + offset as u64) as *const u32 as *mut _, val);
+            ptr::write_volatile(
+                (self.hw_addr.addr + offset as u64) as *const u32 as *mut _,
+                val,
+            );
         }
         Ok(())
     }
@@ -202,10 +232,51 @@ impl Hardware {
     }
 
     pub fn read(&self, offset: u32) -> Result<u32, ()> {
-        Ok(unsafe { ptr::read_volatile((self.hw_addr + offset as u64) as *const u32) })
+        // TODO: Check for invalid ranges to make sure this is safe.
+        Ok(unsafe { ptr::read_volatile((self.hw_addr.addr + offset as u64) as *const u32) })
     }
 
-    pub fn acquire_eeprom(&self) -> Result<(), ()> {
+    /**
+     * e1000_release_eeprom - drop chip select
+     *
+     * Terminates a command by inverting the EEPROM's chip select pin
+     */
+    fn release_eeprom(&self) -> Result<(), ()> {
+        let mut eecd = self.read(CTRL_EECD)?;
+
+        /* cleanup eeprom */
+
+        /* CS on Microwire is active-high */
+        eecd &= !(E1000_EECD_CS | E1000_EECD_DI);
+
+        self.write(CTRL_EECD, eecd)?;
+
+        /* Rising edge of clock */
+        eecd |= E1000_EECD_SK;
+        self.write(CTRL_EECD, eecd)?;
+
+        self.write_flush()?;
+        self.delay();
+        //udelay(hw->eeprom.delay_usec);
+
+        /* Falling edge of clock */
+        eecd &= !E1000_EECD_SK;
+        self.write(CTRL_EECD, eecd)?;
+
+        self.write_flush()?;
+        self.delay();
+        //udelay(hw->eeprom.delay_usec);
+
+        /* Stop requesting EEPROM access */
+        if self.mac_type as u32 > MacType::E100082544 as u32 {
+            eecd &= !E1000_EECD_REQ;
+            self.write(CTRL_EECD, eecd)?;
+        }
+
+        Ok(())
+    }
+
+    fn acquire_eeprom(&self) -> Result<(), ()> {
         let mut eecd: u32 = 0;
         let mut i = 0;
 
@@ -389,6 +460,26 @@ impl Hardware {
     }
 
     pub fn read_eeprom(&self, offset: u16, words: u16) -> Result<u16, ()> {
+        // TODO: Lock this all
+
+        /* A check for invalid values:  offset too large, too many words, and
+         * not enough words.
+         *
+        if ((offset >= eeprom->word_size) ||
+            (words > eeprom->word_size - offset) ||
+            (words == 0)) {
+            e_dbg("\"words\" parameter out of bounds. Words = %d,"
+                "size = %d\n", offset, eeprom->word_size);
+            return -E1000_ERR_EEPROM;
+        }*/
+
+        /* EEPROM's that don't use EERD to read require us to bit-bang the SPI
+         * directly. In this case, we need to acquire the EEPROM so that
+         * FW or other port software does not interrupt.
+         */
+        /* Prepare the EEPROM for bit-bang reading */
+        self.acquire_eeprom()?;
+
         let mut data: u16 = 0;
         for i in 0..words {
             /* Send the READ command (opcode + addr)  */
@@ -404,6 +495,8 @@ impl Hardware {
             self.standby_eeprom()?;
         }
 
+        self.release_eeprom()?;
+
         Ok(data)
     }
 
@@ -414,17 +507,20 @@ impl Hardware {
      * If the the sum of the 64 16 bit words is 0xBABA, the EEPROM's checksum is
      * valid.
      */
-    pub fn checksum_eeprom(&self) -> Result<bool, ()> {
+    pub fn checksum_eeprom(&self) -> Result<(), ()> {
         let mut checksum: u16 = 0;
         for i in 0..EEPROM_CHECKSUM_REG + 1 {
-            let data: u16 = self.read_eeprom(i, 1)?;
-            // crate::println!("data at {} is {:x}", i, data);
+            let data = self.read_eeprom(i, 1)?;
             checksum = checksum.wrapping_add(data);
         }
 
         crate::println!("eeprom checksum is {:x}", checksum);
 
-        Ok(checksum == EEPROM_SUM)
+        if checksum != EEPROM_SUM {
+            return Err(());
+        }
+
+        Ok(())
     }
 
     /*
@@ -845,6 +941,85 @@ impl Hardware {
         }
 
         Ok(())
+    }
+
+    pub(in crate::io::drivers::network::e1000) fn populate_phy_info(
+        &mut self,
+    ) -> Result<PhyInfo, ()> {
+        let mut phy_info: PhyInfo = PhyInfo::defaults();
+
+        let _ = self.read_phy_reg(PHY_STATUS)?;
+        let mut phy_data = self.read_phy_reg(PHY_STATUS)?;
+
+        if phy_data & MII_SR_LINK_STATUS != MII_SR_LINK_STATUS {
+            println!("PHY info is only valid if link is up");
+            return Ok(phy_info);
+        }
+
+        /*
+         * The downshift status is checked only once, after link is established,
+         * and it stored in the hw->speed_downgraded parameter.
+         */
+        phy_info.downshift = match self.speed_downgraded {
+            true => Downshift::Activated,
+            false => Downshift::Normal,
+        };
+
+        phy_data = self.read_phy_reg(M88E1000_PHY_SPEC_CTRL)?;
+
+        phy_info.extended_10bt_distance = match (phy_data & M88E1000_PSCR_10BT_EXT_DIST_ENABLE)
+            >> M88E1000_PSCR_10BT_EXT_DIST_ENABLE_SHIFT
+        {
+            0 => TenBTExtDistEnable::Normal,
+            _ => TenBTExtDistEnable::Lower,
+        };
+
+        phy_info.polarity_correction = match (phy_data & M88E1000_PSCR_POLARITY_REVERSAL)
+            >> M88E1000_PSCR_POLARITY_REVERSAL_SHIFT
+        {
+            0 => PolarityReversal::Enabled,
+            _ => PolarityReversal::Disabled,
+        };
+
+        // FIXME once we have a working link and can test it.
+
+        /* Check polarity status *
+        ret_val = e1000_check_polarity(hw, &polarity);
+        if (ret_val)
+            return ret_val;
+        phy_info->cable_polarity = polarity;
+
+        ret_val = e1000_read_phy_reg(hw, M88E1000_PHY_SPEC_STATUS, &phy_data);
+        if (ret_val)
+            return ret_val;
+
+        phy_info->mdix_mode =
+            (e1000_auto_x_mode) ((phy_data & M88E1000_PSSR_MDIX) >>
+                    M88E1000_PSSR_MDIX_SHIFT);
+
+        if ((phy_data & M88E1000_PSSR_SPEED) == M88E1000_PSSR_1000MBS) {
+            /* Cable Length Estimation and Local/Remote Receiver Information
+            * are only valid at 1000 Mbps.
+            */
+            phy_info->cable_length =
+                (e1000_cable_length) ((phy_data &
+                        M88E1000_PSSR_CABLE_LENGTH) >>
+                        M88E1000_PSSR_CABLE_LENGTH_SHIFT);
+
+            ret_val = e1000_read_phy_reg(hw, PHY_1000T_STATUS, &phy_data);
+            if (ret_val)
+                return ret_val;
+
+            phy_info->local_rx = ((phy_data & SR_1000T_LOCAL_RX_STATUS) >>
+                        SR_1000T_LOCAL_RX_STATUS_SHIFT) ?
+                e1000_1000t_rx_status_ok : e1000_1000t_rx_status_not_ok;
+            phy_info->remote_rx = ((phy_data & SR_1000T_REMOTE_RX_STATUS) >>
+                        SR_1000T_REMOTE_RX_STATUS_SHIFT) ?
+                e1000_1000t_rx_status_ok : e1000_1000t_rx_status_not_ok;
+        }
+        */
+
+        Ok(phy_info)
     }
 
     /**

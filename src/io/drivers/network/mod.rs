@@ -3,6 +3,8 @@ pub mod e1000;
 pub mod vlan;
 //pub mod rtl8139;
 
+pub const MAXIMUM_ETHERNET_VLAN_SIZE: u32 = 1522;
+
 /*
 use alloc::boxed::Box;
 use alloc::string::String;

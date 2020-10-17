@@ -917,11 +917,56 @@ pub const IFS_STEP: u16 = 10;
 pub const IFS_MIN: u16 = 40;
 pub const IFS_RATIO: u16 = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CableLength {
-    E1000CableLength50 = 0,
-    E1000CableLength50To80,
-    E1000CableLength80To110,
-    E1000CableLength110To140,
-    E1000CableLength140,
-    E1000CableLengthUndefined = 0xFF,
+    Fifty = 0,
+    FiftyToEighty,
+    EightyToOneHundredTen,
+    OneHundredTenToOneHundredForty,
+    OverOneHundredForty,
+    Undefined = 0xFF,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TenBTExtDistEnable {
+    Normal = 0,
+    Lower,
+    Undefined = 0xFF,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RevPolarity {
+    Normal = 0,
+    Reverse,
+    Undefined = 0xFF,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Downshift {
+    Normal = 0,
+    Activated,
+    Undefined = 0xFF,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PolarityReversal {
+    Enabled = 0,
+    Disabled,
+    Undefined = 0xFF,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AutoXMode {
+    ManualMDI = 0,
+    ManualMDIX,
+    Auto1,
+    Auto2,
+    Undefined = 0xFF,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RXStatus {
+    NotOk = 0,
+    Ok,
+    Undefined = 0xFF,
 }
