@@ -1,6 +1,9 @@
+
 use core::ptr;
 
 use macaddr::MacAddr;
+
+use spin::Mutex;
 
 use crate::println;
 
@@ -8,6 +11,8 @@ use crate::io::pci;
 use crate::io::pci::BAR;
 
 use crate::io::drivers::network::e1000::constants::*;
+
+mod eeprom;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(C)]
@@ -175,6 +180,9 @@ impl Hardware {
 
         // Make this more real because we're just hardcoding a lot of this
 
+        // Init eeprom
+        //self.eeprom.lock().init(&self);
+
         self.populate_bus_info()?;
 
         Ok(())
@@ -236,268 +244,18 @@ impl Hardware {
         Ok(unsafe { ptr::read_volatile((self.hw_addr.addr + offset as u64) as *const u32) })
     }
 
-    /**
-     * e1000_release_eeprom - drop chip select
-     *
-     * Terminates a command by inverting the EEPROM's chip select pin
-     */
-    fn release_eeprom(&self) -> Result<(), ()> {
-        let mut eecd = self.read(CTRL_EECD)?;
-
-        /* cleanup eeprom */
-
-        /* CS on Microwire is active-high */
-        eecd &= !(E1000_EECD_CS | E1000_EECD_DI);
-
-        self.write(CTRL_EECD, eecd)?;
-
-        /* Rising edge of clock */
-        eecd |= E1000_EECD_SK;
-        self.write(CTRL_EECD, eecd)?;
-
-        self.write_flush()?;
-        self.delay();
-        //udelay(hw->eeprom.delay_usec);
-
-        /* Falling edge of clock */
-        eecd &= !E1000_EECD_SK;
-        self.write(CTRL_EECD, eecd)?;
-
-        self.write_flush()?;
-        self.delay();
-        //udelay(hw->eeprom.delay_usec);
-
-        /* Stop requesting EEPROM access */
-        if self.mac_type as u32 > MacType::E100082544 as u32 {
-            eecd &= !E1000_EECD_REQ;
-            self.write(CTRL_EECD, eecd)?;
-        }
-
-        Ok(())
-    }
-
-    fn acquire_eeprom(&self) -> Result<(), ()> {
-        let mut eecd: u32 = 0;
-        let mut i = 0;
-
-        eecd = self.read(CTRL_EECD)?;
-
-        /* Request EEPROM Access */
-        eecd |= E1000_EECD_REQ;
-        self.write(CTRL_EECD, eecd)?;
-        eecd = self.read(CTRL_EECD)?;
-        while eecd & E1000_EECD_GNT == 0 && i < E1000_EEPROM_GRANT_ATTEMPTS {
-            i += 1;
-            // udelay(5);
-            eecd = self.read(CTRL_EECD)?;
-        }
-
-        if eecd & E1000_EECD_GNT == 0 {
-            panic!("Failed to acquire eeprom");
-        }
-
-        /* Setup EEPROM for Read/Write */
-
-        /* Clear SK and DI */
-        eecd = eecd & !(E1000_EECD_DI | E1000_EECD_SK);
-        self.write(CTRL_EECD, eecd)?;
-
-        /* Set CS */
-        eecd = eecd | E1000_EECD_CS;
-        self.write(CTRL_EECD, eecd)?;
-
-        eecd = self.read(CTRL_EECD)?;
-
-        Ok(())
-    }
-
-    fn write_flush(&self) -> Result<(), ()> {
+    pub(in crate::io::drivers::network::e1000) fn write_flush(&self) -> Result<(), ()> {
         // write flush
         self.read(STATUS)?;
         Ok(())
     }
 
-    fn delay(&self) {
+    pub(in crate::io::drivers::network::e1000) fn delay(&self) {
         //crate::delay!(EEPROM_DELAY_USEC);
         /*
         for i in 0..1 {
             //udelay(eeprom->delay_usec);
         }*/
-    }
-
-    fn standby_eeprom(&self) -> Result<(), ()> {
-        let mut eecd: u32 = self.read(CTRL_EECD)?;
-
-        eecd &= !(E1000_EECD_CS | E1000_EECD_SK);
-        self.write(CTRL_EECD, eecd)?;
-        self.write_flush()?;
-        self.delay();
-
-        /* Clock high */
-        eecd |= E1000_EECD_SK;
-        self.write(CTRL_EECD, eecd)?;
-        self.write_flush()?;
-        self.delay();
-
-        /* Select EEPROM */
-        eecd |= E1000_EECD_CS;
-        self.write(CTRL_EECD, eecd)?;
-        self.write_flush()?;
-        self.delay();
-
-        /* Clock low */
-        eecd &= !E1000_EECD_SK;
-        self.write(CTRL_EECD, eecd)?;
-        self.write_flush()?;
-        self.delay();
-
-        Ok(())
-    }
-
-    fn raise_ee_clk(&self, eecd: u32) -> Result<u32, ()> {
-        /*
-         * Raise the clock input to the EEPROM (by setting the SK bit), and then
-         * wait <delay> microseconds.
-         */
-        let mut new_eecd = eecd | E1000_EECD_SK;
-        self.write(CTRL_EECD, new_eecd)?;
-
-        self.write_flush()?;
-        self.delay();
-        Ok(new_eecd)
-    }
-
-    fn lower_ee_clk(&self, eecd: u32) -> Result<u32, ()> {
-        /*
-         * Raise the clock input to the EEPROM (by setting the SK bit), and then
-         * wait <delay> microseconds.
-         */
-        let mut new_eecd = eecd & !E1000_EECD_SK;
-        self.write(CTRL_EECD, new_eecd)?;
-
-        self.write_flush()?;
-        self.delay();
-        Ok(new_eecd)
-    }
-
-    fn shift_in_ee_bits(&self, count: u16) -> Result<u16, ()> {
-        let mut eecd: u32;
-        let mut data: u16 = 0;
-
-        /*
-         * In order to read a register from the EEPROM, we need to shift 'count'
-         * bits in from the EEPROM. Bits are "shifted in" by raising the clock
-         * input to the EEPROM (setting the SK bit), and then reading the value
-         * of the "DO" bit.  During this "shifting in" process the "DI" bit
-         * should always be clear.
-         */
-        eecd = self.read(CTRL_EECD)?;
-
-        eecd &= !(E1000_EECD_DO | E1000_EECD_DI);
-
-        for _ in 0..count {
-            data = data << 1;
-            self.raise_ee_clk(eecd)?;
-
-            eecd = self.read(CTRL_EECD)?;
-
-            eecd &= !(E1000_EECD_DI);
-            if eecd & E1000_EECD_DO != 0 {
-                data |= 1;
-            }
-
-            self.lower_ee_clk(eecd)?;
-        }
-
-        Ok(data)
-    }
-
-    fn shift_out_ee_bits(&self, data: u32, count: u32) -> Result<(), ()> {
-        let mut eecd: u32;
-        let mut mask: u32;
-
-        /*
-         * We need to shift "count" bits out to the EEPROM. So, value in the
-         * "data" parameter will be shifted out to the EEPROM one bit at a time.
-         * In order to do this, "data" must be broken down into bits.
-         */
-        mask = 0x01 << (count - 1);
-        eecd = self.read(CTRL_EECD)?;
-
-        eecd = eecd & !E1000_EECD_DO;
-
-        while mask != 0 {
-            /*
-             * A "1" is shifted out to the EEPROM by setting bit "DI" to a
-             * "1", and then raising and then lowering the clock (the SK bit
-             * controls the clock input to the EEPROM).  A "0" is shifted
-             * out to the EEPROM by setting "DI" to "0" and then raising and
-             * then lowering the clock.
-             */
-            eecd &= !E1000_EECD_DI;
-
-            if data & mask != 0 {
-                eecd = eecd | E1000_EECD_DI;
-            }
-
-            self.write(CTRL_EECD, eecd)?;
-
-            // write flush
-            self.read(STATUS)?;
-
-            eecd = self.raise_ee_clk(eecd)?;
-            eecd = self.lower_ee_clk(eecd)?;
-
-            mask = mask >> 1;
-        }
-
-        /* We leave the "DI" bit set to "0" when we leave this routine. */
-        eecd &= !E1000_EECD_DI;
-        self.write(CTRL_EECD, eecd)?;
-
-        self.read(CTRL_EECD)?;
-        Ok(())
-    }
-
-    pub fn read_eeprom(&self, offset: u16, words: u16) -> Result<u16, ()> {
-        // TODO: Lock this all
-
-        /* A check for invalid values:  offset too large, too many words, and
-         * not enough words.
-         *
-        if ((offset >= eeprom->word_size) ||
-            (words > eeprom->word_size - offset) ||
-            (words == 0)) {
-            e_dbg("\"words\" parameter out of bounds. Words = %d,"
-                "size = %d\n", offset, eeprom->word_size);
-            return -E1000_ERR_EEPROM;
-        }*/
-
-        /* EEPROM's that don't use EERD to read require us to bit-bang the SPI
-         * directly. In this case, we need to acquire the EEPROM so that
-         * FW or other port software does not interrupt.
-         */
-        /* Prepare the EEPROM for bit-bang reading */
-        self.acquire_eeprom()?;
-
-        let mut data: u16 = 0;
-        for i in 0..words {
-            /* Send the READ command (opcode + addr)  */
-            self.shift_out_ee_bits(EEPROM_READ_OPCODE_MICROWIRE, 3)?;
-
-            self.shift_out_ee_bits(offset as u32 + i as u32, 6)?;
-
-            /*
-             * Read the data.  For microwire, each word requires the
-             * overhead of eeprom setup and tear-down.
-             */
-            data = data | (self.shift_in_ee_bits(16)? << (8 * i));
-            self.standby_eeprom()?;
-        }
-
-        self.release_eeprom()?;
-
-        Ok(data)
     }
 
     /**
@@ -510,7 +268,7 @@ impl Hardware {
     pub fn checksum_eeprom(&self) -> Result<(), ()> {
         let mut checksum: u16 = 0;
         for i in 0..EEPROM_CHECKSUM_REG + 1 {
-            let data = self.read_eeprom(i, 1)?;
+            let data = eeprom::read_eeprom(self, i, 1)?;
             checksum = checksum.wrapping_add(data);
         }
 
@@ -535,7 +293,7 @@ impl Hardware {
 
         for i in (0..NODE_ADDRESS_SIZE).step_by(2) {
             offset = i as u16 >> 1;
-            eeprom_data = self.read_eeprom(offset, 1)?;
+            eeprom_data = eeprom::read_eeprom(self, offset, 1)?;
             macbytes[i] = eeprom_data as u8 & 0x00FF;
             macbytes[i + 1] = eeprom_data.wrapping_shr(8) as u8;
         }
@@ -653,7 +411,7 @@ impl Hardware {
         self.ledctl_mode1 = ledctl;
         self.ledctl_mode2 = ledctl;
 
-        let mut eeprom_data: u16 = self.read_eeprom(EEPROM_ID_LED_SETTINGS, 1)?;
+        let mut eeprom_data: u16 = eeprom::read_eeprom(self, EEPROM_ID_LED_SETTINGS, 1)?;
 
         if eeprom_data == ID_LED_RESERVED_0000 || eeprom_data == ID_LED_RESERVED_FFFF {
             eeprom_data = ID_LED_DEFAULT;
@@ -853,7 +611,7 @@ impl Hardware {
          * be initialized based on a value in the EEPROM.
          */
         if self.fc == FlowControlSettings::E1000FCDefault {
-            eeprom_data = self.read_eeprom(EEPROM_INIT_CONTROL2_REG, 1)?;
+            eeprom_data = eeprom::read_eeprom(self, EEPROM_INIT_CONTROL2_REG, 1)?;
             if eeprom_data & EEPROM_WORD0F_PAUSE_MASK == 0 {
                 self.fc = FlowControlSettings::E1000FCNone;
             } else if eeprom_data & EEPROM_WORD0F_PAUSE_MASK == EEPROM_WORD0F_ASM_DIR {
@@ -917,6 +675,10 @@ impl Hardware {
             }
         }
         Ok(())
+    }
+
+    pub fn read_eeprom(&self, offset: u16, words: u16) -> Result<u16, ()> {
+        eeprom::read_eeprom(self, offset, words)
     }
 
     /**

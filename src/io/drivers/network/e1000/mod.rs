@@ -216,9 +216,7 @@ impl E1000 {
         self.hardware.load_mac_addr()?;
         println!("MAC is {}", self.hardware.mac);
 
-        let control_port = self
-            .hardware
-            .read_eeprom(self::constants::EEPROM_INIT_CONTROL3_PORT_A, 1)?;
+        let control_port = self.hardware.read_eeprom(self::constants::EEPROM_INIT_CONTROL3_PORT_A, 1)?;
 
         let mut wol = 0;
 
