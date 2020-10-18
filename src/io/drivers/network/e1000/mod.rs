@@ -6,6 +6,7 @@ use crate::io::pci::DeviceError;
 mod constants;
 mod hardware;
 //mod params;
+mod vlan;
 
 use self::constants::*;
 use crate::io::drivers::network::vlan::*;
@@ -89,47 +90,6 @@ impl E1000 {
         Ok(())
     }
 
-    fn vlan_used(&self) -> bool {
-        /*
-        // FIXME: I will eventually need to support this.
-        u16 vid;
-
-        for_each_set_bit(vid, adapter->active_vlans, VLAN_N_VID)
-            return true;
-            */
-        false
-    }
-
-    fn update_mng_vlan(&self) -> Result<(), DeviceError<ErrorType>> {
-        let vid = self.hardware.mng_cookie.vlan_id;
-        let old_vid = self.mng_vlan_id;
-
-        if !self.vlan_used() {
-            return Ok(());
-        }
-
-        // FIXME: I will eventually need to support this.
-        /*
-        if (!test_bit(vid, adapter->active_vlans)) {
-            if (hw->mng_cookie.status &
-                MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT) {
-                vlan_rx_add_vid(netdev, htons(ETH_P_8021Q), vid);
-                adapter->mng_vlan_id = vid;
-            } else {
-                adapter->mng_vlan_id = MNG_VLAN_NONE;
-            }
-            if ((old_vid != (u16)MNG_VLAN_NONE) &&
-                (vid != old_vid) &&
-                !test_bit(old_vid, adapter->active_vlans))
-                vlan_rx_kill_vid(netdev, htons(ETH_P_8021Q),
-                            old_vid);
-        } else {
-            adapter->mng_vlan_id = vid;
-        }*/
-
-        Ok(())
-    }
-
     fn release_manageability(&self) -> Result<(), DeviceError<ErrorType>> {
         if self.en_mng_pt {
             let mut manc = self.hardware.read(MANC)?;
@@ -170,7 +130,7 @@ impl E1000 {
 
         self.hardware.init()?;
 
-        self.update_mng_vlan()?;
+        vlan::update_mng_vlan(self)?;
 
         /* Enable h/w to recognize an 802.1Q VLAN Ethernet packet */
         self.hardware.write(VET, ETHERNET_IEEE_VLAN_TYPE)?;
@@ -190,6 +150,7 @@ impl E1000 {
         // There's a whole bunch of stuff Linux does here that I don't yet understand
         /*
 
+        // FIXME: NET DEVICE SETUP
         /* there is a workaround being applied below that limits
         * 64-bit DMA addresses to 64-bit hardware.  There are some
         * 32-bit adapters that Tx hang when given 64-bit DMA addresses
@@ -220,6 +181,7 @@ impl E1000 {
         /* setup the private structure */
         self.sw_init()?;
 
+        // FIXME: NET DEVICE SETUP
         /*
         netdev->priv_flags |= IFF_SUPP_NOFCS;
 
@@ -245,6 +207,7 @@ impl E1000 {
 
         */
 
+        // FIXME: NET DEVICE SETUP
         /* MTU range: 46 - 16110 */
         //netdev->min_mtu = ETH_ZLEN - ETH_HLEN;
         //netdev->max_mtu = MAX_JUMBO_FRAME_SIZE - (ETH_HLEN + ETH_FCS_LEN);
@@ -268,9 +231,11 @@ impl E1000 {
 
         let _ = self.hardware.read(EECD)?;
 
+        // FIXME: NET DEVICE SETUP
         /* don't block initialization here due to bad MAC address */
         // memcpy(netdev->dev_addr, hw->mac_addr, netdev->addr_len);
 
+        // FIXME: NET DEVICE SETUP
         /*
         if (!is_valid_ether_addr(netdev->dev_addr)) {
             e_err(probe, "Invalid MAC Address\n");
@@ -323,6 +288,7 @@ impl E1000 {
         self.wol = self.eeprom_wol;
         println!("set wol to {:x}", self.wol);
 
+        // FIXME: NET DEVICE SETUP
         //device_set_wakeup_enable(&adapter->pdev->dev, adapter->wol);
 
         /* Auto detect PHY address */
@@ -347,6 +313,16 @@ impl E1000 {
 
         /* reset the hardware with the new settings */
         self.reset()?;
+
+        // FIXME: NET DEVICE SETUP
+        /*
+        strcpy(netdev->name, "eth%d");
+        err = register_netdev(netdev);
+        if (err)
+            goto err_register;
+            */
+
+        vlan::toggle_vlan_filter(self, false)?;
 
         Ok(())
     }
