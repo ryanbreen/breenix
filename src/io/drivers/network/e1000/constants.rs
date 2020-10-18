@@ -88,31 +88,31 @@ pub(in crate::io::drivers::network::e1000) const IAM: u32 = 0x000E0; /* Interrup
 /* PCI bus types */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum BusType {
-    E1000BusTypeUnknown = 0,
-    E1000BusTypePCI,
-    E1000BusTypePCIX,
-    E1000BusTypeReserved,
+    Unknown = 0,
+    PCI,
+    PCIX,
+    Reserved,
 }
 
 /* PCI bus speeds */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum BusSpeed {
-    E1000BusSpeedUnknown = 0,
-    E1000BusSpeed33,
-    E1000BusSpeed66,
-    E1000BusSpeed100,
-    E1000BusSpeed120,
-    E1000BusSpeed133,
-    E1000BusSpeedReserved,
+    Unknown = 0,
+    Thirty3,
+    Sixty6,
+    OneHundred,
+    OneHundred20,
+    OneHundred33,
+    Reserved,
 }
 
 /* PCI bus widths */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum BusWidth {
-    E1000BusWidthUnknown = 0,
-    E1000BusWidth32,
-    E1000BusWidth64,
-    E1000BusWidthreserved,
+    Unknown = 0,
+    Thirty2,
+    Sixty4,
+    Reserved,
 }
 
 /* Device Control */
@@ -246,7 +246,8 @@ pub(in crate::io::drivers::network::e1000) const NODE_ADDRESS_SIZE: usize = 6;
 pub(in crate::io::drivers::network::e1000) const ENET_HEADER_SIZE: u32 = 14;
 pub(in crate::io::drivers::network::e1000) const MINIMUM_ETHERNET_FRAME_SIZE: u32 = 64; /* With FCS */
 pub(in crate::io::drivers::network::e1000) const ETHERNET_FCS_SIZE: u32 = 4;
-pub(in crate::io::drivers::network::e1000) const MINIMUM_ETHERNET_PACKET_SIZE: u32 = MINIMUM_ETHERNET_FRAME_SIZE - ETHERNET_FCS_SIZE;
+pub(in crate::io::drivers::network::e1000) const MINIMUM_ETHERNET_PACKET_SIZE: u32 =
+    MINIMUM_ETHERNET_FRAME_SIZE - ETHERNET_FCS_SIZE;
 pub(in crate::io::drivers::network::e1000) const CRC_LENGTH: u32 = ETHERNET_FCS_SIZE;
 pub(in crate::io::drivers::network::e1000) const MAX_JUMBO_FRAME_SIZE: u32 = 0x3F00;
 
@@ -265,7 +266,7 @@ pub(in crate::io::drivers::network::e1000) const MAX_FRAME_SIZE: u64 = 0x5ee;
 /* Media Access Controllers */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum MacType {
-    E1000Undefined = 0,
+    Undefined = 0,
     E100082542Rev2Point0,
     E100082542Rev2Point1,
     E100082543,
@@ -285,28 +286,28 @@ pub(in crate::io::drivers::network::e1000) enum MacType {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum MediaType {
-    E1000MediaTypeCopper = 0,
-    E1000MediaTypeFiber = 1,
-    E1000MediaTypeInternalSerdes = 2,
-    E1000NumMediaTypes,
+    Copper = 0,
+    Fiber = 1,
+    InternalSerdes = 2,
+    NumMediaTypes,
 }
 
 /* Flow Control Settings */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum FlowControlSettings {
-    E1000FCNone = 0,
-    E1000FCRXPause = 1,
-    E1000FCTXPause = 2,
-    E1000FCFull = 3,
-    E1000FCDefault = 0xFF,
+    None = 0,
+    RXPause = 1,
+    TXPause = 2,
+    Full = 3,
+    Default = 0xFF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum MasterSlaveType {
-    E1000MSHWDefault = 0,
-    E1000MSForceMaster,
-    E1000MSForceSlave,
-    E1000MSAuto,
+    Default = 0,
+    ForceMaster,
+    ForceSlave,
+    Auto,
 }
 
 pub(in crate::io::drivers::network::e1000) const RCTL: u32 = 0x00100; /* RX Control - RW */
@@ -665,7 +666,8 @@ pub(in crate::io::drivers::network::e1000) const KUMCTRLSTA_INB_CTRL_LINK_STATUS
 pub(in crate::io::drivers::network::e1000) const KUMCTRLSTA_INB_CTRL_DIS_PADDING: u32 = 0x00000010;
 
 /* Half-Duplex Control */
-pub(in crate::io::drivers::network::e1000) const KUMCTRLSTA_HD_CTRL_10_100_DEFAULT: u32 = 0x00000004;
+pub(in crate::io::drivers::network::e1000) const KUMCTRLSTA_HD_CTRL_10_100_DEFAULT: u32 =
+    0x00000004;
 pub(in crate::io::drivers::network::e1000) const KUMCTRLSTA_HD_CTRL_1000_DEFAULT: u32 = 0x00000000;
 
 pub(in crate::io::drivers::network::e1000) const KUMCTRLSTA_OFFSET_K0S_CTRL: u32 = 0x0000001E;
@@ -741,11 +743,11 @@ pub(in crate::io::drivers::network::e1000) const RTL_PHY_CTRL_SPD_100: u32 = 0x2
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum PhyType {
-    E1000PhyM88 = 0,
-    E1000PhyIGP,
-    E1000Phy8211,
-    E1000Phy8201,
-    E1000PhyUndefined = 0xFF,
+    M88 = 0,
+    IGP,
+    Eight211,
+    Eight201,
+    Undefined = 0xFF,
 }
 
 /* Miscellaneous PHY bit definitions. */
@@ -871,7 +873,7 @@ pub(in crate::io::drivers::network::e1000) const M88PSSR_REV_POLARITY: u32 = 0x0
 pub(in crate::io::drivers::network::e1000) const M88PSSR_DOWNSHIFT: u32 = 0x0020; /* 1=Downshifted */
 pub(in crate::io::drivers::network::e1000) const M88PSSR_MDIX: u32 = 0x0040; /* 1=MDIX; 0=MDI */
 pub(in crate::io::drivers::network::e1000) const M88PSSR_CABLE_LENGTH: u32 = 0x0380; /* 0=<50M;1=50-80M;2=80-110M;
-                                                     * 3=110-140M;4=>140M */
+                                                                                      * 3=110-140M;4=>140M */
 pub(in crate::io::drivers::network::e1000) const M88PSSR_LINK: u32 = 0x0400; /* 1=Link up, 0=Link down */
 pub(in crate::io::drivers::network::e1000) const M88PSSR_SPD_DPLX_RESOLVED: u32 = 0x0800; /* 1=Speed & Duplex resolved */
 pub(in crate::io::drivers::network::e1000) const M88PSSR_PAGE_RCVD: u32 = 0x1000; /* 1=Page received */
@@ -889,10 +891,10 @@ pub(in crate::io::drivers::network::e1000) const M88PSSR_CABLE_LENGTH_SHIFT: u32
 /* M88E1000 Extended PHY Specific Control Register */
 pub(in crate::io::drivers::network::e1000) const M88EPSCR_FIBER_LOOPBACK: u32 = 0x4000; /* 1=Fiber loopback */
 pub(in crate::io::drivers::network::e1000) const M88EPSCR_DOWN_NO_IDLE: u32 = 0x8000; /* 1=Lost lock detect enabled.
-                                                      * Will assert lost lock and bring
-                                                      * link down if idle not seen
-                                                      * within 1ms in 1000BASE-T
-                                                      */
+                                                                                       * Will assert lost lock and bring
+                                                                                       * link down if idle not seen
+                                                                                       * within 1ms in 1000BASE-T
+                                                                                       */
 /* Number of times we will attempt to autonegotiate before downshifting if we
  * are the master */
 pub(in crate::io::drivers::network::e1000) const M88EPSCR_MASTER_DOWNSHIFT_MASK: u16 = 0x0C00;

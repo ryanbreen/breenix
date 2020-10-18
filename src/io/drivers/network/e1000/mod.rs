@@ -154,7 +154,7 @@ impl E1000 {
         self.hardware.fc_low_water = self.hardware.fc_high_water - 8;
         self.hardware.fc_pause_time = FC_PAUSE_TIME;
         self.hardware.fc_send_xon = true;
-        self.hardware.fc = FlowControlSettings::E1000FCDefault;
+        self.hardware.fc = FlowControlSettings::Default;
 
         self.hardware.reset()?;
 

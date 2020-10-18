@@ -124,23 +124,23 @@ impl Hardware {
             subsystem_vendor_id: device.subsystem_vendor_id,
             subsystem_id: device.subsystem_id,
             revision_id: device.revision_id,
-            bus_type: BusType::E1000BusTypeUnknown,
-            bus_speed: BusSpeed::E1000BusSpeedUnknown,
-            bus_width: BusWidth::E1000BusWidthUnknown,
+            bus_type: BusType::Unknown,
+            bus_speed: BusSpeed::Unknown,
+            bus_width: BusWidth::Unknown,
             phy_id: 0,
             phy_revision: 0,
-            phy_type: PhyType::E1000PhyUndefined,
-            mac_type: MacType::E1000Undefined,
+            phy_type: PhyType::Undefined,
+            mac_type: MacType::Undefined,
             mac: MacAddr::from([0, 0, 0, 0, 0, 0]),
-            media_type: MediaType::E1000MediaTypeCopper,
+            media_type: MediaType::Copper,
             mtu: 0x5dc,
             max_frame_size: 0x5ee,
             fc_high_water: 0,
             fc_low_water: 0,
             fc_pause_time: 0,
             fc_send_xon: false,
-            fc: FlowControlSettings::E1000FCDefault,
-            original_fc: FlowControlSettings::E1000FCDefault,
+            fc: FlowControlSettings::Default,
+            original_fc: FlowControlSettings::Default,
             current_ifs_val: 0,
             ifs_min_val: IFS_MIN,
             ifs_max_val: IFS_MAX,
@@ -154,7 +154,7 @@ impl Hardware {
             adaptive_ifs: true,
             mdix: AUTO_ALL_MODES,
             disable_polarity_correction: false,
-            master_slave: MasterSlaveType::E1000MSHWDefault,
+            master_slave: MasterSlaveType::Default,
             ledctl_default: 0,
             ledctl_mode1: 0,
             ledctl_mode2: 0,
@@ -197,10 +197,10 @@ impl Hardware {
 
         /* Copper options */
 
-        if self.media_type == MediaType::E1000MediaTypeCopper {
+        if self.media_type == MediaType::Copper {
             self.mdix = AUTO_ALL_MODES;
             self.disable_polarity_correction = false;
-            self.master_slave = MasterSlaveType::E1000MSHWDefault;
+            self.master_slave = MasterSlaveType::Default;
         }
 
         Ok(())
@@ -217,24 +217,24 @@ impl Hardware {
 
         match self.device_id {
             DEV_ID_82545GM_SERDES | DEV_ID_82546GB_SERDES => {
-                self.media_type = MediaType::E1000MediaTypeInternalSerdes;
+                self.media_type = MediaType::InternalSerdes;
             }
             _ => {
                 match self.mac_type {
                     MacType::E100082542Rev2Point0 | MacType::E100082542Rev2Point1 => {
-                        self.media_type = MediaType::E1000MediaTypeFiber;
+                        self.media_type = MediaType::Fiber;
                     }
                     MacType::E1000CE4100 => {
-                        self.media_type = MediaType::E1000MediaTypeCopper;
+                        self.media_type = MediaType::Copper;
                     }
                     _ => {
                         let status = self.read(STATUS)?;
                         if status & STATUS_TBIMODE != 0 {
-                            self.media_type = MediaType::E1000MediaTypeFiber;
+                            self.media_type = MediaType::Fiber;
                             /* tbi_compatibility not valid on fiber */
                             self.tbi_compatibility_en = false;
                         } else {
-                            self.media_type = MediaType::E1000MediaTypeCopper;
+                            self.media_type = MediaType::Copper;
                             println!("Set type to copper");
                         }
                     }
@@ -274,24 +274,17 @@ impl Hardware {
             | DEV_ID_82544GC_LOM => {
                 self.mac_type = MacType::E100082544;
             }
-            DEV_ID_82540EM
-            | DEV_ID_82540EM_LOM
-            | DEV_ID_82540EP
-            | DEV_ID_82540EP_LOM
+            DEV_ID_82540EM | DEV_ID_82540EM_LOM | DEV_ID_82540EP | DEV_ID_82540EP_LOM
             | DEV_ID_82540EP_LP => {
                 self.mac_type = MacType::E100082540;
             }
             DEV_ID_82545EM_COPPER | DEV_ID_82545EM_FIBER => {
                 self.mac_type = MacType::E100082545;
             }
-            DEV_ID_82545GM_COPPER
-            | DEV_ID_82545GM_FIBER
-            | DEV_ID_82545GM_SERDES => {
+            DEV_ID_82545GM_COPPER | DEV_ID_82545GM_FIBER | DEV_ID_82545GM_SERDES => {
                 self.mac_type = MacType::E100082545Rev3;
             }
-            DEV_ID_82546EB_COPPER
-            | DEV_ID_82546EB_FIBER
-            | DEV_ID_82546EB_QUAD_COPPER => {
+            DEV_ID_82546EB_COPPER | DEV_ID_82546EB_FIBER | DEV_ID_82546EB_QUAD_COPPER => {
                 self.mac_type = MacType::E100082546;
             }
             DEV_ID_82546GB_COPPER
@@ -305,10 +298,7 @@ impl Hardware {
             DEV_ID_82541EI | DEV_ID_82541EI_MOBILE | DEV_ID_82541ER_LOM => {
                 self.mac_type = MacType::E100082541;
             }
-            DEV_ID_82541ER
-            | DEV_ID_82541GI
-            | DEV_ID_82541GI_LF
-            | DEV_ID_82541GI_MOBILE => {
+            DEV_ID_82541ER | DEV_ID_82541GI | DEV_ID_82541GI_LF | DEV_ID_82541GI_MOBILE => {
                 self.mac_type = MacType::E100082541Rev2;
             }
             DEV_ID_82547EI | DEV_ID_82547EI_MOBILE => {
@@ -354,18 +344,18 @@ impl Hardware {
         let status = self.read(STATUS)?;
 
         self.bus_type = match status & STATUS_PCIX_MODE {
-            0 => BusType::E1000BusTypePCI,
-            _ => BusType::E1000BusTypePCIX,
+            0 => BusType::PCI,
+            _ => BusType::PCIX,
         };
 
         self.bus_speed = match status & STATUS_PCI66 {
-            0 => BusSpeed::E1000BusSpeed33,
-            _ => BusSpeed::E1000BusSpeed66,
+            0 => BusSpeed::Thirty3,
+            _ => BusSpeed::Sixty6,
         };
 
         self.bus_width = match status & STATUS_BUS64 {
-            0 => BusWidth::E1000BusWidth32,
-            _ => BusWidth::E1000BusWidth64,
+            0 => BusWidth::Thirty2,
+            _ => BusWidth::Sixty4,
         };
 
         Ok(())
@@ -616,64 +606,11 @@ impl Hardware {
      */
     fn clear_hw_cntrs(&self) -> Result<(), ()> {
         let registers = [
-            CRCERRS,
-            SYMERRS,
-            MPC,
-            SCC,
-            ECOL,
-            MCC,
-            LATECOL,
-            COLC,
-            DC,
-            SEC,
-            RLEC,
-            XONRXC,
-            XONTXC,
-            XOFFRXC,
-            XOFFTXC,
-            FCRUC,
-            PRC64,
-            PRC127,
-            PRC255,
-            PRC511,
-            PRC1023,
-            PRC1522,
-            GPRC,
-            BPRC,
-            MPRC,
-            GPTC,
-            GORCL,
-            GORCH,
-            GOTCL,
-            GOTCH,
-            RNBC,
-            RUC,
-            RFC,
-            ROC,
-            RJC,
-            TORL,
-            TORH,
-            TOTL,
-            TOTH,
-            TPR,
-            TPT,
-            PTC64,
-            PTC127,
-            PTC255,
-            PTC511,
-            PTC1023,
-            PTC1522,
-            MPTC,
-            BPTC,
-            ALGNERRC,
-            RXERRC,
-            TNCRS,
-            CEXTERR,
-            TSCTC,
-            TSCTFC,
-            MGTPRC,
-            MGTPDC,
-            MGTPTC,
+            CRCERRS, SYMERRS, MPC, SCC, ECOL, MCC, LATECOL, COLC, DC, SEC, RLEC, XONRXC, XONTXC,
+            XOFFRXC, XOFFTXC, FCRUC, PRC64, PRC127, PRC255, PRC511, PRC1023, PRC1522, GPRC, BPRC,
+            MPRC, GPTC, GORCL, GORCH, GOTCL, GOTCH, RNBC, RUC, RFC, ROC, RJC, TORL, TORH, TOTL,
+            TOTH, TPR, TPT, PTC64, PTC127, PTC255, PTC511, PTC1023, PTC1522, MPTC, BPTC, ALGNERRC,
+            RXERRC, TNCRS, CEXTERR, TSCTC, TSCTFC, MGTPRC, MGTPDC, MGTPTC,
         ];
 
         for i in 0..registers.len() {
@@ -772,14 +709,14 @@ impl Hardware {
          * control setting, then the variable hw->fc will
          * be initialized based on a value in the EEPROM.
          */
-        if self.fc == FlowControlSettings::E1000FCDefault {
+        if self.fc == FlowControlSettings::Default {
             eeprom_data = eeprom::read_eeprom(self, EEPROM_INIT_CONTROL2_REG, 1)?;
             if eeprom_data & EEPROM_WORD0F_PAUSE_MASK == 0 {
-                self.fc = FlowControlSettings::E1000FCNone;
+                self.fc = FlowControlSettings::None;
             } else if eeprom_data & EEPROM_WORD0F_PAUSE_MASK == EEPROM_WORD0F_ASM_DIR {
-                self.fc = FlowControlSettings::E1000FCTXPause;
+                self.fc = FlowControlSettings::TXPause;
             } else {
-                self.fc = FlowControlSettings::E1000FCFull;
+                self.fc = FlowControlSettings::Full;
             }
         }
 
@@ -794,7 +731,7 @@ impl Hardware {
 
         /* Call the necessary subroutine to configure the link. */
         match self.media_type {
-            MediaType::E1000MediaTypeCopper => self.setup_copper_link()?,
+            MediaType::Copper => self.setup_copper_link()?,
             _ => {
                 println!("Unexpected media type");
                 return Err(());
@@ -820,7 +757,7 @@ impl Hardware {
          * ability to transmit pause frames in not enabled, then these
          * registers will be set to 0.
          */
-        if ((self.fc as u32) & (FlowControlSettings::E1000FCTXPause as u32)) == 0 {
+        if ((self.fc as u32) & (FlowControlSettings::TXPause as u32)) == 0 {
             self.write(FCRTL, 0)?;
             self.write(FCRTH, 0)?;
         } else {
@@ -891,19 +828,17 @@ impl Hardware {
 
         phy_data = self.read_phy_reg(M88PHY_SPEC_CTRL)?;
 
-        phy_info.extended_10bt_distance = match (phy_data & M88PSCR_10BT_EXT_DIST_ENABLE)
-            >> M88PSCR_10BT_EXT_DIST_ENABLE_SHIFT
-        {
-            0 => TenBTExtDistEnable::Normal,
-            _ => TenBTExtDistEnable::Lower,
-        };
+        phy_info.extended_10bt_distance =
+            match (phy_data & M88PSCR_10BT_EXT_DIST_ENABLE) >> M88PSCR_10BT_EXT_DIST_ENABLE_SHIFT {
+                0 => TenBTExtDistEnable::Normal,
+                _ => TenBTExtDistEnable::Lower,
+            };
 
-        phy_info.polarity_correction = match (phy_data & M88PSCR_POLARITY_REVERSAL)
-            >> M88PSCR_POLARITY_REVERSAL_SHIFT
-        {
-            0 => PolarityReversal::Enabled,
-            _ => PolarityReversal::Disabled,
-        };
+        phy_info.polarity_correction =
+            match (phy_data & M88PSCR_POLARITY_REVERSAL) >> M88PSCR_POLARITY_REVERSAL_SHIFT {
+                0 => PolarityReversal::Enabled,
+                _ => PolarityReversal::Disabled,
+            };
 
         // FIXME once we have a working link and can test it.
 
@@ -1011,9 +946,7 @@ impl Hardware {
 
         let phy_addr: u32 = 1;
 
-        let mut mdic: u32 = reg_addr << MDIC_REG_SHIFT
-            | phy_addr << MDIC_PHY_SHIFT
-            | MDIC_OP_READ;
+        let mut mdic: u32 = reg_addr << MDIC_REG_SHIFT | phy_addr << MDIC_PHY_SHIFT | MDIC_OP_READ;
 
         self.write(MDIC, mdic)?;
 
@@ -1120,7 +1053,7 @@ impl Hardware {
         match self.phy_id {
             M88E_PHY_ID | M88I_PHY_ID | M88E1011_I_PHY_ID | M88E1111_I_PHY_ID
             | M88E1118_E_PHY_ID => {
-                self.phy_type = PhyType::E1000PhyM88;
+                self.phy_type = PhyType::M88;
             }
             IGP01I_PHY_ID => {
                 if self.mac_type == MacType::E100082541
@@ -1128,18 +1061,18 @@ impl Hardware {
                     || self.mac_type == MacType::E100082547
                     || self.mac_type == MacType::E100082547Rev2
                 {
-                    self.phy_type = PhyType::E1000PhyIGP;
+                    self.phy_type = PhyType::IGP;
                 }
             }
             RTL8211B_PHY_ID => {
-                self.phy_type = PhyType::E1000Phy8211;
+                self.phy_type = PhyType::Eight211;
             }
             RTL8201N_PHY_ID => {
-                self.phy_type = PhyType::E1000Phy8201;
+                self.phy_type = PhyType::Eight201;
             }
             _ => {
                 /* Should never have loaded on this device */
-                self.phy_type = PhyType::E1000PhyUndefined;
+                self.phy_type = PhyType::Undefined;
                 return Err(()); //-ERR_PHY_TYPE;
             }
         };
@@ -1223,8 +1156,7 @@ impl Hardware {
             phy_data |= M88EPSCR_TX_CLK_25;
 
             /* Configure Master and Slave downshift values */
-            phy_data &=
-                !(M88EPSCR_MASTER_DOWNSHIFT_MASK | M88EPSCR_SLAVE_DOWNSHIFT_MASK);
+            phy_data &= !(M88EPSCR_MASTER_DOWNSHIFT_MASK | M88EPSCR_SLAVE_DOWNSHIFT_MASK);
             phy_data |= M88EPSCR_MASTER_DOWNSHIFT_1X | M88EPSCR_SLAVE_DOWNSHIFT_1X;
             self.write_phy_reg(M88EXT_PHY_SPEC_CTRL, phy_data)?;
         }
@@ -1249,7 +1181,7 @@ impl Hardware {
         /* Read the MII 1000Base-T Control Register (Address 9). */
         let mut mii_1000t_ctrl_reg = self.read_phy_reg(PHY_1000T_CTRL)?;
 
-        if self.phy_type == PhyType::E1000Phy8201 {
+        if self.phy_type == PhyType::Eight201 {
             mii_1000t_ctrl_reg &= !REG9_SPEED_MASK;
         }
 
@@ -1322,7 +1254,7 @@ impl Hardware {
          *          in the EEPROM is used.
          */
         match self.fc {
-            FlowControlSettings::E1000FCNone =>
+            FlowControlSettings::None =>
             /* 0 */
             {
                 /* Flow control (RX & TX) is completely disabled by a
@@ -1330,7 +1262,7 @@ impl Hardware {
                  */
                 mii_autoneg_adv_reg &= !(NWAY_AR_ASM_DIR | NWAY_AR_PAUSE);
             }
-            FlowControlSettings::E1000FCRXPause =>
+            FlowControlSettings::RXPause =>
             /* 1 */
             {
                 /* RX Flow control is enabled, and TX Flow control is
@@ -1345,7 +1277,7 @@ impl Hardware {
                  */
                 mii_autoneg_adv_reg |= NWAY_AR_ASM_DIR | NWAY_AR_PAUSE;
             }
-            FlowControlSettings::E1000FCTXPause =>
+            FlowControlSettings::TXPause =>
             /* 2 */
             {
                 /* TX Flow control is enabled, and RX Flow control is
@@ -1354,7 +1286,7 @@ impl Hardware {
                 mii_autoneg_adv_reg |= NWAY_AR_ASM_DIR;
                 mii_autoneg_adv_reg &= !NWAY_AR_PAUSE;
             }
-            FlowControlSettings::E1000FCFull =>
+            FlowControlSettings::Full =>
             /* 3 */
             {
                 /* Flow control (both RX and TX) is enabled by a software
@@ -1372,7 +1304,7 @@ impl Hardware {
         self.write_phy_reg(PHY_AUTONEG_ADV, mii_autoneg_adv_reg)?;
         println!("Auto-Neg Advertising {:x}", mii_autoneg_adv_reg);
 
-        if self.phy_type == PhyType::E1000Phy8201 {
+        if self.phy_type == PhyType::Eight201 {
             mii_1000t_ctrl_reg = 0;
         } else {
             self.write_phy_reg(PHY_1000T_CTRL, mii_1000t_ctrl_reg)?;
@@ -1426,7 +1358,7 @@ impl Hardware {
         }
 
         /* IFE/RTL8201N PHY only supports 10/100 */
-        if self.phy_type == PhyType::E1000Phy8201 {
+        if self.phy_type == PhyType::Eight201 {
             self.autoneg_advertised &= AUTONEG_ADVERTISE_10_100_ALL;
         }
 
