@@ -54,15 +54,39 @@ impl E1000 {
         self.num_tx_queues = 1;
         self.num_rx_queues = 1;
 
-        //self.alloc_queues(adapter)?;
+        self.alloc_queues()?;
 
         /* Explicitly disable IRQ since the NIC can be in any state. */
-        //self.irq_disable(adapter);
+        self.irq_disable()?;
 
+        // FIXME: sync
         // spin_lock_init(&adapter->stats_lock);
 
+        // FIXME: NET DEVICE SETUP
         //set_bit(__DOWN, &adapter->flags);
 
+        Ok(())
+    }
+
+    /**
+     * e1000_irq_disable - Mask off interrupt generation on the NIC
+     **/
+    fn irq_disable(&self) -> Result<(), DeviceError<ErrorType>> {
+        self.hardware.write(IMC, !0)?;
+        self.hardware.write_flush()?;
+        
+        // FIXME: NET DEVICE SETUP
+        // synchronize_irq(adapter->pdev->irq);
+
+        Ok(())
+    }
+
+    /**
+     * e1000_irq_enable - Enable default interrupt generation settings
+     **/
+    fn irq_enable(&self) -> Result<(), DeviceError<ErrorType>> {
+        self.hardware.write(IMS, IMS_ENABLE_MASK)?;
+        self.hardware.write_flush()?;
         Ok(())
     }
 
@@ -323,6 +347,23 @@ impl E1000 {
             */
 
         vlan::toggle_vlan_filter(self, false)?;
+
+        /* print bus type/speed/width info */
+	    println!("(PCI{}:{}MHz:{}-bit)",
+            match self.hardware.bus_type == BusType::PCIX { true => "-X", false => "" },
+            self.hardware.bus_speed as u32,
+            self.hardware.bus_width as u32
+        );
+
+        // FIXME: NET DEVICE SETUP
+        /* carrier off reporting is important to ethtool even BEFORE open */
+        // netif_carrier_off(netdev);
+
+        println!("Intel(R) PRO/1000 Network Connection");
+
+        let _ = self.hardware.read(EECD)?;
+
+        // cards_found++;
 
         Ok(())
     }

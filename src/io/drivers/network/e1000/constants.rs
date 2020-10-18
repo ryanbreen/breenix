@@ -98,21 +98,21 @@ pub(in crate::io::drivers::network::e1000) enum BusType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum BusSpeed {
     Unknown = 0,
-    Thirty3,
-    Sixty6,
-    OneHundred,
-    OneHundred20,
-    OneHundred33,
-    Reserved,
+    Thirty3 = 33,
+    Sixty6 = 66,
+    OneHundred = 100,
+    OneHundred20 = 120,
+    OneHundred33 = 133,
+    Reserved = 0xFF,
 }
 
 /* PCI bus widths */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::io::drivers::network::e1000) enum BusWidth {
     Unknown = 0,
-    Thirty2,
-    Sixty4,
-    Reserved,
+    Thirty2 = 32,
+    Sixty4 = 64,
+    Reserved = 0xFF,
 }
 
 /* Error types */
@@ -1090,6 +1090,17 @@ pub(in crate::io::drivers::network::e1000) const IMC_TXD_FIFO_PAR1: u32 = ICR_TX
 pub(in crate::io::drivers::network::e1000) const IMC_DSW: u32 =       ICR_DSW;
 pub(in crate::io::drivers::network::e1000) const IMC_PHYINT: u32 =    ICR_PHYINT;
 pub(in crate::io::drivers::network::e1000) const IMC_EPRST: u32 =     ICR_EPRST;
+
+/* This defines the bits that are set in the Interrupt Mask
+ * Set/Read Register.  Each bit is documented below:
+ *   o RXT0   = Receiver Timer Interrupt (ring 0)
+ *   o TXDW   = Transmit Descriptor Written Back
+ *   o RXDMT0 = Receive Descriptor Minimum Threshold hit (ring 0)
+ *   o RXSEQ  = Receive Sequence Error
+ *   o LSC    = Link Status Change
+ */
+pub(in crate::io::drivers::network::e1000) const IMS_ENABLE_MASK: u32 =
+    IMS_RXT0 | IMS_TXDW | IMS_RXDMT0 | IMS_RXSEQ | IMS_LSC;
 
 /* Receive Control */
 pub(in crate::io::drivers::network::e1000) const RCTL_RST: u32 =            0x00000001;	/* Software reset */
