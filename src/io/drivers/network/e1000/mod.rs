@@ -19,6 +19,8 @@ pub struct E1000 {
     rx_buffer_len: u32,
     num_tx_queues: u32,
     num_rx_queues: u32,
+    wol: u32,
+    eeprom_wol: u32,
 }
 
 impl E1000 {
@@ -32,6 +34,8 @@ impl E1000 {
             rx_buffer_len: 0,
             num_tx_queues: 0,
             num_rx_queues: 0,
+            wol: 0,
+            eeprom_wol: 0,
         };
 
         let result = e1000.probe();
@@ -181,9 +185,6 @@ impl E1000 {
     }
 
     fn probe(&mut self) -> Result<(), DeviceError<ErrorType>> {
-
-        let mut eecd:u32;
-
         self.hardware.init_data()?;
 
         // There's a whole bunch of stuff Linux does here that I don't yet understand
@@ -253,28 +254,98 @@ impl E1000 {
         /* initialize eeprom parameters */
         self.hardware.init_eeprom()?;
 
-        eecd = self.hardware.read(EECD)?;
+        let _ = self.hardware.read(EECD)?;
 
         self.hardware.reset()?;
 
-        /*
+        let _ = self.hardware.read(EECD)?;
+
+        /* make sure the EEPROM is good */
+        self.hardware.checksum_eeprom()?;
+        self.hardware.load_mac_addr()?;
+
         println!("MAC is {}", self.hardware.mac);
 
-        let control_port = self
-            .hardware
-            .read_eeprom(self::constants::EEPROM_INIT_CONTROL3_PORT_A, 1)?;
+        let _ = self.hardware.read(EECD)?;
 
-        let mut wol = 0;
+        /* don't block initialization here due to bad MAC address */
+        // memcpy(netdev->dev_addr, hw->mac_addr, netdev->addr_len);
 
-        // println!("Control port is {:x}", control_port);
+        /*
+        if (!is_valid_ether_addr(netdev->dev_addr)) {
+            e_err(probe, "Invalid MAC Address\n");
+        }
+        */
 
-        if control_port & EEPROM_APME != 0 {
-            //pr_info("need to frob the beanflute\n");
-            wol |= WUFC_MAG;
+        /*
+        INIT_DELAYED_WORK(&adapter->watchdog_task, e1000_watchdog);
+        INIT_DELAYED_WORK(&adapter->fifo_stall_task,
+                e1000_82547_tx_fifo_stall_task);
+        INIT_DELAYED_WORK(&adapter->phy_info_task, e1000_update_phy_info_task);
+        INIT_WORK(&adapter->reset_task, e1000_reset_task);
+        */
+
+        // FIXME: DO THIS!
+        // e1000_check_options(adapter);
+
+        /*
+         * Initial Wake on LAN setting
+         * If APM wake is enabled in the EEPROM,
+         * enable the ACPI Magic Packet filter
+         */
+
+        let mut eeprom_apme_mask: u16 = EEPROM_APME;
+        let mut eeprom_data: u16 = 0;
+
+        match self.hardware.mac_type {
+            MacType::E100082542Rev2Point0 | MacType::E100082542Rev2Point1 | MacType::E100082543 => {
+            }
+            MacType::E100082544 => {
+                eeprom_data = self.hardware.read_eeprom(EEPROM_INIT_CONTROL2_REG, 1)?;
+                eeprom_apme_mask = EEPROM_82544_APM;
+            }
+            MacType::E100082546 | MacType::E100082546Rev3 => {
+                if self.hardware.read(STATUS)? & STATUS_FUNC_1 != 0 {
+                    eeprom_data = self.hardware.read_eeprom(EEPROM_INIT_CONTROL3_PORT_B, 1)?;
+                } else {
+                    eeprom_data = self.hardware.read_eeprom(EEPROM_INIT_CONTROL3_PORT_A, 1)?;
+                }
+            }
+            _ => {
+                eeprom_data = self.hardware.read_eeprom(EEPROM_INIT_CONTROL3_PORT_A, 1)?;
+            }
+        };
+
+        if eeprom_data & eeprom_apme_mask != 0 {
+            self.eeprom_wol |= WUFC_MAG;
         }
 
-        println!("wol is {:x}", wol);
-        */
+        self.wol = self.eeprom_wol;
+        println!("set wol to {:x}", self.wol);
+
+        //device_set_wakeup_enable(&adapter->pdev->dev, adapter->wol);
+
+        /* Auto detect PHY address */
+        if self.hardware.mac_type == MacType::E1000CE4100 {
+            let mut i: u32 = 0;
+            for _ in 0..32 {
+                i += 1;
+                self.hardware.phy_addr = i;
+                let tmp = self.hardware.read_phy_reg(PHY_ID2)?;
+
+                if tmp != 0 && tmp != 0xFF {
+                    break;
+                }
+            }
+
+            if i >= 32 {
+                return Err(DeviceError {
+                    kind: ErrorType::EEPROM,
+                });
+            }
+        }
+
+        /* reset the hardware with the new settings */
         self.reset()?;
 
         Ok(())

@@ -5,7 +5,7 @@ use macaddr::MacAddr;
 use crate::println;
 
 use crate::io::pci;
-use crate::io::pci::{BAR, DeviceError};
+use crate::io::pci::{DeviceError, BAR};
 
 use crate::io::drivers::network::e1000::constants::*;
 
@@ -84,6 +84,7 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     pub(in crate::io::drivers::network::e1000) phy_id: u32,
     pub(in crate::io::drivers::network::e1000) phy_type: PhyType,
     pub(in crate::io::drivers::network::e1000) phy_revision: u32,
+    pub(in crate::io::drivers::network::e1000) phy_addr: u32,
     pub(in crate::io::drivers::network::e1000) mtu: u16,
     pub(in crate::io::drivers::network::e1000) max_frame_size: u32,
     pub(in crate::io::drivers::network::e1000) fc_high_water: u32,
@@ -134,6 +135,7 @@ impl Hardware {
             bus_width: BusWidth::Unknown,
             phy_id: 0,
             phy_revision: 0,
+            phy_addr: 1, /* Default if not e1000_ce4100 */
             phy_type: PhyType::Undefined,
             mac_type: MacType::Undefined,
             mac: MacAddr::from([0, 0, 0, 0, 0, 0]),
@@ -172,7 +174,9 @@ impl Hardware {
         }
     }
 
-    pub(in crate::io::drivers::network::e1000) fn init_eeprom(&mut self) -> Result<(), DeviceError<ErrorType>> {
+    pub(in crate::io::drivers::network::e1000) fn init_eeprom(
+        &mut self,
+    ) -> Result<(), DeviceError<ErrorType>> {
         let eeprom_info_res = eeprom::init_eeprom_params(self);
         if eeprom_info_res.is_err() {
             return Err(eeprom_info_res.err().unwrap());
@@ -182,7 +186,9 @@ impl Hardware {
         Ok(())
     }
 
-    pub(in crate::io::drivers::network::e1000) fn init_data(&mut self) -> Result<(), DeviceError<ErrorType>> {
+    pub(in crate::io::drivers::network::e1000) fn init_data(
+        &mut self,
+    ) -> Result<(), DeviceError<ErrorType>> {
         use x86_64::structures::paging::PageTableFlags;
         let res = crate::memory::identity_map_range(
             self.hw_addr.addr,
@@ -278,7 +284,9 @@ impl Hardware {
                     }
                     _ => {
                         /* Invalid 82542 revision ID */
-                        return Err(DeviceError { kind: ErrorType::MacType });
+                        return Err(DeviceError {
+                            kind: ErrorType::MacType,
+                        });
                     }
                 };
             }
@@ -330,7 +338,9 @@ impl Hardware {
             }
             _ => {
                 /* Should never have loaded on this device */
-                return Err(DeviceError { kind: ErrorType::MacType });
+                return Err(DeviceError {
+                    kind: ErrorType::MacType,
+                });
             }
         };
 
@@ -406,7 +416,12 @@ impl Hardware {
         Ok(())
     }
 
-    pub fn write_array(&self, offset: u32, idx: u32, val: u32) -> Result<(), DeviceError<ErrorType>> {
+    pub fn write_array(
+        &self,
+        offset: u32,
+        idx: u32,
+        val: u32,
+    ) -> Result<(), DeviceError<ErrorType>> {
         self.write(offset + (idx << 2), val)
     }
 
@@ -415,7 +430,9 @@ impl Hardware {
         Ok(unsafe { ptr::read_volatile((self.hw_addr.addr + offset as u64) as *const u32) })
     }
 
-    pub(in crate::io::drivers::network::e1000) fn write_flush(&self) -> Result<(), DeviceError<ErrorType>> {
+    pub(in crate::io::drivers::network::e1000) fn write_flush(
+        &self,
+    ) -> Result<(), DeviceError<ErrorType>> {
         // write flush
         self.read(STATUS)?;
         Ok(())
@@ -435,7 +452,9 @@ impl Hardware {
      * Verifies the hardware needs to allow ARPs to be processed by the host
      * returns: - true/false
      */
-    pub(in crate::io::drivers::network::e1000) fn enable_mng_pass_thru(&self) -> Result<bool, DeviceError<ErrorType>> {
+    pub(in crate::io::drivers::network::e1000) fn enable_mng_pass_thru(
+        &self,
+    ) -> Result<bool, DeviceError<ErrorType>> {
         if self.asf_firmware_present {
             let manc = self.read(MANC)?;
 
@@ -467,7 +486,9 @@ impl Hardware {
         crate::println!("eeprom checksum is {:x}", checksum);
 
         if checksum != EEPROM_SUM {
-            return Err(DeviceError { kind: ErrorType::EEPROM });
+            return Err(DeviceError {
+                kind: ErrorType::EEPROM,
+            });
         }
 
         Ok(())
@@ -477,7 +498,9 @@ impl Hardware {
      * Reads the adapter's MAC address from the EEPROM and inverts the LSB for the
      * second function of dual function devices
      */
-    pub(in crate::io::drivers::network::e1000) fn load_mac_addr(&mut self) -> Result<(), DeviceError<ErrorType>> {
+    pub(in crate::io::drivers::network::e1000) fn load_mac_addr(
+        &mut self,
+    ) -> Result<(), DeviceError<ErrorType>> {
         let mut macbytes: [u8; 6] = [0; 6];
 
         let mut offset: u16 = 0;
@@ -774,7 +797,9 @@ impl Hardware {
             MediaType::Copper => self.setup_copper_link()?,
             _ => {
                 println!("Unexpected media type");
-                return Err(DeviceError { kind: ErrorType::MediaType });
+                return Err(DeviceError {
+                    kind: ErrorType::MediaType,
+                });
             }
         };
 
@@ -828,7 +853,9 @@ impl Hardware {
      * ifs_min_val, ifs_max_val, ifs_step_size, and ifs_ratio before calling
      * this function.
      */
-    pub(in crate::io::drivers::network::e1000) fn reset_adaptive(&mut self) -> Result<(), DeviceError<ErrorType>> {
+    pub(in crate::io::drivers::network::e1000) fn reset_adaptive(
+        &mut self,
+    ) -> Result<(), DeviceError<ErrorType>> {
         if self.adaptive_ifs {
             self.current_ifs_val = 0;
             self.ifs_min_val = IFS_MIN;
@@ -980,13 +1007,15 @@ impl Hardware {
      * Reads the value from a PHY register, if the value is on a specific non zero
      * page, sets the page first.
      */
-    fn read_phy_reg(&self, reg_addr: u32) -> Result<u16, DeviceError<ErrorType>> {
+    pub(in crate::io::drivers::network::e1000) fn read_phy_reg(
+        &self,
+        reg_addr: u32,
+    ) -> Result<u16, DeviceError<ErrorType>> {
         // Linux does a lock here, but I can't be bothered
         // spin_lock_irqsave(&phy_lock, flags);
 
-        let phy_addr: u32 = 1;
-
-        let mut mdic: u32 = reg_addr << MDIC_REG_SHIFT | phy_addr << MDIC_PHY_SHIFT | MDIC_OP_READ;
+        let mut mdic: u32 =
+            reg_addr << MDIC_REG_SHIFT | self.phy_addr << MDIC_PHY_SHIFT | MDIC_OP_READ;
 
         self.write(MDIC, mdic)?;
 
@@ -1007,11 +1036,15 @@ impl Hardware {
         println!("Got mdic {:x} for {:x} read", mdic, reg_addr);
         if (mdic & MDIC_READY) == 0 {
             println!("MDI Read did not complete");
-            return Err(DeviceError { kind: ErrorType::Phy });
+            return Err(DeviceError {
+                kind: ErrorType::Phy,
+            });
         }
         if (mdic & MDIC_ERROR) != 0 {
             println!("MDI Read error");
-            return Err(DeviceError { kind: ErrorType::Phy });
+            return Err(DeviceError {
+                kind: ErrorType::Phy,
+            });
         }
 
         // spin_unlock_irqrestore(&phy_lock, flags);
@@ -1056,7 +1089,9 @@ impl Hardware {
 
         if mdic & MDIC_READY == 0 {
             println!("MDI write did not complete");
-            return Err(DeviceError { kind: ErrorType::Phy });
+            return Err(DeviceError {
+                kind: ErrorType::Phy,
+            });
         }
 
         // spin_unlock_irqrestore(&phy_lock, flags);
@@ -1114,12 +1149,16 @@ impl Hardware {
             _ => {
                 /* Should never have loaded on this device */
                 self.phy_type = PhyType::Undefined;
-                return Err(DeviceError { kind: ErrorType::PhyType });
+                return Err(DeviceError {
+                    kind: ErrorType::PhyType,
+                });
             }
         };
 
         if !matched {
-            return Err(DeviceError { kind: ErrorType::Phy }); //-ERR_PHY;
+            return Err(DeviceError {
+                kind: ErrorType::Phy,
+            }); //-ERR_PHY;
         }
 
         println!(
@@ -1337,7 +1376,9 @@ impl Hardware {
             }
             _ => {
                 println!("Flow control param set incorrectly");
-                return Err(DeviceError { kind: ErrorType::Config });
+                return Err(DeviceError {
+                    kind: ErrorType::Config,
+                });
             }
         };
 

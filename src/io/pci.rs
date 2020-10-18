@@ -358,4 +358,3 @@ pub fn initialize() {
 pub(in crate::io) struct DeviceError<T> {
     pub(in crate::io) kind: T,
 }
-
