@@ -207,7 +207,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_set_media_type - Set media type and TBI compatibility.
+     * set_media_type - Set media type and TBI compatibility.
      */
     fn set_media_type(&mut self) -> Result<(), ()> {
         if self.mac_type != MacType::E100082543 {
@@ -216,7 +216,7 @@ impl Hardware {
         }
 
         match self.device_id {
-            E1000_DEV_ID_82545GM_SERDES | E1000_DEV_ID_82546GB_SERDES => {
+            DEV_ID_82545GM_SERDES | DEV_ID_82546GB_SERDES => {
                 self.media_type = MediaType::E1000MediaTypeInternalSerdes;
             }
             _ => {
@@ -229,7 +229,7 @@ impl Hardware {
                     }
                     _ => {
                         let status = self.read(STATUS)?;
-                        if status & E1000_STATUS_TBIMODE != 0 {
+                        if status & STATUS_TBIMODE != 0 {
                             self.media_type = MediaType::E1000MediaTypeFiber;
                             /* tbi_compatibility not valid on fiber */
                             self.tbi_compatibility_en = false;
@@ -246,11 +246,11 @@ impl Hardware {
     }
 
     /**
-     * e1000_set_mac_type - Set the mac type member in the hw struct.
+     * set_mac_type - Set the mac type member in the hw struct.
      */
     fn set_mac_type(&mut self) -> Result<(), ()> {
         match self.device_id {
-            E1000_DEV_ID_82542 => {
+            DEV_ID_82542 => {
                 match self.revision_id {
                     E1000_82542_2_0_REV_ID => {
                         self.mac_type = MacType::E100082542Rev2Point0;
@@ -265,59 +265,59 @@ impl Hardware {
                 };
             }
 
-            E1000_DEV_ID_82543GC_FIBER | E1000_DEV_ID_82543GC_COPPER => {
+            DEV_ID_82543GC_FIBER | DEV_ID_82543GC_COPPER => {
                 self.mac_type = MacType::E100082543;
             }
-            E1000_DEV_ID_82544EI_COPPER
-            | E1000_DEV_ID_82544EI_FIBER
-            | E1000_DEV_ID_82544GC_COPPER
-            | E1000_DEV_ID_82544GC_LOM => {
+            DEV_ID_82544EI_COPPER
+            | DEV_ID_82544EI_FIBER
+            | DEV_ID_82544GC_COPPER
+            | DEV_ID_82544GC_LOM => {
                 self.mac_type = MacType::E100082544;
             }
-            E1000_DEV_ID_82540EM
-            | E1000_DEV_ID_82540EM_LOM
-            | E1000_DEV_ID_82540EP
-            | E1000_DEV_ID_82540EP_LOM
-            | E1000_DEV_ID_82540EP_LP => {
+            DEV_ID_82540EM
+            | DEV_ID_82540EM_LOM
+            | DEV_ID_82540EP
+            | DEV_ID_82540EP_LOM
+            | DEV_ID_82540EP_LP => {
                 self.mac_type = MacType::E100082540;
             }
-            E1000_DEV_ID_82545EM_COPPER | E1000_DEV_ID_82545EM_FIBER => {
+            DEV_ID_82545EM_COPPER | DEV_ID_82545EM_FIBER => {
                 self.mac_type = MacType::E100082545;
             }
-            E1000_DEV_ID_82545GM_COPPER
-            | E1000_DEV_ID_82545GM_FIBER
-            | E1000_DEV_ID_82545GM_SERDES => {
+            DEV_ID_82545GM_COPPER
+            | DEV_ID_82545GM_FIBER
+            | DEV_ID_82545GM_SERDES => {
                 self.mac_type = MacType::E100082545Rev3;
             }
-            E1000_DEV_ID_82546EB_COPPER
-            | E1000_DEV_ID_82546EB_FIBER
-            | E1000_DEV_ID_82546EB_QUAD_COPPER => {
+            DEV_ID_82546EB_COPPER
+            | DEV_ID_82546EB_FIBER
+            | DEV_ID_82546EB_QUAD_COPPER => {
                 self.mac_type = MacType::E100082546;
             }
-            E1000_DEV_ID_82546GB_COPPER
-            | E1000_DEV_ID_82546GB_FIBER
-            | E1000_DEV_ID_82546GB_SERDES
-            | E1000_DEV_ID_82546GB_PCIE
-            | E1000_DEV_ID_82546GB_QUAD_COPPER
-            | E1000_DEV_ID_82546GB_QUAD_COPPER_KSP3 => {
+            DEV_ID_82546GB_COPPER
+            | DEV_ID_82546GB_FIBER
+            | DEV_ID_82546GB_SERDES
+            | DEV_ID_82546GB_PCIE
+            | DEV_ID_82546GB_QUAD_COPPER
+            | DEV_ID_82546GB_QUAD_COPPER_KSP3 => {
                 self.mac_type = MacType::E100082546Rev3;
             }
-            E1000_DEV_ID_82541EI | E1000_DEV_ID_82541EI_MOBILE | E1000_DEV_ID_82541ER_LOM => {
+            DEV_ID_82541EI | DEV_ID_82541EI_MOBILE | DEV_ID_82541ER_LOM => {
                 self.mac_type = MacType::E100082541;
             }
-            E1000_DEV_ID_82541ER
-            | E1000_DEV_ID_82541GI
-            | E1000_DEV_ID_82541GI_LF
-            | E1000_DEV_ID_82541GI_MOBILE => {
+            DEV_ID_82541ER
+            | DEV_ID_82541GI
+            | DEV_ID_82541GI_LF
+            | DEV_ID_82541GI_MOBILE => {
                 self.mac_type = MacType::E100082541Rev2;
             }
-            E1000_DEV_ID_82547EI | E1000_DEV_ID_82547EI_MOBILE => {
+            DEV_ID_82547EI | DEV_ID_82547EI_MOBILE => {
                 self.mac_type = MacType::E100082547;
             }
-            E1000_DEV_ID_82547GI => {
+            DEV_ID_82547GI => {
                 self.mac_type = MacType::E100082547Rev2;
             }
-            E1000_DEV_ID_INTEL_CE4100_GBE => {
+            DEV_ID_INTEL_CE4100_GBE => {
                 self.mac_type = MacType::E1000CE4100;
             }
             _ => {
@@ -344,7 +344,7 @@ impl Hardware {
             self.bad_tx_carr_stats_fd = true;
         }
 
-        if (hw->mac_type > e1000_82544)
+        if (hw->mac_type > 82544)
             hw->has_smbus = true;
         */
         Ok(())
@@ -353,17 +353,17 @@ impl Hardware {
     fn populate_bus_info(&mut self) -> Result<(), ()> {
         let status = self.read(STATUS)?;
 
-        self.bus_type = match status & E1000_STATUS_PCIX_MODE {
+        self.bus_type = match status & STATUS_PCIX_MODE {
             0 => BusType::E1000BusTypePCI,
             _ => BusType::E1000BusTypePCIX,
         };
 
-        self.bus_speed = match status & E1000_STATUS_PCI66 {
+        self.bus_speed = match status & STATUS_PCI66 {
             0 => BusSpeed::E1000BusSpeed33,
             _ => BusSpeed::E1000BusSpeed66,
         };
 
-        self.bus_width = match status & E1000_STATUS_BUS64 {
+        self.bus_width = match status & STATUS_BUS64 {
             0 => BusWidth::E1000BusWidth32,
             _ => BusWidth::E1000BusWidth64,
         };
@@ -467,15 +467,15 @@ impl Hardware {
 
     pub fn reset(&mut self) -> Result<(), ()> {
         /* Clear interrupt mask to stop board from generating interrupts */
-        self.write(E1000_IMC, 0xffffffff)?;
+        self.write(IMC, 0xffffffff)?;
 
         /*
          * Disable the Transmit and Receive units.  Then delay to allow
          * any pending transactions to complete before we hit the MAC with
          * the global reset.
          */
-        self.write(E1000_RCTL, 0)?;
-        self.write(E1000_TCTL, E1000_TCTL_PSP as u32)?;
+        self.write(RCTL, 0)?;
+        self.write(TCTL, TCTL_PSP as u32)?;
         self.write_flush()?;
 
         /* The tbi_compatibility_on Flag must be cleared when Rctl is cleared. */
@@ -494,21 +494,21 @@ impl Hardware {
          * This controller can't ack the 64-bit write when issuing the
          * reset, so use IO-mapping as a workaround to issue the reset
          */
-        self.write_command(CTRL, ctrl | E1000_CTRL_RST);
+        self.write_command(CTRL, ctrl | CTRL_RST);
 
         self.delay(); // FIXME: should be 5 msec
 
         /* Disable HW ARPs on ASF enabled adapters */
-        let mut manc: u32 = self.read(E1000_MANC)?;
-        manc &= !(E1000_MANC_ARP_EN);
+        let mut manc: u32 = self.read(MANC)?;
+        manc &= !(MANC_ARP_EN);
         println!("Writing manc {:x}", manc);
-        self.write(E1000_MANC, manc)?;
+        self.write(MANC, manc)?;
 
         /* Clear interrupt mask to stop board from generating interrupts */
-        self.write(E1000_IMC, 0xffffffff)?;
+        self.write(IMC, 0xffffffff)?;
 
         /* Clear any pending interrupt events. */
-        let icr: u32 = self.read(E1000_ICR)?;
+        let icr: u32 = self.read(ICR)?;
         println!("ICR is {:x}", icr);
 
         Ok(())
@@ -528,7 +528,7 @@ impl Hardware {
         self.id_led_init()?;
 
         /* Disabling VLAN filtering. */
-        self.write(E1000_VET, 0)?;
+        self.write(VET, 0)?;
 
         self.clear_vfta()?;
 
@@ -539,8 +539,8 @@ impl Hardware {
         self.init_rx_addrs()?;
 
         println!("Zeroing the MTA");
-        for i in 0..E1000_MC_TBL_SIZE {
-            self.write_array(E1000_MTA, i, 0)?;
+        for i in 0..MC_TBL_SIZE {
+            self.write_array(MTA, i, 0)?;
             /*
              * use write flush to prevent Memory Write Block (MWB) from
              * occurring when accessing our register space
@@ -567,7 +567,7 @@ impl Hardware {
 
         let mut temp: u16;
 
-        let mut ledctl: u32 = self.read(E1000_LEDCTL)?;
+        let mut ledctl: u32 = self.read(LEDCTL)?;
 
         self.ledctl_default = ledctl;
         self.ledctl_mode1 = ledctl;
@@ -584,11 +584,11 @@ impl Hardware {
             match temp {
                 ID_LED_ON1_DEF2 | ID_LED_ON1_ON2 | ID_LED_ON1_OFF2 => {
                     self.ledctl_mode1 &= !(ledctl_mask << (i << 3));
-                    self.ledctl_mode1 |= E1000_LEDCTL_MODE_LED_ON << (i << 3);
+                    self.ledctl_mode1 |= LEDCTL_MODE_LED_ON << (i << 3);
                 }
                 ID_LED_OFF1_DEF2 | ID_LED_OFF1_ON2 | ID_LED_OFF1_OFF2 => {
                     self.ledctl_mode1 &= !(ledctl_mask << (i << 3));
-                    self.ledctl_mode1 |= E1000_LEDCTL_MODE_LED_OFF << (i << 3);
+                    self.ledctl_mode1 |= LEDCTL_MODE_LED_OFF << (i << 3);
                 }
                 _ => {}
             };
@@ -596,11 +596,11 @@ impl Hardware {
             match temp {
                 ID_LED_DEF1_ON2 | ID_LED_ON1_ON2 | ID_LED_OFF1_ON2 => {
                     self.ledctl_mode2 &= !(ledctl_mask << (i << 3));
-                    self.ledctl_mode2 |= E1000_LEDCTL_MODE_LED_ON << (i << 3);
+                    self.ledctl_mode2 |= LEDCTL_MODE_LED_ON << (i << 3);
                 }
                 ID_LED_DEF1_OFF2 | ID_LED_ON1_OFF2 | ID_LED_OFF1_OFF2 => {
                     self.ledctl_mode2 &= !(ledctl_mask << (i << 3));
-                    self.ledctl_mode2 |= E1000_LEDCTL_MODE_LED_OFF << (i << 3);
+                    self.ledctl_mode2 |= LEDCTL_MODE_LED_OFF << (i << 3);
                 }
                 _ => {}
             }
@@ -612,68 +612,68 @@ impl Hardware {
     }
 
     /**
-     * e1000_clear_hw_cntrs - Clears all hardware statistics counters.
+     * clear_hw_cntrs - Clears all hardware statistics counters.
      */
     fn clear_hw_cntrs(&self) -> Result<(), ()> {
         let registers = [
-            E1000_CRCERRS,
-            E1000_SYMERRS,
-            E1000_MPC,
-            E1000_SCC,
-            E1000_ECOL,
-            E1000_MCC,
-            E1000_LATECOL,
-            E1000_COLC,
-            E1000_DC,
-            E1000_SEC,
-            E1000_RLEC,
-            E1000_XONRXC,
-            E1000_XONTXC,
-            E1000_XOFFRXC,
-            E1000_XOFFTXC,
-            E1000_FCRUC,
-            E1000_PRC64,
-            E1000_PRC127,
-            E1000_PRC255,
-            E1000_PRC511,
-            E1000_PRC1023,
-            E1000_PRC1522,
-            E1000_GPRC,
-            E1000_BPRC,
-            E1000_MPRC,
-            E1000_GPTC,
-            E1000_GORCL,
-            E1000_GORCH,
-            E1000_GOTCL,
-            E1000_GOTCH,
-            E1000_RNBC,
-            E1000_RUC,
-            E1000_RFC,
-            E1000_ROC,
-            E1000_RJC,
-            E1000_TORL,
-            E1000_TORH,
-            E1000_TOTL,
-            E1000_TOTH,
-            E1000_TPR,
-            E1000_TPT,
-            E1000_PTC64,
-            E1000_PTC127,
-            E1000_PTC255,
-            E1000_PTC511,
-            E1000_PTC1023,
-            E1000_PTC1522,
-            E1000_MPTC,
-            E1000_BPTC,
-            E1000_ALGNERRC,
-            E1000_RXERRC,
-            E1000_TNCRS,
-            E1000_CEXTERR,
-            E1000_TSCTC,
-            E1000_TSCTFC,
-            E1000_MGTPRC,
-            E1000_MGTPDC,
-            E1000_MGTPTC,
+            CRCERRS,
+            SYMERRS,
+            MPC,
+            SCC,
+            ECOL,
+            MCC,
+            LATECOL,
+            COLC,
+            DC,
+            SEC,
+            RLEC,
+            XONRXC,
+            XONTXC,
+            XOFFRXC,
+            XOFFTXC,
+            FCRUC,
+            PRC64,
+            PRC127,
+            PRC255,
+            PRC511,
+            PRC1023,
+            PRC1522,
+            GPRC,
+            BPRC,
+            MPRC,
+            GPTC,
+            GORCL,
+            GORCH,
+            GOTCL,
+            GOTCH,
+            RNBC,
+            RUC,
+            RFC,
+            ROC,
+            RJC,
+            TORL,
+            TORH,
+            TOTL,
+            TOTH,
+            TPR,
+            TPT,
+            PTC64,
+            PTC127,
+            PTC255,
+            PTC511,
+            PTC1023,
+            PTC1522,
+            MPTC,
+            BPTC,
+            ALGNERRC,
+            RXERRC,
+            TNCRS,
+            CEXTERR,
+            TSCTC,
+            TSCTFC,
+            MGTPRC,
+            MGTPDC,
+            MGTPTC,
         ];
 
         for i in 0..registers.len() {
@@ -684,13 +684,13 @@ impl Hardware {
     }
 
     /**
-     * e1000_clear_vfta - Clear the VLAN filer table
+     * clear_vfta - Clear the VLAN filer table
      */
     fn clear_vfta(&self) -> Result<(), ()> {
         let vfta_offset: u32 = 0;
         let mut vfta_bit_in_reg: u32 = 0;
 
-        for offset in 0..E1000_VLAN_FILTER_TBL_SIZE {
+        for offset in 0..VLAN_FILTER_TBL_SIZE {
             /*
              * If the offset we want to clear is the same offset of the
              * manageability VLAN ID, then clear all bits except that of the
@@ -701,7 +701,7 @@ impl Hardware {
                 _ => 0,
             };
 
-            self.write_array(E1000_VFTA, offset, vfta_value)?;
+            self.write_array(VFTA, offset, vfta_value)?;
             self.write_flush()?
         }
 
@@ -709,7 +709,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_init_rx_addrs - Initializes receive address filters.
+     * init_rx_addrs - Initializes receive address filters.
      *
      * Places the MAC address in receive address register 0 and clears the rest
      * of the receive address registers. Clears the multicast table. Assumes
@@ -723,17 +723,17 @@ impl Hardware {
          * Zero out the following 14 receive addresses. RAR[15] is for
          * manageability
          */
-        for i in 1..E1000_RAR_ENTRIES as u32 {
-            self.write_array(E1000_RA, i << 1, 0)?;
+        for i in 1..RAR_ENTRIES as u32 {
+            self.write_array(RA, i << 1, 0)?;
             self.write_flush()?;
-            self.write_array(E1000_RA, (i << 1) + 1, 0)?;
+            self.write_array(RA, (i << 1) + 1, 0)?;
             self.write_flush()?;
         }
         Ok(())
     }
 
     /**
-     * e1000_rar_set - Puts an ethernet address into a receive address register.
+     * rar_set - Puts an ethernet address into a receive address register.
      * @addr: Address to put into receive address register
      * @index: Receive address register to write
      */
@@ -752,11 +752,11 @@ impl Hardware {
         rar_high = addr[4] as u32 | (addr[5] as u32) << 8;
 
         /* Indicate to hardware the Address is Valid. */
-        rar_high |= E1000_RAH_AV;
+        rar_high |= RAH_AV;
 
-        self.write_array(E1000_RA, index << 1, rar_low)?;
+        self.write_array(RA, index << 1, rar_low)?;
         self.write_flush()?;
-        self.write_array(E1000_RA, (index << 1) + 1, rar_high)?;
+        self.write_array(RA, (index << 1) + 1, rar_high)?;
         self.write_flush()
     }
 
@@ -808,11 +808,11 @@ impl Hardware {
          */
         println!("Initializing the Flow Control address, type and timer regs");
 
-        self.write(E1000_FCT, FLOW_CONTROL_TYPE)?;
-        self.write(E1000_FCAH, FLOW_CONTROL_ADDRESS_HIGH)?;
-        self.write(E1000_FCAL, FLOW_CONTROL_ADDRESS_LOW)?;
+        self.write(FCT, FLOW_CONTROL_TYPE)?;
+        self.write(FCAH, FLOW_CONTROL_ADDRESS_HIGH)?;
+        self.write(FCAL, FLOW_CONTROL_ADDRESS_LOW)?;
 
-        self.write(E1000_FCTTV, self.fc_pause_time as u32)?;
+        self.write(FCTTV, self.fc_pause_time as u32)?;
 
         /* Set the flow control receive threshold registers.  Normally,
          * these registers will be set to a default threshold that may be
@@ -821,19 +821,19 @@ impl Hardware {
          * registers will be set to 0.
          */
         if ((self.fc as u32) & (FlowControlSettings::E1000FCTXPause as u32)) == 0 {
-            self.write(E1000_FCRTL, 0)?;
-            self.write(E1000_FCRTH, 0)?;
+            self.write(FCRTL, 0)?;
+            self.write(FCRTH, 0)?;
         } else {
             /* We need to set up the Receive Threshold high and low water
              * marks as well as (optionally) enabling the transmission of
              * XON frames.
              */
             if self.fc_send_xon {
-                self.write(E1000_FCRTL, self.fc_low_water | E1000_FCRTL_XONE)?;
-                self.write(E1000_FCRTH, self.fc_high_water)?;
+                self.write(FCRTL, self.fc_low_water | FCRTL_XONE)?;
+                self.write(FCRTH, self.fc_high_water)?;
             } else {
-                self.write(E1000_FCRTL, self.fc_low_water)?;
-                self.write(E1000_FCRTH, self.fc_high_water)?;
+                self.write(FCRTL, self.fc_low_water)?;
+                self.write(FCRTH, self.fc_high_water)?;
             }
         }
         Ok(())
@@ -844,7 +844,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_reset_adaptive - Resets Adaptive IFS to its default state.
+     * reset_adaptive - Resets Adaptive IFS to its default state.
      *
      * Call this after init_hw. You may override the IFS defaults by setting
      * ifs_params_forced to true. However, you must initialize current_ifs_val,
@@ -859,7 +859,7 @@ impl Hardware {
             self.ifs_step_size = IFS_STEP;
             self.ifs_ratio = IFS_RATIO;
             self.in_ifs_mode = false;
-            self.write(E1000_AIT, 0)?;
+            self.write(AIT, 0)?;
         } else {
             println!("Not in Adaptive IFS mode!");
         }
@@ -889,17 +889,17 @@ impl Hardware {
             false => Downshift::Normal,
         };
 
-        phy_data = self.read_phy_reg(M88E1000_PHY_SPEC_CTRL)?;
+        phy_data = self.read_phy_reg(M88PHY_SPEC_CTRL)?;
 
-        phy_info.extended_10bt_distance = match (phy_data & M88E1000_PSCR_10BT_EXT_DIST_ENABLE)
-            >> M88E1000_PSCR_10BT_EXT_DIST_ENABLE_SHIFT
+        phy_info.extended_10bt_distance = match (phy_data & M88PSCR_10BT_EXT_DIST_ENABLE)
+            >> M88PSCR_10BT_EXT_DIST_ENABLE_SHIFT
         {
             0 => TenBTExtDistEnable::Normal,
             _ => TenBTExtDistEnable::Lower,
         };
 
-        phy_info.polarity_correction = match (phy_data & M88E1000_PSCR_POLARITY_REVERSAL)
-            >> M88E1000_PSCR_POLARITY_REVERSAL_SHIFT
+        phy_info.polarity_correction = match (phy_data & M88PSCR_POLARITY_REVERSAL)
+            >> M88PSCR_POLARITY_REVERSAL_SHIFT
         {
             0 => PolarityReversal::Enabled,
             _ => PolarityReversal::Disabled,
@@ -908,38 +908,38 @@ impl Hardware {
         // FIXME once we have a working link and can test it.
 
         /* Check polarity status *
-        ret_val = e1000_check_polarity(hw, &polarity);
+        ret_val = check_polarity(hw, &polarity);
         if (ret_val)
             return ret_val;
         phy_info->cable_polarity = polarity;
 
-        ret_val = e1000_read_phy_reg(hw, M88E1000_PHY_SPEC_STATUS, &phy_data);
+        ret_val = read_phy_reg(hw, M88PHY_SPEC_STATUS, &phy_data);
         if (ret_val)
             return ret_val;
 
         phy_info->mdix_mode =
-            (e1000_auto_x_mode) ((phy_data & M88E1000_PSSR_MDIX) >>
-                    M88E1000_PSSR_MDIX_SHIFT);
+            (auto_x_mode) ((phy_data & M88PSSR_MDIX) >>
+                    M88PSSR_MDIX_SHIFT);
 
-        if ((phy_data & M88E1000_PSSR_SPEED) == M88E1000_PSSR_1000MBS) {
+        if ((phy_data & M88PSSR_SPEED) == M88PSSR_1000MBS) {
             /* Cable Length Estimation and Local/Remote Receiver Information
             * are only valid at 1000 Mbps.
             */
             phy_info->cable_length =
-                (e1000_cable_length) ((phy_data &
-                        M88E1000_PSSR_CABLE_LENGTH) >>
-                        M88E1000_PSSR_CABLE_LENGTH_SHIFT);
+                (cable_length) ((phy_data &
+                        M88PSSR_CABLE_LENGTH) >>
+                        M88PSSR_CABLE_LENGTH_SHIFT);
 
-            ret_val = e1000_read_phy_reg(hw, PHY_1000T_STATUS, &phy_data);
+            ret_val = read_phy_reg(hw, PHY_1000T_STATUS, &phy_data);
             if (ret_val)
                 return ret_val;
 
             phy_info->local_rx = ((phy_data & SR_1000T_LOCAL_RX_STATUS) >>
                         SR_1000T_LOCAL_RX_STATUS_SHIFT) ?
-                e1000_1000t_rx_status_ok : e1000_1000t_rx_status_not_ok;
+                1000t_rx_status_ok : 1000t_rx_status_not_ok;
             phy_info->remote_rx = ((phy_data & SR_1000T_REMOTE_RX_STATUS) >>
                         SR_1000T_REMOTE_RX_STATUS_SHIFT) ?
-                e1000_1000t_rx_status_ok : e1000_1000t_rx_status_not_ok;
+                1000t_rx_status_ok : 1000t_rx_status_not_ok;
         }
         */
 
@@ -947,7 +947,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_phy_reset - reset the phy to commit settings
+     * phy_reset - reset the phy to commit settings
      *
      * Resets the PHY
      * Sets bit 15 of the MII Control register
@@ -964,7 +964,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_phy_hw_reset - reset the phy, hardware style
+     * phy_hw_reset - reset the phy, hardware style
      *
      * Returns the PHY to the power-on reset state
      */
@@ -974,17 +974,17 @@ impl Hardware {
          * PHY_RESET_DIR bit to put the PHY into reset. Then, take it
          * out of reset.
          */
-        let mut ctrl_ext = self.read(E1000_CTRL_EXT)?;
-        ctrl_ext |= E1000_CTRL_EXT_SDP4_DIR;
-        ctrl_ext &= !E1000_CTRL_EXT_SDP4_DATA;
-        self.write(E1000_CTRL_EXT, ctrl_ext)?;
+        let mut ctrl_ext = self.read(CTRL_EXT)?;
+        ctrl_ext |= CTRL_EXT_SDP4_DIR;
+        ctrl_ext &= !CTRL_EXT_SDP4_DATA;
+        self.write(CTRL_EXT, ctrl_ext)?;
         self.write_flush()?;
 
         self.delay();
         //msleep(10);
 
-        ctrl_ext |= E1000_CTRL_EXT_SDP4_DATA;
-        self.write(E1000_CTRL_EXT, ctrl_ext)?;
+        ctrl_ext |= CTRL_EXT_SDP4_DATA;
+        self.write(CTRL_EXT, ctrl_ext)?;
         self.write_flush()?;
 
         self.delay();
@@ -998,7 +998,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_read_phy_reg - read a phy register
+     * read_phy_reg - read a phy register
      * @reg_addr: address of the PHY register to read
      * @phy_data: pointer to the value on the PHY register
      *
@@ -1007,15 +1007,15 @@ impl Hardware {
      */
     fn read_phy_reg(&self, reg_addr: u32) -> Result<u16, ()> {
         // Linux does a lock here, but I can't be bothered
-        // spin_lock_irqsave(&e1000_phy_lock, flags);
+        // spin_lock_irqsave(&phy_lock, flags);
 
         let phy_addr: u32 = 1;
 
-        let mut mdic: u32 = reg_addr << E1000_MDIC_REG_SHIFT
-            | phy_addr << E1000_MDIC_PHY_SHIFT
-            | E1000_MDIC_OP_READ;
+        let mut mdic: u32 = reg_addr << MDIC_REG_SHIFT
+            | phy_addr << MDIC_PHY_SHIFT
+            | MDIC_OP_READ;
 
-        self.write(E1000_MDIC, mdic)?;
+        self.write(MDIC, mdic)?;
 
         /*
          * Poll the ready bit to see if the MDI read
@@ -1025,28 +1025,28 @@ impl Hardware {
             //udelay(50);
             self.delay();
 
-            mdic = self.read(E1000_MDIC)?;
-            if mdic & E1000_MDIC_READY != 0 {
+            mdic = self.read(MDIC)?;
+            if mdic & MDIC_READY != 0 {
                 break;
             }
         }
 
-        if (mdic & E1000_MDIC_READY) == 0 {
+        if (mdic & MDIC_READY) == 0 {
             println!("MDI Read did not complete");
             return Err(());
         }
-        if (mdic & E1000_MDIC_ERROR) != 0 {
+        if (mdic & MDIC_ERROR) != 0 {
             println!("MDI Read error");
             return Err(());
         }
 
-        // spin_unlock_irqrestore(&e1000_phy_lock, flags);
+        // spin_unlock_irqrestore(&phy_lock, flags);
 
         Ok(mdic as u16)
     }
 
     /**
-     * e1000_write_phy_reg - write a phy register
+     * write_phy_reg - write a phy register
      *
      * @reg_addr: address of the PHY register to write
      * @data: data to write to the PHY
@@ -1055,16 +1055,16 @@ impl Hardware {
      */
     fn write_phy_reg(&self, reg_addr: u32, phy_data: u16) -> Result<(), ()> {
         // Linux does a lock here, but I can't be bothered
-        // spin_lock_irqsave(&e1000_phy_lock, flags);
+        // spin_lock_irqsave(&phy_lock, flags);
 
         let phy_addr: u32 = 1;
 
         let mut mdic = (phy_data as u32)
-            | (reg_addr << E1000_MDIC_REG_SHIFT)
-            | (phy_addr << E1000_MDIC_PHY_SHIFT)
-            | (E1000_MDIC_OP_WRITE);
+            | (reg_addr << MDIC_REG_SHIFT)
+            | (phy_addr << MDIC_PHY_SHIFT)
+            | (MDIC_OP_WRITE);
 
-        self.write(E1000_MDIC, mdic)?;
+        self.write(MDIC, mdic)?;
 
         /*
          * Poll the ready bit to see if the MDI read
@@ -1074,24 +1074,24 @@ impl Hardware {
         for _ in 0..641 {
             //udelay(5);
             self.delay();
-            mdic = self.read(E1000_MDIC)?;
-            if mdic & E1000_MDIC_READY != 0 {
+            mdic = self.read(MDIC)?;
+            if mdic & MDIC_READY != 0 {
                 break;
             }
         }
 
-        if mdic & E1000_MDIC_READY == 0 {
+        if mdic & MDIC_READY == 0 {
             println!("MDI write did not complete");
             return Err(());
         }
 
-        // spin_unlock_irqrestore(&e1000_phy_lock, flags);
+        // spin_unlock_irqrestore(&phy_lock, flags);
 
         Ok(())
     }
 
     /**
-     * e1000_detect_gig_phy - check the phy type
+     * detect_gig_phy - check the phy type
      *
      * Probes the expected PHY address for known PHY IDs
      */
@@ -1118,11 +1118,11 @@ impl Hardware {
         let matched = self.phy_id == M88E1011_I_PHY_ID;
 
         match self.phy_id {
-            M88E1000_E_PHY_ID | M88E1000_I_PHY_ID | M88E1011_I_PHY_ID | M88E1111_I_PHY_ID
+            M88E_PHY_ID | M88I_PHY_ID | M88E1011_I_PHY_ID | M88E1111_I_PHY_ID
             | M88E1118_E_PHY_ID => {
                 self.phy_type = PhyType::E1000PhyM88;
             }
-            IGP01E1000_I_PHY_ID => {
+            IGP01I_PHY_ID => {
                 if self.mac_type == MacType::E100082541
                     || self.mac_type == MacType::E100082541Rev2
                     || self.mac_type == MacType::E100082547
@@ -1140,12 +1140,12 @@ impl Hardware {
             _ => {
                 /* Should never have loaded on this device */
                 self.phy_type = PhyType::E1000PhyUndefined;
-                return Err(()); //-E1000_ERR_PHY_TYPE;
+                return Err(()); //-ERR_PHY_TYPE;
             }
         };
 
         if !matched {
-            return Err(()); //-E1000_ERR_PHY;
+            return Err(()); //-ERR_PHY;
         }
 
         println!(
@@ -1156,13 +1156,13 @@ impl Hardware {
     }
 
     /**
-     * e1000_copper_link_preconfig - early configuration for copper
+     * copper_link_preconfig - early configuration for copper
      *
      * Make sure we have a valid PHY and change PHY mode before link setup.
      */
     fn copper_link_preconfig(&mut self) -> Result<(), ()> {
         let mut ctrl = self.read(CTRL)?;
-        ctrl |= E1000_CTRL_FRCSPD | E1000_CTRL_FRCDPX | E1000_CTRL_SLU;
+        ctrl |= CTRL_FRCSPD | CTRL_FRCDPX | CTRL_SLU;
         self.write(CTRL, ctrl)?;
 
         self.phy_hw_reset()?;
@@ -1175,12 +1175,12 @@ impl Hardware {
     }
 
     /**
-     * e1000_copper_link_mgp_setup - Copper link setup for e1000_phy_m88 series.
+     * copper_link_mgp_setup - Copper link setup for phy_m88 series.
      */
     fn copper_link_mgp_setup(&self) -> Result<(), ()> {
         /* Enable CRS on TX. This must be set for half-duplex operation. */
-        let mut phy_data: u16 = self.read_phy_reg(M88E1000_PHY_SPEC_CTRL)?;
-        phy_data |= M88E1000_PSCR_ASSERT_CRS_ON_TX;
+        let mut phy_data: u16 = self.read_phy_reg(M88PHY_SPEC_CTRL)?;
+        phy_data |= M88PSCR_ASSERT_CRS_ON_TX;
 
         /* Options:
          *   MDI/MDI-X = 0 (default)
@@ -1189,13 +1189,13 @@ impl Hardware {
          *   2 - MDI-X mode
          *   3 - Auto for 1000Base-T only (MDI-X for 10/100Base-T modes)
          */
-        phy_data &= !M88E1000_PSCR_AUTO_X_MODE;
+        phy_data &= !M88PSCR_AUTO_X_MODE;
 
         let shifter = match self.mdix {
-            1 => M88E1000_PSCR_MDI_MANUAL_MODE,
-            2 => M88E1000_PSCR_MDIX_MANUAL_MODE,
-            3 => M88E1000_PSCR_AUTO_X_1000T,
-            _ => M88E1000_PSCR_AUTO_X_MODE,
+            1 => M88PSCR_MDI_MANUAL_MODE,
+            2 => M88PSCR_MDIX_MANUAL_MODE,
+            3 => M88PSCR_AUTO_X_1000T,
+            _ => M88PSCR_AUTO_X_MODE,
         };
 
         phy_data |= shifter;
@@ -1207,26 +1207,26 @@ impl Hardware {
          *   0 - Disabled
          *   1 - Enabled
          */
-        phy_data &= !M88E1000_PSCR_POLARITY_REVERSAL;
+        phy_data &= !M88PSCR_POLARITY_REVERSAL;
         if self.disable_polarity_correction {
-            phy_data |= M88E1000_PSCR_POLARITY_REVERSAL;
+            phy_data |= M88PSCR_POLARITY_REVERSAL;
         }
 
-        self.write_phy_reg(M88E1000_PHY_SPEC_CTRL, phy_data)?;
+        self.write_phy_reg(M88PHY_SPEC_CTRL, phy_data)?;
 
         if self.phy_revision < M88E1011_I_REV_4 {
             /*
              * Force TX_CLK in the Extended PHY Specific Control Register
              * to 25MHz clock.
              */
-            phy_data = self.read_phy_reg(M88E1000_EXT_PHY_SPEC_CTRL)?;
-            phy_data |= M88E1000_EPSCR_TX_CLK_25;
+            phy_data = self.read_phy_reg(M88EXT_PHY_SPEC_CTRL)?;
+            phy_data |= M88EPSCR_TX_CLK_25;
 
             /* Configure Master and Slave downshift values */
             phy_data &=
-                !(M88E1000_EPSCR_MASTER_DOWNSHIFT_MASK | M88E1000_EPSCR_SLAVE_DOWNSHIFT_MASK);
-            phy_data |= M88E1000_EPSCR_MASTER_DOWNSHIFT_1X | M88E1000_EPSCR_SLAVE_DOWNSHIFT_1X;
-            self.write_phy_reg(M88E1000_EXT_PHY_SPEC_CTRL, phy_data)?;
+                !(M88EPSCR_MASTER_DOWNSHIFT_MASK | M88EPSCR_SLAVE_DOWNSHIFT_MASK);
+            phy_data |= M88EPSCR_MASTER_DOWNSHIFT_1X | M88EPSCR_SLAVE_DOWNSHIFT_1X;
+            self.write_phy_reg(M88EXT_PHY_SPEC_CTRL, phy_data)?;
         }
 
         println!("before reset, phy_data is {:x}", phy_data);
@@ -1238,7 +1238,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_phy_setup_autoneg - phy settings
+     * phy_setup_autoneg - phy settings
      *
      * Configures PHY autoneg and flow control advertisement settings
      */
@@ -1340,7 +1340,7 @@ impl Hardware {
                 /* Since there really isn't a way to advertise that we are
                  * capable of RX Pause ONLY, we will advertise that we
                  * support both symmetric and asymmetric RX PAUSE.  Later
-                 * (in e1000_config_fc_after_link_up) we will disable the
+                 * (in config_fc_after_link_up) we will disable the
                  * hw's ability to send PAUSE frames.
                  */
                 mii_autoneg_adv_reg |= NWAY_AR_ASM_DIR | NWAY_AR_PAUSE;
@@ -1365,7 +1365,7 @@ impl Hardware {
             _ => {
                 println!("Flow control param set incorrectly");
                 return Err(());
-                //return -E1000_ERR_CONFIG;
+                //return -ERR_CONFIG;
             }
         };
 
@@ -1382,7 +1382,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_wait_autoneg
+     * wait_autoneg
      *
      * Blocks until autoneg completes or times out (~4.5 seconds)
      */
@@ -1407,7 +1407,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_copper_link_autoneg - setup auto-neg
+     * copper_link_autoneg - setup auto-neg
      *
      * Setup auto-negotiation and flow control advertisements,
      * and then perform auto-negotiation.
@@ -1455,7 +1455,7 @@ impl Hardware {
     }
 
     /**
-     * e1000_setup_copper_link - phy/speed/duplex setting
+     * setup_copper_link - phy/speed/duplex setting
      *
      * Detects which PHY is present and sets up the speed and duplex
      */

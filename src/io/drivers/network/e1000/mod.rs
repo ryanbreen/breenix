@@ -50,13 +50,13 @@ impl E1000 {
 
         // spin_lock_init(&adapter->stats_lock);
 
-        //set_bit(__E1000_DOWN, &adapter->flags);
+        //set_bit(__DOWN, &adapter->flags);
 
         Ok(())
     }
 
     /**
-     * e1000_alloc_queues - Allocate memory for all rings
+     * alloc_queues - Allocate memory for all rings
      *
      * We allocate one ring per queue at run-time since we don't know the
      * number of queues at compile-time.
@@ -64,12 +64,12 @@ impl E1000 {
     fn alloc_queues(&mut self) -> Result<(), ()> {
         /*
         adapter->tx_ring = kcalloc(adapter->num_tx_queues,
-                    sizeof(struct e1000_tx_ring), GFP_KERNEL);
+                    sizeof(struct tx_ring), GFP_KERNEL);
         if (!adapter->tx_ring)
             return -ENOMEM;
 
         adapter->rx_ring = kcalloc(adapter->num_rx_queues,
-                    sizeof(struct e1000_rx_ring), GFP_KERNEL);
+                    sizeof(struct rx_ring), GFP_KERNEL);
         if (!adapter->rx_ring) {
             kfree(adapter->tx_ring);
             return -ENOMEM;
@@ -102,16 +102,16 @@ impl E1000 {
         /*
         if (!test_bit(vid, adapter->active_vlans)) {
             if (hw->mng_cookie.status &
-                E1000_MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT) {
-                e1000_vlan_rx_add_vid(netdev, htons(ETH_P_8021Q), vid);
+                MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT) {
+                vlan_rx_add_vid(netdev, htons(ETH_P_8021Q), vid);
                 adapter->mng_vlan_id = vid;
             } else {
-                adapter->mng_vlan_id = E1000_MNG_VLAN_NONE;
+                adapter->mng_vlan_id = MNG_VLAN_NONE;
             }
-            if ((old_vid != (u16)E1000_MNG_VLAN_NONE) &&
+            if ((old_vid != (u16)MNG_VLAN_NONE) &&
                 (vid != old_vid) &&
                 !test_bit(old_vid, adapter->active_vlans))
-                e1000_vlan_rx_kill_vid(netdev, htons(ETH_P_8021Q),
+                vlan_rx_kill_vid(netdev, htons(ETH_P_8021Q),
                             old_vid);
         } else {
             adapter->mng_vlan_id = vid;
@@ -122,12 +122,12 @@ impl E1000 {
 
     fn release_manageability(&self) -> Result<(), ()> {
         if self.en_mng_pt {
-            let mut manc = self.hardware.read(E1000_MANC)?;
+            let mut manc = self.hardware.read(MANC)?;
 
             /* re-enable hardware interception of ARP */
-            manc |= E1000_MANC_ARP_EN;
+            manc |= MANC_ARP_EN;
 
-            self.hardware.write(E1000_MANC, manc)?;
+            self.hardware.write(MANC, manc)?;
         }
         Ok(())
     }
@@ -142,7 +142,7 @@ impl E1000 {
          * Set it to the lower of:
          * - 90% of the Rx FIFO size, and
          * - the full Rx FIFO size minus the early receive size (for parts
-         *   with ERT support assuming ERT set to E1000_ERT_2048), or
+         *   with ERT support assuming ERT set to ERT_2048), or
          * - the full Rx FIFO size minus one full frame
          */
         use core::cmp;
@@ -163,7 +163,7 @@ impl E1000 {
         self.update_mng_vlan()?;
 
         /* Enable h/w to recognize an 802.1Q VLAN Ethernet packet */
-        self.hardware.write(E1000_VET, ETHERNET_IEEE_VLAN_TYPE)?;
+        self.hardware.write(VET, ETHERNET_IEEE_VLAN_TYPE)?;
 
         self.hardware.reset_adaptive()?;
 
@@ -185,7 +185,7 @@ impl E1000 {
         * 32-bit adapters that Tx hang when given 64-bit DMA addresses
         */
         pci_using_dac = 0;
-        if ((hw->bus_type == e1000_bus_type_pcix) &&
+        if ((hw->bus_type == bus_type_pcix) &&
             !dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))) {
             pci_using_dac = 1;
         } else {
@@ -197,10 +197,10 @@ impl E1000 {
             }
         }
 
-        netdev->netdev_ops = &e1000_netdev_ops;
-        e1000_set_ethtool_ops(netdev);
+        netdev->netdev_ops = &netdev_ops;
+        set_ethtool_ops(netdev);
         netdev->watchdog_timeo = 5 * HZ;
-        netif_napi_add(netdev, &adapter->napi, e1000_clean, 64);
+        netif_napi_add(netdev, &adapter->napi, clean, 64);
 
         strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
 

@@ -1,41 +1,41 @@
 /* PCI Device IDs */
-pub const E1000_DEV_ID_82542: u16 = 0x1000;
-pub const E1000_DEV_ID_82543GC_FIBER: u16 = 0x1001;
-pub const E1000_DEV_ID_82543GC_COPPER: u16 = 0x1004;
-pub const E1000_DEV_ID_82544EI_COPPER: u16 = 0x1008;
-pub const E1000_DEV_ID_82544EI_FIBER: u16 = 0x1009;
-pub const E1000_DEV_ID_82544GC_COPPER: u16 = 0x100C;
-pub const E1000_DEV_ID_82544GC_LOM: u16 = 0x100D;
-pub const E1000_DEV_ID_82540EM: u16 = 0x100E;
-pub const E1000_DEV_ID_82540EM_LOM: u16 = 0x1015;
-pub const E1000_DEV_ID_82540EP_LOM: u16 = 0x1016;
-pub const E1000_DEV_ID_82540EP: u16 = 0x1017;
-pub const E1000_DEV_ID_82540EP_LP: u16 = 0x101E;
-pub const E1000_DEV_ID_82545EM_COPPER: u16 = 0x100F;
-pub const E1000_DEV_ID_82545EM_FIBER: u16 = 0x1011;
-pub const E1000_DEV_ID_82545GM_COPPER: u16 = 0x1026;
-pub const E1000_DEV_ID_82545GM_FIBER: u16 = 0x1027;
-pub const E1000_DEV_ID_82545GM_SERDES: u16 = 0x1028;
-pub const E1000_DEV_ID_82546EB_COPPER: u16 = 0x1010;
-pub const E1000_DEV_ID_82546EB_FIBER: u16 = 0x1012;
-pub const E1000_DEV_ID_82546EB_QUAD_COPPER: u16 = 0x101D;
-pub const E1000_DEV_ID_82541EI: u16 = 0x1013;
-pub const E1000_DEV_ID_82541EI_MOBILE: u16 = 0x1018;
-pub const E1000_DEV_ID_82541ER_LOM: u16 = 0x1014;
-pub const E1000_DEV_ID_82541ER: u16 = 0x1078;
-pub const E1000_DEV_ID_82547GI: u16 = 0x1075;
-pub const E1000_DEV_ID_82541GI: u16 = 0x1076;
-pub const E1000_DEV_ID_82541GI_MOBILE: u16 = 0x1077;
-pub const E1000_DEV_ID_82541GI_LF: u16 = 0x107C;
-pub const E1000_DEV_ID_82546GB_COPPER: u16 = 0x1079;
-pub const E1000_DEV_ID_82546GB_FIBER: u16 = 0x107A;
-pub const E1000_DEV_ID_82546GB_SERDES: u16 = 0x107B;
-pub const E1000_DEV_ID_82546GB_PCIE: u16 = 0x108A;
-pub const E1000_DEV_ID_82546GB_QUAD_COPPER: u16 = 0x1099;
-pub const E1000_DEV_ID_82547EI: u16 = 0x1019;
-pub const E1000_DEV_ID_82547EI_MOBILE: u16 = 0x101A;
-pub const E1000_DEV_ID_82546GB_QUAD_COPPER_KSP3: u16 = 0x10B5;
-pub const E1000_DEV_ID_INTEL_CE4100_GBE: u16 = 0x2E6E;
+pub const DEV_ID_82542: u16 = 0x1000;
+pub const DEV_ID_82543GC_FIBER: u16 = 0x1001;
+pub const DEV_ID_82543GC_COPPER: u16 = 0x1004;
+pub const DEV_ID_82544EI_COPPER: u16 = 0x1008;
+pub const DEV_ID_82544EI_FIBER: u16 = 0x1009;
+pub const DEV_ID_82544GC_COPPER: u16 = 0x100C;
+pub const DEV_ID_82544GC_LOM: u16 = 0x100D;
+pub const DEV_ID_82540EM: u16 = 0x100E;
+pub const DEV_ID_82540EM_LOM: u16 = 0x1015;
+pub const DEV_ID_82540EP_LOM: u16 = 0x1016;
+pub const DEV_ID_82540EP: u16 = 0x1017;
+pub const DEV_ID_82540EP_LP: u16 = 0x101E;
+pub const DEV_ID_82545EM_COPPER: u16 = 0x100F;
+pub const DEV_ID_82545EM_FIBER: u16 = 0x1011;
+pub const DEV_ID_82545GM_COPPER: u16 = 0x1026;
+pub const DEV_ID_82545GM_FIBER: u16 = 0x1027;
+pub const DEV_ID_82545GM_SERDES: u16 = 0x1028;
+pub const DEV_ID_82546EB_COPPER: u16 = 0x1010;
+pub const DEV_ID_82546EB_FIBER: u16 = 0x1012;
+pub const DEV_ID_82546EB_QUAD_COPPER: u16 = 0x101D;
+pub const DEV_ID_82541EI: u16 = 0x1013;
+pub const DEV_ID_82541EI_MOBILE: u16 = 0x1018;
+pub const DEV_ID_82541ER_LOM: u16 = 0x1014;
+pub const DEV_ID_82541ER: u16 = 0x1078;
+pub const DEV_ID_82547GI: u16 = 0x1075;
+pub const DEV_ID_82541GI: u16 = 0x1076;
+pub const DEV_ID_82541GI_MOBILE: u16 = 0x1077;
+pub const DEV_ID_82541GI_LF: u16 = 0x107C;
+pub const DEV_ID_82546GB_COPPER: u16 = 0x1079;
+pub const DEV_ID_82546GB_FIBER: u16 = 0x107A;
+pub const DEV_ID_82546GB_SERDES: u16 = 0x107B;
+pub const DEV_ID_82546GB_PCIE: u16 = 0x108A;
+pub const DEV_ID_82546GB_QUAD_COPPER: u16 = 0x1099;
+pub const DEV_ID_82547EI: u16 = 0x1019;
+pub const DEV_ID_82547EI_MOBILE: u16 = 0x101A;
+pub const DEV_ID_82546GB_QUAD_COPPER_KSP3: u16 = 0x10B5;
+pub const DEV_ID_INTEL_CE4100_GBE: u16 = 0x2E6E;
 
 /* MAC decode size is 128K - This is the size of BAR0 */
 pub const MAC_DECODE_SIZE: u32 = 128 * 1024;
@@ -59,35 +59,31 @@ pub const E1000_REVISION_3: u8 = 3;
  * R/clr - register is read only and is cleared when read
  * A - register array
  */
-pub const E1000_CTRL: u32 = 0x00000; /* Device Control - RW */
-pub const E1000_CTRL_DUP: u32 = 0x00004; /* Device Control Duplicate (Shadow) - RW */
-pub const E1000_STATUS: u32 = 0x00008; /* Device Status - RO */
-pub const E1000_EECD: u32 = 0x00010; /* EEPROM/Flash Control - RW */
-pub const E1000_EERD: u32 = 0x00014; /* EEPROM Read - RW */
-pub const E1000_CTRL_EXT: u32 = 0x00018; /* Extended Device Control - RW */
-pub const E1000_FLA: u32 = 0x0001C; /* Flash Access - RW */
-pub const E1000_MDIC: u32 = 0x00020; /* MDI Control - RW */
+pub const CTRL: u32 = 0x00000; /* Device Control - RW */
+pub const CTRL_DUP: u32 = 0x00004; /* Device Control Duplicate (Shadow) - RW */
+pub const STATUS: u32 = 0x00008; /* Device Status - RO */
+pub const EECD: u32 = 0x00010; /* EEPROM/Flash Control - RW */
+pub const EERD: u32 = 0x00014; /* EEPROM Read - RW */
+pub const CTRL_EXT: u32 = 0x00018; /* Extended Device Control - RW */
+pub const FLA: u32 = 0x0001C; /* Flash Access - RW */
+pub const MDIC: u32 = 0x00020; /* MDI Control - RW */
 
-pub const CTRL: u32 = 0x00;
-pub const STATUS: u32 = 0x00008;
-pub const CTRL_EECD: u32 = 0x00010;
-pub const CTRL_EERD: u32 = 0x00014;
-pub const E1000_EECD_REQ: u32 = 0x00000040; /* EEPROM Access Request */
-pub const E1000_EECD_GNT: u32 = 0x00000080; /* EEPROM Access Grant */
-pub const E1000_EEPROM_GRANT_ATTEMPTS: u32 = 1000;
+pub const EECD_REQ: u32 = 0x00000040; /* EEPROM Access Request */
+pub const EECD_GNT: u32 = 0x00000080; /* EEPROM Access Grant */
+pub const EEPROM_GRANT_ATTEMPTS: u32 = 1000;
 
-pub const E1000_SCTL: u32 = 0x00024; /* SerDes Control - RW */
-pub const E1000_FEXTNVM: u32 = 0x00028; /* Future Extended NVM register */
-pub const E1000_FCAL: u32 = 0x00028; /* Flow Control Address Low - RW */
-pub const E1000_FCAH: u32 = 0x0002C; /* Flow Control Address High -RW */
-pub const E1000_FCT: u32 = 0x00030; /* Flow Control Type - RW */
-pub const E1000_VET: u32 = 0x00038; /* VLAN Ether Type - RW */
-pub const E1000_ICR: u32 = 0x000C0; /* Interrupt Cause Read - R/clr */
-pub const E1000_ITR: u32 = 0x000C4; /* Interrupt Throttling Rate - RW */
-pub const E1000_ICS: u32 = 0x000C8; /* Interrupt Cause Set - WO */
-pub const E1000_IMS: u32 = 0x000D0; /* Interrupt Mask Set - RW */
-pub const E1000_IMC: u32 = 0x000D8; /* Interrupt Mask Clear - WO */
-pub const E1000_IAM: u32 = 0x000E0; /* Interrupt Acknowledge Auto Mask */
+pub const SCTL: u32 = 0x00024; /* SerDes Control - RW */
+pub const FEXTNVM: u32 = 0x00028; /* Future Extended NVM register */
+pub const FCAL: u32 = 0x00028; /* Flow Control Address Low - RW */
+pub const FCAH: u32 = 0x0002C; /* Flow Control Address High -RW */
+pub const FCT: u32 = 0x00030; /* Flow Control Type - RW */
+pub const VET: u32 = 0x00038; /* VLAN Ether Type - RW */
+pub const ICR: u32 = 0x000C0; /* Interrupt Cause Read - R/clr */
+pub const ITR: u32 = 0x000C4; /* Interrupt Throttling Rate - RW */
+pub const ICS: u32 = 0x000C8; /* Interrupt Cause Set - WO */
+pub const IMS: u32 = 0x000D0; /* Interrupt Mask Set - RW */
+pub const IMC: u32 = 0x000D8; /* Interrupt Mask Clear - WO */
+pub const IAM: u32 = 0x000E0; /* Interrupt Acknowledge Auto Mask */
 
 /* PCI bus types */
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -120,81 +116,81 @@ pub enum BusWidth {
 }
 
 /* Device Control */
-pub const E1000_CTRL_FD: u32 = 0x00000001; /* Full duplex.0=half; 1=full */
-pub const E1000_CTRL_BEM: u32 = 0x00000002; /* Endian Mode.0=little,1=big */
-pub const E1000_CTRL_PRIOR: u32 = 0x00000004; /* Priority on PCI. 0=rx,1=fair */
-pub const E1000_CTRL_GIO_MASTER_DISABLE: u32 = 0x00000004; /*Blocks new Master requests */
-pub const E1000_CTRL_LRST: u32 = 0x00000008; /* Link reset. 0=normal,1=reset */
-pub const E1000_CTRL_TME: u32 = 0x00000010; /* Test mode. 0=normal,1=test */
-pub const E1000_CTRL_SLE: u32 = 0x00000020; /* Serial Link on 0=dis,1=en */
-pub const E1000_CTRL_ASDE: u32 = 0x00000020; /* Auto-speed detect enable */
-pub const E1000_CTRL_SLU: u32 = 0x00000040; /* Set link up (Force Link) */
-pub const E1000_CTRL_ILOS: u32 = 0x00000080; /* Invert Loss-Of Signal */
-pub const E1000_CTRL_SPD_SEL: u32 = 0x00000300; /* Speed Select Mask */
-pub const E1000_CTRL_SPD_10: u32 = 0x00000000; /* Force 10Mb */
-pub const E1000_CTRL_SPD_100: u32 = 0x00000100; /* Force 100Mb */
-pub const E1000_CTRL_SPD_1000: u32 = 0x00000200; /* Force 1Gb */
-pub const E1000_CTRL_BEM32: u32 = 0x00000400; /* Big Endian 32 mode */
-pub const E1000_CTRL_FRCSPD: u32 = 0x00000800; /* Force Speed */
-pub const E1000_CTRL_FRCDPX: u32 = 0x00001000; /* Force Duplex */
-pub const E1000_CTRL_D_UD_EN: u32 = 0x00002000; /* Dock/Undock enable */
-pub const E1000_CTRL_D_UD_POLARITY: u32 = 0x00004000; /* Defined polarity of Dock/Undock indication in SDP[0] */
-pub const E1000_CTRL_FORCE_PHY_RESET: u32 = 0x00008000; /* Reset both PHY ports, through PHYRST_N pin */
-pub const E1000_CTRL_EXT_LINK_EN: u32 = 0x00010000; /* enable link status from external LINK_0 and LINK_1 pins */
-pub const E1000_CTRL_SWDPIN0: u32 = 0x00040000; /* SWDPIN 0 value */
-pub const E1000_CTRL_SWDPIN1: u32 = 0x00080000; /* SWDPIN 1 value */
-pub const E1000_CTRL_SWDPIN2: u32 = 0x00100000; /* SWDPIN 2 value */
-pub const E1000_CTRL_SWDPIN3: u32 = 0x00200000; /* SWDPIN 3 value */
-pub const E1000_CTRL_SWDPIO0: u32 = 0x00400000; /* SWDPIN 0 Input or output */
-pub const E1000_CTRL_SWDPIO1: u32 = 0x00800000; /* SWDPIN 1 input or output */
-pub const E1000_CTRL_SWDPIO2: u32 = 0x01000000; /* SWDPIN 2 input or output */
-pub const E1000_CTRL_SWDPIO3: u32 = 0x02000000; /* SWDPIN 3 input or output */
-pub const E1000_CTRL_RST: u32 = 0x04000000; /* Global reset */
-pub const E1000_CTRL_RFCE: u32 = 0x08000000; /* Receive Flow Control enable */
-pub const E1000_CTRL_TFCE: u32 = 0x10000000; /* Transmit flow control enable */
-pub const E1000_CTRL_RTE: u32 = 0x20000000; /* Routing tag enable */
-pub const E1000_CTRL_VME: u32 = 0x40000000; /* IEEE VLAN mode enable */
-pub const E1000_CTRL_PHY_RST: u32 = 0x80000000; /* PHY Reset */
-pub const E1000_CTRL_SW2FW_INT: u32 = 0x02000000; /* Initiate an interrupt to manageability engine */
+pub const CTRL_FD: u32 = 0x00000001; /* Full duplex.0=half; 1=full */
+pub const CTRL_BEM: u32 = 0x00000002; /* Endian Mode.0=little,1=big */
+pub const CTRL_PRIOR: u32 = 0x00000004; /* Priority on PCI. 0=rx,1=fair */
+pub const CTRL_GIO_MASTER_DISABLE: u32 = 0x00000004; /*Blocks new Master requests */
+pub const CTRL_LRST: u32 = 0x00000008; /* Link reset. 0=normal,1=reset */
+pub const CTRL_TME: u32 = 0x00000010; /* Test mode. 0=normal,1=test */
+pub const CTRL_SLE: u32 = 0x00000020; /* Serial Link on 0=dis,1=en */
+pub const CTRL_ASDE: u32 = 0x00000020; /* Auto-speed detect enable */
+pub const CTRL_SLU: u32 = 0x00000040; /* Set link up (Force Link) */
+pub const CTRL_ILOS: u32 = 0x00000080; /* Invert Loss-Of Signal */
+pub const CTRL_SPD_SEL: u32 = 0x00000300; /* Speed Select Mask */
+pub const CTRL_SPD_10: u32 = 0x00000000; /* Force 10Mb */
+pub const CTRL_SPD_100: u32 = 0x00000100; /* Force 100Mb */
+pub const CTRL_SPD_1000: u32 = 0x00000200; /* Force 1Gb */
+pub const CTRL_BEM32: u32 = 0x00000400; /* Big Endian 32 mode */
+pub const CTRL_FRCSPD: u32 = 0x00000800; /* Force Speed */
+pub const CTRL_FRCDPX: u32 = 0x00001000; /* Force Duplex */
+pub const CTRL_D_UD_EN: u32 = 0x00002000; /* Dock/Undock enable */
+pub const CTRL_D_UD_POLARITY: u32 = 0x00004000; /* Defined polarity of Dock/Undock indication in SDP[0] */
+pub const CTRL_FORCE_PHY_RESET: u32 = 0x00008000; /* Reset both PHY ports, through PHYRST_N pin */
+pub const CTRL_EXT_LINK_EN: u32 = 0x00010000; /* enable link status from external LINK_0 and LINK_1 pins */
+pub const CTRL_SWDPIN0: u32 = 0x00040000; /* SWDPIN 0 value */
+pub const CTRL_SWDPIN1: u32 = 0x00080000; /* SWDPIN 1 value */
+pub const CTRL_SWDPIN2: u32 = 0x00100000; /* SWDPIN 2 value */
+pub const CTRL_SWDPIN3: u32 = 0x00200000; /* SWDPIN 3 value */
+pub const CTRL_SWDPIO0: u32 = 0x00400000; /* SWDPIN 0 Input or output */
+pub const CTRL_SWDPIO1: u32 = 0x00800000; /* SWDPIN 1 input or output */
+pub const CTRL_SWDPIO2: u32 = 0x01000000; /* SWDPIN 2 input or output */
+pub const CTRL_SWDPIO3: u32 = 0x02000000; /* SWDPIN 3 input or output */
+pub const CTRL_RST: u32 = 0x04000000; /* Global reset */
+pub const CTRL_RFCE: u32 = 0x08000000; /* Receive Flow Control enable */
+pub const CTRL_TFCE: u32 = 0x10000000; /* Transmit flow control enable */
+pub const CTRL_RTE: u32 = 0x20000000; /* Routing tag enable */
+pub const CTRL_VME: u32 = 0x40000000; /* IEEE VLAN mode enable */
+pub const CTRL_PHY_RST: u32 = 0x80000000; /* PHY Reset */
+pub const CTRL_SW2FW_INT: u32 = 0x02000000; /* Initiate an interrupt to manageability engine */
 
 /* Device Status */
-pub const E1000_STATUS_FD: u32 = 0x00000001; /* Full duplex.0=half,1=full */
-pub const E1000_STATUS_LU: u32 = 0x00000002; /* Link up.0=no,1=link */
-pub const E1000_STATUS_FUNC_MASK: u32 = 0x0000000C; /* PCI Function Mask */
-pub const E1000_STATUS_FUNC_SHIFT: u32 = 2;
-pub const E1000_STATUS_FUNC_0: u32 = 0x00000000; /* Function 0 */
-pub const E1000_STATUS_FUNC_1: u32 = 0x00000004; /* Function 1 */
-pub const E1000_STATUS_TXOFF: u32 = 0x00000010; /* transmission paused */
-pub const E1000_STATUS_TBIMODE: u32 = 0x00000020; /* TBI mode */
-pub const E1000_STATUS_SPEED_MASK: u32 = 0x000000C0;
-pub const E1000_STATUS_SPEED_10: u32 = 0x00000000; /* Speed 10Mb/s */
-pub const E1000_STATUS_SPEED_100: u32 = 0x00000040; /* Speed 100Mb/s */
-pub const E1000_STATUS_SPEED_1000: u32 = 0x00000080; /* Speed 1000Mb/s */
-pub const E1000_STATUS_LAN_INIT_DONE: u32 = 0x00000200; /* Lan Init Completion by EEPROM/Flash */
-pub const E1000_STATUS_ASDV: u32 = 0x00000300; /* Auto speed detect value */
-pub const E1000_STATUS_DOCK_CI: u32 = 0x00000800; /* Change in Dock/Undock state. Clear on write '0'. */
-pub const E1000_STATUS_GIO_MASTER_ENABLE: u32 = 0x00080000; /* Status of Master requests. */
-pub const E1000_STATUS_MTXCKOK: u32 = 0x00000400; /* MTX clock running OK */
-pub const E1000_STATUS_PCI66: u32 = 0x00000800; /* In 66Mhz slot */
-pub const E1000_STATUS_BUS64: u32 = 0x00001000; /* In 64 bit slot */
-pub const E1000_STATUS_PCIX_MODE: u32 = 0x00002000; /* PCI-X mode */
-pub const E1000_STATUS_PCIX_SPEED: u32 = 0x0000C000; /* PCI-X bus speed */
-pub const E1000_STATUS_BMC_SKU_0: u32 = 0x00100000; /* BMC USB redirect disabled */
-pub const E1000_STATUS_BMC_SKU_1: u32 = 0x00200000; /* BMC SRAM disabled */
-pub const E1000_STATUS_BMC_SKU_2: u32 = 0x00400000; /* BMC SDRAM disabled */
-pub const E1000_STATUS_BMC_CRYPTO: u32 = 0x00800000; /* BMC crypto disabled */
-pub const E1000_STATUS_BMC_LITE: u32 = 0x01000000; /* BMC external code execution disabled */
-pub const E1000_STATUS_RGMII_ENABLE: u32 = 0x02000000; /* RGMII disabled */
-pub const E1000_STATUS_FUSE_8: u32 = 0x04000000;
-pub const E1000_STATUS_FUSE_9: u32 = 0x08000000;
-pub const E1000_STATUS_SERDES0_DIS: u32 = 0x10000000; /* SERDES disabled on port 0 */
-pub const E1000_STATUS_SERDES1_DIS: u32 = 0x20000000; /* SERDES disabled on port 1 */
+pub const STATUS_FD: u32 = 0x00000001; /* Full duplex.0=half,1=full */
+pub const STATUS_LU: u32 = 0x00000002; /* Link up.0=no,1=link */
+pub const STATUS_FUNC_MASK: u32 = 0x0000000C; /* PCI Function Mask */
+pub const STATUS_FUNC_SHIFT: u32 = 2;
+pub const STATUS_FUNC_0: u32 = 0x00000000; /* Function 0 */
+pub const STATUS_FUNC_1: u32 = 0x00000004; /* Function 1 */
+pub const STATUS_TXOFF: u32 = 0x00000010; /* transmission paused */
+pub const STATUS_TBIMODE: u32 = 0x00000020; /* TBI mode */
+pub const STATUS_SPEED_MASK: u32 = 0x000000C0;
+pub const STATUS_SPEED_10: u32 = 0x00000000; /* Speed 10Mb/s */
+pub const STATUS_SPEED_100: u32 = 0x00000040; /* Speed 100Mb/s */
+pub const STATUS_SPEED_1000: u32 = 0x00000080; /* Speed 1000Mb/s */
+pub const STATUS_LAN_INIT_DONE: u32 = 0x00000200; /* Lan Init Completion by EEPROM/Flash */
+pub const STATUS_ASDV: u32 = 0x00000300; /* Auto speed detect value */
+pub const STATUS_DOCK_CI: u32 = 0x00000800; /* Change in Dock/Undock state. Clear on write '0'. */
+pub const STATUS_GIO_MASTER_ENABLE: u32 = 0x00080000; /* Status of Master requests. */
+pub const STATUS_MTXCKOK: u32 = 0x00000400; /* MTX clock running OK */
+pub const STATUS_PCI66: u32 = 0x00000800; /* In 66Mhz slot */
+pub const STATUS_BUS64: u32 = 0x00001000; /* In 64 bit slot */
+pub const STATUS_PCIX_MODE: u32 = 0x00002000; /* PCI-X mode */
+pub const STATUS_PCIX_SPEED: u32 = 0x0000C000; /* PCI-X bus speed */
+pub const STATUS_BMC_SKU_0: u32 = 0x00100000; /* BMC USB redirect disabled */
+pub const STATUS_BMC_SKU_1: u32 = 0x00200000; /* BMC SRAM disabled */
+pub const STATUS_BMC_SKU_2: u32 = 0x00400000; /* BMC SDRAM disabled */
+pub const STATUS_BMC_CRYPTO: u32 = 0x00800000; /* BMC crypto disabled */
+pub const STATUS_BMC_LITE: u32 = 0x01000000; /* BMC external code execution disabled */
+pub const STATUS_RGMII_ENABLE: u32 = 0x02000000; /* RGMII disabled */
+pub const STATUS_FUSE_8: u32 = 0x04000000;
+pub const STATUS_FUSE_9: u32 = 0x08000000;
+pub const STATUS_SERDES0_DIS: u32 = 0x10000000; /* SERDES disabled on port 0 */
+pub const STATUS_SERDES1_DIS: u32 = 0x20000000; /* SERDES disabled on port 1 */
 
 /* EEPROM/Flash Control */
-pub const E1000_EECD_SK: u32 = 0x00000001; /* EEPROM Clock */
-pub const E1000_EECD_CS: u32 = 0x00000002; /* EEPROM Chip Select */
-pub const E1000_EECD_DI: u32 = 0x00000004; /* EEPROM Data In */
-pub const E1000_EECD_DO: u32 = 0x00000008; /* EEPROM Data Out */
+pub const EECD_SK: u32 = 0x00000001; /* EEPROM Clock */
+pub const EECD_CS: u32 = 0x00000002; /* EEPROM Chip Select */
+pub const EECD_DI: u32 = 0x00000004; /* EEPROM Data In */
+pub const EECD_DO: u32 = 0x00000008; /* EEPROM Data Out */
 
 /* EEPROM Commands - Microwire */
 pub const EEPROM_READ_OPCODE_MICROWIRE: u32 = 0x6; /* EEPROM read opcode */
@@ -229,7 +225,6 @@ pub const WUFC_MAG: u32 = 0x00000002;
 
 /* Packet Buffer allocations */
 pub const PBA_48K: u32 = 0x30;
-pub const PBA: u32 = 0x01000; /* Packet Buffer Allocation - RW */
 pub const PBA_BYTES_SHIFT: u32 = 0xA;
 pub const TX_HEAD_ADDR_SHIFT: u32 = 7;
 pub const PBA_TX_MASK: u32 = 0xFFFF0000;
@@ -314,396 +309,396 @@ pub enum MasterSlaveType {
     E1000MSAuto,
 }
 
-pub const E1000_RCTL: u32 = 0x00100; /* RX Control - RW */
-pub const E1000_RDTR1: u32 = 0x02820; /* RX Delay Timer (1) - RW */
-pub const E1000_RDBAL1: u32 = 0x02900; /* RX Descriptor Base Address Low (1) - RW */
-pub const E1000_RDBAH1: u32 = 0x02904; /* RX Descriptor Base Address High (1) - RW */
-pub const E1000_RDLEN1: u32 = 0x02908; /* RX Descriptor Length (1) - RW */
-pub const E1000_RDH1: u32 = 0x02910; /* RX Descriptor Head (1) - RW */
-pub const E1000_RDT1: u32 = 0x02918; /* RX Descriptor Tail (1) - RW */
-pub const E1000_FCTTV: u32 = 0x00170; /* Flow Control Transmit Timer Value - RW */
-pub const E1000_TXCW: u32 = 0x00178; /* TX Configuration Word - RW */
-pub const E1000_RXCW: u32 = 0x00180; /* RX Configuration Word - RO */
-pub const E1000_TCTL: u32 = 0x00400; /* TX Control - RW */
-pub const E1000_TCTL_EXT: u32 = 0x00404; /* Extended TX Control - RW */
-pub const E1000_TIPG: u32 = 0x00410; /* TX Inter-packet gap -RW */
-pub const E1000_TBT: u32 = 0x00448; /* TX Burst Timer - RW */
-pub const E1000_AIT: u32 = 0x00458; /* Adaptive Interframe Spacing Throttle - RW */
-pub const E1000_LEDCTL: u32 = 0x00E00; /* LED Control - RW */
-pub const E1000_EXTCNF_CTRL: u32 = 0x00F00; /* Extended Configuration Control */
-pub const E1000_EXTCNF_SIZE: u32 = 0x00F08; /* Extended Configuration Size */
-pub const E1000_PHY_CTRL: u32 = 0x00F10; /* PHY Control Register in CSR */
+pub const RCTL: u32 = 0x00100; /* RX Control - RW */
+pub const RDTR1: u32 = 0x02820; /* RX Delay Timer (1) - RW */
+pub const RDBAL1: u32 = 0x02900; /* RX Descriptor Base Address Low (1) - RW */
+pub const RDBAH1: u32 = 0x02904; /* RX Descriptor Base Address High (1) - RW */
+pub const RDLEN1: u32 = 0x02908; /* RX Descriptor Length (1) - RW */
+pub const RDH1: u32 = 0x02910; /* RX Descriptor Head (1) - RW */
+pub const RDT1: u32 = 0x02918; /* RX Descriptor Tail (1) - RW */
+pub const FCTTV: u32 = 0x00170; /* Flow Control Transmit Timer Value - RW */
+pub const TXCW: u32 = 0x00178; /* TX Configuration Word - RW */
+pub const RXCW: u32 = 0x00180; /* RX Configuration Word - RO */
+pub const TCTL: u32 = 0x00400; /* TX Control - RW */
+pub const TCTL_EXT: u32 = 0x00404; /* Extended TX Control - RW */
+pub const TIPG: u32 = 0x00410; /* TX Inter-packet gap -RW */
+pub const TBT: u32 = 0x00448; /* TX Burst Timer - RW */
+pub const AIT: u32 = 0x00458; /* Adaptive Interframe Spacing Throttle - RW */
+pub const LEDCTL: u32 = 0x00E00; /* LED Control - RW */
+pub const EXTCNF_CTRL: u32 = 0x00F00; /* Extended Configuration Control */
+pub const EXTCNF_SIZE: u32 = 0x00F08; /* Extended Configuration Size */
+pub const PHY_CTRL_CSR: u32 = 0x00F10; /* PHY Control Register in CSR */
 pub const FEXTNVM_SW_CONFIG: u32 = 0x0001;
-pub const E1000_PBA: u32 = 0x01000; /* Packet Buffer Allocation - RW */
-pub const E1000_PBS: u32 = 0x01008; /* Packet Buffer Size */
-pub const E1000_EEMNGCTL: u32 = 0x01010; /* MNG EEprom Control */
-pub const E1000_FLASH_UPDATES: u32 = 1000;
-pub const E1000_EEARBC: u32 = 0x01024; /* EEPROM Auto Read Bus Control */
-pub const E1000_FLASHT: u32 = 0x01028; /* FLASH Timer Register */
-pub const E1000_EEWR: u32 = 0x0102C; /* EEPROM Write Register - RW */
-pub const E1000_FLSWCTL: u32 = 0x01030; /* FLASH control register */
-pub const E1000_FLSWDATA: u32 = 0x01034; /* FLASH data register */
-pub const E1000_FLSWCNT: u32 = 0x01038; /* FLASH Access Counter */
-pub const E1000_FLOP: u32 = 0x0103C; /* FLASH Opcode Register */
-pub const E1000_ERT: u32 = 0x02008; /* Early Rx Threshold - RW */
-pub const E1000_FCRTL: u32 = 0x02160; /* Flow Control Receive Threshold Low - RW */
-pub const E1000_FCRTH: u32 = 0x02168; /* Flow Control Receive Threshold High - RW */
-pub const E1000_PSRCTL: u32 = 0x02170; /* Packet Split Receive Control - RW */
-pub const E1000_RDFH: u32 = 0x02410; /* RX Data FIFO Head - RW */
-pub const E1000_RDFT: u32 = 0x02418; /* RX Data FIFO Tail - RW */
-pub const E1000_RDFHS: u32 = 0x02420; /* RX Data FIFO Head Saved - RW */
-pub const E1000_RDFTS: u32 = 0x02428; /* RX Data FIFO Tail Saved - RW */
-pub const E1000_RDFPC: u32 = 0x02430; /* RX Data FIFO Packet Count - RW */
-pub const E1000_RDBAL: u32 = 0x02800; /* RX Descriptor Base Address Low - RW */
-pub const E1000_RDBAH: u32 = 0x02804; /* RX Descriptor Base Address High - RW */
-pub const E1000_RDLEN: u32 = 0x02808; /* RX Descriptor Length - RW */
-pub const E1000_RDH: u32 = 0x02810; /* RX Descriptor Head - RW */
-pub const E1000_RDT: u32 = 0x02818; /* RX Descriptor Tail - RW */
-pub const E1000_RDTR: u32 = 0x02820; /* RX Delay Timer - RW */
-pub const E1000_RDBAL0: u32 = E1000_RDBAL; /* RX Desc Base Address Low (0) - RW */
-pub const E1000_RDBAH0: u32 = E1000_RDBAH; /* RX Desc Base Address High (0) - RW */
-pub const E1000_RDLEN0: u32 = E1000_RDLEN; /* RX Desc Length (0) - RW */
-pub const E1000_RDH0: u32 = E1000_RDH; /* RX Desc Head (0) - RW */
-pub const E1000_RDT0: u32 = E1000_RDT; /* RX Desc Tail (0) - RW */
-pub const E1000_RDTR0: u32 = E1000_RDTR; /* RX Delay Timer (0) - RW */
-pub const E1000_RXDCTL: u32 = 0x02828; /* RX Descriptor Control queue 0 - RW */
-pub const E1000_RXDCTL1: u32 = 0x02928; /* RX Descriptor Control queue 1 - RW */
-pub const E1000_RADV: u32 = 0x0282C; /* RX Interrupt Absolute Delay Timer - RW */
-pub const E1000_RSRPD: u32 = 0x02C00; /* RX Small Packet Detect - RW */
-pub const E1000_RAID: u32 = 0x02C08; /* Receive Ack Interrupt Delay - RW */
-pub const E1000_TXDMAC: u32 = 0x03000; /* TX DMA Control - RW */
-pub const E1000_KABGTXD: u32 = 0x03004; /* AFE Band Gap Transmit Ref Data */
-pub const E1000_TDFH: u32 = 0x03410; /* TX Data FIFO Head - RW */
-pub const E1000_TDFT: u32 = 0x03418; /* TX Data FIFO Tail - RW */
-pub const E1000_TDFHS: u32 = 0x03420; /* TX Data FIFO Head Saved - RW */
-pub const E1000_TDFTS: u32 = 0x03428; /* TX Data FIFO Tail Saved - RW */
-pub const E1000_TDFPC: u32 = 0x03430; /* TX Data FIFO Packet Count - RW */
-pub const E1000_TDBAL: u32 = 0x03800; /* TX Descriptor Base Address Low - RW */
-pub const E1000_TDBAH: u32 = 0x03804; /* TX Descriptor Base Address High - RW */
-pub const E1000_TDLEN: u32 = 0x03808; /* TX Descriptor Length - RW */
-pub const E1000_TDH: u32 = 0x03810; /* TX Descriptor Head - RW */
-pub const E1000_TDT: u32 = 0x03818; /* TX Descripotr Tail - RW */
-pub const E1000_TIDV: u32 = 0x03820; /* TX Interrupt Delay Value - RW */
-pub const E1000_TXDCTL: u32 = 0x03828; /* TX Descriptor Control - RW */
-pub const E1000_TADV: u32 = 0x0382C; /* TX Interrupt Absolute Delay Val - RW */
-pub const E1000_TSPMT: u32 = 0x03830; /* TCP Segmentation PAD & Min Threshold - RW */
-pub const E1000_TARC0: u32 = 0x03840; /* TX Arbitration Count (0) */
-pub const E1000_TDBAL1: u32 = 0x03900; /* TX Desc Base Address Low (1) - RW */
-pub const E1000_TDBAH1: u32 = 0x03904; /* TX Desc Base Address High (1) - RW */
-pub const E1000_TDLEN1: u32 = 0x03908; /* TX Desc Length (1) - RW */
-pub const E1000_TDH1: u32 = 0x03910; /* TX Desc Head (1) - RW */
-pub const E1000_TDT1: u32 = 0x03918; /* TX Desc Tail (1) - RW */
-pub const E1000_TXDCTL1: u32 = 0x03928; /* TX Descriptor Control (1) - RW */
-pub const E1000_TARC1: u32 = 0x03940; /* TX Arbitration Count (1) */
-pub const E1000_CRCERRS: u32 = 0x04000; /* CRC Error Count - R/clr */
-pub const E1000_ALGNERRC: u32 = 0x04004; /* Alignment Error Count - R/clr */
-pub const E1000_SYMERRS: u32 = 0x04008; /* Symbol Error Count - R/clr */
-pub const E1000_RXERRC: u32 = 0x0400C; /* Receive Error Count - R/clr */
-pub const E1000_MPC: u32 = 0x04010; /* Missed Packet Count - R/clr */
-pub const E1000_SCC: u32 = 0x04014; /* Single Collision Count - R/clr */
-pub const E1000_ECOL: u32 = 0x04018; /* Excessive Collision Count - R/clr */
-pub const E1000_MCC: u32 = 0x0401C; /* Multiple Collision Count - R/clr */
-pub const E1000_LATECOL: u32 = 0x04020; /* Late Collision Count - R/clr */
-pub const E1000_COLC: u32 = 0x04028; /* Collision Count - R/clr */
-pub const E1000_DC: u32 = 0x04030; /* Defer Count - R/clr */
-pub const E1000_TNCRS: u32 = 0x04034; /* TX-No CRS - R/clr */
-pub const E1000_SEC: u32 = 0x04038; /* Sequence Error Count - R/clr */
-pub const E1000_CEXTERR: u32 = 0x0403C; /* Carrier Extension Error Count - R/clr */
-pub const E1000_RLEC: u32 = 0x04040; /* Receive Length Error Count - R/clr */
-pub const E1000_XONRXC: u32 = 0x04048; /* XON RX Count - R/clr */
-pub const E1000_XONTXC: u32 = 0x0404C; /* XON TX Count - R/clr */
-pub const E1000_XOFFRXC: u32 = 0x04050; /* XOFF RX Count - R/clr */
-pub const E1000_XOFFTXC: u32 = 0x04054; /* XOFF TX Count - R/clr */
-pub const E1000_FCRUC: u32 = 0x04058; /* Flow Control RX Unsupported Count- R/clr */
-pub const E1000_PRC64: u32 = 0x0405C; /* Packets RX (64 bytes) - R/clr */
-pub const E1000_PRC127: u32 = 0x04060; /* Packets RX (65-127 bytes) - R/clr */
-pub const E1000_PRC255: u32 = 0x04064; /* Packets RX (128-255 bytes) - R/clr */
-pub const E1000_PRC511: u32 = 0x04068; /* Packets RX (255-511 bytes) - R/clr */
-pub const E1000_PRC1023: u32 = 0x0406C; /* Packets RX (512-1023 bytes) - R/clr */
-pub const E1000_PRC1522: u32 = 0x04070; /* Packets RX (1024-1522 bytes) - R/clr */
-pub const E1000_GPRC: u32 = 0x04074; /* Good Packets RX Count - R/clr */
-pub const E1000_BPRC: u32 = 0x04078; /* Broadcast Packets RX Count - R/clr */
-pub const E1000_MPRC: u32 = 0x0407C; /* Multicast Packets RX Count - R/clr */
-pub const E1000_GPTC: u32 = 0x04080; /* Good Packets TX Count - R/clr */
-pub const E1000_GORCL: u32 = 0x04088; /* Good Octets RX Count Low - R/clr */
-pub const E1000_GORCH: u32 = 0x0408C; /* Good Octets RX Count High - R/clr */
-pub const E1000_GOTCL: u32 = 0x04090; /* Good Octets TX Count Low - R/clr */
-pub const E1000_GOTCH: u32 = 0x04094; /* Good Octets TX Count High - R/clr */
-pub const E1000_RNBC: u32 = 0x040A0; /* RX No Buffers Count - R/clr */
-pub const E1000_RUC: u32 = 0x040A4; /* RX Undersize Count - R/clr */
-pub const E1000_RFC: u32 = 0x040A8; /* RX Fragment Count - R/clr */
-pub const E1000_ROC: u32 = 0x040AC; /* RX Oversize Count - R/clr */
-pub const E1000_RJC: u32 = 0x040B0; /* RX Jabber Count - R/clr */
-pub const E1000_MGTPRC: u32 = 0x040B4; /* Management Packets RX Count - R/clr */
-pub const E1000_MGTPDC: u32 = 0x040B8; /* Management Packets Dropped Count - R/clr */
-pub const E1000_MGTPTC: u32 = 0x040BC; /* Management Packets TX Count - R/clr */
-pub const E1000_TORL: u32 = 0x040C0; /* Total Octets RX Low - R/clr */
-pub const E1000_TORH: u32 = 0x040C4; /* Total Octets RX High - R/clr */
-pub const E1000_TOTL: u32 = 0x040C8; /* Total Octets TX Low - R/clr */
-pub const E1000_TOTH: u32 = 0x040CC; /* Total Octets TX High - R/clr */
-pub const E1000_TPR: u32 = 0x040D0; /* Total Packets RX - R/clr */
-pub const E1000_TPT: u32 = 0x040D4; /* Total Packets TX - R/clr */
-pub const E1000_PTC64: u32 = 0x040D8; /* Packets TX (64 bytes) - R/clr */
-pub const E1000_PTC127: u32 = 0x040DC; /* Packets TX (65-127 bytes) - R/clr */
-pub const E1000_PTC255: u32 = 0x040E0; /* Packets TX (128-255 bytes) - R/clr */
-pub const E1000_PTC511: u32 = 0x040E4; /* Packets TX (256-511 bytes) - R/clr */
-pub const E1000_PTC1023: u32 = 0x040E8; /* Packets TX (512-1023 bytes) - R/clr */
-pub const E1000_PTC1522: u32 = 0x040EC; /* Packets TX (1024-1522 Bytes) - R/clr */
-pub const E1000_MPTC: u32 = 0x040F0; /* Multicast Packets TX Count - R/clr */
-pub const E1000_BPTC: u32 = 0x040F4; /* Broadcast Packets TX Count - R/clr */
-pub const E1000_TSCTC: u32 = 0x040F8; /* TCP Segmentation Context TX - R/clr */
-pub const E1000_TSCTFC: u32 = 0x040FC; /* TCP Segmentation Context TX Fail - R/clr */
-pub const E1000_IAC: u32 = 0x04100; /* Interrupt Assertion Count */
-pub const E1000_ICRXPTC: u32 = 0x04104; /* Interrupt Cause Rx Packet Timer Expire Count */
-pub const E1000_ICRXATC: u32 = 0x04108; /* Interrupt Cause Rx Absolute Timer Expire Count */
-pub const E1000_ICTXPTC: u32 = 0x0410C; /* Interrupt Cause Tx Packet Timer Expire Count */
-pub const E1000_ICTXATC: u32 = 0x04110; /* Interrupt Cause Tx Absolute Timer Expire Count */
-pub const E1000_ICTXQEC: u32 = 0x04118; /* Interrupt Cause Tx Queue Empty Count */
-pub const E1000_ICTXQMTC: u32 = 0x0411C; /* Interrupt Cause Tx Queue Minimum Threshold Count */
-pub const E1000_ICRXDMTC: u32 = 0x04120; /* Interrupt Cause Rx Descriptor Minimum Threshold Count */
-pub const E1000_ICRXOC: u32 = 0x04124; /* Interrupt Cause Receiver Overrun Count */
-pub const E1000_RXCSUM: u32 = 0x05000; /* RX Checksum Control - RW */
-pub const E1000_RFCTL: u32 = 0x05008; /* Receive Filter Control */
-pub const E1000_MTA: u32 = 0x05200; /* Multicast Table Array - RW Array */
-pub const E1000_RA: u32 = 0x05400; /* Receive Address - RW Array */
-pub const E1000_VFTA: u32 = 0x05600; /* VLAN Filter Table Array - RW Array */
-pub const E1000_WUC: u32 = 0x05800; /* Wakeup Control - RW */
-pub const E1000_WUFC: u32 = 0x05808; /* Wakeup Filter Control - RW */
-pub const E1000_WUS: u32 = 0x05810; /* Wakeup Status - RO */
-pub const E1000_MANC: u32 = 0x05820; /* Management Control - RW */
-pub const E1000_IPAV: u32 = 0x05838; /* IP Address Valid - RW */
-pub const E1000_IP4AT: u32 = 0x05840; /* IPv4 Address Table - RW Array */
-pub const E1000_IP6AT: u32 = 0x05880; /* IPv6 Address Table - RW Array */
-pub const E1000_WUPL: u32 = 0x05900; /* Wakeup Packet Length - RW */
-pub const E1000_WUPM: u32 = 0x05A00; /* Wakeup Packet Memory - RO A */
-pub const E1000_FFLT: u32 = 0x05F00; /* Flexible Filter Length Table - RW Array */
-pub const E1000_HOST_IF: u32 = 0x08800; /* Host Interface */
-pub const E1000_FFMT: u32 = 0x09000; /* Flexible Filter Mask Table - RW Array */
-pub const E1000_FFVT: u32 = 0x09800; /* Flexible Filter Value Table - RW Array */
+pub const PBA: u32 = 0x01000; /* Packet Buffer Allocation - RW */
+pub const PBS: u32 = 0x01008; /* Packet Buffer Size */
+pub const EEMNGCTL: u32 = 0x01010; /* MNG EEprom Control */
+pub const FLASH_UPDATES: u32 = 1000;
+pub const EEARBC: u32 = 0x01024; /* EEPROM Auto Read Bus Control */
+pub const FLASHT: u32 = 0x01028; /* FLASH Timer Register */
+pub const EEWR: u32 = 0x0102C; /* EEPROM Write Register - RW */
+pub const FLSWCTL: u32 = 0x01030; /* FLASH control register */
+pub const FLSWDATA: u32 = 0x01034; /* FLASH data register */
+pub const FLSWCNT: u32 = 0x01038; /* FLASH Access Counter */
+pub const FLOP: u32 = 0x0103C; /* FLASH Opcode Register */
+pub const ERT: u32 = 0x02008; /* Early Rx Threshold - RW */
+pub const FCRTL: u32 = 0x02160; /* Flow Control Receive Threshold Low - RW */
+pub const FCRTH: u32 = 0x02168; /* Flow Control Receive Threshold High - RW */
+pub const PSRCTL: u32 = 0x02170; /* Packet Split Receive Control - RW */
+pub const RDFH: u32 = 0x02410; /* RX Data FIFO Head - RW */
+pub const RDFT: u32 = 0x02418; /* RX Data FIFO Tail - RW */
+pub const RDFHS: u32 = 0x02420; /* RX Data FIFO Head Saved - RW */
+pub const RDFTS: u32 = 0x02428; /* RX Data FIFO Tail Saved - RW */
+pub const RDFPC: u32 = 0x02430; /* RX Data FIFO Packet Count - RW */
+pub const RDBAL: u32 = 0x02800; /* RX Descriptor Base Address Low - RW */
+pub const RDBAH: u32 = 0x02804; /* RX Descriptor Base Address High - RW */
+pub const RDLEN: u32 = 0x02808; /* RX Descriptor Length - RW */
+pub const RDH: u32 = 0x02810; /* RX Descriptor Head - RW */
+pub const RDT: u32 = 0x02818; /* RX Descriptor Tail - RW */
+pub const RDTR: u32 = 0x02820; /* RX Delay Timer - RW */
+pub const RDBAL0: u32 = RDBAL; /* RX Desc Base Address Low (0) - RW */
+pub const RDBAH0: u32 = RDBAH; /* RX Desc Base Address High (0) - RW */
+pub const RDLEN0: u32 = RDLEN; /* RX Desc Length (0) - RW */
+pub const RDH0: u32 = RDH; /* RX Desc Head (0) - RW */
+pub const RDT0: u32 = RDT; /* RX Desc Tail (0) - RW */
+pub const RDTR0: u32 = RDTR; /* RX Delay Timer (0) - RW */
+pub const RXDCTL: u32 = 0x02828; /* RX Descriptor Control queue 0 - RW */
+pub const RXDCTL1: u32 = 0x02928; /* RX Descriptor Control queue 1 - RW */
+pub const RADV: u32 = 0x0282C; /* RX Interrupt Absolute Delay Timer - RW */
+pub const RSRPD: u32 = 0x02C00; /* RX Small Packet Detect - RW */
+pub const RAID: u32 = 0x02C08; /* Receive Ack Interrupt Delay - RW */
+pub const TXDMAC: u32 = 0x03000; /* TX DMA Control - RW */
+pub const KABGTXD: u32 = 0x03004; /* AFE Band Gap Transmit Ref Data */
+pub const TDFH: u32 = 0x03410; /* TX Data FIFO Head - RW */
+pub const TDFT: u32 = 0x03418; /* TX Data FIFO Tail - RW */
+pub const TDFHS: u32 = 0x03420; /* TX Data FIFO Head Saved - RW */
+pub const TDFTS: u32 = 0x03428; /* TX Data FIFO Tail Saved - RW */
+pub const TDFPC: u32 = 0x03430; /* TX Data FIFO Packet Count - RW */
+pub const TDBAL: u32 = 0x03800; /* TX Descriptor Base Address Low - RW */
+pub const TDBAH: u32 = 0x03804; /* TX Descriptor Base Address High - RW */
+pub const TDLEN: u32 = 0x03808; /* TX Descriptor Length - RW */
+pub const TDH: u32 = 0x03810; /* TX Descriptor Head - RW */
+pub const TDT: u32 = 0x03818; /* TX Descripotr Tail - RW */
+pub const TIDV: u32 = 0x03820; /* TX Interrupt Delay Value - RW */
+pub const TXDCTL: u32 = 0x03828; /* TX Descriptor Control - RW */
+pub const TADV: u32 = 0x0382C; /* TX Interrupt Absolute Delay Val - RW */
+pub const TSPMT: u32 = 0x03830; /* TCP Segmentation PAD & Min Threshold - RW */
+pub const TARC0: u32 = 0x03840; /* TX Arbitration Count (0) */
+pub const TDBAL1: u32 = 0x03900; /* TX Desc Base Address Low (1) - RW */
+pub const TDBAH1: u32 = 0x03904; /* TX Desc Base Address High (1) - RW */
+pub const TDLEN1: u32 = 0x03908; /* TX Desc Length (1) - RW */
+pub const TDH1: u32 = 0x03910; /* TX Desc Head (1) - RW */
+pub const TDT1: u32 = 0x03918; /* TX Desc Tail (1) - RW */
+pub const TXDCTL1: u32 = 0x03928; /* TX Descriptor Control (1) - RW */
+pub const TARC1: u32 = 0x03940; /* TX Arbitration Count (1) */
+pub const CRCERRS: u32 = 0x04000; /* CRC Error Count - R/clr */
+pub const ALGNERRC: u32 = 0x04004; /* Alignment Error Count - R/clr */
+pub const SYMERRS: u32 = 0x04008; /* Symbol Error Count - R/clr */
+pub const RXERRC: u32 = 0x0400C; /* Receive Error Count - R/clr */
+pub const MPC: u32 = 0x04010; /* Missed Packet Count - R/clr */
+pub const SCC: u32 = 0x04014; /* Single Collision Count - R/clr */
+pub const ECOL: u32 = 0x04018; /* Excessive Collision Count - R/clr */
+pub const MCC: u32 = 0x0401C; /* Multiple Collision Count - R/clr */
+pub const LATECOL: u32 = 0x04020; /* Late Collision Count - R/clr */
+pub const COLC: u32 = 0x04028; /* Collision Count - R/clr */
+pub const DC: u32 = 0x04030; /* Defer Count - R/clr */
+pub const TNCRS: u32 = 0x04034; /* TX-No CRS - R/clr */
+pub const SEC: u32 = 0x04038; /* Sequence Error Count - R/clr */
+pub const CEXTERR: u32 = 0x0403C; /* Carrier Extension Error Count - R/clr */
+pub const RLEC: u32 = 0x04040; /* Receive Length Error Count - R/clr */
+pub const XONRXC: u32 = 0x04048; /* XON RX Count - R/clr */
+pub const XONTXC: u32 = 0x0404C; /* XON TX Count - R/clr */
+pub const XOFFRXC: u32 = 0x04050; /* XOFF RX Count - R/clr */
+pub const XOFFTXC: u32 = 0x04054; /* XOFF TX Count - R/clr */
+pub const FCRUC: u32 = 0x04058; /* Flow Control RX Unsupported Count- R/clr */
+pub const PRC64: u32 = 0x0405C; /* Packets RX (64 bytes) - R/clr */
+pub const PRC127: u32 = 0x04060; /* Packets RX (65-127 bytes) - R/clr */
+pub const PRC255: u32 = 0x04064; /* Packets RX (128-255 bytes) - R/clr */
+pub const PRC511: u32 = 0x04068; /* Packets RX (255-511 bytes) - R/clr */
+pub const PRC1023: u32 = 0x0406C; /* Packets RX (512-1023 bytes) - R/clr */
+pub const PRC1522: u32 = 0x04070; /* Packets RX (1024-1522 bytes) - R/clr */
+pub const GPRC: u32 = 0x04074; /* Good Packets RX Count - R/clr */
+pub const BPRC: u32 = 0x04078; /* Broadcast Packets RX Count - R/clr */
+pub const MPRC: u32 = 0x0407C; /* Multicast Packets RX Count - R/clr */
+pub const GPTC: u32 = 0x04080; /* Good Packets TX Count - R/clr */
+pub const GORCL: u32 = 0x04088; /* Good Octets RX Count Low - R/clr */
+pub const GORCH: u32 = 0x0408C; /* Good Octets RX Count High - R/clr */
+pub const GOTCL: u32 = 0x04090; /* Good Octets TX Count Low - R/clr */
+pub const GOTCH: u32 = 0x04094; /* Good Octets TX Count High - R/clr */
+pub const RNBC: u32 = 0x040A0; /* RX No Buffers Count - R/clr */
+pub const RUC: u32 = 0x040A4; /* RX Undersize Count - R/clr */
+pub const RFC: u32 = 0x040A8; /* RX Fragment Count - R/clr */
+pub const ROC: u32 = 0x040AC; /* RX Oversize Count - R/clr */
+pub const RJC: u32 = 0x040B0; /* RX Jabber Count - R/clr */
+pub const MGTPRC: u32 = 0x040B4; /* Management Packets RX Count - R/clr */
+pub const MGTPDC: u32 = 0x040B8; /* Management Packets Dropped Count - R/clr */
+pub const MGTPTC: u32 = 0x040BC; /* Management Packets TX Count - R/clr */
+pub const TORL: u32 = 0x040C0; /* Total Octets RX Low - R/clr */
+pub const TORH: u32 = 0x040C4; /* Total Octets RX High - R/clr */
+pub const TOTL: u32 = 0x040C8; /* Total Octets TX Low - R/clr */
+pub const TOTH: u32 = 0x040CC; /* Total Octets TX High - R/clr */
+pub const TPR: u32 = 0x040D0; /* Total Packets RX - R/clr */
+pub const TPT: u32 = 0x040D4; /* Total Packets TX - R/clr */
+pub const PTC64: u32 = 0x040D8; /* Packets TX (64 bytes) - R/clr */
+pub const PTC127: u32 = 0x040DC; /* Packets TX (65-127 bytes) - R/clr */
+pub const PTC255: u32 = 0x040E0; /* Packets TX (128-255 bytes) - R/clr */
+pub const PTC511: u32 = 0x040E4; /* Packets TX (256-511 bytes) - R/clr */
+pub const PTC1023: u32 = 0x040E8; /* Packets TX (512-1023 bytes) - R/clr */
+pub const PTC1522: u32 = 0x040EC; /* Packets TX (1024-1522 Bytes) - R/clr */
+pub const MPTC: u32 = 0x040F0; /* Multicast Packets TX Count - R/clr */
+pub const BPTC: u32 = 0x040F4; /* Broadcast Packets TX Count - R/clr */
+pub const TSCTC: u32 = 0x040F8; /* TCP Segmentation Context TX - R/clr */
+pub const TSCTFC: u32 = 0x040FC; /* TCP Segmentation Context TX Fail - R/clr */
+pub const IAC: u32 = 0x04100; /* Interrupt Assertion Count */
+pub const ICRXPTC: u32 = 0x04104; /* Interrupt Cause Rx Packet Timer Expire Count */
+pub const ICRXATC: u32 = 0x04108; /* Interrupt Cause Rx Absolute Timer Expire Count */
+pub const ICTXPTC: u32 = 0x0410C; /* Interrupt Cause Tx Packet Timer Expire Count */
+pub const ICTXATC: u32 = 0x04110; /* Interrupt Cause Tx Absolute Timer Expire Count */
+pub const ICTXQEC: u32 = 0x04118; /* Interrupt Cause Tx Queue Empty Count */
+pub const ICTXQMTC: u32 = 0x0411C; /* Interrupt Cause Tx Queue Minimum Threshold Count */
+pub const ICRXDMTC: u32 = 0x04120; /* Interrupt Cause Rx Descriptor Minimum Threshold Count */
+pub const ICRXOC: u32 = 0x04124; /* Interrupt Cause Receiver Overrun Count */
+pub const RXCSUM: u32 = 0x05000; /* RX Checksum Control - RW */
+pub const RFCTL: u32 = 0x05008; /* Receive Filter Control */
+pub const MTA: u32 = 0x05200; /* Multicast Table Array - RW Array */
+pub const RA: u32 = 0x05400; /* Receive Address - RW Array */
+pub const VFTA: u32 = 0x05600; /* VLAN Filter Table Array - RW Array */
+pub const WUC: u32 = 0x05800; /* Wakeup Control - RW */
+pub const WUFC: u32 = 0x05808; /* Wakeup Filter Control - RW */
+pub const WUS: u32 = 0x05810; /* Wakeup Status - RO */
+pub const MANC: u32 = 0x05820; /* Management Control - RW */
+pub const IPAV: u32 = 0x05838; /* IP Address Valid - RW */
+pub const IP4AT: u32 = 0x05840; /* IPv4 Address Table - RW Array */
+pub const IP6AT: u32 = 0x05880; /* IPv6 Address Table - RW Array */
+pub const WUPL: u32 = 0x05900; /* Wakeup Packet Length - RW */
+pub const WUPM: u32 = 0x05A00; /* Wakeup Packet Memory - RO A */
+pub const FFLT: u32 = 0x05F00; /* Flexible Filter Length Table - RW Array */
+pub const HOST_IF: u32 = 0x08800; /* Host Interface */
+pub const FFMT: u32 = 0x09000; /* Flexible Filter Mask Table - RW Array */
+pub const FFVT: u32 = 0x09800; /* Flexible Filter Value Table - RW Array */
 
-pub const E1000_KUMCTRLSTA: u32 = 0x00034; /* MAC-PHY interface - RW */
-pub const E1000_MDPHYA: u32 = 0x0003C; /* PHY address - RW */
-pub const E1000_MANC2H: u32 = 0x05860; /* Management Control To Host - RW */
-pub const E1000_SW_FW_SYNC: u32 = 0x05B5C; /* Software-Firmware Synchronization - RW */
+pub const KUMCTRLSTA: u32 = 0x00034; /* MAC-PHY interface - RW */
+pub const MDPHYA: u32 = 0x0003C; /* PHY address - RW */
+pub const MANC2H: u32 = 0x05860; /* Management Control To Host - RW */
+pub const SW_FW_SYNC: u32 = 0x05B5C; /* Software-Firmware Synchronization - RW */
 
-pub const E1000_GCR: u32 = 0x05B00; /* PCI-Ex Control */
-pub const E1000_GSCL_1: u32 = 0x05B10; /* PCI-Ex Statistic Control #1 */
-pub const E1000_GSCL_2: u32 = 0x05B14; /* PCI-Ex Statistic Control #2 */
-pub const E1000_GSCL_3: u32 = 0x05B18; /* PCI-Ex Statistic Control #3 */
-pub const E1000_GSCL_4: u32 = 0x05B1C; /* PCI-Ex Statistic Control #4 */
-pub const E1000_FACTPS: u32 = 0x05B30; /* Function Active and Power State to MNG */
-pub const E1000_SWSM: u32 = 0x05B50; /* SW Semaphore */
-pub const E1000_FWSM: u32 = 0x05B54; /* FW Semaphore */
-pub const E1000_FFLT_DBG: u32 = 0x05F04; /* Debug Register */
-pub const E1000_HICR: u32 = 0x08F00; /* Host Interface Control */
+pub const GCR: u32 = 0x05B00; /* PCI-Ex Control */
+pub const GSCL_1: u32 = 0x05B10; /* PCI-Ex Statistic Control #1 */
+pub const GSCL_2: u32 = 0x05B14; /* PCI-Ex Statistic Control #2 */
+pub const GSCL_3: u32 = 0x05B18; /* PCI-Ex Statistic Control #3 */
+pub const GSCL_4: u32 = 0x05B1C; /* PCI-Ex Statistic Control #4 */
+pub const FACTPS: u32 = 0x05B30; /* Function Active and Power State to MNG */
+pub const SWSM: u32 = 0x05B50; /* SW Semaphore */
+pub const FWSM: u32 = 0x05B54; /* FW Semaphore */
+pub const FFLT_DBG: u32 = 0x05F04; /* Debug Register */
+pub const HICR: u32 = 0x08F00; /* Host Interface Control */
 
 /* Number of high/low register pairs in the RAR. The RAR (Receive Address
  * Registers) holds the directed and multicast addresses that we monitor. We
  * reserve one of these spots for our directed address, allowing us room for
- * E1000_RAR_ENTRIES - 1 multicast addresses.
+ * RAR_ENTRIES - 1 multicast addresses.
  */
-pub const E1000_RAR_ENTRIES: u16 = 15;
+pub const RAR_ENTRIES: u16 = 15;
 
 /* Transmit Control */
-pub const E1000_TCTL_RST: u32 = 0x00000001; /* software reset */
-pub const E1000_TCTL_EN: u32 = 0x00000002; /* enable tx */
-pub const E1000_TCTL_BCE: u32 = 0x00000004; /* busy check enable */
-pub const E1000_TCTL_PSP: u32 = 0x00000008; /* pad short packets */
-pub const E1000_TCTL_CT: u32 = 0x00000ff0; /* collision threshold */
-pub const E1000_TCTL_COLD: u32 = 0x003ff000; /* collision distance */
-pub const E1000_TCTL_SWXOFF: u32 = 0x00400000; /* SW Xoff transmission */
-pub const E1000_TCTL_PBE: u32 = 0x00800000; /* Packet Burst Enable */
-pub const E1000_TCTL_RTLC: u32 = 0x01000000; /* Re-transmit on late collision */
-pub const E1000_TCTL_NRTU: u32 = 0x02000000; /* No Re-transmit on underrun */
-pub const E1000_TCTL_MULR: u32 = 0x10000000; /* Multiple request support */
+pub const TCTL_RST: u32 = 0x00000001; /* software reset */
+pub const TCTL_EN: u32 = 0x00000002; /* enable tx */
+pub const TCTL_BCE: u32 = 0x00000004; /* busy check enable */
+pub const TCTL_PSP: u32 = 0x00000008; /* pad short packets */
+pub const TCTL_CT: u32 = 0x00000ff0; /* collision threshold */
+pub const TCTL_COLD: u32 = 0x003ff000; /* collision distance */
+pub const TCTL_SWXOFF: u32 = 0x00400000; /* SW Xoff transmission */
+pub const TCTL_PBE: u32 = 0x00800000; /* Packet Burst Enable */
+pub const TCTL_RTLC: u32 = 0x01000000; /* Re-transmit on late collision */
+pub const TCTL_NRTU: u32 = 0x02000000; /* No Re-transmit on underrun */
+pub const TCTL_MULR: u32 = 0x10000000; /* Multiple request support */
 /* Extended Transmit Control */
-pub const E1000_TCTL_EXT_BST_MASK: u32 = 0x000003FF; /* Backoff Slot Time */
-pub const E1000_TCTL_EXT_GCEX_MASK: u32 = 0x000FFC00; /* Gigabit Carry Extend Padding */
+pub const TCTL_EXT_BST_MASK: u32 = 0x000003FF; /* Backoff Slot Time */
+pub const TCTL_EXT_GCEX_MASK: u32 = 0x000FFC00; /* Gigabit Carry Extend Padding */
 
 /* Management Control */
-pub const E1000_MANC_SMBUS_EN: u32 = 0x00000001; /* SMBus Enabled - RO */
-pub const E1000_MANC_ASF_EN: u32 = 0x00000002; /* ASF Enabled - RO */
-pub const E1000_MANC_R_ON_FORCE: u32 = 0x00000004; /* Reset on Force TCO - RO */
-pub const E1000_MANC_RMCP_EN: u32 = 0x00000100; /* Enable RCMP 026Fh Filtering */
-pub const E1000_MANC_0298_EN: u32 = 0x00000200; /* Enable RCMP 0298h Filtering */
-pub const E1000_MANC_IPV4_EN: u32 = 0x00000400; /* Enable IPv4 */
-pub const E1000_MANC_IPV6_EN: u32 = 0x00000800; /* Enable IPv6 */
-pub const E1000_MANC_SNAP_EN: u32 = 0x00001000; /* Accept LLC/SNAP */
-pub const E1000_MANC_ARP_EN: u32 = 0x00002000; /* Enable ARP Request Filtering */
-pub const E1000_MANC_NEIGHBOR_EN: u32 = 0x00004000; /* Enable Neighbor Discovery Filtering */
-pub const E1000_MANC_ARP_RES_EN: u32 = 0x00008000; /* Enable ARP response Filtering */
-pub const E1000_MANC_TCO_RESET: u32 = 0x00010000; /* TCO Reset Occurred */
-pub const E1000_MANC_RCV_TCO_EN: u32 = 0x00020000; /* Receive TCO Packets Enabled */
-pub const E1000_MANC_REPORT_STATUS: u32 = 0x00040000; /* Status Reporting Enabled */
-pub const E1000_MANC_RCV_ALL: u32 = 0x00080000; /* Receive All Enabled */
-pub const E1000_MANC_BLK_PHY_RST_ON_IDE: u32 = 0x00040000; /* Block phy resets */
-pub const E1000_MANC_EN_MAC_ADDR_FILTER: u32 = 0x00100000; /* Enable MAC address filtering */
-pub const E1000_MANC_EN_MNG2HOST: u32 = 0x00200000; /* Enable MNG packets to host memory */
-pub const E1000_MANC_EN_IP_ADDR_FILTER: u32 = 0x00400000; /* Enable IP address filtering */
-pub const E1000_MANC_EN_XSUM_FILTER: u32 = 0x00800000; /* Enable checksum filtering */
-pub const E1000_MANC_BR_EN: u32 = 0x01000000; /* Enable broadcast filtering */
-pub const E1000_MANC_SMB_REQ: u32 = 0x01000000; /* SMBus Request */
-pub const E1000_MANC_SMB_GNT: u32 = 0x02000000; /* SMBus Grant */
-pub const E1000_MANC_SMB_CLK_IN: u32 = 0x04000000; /* SMBus Clock In */
-pub const E1000_MANC_SMB_DATA_IN: u32 = 0x08000000; /* SMBus Data In */
-pub const E1000_MANC_SMB_DATA_OUT: u32 = 0x10000000; /* SMBus Data Out */
-pub const E1000_MANC_SMB_CLK_OUT: u32 = 0x20000000; /* SMBus Clock Out */
+pub const MANC_SMBUS_EN: u32 = 0x00000001; /* SMBus Enabled - RO */
+pub const MANC_ASF_EN: u32 = 0x00000002; /* ASF Enabled - RO */
+pub const MANC_R_ON_FORCE: u32 = 0x00000004; /* Reset on Force TCO - RO */
+pub const MANC_RMCP_EN: u32 = 0x00000100; /* Enable RCMP 026Fh Filtering */
+pub const MANC_0298_EN: u32 = 0x00000200; /* Enable RCMP 0298h Filtering */
+pub const MANC_IPV4_EN: u32 = 0x00000400; /* Enable IPv4 */
+pub const MANC_IPV6_EN: u32 = 0x00000800; /* Enable IPv6 */
+pub const MANC_SNAP_EN: u32 = 0x00001000; /* Accept LLC/SNAP */
+pub const MANC_ARP_EN: u32 = 0x00002000; /* Enable ARP Request Filtering */
+pub const MANC_NEIGHBOR_EN: u32 = 0x00004000; /* Enable Neighbor Discovery Filtering */
+pub const MANC_ARP_RES_EN: u32 = 0x00008000; /* Enable ARP response Filtering */
+pub const MANC_TCO_RESET: u32 = 0x00010000; /* TCO Reset Occurred */
+pub const MANC_RCV_TCO_EN: u32 = 0x00020000; /* Receive TCO Packets Enabled */
+pub const MANC_REPORT_STATUS: u32 = 0x00040000; /* Status Reporting Enabled */
+pub const MANC_RCV_ALL: u32 = 0x00080000; /* Receive All Enabled */
+pub const MANC_BLK_PHY_RST_ON_IDE: u32 = 0x00040000; /* Block phy resets */
+pub const MANC_EN_MAC_ADDR_FILTER: u32 = 0x00100000; /* Enable MAC address filtering */
+pub const MANC_EN_MNG2HOST: u32 = 0x00200000; /* Enable MNG packets to host memory */
+pub const MANC_EN_IP_ADDR_FILTER: u32 = 0x00400000; /* Enable IP address filtering */
+pub const MANC_EN_XSUM_FILTER: u32 = 0x00800000; /* Enable checksum filtering */
+pub const MANC_BR_EN: u32 = 0x01000000; /* Enable broadcast filtering */
+pub const MANC_SMB_REQ: u32 = 0x01000000; /* SMBus Request */
+pub const MANC_SMB_GNT: u32 = 0x02000000; /* SMBus Grant */
+pub const MANC_SMB_CLK_IN: u32 = 0x04000000; /* SMBus Clock In */
+pub const MANC_SMB_DATA_IN: u32 = 0x08000000; /* SMBus Data In */
+pub const MANC_SMB_DATA_OUT: u32 = 0x10000000; /* SMBus Data Out */
+pub const MANC_SMB_CLK_OUT: u32 = 0x20000000; /* SMBus Clock Out */
 
-pub const E1000_MANC_SMB_DATA_OUT_SHIFT: u32 = 28; /* SMBus Data Out Shift */
-pub const E1000_MANC_SMB_CLK_OUT_SHIFT: u32 = 29; /* SMBus Clock Out Shift */
+pub const MANC_SMB_DATA_OUT_SHIFT: u32 = 28; /* SMBus Data Out Shift */
+pub const MANC_SMB_CLK_OUT_SHIFT: u32 = 29; /* SMBus Clock Out Shift */
 
 /* LED Control */
-pub const E1000_LEDCTL_LED0_MODE_MASK: u32 = 0x0000000F;
-pub const E1000_LEDCTL_LED0_MODE_SHIFT: u8 = 0;
-pub const E1000_LEDCTL_LED0_BLINK_RATE: u32 = 0x0000020;
-pub const E1000_LEDCTL_LED0_IVRT: u32 = 0x00000040;
-pub const E1000_LEDCTL_LED0_BLINK: u32 = 0x00000080;
-pub const E1000_LEDCTL_LED1_MODE_MASK: u32 = 0x00000F00;
-pub const E1000_LEDCTL_LED1_MODE_SHIFT: u8 = 8;
-pub const E1000_LEDCTL_LED1_BLINK_RATE: u32 = 0x0002000;
-pub const E1000_LEDCTL_LED1_IVRT: u32 = 0x00004000;
-pub const E1000_LEDCTL_LED1_BLINK: u32 = 0x00008000;
-pub const E1000_LEDCTL_LED2_MODE_MASK: u32 = 0x000F0000;
-pub const E1000_LEDCTL_LED2_MODE_SHIFT: u8 = 16;
-pub const E1000_LEDCTL_LED2_BLINK_RATE: u32 = 0x00200000;
-pub const E1000_LEDCTL_LED2_IVRT: u32 = 0x00400000;
-pub const E1000_LEDCTL_LED2_BLINK: u32 = 0x00800000;
-pub const E1000_LEDCTL_LED3_MODE_MASK: u32 = 0x0F000000;
-pub const E1000_LEDCTL_LED3_MODE_SHIFT: u8 = 24;
-pub const E1000_LEDCTL_LED3_BLINK_RATE: u32 = 0x20000000;
-pub const E1000_LEDCTL_LED3_IVRT: u32 = 0x40000000;
-pub const E1000_LEDCTL_LED3_BLINK: u32 = 0x80000000;
+pub const LEDCTL_LED0_MODE_MASK: u32 = 0x0000000F;
+pub const LEDCTL_LED0_MODE_SHIFT: u8 = 0;
+pub const LEDCTL_LED0_BLINK_RATE: u32 = 0x0000020;
+pub const LEDCTL_LED0_IVRT: u32 = 0x00000040;
+pub const LEDCTL_LED0_BLINK: u32 = 0x00000080;
+pub const LEDCTL_LED1_MODE_MASK: u32 = 0x00000F00;
+pub const LEDCTL_LED1_MODE_SHIFT: u8 = 8;
+pub const LEDCTL_LED1_BLINK_RATE: u32 = 0x0002000;
+pub const LEDCTL_LED1_IVRT: u32 = 0x00004000;
+pub const LEDCTL_LED1_BLINK: u32 = 0x00008000;
+pub const LEDCTL_LED2_MODE_MASK: u32 = 0x000F0000;
+pub const LEDCTL_LED2_MODE_SHIFT: u8 = 16;
+pub const LEDCTL_LED2_BLINK_RATE: u32 = 0x00200000;
+pub const LEDCTL_LED2_IVRT: u32 = 0x00400000;
+pub const LEDCTL_LED2_BLINK: u32 = 0x00800000;
+pub const LEDCTL_LED3_MODE_MASK: u32 = 0x0F000000;
+pub const LEDCTL_LED3_MODE_SHIFT: u8 = 24;
+pub const LEDCTL_LED3_BLINK_RATE: u32 = 0x20000000;
+pub const LEDCTL_LED3_IVRT: u32 = 0x40000000;
+pub const LEDCTL_LED3_BLINK: u32 = 0x80000000;
 
-pub const E1000_LEDCTL_MODE_LINK_10_1000: u8 = 0x0;
-pub const E1000_LEDCTL_MODE_LINK_100_1000: u8 = 0x1;
-pub const E1000_LEDCTL_MODE_LINK_UP: u8 = 0x2;
-pub const E1000_LEDCTL_MODE_ACTIVITY: u8 = 0x3;
-pub const E1000_LEDCTL_MODE_LINK_ACTIVITY: u8 = 0x4;
-pub const E1000_LEDCTL_MODE_LINK_10: u8 = 0x5;
-pub const E1000_LEDCTL_MODE_LINK_100: u8 = 0x6;
-pub const E1000_LEDCTL_MODE_LINK_1000: u8 = 0x7;
-pub const E1000_LEDCTL_MODE_PCIX_MODE: u8 = 0x8;
-pub const E1000_LEDCTL_MODE_FULL_DUPLEX: u8 = 0x9;
-pub const E1000_LEDCTL_MODE_COLLISION: u8 = 0xA;
-pub const E1000_LEDCTL_MODE_BUS_SPEED: u8 = 0xB;
-pub const E1000_LEDCTL_MODE_BUS_SIZE: u8 = 0xC;
-pub const E1000_LEDCTL_MODE_PAUSED: u8 = 0xD;
-pub const E1000_LEDCTL_MODE_LED_ON: u32 = 0xE;
-pub const E1000_LEDCTL_MODE_LED_OFF: u32 = 0xF;
+pub const LEDCTL_MODE_LINK_10_1000: u8 = 0x0;
+pub const LEDCTL_MODE_LINK_100_1000: u8 = 0x1;
+pub const LEDCTL_MODE_LINK_UP: u8 = 0x2;
+pub const LEDCTL_MODE_ACTIVITY: u8 = 0x3;
+pub const LEDCTL_MODE_LINK_ACTIVITY: u8 = 0x4;
+pub const LEDCTL_MODE_LINK_10: u8 = 0x5;
+pub const LEDCTL_MODE_LINK_100: u8 = 0x6;
+pub const LEDCTL_MODE_LINK_1000: u8 = 0x7;
+pub const LEDCTL_MODE_PCIX_MODE: u8 = 0x8;
+pub const LEDCTL_MODE_FULL_DUPLEX: u8 = 0x9;
+pub const LEDCTL_MODE_COLLISION: u8 = 0xA;
+pub const LEDCTL_MODE_BUS_SPEED: u8 = 0xB;
+pub const LEDCTL_MODE_BUS_SIZE: u8 = 0xC;
+pub const LEDCTL_MODE_PAUSED: u8 = 0xD;
+pub const LEDCTL_MODE_LED_ON: u32 = 0xE;
+pub const LEDCTL_MODE_LED_OFF: u32 = 0xF;
 
 /* Extended Device Control */
-pub const E1000_CTRL_EXT_GPI0_EN: u32 = 0x00000001; /* Maps SDP4 to GPI0 */
-pub const E1000_CTRL_EXT_GPI1_EN: u32 = 0x00000002; /* Maps SDP5 to GPI1 */
-pub const E1000_CTRL_EXT_PHYINT_EN: u32 = E1000_CTRL_EXT_GPI1_EN;
-pub const E1000_CTRL_EXT_GPI2_EN: u32 = 0x00000004; /* Maps SDP6 to GPI2 */
-pub const E1000_CTRL_EXT_GPI3_EN: u32 = 0x00000008; /* Maps SDP7 to GPI3 */
-pub const E1000_CTRL_EXT_SDP4_DATA: u32 = 0x00000010; /* Value of SW Defineable Pin 4 */
-pub const E1000_CTRL_EXT_SDP5_DATA: u32 = 0x00000020; /* Value of SW Defineable Pin 5 */
-pub const E1000_CTRL_EXT_PHY_INT: u32 = E1000_CTRL_EXT_SDP5_DATA;
-pub const E1000_CTRL_EXT_SDP6_DATA: u32 = 0x00000040; /* Value of SW Defineable Pin 6 */
-pub const E1000_CTRL_EXT_SDP7_DATA: u32 = 0x00000080; /* Value of SW Defineable Pin 7 */
-pub const E1000_CTRL_EXT_SDP4_DIR: u32 = 0x00000100; /* Direction of SDP4 0=in 1=out */
-pub const E1000_CTRL_EXT_SDP5_DIR: u32 = 0x00000200; /* Direction of SDP5 0=in 1=out */
-pub const E1000_CTRL_EXT_SDP6_DIR: u32 = 0x00000400; /* Direction of SDP6 0=in 1=out */
-pub const E1000_CTRL_EXT_SDP7_DIR: u32 = 0x00000800; /* Direction of SDP7 0=in 1=out */
-pub const E1000_CTRL_EXT_ASDCHK: u32 = 0x00001000; /* Initiate an ASD sequence */
-pub const E1000_CTRL_EXT_EE_RST: u32 = 0x00002000; /* Reinitialize from EEPROM */
-pub const E1000_CTRL_EXT_IPS: u32 = 0x00004000; /* Invert Power State */
-pub const E1000_CTRL_EXT_SPD_BYPS: u32 = 0x00008000; /* Speed Select Bypass */
-pub const E1000_CTRL_EXT_RO_DIS: u32 = 0x00020000; /* Relaxed Ordering disable */
-pub const E1000_CTRL_EXT_LINK_MODE_MASK: u32 = 0x00C00000;
-pub const E1000_CTRL_EXT_LINK_MODE_GMII: u32 = 0x00000000;
-pub const E1000_CTRL_EXT_LINK_MODE_TBI: u32 = 0x00C00000;
-pub const E1000_CTRL_EXT_LINK_MODE_KMRN: u32 = 0x00000000;
-pub const E1000_CTRL_EXT_LINK_MODE_SERDES: u32 = 0x00C00000;
-pub const E1000_CTRL_EXT_LINK_MODE_SGMII: u32 = 0x00800000;
-pub const E1000_CTRL_EXT_WR_WMARK_MASK: u32 = 0x03000000;
-pub const E1000_CTRL_EXT_WR_WMARK_256: u32 = 0x00000000;
-pub const E1000_CTRL_EXT_WR_WMARK_320: u32 = 0x01000000;
-pub const E1000_CTRL_EXT_WR_WMARK_384: u32 = 0x02000000;
-pub const E1000_CTRL_EXT_WR_WMARK_448: u32 = 0x03000000;
-pub const E1000_CTRL_EXT_DRV_LOAD: u32 = 0x10000000; /* Driver loaded bit for FW */
-pub const E1000_CTRL_EXT_IAME: u32 = 0x08000000; /* Interrupt acknowledge Auto-mask */
-pub const E1000_CTRL_EXT_INT_TIMER_CLR: u32 = 0x20000000; /* Clear Interrupt timers after IMS clear */
-pub const E1000_CRTL_EXT_PB_PAREN: u32 = 0x01000000; /* packet buffer parity error detection enabled */
-pub const E1000_CTRL_EXT_DF_PAREN: u32 = 0x02000000; /* descriptor FIFO parity error detection enable */
-pub const E1000_CTRL_EXT_GHOST_PAREN: u32 = 0x40000000;
+pub const CTRL_EXT_GPI0_EN: u32 = 0x00000001; /* Maps SDP4 to GPI0 */
+pub const CTRL_EXT_GPI1_EN: u32 = 0x00000002; /* Maps SDP5 to GPI1 */
+pub const CTRL_EXT_PHYINT_EN: u32 = CTRL_EXT_GPI1_EN;
+pub const CTRL_EXT_GPI2_EN: u32 = 0x00000004; /* Maps SDP6 to GPI2 */
+pub const CTRL_EXT_GPI3_EN: u32 = 0x00000008; /* Maps SDP7 to GPI3 */
+pub const CTRL_EXT_SDP4_DATA: u32 = 0x00000010; /* Value of SW Defineable Pin 4 */
+pub const CTRL_EXT_SDP5_DATA: u32 = 0x00000020; /* Value of SW Defineable Pin 5 */
+pub const CTRL_EXT_PHY_INT: u32 = CTRL_EXT_SDP5_DATA;
+pub const CTRL_EXT_SDP6_DATA: u32 = 0x00000040; /* Value of SW Defineable Pin 6 */
+pub const CTRL_EXT_SDP7_DATA: u32 = 0x00000080; /* Value of SW Defineable Pin 7 */
+pub const CTRL_EXT_SDP4_DIR: u32 = 0x00000100; /* Direction of SDP4 0=in 1=out */
+pub const CTRL_EXT_SDP5_DIR: u32 = 0x00000200; /* Direction of SDP5 0=in 1=out */
+pub const CTRL_EXT_SDP6_DIR: u32 = 0x00000400; /* Direction of SDP6 0=in 1=out */
+pub const CTRL_EXT_SDP7_DIR: u32 = 0x00000800; /* Direction of SDP7 0=in 1=out */
+pub const CTRL_EXT_ASDCHK: u32 = 0x00001000; /* Initiate an ASD sequence */
+pub const CTRL_EXT_EE_RST: u32 = 0x00002000; /* Reinitialize from EEPROM */
+pub const CTRL_EXT_IPS: u32 = 0x00004000; /* Invert Power State */
+pub const CTRL_EXT_SPD_BYPS: u32 = 0x00008000; /* Speed Select Bypass */
+pub const CTRL_EXT_RO_DIS: u32 = 0x00020000; /* Relaxed Ordering disable */
+pub const CTRL_EXT_LINK_MODE_MASK: u32 = 0x00C00000;
+pub const CTRL_EXT_LINK_MODE_GMII: u32 = 0x00000000;
+pub const CTRL_EXT_LINK_MODE_TBI: u32 = 0x00C00000;
+pub const CTRL_EXT_LINK_MODE_KMRN: u32 = 0x00000000;
+pub const CTRL_EXT_LINK_MODE_SERDES: u32 = 0x00C00000;
+pub const CTRL_EXT_LINK_MODE_SGMII: u32 = 0x00800000;
+pub const CTRL_EXT_WR_WMARK_MASK: u32 = 0x03000000;
+pub const CTRL_EXT_WR_WMARK_256: u32 = 0x00000000;
+pub const CTRL_EXT_WR_WMARK_320: u32 = 0x01000000;
+pub const CTRL_EXT_WR_WMARK_384: u32 = 0x02000000;
+pub const CTRL_EXT_WR_WMARK_448: u32 = 0x03000000;
+pub const CTRL_EXT_DRV_LOAD: u32 = 0x10000000; /* Driver loaded bit for FW */
+pub const CTRL_EXT_IAME: u32 = 0x08000000; /* Interrupt acknowledge Auto-mask */
+pub const CTRL_EXT_INT_TIMER_CLR: u32 = 0x20000000; /* Clear Interrupt timers after IMS clear */
+pub const CRTL_EXT_PB_PAREN: u32 = 0x01000000; /* packet buffer parity error detection enabled */
+pub const CTRL_EXT_DF_PAREN: u32 = 0x02000000; /* descriptor FIFO parity error detection enable */
+pub const CTRL_EXT_GHOST_PAREN: u32 = 0x40000000;
 
 /* MDI Control */
-pub const E1000_MDIC_DATA_MASK: u32 = 0x0000FFFF;
-pub const E1000_MDIC_REG_MASK: u32 = 0x001F0000;
-pub const E1000_MDIC_REG_SHIFT: u32 = 16;
-pub const E1000_MDIC_PHY_MASK: u32 = 0x03E00000;
-pub const E1000_MDIC_PHY_SHIFT: u32 = 21;
-pub const E1000_MDIC_OP_WRITE: u32 = 0x04000000;
-pub const E1000_MDIC_OP_READ: u32 = 0x08000000;
-pub const E1000_MDIC_READY: u32 = 0x10000000;
-pub const E1000_MDIC_INT_EN: u32 = 0x20000000;
-pub const E1000_MDIC_ERROR: u32 = 0x40000000;
+pub const MDIC_DATA_MASK: u32 = 0x0000FFFF;
+pub const MDIC_REG_MASK: u32 = 0x001F0000;
+pub const MDIC_REG_SHIFT: u32 = 16;
+pub const MDIC_PHY_MASK: u32 = 0x03E00000;
+pub const MDIC_PHY_SHIFT: u32 = 21;
+pub const MDIC_OP_WRITE: u32 = 0x04000000;
+pub const MDIC_OP_READ: u32 = 0x08000000;
+pub const MDIC_READY: u32 = 0x10000000;
+pub const MDIC_INT_EN: u32 = 0x20000000;
+pub const MDIC_ERROR: u32 = 0x40000000;
 
 pub const INTEL_CE_GBE_MDIC_OP_WRITE: u32 = 0x04000000;
 pub const INTEL_CE_GBE_MDIC_OP_READ: u32 = 0x00000000;
 pub const INTEL_CE_GBE_MDIC_GO: u32 = 0x80000000;
 pub const INTEL_CE_GBE_MDIC_READ_ERROR: u32 = 0x80000000;
 
-pub const E1000_KUMCTRLSTA_MASK: u32 = 0x0000FFFF;
-pub const E1000_KUMCTRLSTA_OFFSET: u32 = 0x001F0000;
-pub const E1000_KUMCTRLSTA_OFFSET_SHIFT: u32 = 16;
-pub const E1000_KUMCTRLSTA_REN: u32 = 0x00200000;
+pub const KUMCTRLSTA_MASK: u32 = 0x0000FFFF;
+pub const KUMCTRLSTA_OFFSET: u32 = 0x001F0000;
+pub const KUMCTRLSTA_OFFSET_SHIFT: u32 = 16;
+pub const KUMCTRLSTA_REN: u32 = 0x00200000;
 
-pub const E1000_KUMCTRLSTA_OFFSET_FIFO_CTRL: u32 = 0x00000000;
-pub const E1000_KUMCTRLSTA_OFFSET_CTRL: u32 = 0x00000001;
-pub const E1000_KUMCTRLSTA_OFFSET_INB_CTRL: u32 = 0x00000002;
-pub const E1000_KUMCTRLSTA_OFFSET_DIAG: u32 = 0x00000003;
-pub const E1000_KUMCTRLSTA_OFFSET_TIMEOUTS: u32 = 0x00000004;
-pub const E1000_KUMCTRLSTA_OFFSET_INB_PARAM: u32 = 0x00000009;
-pub const E1000_KUMCTRLSTA_OFFSET_HD_CTRL: u32 = 0x00000010;
-pub const E1000_KUMCTRLSTA_OFFSET_M2P_SERDES: u32 = 0x0000001E;
-pub const E1000_KUMCTRLSTA_OFFSET_M2P_MODES: u32 = 0x0000001F;
+pub const KUMCTRLSTA_OFFSET_FIFO_CTRL: u32 = 0x00000000;
+pub const KUMCTRLSTA_OFFSET_CTRL: u32 = 0x00000001;
+pub const KUMCTRLSTA_OFFSET_INB_CTRL: u32 = 0x00000002;
+pub const KUMCTRLSTA_OFFSET_DIAG: u32 = 0x00000003;
+pub const KUMCTRLSTA_OFFSET_TIMEOUTS: u32 = 0x00000004;
+pub const KUMCTRLSTA_OFFSET_INB_PARAM: u32 = 0x00000009;
+pub const KUMCTRLSTA_OFFSET_HD_CTRL: u32 = 0x00000010;
+pub const KUMCTRLSTA_OFFSET_M2P_SERDES: u32 = 0x0000001E;
+pub const KUMCTRLSTA_OFFSET_M2P_MODES: u32 = 0x0000001F;
 
 /* FIFO Control */
-pub const E1000_KUMCTRLSTA_FIFO_CTRL_RX_BYPASS: u32 = 0x00000008;
-pub const E1000_KUMCTRLSTA_FIFO_CTRL_TX_BYPASS: u32 = 0x00000800;
+pub const KUMCTRLSTA_FIFO_CTRL_RX_BYPASS: u32 = 0x00000008;
+pub const KUMCTRLSTA_FIFO_CTRL_TX_BYPASS: u32 = 0x00000800;
 
 /* In-Band Control */
-pub const E1000_KUMCTRLSTA_INB_CTRL_LINK_STATUS_TX_TIMEOUT_DEFAULT: u32 = 0x00000500;
-pub const E1000_KUMCTRLSTA_INB_CTRL_DIS_PADDING: u32 = 0x00000010;
+pub const KUMCTRLSTA_INB_CTRL_LINK_STATUS_TX_TIMEOUT_DEFAULT: u32 = 0x00000500;
+pub const KUMCTRLSTA_INB_CTRL_DIS_PADDING: u32 = 0x00000010;
 
 /* Half-Duplex Control */
-pub const E1000_KUMCTRLSTA_HD_CTRL_10_100_DEFAULT: u32 = 0x00000004;
-pub const E1000_KUMCTRLSTA_HD_CTRL_1000_DEFAULT: u32 = 0x00000000;
+pub const KUMCTRLSTA_HD_CTRL_10_100_DEFAULT: u32 = 0x00000004;
+pub const KUMCTRLSTA_HD_CTRL_1000_DEFAULT: u32 = 0x00000000;
 
-pub const E1000_KUMCTRLSTA_OFFSET_K0S_CTRL: u32 = 0x0000001E;
+pub const KUMCTRLSTA_OFFSET_K0S_CTRL: u32 = 0x0000001E;
 
-pub const E1000_KUMCTRLSTA_DIAG_FELPBK: u32 = 0x2000;
-pub const E1000_KUMCTRLSTA_DIAG_NELPBK: u32 = 0x1000;
+pub const KUMCTRLSTA_DIAG_FELPBK: u32 = 0x2000;
+pub const KUMCTRLSTA_DIAG_NELPBK: u32 = 0x1000;
 
-pub const E1000_KUMCTRLSTA_K0S_100_EN: u32 = 0x2000;
-pub const E1000_KUMCTRLSTA_K0S_GBE_EN: u32 = 0x1000;
-pub const E1000_KUMCTRLSTA_K0S_ENTRY_LATENCY_MASK: u32 = 0x0003;
+pub const KUMCTRLSTA_K0S_100_EN: u32 = 0x2000;
+pub const KUMCTRLSTA_K0S_GBE_EN: u32 = 0x1000;
+pub const KUMCTRLSTA_K0S_ENTRY_LATENCY_MASK: u32 = 0x0003;
 
-pub const E1000_KABGTXD_BGSQLBIAS: u32 = 0x00050000;
+pub const KABGTXD_BGSQLBIAS: u32 = 0x00050000;
 
-pub const E1000_PHY_CTRL_SPD_EN: u32 = 0x00000001;
-pub const E1000_PHY_CTRL_D0A_LPLU: u32 = 0x00000002;
-pub const E1000_PHY_CTRL_NOND0A_LPLU: u32 = 0x00000004;
-pub const E1000_PHY_CTRL_NOND0A_GBE_DISABLE: u32 = 0x00000008;
-pub const E1000_PHY_CTRL_GBE_DISABLE: u32 = 0x00000040;
-pub const E1000_PHY_CTRL_B2B_EN: u32 = 0x00000080;
+pub const PHY_CTRL_SPD_EN: u32 = 0x00000001;
+pub const PHY_CTRL_D0A_LPLU: u32 = 0x00000002;
+pub const PHY_CTRL_NOND0A_LPLU: u32 = 0x00000004;
+pub const PHY_CTRL_NOND0A_GBE_DISABLE: u32 = 0x00000008;
+pub const PHY_CTRL_GBE_DISABLE: u32 = 0x00000040;
+pub const PHY_CTRL_B2B_EN: u32 = 0x00000080;
 
 /* Structures, enums, and macros for the PHY */
 
 /* Bit definitions for the Management Data IO (MDIO) and Management Data
  * Clock (MDC) pins in the Device Control Register.
  */
-pub const E1000_CTRL_PHY_RESET_DIR: u32 = E1000_CTRL_SWDPIO0;
-pub const E1000_CTRL_PHY_RESET: u32 = E1000_CTRL_SWDPIN0;
-pub const E1000_CTRL_MDIO_DIR: u32 = E1000_CTRL_SWDPIO2;
-pub const E1000_CTRL_MDIO: u32 = E1000_CTRL_SWDPIN2;
-pub const E1000_CTRL_MDC_DIR: u32 = E1000_CTRL_SWDPIO3;
-pub const E1000_CTRL_MDC: u32 = E1000_CTRL_SWDPIN3;
-pub const E1000_CTRL_PHY_RESET_DIR4: u32 = E1000_CTRL_EXT_SDP4_DIR;
-pub const E1000_CTRL_PHY_RESET4: u32 = E1000_CTRL_EXT_SDP4_DATA;
+pub const CTRL_PHY_RESET_DIR: u32 = CTRL_SWDPIO0;
+pub const CTRL_PHY_RESET: u32 = CTRL_SWDPIN0;
+pub const CTRL_MDIO_DIR: u32 = CTRL_SWDPIO2;
+pub const CTRL_MDIO: u32 = CTRL_SWDPIN2;
+pub const CTRL_MDC_DIR: u32 = CTRL_SWDPIO3;
+pub const CTRL_MDC: u32 = CTRL_SWDPIN3;
+pub const CTRL_PHY_RESET_DIR4: u32 = CTRL_EXT_SDP4_DIR;
+pub const CTRL_PHY_RESET4: u32 = CTRL_EXT_SDP4_DATA;
 
 /* PHY 1000 MII Register/Bit Definitions */
 /* PHY Registers defined by IEEE */
@@ -728,12 +723,12 @@ pub const MAX_PHY_MULTI_PAGE_REG: u32 = 0xF; /* Registers equal on all pages */
  * E = External
  */
 pub const M88_VENDOR: u32 = 0x0141;
-pub const M88E1000_E_PHY_ID: u32 = 0x01410C50;
-pub const M88E1000_I_PHY_ID: u32 = 0x01410C30;
+pub const M88E_PHY_ID: u32 = 0x01410C50;
+pub const M88I_PHY_ID: u32 = 0x01410C30;
 pub const M88E1011_I_PHY_ID: u32 = 0x01410C20;
-pub const IGP01E1000_I_PHY_ID: u32 = 0x02A80380;
-pub const M88E1000_12_PHY_ID: u32 = M88E1000_E_PHY_ID;
-pub const M88E1000_14_PHY_ID: u32 = M88E1000_E_PHY_ID;
+pub const IGP01I_PHY_ID: u32 = 0x02A80380;
+pub const M8812_PHY_ID: u32 = M88E_PHY_ID;
+pub const M8814_PHY_ID: u32 = M88E_PHY_ID;
 pub const M88E1011_I_REV_4: u32 = 0x04;
 pub const M88E1111_I_PHY_ID: u32 = 0x01410CC0;
 pub const M88E1118_E_PHY_ID: u32 = 0x01410E40;
@@ -763,7 +758,7 @@ pub const PHY_PREAMBLE_SIZE: u32 = 32;
 pub const MII_CR_SPEED_1000: u32 = 0x0040;
 pub const MII_CR_SPEED_100: u32 = 0x2000;
 pub const MII_CR_SPEED_10: u32 = 0x0000;
-pub const E1000_PHY_ADDRESS: u32 = 0x01;
+pub const PHY_ADDRESS: u32 = 0x01;
 pub const PHY_AUTO_NEG_TIME: u32 = 45; /* 4.5 Seconds */
 pub const PHY_FORCE_TIME: u32 = 20; /* 2.0 Seconds */
 pub const PHY_REVISION_MASK: u32 = 0xFFFFFFF0;
@@ -838,83 +833,83 @@ pub const CR_1000T_TEST_MODE_3: u16 = 0x6000; /* Slave Transmit Jitter test */
 pub const CR_1000T_TEST_MODE_4: u16 = 0x8000; /* Transmitter Distortion test */
 
 /* M88E1000 PHY Specific Control Register */
-pub const M88E1000_PSCR_JABBER_DISABLE: u16 = 0x0001; /* 1=Jabber Function disabled */
-pub const M88E1000_PSCR_POLARITY_REVERSAL: u16 = 0x0002; /* 1=Polarity Reversal enabled */
-pub const M88E1000_PSCR_SQE_TEST: u16 = 0x0004; /* 1=SQE Test enabled */
-pub const M88E1000_PSCR_CLK125_DISABLE: u16 = 0x0010; /* 1=CLK125 low, 0=CLK125 toggling */
-pub const M88E1000_PSCR_MDI_MANUAL_MODE: u16 = 0x0000; /* MDI Crossover Mode bits 6:5 */
-pub const M88E1000_PSCR_MDIX_MANUAL_MODE: u16 = 0x0020; /* Manual MDIX configuration */
-pub const M88E1000_PSCR_AUTO_X_1000T: u16 = 0x0040;
-pub const M88E1000_PSCR_AUTO_X_MODE: u16 = 0x0060; /* Auto crossover enabled all speeds. */
-pub const M88E1000_PSCR_10BT_EXT_DIST_ENABLE: u16 = 0x0080;
-pub const M88E1000_PSCR_MII_5BIT_ENABLE: u16 = 0x0100;
-pub const M88E1000_PSCR_SCRAMBLER_DISABLE: u16 = 0x0200; /* 1=Scrambler disable */
-pub const M88E1000_PSCR_FORCE_LINK_GOOD: u16 = 0x0400; /* 1=Force link good */
-pub const M88E1000_PSCR_ASSERT_CRS_ON_TX: u16 = 0x0800; /* 1=Assert CRS on Transmit */
+pub const M88PSCR_JABBER_DISABLE: u16 = 0x0001; /* 1=Jabber Function disabled */
+pub const M88PSCR_POLARITY_REVERSAL: u16 = 0x0002; /* 1=Polarity Reversal enabled */
+pub const M88PSCR_SQE_TEST: u16 = 0x0004; /* 1=SQE Test enabled */
+pub const M88PSCR_CLK125_DISABLE: u16 = 0x0010; /* 1=CLK125 low, 0=CLK125 toggling */
+pub const M88PSCR_MDI_MANUAL_MODE: u16 = 0x0000; /* MDI Crossover Mode bits 6:5 */
+pub const M88PSCR_MDIX_MANUAL_MODE: u16 = 0x0020; /* Manual MDIX configuration */
+pub const M88PSCR_AUTO_X_1000T: u16 = 0x0040;
+pub const M88PSCR_AUTO_X_MODE: u16 = 0x0060; /* Auto crossover enabled all speeds. */
+pub const M88PSCR_10BT_EXT_DIST_ENABLE: u16 = 0x0080;
+pub const M88PSCR_MII_5BIT_ENABLE: u16 = 0x0100;
+pub const M88PSCR_SCRAMBLER_DISABLE: u16 = 0x0200; /* 1=Scrambler disable */
+pub const M88PSCR_FORCE_LINK_GOOD: u16 = 0x0400; /* 1=Force link good */
+pub const M88PSCR_ASSERT_CRS_ON_TX: u16 = 0x0800; /* 1=Assert CRS on Transmit */
 
-pub const M88E1000_PSCR_POLARITY_REVERSAL_SHIFT: u16 = 1;
-pub const M88E1000_PSCR_AUTO_X_MODE_SHIFT: u16 = 5;
-pub const M88E1000_PSCR_10BT_EXT_DIST_ENABLE_SHIFT: u16 = 7;
+pub const M88PSCR_POLARITY_REVERSAL_SHIFT: u16 = 1;
+pub const M88PSCR_AUTO_X_MODE_SHIFT: u16 = 5;
+pub const M88PSCR_10BT_EXT_DIST_ENABLE_SHIFT: u16 = 7;
 
 /* M88E1000 Specific Registers */
-pub const M88E1000_PHY_SPEC_CTRL: u32 = 0x10; /* PHY Specific Control Register */
-pub const M88E1000_PHY_SPEC_STATUS: u32 = 0x11; /* PHY Specific Status Register */
-pub const M88E1000_INT_ENABLE: u32 = 0x12; /* Interrupt Enable Register */
-pub const M88E1000_INT_STATUS: u32 = 0x13; /* Interrupt Status Register */
-pub const M88E1000_EXT_PHY_SPEC_CTRL: u32 = 0x14; /* Extended PHY Specific Control */
-pub const M88E1000_RX_ERR_CNTR: u32 = 0x15; /* Receive Error Counter */
+pub const M88PHY_SPEC_CTRL: u32 = 0x10; /* PHY Specific Control Register */
+pub const M88PHY_SPEC_STATUS: u32 = 0x11; /* PHY Specific Status Register */
+pub const M88INT_ENABLE: u32 = 0x12; /* Interrupt Enable Register */
+pub const M88INT_STATUS: u32 = 0x13; /* Interrupt Status Register */
+pub const M88EXT_PHY_SPEC_CTRL: u32 = 0x14; /* Extended PHY Specific Control */
+pub const M88RX_ERR_CNTR: u32 = 0x15; /* Receive Error Counter */
 
-pub const M88E1000_PHY_EXT_CTRL: u32 = 0x1A; /* PHY extend control register */
-pub const M88E1000_PHY_PAGE_SELECT: u32 = 0x1D; /* Reg 29 for page number setting */
-pub const M88E1000_PHY_GEN_CONTROL: u32 = 0x1E; /* Its meaning depends on reg 29 */
-pub const M88E1000_PHY_VCO_REG_BIT8: u32 = 0x100; /* Bits 8 & 11 are adjusted for */
-pub const M88E1000_PHY_VCO_REG_BIT11: u32 = 0x800; /* improved BER performance */
+pub const M88PHY_EXT_CTRL: u32 = 0x1A; /* PHY extend control register */
+pub const M88PHY_PAGE_SELECT: u32 = 0x1D; /* Reg 29 for page number setting */
+pub const M88PHY_GEN_CONTROL: u32 = 0x1E; /* Its meaning depends on reg 29 */
+pub const M88PHY_VCO_REG_BIT8: u32 = 0x100; /* Bits 8 & 11 are adjusted for */
+pub const M88PHY_VCO_REG_BIT11: u32 = 0x800; /* improved BER performance */
 
 /* M88E1000 PHY Specific Status Register */
-pub const M88E1000_PSSR_JABBER: u32 = 0x0001; /* 1=Jabber */
-pub const M88E1000_PSSR_REV_POLARITY: u32 = 0x0002; /* 1=Polarity reversed */
-pub const M88E1000_PSSR_DOWNSHIFT: u32 = 0x0020; /* 1=Downshifted */
-pub const M88E1000_PSSR_MDIX: u32 = 0x0040; /* 1=MDIX; 0=MDI */
-pub const M88E1000_PSSR_CABLE_LENGTH: u32 = 0x0380; /* 0=<50M;1=50-80M;2=80-110M;
+pub const M88PSSR_JABBER: u32 = 0x0001; /* 1=Jabber */
+pub const M88PSSR_REV_POLARITY: u32 = 0x0002; /* 1=Polarity reversed */
+pub const M88PSSR_DOWNSHIFT: u32 = 0x0020; /* 1=Downshifted */
+pub const M88PSSR_MDIX: u32 = 0x0040; /* 1=MDIX; 0=MDI */
+pub const M88PSSR_CABLE_LENGTH: u32 = 0x0380; /* 0=<50M;1=50-80M;2=80-110M;
                                                      * 3=110-140M;4=>140M */
-pub const M88E1000_PSSR_LINK: u32 = 0x0400; /* 1=Link up, 0=Link down */
-pub const M88E1000_PSSR_SPD_DPLX_RESOLVED: u32 = 0x0800; /* 1=Speed & Duplex resolved */
-pub const M88E1000_PSSR_PAGE_RCVD: u32 = 0x1000; /* 1=Page received */
-pub const M88E1000_PSSR_DPLX: u32 = 0x2000; /* 1=Duplex 0=Half Duplex */
-pub const M88E1000_PSSR_SPEED: u32 = 0xC000; /* Speed, bits 14:15 */
-pub const M88E1000_PSSR_10MBS: u32 = 0x0000; /* 00=10Mbs */
-pub const M88E1000_PSSR_100MBS: u32 = 0x4000; /* 01=100Mbs */
-pub const M88E1000_PSSR_1000MBS: u32 = 0x8000; /* 10=1000Mbs */
+pub const M88PSSR_LINK: u32 = 0x0400; /* 1=Link up, 0=Link down */
+pub const M88PSSR_SPD_DPLX_RESOLVED: u32 = 0x0800; /* 1=Speed & Duplex resolved */
+pub const M88PSSR_PAGE_RCVD: u32 = 0x1000; /* 1=Page received */
+pub const M88PSSR_DPLX: u32 = 0x2000; /* 1=Duplex 0=Half Duplex */
+pub const M88PSSR_SPEED: u32 = 0xC000; /* Speed, bits 14:15 */
+pub const M88PSSR_10MBS: u32 = 0x0000; /* 00=10Mbs */
+pub const M88PSSR_100MBS: u32 = 0x4000; /* 01=100Mbs */
+pub const M88PSSR_1000MBS: u32 = 0x8000; /* 10=1000Mbs */
 
-pub const M88E1000_PSSR_REV_POLARITY_SHIFT: u32 = 1;
-pub const M88E1000_PSSR_DOWNSHIFT_SHIFT: u32 = 5;
-pub const M88E1000_PSSR_MDIX_SHIFT: u32 = 6;
-pub const M88E1000_PSSR_CABLE_LENGTH_SHIFT: u32 = 7;
+pub const M88PSSR_REV_POLARITY_SHIFT: u32 = 1;
+pub const M88PSSR_DOWNSHIFT_SHIFT: u32 = 5;
+pub const M88PSSR_MDIX_SHIFT: u32 = 6;
+pub const M88PSSR_CABLE_LENGTH_SHIFT: u32 = 7;
 
 /* M88E1000 Extended PHY Specific Control Register */
-pub const M88E1000_EPSCR_FIBER_LOOPBACK: u32 = 0x4000; /* 1=Fiber loopback */
-pub const M88E1000_EPSCR_DOWN_NO_IDLE: u32 = 0x8000; /* 1=Lost lock detect enabled.
+pub const M88EPSCR_FIBER_LOOPBACK: u32 = 0x4000; /* 1=Fiber loopback */
+pub const M88EPSCR_DOWN_NO_IDLE: u32 = 0x8000; /* 1=Lost lock detect enabled.
                                                       * Will assert lost lock and bring
                                                       * link down if idle not seen
                                                       * within 1ms in 1000BASE-T
                                                       */
 /* Number of times we will attempt to autonegotiate before downshifting if we
  * are the master */
-pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_MASK: u16 = 0x0C00;
-pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_1X: u16 = 0x0000;
-pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_2X: u16 = 0x0400;
-pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_3X: u16 = 0x0800;
-pub const M88E1000_EPSCR_MASTER_DOWNSHIFT_4X: u16 = 0x0C00;
+pub const M88EPSCR_MASTER_DOWNSHIFT_MASK: u16 = 0x0C00;
+pub const M88EPSCR_MASTER_DOWNSHIFT_1X: u16 = 0x0000;
+pub const M88EPSCR_MASTER_DOWNSHIFT_2X: u16 = 0x0400;
+pub const M88EPSCR_MASTER_DOWNSHIFT_3X: u16 = 0x0800;
+pub const M88EPSCR_MASTER_DOWNSHIFT_4X: u16 = 0x0C00;
 /* Number of times we will attempt to autonegotiate before downshifting if we
  * are the slave */
-pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_MASK: u16 = 0x0300;
-pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_DIS: u16 = 0x0000;
-pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_1X: u16 = 0x0100;
-pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_2X: u16 = 0x0200;
-pub const M88E1000_EPSCR_SLAVE_DOWNSHIFT_3X: u16 = 0x0300;
-pub const M88E1000_EPSCR_TX_CLK_2_5: u16 = 0x0060; /* 2.5 MHz TX_CLK */
-pub const M88E1000_EPSCR_TX_CLK_25: u16 = 0x0070; /* 25  MHz TX_CLK */
-pub const M88E1000_EPSCR_TX_CLK_0: u16 = 0x0000; /* NO  TX_CLK */
+pub const M88EPSCR_SLAVE_DOWNSHIFT_MASK: u16 = 0x0300;
+pub const M88EPSCR_SLAVE_DOWNSHIFT_DIS: u16 = 0x0000;
+pub const M88EPSCR_SLAVE_DOWNSHIFT_1X: u16 = 0x0100;
+pub const M88EPSCR_SLAVE_DOWNSHIFT_2X: u16 = 0x0200;
+pub const M88EPSCR_SLAVE_DOWNSHIFT_3X: u16 = 0x0300;
+pub const M88EPSCR_TX_CLK_2_5: u16 = 0x0060; /* 2.5 MHz TX_CLK */
+pub const M88EPSCR_TX_CLK_25: u16 = 0x0070; /* 25  MHz TX_CLK */
+pub const M88EPSCR_TX_CLK_0: u16 = 0x0000; /* NO  TX_CLK */
 
 /* Word definitions for ID LED Settings */
 pub const ID_LED_RESERVED_0000: u16 = 0x0000;
@@ -932,12 +927,12 @@ pub const ID_LED_OFF1_ON2: u16 = 0x8;
 pub const ID_LED_OFF1_OFF2: u16 = 0x9;
 
 /* Filters */
-pub const E1000_NUM_UNICAST: u32 = 16; /* Unicast filter entries */
-pub const E1000_MC_TBL_SIZE: u32 = 128; /* Multicast Filter Table (4096 bits) */
-pub const E1000_VLAN_FILTER_TBL_SIZE: u32 = 128; /* VLAN Filter Table (4096 bits) */
+pub const NUM_UNICAST: u32 = 16; /* Unicast filter entries */
+pub const MC_TBL_SIZE: u32 = 128; /* Multicast Filter Table (4096 bits) */
+pub const VLAN_FILTER_TBL_SIZE: u32 = 128; /* VLAN Filter Table (4096 bits) */
 
 /* Receive Address */
-pub const E1000_RAH_AV: u32 = 0x80000000; /* Receive descriptor valid */
+pub const RAH_AV: u32 = 0x80000000; /* Receive descriptor valid */
 
 /* Mask bits for fields in Word 0x0f of the EEPROM */
 pub const EEPROM_WORD0F_PAUSE_MASK: u16 = 0x3000;
@@ -948,10 +943,10 @@ pub const EEPROM_WORD0F_SWPDIO_EXT: u16 = 0x00F0;
 pub const EEPROM_WORD0F_LPLU: u16 = 0x0001;
 
 /* Flow Control */
-pub const E1000_FCRTH_RTH: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTH */
-pub const E1000_FCRTH_XFCE: u32 = 0x80000000; /* External Flow Control Enable */
-pub const E1000_FCRTL_RTL: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTL */
-pub const E1000_FCRTL_XONE: u32 = 0x80000000; /* Enable XON frame transmission */
+pub const FCRTH_RTH: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTH */
+pub const FCRTH_XFCE: u32 = 0x80000000; /* External Flow Control Enable */
+pub const FCRTL_RTL: u32 = 0x0000FFF8; /* Mask Bits[15:3] for RTL */
+pub const FCRTL_XONE: u32 = 0x80000000; /* Enable XON frame transmission */
 
 /* Adaptive IFS defines */
 pub const TX_THRESHOLD_START: u16 = 8;

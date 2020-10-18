@@ -5,31 +5,31 @@ use spin::Mutex;
 const EEPROM_LOCK: Mutex<usize> = Mutex::new(0);
 
 /**
- * e1000_release_eeprom - drop chip select
+ * release_eeprom - drop chip select
  *
  * Terminates a command by inverting the EEPROM's chip select pin
  */
 fn release_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
-    let mut eecd = hardware.read(CTRL_EECD)?;
+    let mut eecd = hardware.read(EECD)?;
 
     /* cleanup eeprom */
 
     /* CS on Microwire is active-high */
-    eecd &= !(E1000_EECD_CS | E1000_EECD_DI);
+    eecd &= !(EECD_CS | EECD_DI);
 
-    hardware.write(CTRL_EECD, eecd)?;
+    hardware.write(EECD, eecd)?;
 
     /* Rising edge of clock */
-    eecd |= E1000_EECD_SK;
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd |= EECD_SK;
+    hardware.write(EECD, eecd)?;
 
     hardware.write_flush()?;
     hardware.delay();
     //udelay(hw->eeprom.delay_usec);
 
     /* Falling edge of clock */
-    eecd &= !E1000_EECD_SK;
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd &= !EECD_SK;
+    hardware.write(EECD, eecd)?;
 
     hardware.write_flush()?;
     hardware.delay();
@@ -37,8 +37,8 @@ fn release_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
 
     /* Stop requesting EEPROM access */
     if hardware.mac_type as u32 > MacType::E100082544 as u32 {
-        eecd &= !E1000_EECD_REQ;
-        hardware.write(CTRL_EECD, eecd)?;
+        eecd &= !EECD_REQ;
+        hardware.write(EECD, eecd)?;
     }
 
     Ok(())
@@ -46,60 +46,60 @@ fn release_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
 
 fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
     let mut i = 0;
-    let mut eecd = hardware.read(CTRL_EECD)?;
+    let mut eecd = hardware.read(EECD)?;
 
     /* Request EEPROM Access */
-    eecd |= E1000_EECD_REQ;
-    hardware.write(CTRL_EECD, eecd)?;
-    eecd = hardware.read(CTRL_EECD)?;
-    while eecd & E1000_EECD_GNT == 0 && i < E1000_EEPROM_GRANT_ATTEMPTS {
+    eecd |= EECD_REQ;
+    hardware.write(EECD, eecd)?;
+    eecd = hardware.read(EECD)?;
+    while eecd & EECD_GNT == 0 && i < EEPROM_GRANT_ATTEMPTS {
         i += 1;
         // udelay(5);
-        eecd = hardware.read(CTRL_EECD)?;
+        eecd = hardware.read(EECD)?;
     }
 
-    if eecd & E1000_EECD_GNT == 0 {
+    if eecd & EECD_GNT == 0 {
         panic!("Failed to acquire eeprom");
     }
 
     /* Setup EEPROM for Read/Write */
 
     /* Clear SK and DI */
-    eecd = eecd & !(E1000_EECD_DI | E1000_EECD_SK);
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd = eecd & !(EECD_DI | EECD_SK);
+    hardware.write(EECD, eecd)?;
 
     /* Set CS */
-    eecd = eecd | E1000_EECD_CS;
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd = eecd | EECD_CS;
+    hardware.write(EECD, eecd)?;
 
-    let _ = hardware.read(CTRL_EECD)?;
+    let _ = hardware.read(EECD)?;
 
     Ok(())
 }
 
 fn standby_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
-    let mut eecd: u32 = hardware.read(CTRL_EECD)?;
+    let mut eecd: u32 = hardware.read(EECD)?;
 
-    eecd &= !(E1000_EECD_CS | E1000_EECD_SK);
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd &= !(EECD_CS | EECD_SK);
+    hardware.write(EECD, eecd)?;
     hardware.write_flush()?;
     hardware.delay();
 
     /* Clock high */
-    eecd |= E1000_EECD_SK;
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd |= EECD_SK;
+    hardware.write(EECD, eecd)?;
     hardware.write_flush()?;
     hardware.delay();
 
     /* Select EEPROM */
-    eecd |= E1000_EECD_CS;
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd |= EECD_CS;
+    hardware.write(EECD, eecd)?;
     hardware.write_flush()?;
     hardware.delay();
 
     /* Clock low */
-    eecd &= !E1000_EECD_SK;
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd &= !EECD_SK;
+    hardware.write(EECD, eecd)?;
     hardware.write_flush()?;
     hardware.delay();
 
@@ -111,8 +111,8 @@ fn raise_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, ()> {
      * Raise the clock input to the EEPROM (by setting the SK bit), and then
      * wait <delay> microseconds.
      */
-    let new_eecd = eecd | E1000_EECD_SK;
-    hardware.write(CTRL_EECD, new_eecd)?;
+    let new_eecd = eecd | EECD_SK;
+    hardware.write(EECD, new_eecd)?;
 
     hardware.write_flush()?;
     hardware.delay();
@@ -124,8 +124,8 @@ fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, ()> {
      * Raise the clock input to the EEPROM (by setting the SK bit), and then
      * wait <delay> microseconds.
      */
-    let new_eecd = eecd & !E1000_EECD_SK;
-    hardware.write(CTRL_EECD, new_eecd)?;
+    let new_eecd = eecd & !EECD_SK;
+    hardware.write(EECD, new_eecd)?;
 
     hardware.write_flush()?;
     hardware.delay();
@@ -143,18 +143,18 @@ fn shift_in_ee_bits(hardware: &super::Hardware, count: u16) -> Result<u16, ()> {
      * of the "DO" bit.  During this "shifting in" process the "DI" bit
      * should always be clear.
      */
-    eecd = hardware.read(CTRL_EECD)?;
+    eecd = hardware.read(EECD)?;
 
-    eecd &= !(E1000_EECD_DO | E1000_EECD_DI);
+    eecd &= !(EECD_DO | EECD_DI);
 
     for _ in 0..count {
         data = data << 1;
         raise_ee_clk(hardware, eecd)?;
 
-        eecd = hardware.read(CTRL_EECD)?;
+        eecd = hardware.read(EECD)?;
 
-        eecd &= !(E1000_EECD_DI);
-        if eecd & E1000_EECD_DO != 0 {
+        eecd &= !(EECD_DI);
+        if eecd & EECD_DO != 0 {
             data |= 1;
         }
 
@@ -174,9 +174,9 @@ fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Resul
      * In order to do this, "data" must be broken down into bits.
      */
     mask = 0x01 << (count - 1);
-    eecd = hardware.read(CTRL_EECD)?;
+    eecd = hardware.read(EECD)?;
 
-    eecd = eecd & !E1000_EECD_DO;
+    eecd = eecd & !EECD_DO;
 
     while mask != 0 {
         /*
@@ -186,13 +186,13 @@ fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Resul
          * out to the EEPROM by setting "DI" to "0" and then raising and
          * then lowering the clock.
          */
-        eecd &= !E1000_EECD_DI;
+        eecd &= !EECD_DI;
 
         if data & mask != 0 {
-            eecd = eecd | E1000_EECD_DI;
+            eecd = eecd | EECD_DI;
         }
 
-        hardware.write(CTRL_EECD, eecd)?;
+        hardware.write(EECD, eecd)?;
 
         // write flush
         hardware.read(STATUS)?;
@@ -204,10 +204,10 @@ fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Resul
     }
 
     /* We leave the "DI" bit set to "0" when we leave this routine. */
-    eecd &= !E1000_EECD_DI;
-    hardware.write(CTRL_EECD, eecd)?;
+    eecd &= !EECD_DI;
+    hardware.write(EECD, eecd)?;
 
-    hardware.read(CTRL_EECD)?;
+    hardware.read(EECD)?;
     Ok(())
 }
 
@@ -224,7 +224,7 @@ pub(super) fn read_eeprom(hardware: &super::Hardware, offset: u16, words: u16) -
             (words == 0)) {
             e_dbg("\"words\" parameter out of bounds. Words = %d,"
                 "size = %d\n", offset, eeprom->word_size);
-            return -E1000_ERR_EEPROM;
+            return -ERR_EEPROM;
         }*/
 
         /* EEPROM's that don't use EERD to read require us to bit-bang the SPI
