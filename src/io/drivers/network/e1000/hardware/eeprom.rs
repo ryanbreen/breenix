@@ -1,6 +1,10 @@
 
 use crate::io::drivers::network::e1000::constants::*;
 
+use spin::Mutex;
+
+const EEPROM_LOCK:Mutex<usize> = Mutex::new(0);
+
 /**
  * e1000_release_eeprom - drop chip select
  *
@@ -121,7 +125,7 @@ fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, ()> {
      * Raise the clock input to the EEPROM (by setting the SK bit), and then
      * wait <delay> microseconds.
      */
-    let mut new_eecd = eecd & !E1000_EECD_SK;
+    let new_eecd = eecd & !E1000_EECD_SK;
     hardware.write(CTRL_EECD, new_eecd)?;
 
     hardware.write_flush()?;
@@ -209,42 +213,45 @@ fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Resul
 }
 
 pub(super) fn read_eeprom(hardware: &super::Hardware, offset: u16, words: u16) -> Result<u16, ()> {
-    // TODO: Lock this all
-
-    /* A check for invalid values:  offset too large, too many words, and
-     * not enough words.
-     *
-    if ((offset >= eeprom->word_size) ||
-        (words > eeprom->word_size - offset) ||
-        (words == 0)) {
-        e_dbg("\"words\" parameter out of bounds. Words = %d,"
-            "size = %d\n", offset, eeprom->word_size);
-        return -E1000_ERR_EEPROM;
-    }*/
-
-    /* EEPROM's that don't use EERD to read require us to bit-bang the SPI
-     * directly. In this case, we need to acquire the EEPROM so that
-     * FW or other port software does not interrupt.
-     */
-    /* Prepare the EEPROM for bit-bang reading */
-    acquire_eeprom(hardware)?;
 
     let mut data: u16 = 0;
-    for i in 0..words {
-        /* Send the READ command (opcode + addr)  */
-        shift_out_ee_bits(hardware, EEPROM_READ_OPCODE_MICROWIRE, 3)?;
+    EEPROM_LOCK.lock();
 
-        shift_out_ee_bits(hardware, offset as u32 + i as u32, 6)?;
+    {
+        /* A check for invalid values:  offset too large, too many words, and
+        * not enough words.
+        *
+        if ((offset >= eeprom->word_size) ||
+            (words > eeprom->word_size - offset) ||
+            (words == 0)) {
+            e_dbg("\"words\" parameter out of bounds. Words = %d,"
+                "size = %d\n", offset, eeprom->word_size);
+            return -E1000_ERR_EEPROM;
+        }*/
 
-        /*
-         * Read the data.  For microwire, each word requires the
-         * overhead of eeprom setup and tear-down.
-         */
-        data = data | (shift_in_ee_bits(hardware,16)? << (8 * i));
-        standby_eeprom(hardware, )?;
+        /* EEPROM's that don't use EERD to read require us to bit-bang the SPI
+        * directly. In this case, we need to acquire the EEPROM so that
+        * FW or other port software does not interrupt.
+        */
+        /* Prepare the EEPROM for bit-bang reading */
+        acquire_eeprom(hardware)?;
+
+        for i in 0..words {
+            /* Send the READ command (opcode + addr)  */
+            shift_out_ee_bits(hardware, EEPROM_READ_OPCODE_MICROWIRE, 3)?;
+
+            shift_out_ee_bits(hardware, offset as u32 + i as u32, 6)?;
+
+            /*
+            * Read the data.  For microwire, each word requires the
+            * overhead of eeprom setup and tear-down.
+            */
+            data = data | (shift_in_ee_bits(hardware,16)? << (8 * i));
+            standby_eeprom(hardware, )?;
+        }
+
+        release_eeprom(hardware, )?;
     }
-
-    release_eeprom(hardware, )?;
 
     Ok(data)
 }

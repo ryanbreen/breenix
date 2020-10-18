@@ -3,8 +3,6 @@ use core::ptr;
 
 use macaddr::MacAddr;
 
-use spin::Mutex;
-
 use crate::println;
 
 use crate::io::pci;
