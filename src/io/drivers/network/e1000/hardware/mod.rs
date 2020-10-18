@@ -191,6 +191,18 @@ impl Hardware {
 
         self.populate_bus_info()?;
 
+        self.wait_autoneg_complete = false;
+        self.tbi_compatibility_en = true;
+        self.adaptive_ifs = true;
+
+        /* Copper options */
+
+        if self.media_type == MediaType::E1000MediaTypeCopper {
+            self.mdix = AUTO_ALL_MODES;
+            self.disable_polarity_correction = false;
+            self.master_slave = MasterSlaveType::E1000MSHWDefault;
+        }
+
         Ok(())
     }
 
