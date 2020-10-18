@@ -210,10 +210,42 @@ impl E1000 {
         /* setup the private structure */
         self.sw_init()?;
 
-        self.hardware.reset()?;
+        /*
+        netdev->priv_flags |= IFF_SUPP_NOFCS;
+
+        netdev->features |= netdev->hw_features;
+        netdev->hw_features |= (NETIF_F_RXCSUM |
+                    NETIF_F_RXALL |
+                    NETIF_F_RXFCS);
+
+        if (pci_using_dac) {
+            pr_info("Using dac\n");
+            netdev->features |= NETIF_F_HIGHDMA;
+            netdev->vlan_features |= NETIF_F_HIGHDMA;
+        }
+
+        netdev->vlan_features |= (NETIF_F_TSO |
+                    NETIF_F_HW_CSUM |
+                    NETIF_F_SG);
+
+        /* Do not set IFF_UNICAST_FLT for VMWare's 82545EM */
+        if (hw->device_id != E1000_DEV_ID_82545EM_COPPER ||
+            hw->subsystem_vendor_id != PCI_VENDOR_ID_VMWARE)
+            netdev->priv_flags |= IFF_UNICAST_FLT;
+
+        */
+
+        /* MTU range: 46 - 16110 */
+        //netdev->min_mtu = ETH_ZLEN - ETH_HLEN;
+        //netdev->max_mtu = MAX_JUMBO_FRAME_SIZE - (ETH_HLEN + ETH_FCS_LEN);
+
+        self.en_mng_pt = self.hardware.enable_mng_pass_thru()?;
 
         self.hardware.checksum_eeprom()?;
         self.hardware.load_mac_addr()?;
+
+        self.hardware.reset()?;
+
         println!("MAC is {}", self.hardware.mac);
 
         let control_port = self

@@ -99,6 +99,9 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     in_ifs_mode: bool,
     autoneg_advertised: u16,
     get_link_status: bool,
+    asf_firmware_present: bool,
+    bad_tx_carr_stats_fd: bool,
+    has_smbus: bool,
     wait_autoneg_complete: bool,
     tbi_compatibility_en: bool,
     adaptive_ifs: bool,
@@ -146,6 +149,9 @@ impl Hardware {
             ifs_max_val: IFS_MAX,
             ifs_step_size: IFS_STEP,
             ifs_ratio: IFS_RATIO,
+            asf_firmware_present: false,
+            bad_tx_carr_stats_fd: false,
+            has_smbus: false,
             in_ifs_mode: false,
             autoneg_advertised: 0,
             get_link_status: false,
@@ -316,27 +322,28 @@ impl Hardware {
             }
         };
 
-        // I don't intend to lard up the struct with the below fields because it's highly
-        // unlikely Breenix will ever run on anything other than qemu.
-        /*
         match self.mac_type {
-            MacType::E100082541 | MacType::E100082547 |
-            MacType::E100082541Rev2 | MacType::E100082547Rev2 => {
+            MacType::E100082541
+            | MacType::E100082547
+            | MacType::E100082541Rev2
+            | MacType::E100082547Rev2 => {
                 self.asf_firmware_present = true;
-            },
+            }
             _ => {}
         };
 
-        /* The 82543 chip does not count tx_carrier_errors properly in
+        /*
+         * The 82543 chip does not count tx_carrier_errors properly in
          * FD mode
          */
-        if (self.mac_type == MacType::E100082543) {
+        if self.mac_type == MacType::E100082543 {
             self.bad_tx_carr_stats_fd = true;
         }
 
-        if (hw->mac_type > 82544)
-            hw->has_smbus = true;
-        */
+        if self.mac_type as u32 > MacType::E100082544 as u32 {
+            self.has_smbus = true;
+        }
+
         Ok(())
     }
 
@@ -408,6 +415,27 @@ impl Hardware {
         for i in 0..1 {
             //udelay(eeprom->delay_usec);
         }*/
+    }
+
+    /**
+     * e1000_enable_mng_pass_thru - check for bmc pass through
+     *
+     * Verifies the hardware needs to allow ARPs to be processed by the host
+     * returns: - true/false
+     */
+    pub(in crate::io::drivers::network::e1000) fn enable_mng_pass_thru(&self) -> Result<bool, ()> {
+        if self.asf_firmware_present {
+            let manc = self.read(MANC)?;
+
+            if manc & MANC_RCV_TCO_EN == 0 || manc & MANC_EN_MAC_ADDR_FILTER == 0 {
+                return Ok(false);
+            }
+
+            if manc & MANC_SMBUS_EN != 0 && manc & MANC_ASF_EN == 0 {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
     }
 
     /**
