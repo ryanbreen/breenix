@@ -87,7 +87,7 @@ pub(in crate::io::drivers::network::e1000) const IAM: u32 = 0x000E0; /* Interrup
 
 /* PCI bus types */
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BusType {
+pub(in crate::io::drivers::network::e1000) enum BusType {
     E1000BusTypeUnknown = 0,
     E1000BusTypePCI,
     E1000BusTypePCIX,
@@ -96,7 +96,7 @@ pub enum BusType {
 
 /* PCI bus speeds */
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BusSpeed {
+pub(in crate::io::drivers::network::e1000) enum BusSpeed {
     E1000BusSpeedUnknown = 0,
     E1000BusSpeed33,
     E1000BusSpeed66,
@@ -108,7 +108,7 @@ pub enum BusSpeed {
 
 /* PCI bus widths */
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BusWidth {
+pub(in crate::io::drivers::network::e1000) enum BusWidth {
     E1000BusWidthUnknown = 0,
     E1000BusWidth32,
     E1000BusWidth64,
@@ -264,7 +264,7 @@ pub(in crate::io::drivers::network::e1000) const MAX_FRAME_SIZE: u64 = 0x5ee;
 /* Enumerated types specific to the e1000 hardware */
 /* Media Access Controllers */
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MacType {
+pub(in crate::io::drivers::network::e1000) enum MacType {
     E1000Undefined = 0,
     E100082542Rev2Point0,
     E100082542Rev2Point1,
@@ -284,7 +284,7 @@ pub enum MacType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MediaType {
+pub(in crate::io::drivers::network::e1000) enum MediaType {
     E1000MediaTypeCopper = 0,
     E1000MediaTypeFiber = 1,
     E1000MediaTypeInternalSerdes = 2,
@@ -293,7 +293,7 @@ pub enum MediaType {
 
 /* Flow Control Settings */
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FlowControlSettings {
+pub(in crate::io::drivers::network::e1000) enum FlowControlSettings {
     E1000FCNone = 0,
     E1000FCRXPause = 1,
     E1000FCTXPause = 2,
@@ -302,7 +302,7 @@ pub enum FlowControlSettings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum MasterSlaveType {
+pub(in crate::io::drivers::network::e1000) enum MasterSlaveType {
     E1000MSHWDefault = 0,
     E1000MSForceMaster,
     E1000MSForceSlave,
@@ -740,7 +740,7 @@ pub(in crate::io::drivers::network::e1000) const RTL_PHY_CTRL_FD: u32 = 0x0100; 
 pub(in crate::io::drivers::network::e1000) const RTL_PHY_CTRL_SPD_100: u32 = 0x200000; /* Force 100Mb */
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PhyType {
+pub(in crate::io::drivers::network::e1000) enum PhyType {
     E1000PhyM88 = 0,
     E1000PhyIGP,
     E1000Phy8211,
@@ -962,7 +962,7 @@ pub(in crate::io::drivers::network::e1000) const IFS_MIN: u16 = 40;
 pub(in crate::io::drivers::network::e1000) const IFS_RATIO: u16 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CableLength {
+pub(in crate::io::drivers::network::e1000) enum CableLength {
     Fifty = 0,
     FiftyToEighty,
     EightyToOneHundredTen,
@@ -972,35 +972,35 @@ pub enum CableLength {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TenBTExtDistEnable {
+pub(in crate::io::drivers::network::e1000) enum TenBTExtDistEnable {
     Normal = 0,
     Lower,
     Undefined = 0xFF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RevPolarity {
+pub(in crate::io::drivers::network::e1000) enum RevPolarity {
     Normal = 0,
     Reverse,
     Undefined = 0xFF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Downshift {
+pub(in crate::io::drivers::network::e1000) enum Downshift {
     Normal = 0,
     Activated,
     Undefined = 0xFF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PolarityReversal {
+pub(in crate::io::drivers::network::e1000) enum PolarityReversal {
     Enabled = 0,
     Disabled,
     Undefined = 0xFF,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AutoXMode {
+pub(in crate::io::drivers::network::e1000) enum AutoXMode {
     ManualMDI = 0,
     ManualMDIX,
     Auto1,
@@ -1009,7 +1009,7 @@ pub enum AutoXMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RXStatus {
+pub(in crate::io::drivers::network::e1000) enum RXStatus {
     NotOk = 0,
     Ok,
     Undefined = 0xFF,
