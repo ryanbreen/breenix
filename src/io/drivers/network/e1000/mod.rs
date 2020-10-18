@@ -1,6 +1,7 @@
 use crate::println;
 
 use crate::io::pci;
+use crate::io::pci::DeviceError;
 
 mod constants;
 mod hardware;
@@ -33,11 +34,16 @@ impl E1000 {
             num_rx_queues: 0,
         };
 
-        e1000.probe()?;
+        let result = e1000.probe();
+
+        if !result.is_ok() {
+            // TODO: Handle the error types
+        }
+
         Ok(e1000)
     }
 
-    fn sw_init(&mut self) -> Result<(), ()> {
+    fn sw_init(&mut self) -> Result<(), DeviceError<ErrorType>> {
         self.rx_buffer_len = crate::io::drivers::network::MAXIMUM_ETHERNET_VLAN_SIZE;
 
         self.num_tx_queues = 1;
@@ -61,7 +67,7 @@ impl E1000 {
      * We allocate one ring per queue at run-time since we don't know the
      * number of queues at compile-time.
      **/
-    fn alloc_queues(&mut self) -> Result<(), ()> {
+    fn alloc_queues(&mut self) -> Result<(), DeviceError<ErrorType>> {
         /*
         adapter->tx_ring = kcalloc(adapter->num_tx_queues,
                     sizeof(struct tx_ring), GFP_KERNEL);
@@ -90,7 +96,7 @@ impl E1000 {
         false
     }
 
-    fn update_mng_vlan(&self) -> Result<(), ()> {
+    fn update_mng_vlan(&self) -> Result<(), DeviceError<ErrorType>> {
         let vid = self.hardware.mng_cookie.vlan_id;
         let old_vid = self.mng_vlan_id;
 
@@ -120,7 +126,7 @@ impl E1000 {
         Ok(())
     }
 
-    fn release_manageability(&self) -> Result<(), ()> {
+    fn release_manageability(&self) -> Result<(), DeviceError<ErrorType>> {
         if self.en_mng_pt {
             let mut manc = self.hardware.read(MANC)?;
 
@@ -132,7 +138,7 @@ impl E1000 {
         Ok(())
     }
 
-    fn reset(&mut self) -> Result<(), ()> {
+    fn reset(&mut self) -> Result<(), DeviceError<ErrorType>> {
         let pba: u32 = PBA as u32;
         self.hardware.write(PBA, PBA_48K)?;
 
@@ -174,7 +180,10 @@ impl E1000 {
         Ok(())
     }
 
-    fn probe(&mut self) -> Result<(), ()> {
+    fn probe(&mut self) -> Result<(), DeviceError<ErrorType>> {
+
+        let mut eecd:u32;
+
         self.hardware.init_data()?;
 
         // There's a whole bunch of stuff Linux does here that I don't yet understand
@@ -241,11 +250,14 @@ impl E1000 {
 
         self.en_mng_pt = self.hardware.enable_mng_pass_thru()?;
 
-        self.hardware.checksum_eeprom()?;
-        self.hardware.load_mac_addr()?;
+        /* initialize eeprom parameters */
+        self.hardware.init_eeprom()?;
+
+        eecd = self.hardware.read(EECD)?;
 
         self.hardware.reset()?;
 
+        /*
         println!("MAC is {}", self.hardware.mac);
 
         let control_port = self
@@ -254,7 +266,7 @@ impl E1000 {
 
         let mut wol = 0;
 
-        println!("Control port is {:x}", control_port);
+        // println!("Control port is {:x}", control_port);
 
         if control_port & EEPROM_APME != 0 {
             //pr_info("need to frob the beanflute\n");
@@ -262,7 +274,7 @@ impl E1000 {
         }
 
         println!("wol is {:x}", wol);
-
+        */
         self.reset()?;
 
         Ok(())

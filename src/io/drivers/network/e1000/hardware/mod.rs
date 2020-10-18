@@ -5,7 +5,7 @@ use macaddr::MacAddr;
 use crate::println;
 
 use crate::io::pci;
-use crate::io::pci::BAR;
+use crate::io::pci::{BAR, DeviceError};
 
 use crate::io::drivers::network::e1000::constants::*;
 
@@ -67,6 +67,7 @@ impl PhyInfo {
 }
 
 pub(in crate::io::drivers::network::e1000) struct Hardware {
+    eeprom_info: eeprom::Info,
     io_base: BAR,
     hw_addr: BAR,
     pub(in crate::io::drivers::network::e1000) vendor_id: u16,
@@ -122,6 +123,7 @@ impl Hardware {
         Hardware {
             io_base: device.bar(0x1),
             hw_addr: device.bar(0x0),
+            eeprom_info: eeprom::Info::defaults(),
             vendor_id: device.vendor_id,
             device_id: device.device_id,
             subsystem_vendor_id: device.subsystem_vendor_id,
@@ -170,7 +172,17 @@ impl Hardware {
         }
     }
 
-    pub(in crate::io::drivers::network::e1000) fn init_data(&mut self) -> Result<(), ()> {
+    pub(in crate::io::drivers::network::e1000) fn init_eeprom(&mut self) -> Result<(), DeviceError<ErrorType>> {
+        let eeprom_info_res = eeprom::init_eeprom_params(self);
+        if eeprom_info_res.is_err() {
+            return Err(eeprom_info_res.err().unwrap());
+        }
+
+        self.eeprom_info = eeprom_info_res.unwrap();
+        Ok(())
+    }
+
+    pub(in crate::io::drivers::network::e1000) fn init_data(&mut self) -> Result<(), DeviceError<ErrorType>> {
         use x86_64::structures::paging::PageTableFlags;
         let res = crate::memory::identity_map_range(
             self.hw_addr.addr,
@@ -215,7 +227,7 @@ impl Hardware {
     /**
      * set_media_type - Set media type and TBI compatibility.
      */
-    fn set_media_type(&mut self) -> Result<(), ()> {
+    fn set_media_type(&mut self) -> Result<(), DeviceError<ErrorType>> {
         if self.mac_type != MacType::E100082543 {
             /* tbi_compatibility is only valid on 82543 */
             self.tbi_compatibility_en = false;
@@ -254,7 +266,7 @@ impl Hardware {
     /**
      * set_mac_type - Set the mac type member in the hw struct.
      */
-    fn set_mac_type(&mut self) -> Result<(), ()> {
+    fn set_mac_type(&mut self) -> Result<(), DeviceError<ErrorType>> {
         match self.device_id {
             DEV_ID_82542 => {
                 match self.revision_id {
@@ -266,7 +278,7 @@ impl Hardware {
                     }
                     _ => {
                         /* Invalid 82542 revision ID */
-                        return Err(());
+                        return Err(DeviceError { kind: ErrorType::MacType });
                     }
                 };
             }
@@ -318,7 +330,7 @@ impl Hardware {
             }
             _ => {
                 /* Should never have loaded on this device */
-                return Err(());
+                return Err(DeviceError { kind: ErrorType::MacType });
             }
         };
 
@@ -347,7 +359,7 @@ impl Hardware {
         Ok(())
     }
 
-    fn populate_bus_info(&mut self) -> Result<(), ()> {
+    fn populate_bus_info(&mut self) -> Result<(), DeviceError<ErrorType>> {
         let status = self.read(STATUS)?;
 
         self.bus_type = match status & STATUS_PCIX_MODE {
@@ -383,7 +395,7 @@ impl Hardware {
         unsafe { ptr::read_volatile((self.io_base.addr + offset as u64) as *const u32) }
     }
 
-    pub fn write(&self, offset: u32, val: u32) -> Result<(), ()> {
+    pub fn write(&self, offset: u32, val: u32) -> Result<(), DeviceError<ErrorType>> {
         // TODO: Check for invalid ranges to make sure this is safe.
         unsafe {
             ptr::write_volatile(
@@ -394,16 +406,16 @@ impl Hardware {
         Ok(())
     }
 
-    pub fn write_array(&self, offset: u32, idx: u32, val: u32) -> Result<(), ()> {
+    pub fn write_array(&self, offset: u32, idx: u32, val: u32) -> Result<(), DeviceError<ErrorType>> {
         self.write(offset + (idx << 2), val)
     }
 
-    pub fn read(&self, offset: u32) -> Result<u32, ()> {
+    pub fn read(&self, offset: u32) -> Result<u32, DeviceError<ErrorType>> {
         // TODO: Check for invalid ranges to make sure this is safe.
         Ok(unsafe { ptr::read_volatile((self.hw_addr.addr + offset as u64) as *const u32) })
     }
 
-    pub(in crate::io::drivers::network::e1000) fn write_flush(&self) -> Result<(), ()> {
+    pub(in crate::io::drivers::network::e1000) fn write_flush(&self) -> Result<(), DeviceError<ErrorType>> {
         // write flush
         self.read(STATUS)?;
         Ok(())
@@ -423,7 +435,7 @@ impl Hardware {
      * Verifies the hardware needs to allow ARPs to be processed by the host
      * returns: - true/false
      */
-    pub(in crate::io::drivers::network::e1000) fn enable_mng_pass_thru(&self) -> Result<bool, ()> {
+    pub(in crate::io::drivers::network::e1000) fn enable_mng_pass_thru(&self) -> Result<bool, DeviceError<ErrorType>> {
         if self.asf_firmware_present {
             let manc = self.read(MANC)?;
 
@@ -445,7 +457,7 @@ impl Hardware {
      * If the the sum of the 64 16 bit words is 0xBABA, the EEPROM's checksum is
      * valid.
      */
-    pub fn checksum_eeprom(&self) -> Result<(), ()> {
+    pub fn checksum_eeprom(&self) -> Result<(), DeviceError<ErrorType>> {
         let mut checksum: u16 = 0;
         for i in 0..EEPROM_CHECKSUM_REG + 1 {
             let data = eeprom::read_eeprom(self, i, 1)?;
@@ -455,7 +467,7 @@ impl Hardware {
         crate::println!("eeprom checksum is {:x}", checksum);
 
         if checksum != EEPROM_SUM {
-            return Err(());
+            return Err(DeviceError { kind: ErrorType::EEPROM });
         }
 
         Ok(())
@@ -465,7 +477,7 @@ impl Hardware {
      * Reads the adapter's MAC address from the EEPROM and inverts the LSB for the
      * second function of dual function devices
      */
-    pub(in crate::io::drivers::network::e1000) fn load_mac_addr(&mut self) -> Result<(), ()> {
+    pub(in crate::io::drivers::network::e1000) fn load_mac_addr(&mut self) -> Result<(), DeviceError<ErrorType>> {
         let mut macbytes: [u8; 6] = [0; 6];
 
         let mut offset: u16 = 0;
@@ -483,7 +495,7 @@ impl Hardware {
         Ok(())
     }
 
-    pub fn reset(&mut self) -> Result<(), ()> {
+    pub fn reset(&mut self) -> Result<(), DeviceError<ErrorType>> {
         /* Clear interrupt mask to stop board from generating interrupts */
         self.write(IMC, 0xffffffff)?;
 
@@ -541,7 +553,7 @@ impl Hardware {
      * configuration and flow control settings. Clears all on-chip counters. Leaves
      * the transmit and receive units disabled and uninitialized.
      */
-    pub fn init(&mut self) -> Result<(), ()> {
+    pub fn init(&mut self) -> Result<(), DeviceError<ErrorType>> {
         /* Initialize Identification LED */
         self.id_led_init()?;
 
@@ -579,7 +591,7 @@ impl Hardware {
         Ok(())
     }
 
-    fn id_led_init(&mut self) -> Result<(), ()> {
+    fn id_led_init(&mut self) -> Result<(), DeviceError<ErrorType>> {
         let ledctl_mask: u32 = 0x000000FF;
         let led_mask: u16 = 0x0F;
 
@@ -632,7 +644,7 @@ impl Hardware {
     /**
      * clear_hw_cntrs - Clears all hardware statistics counters.
      */
-    fn clear_hw_cntrs(&self) -> Result<(), ()> {
+    fn clear_hw_cntrs(&self) -> Result<(), DeviceError<ErrorType>> {
         let registers = [
             CRCERRS, SYMERRS, MPC, SCC, ECOL, MCC, LATECOL, COLC, DC, SEC, RLEC, XONRXC, XONTXC,
             XOFFRXC, XOFFTXC, FCRUC, PRC64, PRC127, PRC255, PRC511, PRC1023, PRC1522, GPRC, BPRC,
@@ -651,7 +663,7 @@ impl Hardware {
     /**
      * clear_vfta - Clear the VLAN filer table
      */
-    fn clear_vfta(&self) -> Result<(), ()> {
+    fn clear_vfta(&self) -> Result<(), DeviceError<ErrorType>> {
         let vfta_offset: u32 = 0;
         let mut vfta_bit_in_reg: u32 = 0;
 
@@ -680,7 +692,7 @@ impl Hardware {
      * of the receive address registers. Clears the multicast table. Assumes
      * the receiver is in reset when the routine is called.
      */
-    fn init_rx_addrs(&self) -> Result<(), ()> {
+    fn init_rx_addrs(&self) -> Result<(), DeviceError<ErrorType>> {
         /* Setup the receive address. */
         self.rar_set(self.mac.as_bytes(), 0)?;
 
@@ -702,7 +714,7 @@ impl Hardware {
      * @addr: Address to put into receive address register
      * @index: Receive address register to write
      */
-    fn rar_set(&self, addr: &[u8], index: u32) -> Result<(), ()> {
+    fn rar_set(&self, addr: &[u8], index: u32) -> Result<(), DeviceError<ErrorType>> {
         let mut rar_low: u32 = 0;
         let mut rar_high: u32 = 0;
 
@@ -725,7 +737,7 @@ impl Hardware {
         self.write_flush()
     }
 
-    fn setup_link(&mut self) -> Result<(), ()> {
+    fn setup_link(&mut self) -> Result<(), DeviceError<ErrorType>> {
         let mut eeprom_data: u16;
 
         /*
@@ -762,7 +774,7 @@ impl Hardware {
             MediaType::Copper => self.setup_copper_link()?,
             _ => {
                 println!("Unexpected media type");
-                return Err(());
+                return Err(DeviceError { kind: ErrorType::MediaType });
             }
         };
 
@@ -804,7 +816,7 @@ impl Hardware {
         Ok(())
     }
 
-    pub fn read_eeprom(&self, offset: u16, words: u16) -> Result<u16, ()> {
+    pub fn read_eeprom(&self, offset: u16, words: u16) -> Result<u16, DeviceError<ErrorType>> {
         eeprom::read_eeprom(self, offset, words)
     }
 
@@ -816,7 +828,7 @@ impl Hardware {
      * ifs_min_val, ifs_max_val, ifs_step_size, and ifs_ratio before calling
      * this function.
      */
-    pub(in crate::io::drivers::network::e1000) fn reset_adaptive(&mut self) -> Result<(), ()> {
+    pub(in crate::io::drivers::network::e1000) fn reset_adaptive(&mut self) -> Result<(), DeviceError<ErrorType>> {
         if self.adaptive_ifs {
             self.current_ifs_val = 0;
             self.ifs_min_val = IFS_MIN;
@@ -834,7 +846,7 @@ impl Hardware {
 
     pub(in crate::io::drivers::network::e1000) fn populate_phy_info(
         &mut self,
-    ) -> Result<PhyInfo, ()> {
+    ) -> Result<PhyInfo, DeviceError<ErrorType>> {
         let mut phy_info: PhyInfo = PhyInfo::defaults();
 
         let _ = self.read_phy_reg(PHY_STATUS)?;
@@ -915,7 +927,7 @@ impl Hardware {
      * Resets the PHY
      * Sets bit 15 of the MII Control register
      */
-    fn phy_reset(&self) -> Result<(), ()> {
+    fn phy_reset(&self) -> Result<(), DeviceError<ErrorType>> {
         let mut phy_data: u16 = self.read_phy_reg(PHY_CTRL)?;
         phy_data |= MII_CR_RESET;
         self.write_phy_reg(PHY_CTRL, phy_data)?;
@@ -931,7 +943,7 @@ impl Hardware {
      *
      * Returns the PHY to the power-on reset state
      */
-    fn phy_hw_reset(&mut self) -> Result<(), ()> {
+    fn phy_hw_reset(&mut self) -> Result<(), DeviceError<ErrorType>> {
         /*
          * Read the Extended Device Control Register, assert the
          * PHY_RESET_DIR bit to put the PHY into reset. Then, take it
@@ -968,7 +980,7 @@ impl Hardware {
      * Reads the value from a PHY register, if the value is on a specific non zero
      * page, sets the page first.
      */
-    fn read_phy_reg(&self, reg_addr: u32) -> Result<u16, ()> {
+    fn read_phy_reg(&self, reg_addr: u32) -> Result<u16, DeviceError<ErrorType>> {
         // Linux does a lock here, but I can't be bothered
         // spin_lock_irqsave(&phy_lock, flags);
 
@@ -992,13 +1004,14 @@ impl Hardware {
             }
         }
 
+        println!("Got mdic {:x} for {:x} read", mdic, reg_addr);
         if (mdic & MDIC_READY) == 0 {
             println!("MDI Read did not complete");
-            return Err(());
+            return Err(DeviceError { kind: ErrorType::Phy });
         }
         if (mdic & MDIC_ERROR) != 0 {
             println!("MDI Read error");
-            return Err(());
+            return Err(DeviceError { kind: ErrorType::Phy });
         }
 
         // spin_unlock_irqrestore(&phy_lock, flags);
@@ -1014,7 +1027,7 @@ impl Hardware {
      *
      * Writes a value to a PHY register
      */
-    fn write_phy_reg(&self, reg_addr: u32, phy_data: u16) -> Result<(), ()> {
+    fn write_phy_reg(&self, reg_addr: u32, phy_data: u16) -> Result<(), DeviceError<ErrorType>> {
         // Linux does a lock here, but I can't be bothered
         // spin_lock_irqsave(&phy_lock, flags);
 
@@ -1043,7 +1056,7 @@ impl Hardware {
 
         if mdic & MDIC_READY == 0 {
             println!("MDI write did not complete");
-            return Err(());
+            return Err(DeviceError { kind: ErrorType::Phy });
         }
 
         // spin_unlock_irqrestore(&phy_lock, flags);
@@ -1056,7 +1069,7 @@ impl Hardware {
      *
      * Probes the expected PHY address for known PHY IDs
      */
-    fn detect_gig_phy(&mut self) -> Result<(), ()> {
+    fn detect_gig_phy(&mut self) -> Result<(), DeviceError<ErrorType>> {
         // Work is already done, so no-op this
         if self.phy_id != 0 {
             return Ok(());
@@ -1101,12 +1114,12 @@ impl Hardware {
             _ => {
                 /* Should never have loaded on this device */
                 self.phy_type = PhyType::Undefined;
-                return Err(()); //-ERR_PHY_TYPE;
+                return Err(DeviceError { kind: ErrorType::PhyType });
             }
         };
 
         if !matched {
-            return Err(()); //-ERR_PHY;
+            return Err(DeviceError { kind: ErrorType::Phy }); //-ERR_PHY;
         }
 
         println!(
@@ -1121,7 +1134,7 @@ impl Hardware {
      *
      * Make sure we have a valid PHY and change PHY mode before link setup.
      */
-    fn copper_link_preconfig(&mut self) -> Result<(), ()> {
+    fn copper_link_preconfig(&mut self) -> Result<(), DeviceError<ErrorType>> {
         let mut ctrl = self.read(CTRL)?;
         ctrl |= CTRL_FRCSPD | CTRL_FRCDPX | CTRL_SLU;
         self.write(CTRL, ctrl)?;
@@ -1138,7 +1151,7 @@ impl Hardware {
     /**
      * copper_link_mgp_setup - Copper link setup for phy_m88 series.
      */
-    fn copper_link_mgp_setup(&self) -> Result<(), ()> {
+    fn copper_link_mgp_setup(&self) -> Result<(), DeviceError<ErrorType>> {
         /* Enable CRS on TX. This must be set for half-duplex operation. */
         let mut phy_data: u16 = self.read_phy_reg(M88PHY_SPEC_CTRL)?;
         phy_data |= M88PSCR_ASSERT_CRS_ON_TX;
@@ -1202,7 +1215,7 @@ impl Hardware {
      *
      * Configures PHY autoneg and flow control advertisement settings
      */
-    fn phy_setup_autoneg(&self) -> Result<(), ()> {
+    fn phy_setup_autoneg(&self) -> Result<(), DeviceError<ErrorType>> {
         /* Read the MII Auto-Neg Advertisement Register (Address 4). */
         let mut mii_autoneg_adv_reg = self.read_phy_reg(PHY_AUTONEG_ADV)?;
 
@@ -1324,8 +1337,7 @@ impl Hardware {
             }
             _ => {
                 println!("Flow control param set incorrectly");
-                return Err(());
-                //return -ERR_CONFIG;
+                return Err(DeviceError { kind: ErrorType::Config });
             }
         };
 
@@ -1346,7 +1358,7 @@ impl Hardware {
      *
      * Blocks until autoneg completes or times out (~4.5 seconds)
      */
-    fn wait_autoneg(&self) -> Result<(), ()> {
+    fn wait_autoneg(&self) -> Result<(), DeviceError<ErrorType>> {
         println!("Waiting for Auto-Neg to complete.\n");
 
         /* We will wait for autoneg to complete or 4.5 seconds to expire. */
@@ -1372,7 +1384,7 @@ impl Hardware {
      * Setup auto-negotiation and flow control advertisements,
      * and then perform auto-negotiation.
      */
-    fn copper_link_autoneg(&mut self) -> Result<(), ()> {
+    fn copper_link_autoneg(&mut self) -> Result<(), DeviceError<ErrorType>> {
         /* Perform some bounds checking on the hw->autoneg_advertised
          * parameter.  If this variable is zero, then set it to the default.
          */
@@ -1419,7 +1431,7 @@ impl Hardware {
      *
      * Detects which PHY is present and sets up the speed and duplex
      */
-    fn setup_copper_link(&mut self) -> Result<(), ()> {
+    fn setup_copper_link(&mut self) -> Result<(), DeviceError<ErrorType>> {
         /* Check if it is a valid PHY and set PHY mode if necessary. */
         self.copper_link_preconfig()?;
 

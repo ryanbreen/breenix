@@ -2,14 +2,127 @@ use crate::io::drivers::network::e1000::constants::*;
 
 use spin::Mutex;
 
+use crate::io::pci::{DeviceError};
+
 const EEPROM_LOCK: Mutex<usize> = Mutex::new(0);
+
+use crate::println;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::io::drivers::network::e1000) struct Info {
+    pub(in crate::io::drivers::network::e1000)eeprom_type: EEPROMType,
+    pub(in crate::io::drivers::network::e1000)word_size: u16,
+    pub(in crate::io::drivers::network::e1000)opcode_bits: u16,
+    pub(in crate::io::drivers::network::e1000)page_size: u16,
+    pub(in crate::io::drivers::network::e1000)address_bits: u16,
+    pub(in crate::io::drivers::network::e1000)delay_usec: u16,
+}
+
+impl Info {
+    pub fn defaults() -> Info {
+        Info {
+            eeprom_type: EEPROMType::Uninitialized,
+            word_size: 0,
+            opcode_bits: 0,
+            address_bits: 0,
+            page_size: 0,
+            delay_usec: 0,
+        }
+    }
+}
+
+/**
+ * e1000_init_eeprom_params - initialize sw eeprom vars
+ * @hw: Struct containing variables accessed by shared code
+ *
+ * Sets up eeprom variables in the hw struct.  Must be called after mac_type
+ * is configured
+ */
+pub(in crate::io::drivers::network::e1000) fn init_eeprom_params(hardware: &super::Hardware) -> Result<Info, DeviceError<ErrorType>> {
+
+    let mut eeprom = Info::defaults();
+    let eecd = hardware.read(EECD)?;
+
+    match hardware.mac_type {
+        MacType::E100082542Rev2Point0 | MacType::E100082542Rev2Point1 |
+        MacType::E100082543 | MacType::E100082544 => {
+            eeprom.eeprom_type = EEPROMType::Microwire;
+            eeprom.word_size = 64;
+            eeprom.opcode_bits = 3;
+		    eeprom.address_bits = 6;
+            eeprom.delay_usec = 50;
+        },
+        MacType::E100082540 | MacType::E100082545 | MacType::E100082545Rev3 => {
+    		eeprom.eeprom_type = EEPROMType::Microwire;
+		    eeprom.opcode_bits = 3;
+		    eeprom.delay_usec = 50;
+		    if eecd & EECD_SIZE != 0 {
+    			eeprom.word_size = 256;
+			    eeprom.address_bits = 8;
+    		} else {
+			    eeprom.word_size = 64;
+			    eeprom.address_bits = 6;
+            }
+        },
+    	MacType::E100082541 | MacType::E100082541Rev2 | MacType::E100082547 | MacType::E100082547Rev2 => {
+    		if eecd & EECD_TYPE != 0 {
+    			eeprom.eeprom_type = EEPROMType::SPI;
+    			eeprom.opcode_bits = 8;
+			    eeprom.delay_usec = 1;
+			    if eecd & EECD_ADDR_BITS != 0 {
+    				eeprom.page_size = 32;
+				    eeprom.address_bits = 16;
+			    } else {
+				    eeprom.page_size = 8;
+				    eeprom.address_bits = 8;
+			    }
+    		} else {
+    			eeprom.eeprom_type = EEPROMType::Microwire;
+			    eeprom.opcode_bits = 3;
+			    eeprom.delay_usec = 50;
+			    if eecd & EECD_ADDR_BITS != 0 {
+	    			eeprom.word_size = 256;
+				    eeprom.address_bits = 8;
+			    } else {
+				    eeprom.word_size = 64;
+				    eeprom.address_bits = 6;
+			    }
+            }
+        },
+        _ => {},
+	};
+
+	if eeprom.eeprom_type == EEPROMType::SPI {
+
+		/* eeprom_size will be an enum [0..8] that maps to eeprom sizes
+		 * 128B to 32KB (incremented by powers of 2).
+		 */
+		/* Set to default value for initial eeprom read. */
+		eeprom.word_size = 64;
+		let mut eeprom_size = read_eeprom(hardware, EEPROM_CFG, 1)?;
+        eeprom_size = (eeprom_size & EEPROM_SIZE_MASK) >> EEPROM_SIZE_SHIFT;
+        
+		/* 256B eeprom size was not supported in earlier hardware, so we
+		 * bump eeprom_size up one to ensure that "1" (which maps to
+		 * 256B) is never the result used in the shifting logic below.
+		 */
+		if eeprom_size != 0 {
+            eeprom_size += 1;
+        }
+
+		eeprom.word_size = 1 << (eeprom_size + EEPROM_WORD_SIZE_SHIFT);
+    }
+    
+    println!("Found an EEPROM like {:?}", eeprom);
+	Ok(eeprom)
+}
 
 /**
  * release_eeprom - drop chip select
  *
  * Terminates a command by inverting the EEPROM's chip select pin
  */
-fn release_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
+fn release_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorType>> {
     let mut eecd = hardware.read(EECD)?;
 
     /* cleanup eeprom */
@@ -44,7 +157,7 @@ fn release_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
     Ok(())
 }
 
-fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
+fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorType>> {
     let mut i = 0;
     let mut eecd = hardware.read(EECD)?;
 
@@ -77,7 +190,7 @@ fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
     Ok(())
 }
 
-fn standby_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
+fn standby_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorType>> {
     let mut eecd: u32 = hardware.read(EECD)?;
 
     eecd &= !(EECD_CS | EECD_SK);
@@ -106,7 +219,7 @@ fn standby_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
     Ok(())
 }
 
-fn raise_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, ()> {
+fn raise_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DeviceError<ErrorType>> {
     /*
      * Raise the clock input to the EEPROM (by setting the SK bit), and then
      * wait <delay> microseconds.
@@ -119,7 +232,7 @@ fn raise_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, ()> {
     Ok(new_eecd)
 }
 
-fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, ()> {
+fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DeviceError<ErrorType>> {
     /*
      * Raise the clock input to the EEPROM (by setting the SK bit), and then
      * wait <delay> microseconds.
@@ -132,7 +245,7 @@ fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, ()> {
     Ok(new_eecd)
 }
 
-fn shift_in_ee_bits(hardware: &super::Hardware, count: u16) -> Result<u16, ()> {
+fn shift_in_ee_bits(hardware: &super::Hardware, count: u16) -> Result<u16, DeviceError<ErrorType>> {
     let mut eecd: u32;
     let mut data: u16 = 0;
 
@@ -164,7 +277,7 @@ fn shift_in_ee_bits(hardware: &super::Hardware, count: u16) -> Result<u16, ()> {
     Ok(data)
 }
 
-fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Result<(), ()> {
+fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Result<(), DeviceError<ErrorType>> {
     let mut eecd: u32;
     let mut mask: u32;
 
@@ -211,7 +324,7 @@ fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Resul
     Ok(())
 }
 
-pub(super) fn read_eeprom(hardware: &super::Hardware, offset: u16, words: u16) -> Result<u16, ()> {
+pub(super) fn read_eeprom(hardware: &super::Hardware, offset: u16, words: u16) -> Result<u16, DeviceError<ErrorType>> {
     let mut data: u16 = 0;
     EEPROM_LOCK.lock();
 

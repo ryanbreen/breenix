@@ -115,6 +115,34 @@ pub(in crate::io::drivers::network::e1000) enum BusWidth {
     Reserved,
 }
 
+/* Error types */
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::io::drivers::network::e1000) enum ErrorType {
+    MacType,
+    MediaType,
+    Phy,
+    PhyType,
+    Register,
+    Config,
+    EEPROM,
+    DMA,
+    SoftwareInit,
+    MDIORemap,
+    IORemap,
+    AllocNetdev,
+    PCIReg,
+}
+
+/* EEPROM Type */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::io::drivers::network::e1000) enum EEPROMType {
+	Uninitialized,
+	SPI,
+	Microwire,
+	Flash,
+	None,	/* No NVM support */
+}
+
 /* Device Control */
 pub(in crate::io::drivers::network::e1000) const CTRL_FD: u32 = 0x00000001; /* Full duplex.0=half; 1=full */
 pub(in crate::io::drivers::network::e1000) const CTRL_BEM: u32 = 0x00000002; /* Endian Mode.0=little,1=big */
@@ -186,11 +214,20 @@ pub(in crate::io::drivers::network::e1000) const STATUS_FUSE_9: u32 = 0x08000000
 pub(in crate::io::drivers::network::e1000) const STATUS_SERDES0_DIS: u32 = 0x10000000; /* SERDES disabled on port 0 */
 pub(in crate::io::drivers::network::e1000) const STATUS_SERDES1_DIS: u32 = 0x20000000; /* SERDES disabled on port 1 */
 
+/* EEPROM Size definitions */
+pub(in crate::io::drivers::network::e1000) const EEPROM_WORD_SIZE_SHIFT:u16 =   6;
+pub(in crate::io::drivers::network::e1000) const EEPROM_SIZE_SHIFT: u16 =       10;
+pub(in crate::io::drivers::network::e1000) const EEPROM_SIZE_MASK: u16 =        0x1C00;
+
 /* EEPROM/Flash Control */
 pub(in crate::io::drivers::network::e1000) const EECD_SK: u32 = 0x00000001; /* EEPROM Clock */
 pub(in crate::io::drivers::network::e1000) const EECD_CS: u32 = 0x00000002; /* EEPROM Chip Select */
 pub(in crate::io::drivers::network::e1000) const EECD_DI: u32 = 0x00000004; /* EEPROM Data In */
 pub(in crate::io::drivers::network::e1000) const EECD_DO: u32 = 0x00000008; /* EEPROM Data Out */
+
+pub(in crate::io::drivers::network::e1000) const EECD_SIZE: u32 =      0x00000200;	/* EEPROM Size (0=64 word 1=256 word) */
+pub(in crate::io::drivers::network::e1000) const EECD_ADDR_BITS: u32 = 0x00000400;	/* EEPROM Addressing bits based on type (0-small, 1-large) */
+pub(in crate::io::drivers::network::e1000) const EECD_TYPE: u32 =      0x00002000;	/* EEPROM Type (1-SPI, 0-Microwire) */
 
 /* EEPROM Commands - Microwire */
 pub(in crate::io::drivers::network::e1000) const EEPROM_READ_OPCODE_MICROWIRE: u32 = 0x6; /* EEPROM read opcode */
@@ -281,7 +318,6 @@ pub(in crate::io::drivers::network::e1000) enum MacType {
     E100082541Rev2,
     E100082547,
     E100082547Rev2,
-    E1000NumMacs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
