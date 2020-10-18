@@ -1,4 +1,3 @@
-
 use core::ptr;
 
 use macaddr::MacAddr;
@@ -91,26 +90,27 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     pub(in crate::io::drivers::network::e1000) fc_pause_time: u32,
     pub(in crate::io::drivers::network::e1000) fc_send_xon: bool,
     pub(in crate::io::drivers::network::e1000) fc: FlowControlSettings,
-    pub(in crate::io::drivers::network::e1000) original_fc: FlowControlSettings,
+    original_fc: FlowControlSettings,
     current_ifs_val: u16,
     ifs_min_val: u16,
     ifs_max_val: u16,
     ifs_step_size: u16,
     ifs_ratio: u16,
     in_ifs_mode: bool,
-    pub(in crate::io::drivers::network::e1000) autoneg_advertised: u16,
-    pub(in crate::io::drivers::network::e1000) get_link_status: bool,
-    pub(in crate::io::drivers::network::e1000) wait_autoneg_complete: bool,
-    pub(in crate::io::drivers::network::e1000) tbi_compatibility_en: bool,
-    pub(in crate::io::drivers::network::e1000) adaptive_ifs: bool,
-    pub(in crate::io::drivers::network::e1000) mdix: u8,
-    pub(in crate::io::drivers::network::e1000) disable_polarity_correction: bool,
-    pub(in crate::io::drivers::network::e1000) master_slave: MasterSlaveType,
-    pub(in crate::io::drivers::network::e1000) ledctl_default: u32,
-    pub(in crate::io::drivers::network::e1000) ledctl_mode1: u32,
-    pub(in crate::io::drivers::network::e1000) ledctl_mode2: u32,
+    autoneg_advertised: u16,
+    get_link_status: bool,
+    wait_autoneg_complete: bool,
+    tbi_compatibility_en: bool,
+    adaptive_ifs: bool,
+    mdix: u8,
+    disable_polarity_correction: bool,
+    master_slave: MasterSlaveType,
+    ledctl_default: u32,
+    ledctl_mode1: u32,
+    ledctl_mode2: u32,
     pub(in crate::io::drivers::network::e1000) mng_cookie: DHCPCookie,
     speed_downgraded: bool,
+    phy_init_script: u32,
 }
 
 #[allow(unused_mut, unused_assignments)]
@@ -119,21 +119,20 @@ impl Hardware {
         Hardware {
             io_base: device.bar(0x1),
             hw_addr: device.bar(0x0),
-            /* below vendor fields are pulled from Linux running on Qemu */
-            vendor_id: 0x8086, /* Intel */
-            device_id: 0x100e, /* e1000 */
-            subsystem_vendor_id: 0x1af4,
-            subsystem_id: 0x1100,
+            vendor_id: device.vendor_id,
+            device_id: device.device_id,
+            subsystem_vendor_id: device.subsystem_vendor_id,
+            subsystem_id: device.subsystem_id,
+            revision_id: device.revision_id,
             bus_type: BusType::E1000BusTypeUnknown,
             bus_speed: BusSpeed::E1000BusSpeedUnknown,
             bus_width: BusWidth::E1000BusWidthUnknown,
             phy_id: 0,
             phy_revision: 0,
             phy_type: PhyType::E1000PhyUndefined,
-            mac_type: MacType::E100082540,
+            mac_type: MacType::E1000Undefined,
             mac: MacAddr::from([0, 0, 0, 0, 0, 0]),
             media_type: MediaType::E1000MediaTypeCopper,
-            revision_id: 0x3,
             mtu: 0x5dc,
             max_frame_size: 0x5ee,
             fc_high_water: 0,
@@ -161,6 +160,7 @@ impl Hardware {
             ledctl_mode2: 0,
             mng_cookie: DHCPCookie::empty(),
             speed_downgraded: true,
+            phy_init_script: 0,
         }
     }
 
@@ -176,13 +176,165 @@ impl Hardware {
             panic!("Failed to map memory");
         }
 
-        // Make this more real because we're just hardcoding a lot of this
+        /* identify the MAC */
+        self.set_mac_type()?;
 
-        // Init eeprom
-        //self.eeprom.lock().init(&self);
+        match self.mac_type {
+            MacType::E100082541
+            | MacType::E100082547
+            | MacType::E100082541Rev2
+            | MacType::E100082547Rev2 => self.phy_init_script = 1,
+            _ => {}
+        };
+
+        self.set_media_type()?;
 
         self.populate_bus_info()?;
 
+        Ok(())
+    }
+
+    /**
+     * e1000_set_media_type - Set media type and TBI compatibility.
+     */
+    fn set_media_type(&mut self) -> Result<(), ()> {
+        if self.mac_type != MacType::E100082543 {
+            /* tbi_compatibility is only valid on 82543 */
+            self.tbi_compatibility_en = false;
+        }
+
+        match self.device_id {
+            E1000_DEV_ID_82545GM_SERDES | E1000_DEV_ID_82546GB_SERDES => {
+                self.media_type = MediaType::E1000MediaTypeInternalSerdes;
+            }
+            _ => {
+                match self.mac_type {
+                    MacType::E100082542Rev2Point0 | MacType::E100082542Rev2Point1 => {
+                        self.media_type = MediaType::E1000MediaTypeFiber;
+                    }
+                    MacType::E1000CE4100 => {
+                        self.media_type = MediaType::E1000MediaTypeCopper;
+                    }
+                    _ => {
+                        let status = self.read(STATUS)?;
+                        if status & E1000_STATUS_TBIMODE != 0 {
+                            self.media_type = MediaType::E1000MediaTypeFiber;
+                            /* tbi_compatibility not valid on fiber */
+                            self.tbi_compatibility_en = false;
+                        } else {
+                            self.media_type = MediaType::E1000MediaTypeCopper;
+                            println!("Set type to copper");
+                        }
+                    }
+                };
+            }
+        };
+
+        Ok(())
+    }
+
+    /**
+     * e1000_set_mac_type - Set the mac type member in the hw struct.
+     */
+    fn set_mac_type(&mut self) -> Result<(), ()> {
+        match self.device_id {
+            E1000_DEV_ID_82542 => {
+                match self.revision_id {
+                    E1000_82542_2_0_REV_ID => {
+                        self.mac_type = MacType::E100082542Rev2Point0;
+                    }
+                    E1000_82542_2_1_REV_ID => {
+                        self.mac_type = MacType::E100082542Rev2Point1;
+                    }
+                    _ => {
+                        /* Invalid 82542 revision ID */
+                        return Err(());
+                    }
+                };
+            }
+
+            E1000_DEV_ID_82543GC_FIBER | E1000_DEV_ID_82543GC_COPPER => {
+                self.mac_type = MacType::E100082543;
+            }
+            E1000_DEV_ID_82544EI_COPPER
+            | E1000_DEV_ID_82544EI_FIBER
+            | E1000_DEV_ID_82544GC_COPPER
+            | E1000_DEV_ID_82544GC_LOM => {
+                self.mac_type = MacType::E100082544;
+            }
+            E1000_DEV_ID_82540EM
+            | E1000_DEV_ID_82540EM_LOM
+            | E1000_DEV_ID_82540EP
+            | E1000_DEV_ID_82540EP_LOM
+            | E1000_DEV_ID_82540EP_LP => {
+                self.mac_type = MacType::E100082540;
+            }
+            E1000_DEV_ID_82545EM_COPPER | E1000_DEV_ID_82545EM_FIBER => {
+                self.mac_type = MacType::E100082545;
+            }
+            E1000_DEV_ID_82545GM_COPPER
+            | E1000_DEV_ID_82545GM_FIBER
+            | E1000_DEV_ID_82545GM_SERDES => {
+                self.mac_type = MacType::E100082545Rev3;
+            }
+            E1000_DEV_ID_82546EB_COPPER
+            | E1000_DEV_ID_82546EB_FIBER
+            | E1000_DEV_ID_82546EB_QUAD_COPPER => {
+                self.mac_type = MacType::E100082546;
+            }
+            E1000_DEV_ID_82546GB_COPPER
+            | E1000_DEV_ID_82546GB_FIBER
+            | E1000_DEV_ID_82546GB_SERDES
+            | E1000_DEV_ID_82546GB_PCIE
+            | E1000_DEV_ID_82546GB_QUAD_COPPER
+            | E1000_DEV_ID_82546GB_QUAD_COPPER_KSP3 => {
+                self.mac_type = MacType::E100082546Rev3;
+            }
+            E1000_DEV_ID_82541EI | E1000_DEV_ID_82541EI_MOBILE | E1000_DEV_ID_82541ER_LOM => {
+                self.mac_type = MacType::E100082541;
+            }
+            E1000_DEV_ID_82541ER
+            | E1000_DEV_ID_82541GI
+            | E1000_DEV_ID_82541GI_LF
+            | E1000_DEV_ID_82541GI_MOBILE => {
+                self.mac_type = MacType::E100082541Rev2;
+            }
+            E1000_DEV_ID_82547EI | E1000_DEV_ID_82547EI_MOBILE => {
+                self.mac_type = MacType::E100082547;
+            }
+            E1000_DEV_ID_82547GI => {
+                self.mac_type = MacType::E100082547Rev2;
+            }
+            E1000_DEV_ID_INTEL_CE4100_GBE => {
+                self.mac_type = MacType::E1000CE4100;
+            }
+            _ => {
+                /* Should never have loaded on this device */
+                return Err(());
+            }
+        };
+
+        // I don't intend to lard up the struct with the below fields because it's highly
+        // unlikely Breenix will ever run on anything other than qemu.
+        /*
+        match self.mac_type {
+            MacType::E100082541 | MacType::E100082547 |
+            MacType::E100082541Rev2 | MacType::E100082547Rev2 => {
+                self.asf_firmware_present = true;
+            },
+            _ => {}
+        };
+
+        /* The 82543 chip does not count tx_carrier_errors properly in
+         * FD mode
+         */
+        if (self.mac_type == MacType::E100082543) {
+            self.bad_tx_carr_stats_fd = true;
+        }
+
+        if (hw->mac_type > e1000_82544)
+            hw->has_smbus = true;
+        */
         Ok(())
     }
 

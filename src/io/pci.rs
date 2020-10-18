@@ -25,6 +25,11 @@ impl Pci {
         self.data.read()
     }
 
+    unsafe fn read16_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8) -> u16 {
+        let val = self.read_config(bus, slot, function, offset & 0b11111100);
+        ((val >> ((offset as usize & 0b10) << 3)) & 0xFFFF) as u16
+    }
+
     /// Check for a PCI device, and return information about it if present.
     unsafe fn probe(&mut self, bus: u8, slot: u8, function: u8) -> Option<Device> {
         let config_0 = self.read_config(bus, slot, function, 0);
@@ -32,8 +37,6 @@ impl Pci {
         if config_0 == 0xFFFFFFFF {
             return None;
         }
-
-        // println!("Found device {}-{}-{}", bus, slot, function);
 
         let config_4 = self.read_config(bus, slot, function, 0x8);
         let config_c = self.read_config(bus, slot, function, 0xC);
@@ -45,6 +48,8 @@ impl Pci {
             vendor_id: config_0 as u16,
             device_id: (config_0 >> 16) as u16,
             revision_id: config_4 as u8,
+            subsystem_id: self.read16_config(bus, slot, function, 0x2E),
+            subsystem_vendor_id: self.read16_config(bus, slot, function, 0x2C),
             subclass: (config_4 >> 16) as u8,
             class_code: DeviceClass::from_u8((config_4 >> 24) as u8),
             multifunction: config_c & 0x800000 != 0,
@@ -98,9 +103,11 @@ pub struct Device {
     device: u8,
     function: u8,
 
-    vendor_id: u16,
-    device_id: u16,
-    revision_id: u8,
+    pub(crate) vendor_id: u16,
+    pub(crate) device_id: u16,
+    pub(crate) revision_id: u8,
+    pub(crate) subsystem_id: u16,
+    pub(crate) subsystem_vendor_id: u16,
     subclass: u8,
     class_code: DeviceClass,
     multifunction: bool,
@@ -111,12 +118,14 @@ impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{}.{}.{}: 0x{:04x} 0x{:04x} {:?} {:02x}",
+            "{}.{}.{}: 0x{:04x} 0x{:04x} 0x{:04x} 0x{:04x} {:?} {:02x}",
             self.bus,
             self.device,
             self.function,
             self.vendor_id,
             self.device_id,
+            self.subsystem_id,
+            self.subsystem_vendor_id,
             self.class_code,
             self.subclass
         )
@@ -184,16 +193,6 @@ impl Device {
         let address = self.address(offset);
         PCI.lock().address.write(address);
         PCI.lock().data.write(value);
-    }
-
-    pub unsafe fn flag(&self, offset: u8, flag: u32, toggle: bool) {
-        let mut value = self.read(offset);
-        if toggle {
-            value |= flag;
-        } else {
-            value &= 0xFFFFFFFF - flag;
-        }
-        self.write(offset, value);
     }
 
     /// Decode an u32 to BAR.

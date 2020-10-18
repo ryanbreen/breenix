@@ -4,13 +4,13 @@ use crate::io::pci;
 
 mod constants;
 mod hardware;
-mod params;
+//mod params;
 
 use self::constants::*;
 use crate::io::drivers::network::vlan::*;
 
 pub struct E1000 {
-    //pci_device: pci::Device,
+    pci_device: pci::Device,
     hardware: self::hardware::Hardware,
     mng_vlan_id: u16,
     phy_info: self::hardware::PhyInfo,
@@ -20,10 +20,10 @@ pub struct E1000 {
     num_rx_queues: u32,
 }
 
-#[allow(unused_mut, unused_assignments)]
 impl E1000 {
     pub fn new(device: pci::Device) -> Result<E1000, ()> {
         let mut e1000: E1000 = E1000 {
+            pci_device: device,
             hardware: self::hardware::Hardware::new(device),
             mng_vlan_id: 0,
             phy_info: self::hardware::PhyInfo::defaults(),
@@ -216,7 +216,9 @@ impl E1000 {
         self.hardware.load_mac_addr()?;
         println!("MAC is {}", self.hardware.mac);
 
-        let control_port = self.hardware.read_eeprom(self::constants::EEPROM_INIT_CONTROL3_PORT_A, 1)?;
+        let control_port = self
+            .hardware
+            .read_eeprom(self::constants::EEPROM_INIT_CONTROL3_PORT_A, 1)?;
 
         let mut wol = 0;
 

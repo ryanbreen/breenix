@@ -1,9 +1,8 @@
-
 use crate::io::drivers::network::e1000::constants::*;
 
 use spin::Mutex;
 
-const EEPROM_LOCK:Mutex<usize> = Mutex::new(0);
+const EEPROM_LOCK: Mutex<usize> = Mutex::new(0);
 
 /**
  * e1000_release_eeprom - drop chip select
@@ -46,7 +45,7 @@ fn release_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
 }
 
 fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), ()> {
-    let mut i = 0;    
+    let mut i = 0;
     let mut eecd = hardware.read(CTRL_EECD)?;
 
     /* Request EEPROM Access */
@@ -213,7 +212,6 @@ fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Resul
 }
 
 pub(super) fn read_eeprom(hardware: &super::Hardware, offset: u16, words: u16) -> Result<u16, ()> {
-
     let mut data: u16 = 0;
     EEPROM_LOCK.lock();
 
@@ -230,9 +228,9 @@ pub(super) fn read_eeprom(hardware: &super::Hardware, offset: u16, words: u16) -
         }*/
 
         /* EEPROM's that don't use EERD to read require us to bit-bang the SPI
-        * directly. In this case, we need to acquire the EEPROM so that
-        * FW or other port software does not interrupt.
-        */
+         * directly. In this case, we need to acquire the EEPROM so that
+         * FW or other port software does not interrupt.
+         */
         /* Prepare the EEPROM for bit-bang reading */
         acquire_eeprom(hardware)?;
 
@@ -243,14 +241,14 @@ pub(super) fn read_eeprom(hardware: &super::Hardware, offset: u16, words: u16) -
             shift_out_ee_bits(hardware, offset as u32 + i as u32, 6)?;
 
             /*
-            * Read the data.  For microwire, each word requires the
-            * overhead of eeprom setup and tear-down.
-            */
-            data = data | (shift_in_ee_bits(hardware,16)? << (8 * i));
-            standby_eeprom(hardware, )?;
+             * Read the data.  For microwire, each word requires the
+             * overhead of eeprom setup and tear-down.
+             */
+            data = data | (shift_in_ee_bits(hardware, 16)? << (8 * i));
+            standby_eeprom(hardware)?;
         }
 
-        release_eeprom(hardware, )?;
+        release_eeprom(hardware)?;
     }
 
     Ok(data)

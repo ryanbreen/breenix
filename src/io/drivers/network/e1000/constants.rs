@@ -1,3 +1,52 @@
+/* PCI Device IDs */
+pub const E1000_DEV_ID_82542: u16 = 0x1000;
+pub const E1000_DEV_ID_82543GC_FIBER: u16 = 0x1001;
+pub const E1000_DEV_ID_82543GC_COPPER: u16 = 0x1004;
+pub const E1000_DEV_ID_82544EI_COPPER: u16 = 0x1008;
+pub const E1000_DEV_ID_82544EI_FIBER: u16 = 0x1009;
+pub const E1000_DEV_ID_82544GC_COPPER: u16 = 0x100C;
+pub const E1000_DEV_ID_82544GC_LOM: u16 = 0x100D;
+pub const E1000_DEV_ID_82540EM: u16 = 0x100E;
+pub const E1000_DEV_ID_82540EM_LOM: u16 = 0x1015;
+pub const E1000_DEV_ID_82540EP_LOM: u16 = 0x1016;
+pub const E1000_DEV_ID_82540EP: u16 = 0x1017;
+pub const E1000_DEV_ID_82540EP_LP: u16 = 0x101E;
+pub const E1000_DEV_ID_82545EM_COPPER: u16 = 0x100F;
+pub const E1000_DEV_ID_82545EM_FIBER: u16 = 0x1011;
+pub const E1000_DEV_ID_82545GM_COPPER: u16 = 0x1026;
+pub const E1000_DEV_ID_82545GM_FIBER: u16 = 0x1027;
+pub const E1000_DEV_ID_82545GM_SERDES: u16 = 0x1028;
+pub const E1000_DEV_ID_82546EB_COPPER: u16 = 0x1010;
+pub const E1000_DEV_ID_82546EB_FIBER: u16 = 0x1012;
+pub const E1000_DEV_ID_82546EB_QUAD_COPPER: u16 = 0x101D;
+pub const E1000_DEV_ID_82541EI: u16 = 0x1013;
+pub const E1000_DEV_ID_82541EI_MOBILE: u16 = 0x1018;
+pub const E1000_DEV_ID_82541ER_LOM: u16 = 0x1014;
+pub const E1000_DEV_ID_82541ER: u16 = 0x1078;
+pub const E1000_DEV_ID_82547GI: u16 = 0x1075;
+pub const E1000_DEV_ID_82541GI: u16 = 0x1076;
+pub const E1000_DEV_ID_82541GI_MOBILE: u16 = 0x1077;
+pub const E1000_DEV_ID_82541GI_LF: u16 = 0x107C;
+pub const E1000_DEV_ID_82546GB_COPPER: u16 = 0x1079;
+pub const E1000_DEV_ID_82546GB_FIBER: u16 = 0x107A;
+pub const E1000_DEV_ID_82546GB_SERDES: u16 = 0x107B;
+pub const E1000_DEV_ID_82546GB_PCIE: u16 = 0x108A;
+pub const E1000_DEV_ID_82546GB_QUAD_COPPER: u16 = 0x1099;
+pub const E1000_DEV_ID_82547EI: u16 = 0x1019;
+pub const E1000_DEV_ID_82547EI_MOBILE: u16 = 0x101A;
+pub const E1000_DEV_ID_82546GB_QUAD_COPPER_KSP3: u16 = 0x10B5;
+pub const E1000_DEV_ID_INTEL_CE4100_GBE: u16 = 0x2E6E;
+
+/* MAC decode size is 128K - This is the size of BAR0 */
+pub const MAC_DECODE_SIZE: u32 = 128 * 1024;
+
+pub const E1000_82542_2_0_REV_ID: u8 = 2;
+pub const E1000_82542_2_1_REV_ID: u8 = 3;
+pub const E1000_REVISION_0: u8 = 0;
+pub const E1000_REVISION_1: u8 = 1;
+pub const E1000_REVISION_2: u8 = 2;
+pub const E1000_REVISION_3: u8 = 3;
+
 /* Register Set. (82543, 82544)
  *
  * Registers are defined to be 32 bits and  should be accessed as 32 bit values.
@@ -230,7 +279,7 @@ pub enum MacType {
     E100082545,
     E100082545Rev3,
     E100082546,
-    E1000ce4100,
+    E1000CE4100,
     E100082546Rev3,
     E100082541,
     E100082541Rev2,
