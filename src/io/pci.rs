@@ -278,12 +278,15 @@ fn device_specific_init(dev: &mut Device) {
         }
         0x100E | 0x100F => {
             println!(
-                "{}-{}-{} Intel Pro 1000/MT {}",
-                dev.bus, dev.device, dev.function, dev
+                "{}-{}-{} Intel Pro 1000/MT {}", dev.bus, dev.device, dev.function, dev
             );
+
+            use crate::io::drivers::network::{NetworkInterface,NetworkInterfaceType};
             use crate::io::drivers::network::e1000::E1000;
-            let e1000 = E1000::new(*dev);
-            println!("Got good nic? {}", e1000.is_ok());
+
+            let e1000 = E1000::new(dev);
+            let nic = NetworkInterface::new(NetworkInterfaceType::Ethernet, e1000);
+            println!("Got good nic? {}", nic.is_ok());
             //let nic: NetworkInterface =
             //    NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
             //println!("Registered as {}", nic);
@@ -355,6 +358,12 @@ pub fn initialize() {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::io) struct DeviceError<T> {
-    pub(in crate::io) kind: T,
+pub enum DeviceErrorCause {
+    InitializationFailure,
+    UnexpectedStuff,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceError {
+    pub cause: DeviceErrorCause,
 }

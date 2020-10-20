@@ -1,7 +1,7 @@
 
 use crate::io::drivers::network::e1000::constants::*;
 
-use crate::io::pci::DeviceError;
+use crate::io::drivers::network::e1000::DriverError;
 
 fn vlan_used() -> bool {
     /*
@@ -14,7 +14,7 @@ fn vlan_used() -> bool {
     false
 }
 
-pub(in crate::io::drivers::network::e1000) fn toggle_vlan_filter(device: &super::E1000, filter_on:bool) -> Result<(), DeviceError<ErrorType>> {
+pub(in crate::io::drivers::network::e1000) fn toggle_vlan_filter(device: &super::E1000, filter_on:bool) -> Result<(), DriverError> {
 
     // FIXME: NET DEVICE SETUP
     //if (!test_bit(__E1000_DOWN, &adapter->flags))
@@ -50,7 +50,7 @@ pub(in crate::io::drivers::network::e1000) fn toggle_vlan_filter(device: &super:
 
 }
 
-pub(in crate::io::drivers::network::e1000) fn update_mng_vlan(device: &super::E1000) -> Result<(), DeviceError<ErrorType>> {
+pub(in crate::io::drivers::network::e1000) fn update_mng_vlan(_device: &super::E1000) -> Result<(), DriverError> {
 
     /*
     let vid = self.hardware.mng_cookie.vlan_id;

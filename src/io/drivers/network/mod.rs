@@ -1,16 +1,14 @@
-#[allow(dead_code)]
+
 pub mod e1000;
 pub mod vlan;
-//pub mod rtl8139;
+
+use crate::io::pci::DeviceError;
 
 pub const MAXIMUM_ETHERNET_VLAN_SIZE: u32 = 1522;
 
-/*
-use alloc::boxed::Box;
-use alloc::string::String;
-
-use crate::format;
-use crate::io::drivers::DeviceDriver;
+pub trait NetworkDriver {
+    fn probe(&mut self) -> Result<(), DeviceError>;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NetworkInterfaceType {
@@ -19,27 +17,31 @@ pub enum NetworkInterfaceType {
     Wireless,
 }
 
-pub struct NetworkInterface {
-    //interface_type: NetworkInterfaceType,
-    name: String,
-    device_driver: Box<DeviceDriver>,
+pub struct NetworkInterface<T: NetworkDriver> {
+    interface_type: NetworkInterfaceType,
+    //name: String,
+    device_driver: T,
 }
 
 #[allow(dead_code)]
-impl NetworkInterface {
-    pub fn new(nic_type: NetworkInterfaceType, driver: Box<DeviceDriver>) -> NetworkInterface {
-        NetworkInterface {
-            //interface_type: nic_type,
-            name: create_network_interface_name(nic_type),
+impl<T: NetworkDriver> NetworkInterface<T> {
+    pub fn new(nic_type: NetworkInterfaceType, driver: T) -> Result<NetworkInterface<T>, ()> {
+        let mut nic = NetworkInterface {
+            interface_type: nic_type,
+            //name: create_network_interface_name(nic_type),
             device_driver: driver,
-        }
-    }
+        };
 
-    pub fn get_device(&self) -> &DeviceDriver {
-        self.device_driver.as_ref()
+        let res = nic.device_driver.probe();
+        if !res.is_ok() {
+            panic!("Failed to boot nic");
+        }
+
+        Ok(nic)
     }
 }
 
+/*
 impl fmt::Display for NetworkInterface {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.name)

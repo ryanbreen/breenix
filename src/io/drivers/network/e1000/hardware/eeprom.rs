@@ -2,11 +2,11 @@ use crate::io::drivers::network::e1000::constants::*;
 
 use spin::Mutex;
 
-use crate::io::pci::DeviceError;
-
 const EEPROM_LOCK: Mutex<usize> = Mutex::new(0);
 
 use crate::println;
+
+use crate::io::drivers::network::e1000::DriverError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::io::drivers::network::e1000) struct Info {
@@ -39,7 +39,7 @@ impl Info {
  */
 pub(in crate::io::drivers::network::e1000) fn init_eeprom_params(
     hardware: &super::Hardware,
-) -> Result<Info, DeviceError<ErrorType>> {
+) -> Result<Info, DriverError> {
     let mut eeprom = Info::defaults();
     let eecd = hardware.read(EECD)?;
 
@@ -126,7 +126,7 @@ pub(in crate::io::drivers::network::e1000) fn init_eeprom_params(
  *
  * Terminates a command by inverting the EEPROM's chip select pin
  */
-fn release_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorType>> {
+fn release_eeprom(hardware: &super::Hardware) -> Result<(), DriverError> {
     let mut eecd = hardware.read(EECD)?;
 
     /* cleanup eeprom */
@@ -161,7 +161,7 @@ fn release_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorTyp
     Ok(())
 }
 
-fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorType>> {
+fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), DriverError> {
     let mut i = 0;
     let mut eecd = hardware.read(EECD)?;
 
@@ -194,7 +194,7 @@ fn acquire_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorTyp
     Ok(())
 }
 
-fn standby_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorType>> {
+fn standby_eeprom(hardware: &super::Hardware) -> Result<(), DriverError> {
     let mut eecd: u32 = hardware.read(EECD)?;
 
     eecd &= !(EECD_CS | EECD_SK);
@@ -223,7 +223,7 @@ fn standby_eeprom(hardware: &super::Hardware) -> Result<(), DeviceError<ErrorTyp
     Ok(())
 }
 
-fn raise_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DeviceError<ErrorType>> {
+fn raise_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DriverError> {
     /*
      * Raise the clock input to the EEPROM (by setting the SK bit), and then
      * wait <delay> microseconds.
@@ -236,7 +236,7 @@ fn raise_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DeviceErro
     Ok(new_eecd)
 }
 
-fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DeviceError<ErrorType>> {
+fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DriverError> {
     /*
      * Raise the clock input to the EEPROM (by setting the SK bit), and then
      * wait <delay> microseconds.
@@ -249,7 +249,7 @@ fn lower_ee_clk(hardware: &super::Hardware, eecd: u32) -> Result<u32, DeviceErro
     Ok(new_eecd)
 }
 
-fn shift_in_ee_bits(hardware: &super::Hardware, count: u16) -> Result<u16, DeviceError<ErrorType>> {
+fn shift_in_ee_bits(hardware: &super::Hardware, count: u16) -> Result<u16, DriverError> {
     let mut eecd: u32;
     let mut data: u16 = 0;
 
@@ -285,7 +285,7 @@ fn shift_out_ee_bits(
     hardware: &super::Hardware,
     data: u32,
     count: u32,
-) -> Result<(), DeviceError<ErrorType>> {
+) -> Result<(), DriverError> {
     let mut eecd: u32;
     let mut mask: u32;
 
@@ -336,7 +336,7 @@ pub(super) fn read_eeprom(
     hardware: &super::Hardware,
     offset: u16,
     words: u16,
-) -> Result<u16, DeviceError<ErrorType>> {
+) -> Result<u16, DriverError> {
     let mut data: u16 = 0;
     EEPROM_LOCK.lock();
 

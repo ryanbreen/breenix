@@ -115,24 +115,6 @@ pub(in crate::io::drivers::network::e1000) enum BusWidth {
     Reserved = 0xFF,
 }
 
-/* Error types */
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(in crate::io::drivers::network::e1000) enum ErrorType {
-    MacType,
-    MediaType,
-    Phy,
-    PhyType,
-    Register,
-    Config,
-    EEPROM,
-    DMA,
-    SoftwareInit,
-    MDIORemap,
-    IORemap,
-    AllocNetdev,
-    PCIReg,
-}
-
 /* EEPROM Type */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::io::drivers::network::e1000) enum EEPROMType {
