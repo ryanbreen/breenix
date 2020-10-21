@@ -53,6 +53,8 @@ lazy_static! {
         */
         idt[TIMER_INTERRUPT as usize].set_handler_fn(timer_handler);
 
+        idt[11 + 32 as usize].set_handler_fn(keyboard_handler);
+
         idt[KEYBOARD_INTERRUPT as usize].set_handler_fn(keyboard_handler);
         /*
         idt.interrupts[11].set_handler_fn(nic_interrupt_handler);

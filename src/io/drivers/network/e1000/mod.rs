@@ -1,8 +1,8 @@
 use crate::println;
 
-use crate::io::pci;
-use crate::io::pci::{DeviceError, DeviceErrorCause};
 use crate::io::drivers::network::NetworkDriver;
+use crate::io::pci;
+use crate::io::pci::{Device, DeviceError, DeviceErrorCause};
 
 #[allow(unused_variables)]
 #[allow(dead_code)]
@@ -43,13 +43,15 @@ pub(in crate::io::drivers::network::e1000) struct DriverError {
 
 impl From<DriverError> for DeviceError {
     fn from(_error: DriverError) -> Self {
-        DeviceError { cause: DeviceErrorCause::InitializationFailure }
+        DeviceError {
+            cause: DeviceErrorCause::InitializationFailure,
+        }
     }
 }
 
 #[allow(dead_code)]
 pub(in crate::io) struct E1000 {
-    //pci_device: pci::Device,
+    pci_device: Device,
     hardware: self::hardware::Hardware,
     mng_vlan_id: u16,
     phy_info: self::hardware::PhyInfo,
@@ -65,7 +67,7 @@ pub(in crate::io) struct E1000 {
 impl E1000 {
     pub fn new(device: &pci::Device) -> E1000 {
         E1000 {
-            //pci_device: device,
+            pci_device: *device,
             hardware: self::hardware::Hardware::new(device),
             device_data: NetworkDeviceData::defaults(),
             mng_vlan_id: 0,
@@ -80,7 +82,7 @@ impl E1000 {
     }
 
     fn sw_init(&mut self) -> Result<(), DriverError> {
-        self.rx_buffer_len = crate::io::drivers::network::MAXIMUM_ETHERNET_VLAN_SIZE;
+        self.rx_buffer_len = MAXIMUM_ETHERNET_VLAN_SIZE;
 
         self.num_tx_queues = 1;
         self.num_rx_queues = 1;
@@ -105,7 +107,7 @@ impl E1000 {
     fn irq_disable(&self) -> Result<(), DriverError> {
         self.hardware.write(IMC, !0)?;
         self.hardware.write_flush()?;
-        
+
         // FIXME: NET DEVICE SETUP
         // synchronize_irq(adapter->pdev->irq);
 
@@ -204,8 +206,8 @@ impl E1000 {
      **/
     fn configure(&mut self) -> Result<(), DriverError> {
         /*
-    	struct net_device *netdev = adapter->netdev;
-	    int i;
+        struct net_device *netdev = adapter->netdev;
+        int i;
 
         e1000_set_rx_mode(netdev);
 
@@ -230,6 +232,53 @@ impl E1000 {
     }
 
     /**
+     * e1000_power_up_phy - restore link in case the phy was powered down
+     * @adapter: address of board private structure
+     *
+     * The phy may be powered down to save power and turn off link when the
+     * driver is unloaded and wake on lan is not enabled (among others)
+     * *** this routine MUST be followed by a call to e1000_reset ***
+     **/
+    fn power_up_phy(&self) -> Result<(), DriverError> {
+        /* Just clear the power down bit to wake the phy back up */
+        if (self.hardware.media_type == MediaType::Copper) {
+            /* according to the manual, the phy will retain its
+             * settings across a power-down/up cycle
+             */
+            let mut mii_reg = self.hardware.read_phy_reg(PHY_CTRL)?;
+            mii_reg &= !MII_CR_POWER_DOWN;
+            self.hardware.write_phy_reg(PHY_CTRL, mii_reg)?;
+        }
+
+        Ok(())
+    }
+
+    fn request_irq(&self) -> Result<(), DriverError> {
+        println!(
+            "This is where we should set up a handler for {}",
+            self.pci_device.irq
+        );
+        /*
+        struct net_device *netdev = adapter->netdev;
+        irq_handler_t handler = e1000_intr;
+        int irq_flags = IRQF_SHARED;
+        int err;
+
+        err = request_irq(adapter->pdev->irq, handler, irq_flags, netdev->name,
+                netdev);
+        if (err) {
+            e_err(probe, "Unable to allocate interrupt Error: %d\n", err);
+        }
+
+        return err;
+        */
+
+        Ok(())
+    }
+}
+
+impl NetworkDriver for E1000 {
+    /**
      * e1000_open - Called when a network interface is made active
      *
      * Returns 0 on success, negative value on failure
@@ -240,72 +289,74 @@ impl E1000 {
      * handler is registered with the OS, the watchdog task is started,
      * and the stack is notified that the interface is ready.
      **/
-    fn open(&mut self) -> Result<(), DriverError> {
-
+    fn open(&mut self) -> Result<(), DeviceError> {
+        // On Linux, which of course does much more, the below equates to:
+        //     netif_carrier_off(netdev);
+        self.device_data.carrier_down_count += 1;
+        self.device_data.carrier_online = false;
         /*
-    	netif_carrier_off(netdev);
 
-    	/* allocate transmit descriptors */
-	    err = e1000_setup_all_tx_resources(adapter);
-	    if (err)
-		    goto err_setup_tx;
+        /* allocate transmit descriptors */
+        err = e1000_setup_all_tx_resources(adapter);
+        if (err)
+            goto err_setup_tx;
 
-    	/* allocate receive descriptors */
-	    err = e1000_setup_all_rx_resources(adapter);
-	    if (err)
-		    goto err_setup_rx;
-
-    	e1000_power_up_phy(adapter);
-
-    	self.mng_vlan_id = MNG_VLAN_NONE;
-	    if self.hardware.mng_cookie.status & MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT != 0 {
-		    vlan::update_mng_vlan(self);
-	    }
-
-    	/* before we allocate an interrupt, we must be ready to handle it.
-     	 * Setting DEBUG_SHIRQ in the kernel makes it fire an interrupt
-	     * as soon as we call pci_request_irq, so we have to setup our
-	     * clean_rx handler before we do so.
-	     */
-    	self.configure(adapter)?;
-
-    	err = e1000_request_irq(adapter);
-	    if (err)
-		    goto err_req_irq;
-
-    	/* From here on the code is the same as e1000_up() */
-	    clear_bit(__E1000_DOWN, &adapter->flags);
-
-    	napi_enable(&adapter->napi);
-
-    	e1000_irq_enable(adapter);
-
-    	netif_start_queue(netdev);
-
-    	/* fire a link status change interrupt to start the watchdog */
-	    ew32(ICS, E1000_ICS_LSC);
-
-    	return E1000_SUCCESS;
-
-        /*
-    err_req_irq:
-	    e1000_power_down_phy(adapter);
-	    e1000_free_all_rx_resources(adapter);
-    err_setup_rx:
-	    e1000_free_all_tx_resources(adapter);
-    err_setup_tx:
-        e1000_reset(adapter);
-        */
+        /* allocate receive descriptors */
+        err = e1000_setup_all_rx_resources(adapter);
+        if (err)
+            goto err_setup_rx;
         */
 
-    	return Ok(())
+        self.power_up_phy()?;
+
+        self.mng_vlan_id = MNG_VLAN_NONE;
+        if self.hardware.mng_cookie.status & MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT != 0 {
+            vlan::update_mng_vlan(self);
+        }
+
+        /* before we allocate an interrupt, we must be ready to handle it.
+         * Setting DEBUG_SHIRQ in the kernel makes it fire an interrupt
+         * as soon as we call pci_request_irq, so we have to setup our
+         * clean_rx handler before we do so.
+         */
+        self.configure()?;
+
+        self.request_irq()?;
+        //if (err)
+        //    goto err_req_irq;
+
+        /*
+
+
+            /* From here on the code is the same as e1000_up() */
+            clear_bit(__E1000_DOWN, &adapter->flags);
+
+            napi_enable(&adapter->napi);
+
+            e1000_irq_enable(adapter);
+
+            netif_start_queue(netdev);
+
+            /* fire a link status change interrupt to start the watchdog */
+            ew32(ICS, E1000_ICS_LSC);
+
+            return E1000_SUCCESS;
+
+            /*
+        err_req_irq:
+            e1000_power_down_phy(adapter);
+            e1000_free_all_rx_resources(adapter);
+        err_setup_rx:
+            e1000_free_all_tx_resources(adapter);
+        err_setup_tx:
+            e1000_reset(adapter);
+            */
+            */
+
+        return Ok(());
     }
-}
-
-impl NetworkDriver for E1000 {
 
     fn probe(&mut self) -> Result<(), DeviceError> {
-
         // FIXME: NET DEVICE SETUP
 
         /* do not allocate ioport bars when not needed *
@@ -342,14 +393,7 @@ impl NetworkDriver for E1000 {
         pr_info("bars? %x\n", bars);
         adapter->need_ioport = need_ioport;
         pr_info("Need ioport? %d\n", need_ioport);
-
-        hw = &adapter->hw;
-        hw->back = adapter;
-
-        err = -EIO;
-        hw->hw_addr = pci_ioremap_bar(pdev, BAR_0);
-        pr_info("hw_addr is %pa\n", &(hw->hw_addr));
-        */    
+        */
 
         // FIXME: Can't run this until hardware is setup, but I'm not doing this until init_data.
         // let _ = self.hardware.read(EECD)?;
@@ -510,11 +554,9 @@ impl NetworkDriver for E1000 {
             }
 
             if i >= 32 {
-                return Err(
-                    DeviceError::from(
-                        DriverError { cause: ErrorCause::EEPROM, }
-                    )
-                );
+                return Err(DeviceError::from(DriverError {
+                    cause: ErrorCause::EEPROM,
+                }));
             }
         }
 
@@ -532,8 +574,12 @@ impl NetworkDriver for E1000 {
         vlan::toggle_vlan_filter(self, false)?;
 
         /* print bus type/speed/width info */
-	    println!("(PCI{}:{}MHz:{}-bit)",
-            match self.hardware.bus_type == BusType::PCIX { true => "-X", false => "" },
+        println!(
+            "(PCI{}:{}MHz:{}-bit)",
+            match self.hardware.bus_type == BusType::PCIX {
+                true => "-X",
+                false => "",
+            },
             self.hardware.bus_speed as u32,
             self.hardware.bus_width as u32
         );

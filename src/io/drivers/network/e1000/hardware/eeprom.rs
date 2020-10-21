@@ -281,11 +281,7 @@ fn shift_in_ee_bits(hardware: &super::Hardware, count: u16) -> Result<u16, Drive
     Ok(data)
 }
 
-fn shift_out_ee_bits(
-    hardware: &super::Hardware,
-    data: u32,
-    count: u32,
-) -> Result<(), DriverError> {
+fn shift_out_ee_bits(hardware: &super::Hardware, data: u32, count: u32) -> Result<(), DriverError> {
     let mut eecd: u32;
     let mut mask: u32;
 

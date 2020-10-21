@@ -30,6 +30,11 @@ impl Pci {
         ((val >> ((offset as usize & 0b10) << 3)) & 0xFFFF) as u16
     }
 
+    unsafe fn read8_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8) -> u8 {
+        let val = self.read_config(bus, slot, function, offset & 0b11111100);
+        ((val >> ((offset as usize & 0b11) << 3)) & 0xFF) as u8
+    }
+
     /// Check for a PCI device, and return information about it if present.
     unsafe fn probe(&mut self, bus: u8, slot: u8, function: u8) -> Option<Device> {
         let config_0 = self.read_config(bus, slot, function, 0);
@@ -48,6 +53,8 @@ impl Pci {
             vendor_id: config_0 as u16,
             device_id: (config_0 >> 16) as u16,
             revision_id: config_4 as u8,
+            pin: self.read8_config(bus, slot, function, 0x3D),
+            irq: self.read8_config(bus, slot, function, 0x3C),
             subsystem_id: self.read16_config(bus, slot, function, 0x2E),
             subsystem_vendor_id: self.read16_config(bus, slot, function, 0x2C),
             subclass: (config_4 >> 16) as u8,
@@ -108,6 +115,8 @@ pub struct Device {
     pub(crate) revision_id: u8,
     pub(crate) subsystem_id: u16,
     pub(crate) subsystem_vendor_id: u16,
+    pub(crate) pin: u8,
+    pub(crate) irq: u8,
     subclass: u8,
     class_code: DeviceClass,
     multifunction: bool,
@@ -278,11 +287,12 @@ fn device_specific_init(dev: &mut Device) {
         }
         0x100E | 0x100F => {
             println!(
-                "{}-{}-{} Intel Pro 1000/MT {}", dev.bus, dev.device, dev.function, dev
+                "{}-{}-{} Intel Pro 1000/MT {}",
+                dev.bus, dev.device, dev.function, dev
             );
 
-            use crate::io::drivers::network::{NetworkInterface,NetworkInterfaceType};
             use crate::io::drivers::network::e1000::E1000;
+            use crate::io::drivers::network::{NetworkInterface, NetworkInterfaceType};
 
             let e1000 = alloc::boxed::Box::new(E1000::new(dev));
             let mut nic = NetworkInterface::new(NetworkInterfaceType::Ethernet, e1000);

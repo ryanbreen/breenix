@@ -7,8 +7,8 @@ use crate::println;
 use crate::io::pci;
 use crate::io::pci::BAR;
 
-use crate::io::drivers::network::e1000::{DriverError, ErrorCause};
 use crate::io::drivers::network::e1000::constants::*;
+use crate::io::drivers::network::e1000::{DriverError, ErrorCause};
 
 mod eeprom;
 
@@ -188,9 +188,7 @@ impl Hardware {
         Ok(())
     }
 
-    pub(in crate::io::drivers::network::e1000) fn init_data(
-        &mut self,
-    ) -> Result<(), DriverError> {
+    pub(in crate::io::drivers::network::e1000) fn init_data(&mut self) -> Result<(), DriverError> {
         use x86_64::structures::paging::PageTableFlags;
         let res = crate::memory::identity_map_range(
             self.hw_addr.addr,
@@ -413,12 +411,7 @@ impl Hardware {
         Ok(())
     }
 
-    pub fn write_array(
-        &self,
-        offset: u32,
-        idx: u32,
-        val: u32,
-    ) -> Result<(), DriverError> {
+    pub fn write_array(&self, offset: u32, idx: u32, val: u32) -> Result<(), DriverError> {
         self.write(offset + (idx << 2), val)
     }
 
@@ -427,9 +420,7 @@ impl Hardware {
         Ok(unsafe { ptr::read_volatile((self.hw_addr.addr + offset as u64) as *const u32) })
     }
 
-    pub(in crate::io::drivers::network::e1000) fn write_flush(
-        &self,
-    ) -> Result<(), DriverError> {
+    pub(in crate::io::drivers::network::e1000) fn write_flush(&self) -> Result<(), DriverError> {
         // write flush
         self.read(STATUS)?;
         Ok(())
@@ -1057,7 +1048,11 @@ impl Hardware {
      *
      * Writes a value to a PHY register
      */
-    fn write_phy_reg(&self, reg_addr: u32, phy_data: u16) -> Result<(), DriverError> {
+    pub(in crate::io::drivers::network::e1000) fn write_phy_reg(
+        &self,
+        reg_addr: u32,
+        phy_data: u16,
+    ) -> Result<(), DriverError> {
         // Linux does a lock here, but I can't be bothered
         // spin_lock_irqsave(&phy_lock, flags);
 
