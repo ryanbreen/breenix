@@ -4,6 +4,8 @@ pub mod vlan;
 
 use crate::io::pci::DeviceError;
 
+use alloc::boxed::Box;
+
 pub const MAXIMUM_ETHERNET_VLAN_SIZE: u32 = 1522;
 
 pub trait NetworkDriver {
@@ -11,33 +13,25 @@ pub trait NetworkDriver {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum NetworkInterfaceType {
+pub(in crate::io) enum NetworkInterfaceType {
     Loopback,
     Ethernet,
     Wireless,
 }
 
-pub struct NetworkInterface<T: NetworkDriver> {
-    interface_type: NetworkInterfaceType,
-    //name: String,
-    device_driver: T,
+pub(in crate::io) struct NetworkInterface {
+    pub (in crate::io) interface_type: NetworkInterfaceType,
+    pub (in crate::io) device_driver: Box<dyn NetworkDriver>,
 }
 
 #[allow(dead_code)]
-impl<T: NetworkDriver> NetworkInterface<T> {
-    pub fn new(nic_type: NetworkInterfaceType, driver: T) -> Result<NetworkInterface<T>, ()> {
-        let mut nic = NetworkInterface {
+impl NetworkInterface {
+    pub (in crate::io) fn new(nic_type: NetworkInterfaceType, driver: Box<dyn NetworkDriver>) -> NetworkInterface {
+        NetworkInterface {
             interface_type: nic_type,
             //name: create_network_interface_name(nic_type),
             device_driver: driver,
-        };
-
-        let res = nic.device_driver.probe();
-        if !res.is_ok() {
-            panic!("Failed to boot nic");
         }
-
-        Ok(nic)
     }
 }
 

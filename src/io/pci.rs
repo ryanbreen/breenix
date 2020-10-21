@@ -285,8 +285,11 @@ fn device_specific_init(dev: &mut Device) {
             use crate::io::drivers::network::e1000::E1000;
 
             let e1000 = E1000::new(dev);
-            let nic = NetworkInterface::new(NetworkInterfaceType::Ethernet, e1000);
-            println!("Got good nic? {}", nic.is_ok());
+            let mut nic = NetworkInterface::new(NetworkInterfaceType::Ethernet, alloc::boxed::Box::new(e1000));
+
+            let res = nic.device_driver.probe();
+
+            println!("Got good nic? {}", res.is_ok());
             //let nic: NetworkInterface =
             //    NetworkInterface::new(NetworkInterfaceType::Ethernet, Box::new(e1000));
             //println!("Registered as {}", nic);

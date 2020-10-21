@@ -67,6 +67,7 @@ impl PhyInfo {
     }
 }
 
+#[allow(dead_code)]
 pub(in crate::io::drivers::network::e1000) struct Hardware {
     eeprom_info: eeprom::Info,
     io_base: BAR,
@@ -399,11 +400,6 @@ impl Hardware {
                 val,
             );
         }
-    }
-
-    pub fn read_command(&self, offset: u32) -> u32 {
-        // TODO: Check for invalid ranges to make sure this is safe.
-        unsafe { ptr::read_volatile((self.io_base.addr + offset as u64) as *const u32) }
     }
 
     pub fn write(&self, offset: u32, val: u32) -> Result<(), DriverError> {

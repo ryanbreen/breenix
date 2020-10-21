@@ -8,7 +8,9 @@ use crate::io::drivers::network::NetworkDriver;
 #[allow(dead_code)]
 mod constants;
 mod hardware;
-//mod params;
+
+#[allow(unused_variables)]
+#[allow(dead_code)]
 mod vlan;
 
 use self::constants::*;
@@ -38,11 +40,12 @@ pub(in crate::io::drivers::network::e1000) struct DriverError {
 }
 
 impl From<DriverError> for DeviceError {
-    fn from(error: DriverError) -> Self {
+    fn from(_error: DriverError) -> Self {
         DeviceError { cause: DeviceErrorCause::InitializationFailure }
     }
 }
 
+#[allow(dead_code)]
 pub(in crate::io) struct E1000 {
     //pci_device: pci::Device,
     hardware: self::hardware::Hardware,
@@ -58,7 +61,7 @@ pub(in crate::io) struct E1000 {
 
 impl E1000 {
     pub fn new(device: &pci::Device) -> E1000 {
-        let mut e1000: E1000 = E1000 {
+        E1000 {
             //pci_device: device,
             hardware: self::hardware::Hardware::new(device),
             mng_vlan_id: 0,
@@ -69,15 +72,7 @@ impl E1000 {
             num_rx_queues: 0,
             wol: 0,
             eeprom_wol: 0,
-        };
-
-        // let result = e1000.probe();
-
-        //if !result.is_ok() {
-            // TODO: Handle the error types
-        //}
-
-        e1000
+        }
     }
 
     fn sw_init(&mut self) -> Result<(), DriverError> {
