@@ -19,14 +19,14 @@ pub(in crate::io) enum NetworkInterfaceType {
     Wireless,
 }
 
-pub(in crate::io) struct NetworkInterface {
+pub(in crate::io) struct NetworkInterface<D: NetworkDriver> {
     pub (in crate::io) interface_type: NetworkInterfaceType,
-    pub (in crate::io) device_driver: Box<dyn NetworkDriver>,
+    pub (in crate::io) device_driver: Box<D>,
 }
 
 #[allow(dead_code)]
 impl NetworkInterface {
-    pub (in crate::io) fn new(nic_type: NetworkInterfaceType, driver: Box<dyn NetworkDriver>) -> NetworkInterface {
+    pub (in crate::io) fn new(nic_type: NetworkInterfaceType, driver: Box<D>) -> NetworkInterface {
         NetworkInterface {
             interface_type: nic_type,
             //name: create_network_interface_name(nic_type),
