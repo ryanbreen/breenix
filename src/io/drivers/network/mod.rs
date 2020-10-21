@@ -1,4 +1,4 @@
-
+pub(in crate::io::drivers::network) mod constants;
 pub mod e1000;
 pub mod vlan;
 
@@ -19,6 +19,23 @@ pub(in crate::io) enum NetworkInterfaceType {
     Wireless,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::io) struct NetworkDeviceData {
+    mtu: u32,
+    min_mtu: u32,
+    max_mtu: u32,
+}
+
+impl NetworkDeviceData {
+    pub (in crate::io) fn defaults() -> NetworkDeviceData {
+        NetworkDeviceData {
+            mtu: 0,
+            min_mtu: 0,
+            max_mtu: 0,
+        }
+    }
+}
+
 pub(in crate::io) struct NetworkInterface<D: NetworkDriver> {
     pub (in crate::io) interface_type: NetworkInterfaceType,
     pub (in crate::io) device_driver: Box<D>,
@@ -29,7 +46,6 @@ impl<D: NetworkDriver> NetworkInterface<D> {
     pub (in crate::io) fn new(nic_type: NetworkInterfaceType, driver: Box<D>) -> NetworkInterface<D> {
         NetworkInterface {
             interface_type: nic_type,
-            //name: create_network_interface_name(nic_type),
             device_driver: driver,
         }
     }

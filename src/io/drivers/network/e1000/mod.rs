@@ -14,6 +14,8 @@ mod hardware;
 mod vlan;
 
 use self::constants::*;
+use super::constants::*;
+use super::NetworkDeviceData;
 
 /* Error cause */
 #[allow(dead_code)]
@@ -57,6 +59,7 @@ pub(in crate::io) struct E1000 {
     num_rx_queues: u32,
     wol: u32,
     eeprom_wol: u32,
+    device_data: NetworkDeviceData,
 }
 
 impl E1000 {
@@ -64,6 +67,7 @@ impl E1000 {
         E1000 {
             //pci_device: device,
             hardware: self::hardware::Hardware::new(device),
+            device_data: NetworkDeviceData::defaults(),
             mng_vlan_id: 0,
             phy_info: self::hardware::PhyInfo::defaults(),
             en_mng_pt: false,
@@ -303,12 +307,10 @@ impl NetworkDriver for E1000 {
     fn probe(&mut self) -> Result<(), DeviceError> {
 
         // FIXME: NET DEVICE SETUP
+
         /* do not allocate ioport bars when not needed *
         need_ioport = e1000_is_need_ioport(pdev);
         if (need_ioport) {
-            pr_info("IORESOURCE_MEM: %x\n", IORESOURCE_MEM);
-            pr_info("IORESOURCE_IO: %x\n", IORESOURCE_IO);
-            pr_info("orred: %x\n", IORESOURCE_MEM | IORESOURCE_IO);
             bars = pci_select_bars(pdev, IORESOURCE_MEM | IORESOURCE_IO);
             err = pci_enable_device(pdev);
             pr_info("bars? %x\n", bars);
@@ -318,10 +320,6 @@ impl NetworkDriver for E1000 {
         }
         if (err)
             return err;
-
-        err = pci_request_selected_regions(pdev, bars, e1000_driver_name);
-        if (err)
-            goto err_pci_reg;
 
         pci_set_master(pdev);
         err = pci_save_state(pdev);
@@ -418,10 +416,9 @@ impl NetworkDriver for E1000 {
 
         */
 
-        // FIXME: NET DEVICE SETUP
         /* MTU range: 46 - 16110 */
-        //netdev->min_mtu = ETH_ZLEN - ETH_HLEN;
-        //netdev->max_mtu = MAX_JUMBO_FRAME_SIZE - (ETH_HLEN + ETH_FCS_LEN);
+        self.device_data.min_mtu = ETH_ZLEN - ETH_HLEN;
+        self.device_data.max_mtu = MAX_JUMBO_FRAME_SIZE - (ETH_HLEN + ETH_FCS_LEN);
 
         self.en_mng_pt = self.hardware.enable_mng_pass_thru()?;
 
