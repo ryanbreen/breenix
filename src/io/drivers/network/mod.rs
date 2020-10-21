@@ -25,13 +25,19 @@ pub(in crate::io) struct NetworkInterface<D: NetworkDriver> {
 }
 
 #[allow(dead_code)]
-impl NetworkInterface {
-    pub (in crate::io) fn new(nic_type: NetworkInterfaceType, driver: Box<D>) -> NetworkInterface {
+impl<D: NetworkDriver> NetworkInterface<D> {
+    pub (in crate::io) fn new(nic_type: NetworkInterfaceType, driver: Box<D>) -> NetworkInterface<D> {
         NetworkInterface {
             interface_type: nic_type,
             //name: create_network_interface_name(nic_type),
             device_driver: driver,
         }
+    }
+
+    pub (in crate::io) fn up(&mut self) -> Result<(), ()> {
+        let res = self.device_driver.probe();
+        crate::println!("Got good nic? {}", res.is_ok());
+        Ok(())
     }
 }
 
