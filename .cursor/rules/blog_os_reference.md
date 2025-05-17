@@ -12,7 +12,7 @@ This rule establishes the fundamental guidelines for using the blog_os repositor
 ## Rule Details
 1. The blog_os directory and its contents are to be used exclusively as reference material
 2. No direct edits should be made to the blog_os directory or its contents
-3. Primary reference material is located in `blog/content/edition-3`
+3. Primary reference material is located in `../blog_os/blog/content/edition-3`
 4. The blog_os repository serves as a learning and reference resource, not as a target for modifications
 
 ## Critical Note: Project Name
