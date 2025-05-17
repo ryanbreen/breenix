@@ -9,8 +9,19 @@ mod framebuffer;
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
-        for byte in framebuffer.buffer_mut() {
-            *byte = 0x90;
+        let color = framebuffer::Color {
+            red: 0,
+            green: 0,
+            blue: 255,
+        };
+        for x in 0..100 {
+            for y in 0..100 {
+                let position = framebuffer::Position {
+                    x: 20 + x,
+                    y: 100 + y,
+                };
+                framebuffer::set_pixel_in(framebuffer, position, color);
+            }
         }
     }
     loop {}
