@@ -1,68 +1,15 @@
-#![no_std] // don't link the Rust standard library
-#![no_main] // disable all Rust-level entry points
-#![feature(
-    alloc_error_handler,
-    ptr_internals,
-    abi_x86_interrupt,
-    const_fn,
-    custom_test_frameworks,
-    wake_trait
-)]
-#![test_runner(breenix::test_runner)]
-#![reexport_test_harness_main = "test_main"]
+// src/main.rs
 
-extern crate alloc;
-extern crate num_traits;
+use std::{env, fs};
 
-use bootloader::{entry_point, BootInfo};
+fn main() {
+    let current_exe = env::current_exe().unwrap();
+    let uefi_target = current_exe.with_file_name("uefi.img");
+    let bios_target = current_exe.with_file_name("bios.img");
 
-use core::panic::PanicInfo;
+    fs::copy(env!("UEFI_IMAGE"), &uefi_target).unwrap();
+    fs::copy(env!("BIOS_IMAGE"), &bios_target).unwrap();
 
-pub mod constants;
-pub mod event;
-pub mod interrupts;
-pub mod io;
-pub mod memory;
-pub mod state;
-pub mod task;
-pub mod util;
-
-pub mod macros;
-
-pub fn hlt_loop() -> ! {
-    loop {
-        x86_64::instructions::hlt();
-    }
-}
-
-#[alloc_error_handler]
-fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
-    panic!("allocation error: {:?}", layout)
-}
-
-/// This function is called on panic.
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    println!("{}", info);
-    hlt_loop();
-}
-
-entry_point!(kernel_main);
-
-pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
-    println!("We're back!");
-
-    memory::init(&boot_info);
-
-    interrupts::initialize();
-    io::initialize();
-
-    use task::{executor::Executor, Task};
-    let mut executor = Executor::new();
-    executor.spawn(Task::new(io::keyboard::read()));
-    executor.run();
-
-    #[cfg(test)]
-    test_main();
+    println!("UEFI disk image at {}", uefi_target.display());
+    println!("BIOS disk image at {}", bios_target.display());
 }
