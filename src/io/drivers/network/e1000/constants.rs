@@ -1,3 +1,12 @@
+
+/* Param Defaults */
+pub(in crate::io::drivers::network::e1000) const DEFAULT_TIDV: u32 =                   8;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_TADV: u32 =                  32;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_RDTR: u32 =                   0;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_RADV: u32 =                   8;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_ITR: u32 =                    3;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_RXCSUM: u32 =                 1;
+
 /* PCI Device IDs */
 pub(in crate::io::drivers::network::e1000) const DEV_ID_82542: u16 = 0x1000;
 pub(in crate::io::drivers::network::e1000) const DEV_ID_82543GC_FIBER: u16 = 0x1001;
@@ -1213,3 +1222,63 @@ pub(in crate::io::drivers::network::e1000) enum RXStatus {
     Ok,
     Undefined = 0xFF,
 }
+
+/* Default values for the transmit IPG register */
+pub(in crate::io::drivers::network::e1000) const DEFAULT_82542_TIPG_IPGT: u32 =         10;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_82543_TIPG_IPGT_FIBER: u32 =   9;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_82543_TIPG_IPGT_COPPER: u32 =  8;
+
+pub(in crate::io::drivers::network::e1000) const TIPG_IPGT_MASK: u32 =   0x000003FF;
+pub(in crate::io::drivers::network::e1000) const TIPG_IPGR1_MASK: u32 =  0x000FFC00;
+pub(in crate::io::drivers::network::e1000) const TIPG_IPGR2_MASK: u32 =  0x3FF00000;
+
+pub(in crate::io::drivers::network::e1000) const DEFAULT_82542_TIPG_IPGR1: u32 =  2;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_82543_TIPG_IPGR1: u32 =  8;
+pub(in crate::io::drivers::network::e1000) const TIPG_IPGR1_SHIFT: u32 =   10;
+
+pub(in crate::io::drivers::network::e1000) const DEFAULT_82542_TIPG_IPGR2: u32 =  10;
+pub(in crate::io::drivers::network::e1000) const DEFAULT_82543_TIPG_IPGR2: u32 =  6;
+pub(in crate::io::drivers::network::e1000) const TIPG_IPGR2_SHIFT: u32 =   20;
+
+pub(in crate::io::drivers::network::e1000) const TXDMAC_DPP: u32 = 0x00000001;
+
+/* Transmit Descriptor bit definitions */
+pub(in crate::io::drivers::network::e1000) const TXD_DTYP_D: u32 =     0x00100000;	/* Data Descriptor */
+pub(in crate::io::drivers::network::e1000) const TXD_DTYP_C: u32 =     0x00000000;	/* Context Descriptor */
+pub(in crate::io::drivers::network::e1000) const TXD_POPTS_IXSM: u32 = 0x01;	/* Insert IP checksum */
+pub(in crate::io::drivers::network::e1000) const TXD_POPTS_TXSM: u32 = 0x02;	/* Insert TCP/UDP checksum */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_EOP: u32 =    0x01000000;	/* End of Packet */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_IFCS: u32 =   0x02000000;	/* Insert FCS (Ethernet CRC) */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_IC: u32 =     0x04000000;	/* Insert Checksum */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_RS: u32 =     0x08000000;	/* Report Status */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_RPS: u32 =    0x10000000;	/* Report Packet Sent */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_DEXT: u32 =   0x20000000;	/* Descriptor extension (0 = legacy) */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_VLE: u32 =    0x40000000;	/* Add VLAN tag */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_IDE: u32 =    0x80000000;	/* Enable Tidv register */
+pub(in crate::io::drivers::network::e1000) const TXD_STAT_DD: u32 =    0x00000001;	/* Descriptor Done */
+pub(in crate::io::drivers::network::e1000) const TXD_STAT_EC: u32 =    0x00000002;	/* Excess Collisions */
+pub(in crate::io::drivers::network::e1000) const TXD_STAT_LC: u32 =    0x00000004;	/* Late Collisions */
+pub(in crate::io::drivers::network::e1000) const TXD_STAT_TU: u32 =    0x00000008;	/* Transmit underrun */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_TCP: u32 =    0x01000000;	/* TCP packet */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_IP: u32 =     0x02000000;	/* IP packet */
+pub(in crate::io::drivers::network::e1000) const TXD_CMD_TSE: u32 =    0x04000000;	/* TCP Seg enable */
+pub(in crate::io::drivers::network::e1000) const TXD_STAT_TC: u32 =    0x00000004;	/* Tx Underrun */
+
+/* Collision related configuration parameters */
+pub(in crate::io::drivers::network::e1000) const COLLISION_THRESHOLD: u32 =       15;
+pub(in crate::io::drivers::network::e1000) const CT_SHIFT: u32 =                  4;
+/* Collision distance is a 0-based value that applies to
+ * half-duplex-capable hardware only. */
+pub(in crate::io::drivers::network::e1000) const COLLISION_DISTANCE: u32 =        63;
+pub(in crate::io::drivers::network::e1000) const COLLISION_DISTANCE_82542: u32 =  64;
+pub(in crate::io::drivers::network::e1000) const FDX_COLLISION_DISTANCE: u32 =    COLLISION_DISTANCE;
+pub(in crate::io::drivers::network::e1000) const HDX_COLLISION_DISTANCE: u32 =    COLLISION_DISTANCE;
+pub(in crate::io::drivers::network::e1000) const COLD_SHIFT: u32 =                12;
+
+/* Receive Checksum Control */
+pub(in crate::io::drivers::network::e1000) const  RXCSUM_PCSS_MASK: u32 = 0x000000FF;	/* Packet Checksum Start */
+pub(in crate::io::drivers::network::e1000) const  RXCSUM_IPOFL: u32 =     0x00000100;	/* IPv4 checksum offload */
+pub(in crate::io::drivers::network::e1000) const  RXCSUM_TUOFL: u32 =     0x00000200;	/* TCP / UDP checksum offload */
+pub(in crate::io::drivers::network::e1000) const  RXCSUM_IPV6OFL: u32 =   0x00000400;	/* IPv6 checksum offload */
+pub(in crate::io::drivers::network::e1000) const  RXCSUM_IPPCSE: u32 =    0x00001000;	/* IP payload checksum enable */
+pub(in crate::io::drivers::network::e1000) const  RXCSUM_PCSD: u32 =      0x00002000;	/* packet checksum disabled */

@@ -1,6 +1,6 @@
 use crate::println;
 
-use crate::io::drivers::network::NetworkDriver;
+use crate::io::drivers::network::{NetworkDriver, NetworkFlags};
 use crate::io::pci;
 use crate::io::pci::{Device, DeviceError, DeviceErrorCause};
 
@@ -12,6 +12,11 @@ mod hardware;
 #[allow(unused_variables)]
 #[allow(dead_code)]
 mod vlan;
+
+use alloc::boxed::Box;
+use core::marker::PhantomPinned;
+use core::mem::size_of;
+use core::pin::Pin;
 
 use self::constants::*;
 use super::constants::*;
@@ -49,6 +54,87 @@ impl From<DriverError> for DeviceError {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct TransmitDescriptorFlags {
+    length: u16,	/* Data buffer length */
+    cso: u8,	/* Checksum offset */
+    cmd: u8,	/* Descriptor control */
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+union TransmitDescriptorLower {
+    data: u32,
+    flags: TransmitDescriptorFlags,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct TransmitDescriptorFields {
+    status: u8,	/* Descriptor status */
+    css: u8,	/* Checksum start */
+    special: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+union TransmitDescriptorUpper {
+    data: u32,
+    fields: TransmitDescriptorFields,
+}
+
+/* Transmit Descriptor */
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct TransmitDescriptor {
+	buffer_addr: u64,	/* Address of the descriptor's data buffer */
+	lower: TransmitDescriptorLower,
+    upper : TransmitDescriptorUpper,
+    _pin: PhantomPinned,
+}
+
+/* wrapper around a pointer to a socket buffer,
+ * so a DMA handle can be stored along with the buffer
+ *
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransmitBuffer {
+	// struct sk_buff *skb;
+	dma: u64,
+	time_stamp: u64,
+	length: u16,
+	next_to_watch: u16,
+	mapped_as_page, bool,
+	segs: u8,
+	bytecount: u32,
+}
+
+/* Transmit Ring */
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransmitRing {
+	/* pointer to the descriptor ring memory */
+	void *desc,
+	/* physical address of the descriptor ring */
+	dma: u64,
+	/* length of descriptor ring in bytes */
+	size: u32,
+	/* number of descriptors in the ring */
+	count: u32,
+	/* next descriptor to associate a buffer with */
+	next_to_use: u32,
+	/* next descriptor to check for DD status bit */
+	next_to_clean: u32,
+	/* array of buffer information structs */
+	struct e1000_tx_buffer *buffer_info,
+
+	tdh: u16,
+	tdt: u16,
+	last_tx_tso: bool,
+}
+*/
+
 #[allow(dead_code)]
 pub(in crate::io) struct E1000 {
     pci_device: Device,
@@ -62,11 +148,36 @@ pub(in crate::io) struct E1000 {
     wol: u32,
     eeprom_wol: u32,
     device_data: NetworkDeviceData,
+    tx_queue_0_ptr: *const [TransmitDescriptor; 0x1000], /* We have 4096 tx records per queue */
+    rx_queue_0_ptr: *const [TransmitDescriptor; 0x1000], // FIXME: THIS IS FAKE /* We have 4096 tx records per queue */
+    txd_cmd: u32,
+	tx_int_delay: u32,
+	tx_abs_int_delay: u32,
+	rx_int_delay: u32,
+	rx_abs_int_delay: u32,
+	itr_setting: u32,
+	itr: u32,
+	rx_csum: u32,
 }
 
 impl E1000 {
-    pub fn new(device: &pci::Device) -> E1000 {
-        E1000 {
+    pub fn new(device: &pci::Device) -> Box<E1000> {
+
+        let txd_archetype = TransmitDescriptor {
+            buffer_addr: 0,
+            lower: TransmitDescriptorLower {
+                data: 0,
+            },
+            upper: TransmitDescriptorUpper {
+                data: 0,
+            },
+            _pin: PhantomPinned,
+        };
+
+        let tx_queue = Box::pin([txd_archetype; 0x1000]);
+        let rx_queue = Box::pin([txd_archetype; 0x1000]); // FIXME: THIS IS FAKE
+
+        let dev = Box::new(E1000 {
             pci_device: *device,
             hardware: self::hardware::Hardware::new(device),
             device_data: NetworkDeviceData::defaults(),
@@ -78,7 +189,19 @@ impl E1000 {
             num_rx_queues: 0,
             wol: 0,
             eeprom_wol: 0,
-        }
+            tx_queue_0_ptr: &*tx_queue as *const [TransmitDescriptor; 4096],
+            rx_queue_0_ptr: &*rx_queue as *const [TransmitDescriptor; 4096], // FIXME: THIS IS FAKE
+            txd_cmd: 0,
+        	tx_int_delay: DEFAULT_TIDV,
+	        tx_abs_int_delay: DEFAULT_TADV,
+        	rx_int_delay: DEFAULT_RDTR,
+	        rx_abs_int_delay: DEFAULT_RADV,
+	        itr: DEFAULT_ITR,
+	        itr_setting: DEFAULT_ITR,
+	        rx_csum: DEFAULT_RXCSUM,
+        });
+
+        dev
     }
 
     fn sw_init(&mut self) -> Result<(), DriverError> {
@@ -118,6 +241,7 @@ impl E1000 {
      * e1000_irq_enable - Enable default interrupt generation settings
      **/
     fn irq_enable(&self) -> Result<(), DriverError> {
+        println!("Enabling IRQ with {:x} sent to {:x}", IMS_ENABLE_MASK, IMS);
         self.hardware.write(IMS, IMS_ENABLE_MASK)?;
         self.hardware.write_flush()?;
         Ok(())
@@ -130,12 +254,15 @@ impl E1000 {
      * number of queues at compile-time.
      **/
     fn alloc_queues(&mut self) -> Result<(), DriverError> {
+
         /*
-        adapter->tx_ring = kcalloc(adapter->num_tx_queues,
+        self.tx_ring = kcalloc(adapter->num_tx_queues,
                     sizeof(struct tx_ring), GFP_KERNEL);
         if (!adapter->tx_ring)
             return -ENOMEM;
 
+        */
+        /*
         adapter->rx_ring = kcalloc(adapter->num_rx_queues,
                     sizeof(struct rx_ring), GFP_KERNEL);
         if (!adapter->rx_ring) {
@@ -183,7 +310,12 @@ impl E1000 {
         self.hardware.fc_send_xon = true;
         self.hardware.fc = FlowControlSettings::Default;
 
+        println!("before hardware reset\n{:?}", self.hardware);
+
         self.hardware.reset()?;
+
+        println!("mancystank {:?}", self.hardware);
+        panic!();
 
         self.hardware.init()?;
 
@@ -201,33 +333,508 @@ impl E1000 {
         Ok(())
     }
 
+    fn init_manageability(&self) -> Result<(), DriverError> {
+        if self.en_mng_pt {
+            let mut manc = self.hardware.read(MANC)?;
+
+            /* disable hardware interception of ARP */
+            manc &= !MANC_ARP_EN;
+
+            self.hardware.write(MANC, manc)?;
+        }
+
+        Ok(())
+    }
+
+    /**
+     * e1000_set_rx_mode - Secondary Unicast, Multicast and Promiscuous mode set
+     * @netdev: network interface device structure
+     *
+     * The set_rx_mode entry point is called whenever the unicast or multicast
+     * address lists or the network interface flags are updated. This routine is
+     * responsible for configuring the hardware for proper unicast, multicast,
+     * promiscuous mode, and all-multi behavior.
+     **/
+    fn set_rx_mode(&self) -> Result<(), DriverError> {
+        /*
+        struct e1000_adapter *adapter = netdev_priv(netdev);
+        struct e1000_hw *hw = &adapter->hw;
+        struct netdev_hw_addr *ha;
+        bool use_uc = false;
+        u32 rctl;
+        u32 hash_value;
+        int i, rar_entries = E1000_RAR_ENTRIES;
+        int mta_reg_count = E1000_NUM_MTA_REGISTERS;
+        u32 *mcarray = kcalloc(mta_reg_count, sizeof(u32), GFP_ATOMIC);
+
+        if (!mcarray)
+            return;
+        */
+
+        /* Check for Promiscuous and All Multicast modes */
+
+        let mut rctl = self.hardware.read(RCTL)?;
+
+        if (self.device_data.flags & NetworkFlags::Promiscuous as u32) != 0 {
+            rctl |= RCTL_UPE | RCTL_MPE;
+            rctl &= !RCTL_VFE;
+        } else {
+            if (self.device_data.flags & NetworkFlags::AllMulti as u32) != 0 {
+                rctl |= RCTL_MPE;
+            } else {
+                rctl &= !RCTL_MPE;
+            }
+            /* Enable VLAN filter if there is a VLAN */
+            if false {// self.vlan_used() {
+                rctl |= RCTL_VFE;
+            }
+        }
+
+        /*
+        if (netdev_uc_count(netdev) > rar_entries - 1) {
+            rctl |= E1000_RCTL_UPE;
+        } else if (!(netdev->flags & IFF_PROMISC)) {
+            */
+        rctl &= !RCTL_UPE;
+        let use_uc:bool = true;
+        //}
+
+        self.hardware.write(RCTL, rctl)?;
+
+        /* 82542 2.0 needs to be in reset to write receive address registers *
+
+        if (hw->mac_type == e1000_82542_rev2_0)
+            e1000_enter_82542_rst(adapter);
+
+        /* load the first 14 addresses into the exact filters 1-14. Unicast
+        * addresses take precedence to avoid disabling unicast filtering
+        * when possible.
+        *
+        * RAR 0 is used for the station MAC address
+        * if there are not 14 addresses, go ahead and clear the filters
+        */
+        i = 1;
+        if (use_uc)
+            netdev_for_each_uc_addr(ha, netdev) {
+                if (i == rar_entries)
+                    break;
+                e1000_rar_set(hw, ha->addr, i++);
+            }
+
+        netdev_for_each_mc_addr(ha, netdev) {
+            if (i == rar_entries) {
+                /* load any remaining addresses into the hash table */
+                u32 hash_reg, hash_bit, mta;
+                hash_value = e1000_hash_mc_addr(hw, ha->addr);
+                hash_reg = (hash_value >> 5) & 0x7F;
+                hash_bit = hash_value & 0x1F;
+                mta = (1 << hash_bit);
+                mcarray[hash_reg] |= mta;
+            } else {
+                e1000_rar_set(hw, ha->addr, i++);
+            }
+        }
+
+        for (; i < rar_entries; i++) {
+            E1000_WRITE_REG_ARRAY(hw, RA, i << 1, 0);
+            E1000_WRITE_FLUSH();
+            E1000_WRITE_REG_ARRAY(hw, RA, (i << 1) + 1, 0);
+            E1000_WRITE_FLUSH();
+        }
+
+        /* write the hash table completely, write from bottom to avoid
+        * both stupid write combining chipsets, and flushing each write
+        */
+        for (i = mta_reg_count - 1; i >= 0 ; i--) {
+            /* If we are on an 82544 has an errata where writing odd
+            * offsets overwrites the previous even offset, but writing
+            * backwards over the range solves the issue by always
+            * writing the odd offset first
+            */
+            E1000_WRITE_REG_ARRAY(hw, MTA, i, mcarray[i]);
+        }
+        E1000_WRITE_FLUSH();
+
+        if (hw->mac_type == e1000_82542_rev2_0)
+            e1000_leave_82542_rst(adapter);
+
+        kfree(mcarray);
+        */
+
+        Ok(())
+    }
+
+    /**
+     * e1000_configure_tx - Configure 8254x Transmit Unit after Reset
+     *
+     * Configure the Tx unit of the MAC after a reset.
+     **/
+    fn configure_tx(&mut self) -> Result<(), DriverError> {
+
+        /* Setup the HW Tx Head and Tail descriptor pointers */
+        println!("configuring TX!");
+
+        /*
+        let queue:[TransmitDescriptor;0x1000] = self.tx_queues[0];
+        let queue_ptr:* const u64 = (&queue) as *const u64;
+        */
+        let tdba:u64 = self.tx_queue_0_ptr as u64;
+        let tdlen:u32 = (100 * size_of::<TransmitDescriptor>()) as u32;
+        self.hardware.write(TDLEN, tdlen)?;
+        self.hardware.write(TDBAH, tdba.wrapping_shr(32) as u32)?;
+        self.hardware.write(TDBAL, (tdba & 0x00000000ffffffff) as u32)?;
+        self.hardware.write(TDT, 0)?;
+        self.hardware.write(TDH, 0)?;
+        //self.adapter->tx_ring[0].tdh = ((hw->mac_type >= e1000_82543) ?
+        //                E1000_TDH : E1000_82542_TDH);
+        //    adapter->tx_ring[0].tdt = ((hw->mac_type >= e1000_82543) ?
+        //                E1000_TDT : E1000_82542_TDT);
+
+        /* Set the default values for the Tx Inter Packet Gap timer */
+        let mut tipg:u32 = match self.hardware.media_type {
+            MediaType::Fiber | MediaType::InternalSerdes => DEFAULT_82543_TIPG_IPGT_FIBER,
+            _ => DEFAULT_82543_TIPG_IPGT_COPPER,
+        };
+
+        let ipgr1:u32;
+        let ipgr2:u32;
+        match self.hardware.mac_type {
+            MacType::E100082542Rev2Point0 | MacType::E100082542Rev2Point1 => {
+                tipg = DEFAULT_82542_TIPG_IPGT;
+                ipgr1 = DEFAULT_82542_TIPG_IPGR1;
+                ipgr2 = DEFAULT_82542_TIPG_IPGR2;
+            },
+            _ => {
+                ipgr1 = DEFAULT_82543_TIPG_IPGR1;
+                ipgr2 = DEFAULT_82543_TIPG_IPGR2;
+            },
+        };
+
+        tipg |= ipgr1 << TIPG_IPGR1_SHIFT;
+        tipg |= ipgr2 << TIPG_IPGR2_SHIFT;
+        self.hardware.write(TIPG, tipg)?;
+
+        /* Set the Tx Interrupt Delay register */
+        self.hardware.write(TIDV, self.tx_int_delay)?;
+        if (self.hardware.mac_type as u32) >= (MacType::E100082540 as u32) {
+            self.hardware.write(TADV, self.tx_abs_int_delay)?;
+        }
+
+        /* Program the Transmit Control Register */
+        let mut tctl = self.hardware.read(TCTL)?;
+        println!("Read tctl of {:x}", tctl);
+        tctl &= !TCTL_CT;
+        tctl |= TCTL_PSP | TCTL_RTLC |
+            (COLLISION_THRESHOLD << CT_SHIFT);
+
+        self.hardware.config_collision_dist()?;
+
+        /* Setup Transmit Descriptor Settings for eop descriptor */
+        self.txd_cmd = TXD_CMD_EOP | TXD_CMD_IFCS;
+
+        /* only set IDE if we are delaying interrupts using the timers */
+        if self.tx_int_delay != 0 {
+            self.txd_cmd |= TXD_CMD_IDE;
+        }
+
+        if (self.hardware.mac_type as u32) < (MacType::E100082543 as u32) {
+            self.txd_cmd |= TXD_CMD_RPS;
+        } else {
+            self.txd_cmd |= TXD_CMD_RS;
+        }
+
+        /* Cache if we're 82544 running in PCI-X because we'll
+        * need this to apply a workaround later in the send path.
+        */
+        if self.hardware.mac_type == MacType::E100082544 &&
+           self.hardware.bus_type == BusType::PCIX {
+            self.hardware.pcix_82544 = true;
+        }
+
+        self.hardware.write(TCTL, tctl)?;
+
+        Ok(())
+    }
+
+    /**
+     * e1000_alloc_rx_buffers - Replace used receive buffers; legacy & extended
+     **/
+    fn alloc_rx_buf(&self) -> Result<(), DriverError> {
+        
+        /*
+        let bufsz: u32 = self.rx_buffer_len;
+
+        i = rx_ring->next_to_use;
+        buffer_info = &rx_ring->buffer_info[i];
+
+        pr_info("Our buffers are not jumbo\n");
+
+        while (cleaned_count--) {
+            void *data;
+
+            if (buffer_info->rxbuf.data)
+                goto skip;
+
+            data = e1000_alloc_frag(adapter);
+            if (!data) {
+                /* Better luck next round */
+                adapter->alloc_rx_buff_failed++;
+                break;
+            }
+
+            /* Fix for errata 23, can't cross 64kB boundary */
+            if (!e1000_check_64k_bound(adapter, data, bufsz)) {
+                void *olddata = data;
+                e_err(rx_err, "skb align check failed: %u bytes at "
+                    "%p\n", bufsz, data);
+                /* Try again, without freeing the previous */
+                data = e1000_alloc_frag(adapter);
+                /* Failed allocation, critical failure */
+                if (!data) {
+                    skb_free_frag(olddata);
+                    adapter->alloc_rx_buff_failed++;
+                    break;
+                }
+
+                if (!e1000_check_64k_bound(adapter, data, bufsz)) {
+                    /* give up */
+                    skb_free_frag(data);
+                    skb_free_frag(olddata);
+                    adapter->alloc_rx_buff_failed++;
+                    break;
+                }
+
+                /* Use new allocation */
+                skb_free_frag(olddata);
+            }
+            buffer_info->dma = dma_map_single(&pdev->dev,
+                            data,
+                            adapter->rx_buffer_len,
+                            DMA_FROM_DEVICE);
+            if (dma_mapping_error(&pdev->dev, buffer_info->dma)) {
+                skb_free_frag(data);
+                buffer_info->dma = 0;
+                adapter->alloc_rx_buff_failed++;
+                break;
+            }
+
+            /* XXX if it was allocated cleanly it will never map to a
+            * boundary crossing
+            */
+
+            /* Fix for errata 23, can't cross 64kB boundary */
+            if (!e1000_check_64k_bound(adapter,
+                        (void *)(unsigned long)buffer_info->dma,
+                        adapter->rx_buffer_len)) {
+                e_err(rx_err, "dma align check failed: %u bytes at "
+                    "%p\n", adapter->rx_buffer_len,
+                    (void *)(unsigned long)buffer_info->dma);
+
+                dma_unmap_single(&pdev->dev, buffer_info->dma,
+                        adapter->rx_buffer_len,
+                        DMA_FROM_DEVICE);
+
+                skb_free_frag(data);
+                buffer_info->rxbuf.data = NULL;
+                buffer_info->dma = 0;
+
+                adapter->alloc_rx_buff_failed++;
+                break;
+            }
+            buffer_info->rxbuf.data = data;
+    skip:
+            rx_desc = E1000_RX_DESC(*rx_ring, i);
+            rx_desc->buffer_addr = cpu_to_le64(buffer_info->dma);
+
+            if (unlikely(++i == rx_ring->count))
+                i = 0;
+            buffer_info = &rx_ring->buffer_info[i];
+        }
+
+        if (likely(rx_ring->next_to_use != i)) {
+            rx_ring->next_to_use = i;
+            if (unlikely(i-- == 0))
+                i = (rx_ring->count - 1);
+
+            /* Force memory writes to complete before letting h/w
+            * know there are new descriptors to fetch.  (Only
+            * applicable for weak-ordered memory model archs,
+            * such as IA-64).
+            */
+            dma_wmb(); */
+            //writel(i, hw->hw_addr + rx_ring->rdt);
+            println!("Writing fake rx thingy");
+            println!("Writing to {} to {:x} at {:x}", 254, 0x2818, self.hardware.hw_addr.addr);
+            self.hardware.write(0x2818, 254)?;
+            println!("Wrote fake rx thingy");
+        //}
+        Ok(())
+    }
+
+    /**
+     * e1000_configure_rx - Configure 8254x Receive Unit after Reset
+     *
+     * Configure the Rx unit of the MAC after a reset.
+     **/
+     fn configure_rx(&mut self, ) -> Result<(), DriverError> {
+
+        /*
+        u64 rdba;
+        u32 rdlen, rctl, rxcsum;
+        */
+
+        println!("configuring RX!");
+
+        let rdlen:u32 = (100 * size_of::<TransmitDescriptor>()) as u32; // FIXME: This is fake
+
+        // FIXME: We will need this before we can do real work
+        /*
+        let rdlen:u32 = 0;
+        if self.device_data.mtu > ETH_DATA_LEN {
+            rdlen = adapter->rx_ring[0].count *
+                sizeof(struct e1000_rx_desc);
+            adapter->clean_rx = e1000_clean_jumbo_rx_irq;
+        } else {
+            rdlen = adapter->rx_ring[0].count *
+                sizeof(struct e1000_rx_desc);
+            adapter->clean_rx = e1000_clean_rx_irq;
+        }
+        */
+
+        /* disable receives while setting up the descriptors */
+        let rctl = self.hardware.read(RCTL)?;
+        self.hardware.write(RCTL, rctl & !RCTL_EN);
+
+        /* set the Receive Delay Timer Register */
+        self.hardware.write(RDTR, self.rx_int_delay)?;
+
+        if (self.hardware.mac_type as u32) >= (MacType::E100082540 as u32) {
+            self.hardware.write(RADV, self.rx_abs_int_delay)?;
+            if self.itr_setting != 0 {
+                self.hardware.write(ITR, 1000000000 / (self.itr * 256))?;
+            }
+        }
+
+        /* Setup the HW Rx Head and Tail Descriptor Pointers and
+        * the Base and Length of the Rx Descriptor Ring
+        */
+        let rdba:u64 = self.rx_queue_0_ptr as u64; // adapter->rx_ring[0].dma;
+        self.hardware.write(RDLEN, rdlen)?;
+        self.hardware.write(RDBAH, rdba.wrapping_shr(32) as u32)?;
+        self.hardware.write(RDBAL, rdba as u32 & 0x00000000ffffffff);
+        self.hardware.write(RDT, 0);
+        self.hardware.write(RDH, 0);
+            
+        /*
+        adapter->rx_ring[0].rdh = ((hw->mac_type >= e1000_82543) ?
+                        E1000_RDH : E1000_82542_RDH);
+            adapter->rx_ring[0].rdt = ((hw->mac_type >= e1000_82543) ?
+                        E1000_RDT : E1000_82542_RDT);
+        */
+
+        /* Enable 82543 Receive Checksum Offload for TCP and UDP */
+        if (self.hardware.mac_type as u32) >= (MacType::E100082543 as u32) {
+            let mut rxcsum = self.hardware.read(RXCSUM)?;
+            println!("register rxcusm is {:x}", rxcsum);
+            if self.rx_csum != 0 {
+                println!("adapter rx_csum is not 0");
+                rxcsum |= RXCSUM_TUOFL;
+            } else {
+                /* don't need to clear IPPCSE as it defaults to 0 */
+                rxcsum &= !RXCSUM_TUOFL;
+            }
+            self.hardware.write(RXCSUM, rxcsum)?;
+        }
+
+        /* Enable Receives */
+        self.hardware.write(RCTL, rctl | RCTL_EN)?;
+
+        Ok(())
+    }
+
+    /**
+     * e1000_setup_rctl - configure the receive control registers
+     **/
+    fn setup_rctl(& self) -> Result<(), DriverError> {
+        
+        let mut rctl = self.hardware.read(RCTL)?;
+
+        rctl &= !(3 << RCTL_MO_SHIFT);
+
+        rctl |= RCTL_BAM | RCTL_LBM_NO |
+            RCTL_RDMTS_HALF |
+            (self.hardware.mc_filter_type << RCTL_MO_SHIFT);
+
+        if self.hardware.tbi_compatibility_on {
+            rctl |= RCTL_SBP;
+        } else {
+            rctl &= !RCTL_SBP;
+        }
+
+        if self.device_data.mtu <= ETH_DATA_LEN {
+            rctl &= !RCTL_LPE;
+        } else {
+            rctl |= RCTL_LPE;
+        }
+
+        /* Setup buffer sizes */
+        rctl &= !RCTL_SZ_4096;
+        rctl |= RCTL_BSEX;
+        match self.rx_buffer_len {
+            _ => {
+                rctl |= RCTL_SZ_2048;
+                rctl &= !RCTL_BSEX;
+            }
+        };
+
+        // FIXME: NETDEV
+        /* This is useful for sniffing bad packets. *
+        if adapter->netdev->features & NETIF_F_RXALL) {
+            /* UPE and MPE will be handled by normal PROMISC logic
+            * in e1000e_set_rx_mode
+            */
+            rctl |= (E1000_RCTL_SBP | /* Receive bad packets */
+                E1000_RCTL_BAM | /* RX All Bcast Pkts */
+                E1000_RCTL_PMCF); /* RX All MAC Ctrl Pkts */
+
+            rctl &= ~(E1000_RCTL_VFE | /* Disable VLAN filter */
+                E1000_RCTL_DPF | /* Allow filtered pause */
+                E1000_RCTL_CFIEN); /* Dis VLAN CFIEN Filter */
+            /* Do not mess with E1000_CTRL_VME, it affects transmit as well,
+            * and that breaks VLANs.
+            */
+        }
+        */
+
+        self.hardware.write(RCTL, rctl)?;
+        Ok(())
+    }
+
     /**
      * e1000_configure - configure the hardware for RX and TX
      **/
     fn configure(&mut self) -> Result<(), DriverError> {
+
+        self.set_rx_mode()?;
+
         /*
-        struct net_device *netdev = adapter->netdev;
-        int i;
-
-        e1000_set_rx_mode(netdev);
-
         e1000_restore_vlan(adapter);
         e1000_init_manageability(adapter);
+        */
 
-        e1000_configure_tx(adapter);
-        e1000_setup_rctl(adapter);
-        e1000_configure_rx(adapter);
+        self.configure_tx()?;
+        self.setup_rctl()?;
+        self.configure_rx()?;
 
         /* call E1000_DESC_UNUSED which always leaves
         * at least 1 descriptor unused to make sure
         * next_to_use != next_to_clean
         */
-        for (i = 0; i < adapter->num_rx_queues; i++) {
-            struct e1000_rx_ring *ring = &adapter->rx_ring[i];
-            adapter->alloc_rx_buf(adapter, ring,
-                        E1000_DESC_UNUSED(ring));
-        }
-        */
+        //for i = 0; i < adapter->num_rx_queues; i++) {
+        //    struct e1000_rx_ring *ring = &adapter->rx_ring[i];
+        self.alloc_rx_buf()?; // ring, E1000_DESC_UNUSED(ring));
+        //}
+
         Ok(())
     }
 
@@ -241,7 +848,7 @@ impl E1000 {
      **/
     fn power_up_phy(&self) -> Result<(), DriverError> {
         /* Just clear the power down bit to wake the phy back up */
-        if (self.hardware.media_type == MediaType::Copper) {
+        if self.hardware.media_type == MediaType::Copper {
             /* according to the manual, the phy will retain its
              * settings across a power-down/up cycle
              */
@@ -273,6 +880,142 @@ impl E1000 {
         return err;
         */
 
+        Ok(())
+    }
+
+    /**
+     * e1000_watchdog - work function
+     * @work: work struct contained inside adapter struct
+     **/
+    fn watchdog(&self) -> Result<(), DriverError> {
+
+        /*
+        struct e1000_adapter *adapter = container_of(work,
+                                struct e1000_adapter,
+                                watchdog_task.work);
+        struct e1000_hw *hw = &adapter->hw;
+        struct net_device *netdev = adapter->netdev;
+        struct e1000_tx_ring *txdr = adapter->tx_ring;
+        u32 link, tctl;
+
+        pr_info("Inside watchdog\n");
+
+        link = e1000_has_link(adapter);
+        if ((netif_carrier_ok(netdev)) && link)
+            goto link_up;
+
+        if (link) {
+            if (!netif_carrier_ok(netdev)) {
+                u32 ctrl;
+                /* update snapshot of PHY registers on LSC */
+                e1000_get_speed_and_duplex(hw,
+                            &adapter->link_speed,
+                            &adapter->link_duplex);
+
+                ctrl = er32(CTRL);
+                pr_info("%s NIC Link is Up %d Mbps %s, "
+                    "Flow Control: %s\n",
+                    netdev->name,
+                    adapter->link_speed,
+                    adapter->link_duplex == FULL_DUPLEX ?
+                    "Full Duplex" : "Half Duplex",
+                    ((ctrl & E1000_CTRL_TFCE) && (ctrl &
+                    E1000_CTRL_RFCE)) ? "RX/TX" : ((ctrl &
+                    E1000_CTRL_RFCE) ? "RX" : ((ctrl &
+                    E1000_CTRL_TFCE) ? "TX" : "None")));
+
+                /* adjust timeout factor according to speed/duplex */
+                adapter->tx_timeout_factor = 1;
+                switch (adapter->link_speed) {
+                case SPEED_10:
+                    adapter->tx_timeout_factor = 16;
+                    break;
+                case SPEED_100:
+                    /* maybe add some timeout factor ? */
+                    break;
+                }
+
+                /* enable transmits in the hardware */
+                tctl = er32(TCTL);
+                tctl |= E1000_TCTL_EN;
+                ew32(TCTL, tctl);
+
+                netif_carrier_on(netdev);
+                if (!test_bit(__E1000_DOWN, &adapter->flags))
+                    schedule_delayed_work(&adapter->phy_info_task,
+                                2 * HZ);
+                adapter->smartspeed = 0;
+            }
+        } else {
+            if (netif_carrier_ok(netdev)) {
+                adapter->link_speed = 0;
+                adapter->link_duplex = 0;
+                pr_info("%s NIC Link is Down\n",
+                    netdev->name);
+                netif_carrier_off(netdev);
+
+                if (!test_bit(__E1000_DOWN, &adapter->flags))
+                    schedule_delayed_work(&adapter->phy_info_task,
+                                2 * HZ);
+            }
+
+            e1000_smartspeed(adapter);
+        }
+
+        //link_up:
+        e1000_update_stats(adapter);
+
+        hw->tx_packet_delta = adapter->stats.tpt - adapter->tpt_old;
+        adapter->tpt_old = adapter->stats.tpt;
+        hw->collision_delta = adapter->stats.colc - adapter->colc_old;
+        adapter->colc_old = adapter->stats.colc;
+
+        adapter->gorcl = adapter->stats.gorcl - adapter->gorcl_old;
+        adapter->gorcl_old = adapter->stats.gorcl;
+        adapter->gotcl = adapter->stats.gotcl - adapter->gotcl_old;
+        adapter->gotcl_old = adapter->stats.gotcl;
+
+        e1000_update_adaptive(hw);
+
+        if (!netif_carrier_ok(netdev)) {
+            if (E1000_DESC_UNUSED(txdr) + 1 < txdr->count) {
+                /* We've lost link, so the controller stops DMA,
+                * but we've got queued Tx work that's never going
+                * to get done, so reset controller to flush Tx.
+                * (Do the reset outside of interrupt context).
+                */
+                adapter->tx_timeout_count++;
+                schedule_work(&adapter->reset_task);
+                /* exit immediately since reset is imminent */
+                return;
+            }
+        }
+
+        /* Simple mode for Interrupt Throttle Rate (ITR) */
+        if (hw->mac_type >= e1000_82540 && adapter->itr_setting == 4) {
+            /* Symmetric Tx/Rx gets a reduced ITR=2000;
+            * Total asymmetrical Tx or Rx gets ITR=8000;
+            * everyone else is between 2000-8000.
+            */
+            u32 goc = (adapter->gotcl + adapter->gorcl) / 10000;
+            u32 dif = (adapter->gotcl > adapter->gorcl ?
+                    adapter->gotcl - adapter->gorcl :
+                    adapter->gorcl - adapter->gotcl) / 10000;
+            u32 itr = goc > 0 ? (dif * 6000 / goc + 2000) : 8000;
+
+            ew32(ITR, 1000000000 / (itr * 256));
+        }
+
+        /* Cause software interrupt to ensure rx ring is cleaned */
+        ew32(ICS, E1000_ICS_RXDMT0);
+
+        /* Force detection of hung controller every watchdog period */
+        adapter->detect_tx_hung = true;
+
+        /* Reschedule the task */
+        if (!test_bit(__E1000_DOWN, &adapter->flags))
+            schedule_delayed_work(&adapter->watchdog_task, 2 * HZ);
+        */
         Ok(())
     }
 }
@@ -307,11 +1050,13 @@ impl NetworkDriver for E1000 {
             goto err_setup_rx;
         */
 
+        // self.hardware.coming_up = true;
+
         self.power_up_phy()?;
 
         self.mng_vlan_id = MNG_VLAN_NONE;
         if self.hardware.mng_cookie.status & MNG_DHCP_COOKIE_STATUS_VLAN_SUPPORT != 0 {
-            vlan::update_mng_vlan(self);
+            vlan::update_mng_vlan(self)?;
         }
 
         /* before we allocate an interrupt, we must be ready to handle it.
@@ -321,6 +1066,8 @@ impl NetworkDriver for E1000 {
          */
         self.configure()?;
 
+        println!("{:?}", self.hardware);
+
         self.request_irq()?;
         //if (err)
         //    goto err_req_irq;
@@ -328,18 +1075,23 @@ impl NetworkDriver for E1000 {
         /*
 
 
-            /* From here on the code is the same as e1000_up() */
-            clear_bit(__E1000_DOWN, &adapter->flags);
+        /* From here on the code is the same as e1000_up() */
+        clear_bit(__E1000_DOWN, &adapter->flags);
 
-            napi_enable(&adapter->napi);
+        napi_enable(&adapter->napi);
 
-            e1000_irq_enable(adapter);
+        */
 
+        self.irq_enable()?;
+
+        /*
             netif_start_queue(netdev);
+            */
 
-            /* fire a link status change interrupt to start the watchdog */
-            ew32(ICS, E1000_ICS_LSC);
+        /* fire a link status change interrupt to start the watchdog */
+        self.hardware.write(ICS, ICS_LSC)?;
 
+            /*
             return E1000_SUCCESS;
 
             /*
@@ -358,25 +1110,27 @@ impl NetworkDriver for E1000 {
 
     fn probe(&mut self) -> Result<(), DeviceError> {
         // FIXME: NET DEVICE SETUP
+        let mut bars = 0;
 
-        /* do not allocate ioport bars when not needed *
-        need_ioport = e1000_is_need_ioport(pdev);
-        if (need_ioport) {
+        /* do not allocate ioport bars when not needed */
+        if self.hardware.need_ioport() {
+            println!("NEED IOPORT!");
+            // bars = self.pci_device.select_bars(IORESOURCE_MEM | IORESOURCE_IO);
+            bars = self.pci_device.select_bars(0x200 | 0x100);
+            println!("Bars selected are {:x}", bars);
+            /*
             bars = pci_select_bars(pdev, IORESOURCE_MEM | IORESOURCE_IO);
             err = pci_enable_device(pdev);
             pr_info("bars? %x\n", bars);
-        } else {
-            bars = pci_select_bars(pdev, IORESOURCE_MEM);
-            err = pci_enable_device_mem(pdev);
+            */
         }
-        if (err)
-            return err;
 
-        pci_set_master(pdev);
-        err = pci_save_state(pdev);
-        if (err)
-            goto err_alloc_etherdev;
+        self.hardware.io_base.addr = 0xc080;
+        println!("IO base is {:x}", self.hardware.io_base.addr);
 
+        self.pci_device.set_master()?;
+        self.pci_device.save_state()?;
+        /*
         err = -ENOMEM;
         netdev = alloc_etherdev(sizeof(struct e1000_adapter));
         if (!netdev)
@@ -453,11 +1207,6 @@ impl NetworkDriver for E1000 {
                     NETIF_F_HW_CSUM |
                     NETIF_F_SG);
 
-        /* Do not set IFF_UNICAST_FLT for VMWare's 82545EM */
-        if (hw->device_id != E1000_DEV_ID_82545EM_COPPER ||
-            hw->subsystem_vendor_id != PCI_VENDOR_ID_VMWARE)
-            netdev->priv_flags |= IFF_UNICAST_FLT;
-
         */
 
         /* MTU range: 46 - 16110 */
@@ -488,12 +1237,8 @@ impl NetworkDriver for E1000 {
         // memcpy(netdev->dev_addr, hw->mac_addr, netdev->addr_len);
 
         // FIXME: NET DEVICE SETUP
-        /*
-        if (!is_valid_ether_addr(netdev->dev_addr)) {
-            e_err(probe, "Invalid MAC Address\n");
-        }
-        */
 
+        // FIXME RUN AS TASKS
         /*
         INIT_DELAYED_WORK(&adapter->watchdog_task, e1000_watchdog);
         INIT_DELAYED_WORK(&adapter->fifo_stall_task,
@@ -507,7 +1252,6 @@ impl NetworkDriver for E1000 {
          * If APM wake is enabled in the EEPROM,
          * enable the ACPI Magic Packet filter
          */
-
         let mut eeprom_apme_mask: u16 = EEPROM_APME;
         let mut eeprom_data: u16 = 0;
 
