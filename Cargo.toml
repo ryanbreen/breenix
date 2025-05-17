@@ -1,3 +1,4 @@
+
 [package]
 name = "breenix"
 version = "0.1.0"
@@ -7,8 +8,8 @@ edition = "2021"
 members = ["kernel"]
 
 [dependencies]
-ovmf-prebuilt = { path = "../ovmf-prebuilt/ovmf-prebuilt" }
+ovmf-prebuilt = "0.2.3"
 
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
-bootloader = "0.11.3"
+bootloader = "0.11.10"

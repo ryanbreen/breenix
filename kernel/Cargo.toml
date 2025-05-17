@@ -9,4 +9,4 @@ test = false
 bench = false
 
 [dependencies]
-bootloader_api = "0.11.0"
+bootloader_api = "0.11.10"
