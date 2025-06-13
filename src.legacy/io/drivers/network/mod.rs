@@ -15,6 +15,12 @@ pub trait NetworkDriver {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::io) enum NetworkFlags {
+    AllMulti = 1,
+    Promiscuous = 2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::io) enum NetworkInterfaceType {
     Loopback,
     Ethernet,
@@ -28,6 +34,7 @@ pub(in crate::io) struct NetworkDeviceData {
     max_mtu: u32,
     carrier_online: bool,
     carrier_down_count: u64,
+    flags: u32,
 }
 
 impl NetworkDeviceData {
@@ -38,6 +45,7 @@ impl NetworkDeviceData {
             max_mtu: 0,
             carrier_online: false,
             carrier_down_count: 0,
+            flags: 0,
         }
     }
 }

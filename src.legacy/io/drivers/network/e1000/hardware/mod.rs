@@ -70,8 +70,8 @@ impl PhyInfo {
 #[allow(dead_code)]
 pub(in crate::io::drivers::network::e1000) struct Hardware {
     eeprom_info: eeprom::Info,
-    io_base: BAR,
-    hw_addr: BAR,
+    pub(in crate::io::drivers::network::e1000) io_base: BAR,
+    pub(in crate::io::drivers::network::e1000) hw_addr: BAR,
     pub(in crate::io::drivers::network::e1000) vendor_id: u16,
     pub(in crate::io::drivers::network::e1000) device_id: u16,
     pub(in crate::io::drivers::network::e1000) subsystem_vendor_id: u16,
@@ -94,6 +94,7 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     pub(in crate::io::drivers::network::e1000) fc_pause_time: u32,
     pub(in crate::io::drivers::network::e1000) fc_send_xon: bool,
     pub(in crate::io::drivers::network::e1000) fc: FlowControlSettings,
+    pub(in crate::io::drivers::network::e1000) mc_filter_type: u32,
     original_fc: FlowControlSettings,
     current_ifs_val: u16,
     ifs_min_val: u16,
@@ -108,6 +109,7 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     has_smbus: bool,
     wait_autoneg_complete: bool,
     tbi_compatibility_en: bool,
+    pub(in crate::io::drivers::network::e1000) tbi_compatibility_on: bool,
     adaptive_ifs: bool,
     mdix: u8,
     disable_polarity_correction: bool,
@@ -118,6 +120,8 @@ pub(in crate::io::drivers::network::e1000) struct Hardware {
     pub(in crate::io::drivers::network::e1000) mng_cookie: DHCPCookie,
     speed_downgraded: bool,
     phy_init_script: u32,
+    pub(in crate::io::drivers::network::e1000) pcix_82544: bool,
+    pub(in crate::io::drivers::network::e1000) coming_up: bool,
 }
 
 #[allow(unused_mut, unused_assignments)]
@@ -150,6 +154,7 @@ impl Hardware {
             fc_send_xon: false,
             fc: FlowControlSettings::Default,
             original_fc: FlowControlSettings::Default,
+            mc_filter_type: 0,
             current_ifs_val: 0,
             ifs_min_val: IFS_MIN,
             ifs_max_val: IFS_MAX,
@@ -162,7 +167,8 @@ impl Hardware {
             autoneg_advertised: 0,
             get_link_status: false,
             wait_autoneg_complete: false,
-            tbi_compatibility_en: true,
+            tbi_compatibility_en: false,
+            tbi_compatibility_on: false,
             adaptive_ifs: true,
             mdix: AUTO_ALL_MODES,
             disable_polarity_correction: false,
@@ -173,6 +179,22 @@ impl Hardware {
             mng_cookie: DHCPCookie::empty(),
             speed_downgraded: true,
             phy_init_script: 0,
+            coming_up: false,
+            pcix_82544: false,
+        }
+    }
+
+    /**
+     * need_ioport - determine if an adapter needs ioport resources or not
+     * Return true if an adapter needs ioport resources
+     **/
+    pub(in crate::io::drivers::network::e1000) fn need_ioport(&self) -> bool {
+    	match self.device_id {
+    	    DEV_ID_82540EM | DEV_ID_82540EM_LOM | DEV_ID_82540EP | DEV_ID_82540EP_LOM | DEV_ID_82540EP_LP | DEV_ID_82541EI |
+            DEV_ID_82541EI_MOBILE | DEV_ID_82541ER | DEV_ID_82541ER_LOM | DEV_ID_82541GI | DEV_ID_82541GI_LF | DEV_ID_82541GI_MOBILE |
+            DEV_ID_82544EI_COPPER | DEV_ID_82544EI_FIBER | DEV_ID_82544GC_COPPER | DEV_ID_82544GC_LOM | DEV_ID_82545EM_COPPER |
+            DEV_ID_82545EM_FIBER | DEV_ID_82546EB_COPPER | DEV_ID_82546EB_FIBER | DEV_ID_82546EB_QUAD_COPPER => true,
+            _ => false
         }
     }
 
@@ -216,7 +238,7 @@ impl Hardware {
         self.populate_bus_info()?;
 
         self.wait_autoneg_complete = false;
-        self.tbi_compatibility_en = true;
+        self.tbi_compatibility_en = false;
         self.adaptive_ifs = true;
 
         /* Copper options */
@@ -392,9 +414,16 @@ impl Hardware {
 
     pub fn write_command(&self, offset: u32, val: u32) {
         // TODO: Check for invalid ranges to make sure this is safe.
+        let io_addr = self.io_base.addr;
+        let io_data = io_addr + 4;
+        println!("Writing {:x} to offset {:x} from {:x}", val, offset, io_addr);
         unsafe {
             ptr::write_volatile(
-                (self.io_base.addr + offset as u64) as *const u32 as *mut _,
+                (io_addr as u64) as *const u32 as *mut _,
+                offset,
+            );
+            ptr::write_volatile(
+                (io_data as u64) as *const u32 as *mut _,
                 val,
             );
         }
@@ -402,6 +431,9 @@ impl Hardware {
 
     pub fn write(&self, offset: u32, val: u32) -> Result<(), DriverError> {
         // TODO: Check for invalid ranges to make sure this is safe.
+        if self.coming_up {
+            println!("Writing {:x} to {:x}", val, offset);
+        }
         unsafe {
             ptr::write_volatile(
                 (self.hw_addr.addr + offset as u64) as *const u32 as *mut _,
@@ -526,7 +558,7 @@ impl Hardware {
          * Delay to allow any outstanding PCI transactions to complete before
          * resetting the device
          */
-        self.delay(); // FIXME: should be 10 msec
+        self.delay(); // FIXME: should be 10 usec
 
         let ctrl = self.read(CTRL)?;
         println!("In reset, ctrl is {:x}", ctrl);
@@ -537,7 +569,7 @@ impl Hardware {
          */
         self.write_command(CTRL, ctrl | CTRL_RST);
 
-        self.delay(); // FIXME: should be 5 msec
+        self.delay(); // FIXME: should be 5 ms
 
         /* Disable HW ARPs on ASF enabled adapters */
         let mut manc: u32 = self.read(MANC)?;
@@ -546,6 +578,7 @@ impl Hardware {
         self.write(MANC, manc)?;
 
         /* Clear interrupt mask to stop board from generating interrupts */
+        println!("Masking off all interrupts");
         self.write(IMC, 0xffffffff)?;
 
         /* Clear any pending interrupt events. */
@@ -834,6 +867,33 @@ impl Hardware {
     }
 
     /**
+     * e1000_config_collision_dist - set collision distance register
+     *
+     * Sets the collision distance in the Transmit Control register.
+     * Link should have been established previously. Reads the speed and duplex
+     * information from the Device Status register.
+     */
+    pub(in crate::io::drivers::network::e1000) fn config_collision_dist(&self) -> Result<(), DriverError> {
+        
+        let coll_dist: u32;
+        if (self.mac_type as u32) < (MacType::E100082543 as u32) {
+            coll_dist = COLLISION_DISTANCE_82542;
+        } else {
+            coll_dist = COLLISION_DISTANCE;
+        }
+
+        let mut tctl = self.read(TCTL)?;
+
+        tctl &= !TCTL_COLD;
+        tctl |= coll_dist << COLD_SHIFT;
+
+        self.write(TCTL, tctl)?;
+        self.write_flush()?;
+
+        Ok(())
+    }
+
+    /**
      * reset_adaptive - Resets Adaptive IFS to its default state.
      *
      * Call this after init_hw. You may override the IFS defaults by setting
@@ -1005,6 +1065,7 @@ impl Hardware {
         let mut mdic: u32 =
             reg_addr << MDIC_REG_SHIFT | self.phy_addr << MDIC_PHY_SHIFT | MDIC_OP_READ;
 
+        println!("Informing mdic ({:x}) of intent to read reg {:x}", MDIC, mdic);
         self.write(MDIC, mdic)?;
 
         /*
@@ -1057,6 +1118,8 @@ impl Hardware {
         // spin_lock_irqsave(&phy_lock, flags);
 
         let phy_addr: u32 = 1;
+
+        println!("Writing {:x} to phy reg {:x}", phy_data, reg_addr);
 
         let mut mdic = (phy_data as u32)
             | (reg_addr << MDIC_REG_SHIFT)
@@ -1167,14 +1230,17 @@ impl Hardware {
      */
     fn copper_link_preconfig(&mut self) -> Result<(), DriverError> {
         let mut ctrl = self.read(CTRL)?;
-        ctrl |= CTRL_FRCSPD | CTRL_FRCDPX | CTRL_SLU;
+        ctrl |= CTRL_SLU;
+        ctrl &= !(CTRL_FRCSPD | CTRL_FRCDPX);
         self.write(CTRL, ctrl)?;
 
-        self.phy_hw_reset()?;
+        println!("{:?}", self);
+        //panic!();
 
         /* Make sure we have a valid PHY */
         self.detect_gig_phy()?;
         println!("Phy ID = {:x}", self.phy_id);
+
 
         Ok(())
     }
@@ -1374,8 +1440,8 @@ impl Hardware {
             }
         };
 
-        self.write_phy_reg(PHY_AUTONEG_ADV, mii_autoneg_adv_reg)?;
         println!("Auto-Neg Advertising {:x}", mii_autoneg_adv_reg);
+        self.write_phy_reg(PHY_AUTONEG_ADV, mii_autoneg_adv_reg)?;
 
         if self.phy_type == PhyType::Eight201 {
             mii_1000t_ctrl_reg = 0;
@@ -1454,8 +1520,60 @@ impl Hardware {
             self.wait_autoneg()?;
         }
 
+        println!("Setting get_link_status to true!");
         self.get_link_status = true;
 
+        Ok(())
+    }
+
+    /**
+     * e1000_copper_link_postconfig - post link setup
+     * @hw: Struct containing variables accessed by shared code
+     *
+     * Config the MAC and the PHY after link is up.
+     *   1) Set up the MAC to the current PHY speed/duplex
+     *      if we are on 82543.  If we
+     *      are on newer silicon, we only need to configure
+     *      collision distance in the Transmit Control Register.
+     *   2) Set up flow control on the MAC to that established with
+     *      the link partner.
+     *   3) Config DSP to improve Gigabit link quality for some PHY revisions.
+     */
+    fn copper_link_postconfig(&mut self) -> Result<(), DriverError> {
+
+        /*
+        if ((hw->mac_type >= e1000_82544) && (hw->mac_type != e1000_ce4100)) {
+            pr_info("floopy\n");
+            e1000_config_collision_dist(hw);
+        } else {
+            pr_info("froopy\n");
+
+            ret_val = e1000_config_mac_to_phy(hw);
+            if (ret_val) {
+                e_dbg("Error configuring MAC to PHY settings\n");
+                return ret_val;
+            }
+        }
+        pr_info("config after link up\n");
+        ret_val = e1000_config_fc_after_link_up(hw);
+        if (ret_val) {
+            e_dbg("Error Configuring Flow Control\n");
+            return ret_val;
+        }
+
+        /* Config DSP to improve Giga link quality */
+        if (hw->phy_type == e1000_phy_igp) {
+            pr_info("goopy\n");
+
+            ret_val = e1000_config_dsp_after_link_change(hw, true);
+            if (ret_val) {
+                e_dbg("Error Configuring DSP after link up\n");
+                return ret_val;
+            }
+        }
+
+        return E1000_SUCCESS;
+        */
         Ok(())
     }
 
@@ -1466,8 +1584,8 @@ impl Hardware {
      */
     fn setup_copper_link(&mut self) -> Result<(), DriverError> {
         /* Check if it is a valid PHY and set PHY mode if necessary. */
+        println!("Before preconfig\n{:?}", self);
         self.copper_link_preconfig()?;
-
         self.copper_link_mgp_setup()?;
 
         /*
@@ -1482,11 +1600,91 @@ impl Hardware {
          */
         for _ in 0..10 {
             let _ = self.read_phy_reg(PHY_STATUS)?;
-            let _ = self.read_phy_reg(PHY_STATUS)?;
+            let phy_data = self.read_phy_reg(PHY_STATUS)?;
+
+            if (phy_data & MII_SR_LINK_STATUS) != 0 {
+                /* Config the MAC and PHY after link is up */
+                self.copper_link_postconfig()?;
+    
+                println!("Valid link established!!!\n");
+                return Ok(());
+            }
 
             self.delay();
+        }
+
+        println!("Link not established!");
+
+        Ok(())
+    }
+}
+
+const NUM_REGS:usize = 38; /* 1 based count */
+impl core::fmt::Debug for Hardware {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+
+        let mut regs_buff:[u32; NUM_REGS] = [0; NUM_REGS];
+    
+        let reg_name:[&'static str; NUM_REGS] = [
+            "CTRL",  "STATUS",
+            "RCTL", "RDLEN", "RDH", "RDT", "RDTR",
+            "TCTL", "TDBAL", "TDBAH", "TDLEN", "TDH", "TDT",
+            "TIDV", "TXDCTL", "TADV", "TARC0",
+            "TDBAL1", "TDBAH1", "TDLEN1", "TDH1", "TDT1",
+            "TXDCTL1", "TARC1",
+            "CTRL_EXT", "ERT", "RDBAL", "RDBAH",
+            "TDFH", "TDFT", "TDFHS", "TDFTS", "TDFPC",
+            "RDFH", "RDFT", "RDFHS", "RDFTS", "RDFPC"
+        ];
+    
+        regs_buff[0]  = self.read(CTRL).unwrap();
+        regs_buff[1]  = self.read(STATUS).unwrap();
+    
+        regs_buff[2]  = self.read(RCTL).unwrap();
+        regs_buff[3]  = self.read(RDLEN).unwrap();
+        regs_buff[4]  = self.read(RDH).unwrap();
+        regs_buff[5]  = self.read(RDT).unwrap();
+        regs_buff[6]  = self.read(RDTR).unwrap();
+    
+        regs_buff[7]  = self.read(TCTL).unwrap();
+        regs_buff[8]  = self.read(TDBAL).unwrap();
+        regs_buff[9]  = self.read(TDBAH).unwrap();
+        regs_buff[10] = self.read(TDLEN).unwrap();
+        regs_buff[11] = self.read(TDH).unwrap();
+        regs_buff[12] = self.read(TDT).unwrap();
+        regs_buff[13] = self.read(TIDV).unwrap();
+        regs_buff[14] = self.read(TXDCTL).unwrap();
+        regs_buff[15] = self.read(TADV).unwrap();
+        regs_buff[16] = self.read(TARC0).unwrap();
+    
+        regs_buff[17] = self.read(TDBAL1).unwrap();
+        regs_buff[18] = self.read(TDBAH1).unwrap();
+        regs_buff[19] = self.read(TDLEN1).unwrap();
+        regs_buff[20] = self.read(TDH1).unwrap();
+        regs_buff[21] = self.read(TDT1).unwrap();
+        regs_buff[22] = self.read(TXDCTL1).unwrap();
+        regs_buff[23] = self.read(TARC1).unwrap();
+        regs_buff[24] = self.read(CTRL_EXT).unwrap();
+        regs_buff[25] = self.read(ERT).unwrap();
+        regs_buff[26] = self.read(RDBAL0).unwrap();
+        regs_buff[27] = self.read(RDBAH0).unwrap();
+        regs_buff[28] = self.read(TDFH).unwrap();
+        regs_buff[29] = self.read(TDFT).unwrap();
+        regs_buff[30] = self.read(TDFHS).unwrap();
+        regs_buff[31] = self.read(TDFTS).unwrap();
+        regs_buff[32] = self.read(TDFPC).unwrap();
+        regs_buff[33] = self.read(RDFH).unwrap();
+        regs_buff[34] = self.read(RDFT).unwrap();
+        regs_buff[35] = self.read(RDFHS).unwrap();
+        regs_buff[36] = self.read(RDFTS).unwrap();
+        regs_buff[37] = self.read(RDFPC).unwrap();
+    
+        let _ = f.write_str("Register dump\n");
+        for i in 0..NUM_REGS {
+            let _ = f.write_fmt(format_args!("{:15}  {:08x}\n", reg_name[i], regs_buff[i]));
         }
 
         Ok(())
     }
 }
+

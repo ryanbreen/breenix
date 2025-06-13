@@ -30,6 +30,16 @@ impl Pci {
         ((val >> ((offset as usize & 0b10) << 3)) & 0xFFFF) as u16
     }
 
+    unsafe fn write16_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8, val: u16) {
+        let address: u32 = 0x80000000
+            | (bus as u32) << 16
+            | (slot as u32) << 11
+            | (function as u32) << 8
+            | (offset & 0xFC) as u32;
+        self.address.write(address);
+        self.data.write(val as u32);
+    }
+
     unsafe fn read8_config(&mut self, bus: u8, slot: u8, function: u8, offset: u8) -> u8 {
         let val = self.read_config(bus, slot, function, offset & 0b11111100);
         ((val >> ((offset as usize & 0b11) << 3)) & 0xFF) as u8
@@ -64,6 +74,7 @@ impl Pci {
                 addr: 0,
                 size: 0,
                 is_io: false,
+                flags: 0,
             }; 6],
         })
     }
@@ -143,6 +154,8 @@ impl fmt::Display for Device {
 
 pub const PCI_MAX_BUS_NUMBER: u8 = 32;
 pub const PCI_MAX_DEVICE_NUMBER: u8 = 32;
+pub const PCI_MAX_RESOURCES: u8 = 6;
+// pub const PCI_MAX_RESOURCES: u8 = 11;  // Per Linux, should really be this?
 
 pub const PCI_CONFIG_ADDRESS_PORT: u16 = 0xCF8;
 pub const PCI_CONFIG_ADDRESS_ENABLE: u32 = 1 << 31;
@@ -176,6 +189,7 @@ pub struct BAR {
     /// a memory space address and its size
     pub size: u64,
     pub addr: u64,
+    pub flags: u64,
     pub is_io: bool,
 }
 
@@ -204,10 +218,29 @@ impl Device {
         PCI.lock().data.write(value);
     }
 
+    pub fn set_master(&self) -> Result<(), DeviceError> {
+
+        unsafe {
+            let old_cmd = PCI.lock().read16_config(self.bus, self.device, self.function, 0x04); //pci_read_config_word(dev, PCI_COMMAND, &old_cmd);
+            println!("Got cmd {:x}", old_cmd);
+            let cmd = old_cmd | 0x4; // PCI_COMMAND_MASTER
+            println!("Running cmd {:x}", cmd);
+            PCI.lock().write16_config(self.bus, self.device, self.function, 0x04, cmd);
+        }
+
+        Ok(())
+    }
+
+    pub fn save_state(&self) -> Result<(), DeviceError> {
+
+        Ok(())
+    }
+
     /// Decode an u32 to BAR.
     unsafe fn decode_bar(&self, register: u8) -> BAR {
         // read bar address
         let addr = self.read(register);
+
         // write to get length
         self.write(register, 0xFFFF_FFFF);
         // read back length
@@ -221,14 +254,17 @@ impl Device {
                     addr: (addr & 0xFFFF_FFF0) as u64,
                     size: (!(length & 0xFFFF_FFF0)).wrapping_add(1) as u64,
                     is_io: false,
+                    flags: 0,
                 }
             }
             _ => {
                 // io space bar
+                println!("For device {:x}-{:x} loading bar {:x}", self.vendor_id, self.device_id, (addr & 0xFFFF_FFFC) as u64);
                 BAR {
                     addr: (addr & 0xFFFF_FFFC) as u64,
                     size: (!(length & 0xFFFF_FFFC)).wrapping_add(1) as u64,
                     is_io: true,
+                    flags: 0,
                 }
             }
         }
@@ -244,6 +280,19 @@ impl Device {
             self.bars[4] = self.decode_bar(8);
             self.bars[5] = self.decode_bar(9);
         }
+    }
+
+    pub fn select_bars(&self, flags:u64) -> u64 {
+        let mut bars:u64 = 0;
+        /*
+        for resources in 0..PCI_MAX_RESOURCES {
+            let resourceFlags = self.bars[resources as usize].flags;
+    		if resourceFlags & flags {
+			    bars |= (1 << resources);
+    			println!("Selecting bar {} (bars now {:d}) for {:x}-{:x}", resources, bars | (resources << i), self.vendor_id, self.device_id);
+            }
+        }*/
+    	bars
     }
 
     pub fn bar(&self, idx: usize) -> BAR {
@@ -294,7 +343,7 @@ fn device_specific_init(dev: &mut Device) {
             use crate::io::drivers::network::e1000::E1000;
             use crate::io::drivers::network::{NetworkInterface, NetworkInterfaceType};
 
-            let e1000 = alloc::boxed::Box::new(E1000::new(dev));
+            let e1000 = E1000::new(dev);
             let mut nic = NetworkInterface::new(NetworkInterfaceType::Ethernet, e1000);
 
             let res = nic.up();
@@ -358,6 +407,7 @@ pub fn initialize() {
 
                     match device {
                         Some(mut d) => {
+                            println!("Selecting bars for {:x}-{:x}", bus, dev);
                             d.load_bars();
                             device_specific_init(&mut d);
                             //println!("Loaded device {}", d);
