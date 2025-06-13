@@ -22,3 +22,13 @@ rust-os-gdb
 #Added by cargo
 
 /target
+
+# Ignore the libs directory
+libs/
+
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
