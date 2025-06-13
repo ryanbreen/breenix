@@ -1,11 +1,12 @@
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
-
-use bootloader_api::BootInfo;
+#![feature(abi_x86_interrupt)]
 
 bootloader_api::entry_point!(kernel_main);
 
 mod framebuffer;
+mod keyboard;
+mod interrupts;
 
 use conquer_once::spin::OnceCell;
 use bootloader_x86_64_common::logger::LockedLogger;
@@ -21,26 +22,60 @@ pub(crate) fn init_logger(buffer: &'static mut [u8], info: FrameBufferInfo) {
 }
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
-
-    // free the doubly wrapped framebuffer from the boot info struct
-    let frame_buffer_optional = &mut boot_info.framebuffer;
-
-    // free the wrapped framebuffer from the FFI-safe abstraction provided by bootloader_api
-    let frame_buffer_option = frame_buffer_optional.as_mut();
-
-    // unwrap the framebuffer
-    let frame_buffer_struct = frame_buffer_option.unwrap();
-
-    // extract the framebuffer info and, to satisfy the borrow checker, clone it
-    let frame_buffer_info = frame_buffer_struct.info().clone();
-
-    // get the framebuffer's mutable raw byte slice
-    let raw_frame_buffer = frame_buffer_struct.buffer_mut();
-
-    // finally, initialize the logger using the last two variables
+    // Get framebuffer and initialize logger
+    let framebuffer = boot_info.framebuffer.as_mut().unwrap();
+    let frame_buffer_info = framebuffer.info().clone();
+    let raw_frame_buffer = framebuffer.buffer_mut();
+    
+    // Initialize the logger with the framebuffer
     init_logger(raw_frame_buffer, frame_buffer_info);
-
-    loop {}
+    
+    log::info!("Initializing kernel systems...");
+    
+    // Initialize interrupt descriptor table
+    interrupts::init_idt();
+    log::info!("IDT initialized");
+    
+    // Initialize keyboard queue
+    keyboard::init();
+    log::info!("Keyboard queue initialized");
+    
+    // Initialize PIC and enable interrupts
+    log::info!("Initializing PIC...");
+    interrupts::init_pic();
+    log::info!("PIC initialized");
+    
+    unsafe {
+        log::info!("Enabling interrupts...");
+        x86_64::instructions::interrupts::enable();
+    }
+    log::info!("Interrupts enabled!");
+    
+    // Test if interrupts are working by triggering a breakpoint
+    log::info!("Testing breakpoint interrupt...");
+    x86_64::instructions::interrupts::int3();
+    log::info!("Breakpoint test completed!");
+    
+    log::info!("Press keys to see their scancodes...");
+    
+    let mut key_count = 0;
+    
+    loop {
+        // Check for keyboard input
+        if let Some(scancode) = keyboard::read_scancode() {
+            if scancode < 0x80 {
+                // Key press
+                key_count += 1;
+                log::info!("Main loop: Key #{} pressed, scancode=0x{:02x}", key_count, scancode);
+            } else {
+                // Key release
+                log::info!("Main loop: Key released, scancode=0x{:02x}", scancode);
+            }
+        }
+        
+        // Use hlt to wait for next interrupt
+        x86_64::instructions::hlt();
+    }
 }
 
 use core::panic::PanicInfo;
