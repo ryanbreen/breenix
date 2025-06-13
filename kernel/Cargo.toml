@@ -11,3 +11,4 @@ bench = false
 [dependencies]
 bootloader_api = "0.11.10"
 embedded-graphics = "0.8.1"
+x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }

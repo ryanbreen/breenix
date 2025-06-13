@@ -2,6 +2,9 @@
 
 use std::{env, fs};
 
+use conquer_once::spin::OnceCell;
+use bootloader_x86_64_common::logger::LockedLogger;
+
 fn main() {
     let current_exe = env::current_exe().unwrap();
     let uefi_target = current_exe.with_file_name("uefi.img");
