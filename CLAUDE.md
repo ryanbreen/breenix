@@ -117,19 +117,32 @@ When implementing new features, the build/test loop is KEY to our development pr
    - Ensure `cargo build` completes without warnings
 
 ### Pull Request Workflow
+
+**CRITICAL: NEVER push directly to main branch!**
+
 Once Ryan is happy with an implementation:
 
-1. **Create PR using GitHub CLI**:
+1. **Always work on a feature branch**:
+   ```bash
+   git checkout -b feature-name
+   ```
+
+2. **Push to the feature branch**:
+   ```bash
+   git push -u origin feature-name
+   ```
+
+3. **Create PR using GitHub CLI**:
    ```bash
    gh pr create --title "Brief description" --body "Detailed description with testing results"
    ```
 
-2. **After creating the PR**:
+4. **After creating the PR**:
    - The command will output a URL like `https://github.com/ryanbreen/breenix/pull/XX`
    - **ALWAYS open this URL** to verify the PR was created correctly
    - Share the URL with Ryan for review
 
-3. **PR Description Should Include**:
+5. **PR Description Should Include**:
    - Summary of changes
    - Implementation details
    - Testing performed and results
