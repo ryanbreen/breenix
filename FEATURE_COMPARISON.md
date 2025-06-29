@@ -78,9 +78,11 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 ### Task/Process Management
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
-| Async Executor | ✅ | ❌ | Legacy has cooperative multitasking |
-| Task Spawning | ✅ | ❌ | |
-| Future Support | ✅ | ❌ | |
+| Async Executor | ✅ | ✅ | Both have cooperative multitasking with BTreeMap task storage |
+| Task Spawning | ✅ | ✅ | New has Task::new() and executor.spawn() |
+| Future Support | ✅ | ✅ | New uses Pin<Box<dyn Future<Output = ()>>> |
+| Waker/Wake Support | ✅ | ✅ | Both implement TaskWaker with Arc<ArrayQueue> |
+| Async I/O - Keyboard | ✅ ScancodeStream | ✅ ScancodeStream | Both use crossbeam-queue for scancode buffering |
 | Process Isolation | ❌ | ❌ | Neither has true processes |
 
 ### I/O Infrastructure
@@ -113,7 +115,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 | UEFI Boot | ✅ | ✅ | |
 | BIOS Boot | ✅ | ✅ | |
 | Custom Target | ✅ | ✅ | Both use x86_64-breenix.json |
-| Tests | ✅ Integration tests | 🚧 Basic | New has serial-based tests |
+| Tests | ✅ Integration tests | ✅ Complete framework | New has 25+ tests using shared QEMU, comprehensive validation |
 
 ## Summary
 
@@ -124,20 +126,21 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 4. Dual logging to both framebuffer and serial port
 5. Early boot message buffering (captures pre-serial messages)
 6. Comprehensive timer system with RTC integration
-7. Serial-based integration testing framework
+7. **Complete integration testing framework (25+ tests with shared QEMU)**
 8. GDT with TSS for interrupt handling (8KB double fault stack)
 9. **Complete memory management system (frame allocator, paging, heap)**
 10. **Physical memory management with 94 MiB usable memory**
 11. **1024 KiB heap with bump allocator and #[global_allocator]**
+12. **Async executor with cooperative multitasking and Future support**
 
 ### Legacy Kernel Has (Not in New)
 1. ~~Comprehensive memory management (paging, heap)~~ **Now implemented in new kernel**
 2. VGA text mode display
-3. Async task execution system
+3. ~~Async task execution system~~ **Now implemented in new kernel**
 4. Network driver infrastructure
 5. PCI bus support
 6. More complete interrupt handling
-7. Complete test infrastructure
+7. ~~Complete test infrastructure~~ **Now implemented in new kernel**
 8. Event system
 9. Interrupt statistics tracking
 10. System calls
@@ -152,10 +155,10 @@ Based on typical OS development needs:
    - ~~GDT setup~~ ✅ Complete
 
 2. **Medium Priority**
-   - Async executor for multitasking
+   - ~~Async executor for multitasking~~ ✅ Complete
    - ~~Timer configuration and time tracking~~ ✅ Complete
    - ~~Keyboard scancode to ASCII translation~~ ✅ Complete
-   - Basic test framework
+   - ~~Basic test framework~~ ✅ Complete
 
 3. **Low Priority**
    - Network drivers
