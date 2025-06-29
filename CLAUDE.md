@@ -77,6 +77,35 @@ breenix/
   - Stack overflow handling
   - Panic testing
 
+#### Test Development Best Practices
+When implementing new features, the build/test loop is KEY to our development process:
+
+1. **Create Test Cases Early**:
+   - Write integration tests in `tests/` directory
+   - Add runtime tests with feature flags (e.g., `test-gdt` feature)
+   - Create shell scripts for comprehensive testing when appropriate
+   - Test both positive cases AND error conditions
+
+2. **Test Structure**:
+   - **Unit Tests**: For isolated functionality (in-module `#[cfg(test)]`)
+   - **Integration Tests**: Boot the kernel and verify output via serial
+   - **Runtime Tests**: Feature-flagged tests that run during kernel execution
+   - **Shell Scripts**: For complex multi-step validation
+
+3. **Build/Test Loop**:
+   ```bash
+   # Quick build check
+   cargo build --target x86_64-apple-darwin
+   
+   # Run with serial output to verify functionality
+   cargo run --target x86_64-apple-darwin --bin qemu-uefi -- -serial stdio -display none
+   
+   # Run with test features enabled
+   cargo run --target x86_64-apple-darwin --features test-feature --bin qemu-uefi -- -serial stdio
+   ```
+
+4. **Verify Output**: Always check serial output for expected log messages and behavior
+
 ### Development Workflow
 1. Kernel code changes are made in `kernel/src/`
 2. Build system automatically creates disk images
@@ -86,6 +115,26 @@ breenix/
    - Fix all compiler warnings (unused imports, dead code, etc.)
    - Run `cargo clippy` if available
    - Ensure `cargo build` completes without warnings
+
+### Pull Request Workflow
+Once Ryan is happy with an implementation:
+
+1. **Create PR using GitHub CLI**:
+   ```bash
+   gh pr create --title "Brief description" --body "Detailed description with testing results"
+   ```
+
+2. **After creating the PR**:
+   - The command will output a URL like `https://github.com/ryanbreen/breenix/pull/XX`
+   - **ALWAYS open this URL** to verify the PR was created correctly
+   - Share the URL with Ryan for review
+
+3. **PR Description Should Include**:
+   - Summary of changes
+   - Implementation details
+   - Testing performed and results
+   - Any improvements over legacy implementation
+   - Co-authorship credit
 
 ## Building and Running
 
