@@ -18,6 +18,8 @@ fn main() {
         "-drive",
         &format!("format=raw,file={}", env!("UEFI_IMAGE")),
     ]);
+    // Forward any additional command-line arguments to QEMU
+    qemu.args(env::args().skip(1));
     let exit_status = qemu.status().unwrap();
     process::exit(exit_status.code().unwrap_or(-1));
 }

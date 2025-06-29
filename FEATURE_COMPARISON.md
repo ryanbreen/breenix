@@ -36,7 +36,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 | VGA Text Mode | ✅ Full implementation | ❌ | Legacy has colors, cursor control |
 | Framebuffer Graphics | 🚧 Basic | ✅ | New uses embedded-graphics |
 | Text Rendering | ✅ VGA hardware | ✅ Software | New renders text to framebuffer |
-| Logging | ✅ Serial + VGA | ✅ Framebuffer | 🔄 Different approaches |
+| Logging | ✅ Serial + VGA | ✅ Framebuffer + Serial | Both outputs, with buffering |
 
 ### Input
 | Feature | Legacy | New | Notes |
@@ -48,9 +48,10 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 ### Serial Communication
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
-| UART 16550 Driver | ✅ | ❌ | |
-| Serial Output | ✅ | ❌ | |
-| Debug Printing | ✅ Serial | ✅ Framebuffer | 🔄 Different output targets |
+| UART 16550 Driver | ✅ | ✅ | Both use uart_16550 crate |
+| Serial Output | ✅ | ✅ | New has serial_print! macros |
+| Debug Printing | ✅ Serial | ✅ Serial + Framebuffer | New outputs to both targets |
+| Early Boot Buffering | ❌ | ✅ | New buffers pre-serial messages |
 
 ### Timers
 | Feature | Legacy | New | Notes |
@@ -100,7 +101,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 |---------|--------|-----|-------|
 | Print Macros | ✅ print!, println! | ✅ log macros | 🔄 Different systems |
 | Timestamp Support | ✅ | ❌ | Legacy prints with timestamps |
-| Debug Output Target | ✅ Serial + VGA | ✅ Framebuffer | |
+| Debug Output Target | ✅ Serial + VGA | ✅ Serial + Framebuffer | |
 | Panic Handler | ✅ | ✅ | Both have custom panic handlers |
 
 ### Build System
@@ -109,7 +110,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 | UEFI Boot | ✅ | ✅ | |
 | BIOS Boot | ✅ | ✅ | |
 | Custom Target | ✅ | ✅ | Both use x86_64-breenix.json |
-| Tests | ✅ Integration tests | ❌ | Legacy has test framework |
+| Tests | ✅ Integration tests | 🚧 Basic | New has serial-based tests |
 
 ## Summary
 
@@ -117,26 +118,29 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 1. Modern framebuffer-based graphics with embedded-graphics
 2. Clean, minimal codebase structure
 3. Basic interrupt handling (keyboard, timer)
-4. Bootloader-provided logging to framebuffer
+4. Dual logging to both framebuffer and serial port
+5. Early boot message buffering (captures pre-serial messages)
+6. Comprehensive timer system with RTC integration
+7. Serial-based integration testing framework
 
 ### Legacy Kernel Has (Not in New)
 1. Comprehensive memory management (paging, heap)
 2. VGA text mode display
-3. Serial port communication
-4. Async task execution system
-5. Network driver infrastructure
-6. PCI bus support
-7. Time tracking (RTC, monotonic clock)
-8. More complete interrupt handling
-9. Test infrastructure
-10. Event system
+3. Async task execution system
+4. Network driver infrastructure
+5. PCI bus support
+6. More complete interrupt handling
+7. Complete test infrastructure
+8. Event system
+9. Interrupt statistics tracking
+10. System calls
 
 ### Migration Priority Suggestions
 Based on typical OS development needs:
 
 1. **High Priority**
    - Memory management (heap allocation, paging)
-   - Serial output (for better debugging)
+   - ~~Serial output (for better debugging)~~ ✅ Complete
    - More exception handlers
    - GDT setup
 

@@ -10,28 +10,35 @@ mod framebuffer;
 mod keyboard;
 mod interrupts;
 mod time;
+mod serial;
+mod logger;
 
-use conquer_once::spin::OnceCell;
-use bootloader_x86_64_common::logger::LockedLogger;
-
-pub(crate) static LOGGER: OnceCell<LockedLogger> = OnceCell::uninit();
-use bootloader_api::info::FrameBufferInfo;
-
-pub(crate) fn init_logger(buffer: &'static mut [u8], info: FrameBufferInfo) {
-    let logger = LOGGER.get_or_init(move || LockedLogger::new(buffer, info, true, false));
-    log::set_logger(logger).expect("Logger already set");
-    log::set_max_level(log::LevelFilter::Trace);
-    log::info!("Hello, Kernel Mode!");
-}
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
-    // Get framebuffer and initialize logger
+    // Initialize logger early so all log messages work
+    logger::init_early();
+    
+    // Now we can use log! macros immediately - they'll be buffered
+    log::info!("Kernel entry point reached");
+    log::debug!("Boot info address: {:p}", boot_info);
+    
+    // Initialize serial port
+    log::info!("Initializing serial port...");
+    serial::init();
+    
+    // Tell logger that serial is ready - this will flush buffered messages
+    logger::serial_ready();
+    
+    log::info!("Serial port initialized and buffer flushed");
+    
+    // Get framebuffer and complete logger initialization
+    log::info!("Setting up framebuffer...");
     let framebuffer = boot_info.framebuffer.as_mut().unwrap();
     let frame_buffer_info = framebuffer.info().clone();
     let raw_frame_buffer = framebuffer.buffer_mut();
     
-    // Initialize the logger with the framebuffer
-    init_logger(raw_frame_buffer, frame_buffer_info);
+    // Complete logger initialization with framebuffer
+    logger::init_framebuffer(raw_frame_buffer, frame_buffer_info);
     
     log::info!("Initializing kernel systems...");
     
