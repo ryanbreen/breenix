@@ -20,20 +20,10 @@ fn test_keyboard_initialization() {
         "Keyboard ready message not found"
     );
     
-    // Check that special key instructions are shown
+    // Check that special key instructions are shown in the new async implementation
     assert!(
-        output.contains("Ctrl+C: Show test message"),
-        "Ctrl+C instruction not shown"
-    );
-    
-    assert!(
-        output.contains("Ctrl+D: Show debug info"),
-        "Ctrl+D instruction not shown"
-    );
-    
-    assert!(
-        output.contains("Ctrl+S: Show keyboard state"),
-        "Ctrl+S instruction not shown"
+        output.contains("Ctrl+C/D/S for special actions"),
+        "Special key instructions not shown"
     );
     
     println!("✅ Keyboard initialization test passed");

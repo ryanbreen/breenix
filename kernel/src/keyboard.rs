@@ -1,19 +1,15 @@
 use spin::Mutex;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use futures_util::stream::StreamExt;
 
 mod scancodes;
 mod modifiers;
 mod event;
+mod stream;
 
 pub use event::KeyEvent;
 use modifiers::Modifiers;
 use scancodes::KEYS;
-
-const QUEUE_SIZE: usize = 100;
-
-static SCANCODE_QUEUE: Mutex<[u8; QUEUE_SIZE]> = Mutex::new([0; QUEUE_SIZE]);
-static QUEUE_HEAD: AtomicUsize = AtomicUsize::new(0);
-static QUEUE_TAIL: AtomicUsize = AtomicUsize::new(0);
+pub use stream::ScancodeStream;
 
 // Global keyboard state
 static KEYBOARD_STATE: Mutex<KeyboardState> = Mutex::new(KeyboardState::new());
@@ -34,10 +30,6 @@ impl KeyboardState {
 }
 
 pub fn init() {
-    // Reset queue pointers
-    QUEUE_HEAD.store(0, Ordering::Release);
-    QUEUE_TAIL.store(0, Ordering::Release);
-    
     // Reset keyboard state
     let mut state = KEYBOARD_STATE.lock();
     state.modifiers = Modifiers::new();
@@ -46,33 +38,7 @@ pub fn init() {
 
 /// Called by the keyboard interrupt handler
 pub(crate) fn add_scancode(scancode: u8) {
-    let mut queue = SCANCODE_QUEUE.lock();
-    let head = QUEUE_HEAD.load(Ordering::Acquire);
-    let tail = QUEUE_TAIL.load(Ordering::Acquire);
-    
-    let next_tail = (tail + 1) % QUEUE_SIZE;
-    if next_tail != head {
-        queue[tail] = scancode;
-        QUEUE_TAIL.store(next_tail, Ordering::Release);
-    } else {
-        // Queue is full, drop the scancode
-        log::warn!("Keyboard scancode queue full; dropping input");
-    }
-}
-
-/// Read a raw scancode from the queue
-pub fn read_scancode() -> Option<u8> {
-    let queue = SCANCODE_QUEUE.lock();
-    let head = QUEUE_HEAD.load(Ordering::Acquire);
-    let tail = QUEUE_TAIL.load(Ordering::Acquire);
-    
-    if head != tail {
-        let scancode = queue[head];
-        QUEUE_HEAD.store((head + 1) % QUEUE_SIZE, Ordering::Release);
-        Some(scancode)
-    } else {
-        None
-    }
+    stream::add_scancode(scancode);
 }
 
 /// Process a scancode and return a keyboard event if applicable
@@ -120,14 +86,29 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
     Some(KeyEvent::new(scancode, None, &state.modifiers))
 }
 
-/// Read and process the next keyboard event
-pub fn read_key() -> Option<KeyEvent> {
-    while let Some(scancode) = read_scancode() {
+/// Async keyboard task that processes scancodes and displays typed characters
+pub async fn keyboard_task() {
+    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S for special actions)");
+    
+    let mut scancodes = ScancodeStream::new();
+    
+    while let Some(scancode) = scancodes.next().await {
         if let Some(event) = process_scancode(scancode) {
-            return Some(event);
+            if let Some(character) = event.character {
+                // Handle special key combinations
+                if event.is_ctrl_c() {
+                    log::info!("Ctrl+C pressed - interrupt signal");
+                } else if event.is_ctrl_d() {
+                    log::info!("Ctrl+D pressed - end of input");
+                } else if event.is_ctrl_s() {
+                    log::info!("Ctrl+S pressed - suspend output");
+                } else {
+                    // Display the typed character
+                    log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);
+                }
+            }
         }
     }
-    None
 }
 
 /// Get current modifier state
