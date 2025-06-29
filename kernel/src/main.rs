@@ -8,7 +8,10 @@ bootloader_api::entry_point!(kernel_main);
 mod macros;
 mod framebuffer;
 mod keyboard;
+mod gdt;
 mod interrupts;
+#[cfg(feature = "test-gdt")]
+mod gdt_tests;
 mod time;
 mod serial;
 mod logger;
@@ -42,9 +45,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     log::info!("Initializing kernel systems...");
     
-    // Initialize interrupt descriptor table
-    interrupts::init_idt();
-    log::info!("IDT initialized");
+    // Initialize GDT and IDT
+    interrupts::init();
+    log::info!("GDT and IDT initialized");
     
     // Initialize timer
     time::init();
@@ -60,15 +63,20 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("PIC initialized");
     
     log::info!("Enabling interrupts...");
-    unsafe {
-        x86_64::instructions::interrupts::enable();
-    }
+    x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled!");
     
     // Test if interrupts are working by triggering a breakpoint
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
+    
+    // Run GDT tests if feature is enabled
+    #[cfg(feature = "test-gdt")]
+    {
+        log::info!("Running GDT tests...");
+        gdt_tests::run_all_tests();
+    }
     
     // Test timer functionality
     log::info!("Testing timer functionality...");

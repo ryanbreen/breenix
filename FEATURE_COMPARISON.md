@@ -23,7 +23,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
 | IDT (Interrupt Descriptor Table) | ✅ Full implementation | 🚧 Basic | New has breakpoint, double fault, timer, keyboard |
-| GDT (Global Descriptor Table) | ✅ | ❌ | |
+| GDT (Global Descriptor Table) | ✅ | ✅ | New has kernel/user segments, TSS with 8KB stack |
 | Exception Handlers | ✅ Many types | 🚧 Limited | New only has breakpoint, double fault |
 | PIC Support | ✅ | ✅ | Both use pic8259 crate |
 | Interrupt Statistics | ✅ | ❌ | Legacy tracks interrupt counts |
@@ -122,6 +122,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 5. Early boot message buffering (captures pre-serial messages)
 6. Comprehensive timer system with RTC integration
 7. Serial-based integration testing framework
+8. GDT with TSS for interrupt handling (8KB double fault stack)
 
 ### Legacy Kernel Has (Not in New)
 1. Comprehensive memory management (paging, heap)
@@ -142,7 +143,7 @@ Based on typical OS development needs:
    - Memory management (heap allocation, paging)
    - ~~Serial output (for better debugging)~~ ✅ Complete
    - More exception handlers
-   - GDT setup
+   - ~~GDT setup~~ ✅ Complete
 
 2. **Medium Priority**
    - Async executor for multitasking
