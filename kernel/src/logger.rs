@@ -113,32 +113,58 @@ impl Log for CombinedLogger {
 
             let state = self.state.lock();
             
+            // Get current timestamp if available
+            let timestamp = if let Ok(rtc_time) = crate::time::rtc::read_rtc_time() {
+                let elapsed = crate::time::time_since_start();
+                rtc_time + elapsed.seconds
+            } else {
+                0
+            };
+            
             match *state {
                 LoggerState::Buffering => {
-                    // Buffer the message
+                    // Buffer the message without timestamp (we don't have time yet)
                     drop(state); // Release lock before acquiring buffer lock
                     let mut buffer = self.buffer.lock();
                     // Format directly into buffer
                     let _ = write!(&mut *buffer, "[{:>5}] {}: {}\n", level, target, args);
                 }
                 LoggerState::SerialReady => {
-                    // Output to serial only
+                    // Output to serial only with timestamp if available
                     drop(state); // Release lock before serial I/O
-                    serial_println!("[{:>5}] {}: {}", 
-                        record.level(), 
-                        record.target(), 
-                        record.args()
-                    );
+                    if timestamp > 0 {
+                        serial_println!("{} - [{:>5}] {}: {}", 
+                            timestamp,
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    } else {
+                        serial_println!("[{:>5}] {}: {}", 
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    }
                 }
                 LoggerState::FullyInitialized => {
-                    // Output to both serial and framebuffer
+                    // Output to both serial and framebuffer with timestamp
                     drop(state); // Release lock before I/O
                     
-                    serial_println!("[{:>5}] {}: {}", 
-                        record.level(), 
-                        record.target(), 
-                        record.args()
-                    );
+                    if timestamp > 0 {
+                        serial_println!("{} - [{:>5}] {}: {}", 
+                            timestamp,
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    } else {
+                        serial_println!("[{:>5}] {}: {}", 
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    }
                     
                     if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
                         fb_logger.log(record);
