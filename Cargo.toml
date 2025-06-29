@@ -4,6 +4,9 @@ name = "breenix"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+test-gdt = ["kernel/test-gdt"]
+
 [[bin]]
 name = "qemu-uefi"
 test = false
