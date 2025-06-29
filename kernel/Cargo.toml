@@ -13,6 +13,9 @@ name = "kernel"
 path = "src/lib.rs"
 test = false
 
+[features]
+test-gdt = []
+
 [dependencies]
 bootloader_api = "0.11.10"
 embedded-graphics = "0.8.1"

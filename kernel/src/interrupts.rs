@@ -1,3 +1,5 @@
+use crate::gdt;
+
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use pic8259::ChainedPics;
 use spin;
@@ -7,8 +9,6 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
-
-static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -28,10 +28,20 @@ impl InterruptIndex {
     }
 }
 
+static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
+
+pub fn init() {
+    // Initialize GDT first
+    gdt::init();
+    // Then initialize IDT
+    init_idt();
+}
+
 pub fn init_idt() {
     unsafe {
         IDT.breakpoint.set_handler_fn(breakpoint_handler);
-        IDT.double_fault.set_handler_fn(double_fault_handler);
+        IDT.double_fault.set_handler_fn(double_fault_handler)
+            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         IDT[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
         IDT[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         IDT.load();
