@@ -61,7 +61,8 @@ pub struct Display<'f> {
 }
 
 impl<'f> Display<'f> {
-    pub fn new(framebuffer: &'f mut FrameBuffer) -> Display {
+    #[allow(dead_code)]
+    pub fn new(framebuffer: &'f mut FrameBuffer) -> Display<'f> {
         Display { framebuffer }
     }
 
@@ -85,7 +86,6 @@ impl<'f> Display<'f> {
         }
     }
 }
-
 
 impl<'f> DrawTarget for Display<'f> {
     type Color = Rgb888;

@@ -82,6 +82,10 @@ breenix/
 2. Build system automatically creates disk images
 3. Tests can be run using QEMU for both UEFI and BIOS modes
 4. Legacy code serves as reference for features being reimplemented
+5. **Always ensure clean builds before declaring victory** - fix all warnings and run lints:
+   - Fix all compiler warnings (unused imports, dead code, etc.)
+   - Run `cargo clippy` if available
+   - Ensure `cargo build` completes without warnings
 
 ## Building and Running
 
