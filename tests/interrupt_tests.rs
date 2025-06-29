@@ -47,7 +47,7 @@ fn test_keyboard_interrupt() {
     // Check for keyboard initialization
     assert!(output.contains("Keyboard queue initialized"), 
             "Keyboard queue not initialized");
-    assert!(output.contains("Press keys to see their scancodes"), 
+    assert!(output.contains("Keyboard ready! Type to see characters"), 
             "Keyboard prompt not shown");
     
     println!("✅ Keyboard interrupt setup test passed");
