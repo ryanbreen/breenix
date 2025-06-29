@@ -29,6 +29,7 @@ mod time;
 mod serial;
 mod logger;
 mod memory;
+mod task;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,52 +196,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Signal that all POST-testable initialization is complete
     log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
     
-    log::info!("Keyboard ready! Type to see characters. Special keys:");
-    log::info!("  Ctrl+C: Show test message");
-    log::info!("  Ctrl+D: Show debug info");
-    log::info!("  Ctrl+S: Show keyboard state");
-    
-    let mut key_count = 0;
-    
-    loop {
-        // Check for keyboard input
-        if let Some(key_event) = keyboard::read_key() {
-            key_count += 1;
-            
-            // Handle special key combinations
-            if key_event.is_ctrl_c() {
-                log::info!("Ctrl+C pressed! (Would normally interrupt)");
-            } else if key_event.is_ctrl_d() {
-                log::info!("Debug info:");
-                log::info!("  Keys pressed: {}", key_count);
-                log::info!("  Modifiers: Shift={}, Ctrl={}, Alt={}, Caps={}", 
-                    key_event.shift, key_event.ctrl, key_event.alt, key_event.caps_lock);
-            } else if key_event.is_ctrl_s() {
-                let modifiers = keyboard::get_modifiers();
-                log::info!("Keyboard state:");
-                log::info!("  Left Shift: {}, Right Shift: {}", modifiers.left_shift, modifiers.right_shift);
-                log::info!("  Left Ctrl: {}, Right Ctrl: {}", modifiers.left_ctrl, modifiers.right_ctrl);
-                log::info!("  Left Alt: {}, Right Alt: {}", modifiers.left_alt, modifiers.right_alt);
-                log::info!("  Caps Lock: {}", modifiers.caps_lock);
-            } else if key_event.is_printable() {
-                // Regular character - display it
-                if let Some(ch) = key_event.character {
-                    log::info!("Typed: '{}'", ch);
-                }
-            } else if let Some(ch) = key_event.character {
-                // Non-printable but has a character (like Enter, Tab)
-                match ch {
-                    '\n' => log::info!("Enter pressed"),
-                    '\t' => log::info!("Tab pressed"),
-                    '\x08' => log::info!("Backspace pressed"),
-                    _ => log::info!("Special key: {:?}", ch),
-                }
-            }
-        }
-        
-        // Use hlt to wait for next interrupt
-        x86_64::instructions::hlt();
-    }
+    // Initialize and run the async executor
+    log::info!("Starting async executor...");
+    let mut executor = task::executor::Executor::new();
+    executor.spawn(task::Task::new(keyboard::keyboard_task()));
+    executor.run()
 }
 
 use core::panic::PanicInfo;

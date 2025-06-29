@@ -92,7 +92,7 @@ When implementing new features, the build/test loop is KEY to our development pr
    - **POST Completion**: Tests wait for kernel completion marker `🎯 KERNEL_POST_TESTS_COMPLETE 🎯`
 
 3. **Test Categories**:
-   
+
    **Standard Tests (use shared QEMU):**
    ```bash
    cargo test  # Runs all standard tests efficiently (~45 seconds)
@@ -110,7 +110,7 @@ When implementing new features, the build/test loop is KEY to our development pr
    ```bash
    # BIOS boot test (requires BIOS mode)
    cargo test test_bios_boot -- --ignored
-   
+
    # Runtime testing feature (requires --features testing)
    cargo test test_runtime_testing_feature -- --ignored
    cargo run --features testing --bin qemu-uefi -- -serial stdio
@@ -124,13 +124,13 @@ When implementing new features, the build/test loop is KEY to our development pr
    # Manual kernel testing
    cargo run --bin qemu-uefi -- -serial stdio -display none
 
-   # Test with runtime features  
+   # Test with runtime features
    cargo run --features testing --bin qemu-uefi -- -serial stdio
 
    # Visual testing (shows QEMU display window)
    BREENIX_VISUAL_TEST=1 cargo test         # Run all tests with visual output
    BREENIX_VISUAL_TEST=1 cargo test memory  # Run specific test with visual output
-   
+
    # Manual testing
    ./scripts/test_kernel.sh       # Interactive manual test
    ```
