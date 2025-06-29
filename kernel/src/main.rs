@@ -1,8 +1,21 @@
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
 
-bootloader_api::entry_point!(kernel_main);
+extern crate alloc;
+
+use x86_64::VirtAddr;
+use bootloader_api::config::{BootloaderConfig, Mapping};
+
+/// Bootloader configuration to enable physical memory mapping
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
+    config
+};
+
+bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 #[macro_use]
 mod macros;
@@ -10,11 +23,12 @@ mod framebuffer;
 mod keyboard;
 mod gdt;
 mod interrupts;
-#[cfg(feature = "test-gdt")]
+#[cfg(feature = "testing")]
 mod gdt_tests;
 mod time;
 mod serial;
 mod logger;
+mod memory;
 
 
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
@@ -49,6 +63,34 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init();
     log::info!("GDT and IDT initialized");
     
+    // Initialize memory management
+    log::info!("Checking physical memory offset availability...");
+    let physical_memory_offset = match boot_info.physical_memory_offset.into_option() {
+        Some(offset) => {
+            log::info!("Physical memory offset available: {:#x}", offset);
+            VirtAddr::new(offset)
+        }
+        None => {
+            log::error!("Physical memory offset not available! The bootloader needs to be configured to map physical memory.");
+            panic!("Cannot initialize memory without physical memory mapping");
+        }
+    };
+    let memory_regions = &boot_info.memory_regions;
+    memory::init(physical_memory_offset, memory_regions);
+    
+    // Test heap allocation
+    log::info!("Testing heap allocation...");
+    {
+        use alloc::vec::Vec;
+        let mut vec = Vec::new();
+        for i in 0..10 {
+            vec.push(i);
+        }
+        log::info!("Heap test: created vector with {} elements", vec.len());
+        log::info!("Heap test: sum of elements = {}", vec.iter().sum::<i32>());
+    }
+    log::info!("Heap allocation test passed!");
+    
     // Initialize timer
     time::init();
     log::info!("Timer initialized");
@@ -71,10 +113,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
     
-    // Run GDT tests if feature is enabled
-    #[cfg(feature = "test-gdt")]
+    // Run tests if testing feature is enabled
+    #[cfg(feature = "testing")]
     {
-        log::info!("Running GDT tests...");
+        log::info!("Running kernel tests...");
         gdt_tests::run_all_tests();
     }
     
