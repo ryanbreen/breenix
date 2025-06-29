@@ -22,6 +22,7 @@ impl InterruptIndex {
         self as u8
     }
 
+    #[allow(dead_code)]
     fn as_usize(self) -> usize {
         usize::from(self.as_u8())
     }
@@ -63,14 +64,14 @@ extern "x86-interrupt" fn double_fault_handler(
 }
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use core::sync::atomic::{AtomicU64, Ordering};
-    static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
+    // Call the timer module's interrupt handler
+    crate::time::timer_interrupt();
     
-    let ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
-    
-    // Only log every 100 ticks to avoid spam
-    if ticks % 100 == 0 {
-        log::info!("Timer tick #{}", ticks);
+    // Log every 1000 ticks (1 second) to avoid spam
+    let ticks = crate::time::get_ticks();
+    if ticks % 1000 == 0 && ticks > 0 {
+        let time = crate::time::time_since_start();
+        log::info!("Timer: {}s elapsed", time.seconds);
     }
     
     unsafe {

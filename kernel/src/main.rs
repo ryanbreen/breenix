@@ -4,9 +4,12 @@
 
 bootloader_api::entry_point!(kernel_main);
 
+#[macro_use]
+mod macros;
 mod framebuffer;
 mod keyboard;
 mod interrupts;
+mod time;
 
 use conquer_once::spin::OnceCell;
 use bootloader_x86_64_common::logger::LockedLogger;
@@ -36,6 +39,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init_idt();
     log::info!("IDT initialized");
     
+    // Initialize timer
+    time::init();
+    log::info!("Timer initialized");
+    
     // Initialize keyboard queue
     keyboard::init();
     log::info!("Keyboard queue initialized");
@@ -45,8 +52,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init_pic();
     log::info!("PIC initialized");
     
+    log::info!("Enabling interrupts...");
     unsafe {
-        log::info!("Enabling interrupts...");
         x86_64::instructions::interrupts::enable();
     }
     log::info!("Interrupts enabled!");
@@ -55,6 +62,21 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
+    
+    // Test timer functionality
+    log::info!("Testing timer functionality...");
+    let start_time = time::time_since_start();
+    log::info!("Current time since boot: {}", start_time);
+    
+    log::info!("Testing delay macro (1 second delay)...");
+    delay!(1000); // 1000ms = 1 second
+    
+    let end_time = time::time_since_start();
+    log::info!("Time after delay: {}", end_time);
+    
+    if let Ok(rtc_time) = time::rtc::read_rtc_time() {
+        log::info!("Current Unix timestamp: {}", rtc_time);
+    }
     
     log::info!("Press keys to see their scancodes...");
     
