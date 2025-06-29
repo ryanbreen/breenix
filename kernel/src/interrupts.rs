@@ -77,13 +77,6 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // Call the timer module's interrupt handler
     crate::time::timer_interrupt();
     
-    // Log every 1000 ticks (1 second) to avoid spam
-    let ticks = crate::time::get_ticks();
-    if ticks % 1000 == 0 && ticks > 0 {
-        let time = crate::time::time_since_start();
-        log::info!("Timer: {}s elapsed", time.seconds);
-    }
-    
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
