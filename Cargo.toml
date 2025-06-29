@@ -20,6 +20,8 @@ members = ["kernel"]
 
 [dependencies]
 ovmf-prebuilt = "0.2.3"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
 conquer-once = { version = "0.4.0", default-features = false }
 bootloader-x86_64-common = "0.11.10"
 log = { version = "0.4.17", default-features = false }

@@ -135,6 +135,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("Current Unix timestamp: {}", rtc_time);
     }
     
+    // Signal that all POST-testable initialization is complete
+    log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
+    
     log::info!("Press keys to see their scancodes...");
     
     let mut key_count = 0;
