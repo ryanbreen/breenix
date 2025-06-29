@@ -82,7 +82,7 @@ When implementing new features, the build/test loop is KEY to our development pr
 
 1. **Create Test Cases Early**:
    - Write integration tests in `tests/` directory
-   - Add runtime tests with feature flags (e.g., `test-gdt` feature)
+   - Add runtime tests with the `testing` feature flag
    - Create shell scripts for comprehensive testing when appropriate
    - Test both positive cases AND error conditions
 
@@ -100,11 +100,22 @@ When implementing new features, the build/test loop is KEY to our development pr
    # Run with serial output to verify functionality
    cargo run --target x86_64-apple-darwin --bin qemu-uefi -- -serial stdio -display none
 
-   # Run with test features enabled
-   cargo run --target x86_64-apple-darwin --features test-feature --bin qemu-uefi -- -serial stdio
+   # Run with testing features enabled
+   cargo run --target x86_64-apple-darwin --features testing --bin qemu-uefi -- -serial stdio
+   
+   # Run integration tests
+   cargo test --target x86_64-apple-darwin
    ```
 
 4. **Verify Output**: Always check serial output for expected log messages and behavior
+
+5. **Testing Feature**:
+   - `testing`: Enables all runtime tests during kernel boot
+   - Currently runs GDT tests, but all new tests should be included under this feature
+
+6. **Integration Tests**: Located in `tests/` directory
+   - Run all tests: `cargo test --target x86_64-apple-darwin`
+   - Tests verify kernel functionality by checking serial output
 
 ### Development Workflow
 1. Kernel code changes are made in `kernel/src/`
