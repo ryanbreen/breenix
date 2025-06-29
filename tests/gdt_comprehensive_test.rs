@@ -4,9 +4,9 @@ fn test_gdt_comprehensive() {
     
     println!("Starting comprehensive GDT test with test feature...");
     
-    // Start QEMU with the kernel and test-gdt feature enabled
+    // Start QEMU with the kernel and testing feature enabled
     let output = Command::new("timeout")
-        .args(&["10s", "cargo", "run", "--target", "x86_64-apple-darwin", "--features", "test-gdt", "--bin", "qemu-uefi", "--", "-serial", "stdio"])
+        .args(&["10s", "cargo", "run", "--target", "x86_64-apple-darwin", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"])
         .output()
         .expect("Failed to execute QEMU");
     
