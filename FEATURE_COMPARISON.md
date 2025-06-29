@@ -14,10 +14,10 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 ### Memory Management
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
-| Physical Memory Management | ✅ Frame allocator | ❌ | Legacy uses bootloader memory map |
-| Virtual Memory (Paging) | ✅ OffsetPageTable | ❌ | Legacy has full page table management |
-| Heap Allocation | ✅ Bump allocator | ❌ | Legacy has #[global_allocator] |
-| Stack Overflow Protection | ✅ Guard pages | ❌ | |
+| Physical Memory Management | ✅ Frame allocator | ✅ | Both use bootloader memory map, new has 94 MiB usable |
+| Virtual Memory (Paging) | ✅ OffsetPageTable | ✅ | Both use OffsetPageTable with physical memory mapping |
+| Heap Allocation | ✅ Bump allocator | ✅ | Both have #[global_allocator], new has 1024 KiB heap |
+| Stack Overflow Protection | ✅ Guard pages | ❌ | New has TSS double fault stack but no guard pages yet |
 
 ### Interrupt Handling
 | Feature | Legacy | New | Notes |
@@ -123,9 +123,12 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 6. Comprehensive timer system with RTC integration
 7. Serial-based integration testing framework
 8. GDT with TSS for interrupt handling (8KB double fault stack)
+9. **Complete memory management system (frame allocator, paging, heap)**
+10. **Physical memory management with 94 MiB usable memory**
+11. **1024 KiB heap with bump allocator and #[global_allocator]**
 
 ### Legacy Kernel Has (Not in New)
-1. Comprehensive memory management (paging, heap)
+1. ~~Comprehensive memory management (paging, heap)~~ **Now implemented in new kernel**
 2. VGA text mode display
 3. Async task execution system
 4. Network driver infrastructure
@@ -140,7 +143,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 Based on typical OS development needs:
 
 1. **High Priority**
-   - Memory management (heap allocation, paging)
+   - ~~Memory management (heap allocation, paging)~~ ✅ Complete
    - ~~Serial output (for better debugging)~~ ✅ Complete
    - More exception handlers
    - ~~GDT setup~~ ✅ Complete

@@ -69,14 +69,14 @@ pub fn init() {
     log::info!("GDT initialized with kernel and user segments");
 }
 
-#[cfg(feature = "test-gdt")]
+#[cfg(feature = "testing")]
 pub fn double_fault_stack_top() -> VirtAddr {
     TSS.get()
         .expect("TSS not initialized")
         .interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize]
 }
 
-#[cfg(not(feature = "test-gdt"))]
+#[cfg(not(feature = "testing"))]
 pub(crate) fn double_fault_stack_top() -> VirtAddr {
     TSS.get()
         .expect("TSS not initialized")

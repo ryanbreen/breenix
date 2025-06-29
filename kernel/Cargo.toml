@@ -14,7 +14,7 @@ path = "src/lib.rs"
 test = false
 
 [features]
-test-gdt = []
+testing = []
 
 [dependencies]
 bootloader_api = "0.11.10"

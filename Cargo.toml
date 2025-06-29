@@ -5,7 +5,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-test-gdt = ["kernel/test-gdt"]
+testing = ["kernel/testing"]
 
 [[bin]]
 name = "qemu-uefi"
