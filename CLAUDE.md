@@ -35,7 +35,7 @@ breenix/
    - Custom panic handler
    - Basic framebuffer graphics using `embedded-graphics`
 
-2. **Build System**: 
+2. **Build System**:
    - Uses cargo workspaces
    - Custom build script creates UEFI and BIOS bootable disk images
    - Artifact dependencies for kernel binary
@@ -96,10 +96,10 @@ When implementing new features, the build/test loop is KEY to our development pr
    ```bash
    # Quick build check
    cargo build --target x86_64-apple-darwin
-   
+
    # Run with serial output to verify functionality
    cargo run --target x86_64-apple-darwin --bin qemu-uefi -- -serial stdio -display none
-   
+
    # Run with test features enabled
    cargo run --target x86_64-apple-darwin --features test-feature --bin qemu-uefi -- -serial stdio
    ```
@@ -174,3 +174,25 @@ cargo run --bin qemu-bios
 
 ## Development Notes
 All commits should be signed as co-developed by Ryan Breen and Claude Code because we're best buds!
+
+### Legacy Code Removal Policy
+As we complete feature migrations from `src.legacy/` to the new kernel:
+
+1. **When to Remove Legacy Code**:
+   - Once a feature reaches full parity or better in the new kernel
+   - After verifying all functionality works correctly
+   - When the feature comparison shows ✅ for both legacy and new
+
+2. **Process**:
+   - Identify the specific legacy modules/files that are now redundant
+   - Remove the code from `src.legacy/`
+   - Update FEATURE_COMPARISON.md to reflect the removal
+   - Include legacy code removal in the same commit as the feature completion
+
+3. **Benefits**:
+   - Reduces codebase size and complexity
+   - Prevents confusion about which implementation to reference
+   - Makes it clear what still needs to be migrated
+   - Keeps the project focused on the new implementation
+
+Example: When timestamp logging reaches parity, remove the legacy print macros and timer code that are no longer needed as reference.

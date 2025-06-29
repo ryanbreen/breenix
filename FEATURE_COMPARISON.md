@@ -33,7 +33,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 ### Display
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
-| VGA Text Mode | ✅ Full implementation | ❌ | Legacy has colors, cursor control |
+| VGA Text Mode | ~~✅ Full implementation~~ (removed) | ❌ | Legacy code removed after framebuffer completion |
 | Framebuffer Graphics | 🚧 Basic | ✅ | New uses embedded-graphics |
 | Text Rendering | ✅ VGA hardware | ✅ Software | New renders text to framebuffer |
 | Logging | ✅ Serial + VGA | ✅ Framebuffer + Serial | Both outputs, with buffering |
@@ -100,7 +100,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
 | Print Macros | ✅ print!, println! | ✅ log macros | 🔄 Different systems |
-| Timestamp Support | ✅ | ❌ | Legacy prints with timestamps |
+| Timestamp Support | ✅ | ✅ | Both print Unix timestamps with messages |
 | Debug Output Target | ✅ Serial + VGA | ✅ Serial + Framebuffer | |
 | Panic Handler | ✅ | ✅ | Both have custom panic handlers |
 
