@@ -19,7 +19,12 @@ static KERNEL_OUTPUT: OnceLock<String> = OnceLock::new();
 /// even when called from multiple tests concurrently.
 pub fn get_kernel_output() -> &'static str {
     KERNEL_OUTPUT.get_or_init(|| {
-        println!("🚀 Starting QEMU to capture complete kernel output for all tests...");
+        let visual_mode = std::env::var("BREENIX_VISUAL_TEST").is_ok();
+        if visual_mode {
+            println!("🖼️  Starting QEMU with VISUAL OUTPUT enabled (set BREENIX_VISUAL_TEST env var)...");
+        } else {
+            println!("🚀 Starting QEMU to capture complete kernel output for all tests...");
+        }
         
         let serial_output_file = "target/shared_kernel_test_output.txt";
         
@@ -41,6 +46,18 @@ pub fn get_kernel_output() -> &'static str {
         const MAX_ATTEMPTS: u32 = 10;
         
         while attempts < MAX_ATTEMPTS {
+            // Check if visual mode is requested via environment variable
+            let display_arg = if std::env::var("BREENIX_VISUAL_TEST").is_ok() {
+                // Use platform-appropriate display backend
+                if cfg!(target_os = "macos") {
+                    "cocoa"
+                } else {
+                    "gtk"  // Linux/Unix default
+                }
+            } else {
+                "none"
+            };
+            
             let mut child = Command::new("cargo")
                 .args(&[
                     "run",
@@ -48,7 +65,7 @@ pub fn get_kernel_output() -> &'static str {
                     "qemu-uefi",
                     "--",
                     "-display",
-                    "none",
+                    display_arg,
                     "-serial",
                     &format!("file:{}", serial_output_file)
                 ])
@@ -92,6 +109,25 @@ pub fn get_kernel_output() -> &'static str {
         let mut post_complete = false;
         let max_wait_time = Duration::from_secs(30); // Maximum wait time as safety
         let start_time = std::time::Instant::now();
+        
+        // In visual mode, wait for serial file to be created
+        if visual_mode {
+            let file_wait_start = std::time::Instant::now();
+            let file_wait_timeout = Duration::from_secs(10);
+            
+            while !std::path::Path::new(serial_output_file).exists() 
+                && file_wait_start.elapsed() < file_wait_timeout {
+                thread::sleep(Duration::from_millis(100));
+            }
+            
+            if !std::path::Path::new(serial_output_file).exists() {
+                panic!("Serial output file not created after {} seconds in visual mode", 
+                       file_wait_timeout.as_secs());
+            }
+            
+            // Give QEMU a moment to start writing content
+            thread::sleep(Duration::from_millis(500));
+        }
         
         while !post_complete && start_time.elapsed() < max_wait_time {
             thread::sleep(Duration::from_millis(200)); // Check every 200ms
