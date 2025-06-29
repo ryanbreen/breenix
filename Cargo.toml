@@ -6,6 +6,10 @@ edition = "2021"
 
 [features]
 testing = ["kernel/testing"]
+test_divide_by_zero = ["kernel/test_divide_by_zero"]
+test_invalid_opcode = ["kernel/test_invalid_opcode"]
+test_page_fault = ["kernel/test_page_fault"]
+test_all_exceptions = ["kernel/test_all_exceptions"]
 
 [[bin]]
 name = "qemu-uefi"
