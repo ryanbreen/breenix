@@ -41,9 +41,12 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 ### Input
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
-| Keyboard Driver | ✅ Full async | 🚧 Basic interrupt | New has scancode queue only |
-| Keyboard Events | ✅ Event system | ❌ | |
-| Scancode Translation | ❌ | ❌ | Neither translates to ASCII |
+| Keyboard Driver | ✅ Full async | ✅ Interrupt-driven | New has complete scancode processing |
+| Keyboard Events | ✅ Event system | ✅ Event structure | New has KeyEvent with modifiers |
+| Scancode Translation | ✅ | ✅ | Both translate scancodes to ASCII |
+| Modifier Key Tracking | ✅ All modifiers | ✅ All modifiers | Shift, Ctrl, Alt, Cmd, Caps Lock |
+| Caps Lock Handling | ✅ | ✅ | Both correctly handle alphabetic-only caps |
+| Special Key Combos | ✅ Ctrl+S, Ctrl+D | ✅ Ctrl+C/D/S | Both support special combinations |
 
 ### Serial Communication
 | Feature | Legacy | New | Notes |
@@ -151,7 +154,7 @@ Based on typical OS development needs:
 2. **Medium Priority**
    - Async executor for multitasking
    - ~~Timer configuration and time tracking~~ ✅ Complete
-   - Keyboard scancode to ASCII translation
+   - ~~Keyboard scancode to ASCII translation~~ ✅ Complete
    - Basic test framework
 
 3. **Low Priority**
