@@ -127,16 +127,20 @@ When implementing new features, the build/test loop is KEY to our development pr
    # Test with runtime features  
    cargo run --features testing --bin qemu-uefi -- -serial stdio
 
-   # Manual visual testing (optional)
-   ./scripts/test_kernel.sh       # Interactive visual test
-   ./test_visual.sh               # Visual test with display
+   # Visual testing (shows QEMU display window)
+   BREENIX_VISUAL_TEST=1 cargo test         # Run all tests with visual output
+   BREENIX_VISUAL_TEST=1 cargo test memory  # Run specific test with visual output
+   
+   # Manual testing
+   ./scripts/test_kernel.sh       # Interactive manual test
    ```
 
 5. **Performance**: Standard tests run ~3x faster due to shared QEMU instance
 
-6. **Legacy Scripts**: Removed old redundant test scripts, kept:
+6. **Visual Testing**: Set `BREENIX_VISUAL_TEST=1` environment variable to see QEMU display
+
+7. **Legacy Scripts**: Removed old redundant test scripts, kept only:
    - `scripts/test_kernel.sh` - Interactive manual testing
-   - `test_visual.sh` - Visual testing with QEMU display
 
 ### Development Workflow
 1. Kernel code changes are made in `kernel/src/`
