@@ -86,36 +86,57 @@ When implementing new features, the build/test loop is KEY to our development pr
    - Create shell scripts for comprehensive testing when appropriate
    - Test both positive cases AND error conditions
 
-2. **Test Structure**:
-   - **Unit Tests**: For isolated functionality (in-module `#[cfg(test)]`)
-   - **Integration Tests**: Boot the kernel and verify output via serial
-   - **Runtime Tests**: Feature-flagged tests that run during kernel execution
-   - **Shell Scripts**: For complex multi-step validation
+2. **Test Infrastructure Overview**:
+   - **Shared QEMU Tests**: Most tests use `tests/shared_qemu.rs` for efficient testing
+   - **Special Tests**: Some tests require specific configurations and are marked `#[ignore]`
+   - **POST Completion**: Tests wait for kernel completion marker `🎯 KERNEL_POST_TESTS_COMPLETE 🎯`
 
-3. **Build/Test Loop**:
-   ```bash
-   # Quick build check
-   cargo build --target x86_64-apple-darwin
-
-   # Run with serial output to verify functionality
-   cargo run --target x86_64-apple-darwin --bin qemu-uefi -- -serial stdio -display none
-
-   # Run with testing features enabled
-   cargo run --target x86_64-apple-darwin --features testing --bin qemu-uefi -- -serial stdio
+3. **Test Categories**:
    
-   # Run integration tests
-   cargo test --target x86_64-apple-darwin
+   **Standard Tests (use shared QEMU):**
+   ```bash
+   cargo test  # Runs all standard tests efficiently (~45 seconds)
+   ```
+   - `boot_post_test.rs` - Comprehensive POST validation (14 subsystems)
+   - `interrupt_tests.rs` - Interrupt system validation (4 tests)
+   - `memory_tests.rs` - Memory management tests (3 tests)
+   - `logging_tests.rs` - Logging system tests (3 tests)
+   - `timer_tests.rs` - Timer and RTC tests (4 tests)
+   - `simple_kernel_test.rs` - Basic execution test
+   - `kernel_build_test.rs` - Build validation (3 tests)
+   - `system_tests.rs` - Boot sequence and stability (2 tests)
+
+   **Special Tests (require specific handling):**
+   ```bash
+   # BIOS boot test (requires BIOS mode)
+   cargo test test_bios_boot -- --ignored
+   
+   # Runtime testing feature (requires --features testing)
+   cargo test test_runtime_testing_feature -- --ignored
+   cargo run --features testing --bin qemu-uefi -- -serial stdio
    ```
 
-4. **Verify Output**: Always check serial output for expected log messages and behavior
+4. **Build/Test Loop**:
+   ```bash
+   # Standard development workflow (FAST)
+   cargo test  # Runs 21 tests with single QEMU boot
 
-5. **Testing Feature**:
-   - `testing`: Enables all runtime tests during kernel boot
-   - Currently runs GDT tests, but all new tests should be included under this feature
+   # Manual kernel testing
+   cargo run --bin qemu-uefi -- -serial stdio -display none
 
-6. **Integration Tests**: Located in `tests/` directory
-   - Run all tests: `cargo test --target x86_64-apple-darwin`
-   - Tests verify kernel functionality by checking serial output
+   # Test with runtime features  
+   cargo run --features testing --bin qemu-uefi -- -serial stdio
+
+   # Manual visual testing (optional)
+   ./scripts/test_kernel.sh       # Interactive visual test
+   ./test_visual.sh               # Visual test with display
+   ```
+
+5. **Performance**: Standard tests run ~3x faster due to shared QEMU instance
+
+6. **Legacy Scripts**: Removed old redundant test scripts, kept:
+   - `scripts/test_kernel.sh` - Interactive manual testing
+   - `test_visual.sh` - Visual testing with QEMU display
 
 ### Development Workflow
 1. Kernel code changes are made in `kernel/src/`
@@ -168,19 +189,20 @@ Once Ryan is happy with an implementation:
 - x86_64 target support
 
 ### Build Commands
-On macOS ARM (Apple Silicon):
+On all systems:
 ```bash
-# Add x86_64 macOS target if not already added
-rustup target add x86_64-apple-darwin
-
-# Build the project
-cargo build --target x86_64-apple-darwin
+# Build kernel with custom target (kernel uses x86_64-breenix.json)
+cargo build
 
 # Run with QEMU (UEFI mode)
-cargo run --target x86_64-apple-darwin --bin qemu-uefi
+cargo run --bin qemu-uefi
 
 # Run with QEMU (BIOS mode)
-cargo run --target x86_64-apple-darwin --bin qemu-bios
+cargo run --bin qemu-bios
+
+# Run tests
+cargo test --test simple_kernel_test
+./scripts/test_kernel.sh
 ```
 
 On x86_64 systems:
@@ -194,7 +216,9 @@ cargo run --bin qemu-bios
 - Current focus appears to be on establishing basic graphics and boot capabilities
 - Network and advanced I/O drivers exist in legacy code but aren't yet ported
 - The kernel currently implements a simple blue square rendering demo
-- On macOS ARM, the project must be built with `--target x86_64-apple-darwin` due to x86_64-specific code in dependencies
+- The kernel is built with the custom x86_64-breenix.json target
+- QEMU runners and build system run on the host platform
+- Tests properly separate host and target concerns
 
 ## Development Notes
 All commits should be signed as co-developed by Ryan Breen and Claude Code because we're best buds!
