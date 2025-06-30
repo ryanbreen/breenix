@@ -10,6 +10,14 @@ pub fn init() {
     SERIAL1.lock().init();
 }
 
+pub fn write_byte(byte: u8) {
+    use x86_64::instructions::interrupts;
+    
+    interrupts::without_interrupts(|| {
+        SERIAL1.lock().send(byte);
+    });
+}
+
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;

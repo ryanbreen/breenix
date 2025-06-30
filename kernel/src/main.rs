@@ -31,6 +31,7 @@ mod logger;
 mod memory;
 mod task;
 mod tls;
+mod syscall;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +134,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init_pic();
     log::info!("PIC initialized");
     
+    // Initialize syscall infrastructure
+    log::info!("Initializing system call infrastructure...");
+    syscall::init();
+    log::info!("System call infrastructure initialized");
+    
     log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled!");
@@ -205,6 +211,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("Current Unix timestamp: {}", rtc_time);
     }
     
+    // Test system calls
+    test_syscalls();
+    
     // Signal that all POST-testable initialization is complete
     log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
     
@@ -247,4 +256,84 @@ fn test_exception_handlers() {
     log::info!("EXCEPTION_TEST: Valid memory access succeeded ✓");
     
     log::info!("🧪 EXCEPTION_HANDLER_TESTS_COMPLETE 🧪");
+}
+
+/// Test system calls from kernel mode
+fn test_syscalls() {
+    log::info!("Testing system call infrastructure...");
+    
+    // Test 1: Verify INT 0x80 handler is installed
+    log::info!("Test 1: INT 0x80 handler installation");
+    let _pre_result = unsafe { syscall::SYSCALL_RESULT };
+    unsafe {
+        core::arch::asm!(
+            "mov rax, 4",  // SyscallNumber::GetTime
+            "int 0x80",
+            options(nostack)
+        );
+    }
+    let post_result = unsafe { syscall::SYSCALL_RESULT };
+    
+    if post_result == 0x1234 {
+        log::info!("✓ INT 0x80 handler called successfully");
+    } else {
+        log::error!("✗ INT 0x80 handler not working properly");
+    }
+    
+    // Test 2: Direct syscall function tests
+    log::info!("Test 2: Direct syscall implementations");
+    
+    // Test sys_get_time
+    let time_result = syscall::handlers::sys_get_time();
+    match time_result {
+        Ok(ticks) => {
+            log::info!("✓ sys_get_time: {} ticks", ticks);
+            assert!(ticks > 0, "Timer should be running");
+        }
+        Err(e) => log::error!("✗ sys_get_time failed: {:?}", e),
+    }
+    
+    // Test sys_write
+    let msg = b"[syscall test output]\n";
+    let write_result = syscall::handlers::sys_write(1, msg.as_ptr() as u64, msg.len() as u64);
+    match write_result {
+        Ok(bytes) => {
+            log::info!("✓ sys_write: {} bytes written", bytes);
+            assert_eq!(bytes, msg.len() as u64, "All bytes should be written");
+        }
+        Err(e) => log::error!("✗ sys_write failed: {:?}", e),
+    }
+    
+    // Test sys_yield
+    let yield_result = syscall::handlers::sys_yield();
+    match yield_result {
+        Ok(_) => log::info!("✓ sys_yield: success"),
+        Err(e) => log::error!("✗ sys_yield failed: {:?}", e),
+    }
+    
+    // Test sys_read (should return 0 as no input available)
+    let mut buffer = [0u8; 10];
+    let read_result = syscall::handlers::sys_read(0, buffer.as_mut_ptr() as u64, buffer.len() as u64);
+    match read_result {
+        Ok(bytes) => {
+            log::info!("✓ sys_read: {} bytes read (expected 0)", bytes);
+            assert_eq!(bytes, 0, "No input should be available");
+        }
+        Err(e) => log::error!("✗ sys_read failed: {:?}", e),
+    }
+    
+    // Test 3: Error handling
+    log::info!("Test 3: Syscall error handling");
+    
+    // Invalid file descriptor for write
+    let invalid_write = syscall::handlers::sys_write(99, 0, 0);
+    assert!(invalid_write.is_err(), "Invalid FD should fail");
+    log::info!("✓ Invalid write FD correctly rejected");
+    
+    // Invalid file descriptor for read
+    let invalid_read = syscall::handlers::sys_read(99, 0, 0);
+    assert!(invalid_read.is_err(), "Invalid FD should fail");
+    log::info!("✓ Invalid read FD correctly rejected");
+    
+    log::info!("System call infrastructure test completed successfully!");
 }

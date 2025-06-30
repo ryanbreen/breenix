@@ -139,9 +139,7 @@ fn set_gs_base(base: VirtAddr) -> Result<(), &'static str> {
     use x86_64::registers::model_specific::GsBase;
     
     // On x86_64, we set the GS base using MSRs
-    unsafe {
-        GsBase::write(base);
-    }
+    GsBase::write(base);
     
     log::debug!("Set GS base to {:#x}", base);
     
@@ -193,6 +191,7 @@ pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
 }
 
 /// Get the current thread's TCB
+#[allow(dead_code)]
 pub fn current_tcb() -> Option<&'static ThreadControlBlock> {
     use x86_64::registers::model_specific::GsBase;
     
@@ -208,12 +207,14 @@ pub fn current_tcb() -> Option<&'static ThreadControlBlock> {
 }
 
 /// Get the current thread ID
+#[allow(dead_code)]
 pub fn current_thread_id() -> u64 {
     current_tcb().map(|tcb| tcb.thread_id).unwrap_or(0)
 }
 
 /// Read a u64 value from TLS at the given offset
 /// Safety: The offset must be valid within the TLS block
+#[allow(dead_code)]
 pub unsafe fn read_tls_u64(offset: usize) -> u64 {
     use core::arch::asm;
     
@@ -231,6 +232,7 @@ pub unsafe fn read_tls_u64(offset: usize) -> u64 {
 
 /// Read a u32 value from TLS at the given offset
 /// Safety: The offset must be valid within the TLS block
+#[allow(dead_code)]
 pub unsafe fn read_tls_u32(offset: usize) -> u32 {
     use core::arch::asm;
     
@@ -248,6 +250,7 @@ pub unsafe fn read_tls_u32(offset: usize) -> u32 {
 
 /// Write a u64 value to TLS at the given offset
 /// Safety: The offset must be valid within the TLS block
+#[allow(dead_code)]
 pub unsafe fn write_tls_u64(offset: usize, value: u64) {
     use core::arch::asm;
     
@@ -261,6 +264,7 @@ pub unsafe fn write_tls_u64(offset: usize, value: u64) {
 
 /// Write a u32 value to TLS at the given offset
 /// Safety: The offset must be valid within the TLS block
+#[allow(dead_code)]
 pub unsafe fn write_tls_u32(offset: usize, value: u32) {
     use core::arch::asm;
     
