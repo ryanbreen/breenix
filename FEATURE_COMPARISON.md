@@ -17,7 +17,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 | Physical Memory Management | ✅ Frame allocator | ✅ | Both use bootloader memory map, new has 94 MiB usable |
 | Virtual Memory (Paging) | ✅ OffsetPageTable | ✅ | Both use OffsetPageTable with physical memory mapping |
 | Heap Allocation | ✅ Bump allocator | ✅ | Both have #[global_allocator], new has 1024 KiB heap |
-| Stack Overflow Protection | ✅ Guard pages | ❌ | New has TSS double fault stack but no guard pages yet |
+| Stack Overflow Protection | 🚧 Double fault only | ✅ Guard pages + Double fault | New has full guard page implementation with enhanced page fault detection |
 
 ### Interrupt Handling
 | Feature | Legacy | New | Notes |
@@ -132,6 +132,7 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 10. **Physical memory management with 94 MiB usable memory**
 11. **1024 KiB heap with bump allocator and #[global_allocator]**
 12. **Async executor with cooperative multitasking and Future support**
+13. **Guard page stack protection with enhanced page fault detection**
 
 ### Legacy Kernel Has (Not in New)
 1. ~~Comprehensive memory management (paging, heap)~~ **Now implemented in new kernel**

@@ -144,7 +144,20 @@ extern "x86-interrupt" fn page_fault_handler(
 ) {
     use x86_64::registers::control::Cr2;
     
-    let accessed_addr = Cr2::read();
+    let accessed_addr = Cr2::read().expect("Failed to read accessed address from CR2");
+    
+    // Check if this is a guard page access
+    if let Some(stack) = crate::memory::stack::is_guard_page_fault(accessed_addr) {
+        log::error!("STACK OVERFLOW DETECTED!");
+        log::error!("Attempted to access guard page at: {:?}", accessed_addr);
+        log::error!("Stack bottom (guard page): {:?}", stack.guard_page());
+        log::error!("Stack range: {:?} - {:?}", stack.bottom(), stack.top());
+        log::error!("This indicates the stack has overflowed!");
+        log::error!("Stack frame: {:#?}", stack_frame);
+        
+        panic!("Stack overflow - guard page accessed");
+    }
+    
     log::error!("EXCEPTION: PAGE FAULT");
     log::error!("Accessed Address: {:?}", accessed_addr);
     log::error!("Error Code: {:?}", error_code);
