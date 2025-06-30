@@ -103,6 +103,24 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // Call the timer module's interrupt handler
     crate::time::timer_interrupt();
     
+    // Perform preemptive scheduling
+    // Note: We only do this if the scheduler is initialized
+    if let Some((old_id, new_id)) = crate::task::scheduler::schedule() {
+        if old_id != new_id {
+            log::trace!("Timer preemption: switching from thread {} to {}", old_id, new_id);
+            
+            // For now, we can at least switch the TLS
+            if let Err(e) = crate::tls::switch_tls(new_id) {
+                log::error!("Failed to switch TLS: {}", e);
+            }
+            
+            // TODO: Full context switching requires either:
+            // 1. Using a naked function wrapper around the interrupt handler
+            // 2. Deferring the switch until interrupt return
+            // 3. Using software interrupt for voluntary yields
+        }
+    }
+    
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());

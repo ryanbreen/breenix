@@ -148,7 +148,14 @@ fn set_gs_base(base: VirtAddr) -> Result<(), &'static str> {
 
 /// Allocate TLS for a new thread
 #[allow(dead_code)]
-pub fn allocate_thread_tls(stack_pointer: VirtAddr) -> Result<u64, &'static str> {
+pub fn allocate_thread_tls() -> Result<u64, &'static str> {
+    // Use a dummy stack pointer for now, will be updated when thread starts
+    allocate_thread_tls_with_stack(VirtAddr::new(0))
+}
+
+/// Allocate TLS for a new thread with a specific stack pointer
+#[allow(dead_code)]
+pub fn allocate_thread_tls_with_stack(stack_pointer: VirtAddr) -> Result<u64, &'static str> {
     let mut manager_lock = TLS_MANAGER.lock();
     let manager = manager_lock.as_mut().ok_or("TLS manager not initialized")?;
     
@@ -274,6 +281,28 @@ pub unsafe fn write_tls_u32(offset: usize, value: u32) {
         in(reg) value,
         options(nostack, preserves_flags)
     );
+}
+
+/// Get the TLS block address for a specific thread
+#[allow(dead_code)]
+pub fn get_thread_tls_block(thread_id: u64) -> Option<VirtAddr> {
+    let manager_lock = TLS_MANAGER.lock();
+    let manager = manager_lock.as_ref()?;
+    
+    // Check if thread_id is valid
+    if thread_id >= manager.tls_blocks.len() as u64 {
+        return None;
+    }
+    
+    Some(manager.tls_blocks[thread_id as usize])
+}
+
+/// Get the current thread's TLS base address
+#[allow(dead_code)]
+pub fn current_tls_base() -> u64 {
+    use x86_64::registers::model_specific::GsBase;
+    
+    GsBase::read().as_u64()
 }
 
 /// Test TLS functionality
