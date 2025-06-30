@@ -43,11 +43,6 @@ impl Modifiers {
         self.left_alt || self.right_alt
     }
 
-    /// Returns true if any cmd/windows key is pressed
-    pub fn cmd(&self) -> bool {
-        self.left_cmd || self.right_cmd
-    }
-
     /// Update modifier state based on scancode
     /// Returns true if this was a modifier key
     pub fn update(&mut self, scancode: u8) -> bool {

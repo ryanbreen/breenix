@@ -1,4 +1,3 @@
 
 [unstable]
 bindeps = true
-artifact-dependencies = ["bin"]

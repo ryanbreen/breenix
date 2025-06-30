@@ -18,8 +18,6 @@ struct UsableRegion {
 struct MemoryInfo {
     regions: [Option<UsableRegion>; MAX_REGIONS],
     region_count: usize,
-    #[allow(dead_code)]
-    total_memory: u64,
 }
 
 static MEMORY_INFO: Mutex<Option<MemoryInfo>> = Mutex::new(None);
@@ -89,7 +87,6 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     *MEMORY_INFO.lock() = Some(MemoryInfo {
         regions,
         region_count,
-        total_memory,
     });
     
     log::info!("Frame allocator initialized with {} MiB of usable memory in {} regions", 
