@@ -1,0 +1,36 @@
+//! System call dispatcher
+//! 
+//! Routes system calls to their appropriate handlers based on the syscall number.
+
+use super::{SyscallNumber, SyscallResult, SyscallError};
+use super::handlers;
+
+/// Dispatch a system call to the appropriate handler
+#[allow(dead_code)]
+pub fn dispatch_syscall(
+    syscall_num: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    _arg4: u64,
+    _arg5: u64,
+    _arg6: u64,
+) -> SyscallResult {
+    // Convert syscall number
+    let syscall = match SyscallNumber::from_u64(syscall_num) {
+        Some(s) => s,
+        None => {
+            log::warn!("Invalid syscall number: {}", syscall_num);
+            return Err(SyscallError::NoSys);
+        }
+    };
+    
+    // Dispatch to appropriate handler
+    match syscall {
+        SyscallNumber::Exit => handlers::sys_exit(arg1),
+        SyscallNumber::Write => handlers::sys_write(arg1, arg2, arg3),
+        SyscallNumber::Read => handlers::sys_read(arg1, arg2, arg3),
+        SyscallNumber::Yield => handlers::sys_yield(),
+        SyscallNumber::GetTime => handlers::sys_get_time(),
+    }
+}

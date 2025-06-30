@@ -5,7 +5,8 @@ use spin::Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Maximum number of usable memory regions we support
-const MAX_REGIONS: usize = 32;
+/// Increased from 32 to 128 to handle UEFI's fragmented memory map
+const MAX_REGIONS: usize = 128;
 
 /// A memory region descriptor
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +67,8 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     let mut regions = [None; MAX_REGIONS];
     let mut region_count = 0;
     let mut total_memory = 0u64;
+    let mut ignored_regions = 0;
+    let mut ignored_memory = 0u64;
     
     // Extract usable regions
     for region in memory_regions.iter() {
@@ -78,7 +81,9 @@ pub fn init(memory_regions: &'static MemoryRegions) {
                 region_count += 1;
                 total_memory += region.end - region.start;
             } else {
-                log::warn!("Too many memory regions, ignoring region at {:#x}", region.start);
+                // Count ignored regions instead of logging each one
+                ignored_regions += 1;
+                ignored_memory += region.end - region.start;
             }
         }
     }
@@ -91,6 +96,11 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     
     log::info!("Frame allocator initialized with {} MiB of usable memory in {} regions", 
                total_memory / (1024 * 1024), region_count);
+    
+    if ignored_regions > 0 {
+        log::warn!("Ignored {} memory regions ({} MiB) due to MAX_REGIONS limit", 
+                   ignored_regions, ignored_memory / (1024 * 1024));
+    }
 }
 
 /// Allocate a physical frame

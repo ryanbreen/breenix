@@ -17,6 +17,9 @@ pub enum InterruptIndex {
     Keyboard,
 }
 
+/// System call interrupt vector (INT 0x80)
+pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
+
 impl InterruptIndex {
     fn as_u8(self) -> u8 {
         self as u8
@@ -55,9 +58,12 @@ pub fn init_idt() {
         idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         
+        // System call handler (INT 0x80)
+        idt[SYSCALL_INTERRUPT_ID].set_handler_fn(crate::syscall::syscall_handler);
+        
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {
-            if i != InterruptIndex::Timer.as_u8() && i != InterruptIndex::Keyboard.as_u8() {
+            if i != InterruptIndex::Timer.as_u8() && i != InterruptIndex::Keyboard.as_u8() && i != SYSCALL_INTERRUPT_ID {
                 idt[i].set_handler_fn(generic_handler);
             }
         }

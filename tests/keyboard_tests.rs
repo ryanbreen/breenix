@@ -22,7 +22,7 @@ fn test_keyboard_initialization() {
     
     // Check that special key instructions are shown in the new async implementation
     assert!(
-        output.contains("Ctrl+C/D/S for special actions"),
+        output.contains("Ctrl+C/D/S/T/M for special actions"),
         "Special key instructions not shown"
     );
     
