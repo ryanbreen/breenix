@@ -77,3 +77,13 @@ pub fn identity_map(
     let page = Page::containing_address(VirtAddr::new(frame.start_address().as_u64()));
     map_page(page, frame, flags)
 }
+
+/// Get a new mapper instance for manual page table operations
+/// 
+/// # Safety
+/// Caller must ensure that the complete physical memory is mapped to virtual memory
+/// at the provided `physical_memory_offset`.
+pub unsafe fn get_mapper(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {
+    let level_4_table = active_level_4_table(physical_memory_offset);
+    OffsetPageTable::new(level_4_table, physical_memory_offset)
+}
