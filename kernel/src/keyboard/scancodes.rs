@@ -398,7 +398,6 @@ pub const LEFT_CTRL_PRESSED: u8 = 0x1D;
 pub const LEFT_CTRL_RELEASED: u8 = 0x9D;
 pub const LEFT_ALT_PRESSED: u8 = 0x38;
 pub const LEFT_ALT_RELEASED: u8 = 0xB8;
-pub const RIGHT_ALT_PRESSED: u8 = 0xE0; // Special case - needs E0 prefix
 pub const CAPS_LOCK_PRESSED: u8 = 0x3A;
 pub const LEFT_CMD_PRESSED: u8 = 0x5B;
 pub const LEFT_CMD_RELEASED: u8 = 0xDB;

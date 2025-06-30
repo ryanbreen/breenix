@@ -41,6 +41,12 @@ impl SerialLogger {
     }
 }
 
+impl Default for SerialLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl log::Log for SerialLogger {
     fn enabled(&self, _metadata: &log::Metadata) -> bool {
         true
@@ -57,11 +63,4 @@ impl log::Log for SerialLogger {
     }
 
     fn flush(&self) {}
-}
-
-pub static LOGGER: SerialLogger = SerialLogger::new();
-
-pub fn test_serial() {
-    serial_println!("Serial port initialized successfully!");
-    serial_println!("This is a test message from the serial port.");
 }

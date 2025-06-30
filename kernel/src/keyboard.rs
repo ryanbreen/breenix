@@ -87,8 +87,15 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 }
 
 /// Async keyboard task that processes scancodes and displays typed characters
+/// 
+/// Special key combinations:
+/// - Ctrl+C: Interrupt signal
+/// - Ctrl+D: End of input
+/// - Ctrl+S: Suspend output
+/// - Ctrl+T: Time debug information
+/// - Ctrl+M: Memory debug information
 pub async fn keyboard_task() {
-    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S for special actions)");
+    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M for special actions)");
     
     let mut scancodes = ScancodeStream::new();
     
@@ -102,6 +109,12 @@ pub async fn keyboard_task() {
                     log::info!("Ctrl+D pressed - end of input");
                 } else if event.is_ctrl_s() {
                     log::info!("Ctrl+S pressed - suspend output");
+                } else if event.is_ctrl_t() {
+                    log::info!("Ctrl+T pressed - showing time debug info");
+                    crate::time::debug_time_info();
+                } else if event.is_ctrl_m() {
+                    log::info!("Ctrl+M pressed - showing memory debug info");
+                    crate::memory::debug_memory_info();
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);
@@ -111,7 +124,3 @@ pub async fn keyboard_task() {
     }
 }
 
-/// Get current modifier state
-pub fn get_modifiers() -> Modifiers {
-    KEYBOARD_STATE.lock().modifiers
-}
