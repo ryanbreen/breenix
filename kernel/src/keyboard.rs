@@ -94,8 +94,9 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+S: Suspend output
 /// - Ctrl+T: Time debug information
 /// - Ctrl+M: Memory debug information
+/// - Ctrl+U: Run userspace test program
 pub async fn keyboard_task() {
-    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M for special actions)");
+    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U for special actions)");
     
     let mut scancodes = ScancodeStream::new();
     
@@ -115,6 +116,9 @@ pub async fn keyboard_task() {
                 } else if event.is_ctrl_m() {
                     log::info!("Ctrl+M pressed - showing memory debug info");
                     crate::memory::debug_memory_info();
+                } else if event.is_ctrl_key('u') {
+                    log::info!("Ctrl+U pressed - running userspace test");
+                    crate::userspace_test::run_userspace_test();
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);

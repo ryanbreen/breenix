@@ -3,6 +3,7 @@ use x86_64::structures::paging::{
     OffsetPageTable, 
 };
 use x86_64::VirtAddr;
+use crate::task::thread::ThreadPrivilege;
 
 /// Base address for stack allocation area
 /// Using a high address area to avoid conflicts with heap
@@ -16,6 +17,8 @@ pub struct GuardedStack {
     stack_top: VirtAddr,
     /// Size of the usable stack area (excluding guard page)
     stack_size: usize,
+    /// Privilege level of the stack
+    privilege: ThreadPrivilege,
 }
 
 impl GuardedStack {
@@ -24,10 +27,11 @@ impl GuardedStack {
     /// # Arguments
     /// * `stack_size` - Size of the usable stack in bytes (must be page-aligned)
     /// * `mapper` - Page table mapper for allocating pages
+    /// * `privilege` - Privilege level for the stack (kernel or user)
     /// 
     /// # Returns
     /// A new GuardedStack with a guard page at the bottom
-    pub fn new(stack_size: usize, mapper: &mut OffsetPageTable) -> Result<Self, &'static str> {
+    pub fn new(stack_size: usize, mapper: &mut OffsetPageTable, privilege: ThreadPrivilege) -> Result<Self, &'static str> {
         // Ensure stack size is page-aligned
         if stack_size % 4096 != 0 {
             return Err("Stack size must be page-aligned");
@@ -47,7 +51,7 @@ impl GuardedStack {
         let stack_start = allocation_start + 4096u64; // Skip guard page
         let stack_top = stack_start + stack_size as u64;
         
-        Self::map_stack_pages(stack_start, stack_size, mapper)?;
+        Self::map_stack_pages(stack_start, stack_size, mapper, privilege)?;
         
         // Guard page is intentionally left unmapped at allocation_start
         log::debug!("Guard page at {:#x} (unmapped)", allocation_start.as_u64());
@@ -58,6 +62,7 @@ impl GuardedStack {
             allocation_start,
             stack_top,
             stack_size,
+            privilege,
         })
     }
     
@@ -122,12 +127,16 @@ impl GuardedStack {
     fn map_stack_pages(
         start: VirtAddr, 
         size: usize, 
-        mapper: &mut OffsetPageTable
+        mapper: &mut OffsetPageTable,
+        privilege: ThreadPrivilege
     ) -> Result<(), &'static str> {
         let start_page = Page::<Size4KiB>::containing_address(start);
         let end_page = Page::<Size4KiB>::containing_address(start + size as u64 - 1u64);
         
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        let flags = match privilege {
+            ThreadPrivilege::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            ThreadPrivilege::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        };
         
         for page in Page::range_inclusive(start_page, end_page) {
             let frame = crate::memory::frame_allocator::allocate_frame()
@@ -163,10 +172,15 @@ pub fn init() {
     log::info!("Stack allocation system initialized");
 }
 
-/// Allocate a new guarded stack
+/// Allocate a new guarded stack with default kernel privilege
 pub fn allocate_stack(size: usize) -> Result<GuardedStack, &'static str> {
+    allocate_stack_with_privilege(size, ThreadPrivilege::Kernel)
+}
+
+/// Allocate a new guarded stack with specified privilege
+pub fn allocate_stack_with_privilege(size: usize, privilege: ThreadPrivilege) -> Result<GuardedStack, &'static str> {
     let mut mapper = unsafe { crate::memory::paging::get_mapper() };
-    GuardedStack::new(size, &mut mapper)
+    GuardedStack::new(size, &mut mapper, privilege)
 }
 
 /// Check if a page fault is due to guard page access
