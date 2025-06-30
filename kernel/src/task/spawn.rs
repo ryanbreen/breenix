@@ -47,12 +47,14 @@ pub fn create_idle_thread() -> Box<Thread> {
     // Idle thread uses the current stack and TLS (kernel main thread)
     // It doesn't need its own stack since it's already running
     
+    let tls_base = crate::tls::current_tls_base();
+    
     let mut thread = Box::new(Thread::new(
         "idle".to_string(),
         idle_thread_fn,
         VirtAddr::new(0), // Will be set to current RSP
         VirtAddr::new(0), // Will be set appropriately
-        VirtAddr::new(crate::tls::current_tls_base()),
+        VirtAddr::new(tls_base),
     ));
     
     // Mark idle thread as already running
