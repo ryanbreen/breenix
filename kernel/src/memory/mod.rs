@@ -46,7 +46,65 @@ pub fn physical_memory_offset() -> VirtAddr {
 }
 
 /// Convert a physical address to a virtual address using the offset mapping
-#[allow(dead_code)]
 pub fn phys_to_virt(phys: PhysAddr, offset: VirtAddr) -> VirtAddr {
     VirtAddr::new(phys.as_u64() + offset.as_u64())
+}
+
+/// Display comprehensive memory debug information
+pub fn debug_memory_info() {
+    log::info!("=== Memory Debug Information ===");
+    
+    // Physical memory offset
+    let phys_offset = physical_memory_offset();
+    log::info!("Physical memory offset: {:#x}", phys_offset);
+    
+    // Frame allocator stats
+    log::info!("Frame Allocator:");
+    // Try to allocate a frame to see if allocator is working
+    if let Some(frame) = frame_allocator::allocate_frame() {
+        log::info!("  - Test frame allocation successful: {:#x}", frame.start_address());
+        log::info!("  - Frame allocator is operational");
+    } else {
+        log::error!("  - Frame allocator returned None!");
+    }
+    
+    // Test stack allocation
+    log::info!("\nTesting stack allocation...");
+    match stack::allocate_stack(16 * 1024) { // 16 KiB stack
+        Ok(stack) => {
+            log::info!("✓ Successfully allocated 16 KiB guarded stack");
+            log::info!("  - Stack top: {:#x}", stack.top());
+            log::info!("  - Stack bottom: {:#x}", stack.bottom());
+            log::info!("  - Guard page: {:#x}", stack.guard_page());
+            log::info!("  - Stack size: {} bytes", stack.size());
+            
+            // Test address containment
+            let test_addr = stack.top() - 100u64;
+            log::info!("  - Contains {:#x}? {}", test_addr, stack.contains(test_addr));
+            let outside_addr = stack.guard_page();
+            log::info!("  - Contains {:#x} (guard)? {}", outside_addr, stack.contains(outside_addr));
+        }
+        Err(e) => {
+            log::error!("✗ Failed to allocate stack: {}", e);
+        }
+    }
+    
+    // Test phys_to_virt conversion
+    log::info!("\nTesting physical to virtual conversion:");
+    let test_phys = PhysAddr::new(0x1000);
+    let test_virt = phys_to_virt(test_phys, phys_offset);
+    log::info!("  - Physical {:#x} -> Virtual {:#x}", test_phys, test_virt);
+    
+    // Heap information
+    log::info!("\nHeap Information:");
+    use alloc::vec::Vec;
+    let test_vec: Vec<u8> = Vec::with_capacity(1024);
+    log::info!("  - Test vector capacity: {} bytes", test_vec.capacity());
+    log::info!("  - Test vector ptr: {:p}", test_vec.as_ptr());
+    
+    // Stack allocation area info
+    log::info!("\nStack Allocation Area:");
+    log::info!("  - STACK_ALLOC_START: {:#x}", stack::STACK_ALLOC_START);
+    
+    log::info!("=============================");
 }

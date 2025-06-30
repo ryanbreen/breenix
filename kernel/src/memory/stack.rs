@@ -94,6 +94,11 @@ impl GuardedStack {
         access_addr >= stack_start && access_addr < stack_end
     }
     
+    /// Get the size of the usable stack area
+    pub fn size(&self) -> usize {
+        self.stack_size
+    }
+    
     /// Find free virtual address space for stack allocation
     fn find_free_virtual_space(size: usize) -> Result<VirtAddr, &'static str> {
         // For now, use a simple incrementing allocator

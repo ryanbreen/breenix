@@ -2,7 +2,7 @@ use crate::gdt;
 
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use pic8259::ChainedPics;
-use spin;
+use spin::Once;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -28,7 +28,7 @@ impl InterruptIndex {
     }
 }
 
-static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
+static IDT: Once<InterruptDescriptorTable> = Once::new();
 
 pub fn init() {
     // Initialize GDT first
@@ -38,28 +38,34 @@ pub fn init() {
 }
 
 pub fn init_idt() {
-    unsafe {
+    IDT.call_once(|| {
+        let mut idt = InterruptDescriptorTable::new();
+        
         // CPU exception handlers
-        IDT.divide_error.set_handler_fn(divide_by_zero_handler);
-        IDT.breakpoint.set_handler_fn(breakpoint_handler);
-        IDT.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-        IDT.double_fault.set_handler_fn(double_fault_handler)
-            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-        IDT.page_fault.set_handler_fn(page_fault_handler);
+        idt.divide_error.set_handler_fn(divide_by_zero_handler);
+        idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        unsafe {
+            idt.double_fault.set_handler_fn(double_fault_handler)
+                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        }
+        idt.page_fault.set_handler_fn(page_fault_handler);
         
         // Hardware interrupt handlers
-        IDT[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
-        IDT[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
+        idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {
             if i != InterruptIndex::Timer.as_u8() && i != InterruptIndex::Keyboard.as_u8() {
-                IDT[i].set_handler_fn(generic_handler);
+                idt[i].set_handler_fn(generic_handler);
             }
         }
         
-        IDT.load();
-    }
+        idt
+    });
+    
+    IDT.get().unwrap().load();
     log::info!("IDT loaded successfully");
 }
 

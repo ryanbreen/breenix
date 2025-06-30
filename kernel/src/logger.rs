@@ -42,10 +42,6 @@ impl LogBuffer {
     fn contents(&self) -> &str {
         core::str::from_utf8(&self.buffer[..self.position]).unwrap_or("<invalid UTF-8>")
     }
-
-    fn clear(&mut self) {
-        self.position = 0;
-    }
 }
 
 impl Write for LogBuffer {
