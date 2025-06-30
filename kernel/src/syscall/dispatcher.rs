@@ -2,7 +2,7 @@
 //! 
 //! Routes system calls to their appropriate handlers based on the syscall number.
 
-use super::{SyscallNumber, SyscallResult, SyscallError};
+use super::{SyscallNumber, SyscallResult};
 use super::handlers;
 
 /// Dispatch a system call to the appropriate handler
@@ -21,13 +21,13 @@ pub fn dispatch_syscall(
         Some(s) => s,
         None => {
             log::warn!("Invalid syscall number: {}", syscall_num);
-            return Err(SyscallError::NoSys);
+            return SyscallResult::Err(38); // ENOSYS
         }
     };
     
     // Dispatch to appropriate handler
     match syscall {
-        SyscallNumber::Exit => handlers::sys_exit(arg1),
+        SyscallNumber::Exit => handlers::sys_exit(arg1 as i32),
         SyscallNumber::Write => handlers::sys_write(arg1, arg2, arg3),
         SyscallNumber::Read => handlers::sys_read(arg1, arg2, arg3),
         SyscallNumber::Yield => handlers::sys_yield(),

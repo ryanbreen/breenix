@@ -109,6 +109,13 @@ pub fn allocate_frame() -> Option<PhysFrame> {
     allocator.allocate_frame()
 }
 
+/// Deallocate a physical frame (currently a no-op)
+/// TODO: Implement proper frame deallocation
+pub fn deallocate_frame(_frame: PhysFrame) {
+    // For now, we don't reclaim frames
+    // A proper implementation would add the frame back to a free list
+}
+
 /// A wrapper that allows using the global frame allocator with the mapper
 pub struct GlobalFrameAllocator;
 

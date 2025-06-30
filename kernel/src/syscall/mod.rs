@@ -7,6 +7,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 pub(crate) mod dispatcher;
 pub mod handlers;
+pub mod handler;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,16 +52,17 @@ pub enum SyscallError {
 }
 
 /// System call result type
-pub type SyscallResult = Result<u64, SyscallError>;
+pub enum SyscallResult {
+    Ok(u64),
+    Err(u64),
+}
 
 /// Storage for syscall results  
 pub static mut SYSCALL_RESULT: i64 = 0;
 
 /// INT 0x80 handler for system calls
 /// 
-/// Note: Due to x86-interrupt calling convention limitations, we can't 
-/// properly read/write registers. For now, we'll store results in a global
-/// and create proper tests that verify the infrastructure works.
+/// Note: This is replaced by assembly entry point for proper register handling
 pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
     // Log that we received a syscall
     log::debug!("INT 0x80 syscall handler called from RIP: {:#x}", 
