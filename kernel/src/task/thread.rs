@@ -1,0 +1,208 @@
+//! Thread management for preemptive multitasking
+//!
+//! This module implements real threads with preemptive scheduling,
+//! building on top of the existing async executor infrastructure.
+
+use core::sync::atomic::{AtomicU64, Ordering};
+use x86_64::VirtAddr;
+
+/// Global thread ID counter
+static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is reserved for kernel thread
+
+/// Thread states
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadState {
+    /// Thread is currently running on CPU
+    Running,
+    /// Thread is ready to run and in scheduler queue
+    Ready,
+    /// Thread is blocked waiting for something
+    Blocked,
+    /// Thread has terminated
+    Terminated,
+}
+
+/// CPU context saved during context switch
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct CpuContext {
+    /// General purpose registers
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    
+    /// Instruction pointer
+    pub rip: u64,
+    
+    /// CPU flags
+    pub rflags: u64,
+    
+    /// Segment registers (for future userspace support)
+    pub cs: u64,
+    pub ss: u64,
+}
+
+impl CpuContext {
+    /// Create a new CPU context for a thread entry point
+    pub fn new(entry_point: VirtAddr, stack_pointer: VirtAddr) -> Self {
+        Self {
+            // Zero all general purpose registers
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            rsp: stack_pointer.as_u64(),
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            
+            // Set instruction pointer to entry point
+            rip: entry_point.as_u64(),
+            
+            // Set default flags (interrupt enabled)
+            rflags: 0x200, // IF (Interrupt Flag) set
+            
+            // Kernel segments
+            cs: 0x08, // Kernel code segment
+            ss: 0x10, // Kernel data segment
+        }
+    }
+}
+
+/// Extended Thread Control Block for preemptive multitasking
+pub struct Thread {
+    /// Thread ID
+    pub id: u64,
+    
+    /// Thread name (for debugging)
+    pub name: alloc::string::String,
+    
+    /// Current state
+    pub state: ThreadState,
+    
+    /// CPU context (registers)
+    pub context: CpuContext,
+    
+    /// Stack information
+    pub stack_top: VirtAddr,
+    pub stack_bottom: VirtAddr,
+    
+    /// TLS block address
+    pub tls_block: VirtAddr,
+    
+    /// Priority (0 = highest)
+    pub priority: u8,
+    
+    /// Time slice remaining (in timer ticks)
+    pub time_slice: u32,
+    
+    /// Entry point function
+    pub entry_point: Option<fn()>,
+}
+
+impl Thread {
+    /// Create a new thread
+    pub fn new(
+        name: alloc::string::String,
+        entry_point: fn(),
+        stack_top: VirtAddr,
+        stack_bottom: VirtAddr,
+        tls_block: VirtAddr,
+    ) -> Self {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+        
+        // Set up initial context
+        // Stack grows down, so initial RSP should be at top
+        let context = CpuContext::new(
+            VirtAddr::new(thread_entry_trampoline as u64),
+            stack_top,
+        );
+        
+        Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            tls_block,
+            priority: 128, // Default medium priority
+            time_slice: 10, // Default time slice
+            entry_point: Some(entry_point),
+        }
+    }
+    
+    /// Get the thread ID
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+    
+    /// Check if thread can be scheduled
+    pub fn is_runnable(&self) -> bool {
+        self.state == ThreadState::Ready
+    }
+    
+    /// Mark thread as running
+    pub fn set_running(&mut self) {
+        self.state = ThreadState::Running;
+    }
+    
+    /// Mark thread as ready
+    pub fn set_ready(&mut self) {
+        if self.state != ThreadState::Terminated {
+            self.state = ThreadState::Ready;
+        }
+    }
+    
+    /// Mark thread as blocked
+    pub fn set_blocked(&mut self) {
+        self.state = ThreadState::Blocked;
+    }
+    
+    /// Mark thread as terminated
+    pub fn set_terminated(&mut self) {
+        self.state = ThreadState::Terminated;
+    }
+}
+
+/// Thread entry point trampoline
+/// This function is called when a thread starts for the first time
+extern "C" fn thread_entry_trampoline() -> ! {
+    // Get current thread from TLS
+    let thread_id = crate::tls::current_thread_id();
+    
+    log::debug!("Thread {} starting execution", thread_id);
+    
+    // TODO: Get thread entry point from thread structure
+    // For now, we'll need to store it somewhere accessible
+    
+    // Call the actual entry point
+    // thread.entry_point();
+    
+    // Thread finished, call exit syscall
+    let _ = crate::syscall::handlers::sys_exit(0);
+    
+    // Should never reach here
+    unreachable!("Thread exit failed");
+}
