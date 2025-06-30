@@ -1,6 +1,4 @@
-use x86_64::structures::paging::{
-    OffsetPageTable, PageTable, PhysFrame, Mapper, Page, PageTableFlags, Size4KiB,
-};
+use x86_64::structures::paging::{OffsetPageTable, PageTable};
 use x86_64::VirtAddr;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
@@ -42,40 +40,6 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut
     let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
     
     &mut *page_table_ptr
-}
-
-/// Map a virtual page to a physical frame
-#[allow(dead_code)]
-pub fn map_page(
-    page: Page<Size4KiB>,
-    frame: PhysFrame<Size4KiB>,
-    flags: PageTableFlags,
-) -> Result<(), &'static str> {
-    let mapper = PAGE_TABLE_MAPPER
-        .get()
-        .ok_or("page table mapper not initialized")?;
-    
-    let mut frame_allocator = crate::memory::frame_allocator::GlobalFrameAllocator;
-    
-    unsafe {
-        mapper
-            .lock()
-            .map_to(page, frame, flags, &mut frame_allocator)
-            .map_err(|_| "failed to map page")?
-            .flush();
-    }
-    
-    Ok(())
-}
-
-/// Identity map a physical frame (map it to the same virtual address)
-#[allow(dead_code)]
-pub fn identity_map(
-    frame: PhysFrame<Size4KiB>,
-    flags: PageTableFlags,
-) -> Result<(), &'static str> {
-    let page = Page::containing_address(VirtAddr::new(frame.start_address().as_u64()));
-    map_page(page, frame, flags)
 }
 
 /// Get a new mapper instance for manual page table operations

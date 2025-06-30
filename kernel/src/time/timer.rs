@@ -4,9 +4,9 @@ use x86_64::instructions::port::Port;
 use super::Time;
 
 const PIT_FREQUENCY: u32 = 1193182;
-const TIMER_INTERRUPT_HZ: u32 = 1000;
+pub const TIMER_INTERRUPT_HZ: u32 = 1000;
 const TIMER_DIVIDER: u16 = (PIT_FREQUENCY / TIMER_INTERRUPT_HZ) as u16;
-const SUBTICKS_PER_TICK: u64 = 1000;
+pub const SUBTICKS_PER_TICK: u64 = 1000;
 
 const PIT_CHANNEL0_DATA: u16 = 0x40;
 const PIT_COMMAND: u16 = 0x43;
