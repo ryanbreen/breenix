@@ -18,6 +18,7 @@ testing = []
 test_divide_by_zero = []
 test_invalid_opcode = []
 test_page_fault = []
+test_userspace = []
 test_all_exceptions = []
 
 [dependencies]

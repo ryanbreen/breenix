@@ -22,6 +22,15 @@ pub enum ThreadState {
     Terminated,
 }
 
+/// Thread privilege level
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadPrivilege {
+    /// Kernel thread (Ring 0)
+    Kernel,
+    /// User thread (Ring 3)
+    User,
+}
+
 /// CPU context saved during context switch
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -57,7 +66,7 @@ pub struct CpuContext {
 
 impl CpuContext {
     /// Create a new CPU context for a thread entry point
-    pub fn new(entry_point: VirtAddr, stack_pointer: VirtAddr) -> Self {
+    pub fn new(entry_point: VirtAddr, stack_pointer: VirtAddr, privilege: ThreadPrivilege) -> Self {
         Self {
             // Zero all general purpose registers
             rax: 0,
@@ -83,9 +92,15 @@ impl CpuContext {
             // Set default flags (interrupt enabled)
             rflags: 0x200, // IF (Interrupt Flag) set
             
-            // Kernel segments
-            cs: 0x08, // Kernel code segment
-            ss: 0x10, // Kernel data segment
+            // Segments based on privilege level
+            cs: match privilege {
+                ThreadPrivilege::Kernel => 0x08, // Kernel code segment
+                ThreadPrivilege::User => 0x2b,   // User code segment (0x28 | 3)
+            },
+            ss: match privilege {
+                ThreadPrivilege::Kernel => 0x10, // Kernel data segment
+                ThreadPrivilege::User => 0x23,   // User data segment (0x20 | 3)
+            },
         }
     }
 }
@@ -119,6 +134,9 @@ pub struct Thread {
     
     /// Entry point function
     pub entry_point: Option<fn()>,
+    
+    /// Privilege level
+    pub privilege: ThreadPrivilege,
 }
 
 impl Thread {
@@ -129,6 +147,7 @@ impl Thread {
         stack_top: VirtAddr,
         stack_bottom: VirtAddr,
         tls_block: VirtAddr,
+        privilege: ThreadPrivilege,
     ) -> Self {
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
         
@@ -137,6 +156,7 @@ impl Thread {
         let context = CpuContext::new(
             VirtAddr::new(thread_entry_trampoline as u64),
             stack_top,
+            privilege,
         );
         
         Self {
@@ -150,6 +170,42 @@ impl Thread {
             priority: 128, // Default medium priority
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
+            privilege,
+        }
+    }
+    
+    /// Create a new userspace thread
+    pub fn new_userspace(
+        name: alloc::string::String,
+        entry_point: VirtAddr,
+        stack_top: VirtAddr,
+        tls_block: VirtAddr,
+    ) -> Self {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+        
+        // Calculate stack bottom (stack grows down)
+        const USER_STACK_SIZE: usize = 128 * 1024;
+        let stack_bottom = stack_top - USER_STACK_SIZE as u64;
+        
+        // Set up initial context for userspace
+        let context = CpuContext::new(
+            entry_point,
+            stack_top,
+            ThreadPrivilege::User,
+        );
+        
+        Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            tls_block,
+            priority: 128, // Default medium priority
+            time_slice: 10, // Default time slice
+            entry_point: None, // Userspace threads don't have kernel entry points
+            privilege: ThreadPrivilege::User,
         }
     }
     

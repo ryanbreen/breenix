@@ -1,6 +1,7 @@
 use crate::gdt;
 
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::VirtAddr;
 use pic8259::ChainedPics;
 use spin::Once;
 
@@ -19,6 +20,11 @@ pub enum InterruptIndex {
 
 /// System call interrupt vector (INT 0x80)
 pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
+
+// Assembly entry point for syscalls
+extern "C" {
+    fn syscall_entry();
+}
 
 impl InterruptIndex {
     fn as_u8(self) -> u8 {
@@ -48,6 +54,7 @@ pub fn init_idt() {
         idt.divide_error.set_handler_fn(divide_by_zero_handler);
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
@@ -59,7 +66,12 @@ pub fn init_idt() {
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         
         // System call handler (INT 0x80)
-        idt[SYSCALL_INTERRUPT_ID].set_handler_fn(crate::syscall::syscall_handler);
+        // Use raw handler for proper register handling
+        unsafe {
+            let syscall_options = idt[SYSCALL_INTERRUPT_ID].set_handler_addr(VirtAddr::new(syscall_entry as u64));
+            // Set DPL=3 to allow userspace to call INT 0x80
+            syscall_options.set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+        }
         
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {
@@ -206,4 +218,26 @@ extern "x86-interrupt" fn page_fault_handler(
 
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     log::warn!("UNHANDLED INTERRUPT\n{:#?}", stack_frame);
+}
+
+extern "x86-interrupt" fn general_protection_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    log::error!("EXCEPTION: GENERAL PROTECTION FAULT");
+    log::error!("Error Code: {:#x} (selector: {:#x})", error_code, error_code & 0xFFF8);
+    
+    // Decode error code
+    let external = (error_code & 1) != 0;
+    let idt = (error_code & 2) != 0;
+    let ti = (error_code & 4) != 0;
+    let selector_index = (error_code >> 3) & 0x1FFF;
+    
+    log::error!("  External: {}", external);
+    log::error!("  IDT: {} ({})", idt, if idt { "IDT" } else { "GDT/LDT" });
+    log::error!("  Table: {} ({})", ti, if ti { "LDT" } else { "GDT" });
+    log::error!("  Selector Index: {}", selector_index);
+    
+    log::error!("{:#?}", stack_frame);
+    panic!("General Protection Fault");
 }
