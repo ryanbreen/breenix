@@ -1,5 +1,5 @@
 //! Tests for GDT functionality
-use x86_64::registers::segmentation::{Segment, CS, DS, ES, FS, GS};
+use x86_64::registers::segmentation::{Segment, CS, DS, ES, FS};
 use x86_64::PrivilegeLevel;
 
 /// Test that GDT segments are loaded correctly
