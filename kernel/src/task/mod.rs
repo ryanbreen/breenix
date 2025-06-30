@@ -7,6 +7,10 @@ use core::{
 };
 
 pub mod executor;
+pub mod thread;
+pub mod context;
+pub mod scheduler;
+pub mod spawn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
