@@ -42,12 +42,21 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut
     &mut *page_table_ptr
 }
 
+/// Get the global mapper instance
+/// 
+/// # Safety
+/// Caller must ensure that init() has been called first.
+pub unsafe fn get_mapper() -> OffsetPageTable<'static> {
+    let physical_memory_offset = crate::memory::physical_memory_offset();
+    get_mapper_with_offset(physical_memory_offset)
+}
+
 /// Get a new mapper instance for manual page table operations
 /// 
 /// # Safety
 /// Caller must ensure that the complete physical memory is mapped to virtual memory
 /// at the provided `physical_memory_offset`.
-pub unsafe fn get_mapper(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {
+pub unsafe fn get_mapper_with_offset(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {
     let level_4_table = active_level_4_table(physical_memory_offset);
     OffsetPageTable::new(level_4_table, physical_memory_offset)
 }

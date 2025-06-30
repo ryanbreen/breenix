@@ -165,8 +165,7 @@ pub fn init() {
 
 /// Allocate a new guarded stack
 pub fn allocate_stack(size: usize) -> Result<GuardedStack, &'static str> {
-    let physical_memory_offset = crate::memory::physical_memory_offset();
-    let mut mapper = unsafe { crate::memory::paging::get_mapper(physical_memory_offset) };
+    let mut mapper = unsafe { crate::memory::paging::get_mapper() };
     GuardedStack::new(size, &mut mapper)
 }
 
