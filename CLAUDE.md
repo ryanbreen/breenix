@@ -159,6 +159,14 @@ When implementing new features, the build/test loop is KEY to our development pr
 
 **CRITICAL: NEVER push directly to main branch!**
 
+**IMPORTANT: Before starting any work, ALWAYS ensure you're on a clean branch off main:**
+```bash
+git checkout main
+git pull origin main
+git checkout -b feature-name
+```
+This prevents confusion about why you can't push upstream when you've accidentally added commits to main.
+
 Once Ryan is happy with an implementation:
 
 1. **Always work on a feature branch**:
