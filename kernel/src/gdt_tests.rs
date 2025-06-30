@@ -24,7 +24,8 @@ pub fn test_gdt_segments() {
         // Test loading data segment into other segment registers
         ES::set_reg(ds);
         FS::set_reg(ds);
-        GS::set_reg(ds);
+        // Note: We don't test GS because it's used for TLS (Thread Local Storage)
+        // and setting it would break our TLS setup
     }
     
     log::info!("✅ GDT segment test passed!");
