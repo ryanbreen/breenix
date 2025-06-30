@@ -30,6 +30,7 @@ mod serial;
 mod logger;
 mod memory;
 mod task;
+mod tls;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,17 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("Heap test: sum of elements = {}", vec.iter().sum::<i32>());
     }
     log::info!("Heap allocation test passed!");
+    
+    // Initialize TLS (Thread Local Storage)
+    tls::init();
+    log::info!("TLS initialized");
+    
+    // Test TLS functionality if enabled
+    #[cfg(feature = "testing")]
+    {
+        log::info!("Running TLS tests...");
+        tls::test_tls();
+    }
     
     // Initialize timer
     time::init();
