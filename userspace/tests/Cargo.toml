@@ -13,6 +13,14 @@ path = "hello_time.rs"
 name = "hello_world"
 path = "hello_world.rs"
 
+[[bin]]
+name = "counter"
+path = "counter.rs"
+
+[[bin]]
+name = "spinner"
+path = "spinner.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

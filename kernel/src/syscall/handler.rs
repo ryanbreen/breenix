@@ -56,8 +56,9 @@ impl SyscallFrame {
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // Log syscall entry
     let from_userspace = frame.is_from_userspace();
-    log::debug!("Syscall entry: from_userspace={}, CS={:#x}, SS={:#x}", 
-        from_userspace, frame.cs, frame.ss);
+    // Commented out to reduce noise - uncomment for debugging
+    // log::debug!("Syscall entry: from_userspace={}, CS={:#x}, SS={:#x}", 
+    //     from_userspace, frame.cs, frame.ss);
     
     // Verify this came from userspace (security check)
     if !from_userspace {
@@ -69,12 +70,15 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     let syscall_num = frame.syscall_number();
     let args = frame.args();
     
-    log::trace!(
-        "Syscall {} from userspace: RIP={:#x}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
-        syscall_num,
-        frame.rip,
-        args.0, args.1, args.2, args.3, args.4, args.5
-    );
+    // Only log non-write syscalls to reduce noise
+    if syscall_num != 1 {  // 1 is sys_write
+        log::trace!(
+            "Syscall {} from userspace: RIP={:#x}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
+            syscall_num,
+            frame.rip,
+            args.0, args.1, args.2, args.3, args.4, args.5
+        );
+    }
     
     // Dispatch to the appropriate syscall handler
     let result = match SyscallNumber::from_u64(syscall_num) {
@@ -97,6 +101,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             frame.set_return_value((-(errno as i64)) as u64);
         }
     }
+    
+    // Note: Context switches after sys_yield happen on the next timer interrupt
 }
 
 // Assembly functions defined in entry.s

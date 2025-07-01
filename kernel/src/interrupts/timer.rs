@@ -21,6 +21,16 @@ pub extern "C" fn timer_interrupt_rust_handler(
     // Check if we came from userspace
     let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
     
+    // Check if current thread is terminated before scheduling
+    let current_terminated = scheduler::with_scheduler(|sched| {
+        sched.current_thread().map(|t| t.state == crate::task::thread::ThreadState::Terminated).unwrap_or(false)
+    }).unwrap_or(false);
+    
+    if current_terminated && from_userspace {
+        log::info!("Current userspace thread is terminated, forcing switch");
+        // Force a switch away from the terminated thread
+    }
+    
     // Perform scheduling
     if let Some((old_id, new_id)) = scheduler::schedule() {
         if old_id != new_id {
@@ -29,6 +39,16 @@ pub extern "C" fn timer_interrupt_rust_handler(
             
             // Handle context switching
             handle_context_switch(old_id, new_id, from_userspace, saved_regs, interrupt_frame);
+        }
+    } else if current_terminated && from_userspace {
+        // No threads to switch to, but current is terminated
+        // We need to switch to the idle thread manually
+        log::info!("No threads available but current is terminated, switching to idle");
+        
+        // Get current thread ID
+        if let Some(current_id) = scheduler::current_thread_id() {
+            // Switch to idle thread (ID 0)
+            handle_context_switch(current_id, 0, from_userspace, saved_regs, interrupt_frame);
         }
     }
     

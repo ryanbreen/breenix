@@ -260,13 +260,14 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let mut executor = task::executor::Executor::new();
     executor.spawn(task::Task::new(keyboard::keyboard_task()));
     
-    // Run userspace test automatically after kernel initialization
-    // But do it after the keyboard task is started
+    // Don't run tests automatically - let the user trigger them manually
     #[cfg(feature = "testing")]
     {
-        log::info!("Keyboard ready. Press Ctrl+P to test multiple processes.");
-        log::info!("Auto-running process test (testing feature enabled)...");
-        userspace_test::test_multiple_processes();
+        log::info!("Testing features enabled. Press keys to test:");
+        log::info!("  Ctrl+P - Test multiple concurrent processes");
+        log::info!("  Ctrl+U - Run single userspace test");
+        log::info!("  Ctrl+T - Show time debug info");
+        log::info!("  Ctrl+M - Show memory debug info");
     }
     
     executor.run()

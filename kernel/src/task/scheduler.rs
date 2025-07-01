@@ -52,10 +52,6 @@ impl Scheduler {
                   thread_id, thread_name, is_user, self.ready_queue);
     }
     
-    /// Get a thread by ID
-    fn get_thread(&self, id: u64) -> Option<&Thread> {
-        self.threads.iter().find(|t| t.id() == id).map(|t| t.as_ref())
-    }
     
     /// Get a mutable thread by ID
     fn get_thread_mut(&mut self, id: u64) -> Option<&mut Thread> {
@@ -75,6 +71,10 @@ impl Scheduler {
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
+        // Only log scheduling events when something interesting happens
+        // log::trace!("Schedule called: current={:?}, ready_queue={:?}", 
+        //            self.current_thread, self.ready_queue);
+        
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
@@ -82,17 +82,26 @@ impl Scheduler {
                     if current.is_runnable() {
                         current.set_ready();
                         self.ready_queue.push_back(current_id);
+                        // log::trace!("Put thread {} back in ready queue", current_id);
                     }
                 }
             }
         }
         
         // Get next thread from ready queue
-        let next_thread_id = self.ready_queue.pop_front()
+        let mut next_thread_id = self.ready_queue.pop_front()
             .or(Some(self.idle_thread))?; // Use idle thread if nothing ready
         
-        // Skip if it's the same thread
-        if Some(next_thread_id) == self.current_thread {
+        // Important: Don't skip if it's the same thread when there are other threads waiting
+        // This was causing the issue where yielding wouldn't switch to other ready threads
+        if Some(next_thread_id) == self.current_thread && !self.ready_queue.is_empty() {
+            // Put current thread back and get the next one
+            self.ready_queue.push_back(next_thread_id);
+            next_thread_id = self.ready_queue.pop_front()?;
+            log::debug!("Forced switch from {} to {} (other threads waiting)", 
+                       self.current_thread.unwrap_or(0), next_thread_id);
+        } else if Some(next_thread_id) == self.current_thread {
+            // No other threads ready, stay with current
             return None;
         }
         
@@ -153,6 +162,20 @@ impl Scheduler {
             self.get_thread(id).map_or(false, |t| t.is_runnable())
         })
     }
+    
+    /// Check if scheduler has any userspace threads (ready, running, or blocked)
+    pub fn has_userspace_threads(&self) -> bool {
+        self.threads.iter().any(|t| {
+            t.id() != self.idle_thread && 
+            t.privilege == super::thread::ThreadPrivilege::User &&
+            t.state != super::thread::ThreadState::Terminated
+        })
+    }
+    
+    /// Get a thread by ID (public for timer.rs)
+    pub fn get_thread(&self, id: u64) -> Option<&Thread> {
+        self.threads.iter().find(|t| t.id() == id).map(|t| t.as_ref())
+    }
 }
 
 /// Initialize the global scheduler
@@ -209,7 +232,15 @@ pub fn yield_current() {
     // This will be called from timer interrupt or sys_yield
     // The actual context switch happens in the interrupt handler
     if let Some((old_id, new_id)) = schedule() {
-        log::trace!("Scheduling: {} -> {}", old_id, new_id);
+        log::debug!("Scheduling: {} -> {}", old_id, new_id);
         // Context switch will be performed by caller
     }
+}
+
+/// Get pending context switch if any
+/// Returns Some((old_thread_id, new_thread_id)) if a switch is pending
+pub fn get_pending_switch() -> Option<(u64, u64)> {
+    // For now, just call schedule to see if we would switch
+    // In a real implementation, we might cache this decision
+    schedule()
 }
