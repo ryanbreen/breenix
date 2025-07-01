@@ -162,6 +162,9 @@ impl Log for CombinedLogger {
                         );
                     }
                     
+                    // Write to framebuffer
+                    // TODO: Add proper synchronization to prevent rendering conflicts
+                    // For now, we'll accept occasional visual glitches rather than deadlock
                     if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
                         fb_logger.log(record);
                     }
