@@ -188,6 +188,12 @@ where
     scheduler_lock.as_mut().map(f)
 }
 
+/// Get the current thread ID
+pub fn current_thread_id() -> Option<u64> {
+    let scheduler_lock = SCHEDULER.lock();
+    scheduler_lock.as_ref().and_then(|s| s.current_thread)
+}
+
 /// Yield the current thread
 pub fn yield_current() {
     // This will be called from timer interrupt or sys_yield

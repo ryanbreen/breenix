@@ -75,65 +75,21 @@ pub fn run_userspace_test() {
         
         log::info!("Creating userspace test process ({} bytes)", HELLO_TIME_ELF.len());
         
-        // Create a process for the test program
-        match crate::process::spawn_process(String::from("hello_time"), HELLO_TIME_ELF) {
+        // Create and schedule a process for the test program
+        match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+            String::from("hello_time"), 
+            HELLO_TIME_ELF
+        ) {
             Ok(pid) => {
-                log::info!("✓ Created process with PID {}", pid.as_u64());
+                log::info!("✓ Created and scheduled process with PID {}", pid.as_u64());
                 
                 // Get the process manager and debug print
                 if let Some(ref manager) = *crate::process::manager() {
                     manager.debug_processes();
                 }
                 
-                // For now, we'll still do direct execution of the process
-                // TODO: Integrate with scheduler to run the process properly
-                log::info!("Direct execution of process (scheduler integration pending)...");
-                
-                // Get process info and set current PID
-                let process_info = {
-                    // Get the process manager (in a limited scope to release the lock)
-                    let mut manager_lock = crate::process::manager();
-                    if let Some(ref mut manager) = *manager_lock {
-                        // Set this as the current process
-                        manager.set_current_pid(pid);
-                        
-                        // Get process info
-                        if let Some(process) = manager.get_process(pid) {
-                            if let Some(ref thread) = process.main_thread {
-                                Some((process.entry_point, thread.stack_top))
-                            } else {
-                                log::error!("Process has no main thread!");
-                                None
-                            }
-                        } else {
-                            log::error!("Could not find process with PID {}", pid.as_u64());
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }; // Lock is released here
-                
-                // Now switch to userspace without holding the lock
-                if let Some((entry_point, stack_top)) = process_info {
-                    log::info!("Switching to userspace with proper ring transition...");
-                    
-                    unsafe {
-                        // Get selectors and ensure Ring 3 RPL bits are set
-                        let user_cs = crate::gdt::USER_CODE_SELECTOR.0 | 3;
-                        let user_ds = crate::gdt::USER_DATA_SELECTOR.0 | 3;
-                        
-                        log::debug!("Using selectors - CS: {:#x}, DS/SS: {:#x}", user_cs, user_ds);
-                        
-                        // This will switch to Ring 3 and never return
-                        crate::task::userspace_switch::switch_to_userspace(
-                            entry_point,
-                            stack_top,
-                            user_cs,
-                            user_ds,
-                        );
-                    }
-                }
+                log::info!("Process scheduled - it will run when scheduler picks it up");
+                log::info!("Use timer interrupts or sys_yield to trigger scheduling");
             }
             Err(e) => {
                 log::error!("✗ Failed to create process: {}", e);
@@ -155,25 +111,31 @@ pub fn test_multiple_processes() {
     {
         use alloc::string::String;
         
-        // Create first process
+        // Create and schedule first process
         log::info!("Creating first process (hello_time)...");
-        match crate::process::spawn_process(String::from("hello_time"), HELLO_TIME_ELF) {
+        match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+            String::from("hello_time"), 
+            HELLO_TIME_ELF
+        ) {
             Ok(pid1) => {
-                log::info!("✓ Created process 1 with PID {}", pid1.as_u64());
+                log::info!("✓ Created and scheduled process 1 with PID {}", pid1.as_u64());
                 
-                // Create second process
+                // Create and schedule second process
                 log::info!("Creating second process (hello_world)...");
-                match crate::process::spawn_process(String::from("hello_world"), HELLO_WORLD_ELF) {
+                match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+                    String::from("hello_world"), 
+                    HELLO_WORLD_ELF
+                ) {
                     Ok(pid2) => {
-                        log::info!("✓ Created process 2 with PID {}", pid2.as_u64());
+                        log::info!("✓ Created and scheduled process 2 with PID {}", pid2.as_u64());
                         
                         // Debug print process list
                         if let Some(ref manager) = *crate::process::manager() {
                             manager.debug_processes();
                         }
                         
-                        // Now run the first process
-                        run_process_by_pid(pid1);
+                        log::info!("Both processes scheduled - they will run when scheduler picks them up");
+                        log::info!("Processes will alternate execution based on timer interrupts");
                     }
                     Err(e) => {
                         log::error!("✗ Failed to create second process: {}", e);
@@ -192,55 +154,3 @@ pub fn test_multiple_processes() {
     }
 }
 
-/// Helper function to run a specific process
-#[cfg(feature = "testing")]
-fn run_process_by_pid(pid: crate::process::ProcessId) {
-    use x86_64::VirtAddr;
-    
-    log::info!("Running process with PID {}...", pid.as_u64());
-    
-    // Get process info and set current PID
-    let process_info = {
-        let mut manager_lock = crate::process::manager();
-        if let Some(ref mut manager) = *manager_lock {
-            // Set this as the current process
-            manager.set_current_pid(pid);
-            
-            // Get process info
-            if let Some(process) = manager.get_process(pid) {
-                if let Some(ref thread) = process.main_thread {
-                    Some((process.entry_point, thread.stack_top))
-                } else {
-                    log::error!("Process has no main thread!");
-                    None
-                }
-            } else {
-                log::error!("Could not find process with PID {}", pid.as_u64());
-                None
-            }
-        } else {
-            None
-        }
-    }; // Lock is released here
-    
-    // Now switch to userspace without holding the lock
-    if let Some((entry_point, stack_top)) = process_info {
-        log::info!("Switching to userspace with proper ring transition...");
-        
-        unsafe {
-            // Get selectors and ensure Ring 3 RPL bits are set
-            let user_cs = crate::gdt::USER_CODE_SELECTOR.0 | 3;
-            let user_ds = crate::gdt::USER_DATA_SELECTOR.0 | 3;
-            
-            log::debug!("Using selectors - CS: {:#x}, DS/SS: {:#x}", user_cs, user_ds);
-            
-            // This will switch to Ring 3 and never return
-            crate::task::userspace_switch::switch_to_userspace(
-                entry_point,
-                stack_top,
-                user_cs,
-                user_ds,
-            );
-        }
-    }
-}

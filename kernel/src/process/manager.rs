@@ -195,6 +195,20 @@ impl ProcessManager {
         self.processes.len()
     }
     
+    /// Find a process by its main thread ID
+    pub fn find_process_by_thread(&self, thread_id: u64) -> Option<(ProcessId, &Process)> {
+        self.processes.iter()
+            .find(|(_, process)| process.main_thread.as_ref().map(|t| t.id) == Some(thread_id))
+            .map(|(pid, process)| (*pid, process))
+    }
+    
+    /// Find a process by its main thread ID (mutable)
+    pub fn find_process_by_thread_mut(&mut self, thread_id: u64) -> Option<(ProcessId, &mut Process)> {
+        self.processes.iter_mut()
+            .find(|(_, process)| process.main_thread.as_ref().map(|t| t.id) == Some(thread_id))
+            .map(|(pid, process)| (*pid, process))
+    }
+    
     /// Debug print all processes
     pub fn debug_processes(&self) {
         log::info!("=== Process List ===");
