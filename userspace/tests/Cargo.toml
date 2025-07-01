@@ -1,5 +1,5 @@
 [package]
-name = "hello_time"
+name = "userspace_tests"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,6 +8,10 @@ edition = "2021"
 [[bin]]
 name = "hello_time"
 path = "hello_time.rs"
+
+[[bin]]
+name = "hello_world"
+path = "hello_world.rs"
 
 [profile.release]
 panic = "abort"
