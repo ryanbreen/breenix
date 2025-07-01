@@ -238,6 +238,48 @@ cargo run --bin qemu-bios
 ## Development Notes
 All commits should be signed as co-developed by Ryan Breen and Claude Code because we're best buds!
 
+## Project Roadmap and Documentation
+
+### Master Roadmap
+**IMPORTANT**: The project roadmap is maintained at `docs/planning/PROJECT_ROADMAP.md` and tracks:
+- Current Development Status (what's done, in progress, and next)
+- All completed phases (✅)
+- Current development focus (🚧)
+- Future planned work (📋)
+- Technical decisions and architecture
+- Success metrics for each phase
+
+### Maintaining Current Development Status
+The top section of PROJECT_ROADMAP.md must be updated:
+- **After each PR merge**: Update "Recently Completed" with what was done
+- **When starting new work**: Update "Currently Working On"
+- **Weekly**: Review and update "Immediate Next Steps"
+- **Format**: Use checkmarks (✅) for completed, construction (🚧) for in-progress
+
+Example update after completing fork():
+```markdown
+### Recently Completed (Last Sprint)
+- ✅ Implemented fork() system call with copy-on-write
+- ✅ Fixed keyboard responsiveness after userspace process exit
+```
+
+### Documentation Structure
+All documentation lives in `docs/planning/`:
+- **Numbered directories (00-15)**: One per roadmap phase
+- **Cross-cutting directories**: `posix-compliance/`, `legacy-migration/`
+- **Key documents**:
+  - `docs/planning/PROJECT_ROADMAP.md` - Master roadmap with current status
+  - `docs/planning/legacy-migration/FEATURE_COMPARISON.md` - Legacy vs new
+  - `docs/planning/06-userspace-execution/USERSPACE_SUMMARY.md` - Userspace status
+  - `docs/planning/posix-compliance/POSIX_COMPLIANCE.md` - POSIX strategy
+
+### Adding New Documentation
+When creating new docs:
+1. Place in the appropriate phase directory (00-15)
+2. Use clear, descriptive filenames
+3. Include context and date in the document
+4. Update PROJECT_ROADMAP.md if it affects current work
+
 ### Legacy Code Removal Policy
 As we complete feature migrations from `src.legacy/` to the new kernel:
 

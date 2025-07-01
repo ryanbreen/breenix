@@ -24,6 +24,7 @@ libs/
 
 # Log files
 *.log
+test_output.log
 
 # Temporary files
 *.tmp
