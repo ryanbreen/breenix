@@ -201,19 +201,45 @@ pub fn allocate_thread_tls_with_stack(stack_pointer: VirtAddr) -> Result<u64, &'
     Ok(thread_id)
 }
 
+/// Register a thread with a specific TLS block
+pub fn register_thread_tls(thread_id: u64, tls_block: VirtAddr) -> Result<(), &'static str> {
+    let mut manager_lock = TLS_MANAGER.lock();
+    let manager = manager_lock.as_mut().ok_or("TLS manager not initialized")?;
+    
+    // Ensure the tls_blocks vector is large enough
+    while manager.tls_blocks.len() <= thread_id as usize {
+        manager.tls_blocks.push(VirtAddr::new(0)); // Add placeholder entries
+    }
+    
+    // Set the TLS block for this thread
+    manager.tls_blocks[thread_id as usize] = tls_block;
+    
+    log::debug!("Registered thread {} with TLS block {:#x}", thread_id, tls_block);
+    Ok(())
+}
+
 /// Switch to a different thread's TLS
 #[allow(dead_code)]
 pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
+    // Thread 0 is the kernel/idle thread - it uses the kernel TLS
+    if thread_id == 0 {
+        // Switch back to kernel TLS
+        set_gs_base(VirtAddr::new(0xffff800000000000))?;
+        return Ok(());
+    }
     let manager_lock = TLS_MANAGER.lock();
     let manager = manager_lock.as_ref().ok_or("TLS manager not initialized")?;
     
-    // For now, we only support switching between existing TLS blocks
-    // In a real implementation, we'd look up the TLS block for the given thread_id
+    // Check if thread is registered
     if thread_id >= manager.tls_blocks.len() as u64 {
         return Err("Invalid thread ID");
     }
     
     let tls_block = manager.tls_blocks[thread_id as usize];
+    if tls_block.is_null() {
+        return Err("Thread has no TLS block allocated");
+    }
+    
     set_gs_base(tls_block)?;
     
     Ok(())
