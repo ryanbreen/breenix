@@ -35,6 +35,7 @@ mod tls;
 mod syscall;
 mod elf;
 mod userspace_test;
+mod process;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +142,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     task::spawn::init();
     log::info!("Threading subsystem initialized");
     
+    // Initialize process management
+    log::info!("Initializing process management...");
+    process::init();
+    log::info!("Process management initialized");
+    
     log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled!");
@@ -246,8 +252,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Run userspace test automatically after kernel initialization
     #[cfg(feature = "testing")]
     {
-        log::info!("Automatically running userspace test...");
-        userspace_test::run_userspace_test();
+        log::info!("Automatically running multi-process test...");
+        userspace_test::test_multiple_processes();
     }
     
     // Initialize and run the async executor
