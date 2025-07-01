@@ -68,9 +68,12 @@ impl ProcessContext {
 
 /// Saved general purpose registers
 /// This matches the layout pushed in syscall_entry and timer interrupt
+/// Order matters! This must match the push order in assembly
+/// Stack grows down, so first push ends up at highest address
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct SavedRegisters {
+    // Memory layout after all pushes (RSP points here)
     pub r15: u64,
     pub r14: u64,
     pub r13: u64,

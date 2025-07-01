@@ -44,9 +44,12 @@ impl Scheduler {
     /// Add a new thread to the scheduler
     pub fn add_thread(&mut self, thread: Box<Thread>) {
         let thread_id = thread.id();
+        let thread_name = thread.name.clone();
+        let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         self.threads.push(thread);
         self.ready_queue.push_back(thread_id);
-        log::debug!("Added thread {} to scheduler", thread_id);
+        log::info!("Added thread {} '{}' to scheduler (user: {}, ready_queue: {:?})", 
+                  thread_id, thread_name, is_user, self.ready_queue);
     }
     
     /// Get a thread by ID
@@ -161,22 +164,29 @@ pub fn init(idle_thread: Box<Thread>) {
 
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
-    let mut scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_mut() {
-        scheduler.add_thread(thread);
-    } else {
-        panic!("Scheduler not initialized");
-    }
+    // Disable interrupts to prevent timer interrupt deadlock
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.add_thread(thread);
+        } else {
+            panic!("Scheduler not initialized");
+        }
+    });
 }
 
 /// Perform scheduling and return threads to switch between
 pub fn schedule() -> Option<(u64, u64)> {
-    let mut scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_mut() {
-        scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
-    } else {
-        None
-    }
+    // Note: This is called from timer interrupt, so interrupts are already disabled
+    // But we'll be explicit about it to prevent nested timer deadlocks
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
+        } else {
+            None
+        }
+    })
 }
 
 /// Get access to the scheduler
