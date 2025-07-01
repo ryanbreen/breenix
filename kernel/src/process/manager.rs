@@ -3,8 +3,8 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU64, Ordering};
+use x86_64::VirtAddr;
 
 use super::{Process, ProcessId};
 use crate::elf;
@@ -23,6 +23,9 @@ pub struct ProcessManager {
     
     /// Queue of ready processes
     ready_queue: Vec<ProcessId>,
+    
+    /// Next available process base address (for virtual address allocation)
+    next_process_base: VirtAddr,
 }
 
 impl ProcessManager {
@@ -33,13 +36,19 @@ impl ProcessManager {
             current_pid: None,
             next_pid: AtomicU64::new(1), // PIDs start at 1 (0 is kernel)
             ready_queue: Vec::new(),
+            // Start process virtual addresses at 0x10000000, with 16MB spacing
+            next_process_base: VirtAddr::new(0x10000000),
         }
     }
     
     /// Create a new process from an ELF binary
     pub fn create_process(&mut self, name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
-        // Load the ELF binary
-        let loaded_elf = elf::load_elf(elf_data)?;
+        // Allocate a virtual address range for this process
+        let process_base = self.next_process_base;
+        self.next_process_base += 0x1000000; // 16MB per process
+        
+        // Load the ELF binary at the allocated base address
+        let loaded_elf = elf::load_elf_at_base(elf_data, process_base)?;
         
         // Generate a new PID
         let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
@@ -63,8 +72,8 @@ impl ProcessManager {
         let stack_top = user_stack.top();
         process.memory_usage.stack_size = USER_STACK_SIZE;
         
-        // Keep the stack alive by leaking it (TODO: store in process struct)
-        let _stack = Box::leak(Box::new(user_stack));
+        // Store the stack in the process
+        process.stack = Some(Box::new(user_stack));
         
         // Create the main thread
         let thread = self.create_main_thread(&process, stack_top)?;

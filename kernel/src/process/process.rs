@@ -2,8 +2,10 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 use x86_64::VirtAddr;
 use crate::task::thread::Thread;
+use crate::memory::stack::GuardedStack;
 
 /// Process ID type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,6 +67,9 @@ pub struct Process {
     
     /// Memory usage statistics
     pub memory_usage: MemoryUsage,
+    
+    /// Stack allocated for this process
+    pub stack: Option<Box<GuardedStack>>,
 }
 
 /// Memory usage tracking
@@ -92,6 +97,7 @@ impl Process {
             children: Vec::new(),
             exit_code: None,
             memory_usage: MemoryUsage::default(),
+            stack: None,
         }
     }
     

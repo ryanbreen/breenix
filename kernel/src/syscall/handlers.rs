@@ -18,19 +18,56 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     // Exit the current process
     crate::process::exit_current(exit_code);
     
-    // TODO: Once scheduler integration is complete:
-    // - This should trigger a context switch to the next process
-    // - Never return to userspace
+    // Try to switch to the next process
+    perform_process_exit_switch();
     
-    // Log that we're about to panic (for debugging)
-    log::info!("Process will now terminate (panic for demo purposes)");
+    // If we get here, there are no more processes to run
+    // Return to kernel mode
+    log::info!("No more processes to run, returning to kernel");
     
     // For now, we still panic to show the process exited
-    // In a real implementation, we'd switch to the next process
+    // In a real implementation, we'd return to the kernel idle loop
     if exit_code == 0 {
-        panic!("Process exited successfully");
+        panic!("Last process exited successfully");
     } else {
-        panic!("Process exited with code: {}", exit_code);
+        panic!("Last process exited with code: {}", exit_code);
+    }
+}
+
+/// Perform context switch after process exit
+/// This should never return if there's another process to run
+fn perform_process_exit_switch() {
+    // Check if there's another process ready to run
+    if let Some(ref mut manager) = *crate::process::manager() {
+        if let Some(next_pid) = manager.schedule_next() {
+            log::info!("Switching to next process (PID {})", next_pid.as_u64());
+            
+            // Get the process info
+            if let Some(process) = manager.get_process(next_pid) {
+                if let Some(ref thread) = process.main_thread {
+                    // Prepare for context switch
+                    unsafe {
+                        // Get selectors
+                        let user_cs = crate::gdt::USER_CODE_SELECTOR.0 | 3;
+                        let user_ds = crate::gdt::USER_DATA_SELECTOR.0 | 3;
+                        
+                        // Note: In a real implementation, we'd restore the thread's saved context
+                        // For now, we assume the process hasn't been run before
+                        log::info!("Switching to process at {:#x}", process.entry_point);
+                        
+                        // This will switch to the new process and never return
+                        crate::task::userspace_switch::switch_to_userspace(
+                            process.entry_point,
+                            thread.stack_top,
+                            user_cs,
+                            user_ds,
+                        );
+                    }
+                }
+            }
+        } else {
+            log::info!("No ready processes in queue");
+        }
     }
 }
 

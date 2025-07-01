@@ -74,7 +74,12 @@ pub struct LoadedElf {
 
 /// Load an ELF64 binary into memory
 pub fn load_elf(data: &[u8]) -> Result<LoadedElf, &'static str> {
-    log::debug!("load_elf: data size = {} bytes", data.len());
+    load_elf_at_base(data, VirtAddr::zero())
+}
+
+/// Load an ELF64 binary into memory with a base address offset
+pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf, &'static str> {
+    log::debug!("load_elf_at_base: data size = {} bytes, base = {:#x}", data.len(), base_offset.as_u64());
     
     // Verify ELF header
     if data.len() < mem::size_of::<Elf64Header>() {
@@ -139,23 +144,23 @@ pub fn load_elf(data: &[u8]) -> Result<LoadedElf, &'static str> {
         let ph: &Elf64ProgramHeader = unsafe { &*(ph_bytes.as_ptr() as *const Elf64ProgramHeader) };
         
         if ph.p_type == SegmentType::Load as u32 {
-            load_segment(data, ph)?;
+            load_segment(data, ph, base_offset)?;
         }
     }
     
     Ok(LoadedElf {
-        entry_point: VirtAddr::new(header.entry),
+        entry_point: base_offset + header.entry,
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
     })
 }
 
 /// Load a program segment into memory
-fn load_segment(data: &[u8], ph: &Elf64ProgramHeader) -> Result<(), &'static str> {
+fn load_segment(data: &[u8], ph: &Elf64ProgramHeader, base_offset: VirtAddr) -> Result<(), &'static str> {
     // Validate segment
     let file_start = ph.p_offset as usize;
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
-    let vaddr = VirtAddr::new(ph.p_vaddr);
+    let vaddr = base_offset + ph.p_vaddr;
     
     if file_start + file_size > data.len() {
         return Err("Segment data out of bounds");
