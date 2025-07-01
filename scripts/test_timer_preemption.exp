@@ -1,0 +1,33 @@
+#!/usr/bin/expect -f
+
+# Expect script to test timer preemption
+set timeout 30
+
+spawn cargo run --features testing --bin qemu-uefi -- -serial stdio
+
+# Wait for kernel to boot and show keyboard ready message
+expect "Keyboard ready" {
+    send_user "\n\n=== Kernel booted, sending Ctrl+P to test processes ===\n\n"
+}
+
+# Send Ctrl+P to trigger multi-process test
+sleep 1
+send "\x10"  ;# Ctrl+P
+
+# Look for timer preemption messages
+expect {
+    timeout {
+        send_user "\n\n=== TIMEOUT: No timer preemption messages seen ===\n"
+        exit 1
+    }
+    "Timer preemption:" {
+        send_user "\n\n=== SUCCESS: Timer preemption is working! ===\n"
+    }
+}
+
+# Wait a bit to see more output
+sleep 3
+
+# Send Ctrl+C to exit
+send "\x03"
+expect eof

@@ -139,6 +139,24 @@ pub struct Thread {
     pub privilege: ThreadPrivilege,
 }
 
+impl Clone for Thread {
+    fn clone(&self) -> Self {
+        Thread {
+            id: self.id,
+            name: self.name.clone(),
+            state: self.state,
+            context: self.context.clone(),
+            stack_top: self.stack_top,
+            stack_bottom: self.stack_bottom,
+            tls_block: self.tls_block,
+            priority: self.priority,
+            time_slice: self.time_slice,
+            entry_point: self.entry_point, // fn pointers can be copied
+            privilege: self.privilege,
+        }
+    }
+}
+
 impl Thread {
     /// Create a new thread
     pub fn new(
@@ -183,6 +201,20 @@ impl Thread {
     ) -> Self {
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
         
+        // For userspace threads, we'll use a simple TLS setup for now
+        // TODO: Properly integrate with the TLS allocation system
+        let actual_tls_block = if tls_block.is_null() {
+            // Allocate a simple TLS block address for this thread
+            VirtAddr::new(0x10000 + id * 0x1000)
+        } else {
+            tls_block
+        };
+        
+        // Register this thread with the TLS system
+        if let Err(e) = crate::tls::register_thread_tls(id, actual_tls_block) {
+            log::warn!("Failed to register thread {} with TLS system: {}", id, e);
+        }
+        
         // Calculate stack bottom (stack grows down)
         const USER_STACK_SIZE: usize = 128 * 1024;
         let stack_bottom = stack_top - USER_STACK_SIZE as u64;
@@ -201,7 +233,7 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
-            tls_block,
+            tls_block: actual_tls_block,
             priority: 128, // Default medium priority
             time_slice: 10, // Default time slice
             entry_point: None, // Userspace threads don't have kernel entry points

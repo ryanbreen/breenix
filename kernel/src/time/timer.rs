@@ -95,6 +95,12 @@ pub fn timer_interrupt() {
     if let Some(timer) = TIMER.get() {
         timer.tick();
         super::increment_ticks();
+        
+        // Log every 1000 ticks (1 second)
+        let ticks = timer.ticks.load(Ordering::Relaxed);
+        if ticks % 1000 == 0 {
+            log::info!("Timer interrupt: {} ticks ({}s)", ticks, ticks / 1000);
+        }
     }
 }
 

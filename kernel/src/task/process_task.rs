@@ -15,28 +15,36 @@ impl ProcessScheduler {
     /// Add a process to the scheduler
     /// This extracts the main thread from the process and adds it to the scheduler
     pub fn schedule_process(pid: ProcessId) -> Result<(), &'static str> {
-        // Get process manager
-        let mut manager_lock = crate::process::manager();
-        let manager = manager_lock.as_mut()
-            .ok_or("Process manager not initialized")?;
+        // Get the thread from the process (minimizing lock time)
+        let thread = {
+            let mut manager_lock = crate::process::manager();
+            let manager = manager_lock.as_mut()
+                .ok_or("Process manager not initialized")?;
+            
+            // Get the process
+            let process = manager.get_process_mut(pid)
+                .ok_or("Process not found")?;
+            
+            // Get a reference to the main thread (don't take it)
+            let thread = process.main_thread.as_ref()
+                .ok_or("Process has no main thread")?;
+            
+            // Clone the thread for the scheduler
+            let thread = thread.clone();
+            
+            // Verify it's a userspace thread
+            if thread.privilege != ThreadPrivilege::User {
+                return Err("Process thread is not userspace");
+            }
+            
+            log::info!("Scheduling process {} (thread {}) on kernel scheduler", 
+                      pid.as_u64(), thread.id);
+            
+            thread
+            // Process manager lock is released here
+        };
         
-        // Get the process
-        let process = manager.get_process_mut(pid)
-            .ok_or("Process not found")?;
-        
-        // Extract the main thread
-        let thread = process.main_thread.take()
-            .ok_or("Process has no main thread")?;
-        
-        // Verify it's a userspace thread
-        if thread.privilege != ThreadPrivilege::User {
-            return Err("Process thread is not userspace");
-        }
-        
-        log::info!("Scheduling process {} (thread {}) on kernel scheduler", 
-                  pid.as_u64(), thread.id);
-        
-        // Add to scheduler
+        // Add to scheduler (outside of process manager lock)
         scheduler::spawn(Box::new(thread));
         
         Ok(())
@@ -47,15 +55,20 @@ impl ProcessScheduler {
         name: alloc::string::String,
         elf_data: &[u8]
     ) -> Result<ProcessId, &'static str> {
-        // Create the process
+        // Create the process (lock is released after this block)
         let pid = {
             let mut manager_lock = crate::process::manager();
             let manager = manager_lock.as_mut()
                 .ok_or("Process manager not initialized")?;
             manager.create_process(name, elf_data)?
+            // Lock is automatically released here
         };
         
-        // Schedule it
+        // Small delay to allow timer interrupts to run if needed
+        // This ensures the process manager lock is definitely released
+        log::debug!("Process {} created, yielding to allow timer interrupts", pid.as_u64());
+        
+        // Schedule it (this will acquire the lock again, but briefly)
         Self::schedule_process(pid)?;
         
         Ok(pid)
