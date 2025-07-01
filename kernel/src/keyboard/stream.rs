@@ -9,6 +9,13 @@ use futures_util::{stream::Stream, task::AtomicWaker};
 static SCANCODE_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
 static WAKER: AtomicWaker = AtomicWaker::new();
 
+/// Initialize the scancode queue early, before the keyboard task starts
+pub(crate) fn init_queue() {
+    SCANCODE_QUEUE
+        .try_init_once(|| ArrayQueue::new(100))
+        .expect("Scancode queue already initialized");
+}
+
 /// Called by the keyboard interrupt handler
 /// 
 /// Must not block or allocate.
@@ -30,9 +37,8 @@ pub struct ScancodeStream {
 
 impl ScancodeStream {
     pub fn new() -> Self {
-        SCANCODE_QUEUE
-            .try_init_once(|| ArrayQueue::new(100))
-            .expect("ScancodeStream::new should only be called once");
+        // Try to initialize, but it's ok if it's already initialized
+        let _ = SCANCODE_QUEUE.try_init_once(|| ArrayQueue::new(100));
         
         ScancodeStream { _private: () }
     }
@@ -60,4 +66,9 @@ impl Stream for ScancodeStream {
             None => Poll::Pending,
         }
     }
+}
+
+/// Wake the keyboard task - useful when returning control after userspace exit
+pub fn wake_keyboard_task() {
+    WAKER.wake();
 }

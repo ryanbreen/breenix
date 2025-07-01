@@ -8,11 +8,19 @@ pub static HELLO_TIME_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_t
 #[cfg(feature = "testing")]
 pub static HELLO_WORLD_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_world.elf");
 
+#[cfg(feature = "testing")]
+pub static COUNTER_ELF: &[u8] = include_bytes!("../../userspace/tests/counter.elf");
+
+#[cfg(feature = "testing")]
+pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.elf");
+
 // Add test to ensure binaries are included
 #[cfg(feature = "testing")]
 fn _test_binaries_included() {
     assert!(HELLO_TIME_ELF.len() > 0, "hello_time.elf not included");
     assert!(HELLO_WORLD_ELF.len() > 0, "hello_world.elf not included");
+    assert!(COUNTER_ELF.len() > 0, "counter.elf not included");
+    assert!(SPINNER_ELF.len() > 0, "spinner.elf not included");
 }
 
 /// Test running a userspace program
@@ -129,31 +137,33 @@ pub fn test_multiple_processes() {
     {
         use alloc::string::String;
         
-        // Create and schedule first process
-        log::info!("Creating first process (hello_time)...");
+        // Create and schedule first process (counter)
+        log::info!("Creating first process (counter)...");
         match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
-            String::from("hello_time"), 
-            HELLO_TIME_ELF
+            String::from("counter"), 
+            COUNTER_ELF
         ) {
             Ok(pid1) => {
-                log::info!("✓ Created and scheduled process 1 with PID {}", pid1.as_u64());
+                log::info!("✓ Created and scheduled process 1 (counter) with PID {}", pid1.as_u64());
                 
-                // Create and schedule second process
-                log::info!("Creating second process (hello_world)...");
+                // Create and schedule second process (spinner)
+                log::info!("Creating second process (spinner)...");
                 match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
-                    String::from("hello_world"), 
-                    HELLO_WORLD_ELF
+                    String::from("spinner"), 
+                    SPINNER_ELF
                 ) {
                     Ok(pid2) => {
-                        log::info!("✓ Created and scheduled process 2 with PID {}", pid2.as_u64());
+                        log::info!("✓ Created and scheduled process 2 (spinner) with PID {}", pid2.as_u64());
                         
                         // Debug print process list
                         if let Some(ref manager) = *crate::process::manager() {
                             manager.debug_processes();
                         }
                         
-                        log::info!("Both processes scheduled - they will run when scheduler picks them up");
+                        log::info!("Both processes scheduled - they will run concurrently");
                         log::info!("Processes will alternate execution based on timer interrupts");
+                        log::info!("Counter will count from 0-9, Spinner will show a spinning animation");
+                        log::info!("Each process yields after each output to allow the other to run");
                     }
                     Err(e) => {
                         log::error!("✗ Failed to create second process: {}", e);
