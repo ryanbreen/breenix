@@ -8,6 +8,13 @@ pub static HELLO_TIME_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_t
 #[cfg(feature = "testing")]
 pub static HELLO_WORLD_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_world.elf");
 
+// Add test to ensure binaries are included
+#[cfg(feature = "testing")]
+fn _test_binaries_included() {
+    assert!(HELLO_TIME_ELF.len() > 0, "hello_time.elf not included");
+    assert!(HELLO_WORLD_ELF.len() > 0, "hello_world.elf not included");
+}
+
 /// Test running a userspace program
 #[cfg(feature = "testing")]
 pub fn test_userspace_syscalls() {
@@ -71,9 +78,16 @@ pub fn run_userspace_test() {
     #[cfg(feature = "testing")]
     {
         use alloc::string::String;
-        use x86_64::VirtAddr;
         
         log::info!("Creating userspace test process ({} bytes)", HELLO_TIME_ELF.len());
+        log::info!("ELF entry point from header: 0x{:x}", {
+            use core::mem;
+            use crate::elf::Elf64Header;
+            let header: &Elf64Header = unsafe { 
+                &*(HELLO_TIME_ELF.as_ptr() as *const Elf64Header) 
+            };
+            header.entry
+        });
         
         // Create and schedule a process for the test program
         match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
@@ -89,7 +103,11 @@ pub fn run_userspace_test() {
                 }
                 
                 log::info!("Process scheduled - it will run when scheduler picks it up");
-                log::info!("Use timer interrupts or sys_yield to trigger scheduling");
+                log::info!("Timer interrupts should trigger scheduling");
+                
+                // Force a yield to try to switch to the process
+                crate::task::scheduler::yield_current();
+                log::info!("Yielded to scheduler");
             }
             Err(e) => {
                 log::error!("✗ Failed to create process: {}", e);

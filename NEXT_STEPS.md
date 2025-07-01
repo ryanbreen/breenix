@@ -6,46 +6,31 @@ We have successfully achieved userspace execution with working syscalls, SWAPGS 
 ### What's Working:
 - ✅ Ring 3 (userspace) execution via IRETQ
 - ✅ INT 0x80 syscall mechanism
-- ✅ Basic syscalls: GetTime, Write, Exit
+- ✅ Basic syscalls: GetTime, Write, Exit, Yield
 - ✅ Memory protection (user vs kernel pages)
 - ✅ TSS with kernel stack (RSP0) for handling interrupts from userspace
 - ✅ ELF loading and execution
 - ✅ SWAPGS support for secure kernel/user GS separation
 - ✅ Process struct with full lifecycle management
 - ✅ Multiple process creation and management
-- ✅ sys_exit implementation with process cleanup
-- ✅ Basic round-robin scheduling in ProcessManager
+- ✅ sys_exit implementation with process cleanup via scheduler
+- ✅ Integration between ProcessManager and kernel's preemptive scheduler
+- ✅ Processes scheduled as tasks in unified scheduler
 
 ### What Needs Work:
-- ❌ Integration between ProcessManager and kernel's preemptive scheduler
-- ❌ Automatic context switching between processes
-- ❌ Process context saving/restoration for preemption
+- ❌ Timer interrupt context switching for userspace processes
+- ❌ Process context saving/restoration during preemption
 - ❌ Resource cleanup (memory unmapping, file descriptors, etc.)
+- ❌ Proper console synchronization (framebuffer conflicts)
 
 ## Immediate Next Steps
 
-### 1. Integrate ProcessManager with Kernel Scheduler (PRIORITY)
-- Bridge the gap between process::ProcessManager and task::scheduler
-- Add processes to the kernel's preemptive scheduler as tasks
-- Implement process context saving/restoration
-- Enable automatic context switching via timer interrupts
-- Remove direct execution model in favor of scheduler-based execution
-
-#### Integration Architecture:
-**Current State:** Two parallel systems that don't communicate:
-1. **Task Scheduler** (`kernel/src/task/scheduler.rs`)
-   - Manages kernel threads/tasks
-   - Preemptive scheduling with timer interrupts
-   - Full context switching support
-   - Async executor integration
-
-2. **Process Manager** (`kernel/src/process/`)
-   - Manages userspace processes
-   - Round-robin scheduling (manual)
-   - Direct execution model
-   - NOT connected to task scheduler
-
-**Goal:** Unify these systems so processes become special tasks in the kernel scheduler
+### 1. Timer Interrupt Context Switching for Userspace (PRIORITY)
+- Implement proper context saving when timer interrupt fires in userspace
+- Handle privilege level transitions during timer interrupts
+- Save/restore full userspace context (all registers, flags, segments)
+- Test preemptive multitasking with multiple userspace processes
+- Ensure SWAPGS is properly handled during timer interrupts
 
 ### 2. Complete Process Resource Management
 - Implement memory unmapping on process exit
@@ -95,13 +80,6 @@ We have successfully achieved userspace execution with working syscalls, SWAPGS 
 - Basic access control
 
 ## Architecture Decisions
-
-### Scheduler Integration Plan
-1. **Create ProcessTask wrapper** - A Task type that wraps a Process
-2. **Modify scheduler to handle ProcessTask** - Extend scheduler to understand userspace tasks
-3. **Connect timer interrupts** - Ensure timer interrupts work from userspace
-4. **Implement proper context switching** - Save/restore full CPU state for processes
-5. **Remove direct execution** - Replace perform_process_exit_switch with scheduler
 
 ### Memory Layout
 ```
