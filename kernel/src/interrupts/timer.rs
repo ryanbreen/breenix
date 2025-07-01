@@ -74,16 +74,20 @@ fn handle_context_switch(
         if let Some((pid, process)) = manager.find_process_by_thread(new_id) {
             if let Some(ref thread) = process.main_thread {
                 if thread.privilege == ThreadPrivilege::User {
-                    // Check if this is the first time running or a resume
-                    let entry_point_addr = thread.entry_point.map(|f| f as *const () as u64).unwrap_or(0);
-                    if thread.context.rip != entry_point_addr {
-                        // This thread has run before, restore its saved context
-                        restore_userspace_context(thread, interrupt_frame, saved_regs);
-                        log::trace!("Restored context for process {} (thread {})", pid.as_u64(), new_id);
-                    } else {
+                    // Check if this is the first time running or a resume based on thread state
+                    let is_first_run = thread.state == crate::task::thread::ThreadState::Ready;
+                    log::info!("Thread {} is_first_run: {}, state: {:?}", new_id, is_first_run, thread.state);
+                    
+                    if is_first_run {
                         // First time running this thread, set up for initial userspace entry
+                        log::info!("Setting up initial userspace entry for thread {}", new_id);
                         setup_initial_userspace_entry(thread, interrupt_frame);
                         log::info!("Initial userspace entry for process {} (thread {})", pid.as_u64(), new_id);
+                    } else {
+                        // This thread has run before, restore its saved context
+                        log::info!("Restoring saved context for thread {}", new_id);
+                        restore_userspace_context(thread, interrupt_frame, saved_regs);
+                        log::trace!("Restored context for process {} (thread {})", pid.as_u64(), new_id);
                     }
                     
                     // Update TSS RSP0 for the new thread's kernel stack
@@ -101,7 +105,8 @@ fn setup_initial_userspace_entry(
 ) {
     unsafe {
         interrupt_frame.as_mut().update(|frame| {
-            let entry = thread.entry_point.map(|f| f as *const () as u64).unwrap_or(0);
+            // For userspace threads, the entry point is stored in thread.context.rip
+            let entry = thread.context.rip;
             log::info!("Setting up userspace entry: RIP={:#x}, RSP={:#x}", entry, thread.context.rsp);
             
             frame.instruction_pointer = x86_64::VirtAddr::new(entry);
