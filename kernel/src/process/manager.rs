@@ -3,6 +3,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
