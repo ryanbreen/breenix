@@ -30,9 +30,25 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         // Yield to scheduler to pick next thread
         crate::task::scheduler::yield_current();
         
-        // The scheduler should switch to another thread
-        // If we get here, something went wrong
-        log::error!("sys_exit: Failed to switch to next thread");
+        // Check if there are any other userspace threads to run
+        let has_other_userspace_threads = crate::task::scheduler::with_scheduler(|sched| {
+            sched.has_userspace_threads()
+        }).unwrap_or(false);
+        
+        if !has_other_userspace_threads {
+            // No more userspace threads remaining
+            log::info!("No more userspace threads remaining");
+            
+            // Wake the keyboard task to ensure it can process any pending input
+            crate::keyboard::stream::wake_keyboard_task();
+            log::info!("Woke keyboard task to ensure input processing continues");
+            
+            // The timer interrupt will eventually switch us to the idle thread
+            log::info!("Waiting for timer interrupt to switch to idle thread");
+        } else {
+            // The scheduler should switch to another thread on next timer interrupt
+            log::debug!("Other userspace threads available, waiting for timer interrupt");
+        }
     } else {
         log::error!("sys_exit: No current thread in scheduler");
     }
@@ -42,6 +58,9 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     
     // Don't panic - just log that we're out of processes
     log::info!("All processes have exited. Kernel continuing...");
+    
+    // Ensure keyboard remains responsive
+    log::info!("Keyboard should still be active - try pressing keys!");
     
     // Return 0 to indicate we handled the exit  
     SyscallResult::Ok(0)
@@ -88,7 +107,7 @@ fn perform_process_exit_switch() {
 /// 
 /// Currently only supports stdout/stderr writing to serial port.
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
-    log::debug!("sys_write: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+    // log::debug!("sys_write: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
     
     // Validate file descriptor
     if fd != FD_STDOUT && fd != FD_STDERR {
@@ -140,19 +159,23 @@ pub fn sys_read(fd: u64, _buf_ptr: u64, _count: u64) -> SyscallResult {
 
 /// sys_yield - Yield CPU to another task
 pub fn sys_yield() -> SyscallResult {
-    log::trace!("sys_yield called");
+    // log::trace!("sys_yield called");
     
     // Yield to the scheduler
     crate::task::scheduler::yield_current();
     
-    // If we return here, either we're still the best thread to run
-    // or the context switch will happen when we return from the syscall
+    // Note: The actual context switch will happen on the next timer interrupt
+    // We don't force an immediate switch here because:
+    // 1. Software interrupts from userspace context are complex
+    // 2. The timer interrupt will fire soon anyway (every 10ms)
+    // 3. This matches typical OS behavior where yield is a hint, not a guarantee
+    
     SyscallResult::Ok(0)
 }
 
 /// sys_get_time - Get current system time in ticks
 pub fn sys_get_time() -> SyscallResult {
     let ticks = crate::time::get_ticks();
-    log::info!("USERSPACE: sys_get_time called, returning {} ticks", ticks);
+    // log::info!("USERSPACE: sys_get_time called, returning {} ticks", ticks);
     SyscallResult::Ok(ticks)
 }
