@@ -40,12 +40,11 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     // If we get here, there are no more processes to run
     log::info!("No more processes to run, returning to kernel");
     
-    // For now, we still panic to show the process exited
-    if exit_code == 0 {
-        panic!("Last process exited successfully");
-    } else {
-        panic!("Last process exited with code: {}", exit_code);
-    }
+    // Don't panic - just log that we're out of processes
+    log::info!("All processes have exited. Kernel continuing...");
+    
+    // Return 0 to indicate we handled the exit  
+    SyscallResult::Ok(0)
 }
 
 /// Perform context switch after process exit
