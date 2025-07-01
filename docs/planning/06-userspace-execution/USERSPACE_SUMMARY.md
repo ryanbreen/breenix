@@ -52,12 +52,14 @@ Then calls `sys_exit(0)` to terminate cleanly.
 **Removed Files:**
 - `/kernel/src/userspace_jump.asm` - Unused early attempt
 
-### Current Limitations
+### What Was Fixed Since Initial Implementation
 
-1. **No SWAPGS** - Disabled for now, needs MSR setup for GS base
-2. **Simple exit** - sys_exit just panics instead of proper cleanup
-3. **No scheduler integration** - Direct execution only
-4. **Single process** - No multi-process support yet
+1. **SWAPGS** - ✅ Now working with proper MSR setup
+2. **sys_exit** - ✅ Proper cleanup and scheduler integration
+3. **Scheduler integration** - ✅ Processes run as scheduled tasks
+4. **Multi-process** - ✅ Multiple concurrent processes supported
+
+All initial limitations have been addressed!
 
 ### Architecture
 
@@ -74,10 +76,13 @@ Selectors:
 0x33 - User code (Ring 3)
 ```
 
-## Next Steps
+## Status
 
-See NEXT_STEPS.md for the roadmap, but key items are:
-1. Fix SWAPGS support
-2. Process management structures
-3. Scheduler integration
-4. More syscalls (mmap, fork, exec)
+This phase is **COMPLETE**. All userspace execution features work:
+- Ring 3 execution
+- ELF loading
+- System calls
+- Process/scheduler integration
+- SWAPGS support
+
+Next work is in Phase 8: Enhanced Process Control (fork/exec/wait)
