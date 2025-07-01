@@ -1,6 +1,5 @@
 //! Userspace program testing module
 
-use alloc::boxed::Box;
 
 /// Include the compiled userspace test binaries
 #[cfg(feature = "testing")]

@@ -37,9 +37,8 @@ syscall_entry:
     ; Clear direction flag for string operations
     cld
 
-    ; TODO: SWAPGS to switch to kernel GS (for TLS)
-    ; Commented out until we set up user GS properly
-    ; swapgs
+    ; Switch to kernel GS (for TLS)
+    swapgs
 
     ; Call the Rust syscall handler
     ; Pass pointer to saved registers as argument
@@ -48,9 +47,8 @@ syscall_entry:
 
     ; Return value is in RAX, which will be restored to userspace
 
-    ; TODO: SWAPGS back to user GS
-    ; Commented out until we set up user GS properly
-    ; swapgs
+    ; Switch back to user GS
+    swapgs
 
     ; Restore all general purpose registers
     pop r15
@@ -83,9 +81,8 @@ syscall_return_to_userspace:
     ; Disable interrupts during the switch
     cli
 
-    ; TODO: SWAPGS to prepare for userspace
-    ; Commented out until we set up user GS properly
-    ; swapgs
+    ; Switch to user GS for userspace
+    swapgs
 
     ; Build IRETQ frame on stack
     ; We need: SS, RSP, RFLAGS, CS, RIP

@@ -118,6 +118,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     tls::init();
     log::info!("TLS initialized");
     
+    // Setup SWAPGS support for syscall entry/exit
+    if let Err(e) = tls::setup_swapgs_support() {
+        log::error!("Failed to setup SWAPGS support: {}", e);
+    } else {
+        log::info!("SWAPGS support enabled");
+    }
     
     // Initialize timer
     time::init();
