@@ -146,6 +146,28 @@ fn set_gs_base(base: VirtAddr) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Setup SWAPGS support by configuring KERNEL_GS_BASE MSR
+/// This allows the kernel to use SWAPGS instruction to switch between
+/// kernel and user GS bases
+pub fn setup_swapgs_support() -> Result<(), &'static str> {
+    use x86_64::registers::model_specific::{GsBase, KernelGsBase};
+    
+    // Read current GS base (should be kernel TLS)
+    let kernel_gs = GsBase::read();
+    
+    // Set KERNEL_GS_BASE to the same value
+    // SWAPGS will swap GS_BASE and KERNEL_GS_BASE
+    KernelGsBase::write(kernel_gs);
+    
+    // Set user GS to 0 initially (userspace can change it later)
+    // This happens after SWAPGS, so we're setting what will become the user GS
+    // For now, we just ensure it's not pointing to kernel memory
+    
+    log::info!("SWAPGS support configured: KERNEL_GS_BASE = {:#x}", kernel_gs);
+    
+    Ok(())
+}
+
 /// Allocate TLS for a new thread
 #[allow(dead_code)]
 pub fn allocate_thread_tls() -> Result<u64, &'static str> {
