@@ -12,6 +12,8 @@ pub mod context;
 pub mod scheduler;
 pub mod spawn;
 pub mod userspace_switch;
+pub mod process_task;
+pub mod process_context;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
