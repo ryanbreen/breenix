@@ -15,18 +15,32 @@ const FD_STDERR: u64 = 2;
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
     log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
     
-    // Exit the current process
-    crate::process::exit_current(exit_code);
-    
-    // Try to switch to the next process
-    perform_process_exit_switch();
+    // Get current thread ID from scheduler
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        // Handle thread exit through ProcessScheduler
+        crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
+        
+        // Mark current thread as terminated
+        crate::task::scheduler::with_scheduler(|scheduler| {
+            if let Some(thread) = scheduler.current_thread_mut() {
+                thread.set_terminated();
+            }
+        });
+        
+        // Yield to scheduler to pick next thread
+        crate::task::scheduler::yield_current();
+        
+        // The scheduler should switch to another thread
+        // If we get here, something went wrong
+        log::error!("sys_exit: Failed to switch to next thread");
+    } else {
+        log::error!("sys_exit: No current thread in scheduler");
+    }
     
     // If we get here, there are no more processes to run
-    // Return to kernel mode
     log::info!("No more processes to run, returning to kernel");
     
     // For now, we still panic to show the process exited
-    // In a real implementation, we'd return to the kernel idle loop
     if exit_code == 0 {
         panic!("Last process exited successfully");
     } else {
@@ -126,17 +140,14 @@ pub fn sys_read(fd: u64, _buf_ptr: u64, _count: u64) -> SyscallResult {
 }
 
 /// sys_yield - Yield CPU to another task
-/// 
-/// Currently just returns since we don't have a scheduler yet.
 pub fn sys_yield() -> SyscallResult {
     log::trace!("sys_yield called");
     
-    // TODO: Once we have a scheduler:
-    // 1. Mark current task as ready
-    // 2. Call scheduler to pick next task
-    // 3. Context switch if different task selected
+    // Yield to the scheduler
+    crate::task::scheduler::yield_current();
     
-    // For now, just return success
+    // If we return here, either we're still the best thread to run
+    // or the context switch will happen when we return from the syscall
     SyscallResult::Ok(0)
 }
 

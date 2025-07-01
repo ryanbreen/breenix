@@ -1,47 +1,65 @@
 # Breenix Next Steps
 
 ## Current Status
-We have successfully achieved userspace execution with working syscalls! 
+We have successfully achieved userspace execution with working syscalls, SWAPGS support, and basic process management!
 
 ### What's Working:
 - ✅ Ring 3 (userspace) execution via IRETQ
 - ✅ INT 0x80 syscall mechanism
-- ✅ Basic syscalls: GetTime, Write
+- ✅ Basic syscalls: GetTime, Write, Exit
 - ✅ Memory protection (user vs kernel pages)
 - ✅ TSS with kernel stack (RSP0) for handling interrupts from userspace
 - ✅ ELF loading and execution
+- ✅ SWAPGS support for secure kernel/user GS separation
+- ✅ Process struct with full lifecycle management
+- ✅ Multiple process creation and management
+- ✅ sys_exit implementation with process cleanup
+- ✅ Basic round-robin scheduling in ProcessManager
 
 ### What Needs Work:
-- ❌ SWAPGS support (currently disabled)
-- ❌ Proper program termination (sys_exit)
-- ❌ Scheduler integration
-- ❌ Multiple processes/threads
+- ❌ Integration between ProcessManager and kernel's preemptive scheduler
+- ❌ Automatic context switching between processes
+- ❌ Process context saving/restoration for preemption
+- ❌ Resource cleanup (memory unmapping, file descriptors, etc.)
 
 ## Immediate Next Steps
 
-### 1. Implement sys_exit (In Progress)
-- Add proper program termination instead of HLT
-- Return control to kernel
-- Clean up resources
+### 1. Integrate ProcessManager with Kernel Scheduler (PRIORITY)
+- Bridge the gap between process::ProcessManager and task::scheduler
+- Add processes to the kernel's preemptive scheduler as tasks
+- Implement process context saving/restoration
+- Enable automatic context switching via timer interrupts
+- Remove direct execution model in favor of scheduler-based execution
 
-### 2. Fix SWAPGS Support
-- Set up MSR_KERNEL_GS_BASE for kernel TLS
-- Set up MSR_GS_BASE for userspace (can be 0 initially)
-- Re-enable SWAPGS in syscall entry/exit
+#### Integration Architecture:
+**Current State:** Two parallel systems that don't communicate:
+1. **Task Scheduler** (`kernel/src/task/scheduler.rs`)
+   - Manages kernel threads/tasks
+   - Preemptive scheduling with timer interrupts
+   - Full context switching support
+   - Async executor integration
 
-### 3. Basic Process Management
-- Create a Process struct to track userspace programs
-- Implement process creation from ELF
-- Track process state (running, terminated)
-- Basic process cleanup on exit
+2. **Process Manager** (`kernel/src/process/`)
+   - Manages userspace processes
+   - Round-robin scheduling (manual)
+   - Direct execution model
+   - NOT connected to task scheduler
 
-### 4. Scheduler Integration
-- Connect userspace execution to the task scheduler
-- Allow multiple userspace processes
-- Implement preemptive multitasking for userspace
-- Handle timer interrupts from userspace
+**Goal:** Unify these systems so processes become special tasks in the kernel scheduler
 
-### 5. Expand Syscall Interface
+### 2. Complete Process Resource Management
+- Implement memory unmapping on process exit
+- Add file descriptor table and cleanup
+- Implement child process reparenting to init
+- Add signal handling infrastructure
+
+### 3. Enhanced Process Control
+- Implement fork() system call
+- Add exec() family of system calls
+- Implement wait()/waitpid() for process synchronization
+- Add process priority and nice values
+
+### 4. Expand Syscall Interface
 - mmap/munmap for memory allocation
 - fork/exec for process creation
 - open/close/read/write for file I/O (initially just console)
@@ -77,6 +95,13 @@ We have successfully achieved userspace execution with working syscalls!
 - Basic access control
 
 ## Architecture Decisions
+
+### Scheduler Integration Plan
+1. **Create ProcessTask wrapper** - A Task type that wraps a Process
+2. **Modify scheduler to handle ProcessTask** - Extend scheduler to understand userspace tasks
+3. **Connect timer interrupts** - Ensure timer interrupts work from userspace
+4. **Implement proper context switching** - Save/restore full CPU state for processes
+5. **Remove direct execution** - Replace perform_process_exit_switch with scheduler
 
 ### Memory Layout
 ```
