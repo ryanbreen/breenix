@@ -11,24 +11,26 @@ const FD_STDIN: u64 = 0;
 const FD_STDOUT: u64 = 1;
 const FD_STDERR: u64 = 2;
 
-/// sys_exit - Terminate the current task
-/// 
-/// For now, this panics with a special message since we don't have proper task management yet.
-#[allow(dead_code)]
+/// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
     log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
     
-    // TODO: Once we have proper task management:
-    // 1. Mark current task as terminated
-    // 2. Clean up task resources
-    // 3. Schedule next task
-    // 4. Never return
+    // Exit the current process
+    crate::process::exit_current(exit_code);
     
-    // For now, panic with a special exit message to indicate successful termination
+    // TODO: Once scheduler integration is complete:
+    // - This should trigger a context switch to the next process
+    // - Never return to userspace
+    
+    // Log that we're about to panic (for debugging)
+    log::info!("Process will now terminate (panic for demo purposes)");
+    
+    // For now, we still panic to show the process exited
+    // In a real implementation, we'd switch to the next process
     if exit_code == 0 {
-        panic!("USERSPACE PROGRAM EXITED SUCCESSFULLY");
+        panic!("Process exited successfully");
     } else {
-        panic!("USERSPACE PROGRAM EXITED WITH CODE: {}", exit_code);
+        panic!("Process exited with code: {}", exit_code);
     }
 }
 

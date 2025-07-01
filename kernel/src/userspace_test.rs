@@ -68,53 +68,73 @@ pub fn run_userspace_test() {
     // Check if we have the test binary
     #[cfg(feature = "testing")]
     {
-        use crate::elf;
+        use alloc::string::String;
+        use x86_64::VirtAddr;
         
-        log::info!("Loading userspace test program ({} bytes)", HELLO_TIME_ELF.len());
+        log::info!("Creating userspace test process ({} bytes)", HELLO_TIME_ELF.len());
         
-        // Just load the ELF without spawning a thread
-        match elf::load_elf(HELLO_TIME_ELF) {
-            Ok(loaded_elf) => {
-                log::info!("✓ Successfully loaded userspace program at {:#x}", loaded_elf.entry_point);
+        // Create a process for the test program
+        match crate::process::spawn_process(String::from("hello_time"), HELLO_TIME_ELF) {
+            Ok(pid) => {
+                log::info!("✓ Created process with PID {}", pid.as_u64());
                 
-                // For now, let's try a direct jump to userspace
-                log::info!("Attempting direct execution of userspace code...");
+                // Get the process manager and debug print
+                if let Some(ref manager) = *crate::process::manager() {
+                    manager.debug_processes();
+                }
                 
-                // Allocate a stack for the userspace program
-                use crate::memory::stack;
-                use crate::task::thread::ThreadPrivilege;
+                // For now, we'll still do direct execution of the process
+                // TODO: Integrate with scheduler to run the process properly
+                log::info!("Direct execution of process (scheduler integration pending)...");
                 
-                const USER_STACK_SIZE: usize = 64 * 1024;
-                let user_stack = stack::allocate_stack_with_privilege(
-                    USER_STACK_SIZE,
-                    ThreadPrivilege::User
-                ).expect("Failed to allocate user stack");
+                // Get process info and set current PID
+                let process_info = {
+                    // Get the process manager (in a limited scope to release the lock)
+                    let mut manager_lock = crate::process::manager();
+                    if let Some(ref mut manager) = *manager_lock {
+                        // Set this as the current process
+                        manager.set_current_pid(pid);
+                        
+                        // Get process info
+                        if let Some(process) = manager.get_process(pid) {
+                            if let Some(ref thread) = process.main_thread {
+                                Some((process.entry_point, thread.stack_top))
+                            } else {
+                                log::error!("Process has no main thread!");
+                                None
+                            }
+                        } else {
+                            log::error!("Could not find process with PID {}", pid.as_u64());
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }; // Lock is released here
                 
-                let stack_top = user_stack.top();
-                
-                // Keep stack alive
-                let _stack = Box::leak(Box::new(user_stack));
-                
-                log::info!("Switching to userspace with proper ring transition...");
-                
-                unsafe {
-                    // Get selectors and ensure Ring 3 RPL bits are set
-                    let user_cs = crate::gdt::USER_CODE_SELECTOR.0 | 3;
-                    let user_ds = crate::gdt::USER_DATA_SELECTOR.0 | 3;
+                // Now switch to userspace without holding the lock
+                if let Some((entry_point, stack_top)) = process_info {
+                    log::info!("Switching to userspace with proper ring transition...");
                     
-                    log::debug!("Using selectors - CS: {:#x}, DS/SS: {:#x}", user_cs, user_ds);
-                    
-                    // This will switch to Ring 3 and never return
-                    crate::task::userspace_switch::switch_to_userspace(
-                        loaded_elf.entry_point,
-                        stack_top,
-                        user_cs,
-                        user_ds,
-                    );
+                    unsafe {
+                        // Get selectors and ensure Ring 3 RPL bits are set
+                        let user_cs = crate::gdt::USER_CODE_SELECTOR.0 | 3;
+                        let user_ds = crate::gdt::USER_DATA_SELECTOR.0 | 3;
+                        
+                        log::debug!("Using selectors - CS: {:#x}, DS/SS: {:#x}", user_cs, user_ds);
+                        
+                        // This will switch to Ring 3 and never return
+                        crate::task::userspace_switch::switch_to_userspace(
+                            entry_point,
+                            stack_top,
+                            user_cs,
+                            user_ds,
+                        );
+                    }
                 }
             }
             Err(e) => {
-                log::error!("✗ Failed to load userspace program: {}", e);
+                log::error!("✗ Failed to create process: {}", e);
             }
         }
     }
