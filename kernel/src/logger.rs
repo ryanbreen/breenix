@@ -162,17 +162,11 @@ impl Log for CombinedLogger {
                         );
                     }
                     
-                    // Only write to framebuffer if we're in kernel context
-                    // This prevents rendering conflicts from concurrent userspace processes
+                    // Write to framebuffer
+                    // TODO: Add proper synchronization to prevent rendering conflicts
+                    // For now, we'll accept occasional visual glitches rather than deadlock
                     if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
-                        // Check if current thread is a kernel thread (not userspace)
-                        let is_kernel_context = crate::task::scheduler::current_thread_id()
-                            .and_then(|_| crate::task::process_task::ProcessScheduler::current_pid())
-                            .is_none();
-                        
-                        if is_kernel_context {
-                            fb_logger.log(record);
-                        }
+                        fb_logger.log(record);
                     }
                 }
             }
