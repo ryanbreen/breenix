@@ -265,8 +265,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     #[cfg(feature = "testing")]
     {
         log::info!("Keyboard ready. Press Ctrl+P to test multiple processes.");
-        // Don't run automatically - let user trigger with Ctrl+P
-        // userspace_test::test_multiple_processes();
+        log::info!("Auto-running process test (testing feature enabled)...");
+        userspace_test::test_multiple_processes();
     }
     
     executor.run()

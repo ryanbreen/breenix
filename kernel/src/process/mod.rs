@@ -27,6 +27,11 @@ pub fn manager() -> spin::MutexGuard<'static, Option<ProcessManager>> {
     PROCESS_MANAGER.lock()
 }
 
+/// Try to get the process manager without blocking (for interrupt contexts)
+pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>> {
+    PROCESS_MANAGER.try_lock()
+}
+
 /// Create and spawn a new process from an ELF binary
 pub fn spawn_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
     let mut manager_lock = PROCESS_MANAGER.lock();

@@ -164,22 +164,29 @@ pub fn init(idle_thread: Box<Thread>) {
 
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
-    let mut scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_mut() {
-        scheduler.add_thread(thread);
-    } else {
-        panic!("Scheduler not initialized");
-    }
+    // Disable interrupts to prevent timer interrupt deadlock
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.add_thread(thread);
+        } else {
+            panic!("Scheduler not initialized");
+        }
+    });
 }
 
 /// Perform scheduling and return threads to switch between
 pub fn schedule() -> Option<(u64, u64)> {
-    let mut scheduler_lock = SCHEDULER.lock();
-    if let Some(scheduler) = scheduler_lock.as_mut() {
-        scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
-    } else {
-        None
-    }
+    // Note: This is called from timer interrupt, so interrupts are already disabled
+    // But we'll be explicit about it to prevent nested timer deadlocks
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
+        } else {
+            None
+        }
+    })
 }
 
 /// Get access to the scheduler
