@@ -4,7 +4,7 @@ use futures_util::stream::StreamExt;
 mod scancodes;
 mod modifiers;
 mod event;
-mod stream;
+pub mod stream;
 
 pub use event::KeyEvent;
 use modifiers::Modifiers;
@@ -34,6 +34,10 @@ pub fn init() {
     let mut state = KEYBOARD_STATE.lock();
     state.modifiers = Modifiers::new();
     state.e0_sequence = false;
+    drop(state); // Release lock before initializing stream
+    
+    // Initialize the scancode queue early to ensure it's ready for interrupts
+    stream::init_queue();
 }
 
 /// Called by the keyboard interrupt handler
@@ -120,9 +124,11 @@ pub async fn keyboard_task() {
                 } else if event.is_ctrl_key('u') {
                     log::info!("Ctrl+U pressed - running userspace test");
                     crate::userspace_test::run_userspace_test();
+                    log::info!("Userspace test scheduled. Press keys to continue...");
                 } else if event.is_ctrl_key('p') {
                     log::info!("Ctrl+P pressed - testing multiple processes");
                     crate::userspace_test::test_multiple_processes();
+                    log::info!("Multiple processes scheduled. Press keys to continue...");
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);
