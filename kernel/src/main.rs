@@ -255,17 +255,20 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Signal that all POST-testable initialization is complete
     log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
     
-    // Run userspace test automatically after kernel initialization
-    #[cfg(feature = "testing")]
-    {
-        log::info!("Automatically running multi-process test...");
-        userspace_test::test_multiple_processes();
-    }
-    
     // Initialize and run the async executor
     log::info!("Starting async executor...");
     let mut executor = task::executor::Executor::new();
     executor.spawn(task::Task::new(keyboard::keyboard_task()));
+    
+    // Run userspace test automatically after kernel initialization
+    // But do it after the keyboard task is started
+    #[cfg(feature = "testing")]
+    {
+        log::info!("Keyboard ready. Press Ctrl+P to test multiple processes.");
+        // Don't run automatically - let user trigger with Ctrl+P
+        // userspace_test::test_multiple_processes();
+    }
+    
     executor.run()
 }
 

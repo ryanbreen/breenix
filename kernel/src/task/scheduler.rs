@@ -44,9 +44,12 @@ impl Scheduler {
     /// Add a new thread to the scheduler
     pub fn add_thread(&mut self, thread: Box<Thread>) {
         let thread_id = thread.id();
+        let thread_name = thread.name.clone();
+        let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         self.threads.push(thread);
         self.ready_queue.push_back(thread_id);
-        log::debug!("Added thread {} to scheduler", thread_id);
+        log::info!("Added thread {} '{}' to scheduler (user: {}, ready_queue: {:?})", 
+                  thread_id, thread_name, is_user, self.ready_queue);
     }
     
     /// Get a thread by ID

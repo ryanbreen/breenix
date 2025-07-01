@@ -5,6 +5,8 @@ use x86_64::VirtAddr;
 use pic8259::ChainedPics;
 use spin::Once;
 
+mod timer;
+
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
@@ -21,9 +23,10 @@ pub enum InterruptIndex {
 /// System call interrupt vector (INT 0x80)
 pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 
-// Assembly entry point for syscalls
+// Assembly entry points
 extern "C" {
     fn syscall_entry();
+    fn timer_interrupt_entry();
 }
 
 impl InterruptIndex {
@@ -62,7 +65,10 @@ pub fn init_idt() {
         idt.page_fault.set_handler_fn(page_fault_handler);
         
         // Hardware interrupt handlers
-        idt[InterruptIndex::Timer.as_u8()].set_handler_fn(timer_interrupt_handler);
+        // Use raw handler for timer to support userspace preemption
+        unsafe {
+            idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_interrupt_entry as u64));
+        }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         
         // System call handler (INT 0x80)
@@ -111,33 +117,6 @@ extern "x86-interrupt" fn double_fault_handler(
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Call the timer module's interrupt handler
-    crate::time::timer_interrupt();
-    
-    // Perform preemptive scheduling
-    // Note: We only do this if the scheduler is initialized
-    if let Some((old_id, new_id)) = crate::task::scheduler::schedule() {
-        if old_id != new_id {
-            log::trace!("Timer preemption: switching from thread {} to {}", old_id, new_id);
-            
-            // For now, we can at least switch the TLS
-            if let Err(e) = crate::tls::switch_tls(new_id) {
-                log::error!("Failed to switch TLS: {}", e);
-            }
-            
-            // TODO: Full context switching requires either:
-            // 1. Using a naked function wrapper around the interrupt handler
-            // 2. Deferring the switch until interrupt return
-            // 3. Using software interrupt for voluntary yields
-        }
-    }
-    
-    unsafe {
-        PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
-}
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
