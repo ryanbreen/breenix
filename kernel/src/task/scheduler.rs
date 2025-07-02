@@ -176,6 +176,11 @@ impl Scheduler {
     pub fn get_thread(&self, id: u64) -> Option<&Thread> {
         self.threads.iter().find(|t| t.id() == id).map(|t| t.as_ref())
     }
+    
+    /// Get the idle thread ID
+    pub fn idle_thread(&self) -> u64 {
+        self.idle_thread
+    }
 }
 
 /// Initialize the global scheduler
