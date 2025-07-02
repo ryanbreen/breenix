@@ -10,19 +10,20 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 - ✅ Added wake mechanism for keyboard task from idle thread
 - ✅ Created test programs (counter.rs, spinner.rs) for process testing
 - ✅ Cleaned up verbose trace logging
+- ✅ Implemented serial input with async stream and command processing
+- ✅ Added line editing (backspace, Ctrl+C) for serial console
+- ✅ Created serial command handler with help, echo, ps commands
 
 ### Currently Working On (Phase 8: Enhanced Process Control)
-- 🚧 Adding serial input for better testing capabilities
 - 🚧 Implementing fork() system call with copy-on-write
 - 🚧 Designing exec() family for program replacement
 - 🚧 Planning wait()/waitpid() for process synchronization
 
 ### Immediate Next Steps
-1. **Serial input support** - Enable remote testing and automation
-2. **Complete fork() implementation** - Critical for process creation
-3. **Add wait()/waitpid()** - Prevent zombie processes
-4. **Implement execve()** - Load new programs into existing process
-5. **Process resource cleanup** - Memory unmapping, FD cleanup on exit
+1. **Complete fork() implementation** - Critical for process creation
+2. **Add wait()/waitpid()** - Prevent zombie processes
+3. **Implement execve()** - Load new programs into existing process
+4. **Process resource cleanup** - Memory unmapping, FD cleanup on exit
 
 ### Next Major Milestone
 **Phase 11: Disk I/O** - Enable dynamic program loading from disk instead of embedding in kernel
@@ -54,7 +55,7 @@ We aim for IEEE Std 1003.1-2017 (POSIX.1-2017) compliance, focusing on:
 - **Display**: Framebuffer graphics with text rendering
 - **Memory**: Full virtual memory with paging, heap allocation, and guard pages
 - **Interrupts**: Complete interrupt handling with timer and keyboard
-- **I/O**: Serial console, keyboard input with async processing
+- **I/O**: Serial console with input/output, keyboard input with async processing
 - **Scheduling**: Preemptive round-robin scheduler with context switching
 - **Userspace**: Ring 3 execution with syscalls and ELF loading
 - **Processes**: Basic process management with scheduler integration
@@ -115,7 +116,7 @@ We aim for IEEE Std 1003.1-2017 (POSIX.1-2017) compliance, focusing on:
 - [x] Register preservation/restoration
 - [x] Basic syscalls implemented:
   - [x] sys_exit (0) - Process termination
-  - [x] sys_write (1) - Console output  
+  - [x] sys_write (1) - Console output
   - [x] sys_read (2) - Input (returns 0)
   - [x] sys_yield (3) - Yield to scheduler
   - [x] sys_get_time (4) - Get system ticks
@@ -200,7 +201,7 @@ We aim for IEEE Std 1003.1-2017 (POSIX.1-2017) compliance, focusing on:
 - [ ] Command line parsing
 - [ ] Basic utilities:
   - [ ] echo
-  - [ ] cat  
+  - [ ] cat
   - [ ] ls
   - [ ] ps
   - [ ] kill

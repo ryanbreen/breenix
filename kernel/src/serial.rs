@@ -1,13 +1,63 @@
 use uart_16550::SerialPort;
 use spin::Mutex;
 use core::fmt;
+use conquer_once::spin::OnceCell;
+use crossbeam_queue::ArrayQueue;
+use futures_util::task::AtomicWaker;
+
+pub mod command;
 
 const COM1_PORT: u16 = 0x3F8;
 
 pub static SERIAL1: Mutex<SerialPort> = Mutex::new(unsafe { SerialPort::new(COM1_PORT) });
 
+// Serial input queue and waker (similar to keyboard)
+static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
+static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
+
 pub fn init() {
+    // Initialize the serial port for output only (no interrupts yet)
     SERIAL1.lock().init();
+    
+    // Don't enable interrupts here - wait until after IDT is set up
+}
+
+/// Enable serial input interrupts - call this after IDT and PIC are initialized
+pub fn enable_serial_input() {
+    // Initialize the input queue
+    SERIAL_INPUT_QUEUE
+        .try_init_once(|| ArrayQueue::new(256))
+        .expect("Serial input queue already initialized");
+    
+    // Enable receive interrupts (when data is available)
+    unsafe {
+        use x86_64::instructions::port::Port;
+        
+        // Read current interrupt enable register
+        let mut ier_port: Port<u8> = Port::new(COM1_PORT + 1);
+        let mut ier = ier_port.read();
+        
+        // Set bit 0 to enable "data available" interrupts
+        ier |= 0x01;
+        ier_port.write(ier);
+    }
+    
+    log::info!("Serial input interrupts enabled");
+}
+
+/// Called by the serial interrupt handler
+/// 
+/// Must not block or allocate.
+pub fn add_serial_byte(byte: u8) {
+    if let Ok(queue) = SERIAL_INPUT_QUEUE.try_get() {
+        if let Err(_) = queue.push(byte) {
+            log::warn!("Serial input queue full; dropping input");
+        } else {
+            SERIAL_WAKER.wake();
+        }
+    } else {
+        log::warn!("Serial input queue uninitialized");
+    }
 }
 
 pub fn write_byte(byte: u8) {
@@ -71,4 +121,48 @@ impl log::Log for SerialLogger {
     }
 
     fn flush(&self) {}
+}
+
+// Serial input stream implementation
+use core::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+use futures_util::stream::Stream;
+
+pub struct SerialInputStream {
+    _private: (),
+}
+
+impl SerialInputStream {
+    pub fn new() -> Self {
+        // Ensure queue is initialized
+        let _ = SERIAL_INPUT_QUEUE.try_init_once(|| ArrayQueue::new(256));
+        
+        SerialInputStream { _private: () }
+    }
+}
+
+impl Stream for SerialInputStream {
+    type Item = u8;
+    
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
+        let queue = SERIAL_INPUT_QUEUE
+            .try_get()
+            .expect("serial input queue not initialized");
+        
+        // Fast path
+        if let Some(byte) = queue.pop() {
+            return Poll::Ready(Some(byte));
+        }
+        
+        SERIAL_WAKER.register(&cx.waker());
+        match queue.pop() {
+            Some(byte) => {
+                SERIAL_WAKER.take();
+                Poll::Ready(Some(byte))
+            }
+            None => Poll::Pending,
+        }
+    }
 }
