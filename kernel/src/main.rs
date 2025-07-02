@@ -138,6 +138,31 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init_pic();
     log::info!("PIC initialized");
     
+    // Now it's safe to enable serial input interrupts
+    serial::enable_serial_input();
+    
+    // Register serial command handlers
+    serial::command::register_handlers(
+        || {
+            // PS handler
+            if let Some(ref manager) = *process::manager() {
+                manager.debug_processes();
+            } else {
+                serial_println!("Process manager not initialized");
+            }
+        },
+        || {
+            // MEM handler
+            memory::debug_memory_info();
+        },
+        || {
+            // TEST handler
+            serial_println!("Running test processes...");
+            userspace_test::test_multiple_processes();
+            serial_println!("Test processes scheduled. Type to continue...");
+        }
+    );
+    
     // Initialize syscall infrastructure
     log::info!("Initializing system call infrastructure...");
     syscall::init();
@@ -259,6 +284,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Starting async executor...");
     let mut executor = task::executor::Executor::new();
     executor.spawn(task::Task::new(keyboard::keyboard_task()));
+    executor.spawn(task::Task::new(serial::command::serial_command_task()));
     
     // Don't run tests automatically - let the user trigger them manually
     #[cfg(feature = "testing")]

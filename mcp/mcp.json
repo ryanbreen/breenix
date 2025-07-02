@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "breenix-mcp": {
+      "command": "/Users/wrb/fun/code/breenix/mcp/start.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}
