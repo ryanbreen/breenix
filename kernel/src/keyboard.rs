@@ -100,8 +100,9 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+M: Memory debug information
 /// - Ctrl+U: Run userspace test program
 /// - Ctrl+P: Test multiple processes
+/// - Ctrl+F: Test fork system call
 pub async fn keyboard_task() {
-    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P for special actions)");
+    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F for special actions)");
     
     let mut scancodes = ScancodeStream::new();
     
@@ -129,6 +130,10 @@ pub async fn keyboard_task() {
                     log::info!("Ctrl+P pressed - testing multiple processes");
                     crate::userspace_test::test_multiple_processes();
                     log::info!("Multiple processes scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('f') {
+                    log::info!("Ctrl+F pressed - testing fork system call (debug mode)");
+                    crate::userspace_test::test_fork_debug();
+                    log::info!("Fork debug test scheduled. Press keys to continue...");
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);

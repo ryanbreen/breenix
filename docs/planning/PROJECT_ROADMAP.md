@@ -5,25 +5,42 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 ## Current Development Status
 
 ### Recently Completed (Last Sprint)
-- ✅ Fixed keyboard responsiveness after userspace process exit
-- ✅ Implemented round-robin scheduling for concurrent processes
-- ✅ Added wake mechanism for keyboard task from idle thread
-- ✅ Created test programs (counter.rs, spinner.rs) for process testing
-- ✅ Cleaned up verbose trace logging
-- ✅ Implemented serial input with async stream and command processing
-- ✅ Added line editing (backspace, Ctrl+C) for serial console
-- ✅ Created serial command handler with help, echo, ps commands
+- ✅ **MAJOR**: Fixed timer interrupt doom loop with terminated threads
+- ✅ **MAJOR**: Fixed idle thread context switching and kernel mode transitions  
+- ✅ **MAJOR**: Implemented proper thread cleanup without infinite loops
+- ✅ Added fork() system call skeleton with thread ID debugging
+- ✅ Enhanced timer interrupt handler to prevent userspace execution loops
+- ✅ Added idle thread transitions with proper assembly context setup
+- ✅ Implemented MCP server connectivity and HTTP API for programmatic testing
+- ✅ Built comprehensive fork testing infrastructure (Ctrl+F, forktest command)
+- ✅ Added scheduler improvements to handle terminated thread states properly
 
 ### Currently Working On (Phase 8: Enhanced Process Control)
-- 🚧 Implementing fork() system call with copy-on-write
-- 🚧 Designing exec() family for program replacement
-- 🚧 Planning wait()/waitpid() for process synchronization
+- 🚧 **Timer scheduling aggressiveness** - Userspace threads get preempted too quickly
+- 🚧 Fork() implementation ready but needs timer scheduling fix to test properly
+- 🚧 Thread 3 starts userspace execution but immediately switches to idle thread 0
+- 🚧 Need to adjust timer frequency or scheduling policy for userspace execution
 
 ### Immediate Next Steps
-1. **Complete fork() implementation** - Critical for process creation
-2. **Add wait()/waitpid()** - Prevent zombie processes
-3. **Implement execve()** - Load new programs into existing process
-4. **Process resource cleanup** - Memory unmapping, FD cleanup on exit
+1. **Fix aggressive timer scheduling** - Allow userspace threads to run before preemption
+2. **Test fork() system call** - Verify thread ID tracking and basic functionality  
+3. **Implement actual fork() logic** - Process duplication with copy-on-write memory
+4. **Add wait()/waitpid()** - Process synchronization and zombie prevention
+5. **Implement execve()** - Program replacement within existing process
+
+### Threading Infrastructure Status ✅
+- **Timer Interrupt Loop**: FIXED - No more endless terminated thread warnings
+- **Idle Transition**: FIXED - Proper kernel mode setup with idle_loop() function
+- **Thread Cleanup**: FIXED - Terminated threads handled without infinite loops
+- **Context Switching**: WORKING - Between userspace and kernel modes
+- **Scheduler**: WORKING - But too aggressive with preemption timing
+
+### Fork Implementation Status
+- **System Call**: `sys_fork()` implemented in `kernel/src/syscall/handlers.rs:184-235`
+- **Test Infrastructure**: Complete with Ctrl+F keyboard trigger and MCP commands
+- **Current Behavior**: Returns fake PID 42, logs thread context for debugging
+- **Threading Issue**: Userspace never runs long enough to call fork() due to aggressive scheduling
+- **Next**: Fix timer scheduling to allow userspace execution, then test fork()
 
 ### Next Major Milestone
 **Phase 11: Disk I/O** - Enable dynamic program loading from disk instead of embedding in kernel

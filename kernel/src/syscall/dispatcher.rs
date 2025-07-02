@@ -32,5 +32,6 @@ pub fn dispatch_syscall(
         SyscallNumber::Read => handlers::sys_read(arg1, arg2, arg3),
         SyscallNumber::Yield => handlers::sys_yield(),
         SyscallNumber::GetTime => handlers::sys_get_time(),
+        SyscallNumber::Fork => handlers::sys_fork(),
     }
 }
