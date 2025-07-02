@@ -18,6 +18,8 @@ pub static PICS: spin::Mutex<ChainedPics> =
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard,
+    // Skip COM2 (IRQ3)
+    Serial = PIC_1_OFFSET + 4,  // COM1 is IRQ4
 }
 
 /// System call interrupt vector (INT 0x80)
@@ -69,6 +71,7 @@ pub fn init_idt() {
             idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_interrupt_entry as u64));
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         
         // System call handler (INT 0x80)
         // Use raw handler for proper register handling
@@ -80,7 +83,10 @@ pub fn init_idt() {
         
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {
-            if i != InterruptIndex::Timer.as_u8() && i != InterruptIndex::Keyboard.as_u8() && i != SYSCALL_INTERRUPT_ID {
+            if i != InterruptIndex::Timer.as_u8() 
+                && i != InterruptIndex::Keyboard.as_u8() 
+                && i != InterruptIndex::Serial.as_u8()
+                && i != SYSCALL_INTERRUPT_ID {
                 idt[i].set_handler_fn(generic_handler);
             }
         }
@@ -97,10 +103,10 @@ pub fn init_pic() {
         // Initialize the PIC
         PICS.lock().initialize();
         
-        // Unmask keyboard interrupt (IRQ1) and timer interrupt (IRQ0)
+        // Unmask timer (IRQ0), keyboard (IRQ1), and serial (IRQ4) interrupts
         use x86_64::instructions::port::Port;
         let mut port: Port<u8> = Port::new(0x21); // PIC1 data port
-        let mask = port.read() & !0b11; // Clear bit 0 (timer) and bit 1 (keyboard)
+        let mask = port.read() & !0b00010011; // Clear bit 0 (timer), bit 1 (keyboard), and bit 4 (serial)
         port.write(mask);
     }
 }
@@ -129,6 +135,25 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+    }
+}
+
+extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    use x86_64::instructions::port::Port;
+
+    // Read from COM1 data port while data is available
+    let mut lsr_port = Port::<u8>::new(0x3F8 + 5); // Line Status Register
+    let mut data_port = Port::<u8>::new(0x3F8);    // Data port
+    
+    // Check if data is available (bit 0 of LSR)
+    while unsafe { lsr_port.read() } & 0x01 != 0 {
+        let byte = unsafe { data_port.read() };
+        crate::serial::add_serial_byte(byte);
+    }
+
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Serial.as_u8());
     }
 }
 
