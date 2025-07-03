@@ -4,6 +4,7 @@
 
 use super::SyscallResult;
 use core::slice;
+use alloc::boxed::Box;
 
 /// File descriptors
 #[allow(dead_code)]
@@ -184,15 +185,19 @@ pub fn sys_get_time() -> SyscallResult {
 pub fn sys_fork() -> SyscallResult {
     log::info!("sys_fork called - implementing basic fork");
     
-    // Get current thread ID from scheduler and TLS (for debugging)
+    // Get current thread ID from scheduler (not TLS, since we're in kernel mode after SWAPGS)
     let scheduler_thread_id = crate::task::scheduler::current_thread_id();
-    let tls_thread_id = crate::tls::current_thread_id();
     
-    log::info!("sys_fork: Scheduler thread ID: {:?}, TLS thread ID: {}", scheduler_thread_id, tls_thread_id);
+    log::info!("sys_fork: Scheduler thread ID: {:?}", scheduler_thread_id);
     
-    // For basic implementation, use TLS thread ID as the authoritative source
-    // since that's what's actually running
-    let current_thread_id = tls_thread_id;
+    // Use scheduler thread ID as the authoritative source
+    let current_thread_id = match scheduler_thread_id {
+        Some(id) => id,
+        None => {
+            log::error!("sys_fork: No current thread in scheduler");
+            return SyscallResult::Err(22); // EINVAL
+        }
+    };
     
     if current_thread_id == 0 {
         log::error!("sys_fork: Cannot fork from idle thread");
@@ -200,7 +205,7 @@ pub fn sys_fork() -> SyscallResult {
     }
     
     // Find the current process by thread ID
-    let manager_guard = crate::process::manager();
+    let mut manager_guard = crate::process::manager();
     let process_info = if let Some(ref manager) = *manager_guard {
         manager.find_process_by_thread(current_thread_id)
     } else {
@@ -218,19 +223,43 @@ pub fn sys_fork() -> SyscallResult {
     
     log::info!("sys_fork: Found parent process {} (PID {})", parent_process.name, parent_pid.as_u64());
     
-    // For basic fork implementation, just return different values for parent and child
-    // In a real implementation, we would:
-    // 1. Copy the process memory space (copy-on-write)
-    // 2. Create a new thread with copied context
-    // 3. Add it to the scheduler
-    // 4. Return 0 in child, child PID in parent
+    // Perform the actual fork
+    drop(manager_guard); // Drop the lock before calling fork to avoid deadlock
     
-    // For now, simulate fork by returning a fake child PID
-    let fake_child_pid = 42; // In real implementation, this would be the actual new process PID
-    
-    log::info!("sys_fork: Simulated fork - parent gets child PID {}", fake_child_pid);
-    log::info!("sys_fork: TODO: Implement actual process duplication with copy-on-write memory");
-    
-    // Return the "child" PID to the parent process
-    SyscallResult::Ok(fake_child_pid)
+    let mut manager_guard = crate::process::manager();
+    if let Some(ref mut manager) = *manager_guard {
+        match manager.fork_process(parent_pid) {
+            Ok(child_pid) => {
+                // Get the child's thread ID to add to scheduler
+                if let Some(child_process) = manager.get_process(child_pid) {
+                    if let Some(child_thread) = &child_process.main_thread {
+                        let child_thread_id = child_thread.id;
+                        let child_thread_clone = child_thread.clone();
+                        
+                        // Add the child thread to the scheduler
+                        crate::task::scheduler::spawn(Box::new(child_thread_clone));
+                        
+                        log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
+                            parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
+                        
+                        // Return the child PID to the parent
+                        SyscallResult::Ok(child_pid.as_u64())
+                    } else {
+                        log::error!("sys_fork: Child process has no main thread");
+                        SyscallResult::Err(12) // ENOMEM
+                    }
+                } else {
+                    log::error!("sys_fork: Failed to find newly created child process");
+                    SyscallResult::Err(12) // ENOMEM
+                }
+            }
+            Err(e) => {
+                log::error!("sys_fork: Failed to fork process: {}", e);
+                SyscallResult::Err(12) // ENOMEM
+            }
+        }
+    } else {
+        log::error!("sys_fork: Process manager not available");
+        SyscallResult::Err(12) // ENOMEM
+    }
 }
