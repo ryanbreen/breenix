@@ -9,6 +9,11 @@ use x86_64::VirtAddr;
 /// Global thread ID counter
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is reserved for kernel thread
 
+/// Allocate a new thread ID
+pub fn allocate_thread_id() -> u64 {
+    NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst)
+}
+
 /// Thread states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {

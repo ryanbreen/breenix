@@ -54,9 +54,18 @@ breenix/
    - Process lifecycle management for QEMU/Breenix sessions
    - RESTful API and JSON-RPC endpoints for automation
 
-## MCP Server Usage
+## MCP Server Usage (REQUIRED - ALWAYS USE MCP)
 
-Breenix includes a comprehensive MCP (Model Context Protocol) server that enables programmatic interaction with the kernel for development and testing. This is especially useful for Claude Code integration.
+**CRITICAL: Always use MCP for ALL Breenix development and testing. NEVER run QEMU or kernel tests directly without MCP.**
+
+Breenix includes a comprehensive MCP (Model Context Protocol) server that enables programmatic interaction with the kernel for development and testing. This is REQUIRED for Claude Code integration and provides essential visibility for debugging.
+
+**Why MCP is mandatory:**
+- Provides real-time visibility into kernel behavior through tmux panes
+- Enables proper debugging with Ryan's assistance
+- Maintains consistent testing environment
+- Prevents stuck QEMU processes
+- Tracks all kernel interactions and logs
 
 ### Quick Start with tmuxinator
 

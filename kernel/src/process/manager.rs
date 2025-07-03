@@ -4,12 +4,14 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::format;
+use core::sync::atomic::{self, AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
 use super::{Process, ProcessId};
 use crate::elf;
 use crate::task::thread::Thread;
+use crate::memory::stack::GuardedStack;
 
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
@@ -221,5 +223,92 @@ impl ProcessManager {
         }
         log::info!("Current PID: {:?}", self.current_pid);
         log::info!("Ready queue: {:?}", self.ready_queue);
+    }
+    
+    /// Fork a process - create a child process that's a copy of the parent
+    pub fn fork_process(&mut self, parent_pid: ProcessId) -> Result<ProcessId, &'static str> {
+        // Get the parent process
+        let parent = self.processes.get(&parent_pid)
+            .ok_or("Parent process not found")?;
+        
+        // Get parent's main thread
+        let parent_thread = parent.main_thread.as_ref()
+            .ok_or("Parent process has no main thread")?;
+        
+        // Allocate a new PID for the child
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        
+        log::info!("Forking process {} '{}' -> child PID {}", 
+            parent_pid.as_u64(), parent.name, child_pid.as_u64());
+        
+        // Create child process name
+        let child_name = format!("{}_child_{}", parent.name, child_pid.as_u64());
+        
+        // Create the child process with the same entry point
+        let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
+        child_process.parent = Some(parent_pid);
+        
+        // TODO: For now, we'll create a simple copy. In the future, we need:
+        // 1. Copy-on-write memory pages
+        // 2. Duplicate file descriptors
+        // 3. Copy signal handlers
+        // 4. Copy other process state
+        
+        // Create a new stack for the child thread
+        // Create a new stack for the child process (64KB userspace stack)
+        let mut mapper = unsafe { crate::memory::paging::get_mapper() };
+        let child_stack = GuardedStack::new(64 * 1024, &mut mapper, crate::task::thread::ThreadPrivilege::User)
+            .map_err(|_| "Failed to allocate stack for child process")?;
+        let child_stack_top = child_stack.top();
+        
+        // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
+        // In the future, we should properly copy parent's TLS data
+        let dummy_tls = VirtAddr::new(0);
+        
+        // Create the child thread - copy most properties from parent
+        let mut child_thread = Thread::new(
+            child_name,
+            parent_thread.entry_point.unwrap_or(|| {}), // Dummy entry point, will use copied context
+            child_stack_top,
+            child_stack_top - (64 * 1024), // Stack is 64KB
+            dummy_tls, // Thread::new will allocate proper TLS
+            parent_thread.privilege,
+        );
+        
+        // Copy the parent's CPU context to the child
+        // This is crucial - the child needs to resume at the same point as the parent
+        child_thread.context = parent_thread.context.clone();
+        // But update the stack pointer to use the child's stack
+        child_thread.context.rsp = child_stack_top.as_u64();
+        // IMPORTANT: Set RAX to 0 for the child (fork return value)
+        child_thread.context.rax = 0;
+        
+        // Set up child thread properties
+        child_thread.privilege = parent_thread.privilege;
+        // Mark child as ready to run
+        child_thread.state = crate::task::thread::ThreadState::Ready;
+        
+        // Store the stack in the child process
+        child_process.stack = Some(Box::new(child_stack));
+        
+        // Set the child thread as the main thread of the child process
+        child_process.set_main_thread(child_thread);
+        
+        // Add child to parent's children list
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.add_child(child_pid);
+        }
+        
+        // Add the child process to the process table
+        self.processes.insert(child_pid, child_process);
+        
+        // Add the child to the ready queue so it can be scheduled
+        self.ready_queue.push(child_pid);
+        
+        log::info!("Fork complete: parent {} -> child {}", 
+            parent_pid.as_u64(), child_pid.as_u64());
+        
+        // Return the child PID to the parent
+        Ok(child_pid)
     }
 }
