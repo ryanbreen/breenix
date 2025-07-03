@@ -5,52 +5,52 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 ## Current Development Status
 
 ### Recently Completed (Last Sprint)
-- ✅ **MAJOR**: Fixed page fault in fork() - TLS access after SWAPGS fixed
-- ✅ **MAJOR**: Implemented basic fork() process duplication logic
-- ✅ Created ProcessManager::fork_process() with child process creation
-- ✅ Fixed sys_fork to use scheduler thread ID instead of TLS
-- ✅ Implemented child thread creation with parent context copying
-- ✅ Added child process to scheduler ready queue
-- ✅ Set up fork return values (0 for child, PID for parent)
-- ✅ Fork test now reaches process creation without crashes
+- ✅ **MAJOR**: Fixed timer delay bug - 1000ms was becoming 100.8 seconds due to unit mismatch
+- ✅ **MAJOR**: Implemented getpid() and gettid() system calls (Linux-compatible numbers)
+- ✅ Fixed syscall stack frame mismatch between assembly and Rust struct
+- ✅ Implemented proper PID/TID management (main thread has TID = PID)
+- ✅ Fixed thread first-run detection with has_run field
+- ✅ **CRITICAL DISCOVERY**: Timer interrupt-based process startup corrupts registers
+- ✅ Created exec mechanism for proper userspace transition (avoids timer issues)
+- ✅ Identified root cause of userspace crashes: register state corruption
 
 ### Currently Working On (Phase 8: Enhanced Process Control) 
-- 🚧 **Current Issue**: Thread creation/TLS initialization issue in forked child
-- 🚧 **Next**: Fix Thread::new to support fork (avoid double ID allocation)
-- 🚧 **Next**: Ensure proper TLS setup for forked processes
-- 🚧 **Next**: Implement copy-on-write memory for efficient forking
-- 🚧 **Next**: Add wait()/waitpid() for process synchronization
+- 🚧 **Current Issue**: Processes start from timer interrupts (fundamentally broken)
+- 🚧 **Next**: Implement proper fork/exec/spawn pattern
+- 🚧 **Next**: Create spawn mechanism that uses dedicated thread for exec
+- 🚧 **Next**: Remove all timer interrupt-based process startup
+- 🚧 **Next**: Test fork() once processes start correctly
 
 ### **SESSION HANDOFF NOTES - CONTINUE HERE NEXT TIME** 🎯
-**FORK IMPLEMENTATION PROGRESS:**
-1. ✅ **Fixed TLS page fault** - sys_fork now uses scheduler thread ID not TLS
-2. ✅ **Implemented fork_process()** - Full process duplication in ProcessManager
-3. ✅ **Child process creation working** - Allocates stack, creates thread, copies context
-4. 🚧 **Current blocker** - Thread::new allocates its own ID/TLS, conflicts with fork
+**PROCESS STARTUP ISSUE DISCOVERED:**
+1. ✅ **Root cause found** - Timer interrupts corrupt register state when starting processes
+2. ✅ **Why it happens** - Timer fires between userspace setting RAX and INT 0x80
+3. ✅ **Created exec.rs** - Proper IRETQ-based userspace transition mechanism
+4. 🚧 **Current blocker** - exec can't be called from interrupt/async contexts
 
 **WHAT'S IMPLEMENTED:**
-- ProcessManager::fork_process() creates child with:
-  - New PID allocation
-  - Stack allocation for child
-  - Thread creation with parent context copy
-  - RAX=0 for child, parent PID for parent
-  - Child added to scheduler ready queue
+- Fixed delay macro (ms to ticks conversion)
+- Added getpid()/gettid() syscalls (numbers 39/186)
+- Fixed syscall frame assembly/struct mismatch
+- Created exec_process() in process/exec.rs
+- Fork test exits with code 11 (starts with RAX=0)
   
 **NEXT SESSION TODO:**
-1. Create Thread::new_forked() that accepts pre-allocated thread ID
-2. Fix TLS allocation for forked threads
-3. Test that both parent and child execute after fork
-4. Eventually add copy-on-write pages
+1. Implement spawn mechanism using dedicated kernel thread
+2. Have spawn thread call exec_process() safely
+3. Update all process creation to use spawn instead of scheduler
+4. Remove timer interrupt process startup completely
+5. Then test fork() with proper process startup
 
 **TEST COMMAND:** `forktest` in serial console (always use MCP!)
 
 ### Immediate Next Steps
-1. **🔥 PRIORITY**: Fix page fault in fork() - handle TLS access properly
-2. **Implement actual fork() logic** - Process duplication with proper memory copying
-3. **Add copy-on-write pages** - Efficient memory sharing between parent/child
-4. **Implement wait()/waitpid()** - Process synchronization and zombie prevention
-5. **Test fork/exec pattern** - Verify process creation and replacement works
-5. **Implement execve()** - Program replacement within existing process
+1. **🔥 PRIORITY**: Implement spawn mechanism with dedicated kernel thread
+2. **Remove timer interrupt process startup** - Replace with spawn/exec pattern
+3. **Test fork() with proper startup** - Should work once processes start correctly
+4. **Add copy-on-write pages** - Efficient memory sharing between parent/child
+5. **Implement wait()/waitpid()** - Process synchronization and zombie prevention
+6. **Implement execve()** - Program replacement within existing process
 
 ### Threading Infrastructure Status ✅ MAJOR SUCCESS
 - **Timer Interrupt Loop**: ✅ FIXED - Eliminated endless terminated thread warnings

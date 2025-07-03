@@ -18,21 +18,21 @@ extern rust_syscall_handler
 ;   - We're in Ring 0
 syscall_entry:
     ; Save all general purpose registers
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rbp
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
     push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rbp
+    push rbx
+    push rdx
+    push rcx
+    push rax    ; syscall number
 
     ; Clear direction flag for string operations
     cld
@@ -51,21 +51,21 @@ syscall_entry:
     swapgs
 
     ; Restore all general purpose registers
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbp
-    pop rbx
-    pop rdx
+    pop rax     ; This gets the syscall return value set by handler
     pop rcx
-    pop rax  ; This now contains the syscall return value
+    pop rdx
+    pop rbx
+    pop rbp
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
 
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack

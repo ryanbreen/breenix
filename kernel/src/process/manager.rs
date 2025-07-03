@@ -97,15 +97,44 @@ impl ProcessManager {
     fn create_main_thread(&self, process: &Process, stack_top: x86_64::VirtAddr) -> Result<Thread, &'static str> {
         
         // For now, use a null TLS block (we'll implement TLS later)
-        let tls_block = x86_64::VirtAddr::new(0);
+        let _tls_block = x86_64::VirtAddr::new(0);
         
-        // Create a thread for the process
-        let thread = Thread::new_userspace(
-            String::from(&process.name),
+        // For the main thread, use PID as TID (Unix convention)
+        let thread_id = process.id.as_u64();
+        
+        // Allocate a TLS block for this thread ID
+        let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
+        
+        // Register this thread with the TLS system
+        if let Err(e) = crate::tls::register_thread_tls(thread_id, actual_tls_block) {
+            log::warn!("Failed to register thread {} with TLS system: {}", thread_id, e);
+        }
+        
+        // Calculate stack bottom (stack grows down)
+        const USER_STACK_SIZE: usize = 64 * 1024;
+        let stack_bottom = stack_top - USER_STACK_SIZE as u64;
+        
+        // Set up initial context for userspace
+        let context = crate::task::thread::CpuContext::new(
             process.entry_point,
             stack_top,
-            tls_block,
+            crate::task::thread::ThreadPrivilege::User,
         );
+        
+        let thread = Thread {
+            id: thread_id,
+            name: String::from(&process.name),
+            state: crate::task::thread::ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            tls_block: actual_tls_block,
+            priority: 128,
+            time_slice: 10,
+            entry_point: None,
+            privilege: crate::task::thread::ThreadPrivilege::User,
+            has_run: false,
+        };
         
         Ok(thread)
     }
@@ -263,21 +292,34 @@ impl ProcessManager {
         
         // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
         // In the future, we should properly copy parent's TLS data
-        let dummy_tls = VirtAddr::new(0);
+        let _dummy_tls = VirtAddr::new(0);
         
-        // Create the child thread - copy most properties from parent
-        let mut child_thread = Thread::new(
-            child_name,
-            parent_thread.entry_point.unwrap_or(|| {}), // Dummy entry point, will use copied context
-            child_stack_top,
-            child_stack_top - (64 * 1024), // Stack is 64KB
-            dummy_tls, // Thread::new will allocate proper TLS
-            parent_thread.privilege,
-        );
+        // Create the child thread with PID as TID (Unix convention for main thread)
+        let child_thread_id = child_pid.as_u64();
         
-        // Copy the parent's CPU context to the child
-        // This is crucial - the child needs to resume at the same point as the parent
-        child_thread.context = parent_thread.context.clone();
+        // Allocate a TLS block for this thread ID
+        let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
+        
+        // Register this thread with the TLS system
+        if let Err(e) = crate::tls::register_thread_tls(child_thread_id, child_tls_block) {
+            log::warn!("Failed to register thread {} with TLS system: {}", child_thread_id, e);
+        }
+        
+        // Create the child thread manually to use specific ID
+        let mut child_thread = Thread {
+            id: child_thread_id,
+            name: child_name,
+            state: crate::task::thread::ThreadState::Ready,
+            context: parent_thread.context.clone(), // Will be modified below
+            stack_top: child_stack_top,
+            stack_bottom: child_stack_top - (64 * 1024),
+            tls_block: child_tls_block,
+            priority: parent_thread.priority,
+            time_slice: parent_thread.time_slice,
+            entry_point: None, // Userspace threads don't have kernel entry points
+            privilege: parent_thread.privilege,
+            has_run: false, // Child hasn't run yet
+        };
         // But update the stack pointer to use the child's stack
         child_thread.context.rsp = child_stack_top.as_u64();
         // IMPORTANT: Set RAX to 0 for the child (fork return value)

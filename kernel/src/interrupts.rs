@@ -206,6 +206,8 @@ extern "x86-interrupt" fn page_fault_handler(
     log::error!("EXCEPTION: PAGE FAULT");
     log::error!("Accessed Address: {:?}", accessed_addr);
     log::error!("Error Code: {:?}", error_code);
+    log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::error!("CS: {:#x}", stack_frame.code_segment.0);
     log::error!("{:#?}", stack_frame);
     
     #[cfg(feature = "test_page_fault")]
@@ -220,7 +222,15 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("UNHANDLED INTERRUPT\n{:#?}", stack_frame);
+    // Get the interrupt number from the stack
+    // Note: This is a bit hacky but helps with debugging
+    let interrupt_num = unsafe {
+        // The interrupt number is pushed by the CPU before calling the handler
+        // We need to look at the return address to figure out which IDT entry was used
+        0 // Placeholder - can't easily get interrupt number in generic handler
+    };
+    log::warn!("UNHANDLED INTERRUPT from RIP {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::warn!("{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(
@@ -228,6 +238,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     error_code: u64,
 ) {
     log::error!("EXCEPTION: GENERAL PROTECTION FAULT");
+    log::error!("RIP: {:#x}, CS: {:#x}", stack_frame.instruction_pointer.as_u64(), stack_frame.code_segment.0);
     log::error!("Error Code: {:#x} (selector: {:#x})", error_code, error_code & 0xFFF8);
     
     // Decode error code

@@ -2,6 +2,7 @@
 #![no_main] // disable all Rust-level entry points
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
+#![feature(never_type)]
 
 extern crate alloc;
 

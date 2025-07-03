@@ -20,6 +20,8 @@ pub enum SyscallNumber {
     Yield = 3,
     GetTime = 4,
     Fork = 5,
+    GetPid = 39,  // Linux syscall number for getpid
+    GetTid = 186, // Linux syscall number for gettid
 }
 
 #[allow(dead_code)]
@@ -33,6 +35,8 @@ impl SyscallNumber {
             3 => Some(Self::Yield),
             4 => Some(Self::GetTime),
             5 => Some(Self::Fork),
+            39 => Some(Self::GetPid),
+            186 => Some(Self::GetTid),
             _ => None,
         }
     }

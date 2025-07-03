@@ -263,3 +263,48 @@ pub fn sys_fork() -> SyscallResult {
         SyscallResult::Err(12) // ENOMEM
     }
 }
+
+/// sys_getpid - Get the current process ID
+pub fn sys_getpid() -> SyscallResult {
+    log::info!("sys_getpid called");
+    
+    // Get current thread ID from scheduler
+    let scheduler_thread_id = crate::task::scheduler::current_thread_id();
+    log::info!("sys_getpid: scheduler_thread_id = {:?}", scheduler_thread_id);
+    
+    if let Some(thread_id) = scheduler_thread_id {
+        // Find the process that owns this thread
+        if let Some(ref manager) = *crate::process::manager() {
+            if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
+                // Return the process ID
+                log::info!("sys_getpid: Found process {} for thread {}", pid.as_u64(), thread_id);
+                return SyscallResult::Ok(pid.as_u64());
+            }
+        }
+        
+        // If no process found, we might be in kernel/idle thread
+        if thread_id == 0 {
+            log::info!("sys_getpid: Thread 0 is kernel/idle thread");
+            return SyscallResult::Ok(0); // Kernel/idle process
+        }
+        
+        log::warn!("sys_getpid: Thread {} has no associated process", thread_id);
+        return SyscallResult::Ok(0); // Return 0 as fallback
+    }
+    
+    log::error!("sys_getpid: No current thread");
+    SyscallResult::Ok(0) // Return 0 as fallback
+}
+
+/// sys_gettid - Get the current thread ID
+pub fn sys_gettid() -> SyscallResult {
+    // Get current thread ID from scheduler
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        // In Linux, the main thread of a process has TID = PID
+        // For now, we just return the thread ID directly
+        return SyscallResult::Ok(thread_id);
+    }
+    
+    log::error!("sys_gettid: No current thread");
+    SyscallResult::Ok(0) // Return 0 as fallback
+}
