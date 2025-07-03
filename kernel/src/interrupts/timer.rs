@@ -21,14 +21,19 @@ pub extern "C" fn timer_interrupt_rust_handler(
     // Check if we came from userspace
     let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
     
-    // Check if current thread is terminated before scheduling
-    let current_terminated = scheduler::with_scheduler(|sched| {
-        sched.current_thread().map(|t| t.state == crate::task::thread::ThreadState::Terminated).unwrap_or(false)
-    }).unwrap_or(false);
+    // Check if we have a current thread and if it's terminated
+    let current_thread_id = scheduler::current_thread_id();
+    let current_terminated = if let Some(id) = current_thread_id {
+        scheduler::with_scheduler(|sched| {
+            sched.get_thread(id).map(|t| t.state == crate::task::thread::ThreadState::Terminated).unwrap_or(false)
+        }).unwrap_or(false)
+    } else {
+        // No current thread means the previous one terminated and was cleaned up
+        true
+    };
     
     if current_terminated && from_userspace {
-        log::info!("Current userspace thread is terminated, forcing switch");
-        // Force a switch away from the terminated thread
+        log::debug!("Current userspace thread is terminated or cleaned up, need to switch");
     }
     
     // Perform scheduling
@@ -41,14 +46,19 @@ pub extern "C" fn timer_interrupt_rust_handler(
             handle_context_switch(old_id, new_id, from_userspace, saved_regs, interrupt_frame);
         }
     } else if current_terminated && from_userspace {
-        // No threads to switch to, but current is terminated
-        // We need to switch to the idle thread manually
-        log::info!("No threads available but current is terminated, switching to idle");
+        // No threads to switch to, but we need to get out of userspace
+        // Switch to idle thread
+        log::debug!("No runnable threads, switching to idle from userspace");
         
-        // Get current thread ID
-        if let Some(current_id) = scheduler::current_thread_id() {
-            // Switch to idle thread (ID 0)
-            handle_context_switch(current_id, 0, from_userspace, saved_regs, interrupt_frame);
+        // Get the idle thread ID from scheduler
+        let idle_id = scheduler::with_scheduler(|sched| sched.idle_thread()).unwrap_or(0);
+        
+        // If we have a current thread ID, do proper cleanup; otherwise just switch to idle
+        if let Some(current_id) = current_thread_id {
+            handle_context_switch(current_id, idle_id, from_userspace, saved_regs, interrupt_frame);
+        } else {
+            // No current thread, just set up to run idle thread
+            handle_idle_transition(idle_id, interrupt_frame);
         }
     }
     
@@ -90,18 +100,30 @@ fn handle_context_switch(
     }
     
     // Now check if we need to restore a userspace context for the new thread
-    if let Some(ref manager) = *crate::process::manager() {
+    // First check if this is the idle thread
+    let is_idle_thread = scheduler::with_scheduler(|sched| new_id == sched.idle_thread()).unwrap_or(false);
+    
+    if is_idle_thread {
+        // Switching to idle thread - ensure we return to kernel mode
+        log::debug!("Switching to idle thread {}, setting up kernel mode return", new_id);
+        handle_idle_transition(new_id, interrupt_frame);
+    } else if let Some(ref manager) = *crate::process::manager() {
         if let Some((pid, process)) = manager.find_process_by_thread(new_id) {
             if let Some(ref thread) = process.main_thread {
                 if thread.privilege == ThreadPrivilege::User {
-                    // Check if this is the first time running or a resume based on thread state
+                    // Check if this is the first time running based on thread state
                     let is_first_run = thread.state == crate::task::thread::ThreadState::Ready;
                     log::info!("Thread {} is_first_run: {}, state: {:?}", new_id, is_first_run, thread.state);
                     
                     if is_first_run {
                         // First time running this thread, set up for initial userspace entry
                         log::info!("Setting up initial userspace entry for thread {}", new_id);
-                        setup_initial_userspace_entry(thread, interrupt_frame);
+                        
+                        // Disable interrupts during critical userspace setup
+                        x86_64::instructions::interrupts::without_interrupts(|| {
+                            setup_initial_userspace_entry(thread, interrupt_frame);
+                        });
+                        
                         log::info!("Initial userspace entry for process {} (thread {})", pid.as_u64(), new_id);
                     } else {
                         // This thread has run before, restore its saved context
@@ -142,5 +164,45 @@ fn setup_initial_userspace_entry(
             log::info!("Userspace segments: CS={:#x}, SS={:#x}", 
                       frame.code_segment.0, frame.stack_segment.0);
         });
+    }
+}
+
+/// Handle transition to idle thread when no current thread exists
+fn handle_idle_transition(
+    idle_id: u64,
+    interrupt_frame: &mut InterruptStackFrame,
+) {
+    // Switch TLS to idle thread
+    if let Err(e) = crate::tls::switch_tls(idle_id) {
+        log::error!("Failed to switch TLS to idle thread: {}", e);
+        return;
+    }
+    
+    // The idle thread should just halt and wait for interrupts
+    // We'll set up the interrupt frame to return to a safe idle loop
+    unsafe {
+        interrupt_frame.as_mut().update(|frame| {
+            // Set kernel code/data segments
+            frame.code_segment = crate::gdt::kernel_code_selector();
+            frame.stack_segment = crate::gdt::kernel_data_selector();
+            
+            // Set RIP to the idle function
+            frame.instruction_pointer = x86_64::VirtAddr::new(idle_loop as *const () as u64);
+            
+            // Use the current kernel stack (it should be safe)
+            // frame.stack_pointer is already set correctly for kernel mode
+            
+            frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+        });
+    }
+    
+    log::debug!("Transitioned to idle thread {}", idle_id);
+}
+
+/// Simple idle loop that halts and waits for interrupts
+fn idle_loop() -> ! {
+    loop {
+        // Halt and wait for next interrupt
+        x86_64::instructions::hlt();
     }
 }

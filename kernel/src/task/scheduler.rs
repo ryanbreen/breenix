@@ -54,7 +54,7 @@ impl Scheduler {
     
     
     /// Get a mutable thread by ID
-    fn get_thread_mut(&mut self, id: u64) -> Option<&mut Thread> {
+    pub fn get_thread_mut(&mut self, id: u64) -> Option<&mut Thread> {
         self.threads.iter_mut().find(|t| t.id() == id).map(|t| t.as_mut())
     }
     
@@ -176,6 +176,11 @@ impl Scheduler {
     pub fn get_thread(&self, id: u64) -> Option<&Thread> {
         self.threads.iter().find(|t| t.id() == id).map(|t| t.as_ref())
     }
+    
+    /// Get the idle thread ID
+    pub fn idle_thread(&self) -> u64 {
+        self.idle_thread
+    }
 }
 
 /// Initialize the global scheduler
@@ -219,6 +224,17 @@ where
 {
     let mut scheduler_lock = SCHEDULER.lock();
     scheduler_lock.as_mut().map(f)
+}
+
+/// Get mutable access to a specific thread (for timer interrupt handler)
+pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
+where
+    F: FnOnce(&mut super::thread::Thread) -> R,
+{
+    let mut scheduler_lock = SCHEDULER.lock();
+    scheduler_lock.as_mut().and_then(|sched| {
+        sched.get_thread_mut(thread_id).map(f)
+    })
 }
 
 /// Get the current thread ID

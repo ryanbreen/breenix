@@ -179,3 +179,58 @@ pub fn sys_get_time() -> SyscallResult {
     // log::info!("USERSPACE: sys_get_time called, returning {} ticks", ticks);
     SyscallResult::Ok(ticks)
 }
+
+/// sys_fork - Basic fork implementation
+pub fn sys_fork() -> SyscallResult {
+    log::info!("sys_fork called - implementing basic fork");
+    
+    // Get current thread ID from scheduler and TLS (for debugging)
+    let scheduler_thread_id = crate::task::scheduler::current_thread_id();
+    let tls_thread_id = crate::tls::current_thread_id();
+    
+    log::info!("sys_fork: Scheduler thread ID: {:?}, TLS thread ID: {}", scheduler_thread_id, tls_thread_id);
+    
+    // For basic implementation, use TLS thread ID as the authoritative source
+    // since that's what's actually running
+    let current_thread_id = tls_thread_id;
+    
+    if current_thread_id == 0 {
+        log::error!("sys_fork: Cannot fork from idle thread");
+        return SyscallResult::Err(22); // EINVAL
+    }
+    
+    // Find the current process by thread ID
+    let manager_guard = crate::process::manager();
+    let process_info = if let Some(ref manager) = *manager_guard {
+        manager.find_process_by_thread(current_thread_id)
+    } else {
+        log::error!("sys_fork: Process manager not available");
+        return SyscallResult::Err(12); // ENOMEM
+    };
+    
+    let (parent_pid, parent_process) = match process_info {
+        Some((pid, process)) => (pid, process),
+        None => {
+            log::error!("sys_fork: Current thread {} not found in any process", current_thread_id);
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+    
+    log::info!("sys_fork: Found parent process {} (PID {})", parent_process.name, parent_pid.as_u64());
+    
+    // For basic fork implementation, just return different values for parent and child
+    // In a real implementation, we would:
+    // 1. Copy the process memory space (copy-on-write)
+    // 2. Create a new thread with copied context
+    // 3. Add it to the scheduler
+    // 4. Return 0 in child, child PID in parent
+    
+    // For now, simulate fork by returning a fake child PID
+    let fake_child_pid = 42; // In real implementation, this would be the actual new process PID
+    
+    log::info!("sys_fork: Simulated fork - parent gets child PID {}", fake_child_pid);
+    log::info!("sys_fork: TODO: Implement actual process duplication with copy-on-write memory");
+    
+    // Return the "child" PID to the parent process
+    SyscallResult::Ok(fake_child_pid)
+}

@@ -3,16 +3,51 @@ use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, System};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
+use warp::{Filter, Rejection, Reply};
+use tracing::info;
 
 const MAX_LOG_LINES: usize = 1000;
+
+// MCP Protocol structures
+#[derive(Debug, Serialize, Deserialize)]
+struct McpRequest {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    method: String,
+    params: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct McpResponse {
+    jsonrpc: String,
+    id: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<McpError>,
+}
+
+#[derive(Debug, Serialize)]
+struct McpError {
+    code: i32,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Tool {
+    name: String,
+    description: String,
+    #[serde(rename = "inputSchema")]
+    input_schema: serde_json::Value,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct LogEntry {
@@ -43,6 +78,11 @@ impl BreenixSession {
         if self.process.is_some() {
             return Err(anyhow!("Breenix is already running"));
         }
+        
+        // Ensure the log directory exists and create/truncate log file
+        std::fs::create_dir_all("/tmp/breenix-mcp").ok();
+        let log_path = "/tmp/breenix-mcp/kernel.log";
+        std::fs::write(log_path, "").ok(); // Truncate the file
 
         let mut cmd = Command::new("cargo");
         cmd.args(&["run", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
@@ -58,7 +98,11 @@ impl BreenixSession {
 
         eprintln!("Starting QEMU with command: {:?}", cmd);
         let mut child = cmd.spawn()
-            .map_err(|e| anyhow!("Failed to spawn QEMU: {}", e))?;
+            .map_err(|e| {
+                eprintln!("Failed to spawn QEMU: {}", e);
+                anyhow!("Failed to spawn QEMU: {}", e)
+            })?;
+        eprintln!("QEMU process started with PID: {:?}", child.id());
 
         // Set up stdout reader
         if let Some(stdout) = child.stdout.take() {
@@ -66,8 +110,33 @@ impl BreenixSession {
             let sender = self.log_sender.clone();
             
             std::thread::spawn(move || {
+                // Try to open the log file for appending
+                let log_path = "/tmp/breenix-mcp/kernel.log";
+                let mut log_writer = match OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(log_path) {
+                    Ok(f) => {
+                        eprintln!("✅ Opened log file for stdout writing: {}", log_path);
+                        Some(f)
+                    },
+                    Err(e) => {
+                        eprintln!("❌ Failed to open log file {}: {}", log_path, e);
+                        None
+                    }
+                };
+                
                 for line in reader.lines() {
                     if let Ok(line) = line {
+                        // Write to log file if available
+                        if let Some(ref mut writer) = log_writer {
+                            if let Err(e) = writeln!(writer, "{}", line) {
+                                eprintln!("❌ Failed to write to log file: {}", e);
+                            } else {
+                                let _ = writer.flush();
+                            }
+                        }
+                        
                         let entry = LogEntry {
                             timestamp: Utc::now().timestamp_millis() as f64 / 1000.0,
                             line,
@@ -84,11 +153,38 @@ impl BreenixSession {
             let sender = self.log_sender.clone();
             
             std::thread::spawn(move || {
+                // Try to open the log file for appending
+                let log_path = "/tmp/breenix-mcp/kernel.log";
+                let mut log_writer = match OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(log_path) {
+                    Ok(f) => {
+                        eprintln!("✅ Opened log file for stderr writing: {}", log_path);
+                        Some(f)
+                    },
+                    Err(e) => {
+                        eprintln!("❌ Failed to open log file {}: {}", log_path, e);
+                        None
+                    }
+                };
+                
                 for line in reader.lines() {
                     if let Ok(line) = line {
+                        let stderr_line = format!("[STDERR] {}", line);
+                        
+                        // Write to log file if available
+                        if let Some(ref mut writer) = log_writer {
+                            if let Err(e) = writeln!(writer, "{}", stderr_line) {
+                                eprintln!("❌ Failed to write to log file: {}", e);
+                            } else {
+                                let _ = writer.flush();
+                            }
+                        }
+                        
                         let entry = LogEntry {
                             timestamp: Utc::now().timestamp_millis() as f64 / 1000.0,
-                            line: format!("[STDERR] {}", line),
+                            line: stderr_line,
                         };
                         let _ = sender.send(entry);
                     }
@@ -97,7 +193,6 @@ impl BreenixSession {
         }
 
         self.process = Some(child);
-        eprintln!("QEMU process started successfully");
         Ok(())
     }
 
@@ -188,7 +283,7 @@ fn kill_all_qemu() -> Result<usize> {
         if process.name().contains("qemu-system") {
             if process.kill() {
                 killed += 1;
-                eprintln!("Killed QEMU process {}", pid);
+                info!("Killed QEMU process {}", pid);
             }
         }
     }
@@ -206,48 +301,269 @@ fn count_qemu_processes() -> usize {
         .count()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct McpRequest {
-    jsonrpc: String,
-    id: Option<serde_json::Value>,
-    method: String,
-    params: Option<serde_json::Value>,
+// HTTP Request/Response types
+#[derive(Debug, Deserialize)]
+struct StartRequest {
+    display: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SendCommandRequest {
+    command: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsRequest {
+    lines: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WaitPromptRequest {
+    timeout: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunCommandRequest {
+    command: String,
+    wait_pattern: Option<String>,
+    timeout: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
-struct McpResponse {
-    jsonrpc: String,
-    id: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<McpError>,
-}
-
-#[derive(Debug, Serialize)]
-struct McpError {
-    code: i32,
+struct ApiResponse {
+    success: bool,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
-struct Tool {
-    name: String,
-    description: String,
-    #[serde(rename = "inputSchema")]
-    input_schema: serde_json::Value,
+impl ApiResponse {
+    fn ok(message: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    fn ok_with_data(message: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            success: true,
+            message: message.into(),
+            data: Some(data),
+        }
+    }
+
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            message: message.into(),
+            data: None,
+        }
+    }
 }
 
-async fn handle_request(
+// HTTP handlers
+async fn handle_start(
+    req: StartRequest,
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    let display = req.display.unwrap_or(false);
+    
+    let start_result = {
+        let mut session = session.lock().unwrap();
+        session.start(display)
+    };
+    
+    match start_result {
+        Ok(_) => {
+            // Wait for boot
+            sleep(Duration::from_secs(2)).await;
+            Ok(warp::reply::json(&ApiResponse::ok("Breenix started successfully")))
+        }
+        Err(e) => Ok(warp::reply::json(&ApiResponse::error(format!("Failed to start Breenix: {}", e))))
+    }
+}
+
+async fn handle_stop(
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    let mut session = session.lock().unwrap();
+    match session.stop() {
+        Ok(_) => Ok(warp::reply::json(&ApiResponse::ok("Breenix stopped"))),
+        Err(e) => Ok(warp::reply::json(&ApiResponse::error(format!("Failed to stop: {}", e))))
+    }
+}
+
+async fn handle_status(
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    let mut session = session.lock().unwrap();
+    let has_managed = session.process.is_some();
+    let is_running = session.is_running();
+    let qemu_count = count_qemu_processes();
+    
+    Ok(warp::reply::json(&ApiResponse::ok_with_data(
+        "Status retrieved",
+        serde_json::json!({
+            "running": is_running,
+            "qemu_processes": qemu_count,
+            "mcp_managed": has_managed,
+        })
+    )))
+}
+
+async fn handle_kill_all() -> Result<impl Reply, Rejection> {
+    match kill_all_qemu() {
+        Ok(count) => Ok(warp::reply::json(&ApiResponse::ok(format!("Killed {} QEMU processes", count)))),
+        Err(e) => Ok(warp::reply::json(&ApiResponse::error(format!("Failed to kill QEMU processes: {}", e))))
+    }
+}
+
+async fn handle_send_command(
+    req: SendCommandRequest,
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    let mut session = session.lock().unwrap();
+    
+    match session.send_command(&req.command) {
+        Ok(_) => Ok(warp::reply::json(&ApiResponse::ok(format!("Sent: {}", req.command)))),
+        Err(e) => Ok(warp::reply::json(&ApiResponse::error(format!("Failed to send command: {}", e))))
+    }
+}
+
+async fn handle_logs(
+    req: LogsRequest,
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    let lines = req.lines.unwrap_or(50);
+    let session = session.lock().unwrap();
+    let logs = session.get_logs(Some(lines), None);
+    
+    Ok(warp::reply::json(&ApiResponse::ok_with_data(
+        "Logs retrieved",
+        serde_json::json!({
+            "logs": logs.iter().map(|entry| &entry.line).collect::<Vec<_>>()
+        })
+    )))
+}
+
+async fn handle_wait_prompt(
+    req: WaitPromptRequest,
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    let timeout = req.timeout.unwrap_or(5.0);
+    let start = Instant::now();
+    
+    loop {
+        let prompt_ready = {
+            let session = session.lock().unwrap();
+            session.last_prompt_time > session.last_command_time
+        };
+        
+        if prompt_ready {
+            return Ok(warp::reply::json(&ApiResponse::ok("Prompt ready")));
+        }
+        
+        if start.elapsed().as_secs_f64() > timeout {
+            return Ok(warp::reply::json(&ApiResponse::error("Timeout waiting for prompt")));
+        }
+        
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn handle_run_command(
+    req: RunCommandRequest,
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    let before_time = Utc::now().timestamp_millis() as f64 / 1000.0;
+    
+    // Send command
+    {
+        let mut session = session.lock().unwrap();
+        if let Err(e) = session.send_command(&req.command) {
+            return Ok(warp::reply::json(&ApiResponse::error(format!("Failed to send command: {}", e))));
+        }
+    }
+    
+    // Wait for completion
+    if let Some(pattern) = req.wait_pattern {
+        let regex = match Regex::new(&pattern) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(warp::reply::json(&ApiResponse::error(format!("Invalid regex pattern: {}", e))));
+            }
+        };
+        
+        let timeout = req.timeout.unwrap_or(5.0);
+        let start = Instant::now();
+        
+        loop {
+            let (_found, output) = {
+                let session = session.lock().unwrap();
+                let logs = session.get_logs(None, Some(before_time));
+                
+                let mut found = false;
+                for log in &logs {
+                    if regex.is_match(&log.line) {
+                        found = true;
+                        break;
+                    }
+                }
+                
+                let output = if found {
+                    Some(logs
+                        .iter()
+                        .map(|entry| &entry.line)
+                        .cloned()
+                        .collect::<Vec<_>>())
+                } else {
+                    None
+                };
+                
+                (found, output)
+            };
+            
+            if let Some(output) = output {
+                return Ok(warp::reply::json(&ApiResponse::ok_with_data(
+                    "Command completed",
+                    serde_json::json!({ "output": output })
+                )));
+            }
+            
+            if start.elapsed().as_secs_f64() > timeout {
+                return Ok(warp::reply::json(&ApiResponse::error(format!("Timeout waiting for pattern: {}", pattern))));
+            }
+            
+            sleep(Duration::from_millis(100)).await;
+        }
+    } else {
+        // Just wait a bit and return recent logs
+        sleep(Duration::from_millis(500)).await;
+        
+        let output = {
+            let session = session.lock().unwrap();
+            let logs = session.get_logs(Some(20), None);
+            logs.iter()
+                .map(|entry| &entry.line)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        
+        Ok(warp::reply::json(&ApiResponse::ok_with_data(
+            "Command sent",
+            serde_json::json!({ "output": output })
+        )))
+    }
+}
+
+async fn handle_mcp_request(
     request: McpRequest,
     session: Arc<Mutex<BreenixSession>>,
 ) -> McpResponse {
-    eprintln!("🎯 Handling request method: {}", request.method);
-    
     match request.method.as_str() {
         "initialize" => {
-            eprintln!("🤝 Processing initialize request");
-            // Handle initialization request
             McpResponse {
                 jsonrpc: "2.0".to_string(),
                 id: request.id,
@@ -283,7 +599,7 @@ async fn handle_request(
                 },
                 Tool {
                     name: "mcp__breenix__stop".to_string(),
-                    description: "Stop the Breenix QEMU session".to_string(),
+                    description: "Stop the running Breenix session".to_string(),
                     input_schema: serde_json::json!({
                         "type": "object",
                         "properties": {}
@@ -291,7 +607,7 @@ async fn handle_request(
                 },
                 Tool {
                     name: "mcp__breenix__running".to_string(),
-                    description: "Check if Breenix is running and count QEMU processes".to_string(),
+                    description: "Check if Breenix is running".to_string(),
                     input_schema: serde_json::json!({
                         "type": "object",
                         "properties": {}
@@ -381,11 +697,9 @@ async fn handle_request(
         }
         
         "tools/call" => {
-            eprintln!("🔨 Processing tools/call request");
             let params = match request.params {
                 Some(p) => p,
                 None => {
-                    eprintln!("❌ No params provided for tools/call");
                     return McpResponse {
                         jsonrpc: "2.0".to_string(),
                         id: request.id,
@@ -400,7 +714,6 @@ async fn handle_request(
 
             let tool_name = params["name"].as_str().unwrap_or("");
             let args = &params["arguments"];
-            eprintln!("🛠️  Tool: {} with args: {:?}", tool_name, args);
 
             match tool_name {
                 "mcp__breenix__start" => {
@@ -408,23 +721,17 @@ async fn handle_request(
                     let mut session = session.lock().unwrap();
                     
                     match session.start(display) {
-                        Ok(_) => {
-                            drop(session);
-                            // Wait for boot
-                            sleep(Duration::from_secs(2)).await;
-                            
-                            McpResponse {
-                                jsonrpc: "2.0".to_string(),
-                                id: request.id,
-                                result: Some(serde_json::json!({
-                                    "content": [{
-                                        "type": "text",
-                                        "text": "Breenix started successfully"
-                                    }]
-                                })),
-                                error: None,
-                            }
-                        }
+                        Ok(_) => McpResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: request.id,
+                            result: Some(serde_json::json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": "Breenix started successfully"
+                                }]
+                            })),
+                            error: None,
+                        },
                         Err(e) => McpResponse {
                             jsonrpc: "2.0".to_string(),
                             id: request.id,
@@ -577,9 +884,12 @@ async fn handle_request(
                     let start = Instant::now();
                     
                     loop {
-                        let session = session.lock().unwrap();
-                        if session.last_prompt_time > session.last_command_time {
-                            drop(session);
+                        let prompt_ready = {
+                            let session = session.lock().unwrap();
+                            session.last_prompt_time > session.last_command_time
+                        };
+                        
+                        if prompt_ready {
                             return McpResponse {
                                 jsonrpc: "2.0".to_string(),
                                 id: request.id,
@@ -592,7 +902,6 @@ async fn handle_request(
                                 error: None,
                             };
                         }
-                        drop(session);
                         
                         if start.elapsed().as_secs_f64() > timeout {
                             return McpResponse {
@@ -608,7 +917,8 @@ async fn handle_request(
                             };
                         }
                         
-                        sleep(Duration::from_millis(100)).await;
+                        // Can't use async sleep here, need to refactor
+                        std::thread::sleep(Duration::from_millis(100));
                     }
                 }
                 
@@ -657,33 +967,43 @@ async fn handle_request(
                         };
                         
                         let start = Instant::now();
+                        
                         loop {
-                            let session = session.lock().unwrap();
-                            let logs = session.get_logs(None, Some(before_time));
-                            
-                            for log in &logs {
-                                if regex.is_match(&log.line) {
-                                    let output = logs
-                                        .iter()
-                                        .map(|entry| &entry.line)
-                                        .cloned()
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    
-                                    return McpResponse {
-                                        jsonrpc: "2.0".to_string(),
-                                        id: request.id,
-                                        result: Some(serde_json::json!({
-                                            "content": [{
-                                                "type": "text",
-                                                "text": output
-                                            }]
-                                        })),
-                                        error: None,
-                                    };
+                            let (found, output) = {
+                                let session = session.lock().unwrap();
+                                let logs = session.get_logs(None, Some(before_time));
+                                
+                                let mut found = false;
+                                for log in &logs {
+                                    if regex.is_match(&log.line) {
+                                        found = true;
+                                        break;
+                                    }
                                 }
+                                
+                                let output = logs
+                                    .iter()
+                                    .map(|entry| &entry.line)
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                
+                                (found, output)
+                            };
+                            
+                            if found {
+                                return McpResponse {
+                                    jsonrpc: "2.0".to_string(),
+                                    id: request.id,
+                                    result: Some(serde_json::json!({
+                                        "content": [{
+                                            "type": "text",
+                                            "text": output
+                                        }]
+                                    })),
+                                    error: None,
+                                };
                             }
-                            drop(session);
                             
                             if start.elapsed().as_secs_f64() > timeout {
                                 return McpResponse {
@@ -699,20 +1019,21 @@ async fn handle_request(
                                 };
                             }
                             
-                            sleep(Duration::from_millis(100)).await;
+                            std::thread::sleep(Duration::from_millis(100));
                         }
                     } else {
                         // Just wait a bit and return recent logs
-                        sleep(Duration::from_millis(500)).await;
+                        std::thread::sleep(Duration::from_millis(500));
                         
-                        let session = session.lock().unwrap();
-                        let logs = session.get_logs(Some(20), None);
-                        let output = logs
-                            .iter()
-                            .map(|entry| &entry.line)
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                        let output = {
+                            let session = session.lock().unwrap();
+                            let logs = session.get_logs(Some(20), None);
+                            logs.iter()
+                                .map(|entry| &entry.line)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        };
                         
                         McpResponse {
                             jsonrpc: "2.0".to_string(),
@@ -736,7 +1057,7 @@ async fn handle_request(
                         message: format!("Unknown tool: {}", tool_name),
                     }),
                     result: None,
-                },
+                }
             }
         }
         
@@ -745,18 +1066,34 @@ async fn handle_request(
             id: request.id,
             error: Some(McpError {
                 code: -32601,
-                message: "Method not found".to_string(),
+                message: format!("Method not found: {}", request.method),
             }),
             result: None,
-        },
+        }
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    eprintln!("🚀 Breenix MCP Server starting...");
+async fn handle_mcp(
+    req: McpRequest,
+    session: Arc<Mutex<BreenixSession>>,
+) -> Result<impl Reply, Rejection> {
+    eprintln!("📨 MCP Request received: {} (id: {:?})", req.method, req.id);
+    let response = handle_mcp_request(req, session).await;
+    eprintln!("📤 Sending MCP response");
+    Ok(warp::reply::json(&response))
+}
+
+async fn handle_health() -> Result<impl Reply, Rejection> {
+    Ok(warp::reply::json(&ApiResponse::ok("Breenix MCP HTTP Server is running")))
+}
+
+pub async fn run_server(port: u16) -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
     
-    // Initialize
+    eprintln!("🚀 Starting Breenix MCP HTTP Server on port {}", port);
+    
+    // Initialize session
     let (log_sender, mut log_receiver) = mpsc::unbounded_channel();
     let session = Arc::new(Mutex::new(BreenixSession::new(log_sender)));
     eprintln!("✅ Session initialized");
@@ -770,58 +1107,80 @@ async fn main() -> Result<()> {
         }
     });
     
-    // Main loop
-    eprintln!("🎧 Listening for MCP requests on stdin...");
-    let stdin = tokio::io::stdin();
-    let mut reader = tokio::io::BufReader::new(stdin);
-    let mut line = String::new();
+    // Define routes
+    let session_filter = warp::any().map(move || session.clone());
     
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => {
-                eprintln!("📭 EOF received, shutting down...");
-                break; // EOF
-            }
-            Ok(n) => {
-                eprintln!("📨 Received {} bytes: {}", n, line.trim());
-                match serde_json::from_str::<McpRequest>(&line) {
-                    Ok(request) => {
-                        eprintln!("🔧 Processing request: {} (id: {:?})", request.method, request.id);
-                        let response = handle_request(request, session.clone()).await;
-                        let response_str = serde_json::to_string(&response)?;
-                        eprintln!("📤 Sending response: {}", response_str);
-                        println!("{}", response_str);
-                        tokio::io::stdout().flush().await?;
-                    }
-                    Err(e) => {
-                        eprintln!("❌ Parse error: {}", e);
-                        let error_response = McpResponse {
-                            jsonrpc: "2.0".to_string(),
-                            id: None,
-                            error: Some(McpError {
-                                code: -32700,
-                                message: format!("Parse error: {}", e),
-                            }),
-                            result: None,
-                        };
-                        let error_str = serde_json::to_string(&error_response)?;
-                        eprintln!("📤 Sending error response: {}", error_str);
-                        println!("{}", error_str);
-                        tokio::io::stdout().flush().await?;
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("💥 Error reading stdin: {}", e);
-                break;
-            }
-        }
-    }
+    // MCP JSON-RPC route (root path)
+    let mcp = warp::path::end()
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(session_filter.clone())
+        .and_then(handle_mcp);
     
-    // Cleanup
-    let mut session = session.lock().unwrap();
-    let _ = session.stop();
+    let health = warp::path("health")
+        .and(warp::get())
+        .and_then(handle_health);
+    
+    let start = warp::path("start")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(session_filter.clone())
+        .and_then(handle_start);
+    
+    let stop = warp::path("stop")
+        .and(warp::post())
+        .and(session_filter.clone())
+        .and_then(handle_stop);
+    
+    let status = warp::path("status")
+        .and(warp::get())
+        .and(session_filter.clone())
+        .and_then(handle_status);
+    
+    let kill_all = warp::path("kill-all")
+        .and(warp::post())
+        .and_then(handle_kill_all);
+    
+    let send = warp::path("send")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(session_filter.clone())
+        .and_then(handle_send_command);
+    
+    let logs = warp::path("logs")
+        .and(warp::get())
+        .and(warp::query())
+        .and(session_filter.clone())
+        .and_then(handle_logs);
+    
+    let wait_prompt = warp::path("wait-prompt")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(session_filter.clone())
+        .and_then(handle_wait_prompt);
+    
+    let run_command = warp::path("run-command")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and(session_filter.clone())
+        .and_then(handle_run_command);
+    
+    let routes = mcp
+        .or(health)
+        .or(start)
+        .or(stop)
+        .or(status)
+        .or(kill_all)
+        .or(send)
+        .or(logs)
+        .or(wait_prompt)
+        .or(run_command);
+    
+    info!("Starting Breenix MCP HTTP Server on port {}", port);
+    
+    warp::serve(routes)
+        .run(([127, 0, 0, 1], port))
+        .await;
     
     Ok(())
 }

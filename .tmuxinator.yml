@@ -1,0 +1,19 @@
+# Breenix MCP Development Environment
+name: breenix-mcp
+root: .
+
+# Optional tmux configurations
+on_project_start: echo "🚀 Starting Breenix MCP development environment"
+on_project_stop: pkill -f "breenix-http-server" || true
+
+windows:
+  - mcp:
+      layout: even-vertical
+      panes:
+        - mcp_server: cd mcp && BREENIX_MCP_PORT=8080 cargo run --bin breenix-http-server
+        - kernel_logs: 'mkdir -p /tmp/breenix-mcp && touch /tmp/breenix-mcp/kernel.log && echo "📜 Breenix kernel logs will appear here..." && tail -F /tmp/breenix-mcp/kernel.log'
+  - kernel:
+      layout: even-horizontal  
+      panes:
+        - echo "🏗️  Kernel build pane - Run 'cargo build --features testing' to build"
+        - echo "🧪 Test execution pane - Run './scripts/test_fork_mcp.sh' to test"

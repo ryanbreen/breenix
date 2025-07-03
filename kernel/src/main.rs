@@ -160,6 +160,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             serial_println!("Running test processes...");
             userspace_test::test_multiple_processes();
             serial_println!("Test processes scheduled. Type to continue...");
+        },
+        || {
+            // FORKTEST handler
+            serial_println!("Testing Fork System Call (Debug Mode)");
+            userspace_test::test_fork_debug();
+            serial_println!("Fork debug test scheduled. Press keys to continue...");
         }
     );
     
@@ -292,6 +298,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("Testing features enabled. Press keys to test:");
         log::info!("  Ctrl+P - Test multiple concurrent processes");
         log::info!("  Ctrl+U - Run single userspace test");
+        log::info!("  Ctrl+F - Test fork() system call");
         log::info!("  Ctrl+T - Show time debug info");
         log::info!("  Ctrl+M - Show memory debug info");
     }
