@@ -165,9 +165,11 @@ impl BreenixSession {
     }
 
     fn update_logs(&mut self, entry: LogEntry) {
-        // Check for prompt
-        if entry.line.contains("> ") && entry.line.trim().ends_with("> ") {
+        // Check for prompt - Breenix outputs just "> " as prompt
+        let trimmed = entry.line.trim();
+        if trimmed == ">" || trimmed == "> " || trimmed.ends_with("> ") {
             self.last_prompt_time = Instant::now();
+            eprintln!("🎯 Detected prompt: '{}'", trimmed);
         }
         
         self.logs.push_back(entry);

@@ -4,9 +4,9 @@ use x86_64::instructions::port::Port;
 use super::Time;
 
 const PIT_FREQUENCY: u32 = 1193182;
-pub const TIMER_INTERRUPT_HZ: u32 = 100;  // Reduced from 1000Hz to 100Hz (10ms intervals)
+pub const TIMER_INTERRUPT_HZ: u32 = 10;   // Further reduced to 10Hz (100ms intervals) for userspace testing
 const TIMER_DIVIDER: u16 = (PIT_FREQUENCY / TIMER_INTERRUPT_HZ) as u16;
-pub const SUBTICKS_PER_TICK: u64 = 100;   // Adjusted to match new frequency
+pub const SUBTICKS_PER_TICK: u64 = 1000;  // Adjusted to match 10Hz frequency
 
 const PIT_CHANNEL0_DATA: u16 = 0x40;
 const PIT_COMMAND: u16 = 0x43;
@@ -51,8 +51,8 @@ impl Timer {
     pub fn tick(&self) {
         self.ticks.fetch_add(1, Ordering::Relaxed);
         
-        // Each tick is now 10ms (100Hz), so add 10 to millis
-        let new_millis = self.millis.fetch_add(10, Ordering::Relaxed) + 10;
+        // Each tick is now 100ms (10Hz), so add 100 to millis
+        let new_millis = self.millis.fetch_add(100, Ordering::Relaxed) + 100;
         if new_millis >= 1000 {
             self.millis.store(new_millis - 1000, Ordering::Relaxed);
             self.seconds.fetch_add(1, Ordering::Relaxed);

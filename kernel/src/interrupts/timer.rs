@@ -111,14 +111,19 @@ fn handle_context_switch(
         if let Some((pid, process)) = manager.find_process_by_thread(new_id) {
             if let Some(ref thread) = process.main_thread {
                 if thread.privilege == ThreadPrivilege::User {
-                    // Check if this is the first time running or a resume based on thread state
+                    // Check if this is the first time running based on thread state
                     let is_first_run = thread.state == crate::task::thread::ThreadState::Ready;
                     log::info!("Thread {} is_first_run: {}, state: {:?}", new_id, is_first_run, thread.state);
                     
                     if is_first_run {
                         // First time running this thread, set up for initial userspace entry
                         log::info!("Setting up initial userspace entry for thread {}", new_id);
-                        setup_initial_userspace_entry(thread, interrupt_frame);
+                        
+                        // Disable interrupts during critical userspace setup
+                        x86_64::instructions::interrupts::without_interrupts(|| {
+                            setup_initial_userspace_entry(thread, interrupt_frame);
+                        });
+                        
                         log::info!("Initial userspace entry for process {} (thread {})", pid.as_u64(), new_id);
                     } else {
                         // This thread has run before, restore its saved context

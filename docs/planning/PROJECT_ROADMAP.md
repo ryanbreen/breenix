@@ -5,21 +5,22 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 ## Current Development Status
 
 ### Recently Completed (Last Sprint)
-- ✅ **MAJOR**: Fixed timer interrupt doom loop with terminated threads
-- ✅ **MAJOR**: Fixed idle thread context switching and kernel mode transitions  
-- ✅ **MAJOR**: Implemented proper thread cleanup without infinite loops
-- ✅ Added fork() system call skeleton with thread ID debugging
-- ✅ Enhanced timer interrupt handler to prevent userspace execution loops
-- ✅ Added idle thread transitions with proper assembly context setup
-- ✅ Implemented MCP server connectivity and HTTP API for programmatic testing
-- ✅ Built comprehensive fork testing infrastructure (Ctrl+F, forktest command)
-- ✅ Added scheduler improvements to handle terminated thread states properly
+- ✅ **MAJOR**: Fixed critical ELF loading bug preventing userspace execution
+- ✅ **MAJOR**: Resolved timer interrupt timing issue with proper OS practices
+- ✅ **MAJOR**: Userspace processes now execute and can make system calls!
+- ✅ Fixed entry point calculation in ELF loader (was double-adding base offset)
+- ✅ Fixed segment loading for absolute addresses in userspace binaries
+- ✅ Added proper interrupt masking during userspace context setup
+- ✅ Reduced timer frequency to 10Hz for better userspace execution
+- ✅ Fork test successfully runs: "Fork test starting..." output confirmed
+- ✅ System call infrastructure verified working (sys_fork called from userspace)
 
 ### Currently Working On (Phase 8: Enhanced Process Control) 
-- 🚧 **CRITICAL TIMING ISSUE**: Timer interrupt fires immediately after userspace setup (same millisecond)
-- 🚧 **Root Cause**: Not timer frequency (tried 100Hz) - interrupt timing or pending interrupt issue
-- 🚧 **Status**: Userspace context setup works perfectly, but timer fires before first instruction
-- 🚧 **Next**: Investigate interrupt timing, scheduling policy, or add userspace execution delay
+- 🚧 **Current Issue**: Page fault at 0x13008 in fork() implementation (TLS access)
+- 🚧 **Next**: Implement actual fork() logic with process duplication
+- 🚧 **Next**: Fix TLS handling in forked processes
+- 🚧 **Next**: Implement copy-on-write memory for efficient forking
+- 🚧 **Next**: Add wait()/waitpid() for process synchronization
 
 ### **SESSION HANDOFF NOTES - CONTINUE HERE NEXT TIME** 🎯
 **MAJOR PROGRESS COMPLETED:**
@@ -28,25 +29,27 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 3. ✅ **Implemented complete fork infrastructure** - sys_fork(), test programs, MCP integration
 4. ✅ **Built comprehensive testing framework** - Ctrl+F keyboard, forktest command, automated testing
 
-**CURRENT BLOCKER:**
-- Timer interrupt fires within same millisecond as userspace setup
-- Logs show: "Initial userspace entry" immediately followed by "Timer preemption: 3 -> 0"  
-- Reduced timer frequency from 1000Hz to 100Hz (10ms intervals) - no improvement
-- Issue is interrupt timing, not frequency
+**TIMING ISSUE COMPLETELY RESOLVED:**
+1. ✅ **Root cause identified** - ELF loader bug, not timer frequency issue
+2. ✅ **Fixed entry point calculation** - No longer double-adding base offset
+3. ✅ **Fixed segment loading** - Properly handles absolute userspace addresses
+4. ✅ **Added interrupt masking** - Critical sections properly protected
+5. ✅ **Userspace execution verified** - Processes run and make system calls
 
-**INVESTIGATION NEEDED:**
-1. **Check if timer interrupt is pending** when userspace context is set up
-2. **Add delay after userspace setup** before enabling timer interrupts
-3. **Modify scheduling policy** to prevent immediate preemption of newly started threads
-4. **Consider disabling timer briefly** during initial userspace transition
+**CURRENT WORK - FORK IMPLEMENTATION:**
+- sys_fork() skeleton implemented and callable from userspace
+- Page fault at 0x13008 indicates TLS access issue in fork
+- Need to implement actual process duplication logic
+- Need to handle TLS properly for forked processes
 
 **TEST COMMAND:** `forktest` in serial console triggers fork test (via MCP or direct QEMU)
 
 ### Immediate Next Steps
-1. **🔥 PRIORITY**: Fix timer interrupt timing issue preventing userspace execution
-2. **Test fork() system call** - Once timing fixed, verify thread ID tracking works  
-3. **Implement actual fork() logic** - Process duplication with copy-on-write memory
-4. **Add wait()/waitpid()** - Process synchronization and zombie prevention
+1. **🔥 PRIORITY**: Fix page fault in fork() - handle TLS access properly
+2. **Implement actual fork() logic** - Process duplication with proper memory copying
+3. **Add copy-on-write pages** - Efficient memory sharing between parent/child
+4. **Implement wait()/waitpid()** - Process synchronization and zombie prevention
+5. **Test fork/exec pattern** - Verify process creation and replacement works
 5. **Implement execve()** - Program replacement within existing process
 
 ### Threading Infrastructure Status ✅ MAJOR SUCCESS
@@ -182,12 +185,12 @@ We aim for IEEE Std 1003.1-2017 (POSIX.1-2017) compliance, focusing on:
 - [x] Keyboard responsiveness after process exit
 
 ### 🚧 Phase 8: Enhanced Process Control (IN PROGRESS)
-- [ ] Serial input support for testing
-  - [ ] UART receive interrupts
-  - [ ] Serial input stream (async)
-  - [ ] Command processing via serial
-  - [ ] Test automation support
-- [ ] fork() system call
+- [x] Serial input support for testing
+  - [x] UART receive interrupts
+  - [x] Serial input stream (async)
+  - [x] Command processing via serial
+  - [x] Test automation support
+- [🚧] fork() system call (skeleton implemented, fixing TLS page fault)
 - [ ] exec() family of system calls
 - [ ] wait()/waitpid() for process synchronization
 - [ ] Process priority and scheduling classes
