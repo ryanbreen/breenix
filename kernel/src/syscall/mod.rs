@@ -19,6 +19,7 @@ pub enum SyscallNumber {
     Read = 2,
     Yield = 3,
     GetTime = 4,
+    Fork = 5,
 }
 
 #[allow(dead_code)]
@@ -31,6 +32,7 @@ impl SyscallNumber {
             2 => Some(Self::Read),
             3 => Some(Self::Yield),
             4 => Some(Self::GetTime),
+            5 => Some(Self::Fork),
             _ => None,
         }
     }

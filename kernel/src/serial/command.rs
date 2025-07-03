@@ -17,6 +17,7 @@ struct CommandRegistry {
     ps_handler: Option<CommandHandler>,
     mem_handler: Option<CommandHandler>,
     test_handler: Option<CommandHandler>,
+    fork_test_handler: Option<CommandHandler>,
 }
 
 impl CommandRegistry {
@@ -25,16 +26,18 @@ impl CommandRegistry {
             ps_handler: None,
             mem_handler: None,
             test_handler: None,
+            fork_test_handler: None,
         }
     }
 }
 
 /// Register command handlers from the kernel binary
-pub fn register_handlers(ps: CommandHandler, mem: CommandHandler, test: CommandHandler) {
+pub fn register_handlers(ps: CommandHandler, mem: CommandHandler, test: CommandHandler, fork_test: CommandHandler) {
     COMMAND_REGISTRY.call_once(|| CommandRegistry {
         ps_handler: Some(ps),
         mem_handler: Some(mem),
         test_handler: Some(test),
+        fork_test_handler: Some(fork_test),
     });
 }
 
@@ -123,6 +126,7 @@ fn process_command(command: &str) {
             serial_println!("  ps          - List processes");
             serial_println!("  mem         - Show memory statistics");
             serial_println!("  test        - Run test processes");
+            serial_println!("  forktest    - Test fork system call");
             serial_println!("  echo <msg>  - Echo a message");
         }
         
@@ -160,6 +164,18 @@ fn process_command(command: &str) {
                     handler();
                 } else {
                     serial_println!("Test command not available");
+                }
+            } else {
+                serial_println!("Command handlers not registered");
+            }
+        }
+        
+        "forktest" | "f" => {
+            if let Some(registry) = COMMAND_REGISTRY.get() {
+                if let Some(handler) = registry.fork_test_handler {
+                    handler();
+                } else {
+                    serial_println!("Fork test command not available");
                 }
             } else {
                 serial_println!("Command handlers not registered");

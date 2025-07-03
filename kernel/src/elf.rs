@@ -148,8 +148,10 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
         }
     }
     
+    // The entry point should be the header entry point directly
+    // since our userspace binaries are compiled with absolute addresses
     Ok(LoadedElf {
-        entry_point: base_offset + header.entry,
+        entry_point: VirtAddr::new(header.entry),
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
     })
 }
@@ -160,7 +162,16 @@ fn load_segment(data: &[u8], ph: &Elf64ProgramHeader, base_offset: VirtAddr) -> 
     let file_start = ph.p_offset as usize;
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
-    let vaddr = base_offset + ph.p_vaddr;
+    
+    // Our userspace binaries use absolute addressing starting at 0x10000000
+    // Don't add base_offset for absolute addresses in the userspace range
+    let vaddr = if ph.p_vaddr >= 0x10000000 {
+        // Absolute userspace address - use directly
+        VirtAddr::new(ph.p_vaddr)
+    } else {
+        // Relative address - add base offset
+        base_offset + ph.p_vaddr
+    };
     
     if file_start + file_size > data.len() {
         return Err("Segment data out of bounds");

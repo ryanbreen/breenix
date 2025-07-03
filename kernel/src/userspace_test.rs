@@ -14,6 +14,9 @@ pub static COUNTER_ELF: &[u8] = include_bytes!("../../userspace/tests/counter.el
 #[cfg(feature = "testing")]
 pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.elf");
 
+#[cfg(feature = "testing")]
+pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
+
 // Add test to ensure binaries are included
 #[cfg(feature = "testing")]
 fn _test_binaries_included() {
@@ -21,6 +24,7 @@ fn _test_binaries_included() {
     assert!(HELLO_WORLD_ELF.len() > 0, "hello_world.elf not included");
     assert!(COUNTER_ELF.len() > 0, "counter.elf not included");
     assert!(SPINNER_ELF.len() > 0, "spinner.elf not included");
+    assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
 }
 
 /// Test running a userspace program
@@ -179,6 +183,47 @@ pub fn test_multiple_processes() {
     #[cfg(not(feature = "testing"))]
     {
         log::warn!("Userspace test binaries not available - compile with --features testing");
+    }
+}
+
+/// Test fork system call implementation (debug version)
+#[cfg(feature = "testing")]
+pub fn test_fork_debug() {
+    log::info!("=== Testing Fork System Call (Debug Mode) ===");
+    
+    use alloc::string::String;
+    
+    log::info!("Creating process that will call fork() to debug thread ID tracking...");
+    match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+        String::from("fork_debug"), 
+        FORK_TEST_ELF
+    ) {
+        Ok(pid) => {
+            log::info!("✓ Created and scheduled fork debug process with PID {}", pid.as_u64());
+            log::info!("Process will call fork() and we'll debug the thread ID issue");
+        }
+        Err(e) => {
+            log::error!("❌ Failed to create fork debug process: {}", e);
+        }
+    }
+}
+
+/// Test fork system call implementation (non-testing version)
+#[cfg(not(feature = "testing"))]
+pub fn test_fork_debug() {
+    log::warn!("Fork test binary not available - compile with --features testing");
+    log::info!("However, we can still test the fork system call directly...");
+    
+    // Call fork directly to test the system call mechanism
+    log::info!("Calling fork() system call directly from kernel...");
+    let result = crate::syscall::handlers::sys_fork();
+    match result {
+        crate::syscall::SyscallResult::Ok(val) => {
+            log::info!("Fork returned success value: {}", val);
+        }
+        crate::syscall::SyscallResult::Err(errno) => {
+            log::info!("Fork returned error code: {} (ENOSYS - not implemented)", errno);
+        }
     }
 }
 

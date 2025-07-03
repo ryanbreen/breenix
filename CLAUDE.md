@@ -48,6 +48,67 @@ breenix/
      - Device drivers (VGA, serial, keyboard, network)
      - PCI support
 
+4. **MCP Integration** (`mcp/`): Model Context Protocol server for programmatic kernel interaction
+   - HTTP server providing tools for Claude Code integration
+   - Real-time kernel log streaming and command injection
+   - Process lifecycle management for QEMU/Breenix sessions
+   - RESTful API and JSON-RPC endpoints for automation
+
+## MCP Server Usage
+
+Breenix includes a comprehensive MCP (Model Context Protocol) server that enables programmatic interaction with the kernel for development and testing. This is especially useful for Claude Code integration.
+
+### Quick Start with tmuxinator
+
+The recommended way to work with Breenix is using tmuxinator, which provides a complete development environment:
+
+```bash
+# Start the MCP development environment
+tmuxinator start breenix-mcp
+```
+
+This creates a horizontal split terminal with:
+- **Top pane**: MCP HTTP server running on port 8080
+- **Bottom pane**: Live kernel logs streaming from `/tmp/breenix-mcp/kernel.log`
+
+### MCP Tools Available
+
+The server provides these tools for interacting with Breenix:
+
+- **Process Management**: `mcp__breenix__start`, `mcp__breenix__stop`, `mcp__breenix__running`, `mcp__breenix__kill`
+- **Communication**: `mcp__breenix__send`, `mcp__breenix__wait_prompt`, `mcp__breenix__run_command`
+- **Logging**: `mcp__breenix__logs`
+
+### Manual Usage
+
+If you prefer manual control:
+
+```bash
+# Start MCP server manually
+cd mcp && BREENIX_MCP_PORT=8080 cargo run --bin breenix-http-server
+
+# Test the HTTP API
+curl http://localhost:8080/health
+curl -X POST http://localhost:8080/start -d '{"display": false}' -H "Content-Type: application/json"
+```
+
+### Development Workflow with MCP
+
+1. **Start Environment**: `tmuxinator start breenix-mcp`
+2. **Use Claude Code**: Claude automatically discovers and uses MCP tools
+3. **Monitor Logs**: Watch the bottom pane for real-time kernel output
+4. **Restart if needed**: `./scripts/restart_mcp.sh` or `tmuxinator restart breenix-mcp`
+
+### Key Benefits
+
+- **Automated Testing**: Run kernel tests programmatically via Claude Code
+- **Real-time Monitoring**: Live log streaming in dedicated terminal pane
+- **Command Injection**: Send commands to running kernel via serial interface
+- **Session Management**: Controlled QEMU process lifecycle
+- **HTTP API**: RESTful endpoints for external tool integration
+
+See `docs/MCP_INTEGRATION.md` for complete documentation.
+
 ## Coding Practices
 
 ### Rust-Specific Conventions
