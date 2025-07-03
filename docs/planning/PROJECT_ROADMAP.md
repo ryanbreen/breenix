@@ -5,21 +5,21 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 ## Current Development Status
 
 ### Recently Completed (Last Sprint)
-- ✅ **MAJOR**: Fixed timer delay bug - 1000ms was becoming 100.8 seconds due to unit mismatch
-- ✅ **MAJOR**: Implemented getpid() and gettid() system calls (Linux-compatible numbers)
-- ✅ Fixed syscall stack frame mismatch between assembly and Rust struct
-- ✅ Implemented proper PID/TID management (main thread has TID = PID)
-- ✅ Fixed thread first-run detection with has_run field
-- ✅ **CRITICAL DISCOVERY**: Timer interrupt-based process startup corrupts registers
-- ✅ Created exec mechanism for proper userspace transition (avoids timer issues)
-- ✅ Identified root cause of userspace crashes: register state corruption
+- ✅ **MAJOR**: Implemented proper fork/exec/spawn pattern for process creation
+- ✅ Created spawn mechanism with dedicated kernel threads
+- ✅ Removed timer interrupt first-run detection (no longer needed)
+- ✅ Fixed TLS switching for kernel threads
+- ✅ Updated all process creation to use spawn instead of timer interrupts
+- ✅ Fixed scheduler deadlock in spawn mechanism
+- ✅ Processes now start with correct register state (no corruption)
+- ✅ Fork test process successfully enters userspace via exec
 
 ### Currently Working On (Phase 8: Enhanced Process Control) 
-- 🚧 **Current Issue**: Processes start from timer interrupts (fundamentally broken)
-- 🚧 **Next**: Implement proper fork/exec/spawn pattern
-- 🚧 **Next**: Create spawn mechanism that uses dedicated thread for exec
-- 🚧 **Next**: Remove all timer interrupt-based process startup
-- 🚧 **Next**: Test fork() once processes start correctly
+- 🚧 **Current Issue**: Fork test process executes but needs getpid/fork syscalls tested
+- 🚧 **Next**: Verify fork() system call works with proper startup
+- 🚧 **Next**: Implement copy-on-write pages for efficient forking
+- 🚧 **Next**: Add wait()/waitpid() for process synchronization
+- 🚧 **Next**: Test multiple concurrent processes with new spawn mechanism
 
 ### **SESSION HANDOFF NOTES - CONTINUE HERE NEXT TIME** 🎯
 **PROCESS STARTUP ISSUE DISCOVERED:**
@@ -45,12 +45,12 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 **TEST COMMAND:** `forktest` in serial console (always use MCP!)
 
 ### Immediate Next Steps
-1. **🔥 PRIORITY**: Implement spawn mechanism with dedicated kernel thread
-2. **Remove timer interrupt process startup** - Replace with spawn/exec pattern
-3. **Test fork() with proper startup** - Should work once processes start correctly
-4. **Add copy-on-write pages** - Efficient memory sharing between parent/child
-5. **Implement wait()/waitpid()** - Process synchronization and zombie prevention
-6. **Implement execve()** - Program replacement within existing process
+1. **🔥 PRIORITY**: Test fork() system call now that processes start correctly
+2. **Verify getpid() returns correct values** - Should see proper parent/child PIDs
+3. **Add copy-on-write pages** - Efficient memory sharing between parent/child
+4. **Implement wait()/waitpid()** - Process synchronization and zombie prevention
+5. **Implement execve()** - Program replacement within existing process
+6. **Clean up unused code** - Remove deprecated ProcessScheduler, etc.
 
 ### Threading Infrastructure Status ✅ MAJOR SUCCESS
 - **Timer Interrupt Loop**: ✅ FIXED - Eliminated endless terminated thread warnings

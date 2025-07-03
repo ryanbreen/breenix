@@ -9,6 +9,7 @@ use spin::Mutex;
 pub mod process;
 pub mod manager;
 pub mod exec;
+pub mod spawn;
 
 pub use process::{Process, ProcessId};
 pub use manager::ProcessManager;

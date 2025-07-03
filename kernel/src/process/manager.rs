@@ -133,7 +133,6 @@ impl ProcessManager {
             time_slice: 10,
             entry_point: None,
             privilege: crate::task::thread::ThreadPrivilege::User,
-            has_run: false,
         };
         
         Ok(thread)
@@ -318,7 +317,6 @@ impl ProcessManager {
             time_slice: parent_thread.time_slice,
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: parent_thread.privilege,
-            has_run: false, // Child hasn't run yet
         };
         // But update the stack pointer to use the child's stack
         child_thread.context.rsp = child_stack_top.as_u64();
