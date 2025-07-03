@@ -20,7 +20,7 @@ SECTIONS {
         *(.bss .bss.*)
     }
     
-    /* Stack grows down from 16MB */
-    . = 0x1000000;
-    _stack_top = .;
+    /* Stack grows down from higher address (we allocate stack separately) */
+    /* . = 0x1000000; */
+    /* _stack_top = .; */
 }
