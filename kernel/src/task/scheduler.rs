@@ -181,6 +181,11 @@ impl Scheduler {
     pub fn idle_thread(&self) -> u64 {
         self.idle_thread
     }
+    
+    /// Set the current thread (used by spawn mechanism)
+    pub fn set_current_thread(&mut self, thread_id: u64) {
+        self.current_thread = Some(thread_id);
+    }
 }
 
 /// Initialize the global scheduler

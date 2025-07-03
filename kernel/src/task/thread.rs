@@ -142,9 +142,6 @@ pub struct Thread {
     
     /// Privilege level
     pub privilege: ThreadPrivilege,
-    
-    /// Whether this thread has ever run (used to detect first run)
-    pub has_run: bool,
 }
 
 impl Clone for Thread {
@@ -161,12 +158,55 @@ impl Clone for Thread {
             time_slice: self.time_slice,
             entry_point: self.entry_point, // fn pointers can be copied
             privilege: self.privilege,
-            has_run: self.has_run,
         }
     }
 }
 
 impl Thread {
+    /// Create a new kernel thread with an argument
+    pub fn new_kernel(
+        name: alloc::string::String,
+        entry_point: extern "C" fn(u64) -> !,
+        arg: u64,
+    ) -> Result<Self, &'static str> {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+        
+        // Allocate a kernel stack
+        const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16 KiB
+        let stack = crate::memory::alloc_kernel_stack(KERNEL_STACK_SIZE)
+            .ok_or("Failed to allocate kernel stack")?;
+        
+        let stack_top = stack.top();
+        let stack_bottom = stack.bottom();
+        
+        // Set up initial context for kernel thread
+        let mut context = CpuContext::new(
+            VirtAddr::new(entry_point as u64),
+            stack_top,
+            ThreadPrivilege::Kernel,
+        );
+        
+        // Pass argument in RDI (System V ABI)
+        context.rdi = arg;
+        
+        // Kernel threads don't need TLS
+        let tls_block = VirtAddr::new(0);
+        
+        Ok(Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            tls_block,
+            priority: 64, // Higher priority for kernel threads
+            time_slice: 20, // Longer time slice
+            entry_point: None, // Kernel threads use direct entry
+            privilege: ThreadPrivilege::Kernel,
+        })
+    }
+    
     /// Create a new thread
     pub fn new(
         name: alloc::string::String,
@@ -198,7 +238,6 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
-            has_run: false,
         }
     }
     
@@ -248,7 +287,6 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: ThreadPrivilege::User,
-            has_run: false,
         }
     }
     
@@ -313,7 +351,6 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
-            has_run: false,
         }
     }
 }

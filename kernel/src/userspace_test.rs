@@ -102,7 +102,7 @@ pub fn run_userspace_test() {
         });
         
         // Create and schedule a process for the test program
-        match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+        match crate::process::spawn::spawn_process(
             String::from("hello_time"), 
             HELLO_TIME_ELF
         ) {
@@ -143,7 +143,7 @@ pub fn test_multiple_processes() {
         
         // Create and schedule first process (counter)
         log::info!("Creating first process (counter)...");
-        match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+        match crate::process::spawn::spawn_process(
             String::from("counter"), 
             COUNTER_ELF
         ) {
@@ -152,7 +152,7 @@ pub fn test_multiple_processes() {
                 
                 // Create and schedule second process (spinner)
                 log::info!("Creating second process (spinner)...");
-                match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+                match crate::process::spawn::spawn_process(
                     String::from("spinner"), 
                     SPINNER_ELF
                 ) {
@@ -195,10 +195,8 @@ pub fn test_fork_debug() {
     
     log::info!("Creating process that will call fork() to debug thread ID tracking...");
     
-    // For now, we still need to use the scheduler approach since exec_process
-    // can't be called from interrupt/async contexts (it never returns)
-    // TODO: Create a proper spawn mechanism that uses exec in a dedicated thread
-    match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
+    // Use the new spawn mechanism which creates a dedicated thread for exec
+    match crate::process::spawn::spawn_process(
         String::from("fork_debug"), 
         FORK_TEST_ELF
     ) {
