@@ -5,44 +5,44 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 ## Current Development Status
 
 ### Recently Completed (Last Sprint)
-- ✅ **MAJOR**: Fixed critical ELF loading bug preventing userspace execution
-- ✅ **MAJOR**: Resolved timer interrupt timing issue with proper OS practices
-- ✅ **MAJOR**: Userspace processes now execute and can make system calls!
-- ✅ Fixed entry point calculation in ELF loader (was double-adding base offset)
-- ✅ Fixed segment loading for absolute addresses in userspace binaries
-- ✅ Added proper interrupt masking during userspace context setup
-- ✅ Reduced timer frequency to 10Hz for better userspace execution
-- ✅ Fork test successfully runs: "Fork test starting..." output confirmed
-- ✅ System call infrastructure verified working (sys_fork called from userspace)
+- ✅ **MAJOR**: Fixed page fault in fork() - TLS access after SWAPGS fixed
+- ✅ **MAJOR**: Implemented basic fork() process duplication logic
+- ✅ Created ProcessManager::fork_process() with child process creation
+- ✅ Fixed sys_fork to use scheduler thread ID instead of TLS
+- ✅ Implemented child thread creation with parent context copying
+- ✅ Added child process to scheduler ready queue
+- ✅ Set up fork return values (0 for child, PID for parent)
+- ✅ Fork test now reaches process creation without crashes
 
 ### Currently Working On (Phase 8: Enhanced Process Control) 
-- 🚧 **Current Issue**: Page fault at 0x13008 in fork() implementation (TLS access)
-- 🚧 **Next**: Implement actual fork() logic with process duplication
-- 🚧 **Next**: Fix TLS handling in forked processes
+- 🚧 **Current Issue**: Thread creation/TLS initialization issue in forked child
+- 🚧 **Next**: Fix Thread::new to support fork (avoid double ID allocation)
+- 🚧 **Next**: Ensure proper TLS setup for forked processes
 - 🚧 **Next**: Implement copy-on-write memory for efficient forking
 - 🚧 **Next**: Add wait()/waitpid() for process synchronization
 
 ### **SESSION HANDOFF NOTES - CONTINUE HERE NEXT TIME** 🎯
-**MAJOR PROGRESS COMPLETED:**
-1. ✅ **Fixed timer interrupt doom loop** - No more endless terminated thread warnings 
-2. ✅ **Fixed idle thread context switching** - Proper kernel mode transitions with assembly
-3. ✅ **Implemented complete fork infrastructure** - sys_fork(), test programs, MCP integration
-4. ✅ **Built comprehensive testing framework** - Ctrl+F keyboard, forktest command, automated testing
+**FORK IMPLEMENTATION PROGRESS:**
+1. ✅ **Fixed TLS page fault** - sys_fork now uses scheduler thread ID not TLS
+2. ✅ **Implemented fork_process()** - Full process duplication in ProcessManager
+3. ✅ **Child process creation working** - Allocates stack, creates thread, copies context
+4. 🚧 **Current blocker** - Thread::new allocates its own ID/TLS, conflicts with fork
 
-**TIMING ISSUE COMPLETELY RESOLVED:**
-1. ✅ **Root cause identified** - ELF loader bug, not timer frequency issue
-2. ✅ **Fixed entry point calculation** - No longer double-adding base offset
-3. ✅ **Fixed segment loading** - Properly handles absolute userspace addresses
-4. ✅ **Added interrupt masking** - Critical sections properly protected
-5. ✅ **Userspace execution verified** - Processes run and make system calls
+**WHAT'S IMPLEMENTED:**
+- ProcessManager::fork_process() creates child with:
+  - New PID allocation
+  - Stack allocation for child
+  - Thread creation with parent context copy
+  - RAX=0 for child, parent PID for parent
+  - Child added to scheduler ready queue
+  
+**NEXT SESSION TODO:**
+1. Create Thread::new_forked() that accepts pre-allocated thread ID
+2. Fix TLS allocation for forked threads
+3. Test that both parent and child execute after fork
+4. Eventually add copy-on-write pages
 
-**CURRENT WORK - FORK IMPLEMENTATION:**
-- sys_fork() skeleton implemented and callable from userspace
-- Page fault at 0x13008 indicates TLS access issue in fork
-- Need to implement actual process duplication logic
-- Need to handle TLS properly for forked processes
-
-**TEST COMMAND:** `forktest` in serial console triggers fork test (via MCP or direct QEMU)
+**TEST COMMAND:** `forktest` in serial console (always use MCP!)
 
 ### Immediate Next Steps
 1. **🔥 PRIORITY**: Fix page fault in fork() - handle TLS access properly

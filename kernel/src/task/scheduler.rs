@@ -260,3 +260,8 @@ pub fn get_pending_switch() -> Option<(u64, u64)> {
     // In a real implementation, we might cache this decision
     schedule()
 }
+
+/// Allocate a new thread ID
+pub fn allocate_thread_id() -> Option<u64> {
+    Some(super::thread::allocate_thread_id())
+}
