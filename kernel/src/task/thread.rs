@@ -142,6 +142,9 @@ pub struct Thread {
     
     /// Privilege level
     pub privilege: ThreadPrivilege,
+    
+    /// Whether this thread has ever run (used to detect first run)
+    pub has_run: bool,
 }
 
 impl Clone for Thread {
@@ -158,6 +161,7 @@ impl Clone for Thread {
             time_slice: self.time_slice,
             entry_point: self.entry_point, // fn pointers can be copied
             privilege: self.privilege,
+            has_run: self.has_run,
         }
     }
 }
@@ -194,6 +198,7 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
+            has_run: false,
         }
     }
     
@@ -243,6 +248,7 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: ThreadPrivilege::User,
+            has_run: false,
         }
     }
     
@@ -276,6 +282,39 @@ impl Thread {
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         self.state = ThreadState::Terminated;
+    }
+    
+    /// Create a new thread with a specific ID (used for fork)
+    pub fn new_with_id(
+        id: u64,
+        name: alloc::string::String,
+        entry_point: fn(),
+        stack_top: VirtAddr,
+        stack_bottom: VirtAddr,
+        tls_block: VirtAddr,
+        privilege: ThreadPrivilege,
+    ) -> Self {
+        // Set up initial context
+        let context = CpuContext::new(
+            VirtAddr::new(thread_entry_trampoline as u64),
+            stack_top,
+            privilege,
+        );
+        
+        Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            tls_block,
+            priority: 128, // Default medium priority
+            time_slice: 10, // Default time slice
+            entry_point: Some(entry_point),
+            privilege,
+            has_run: false,
+        }
     }
 }
 

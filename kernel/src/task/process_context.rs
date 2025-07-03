@@ -74,7 +74,9 @@ impl ProcessContext {
 #[repr(C)]
 pub struct SavedRegisters {
     // Memory layout after all pushes (RSP points here)
-    pub r15: u64,
+    // Timer interrupt pushes in this order: rax, rcx, rdx, rbx, rbp, rsi, rdi, r8-r15
+    // So in memory (from lowest to highest address):
+    pub r15: u64,  // pushed last, so at RSP+0
     pub r14: u64,
     pub r13: u64,
     pub r12: u64,
@@ -88,7 +90,7 @@ pub struct SavedRegisters {
     pub rbx: u64,
     pub rdx: u64,
     pub rcx: u64,
-    pub rax: u64,
+    pub rax: u64,  // pushed first, so at RSP+14*8
 }
 
 /// Perform context switch with userspace support
@@ -154,8 +156,8 @@ pub fn save_userspace_context(
     thread.context.cs = interrupt_frame.code_segment.0 as u64;
     thread.context.ss = interrupt_frame.stack_segment.0 as u64;
     
-    log::trace!("Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}", 
-               thread.id, thread.context.rip, thread.context.rsp);
+    log::trace!("Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}, RAX={:#x}", 
+               thread.id, thread.context.rip, thread.context.rsp, thread.context.rax);
 }
 
 /// Restore userspace context to interrupt frame
@@ -192,6 +194,6 @@ pub fn restore_userspace_context(
         });
     }
     
-    log::trace!("Restored userspace context for thread {}: RIP={:#x}, RSP={:#x}", 
-               thread.id, thread.context.rip, thread.context.rsp);
+    log::trace!("Restored userspace context for thread {}: RIP={:#x}, RSP={:#x}, RAX={:#x}", 
+               thread.id, thread.context.rip, thread.context.rsp, thread.context.rax);
 }

@@ -3,9 +3,10 @@ use super::{SyscallNumber, SyscallResult};
 #[repr(C)]
 #[derive(Debug)]
 pub struct SyscallFrame {
-    // General purpose registers (pushed by syscall_entry)
-    pub r15: u64,
-    pub r14: u64,
+    // General purpose registers (in memory order after all pushes)
+    // Stack grows down, so first field is at lowest address (where RSP points)
+    pub r15: u64,  // pushed last, so at RSP+0
+    pub r14: u64,  // at RSP+8
     pub r13: u64,
     pub r12: u64,
     pub r11: u64,
@@ -18,9 +19,9 @@ pub struct SyscallFrame {
     pub rbx: u64,
     pub rdx: u64,
     pub rcx: u64,
-    pub rax: u64,  // Syscall number
+    pub rax: u64,  // Syscall number - pushed first, so at RSP+0x70
     
-    // Interrupt frame (pushed by CPU)
+    // Interrupt frame (pushed by CPU before our code)
     pub rip: u64,
     pub cs: u64,
     pub rflags: u64,
@@ -54,6 +55,9 @@ impl SyscallFrame {
 /// Main syscall handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
+    // Debug: Log raw RAX value
+    log::debug!("rust_syscall_handler: Raw frame.rax = {:#x} ({})", frame.rax, frame.rax as i64);
+    
     // Log syscall entry
     let from_userspace = frame.is_from_userspace();
     // Commented out to reduce noise - uncomment for debugging
@@ -78,6 +82,12 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             frame.rip,
             args.0, args.1, args.2, args.3, args.4, args.5
         );
+        
+        // Debug: Log critical frame values
+        log::debug!(
+            "Syscall frame before: RIP={:#x}, CS={:#x}, RSP={:#x}, SS={:#x}, RAX={:#x}",
+            frame.rip, frame.cs, frame.rsp, frame.ss, frame.rax
+        );
     }
     
     // Dispatch to the appropriate syscall handler
@@ -88,6 +98,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Yield) => super::handlers::sys_yield(),
         Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
         Some(SyscallNumber::Fork) => super::handlers::sys_fork(),
+        Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
+        Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
         None => {
             log::warn!("Unknown syscall number: {}", syscall_num);
             SyscallResult::Err(u64::MAX)
@@ -101,6 +113,14 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             // Return -errno in RAX for errors (Linux convention)
             frame.set_return_value((-(errno as i64)) as u64);
         }
+    }
+    
+    // Debug: Log frame after handling
+    if syscall_num != 1 {  // 1 is sys_write
+        log::debug!(
+            "Syscall frame after: RIP={:#x}, CS={:#x}, RSP={:#x}, SS={:#x}, RAX={:#x} (return)",
+            frame.rip, frame.cs, frame.rsp, frame.ss, frame.rax
+        );
     }
     
     // Note: Context switches after sys_yield happen on the next timer interrupt

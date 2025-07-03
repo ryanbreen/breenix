@@ -194,6 +194,10 @@ pub fn test_fork_debug() {
     use alloc::string::String;
     
     log::info!("Creating process that will call fork() to debug thread ID tracking...");
+    
+    // For now, we still need to use the scheduler approach since exec_process
+    // can't be called from interrupt/async contexts (it never returns)
+    // TODO: Create a proper spawn mechanism that uses exec in a dedicated thread
     match crate::task::process_task::ProcessScheduler::create_and_schedule_process(
         String::from("fork_debug"), 
         FORK_TEST_ELF
