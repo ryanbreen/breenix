@@ -24,23 +24,23 @@ fn main() {
     let status = Command::new("nasm")
         .args(&[
             "-f", "elf64",
-            "-o", &format!("{}/timer_handler.o", out_dir),
-            "src/interrupts/timer_handler.asm"
+            "-o", &format!("{}/timer_entry.o", out_dir),
+            "src/interrupts/timer_entry.asm"
         ])
         .status()
         .expect("Failed to run nasm");
     
     if !status.success() {
-        panic!("Failed to assemble timer handler");
+        panic!("Failed to assemble timer entry");
     }
     
     // Tell cargo to link the assembled object files
     println!("cargo:rustc-link-arg={}/syscall_entry.o", out_dir);
-    println!("cargo:rustc-link-arg={}/timer_handler.o", out_dir);
+    println!("cargo:rustc-link-arg={}/timer_entry.o", out_dir);
     
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
-    println!("cargo:rerun-if-changed=src/interrupts/timer_handler.asm");
+    println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
     
     // Build userspace test program if it exists
     let userspace_test_dir = Path::new("../userspace/tests");

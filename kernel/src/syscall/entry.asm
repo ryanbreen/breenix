@@ -6,8 +6,9 @@ section .text
 global syscall_entry
 global syscall_return_to_userspace
 
-; External Rust function
+; External Rust functions
 extern rust_syscall_handler
+extern check_need_resched_and_switch
 
 ; Syscall entry point from INT 0x80
 ; This is called when userspace executes INT 0x80
@@ -49,6 +50,15 @@ syscall_entry:
 
     ; Switch back to user GS
     swapgs
+
+    ; Check if we need to reschedule before returning to userspace
+    ; This is critical for sys_exit to work correctly
+    push rax                  ; Save syscall return value
+    mov rdi, rsp              ; Pass pointer to saved registers (after push)
+    add rdi, 8                ; Adjust for the pushed rax
+    lea rsi, [rsp + 16*8]     ; Pass pointer to interrupt frame
+    call check_need_resched_and_switch
+    pop rax                   ; Restore syscall return value
 
     ; Restore all general purpose registers
     pop rax     ; This gets the syscall return value set by handler

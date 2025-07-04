@@ -39,13 +39,17 @@ impl BreenixSession {
         }
     }
 
-    fn start(&mut self, display: bool) -> Result<()> {
+    fn start(&mut self, display: bool, testing: bool) -> Result<()> {
         if self.process.is_some() {
             return Err(anyhow!("Breenix is already running"));
         }
 
         let mut cmd = Command::new("cargo");
-        cmd.args(&["run", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        if testing {
+            cmd.args(&["run", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        } else {
+            cmd.args(&["run", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        }
         
         if !display {
             cmd.args(&["-display", "none"]);
@@ -277,6 +281,11 @@ async fn handle_request(
                                 "type": "boolean",
                                 "description": "Show QEMU display window",
                                 "default": false
+                            },
+                            "testing": {
+                                "type": "boolean",
+                                "description": "Enable kernel testing features",
+                                "default": false
                             }
                         }
                     }),
@@ -405,9 +414,10 @@ async fn handle_request(
             match tool_name {
                 "mcp__breenix__start" => {
                     let display = args["display"].as_bool().unwrap_or(false);
+                    let testing = args["testing"].as_bool().unwrap_or(false);
                     let mut session = session.lock().unwrap();
                     
-                    match session.start(display) {
+                    match session.start(display, testing) {
                         Ok(_) => {
                             drop(session);
                             // Wait for boot

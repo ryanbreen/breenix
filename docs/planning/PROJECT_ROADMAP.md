@@ -5,52 +5,30 @@ This is the master project roadmap for Breenix OS. It consolidates all existing 
 ## Current Development Status
 
 ### Recently Completed (Last Sprint)
-- ✅ **MAJOR**: Implemented proper fork/exec/spawn pattern for process creation
-- ✅ Created spawn mechanism with dedicated kernel threads
-- ✅ Removed timer interrupt first-run detection (no longer needed)
-- ✅ Fixed TLS switching for kernel threads
-- ✅ Updated all process creation to use spawn instead of timer interrupts
-- ✅ Fixed scheduler deadlock in spawn mechanism
-- ✅ Processes now start with correct register state (no corruption)
-- ✅ Fork test process successfully enters userspace via exec
+- ✅ **MAJOR**: Fixed sys_exit to properly handle terminated threads
+  - Scheduler now checks for terminated threads and doesn't reschedule them
+  - Added rescheduling check to syscall return path (similar to timer interrupt)
+  - Terminated threads are immediately switched away from
+  - Fixed thread ID reporting - userspace threads now correctly show their ID (not 0)
+- ✅ Timer interrupt redesign (from previous sprint)
+  - Minimal timer handler, context switching on return path
+  - Eliminated deadlocks and hangs from timer interrupt
+- ✅ Basic fork/exec/getpid/gettid system calls implemented
 
-### Currently Working On (Phase 8: Enhanced Process Control) 
-- 🚧 **Current Issue**: Fork test process executes but needs getpid/fork syscalls tested
-- 🚧 **Next**: Verify fork() system call works with proper startup
-- 🚧 **Next**: Implement copy-on-write pages for efficient forking
-- 🚧 **Next**: Add wait()/waitpid() for process synchronization
-- 🚧 **Next**: Test multiple concurrent processes with new spawn mechanism
-
-### **SESSION HANDOFF NOTES - CONTINUE HERE NEXT TIME** 🎯
-**PROCESS STARTUP ISSUE DISCOVERED:**
-1. ✅ **Root cause found** - Timer interrupts corrupt register state when starting processes
-2. ✅ **Why it happens** - Timer fires between userspace setting RAX and INT 0x80
-3. ✅ **Created exec.rs** - Proper IRETQ-based userspace transition mechanism
-4. 🚧 **Current blocker** - exec can't be called from interrupt/async contexts
-
-**WHAT'S IMPLEMENTED:**
-- Fixed delay macro (ms to ticks conversion)
-- Added getpid()/gettid() syscalls (numbers 39/186)
-- Fixed syscall frame assembly/struct mismatch
-- Created exec_process() in process/exec.rs
-- Fork test exits with code 11 (starts with RAX=0)
-  
-**NEXT SESSION TODO:**
-1. Implement spawn mechanism using dedicated kernel thread
-2. Have spawn thread call exec_process() safely
-3. Update all process creation to use spawn instead of scheduler
-4. Remove timer interrupt process startup completely
-5. Then test fork() with proper process startup
-
-**TEST COMMAND:** `forktest` in serial console (always use MCP!)
+### Currently Working On
+- 🚧 Debugging why userspace programs exit immediately after starting
+  - Programs call sys_exit(0) without executing their code
+  - Likely ELF loading or entry point issue
+- 🚧 Testing fork() system call implementation
+- 🚧 Testing exec() system call with real process replacement
 
 ### Immediate Next Steps
-1. **🔥 PRIORITY**: Test fork() system call now that processes start correctly
-2. **Verify getpid() returns correct values** - Should see proper parent/child PIDs
-3. **Add copy-on-write pages** - Efficient memory sharing between parent/child
+1. **Fix userspace program execution** - Debug why programs exit immediately
+2. **Test fork() system call** - Use Ctrl+F or serial command to test process duplication
+3. **Test exec() system call** - Verify process replacement works correctly
 4. **Implement wait()/waitpid()** - Process synchronization and zombie prevention
-5. **Implement execve()** - Program replacement within existing process
-6. **Clean up unused code** - Remove deprecated ProcessScheduler, etc.
+5. **Remove spawn mechanism** - Clean up old process creation approach
+
 
 ### Threading Infrastructure Status ✅ MAJOR SUCCESS
 - **Timer Interrupt Loop**: ✅ FIXED - Eliminated endless terminated thread warnings
@@ -190,8 +168,12 @@ We aim for IEEE Std 1003.1-2017 (POSIX.1-2017) compliance, focusing on:
   - [x] Serial input stream (async)
   - [x] Command processing via serial
   - [x] Test automation support
-- [🚧] fork() system call (skeleton implemented, fixing TLS page fault)
-- [ ] exec() family of system calls
+- [x] Timer interrupt redesign
+  - [x] Minimal timer handler (only timekeeping)
+  - [x] Context switching on interrupt return path
+  - [x] Proper preemption of userspace processes
+- [🚧] fork() system call (implemented, needs testing)
+- [🚧] exec() family of system calls (basic implementation done)
 - [ ] wait()/waitpid() for process synchronization
 - [ ] Process priority and scheduling classes
 - [ ] Process memory unmapping on exit
