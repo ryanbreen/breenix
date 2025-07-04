@@ -174,6 +174,7 @@ pub fn restore_userspace_context(
         });
     }
     
-    log::trace!("Restored userspace context for thread {}: RIP={:#x}, RSP={:#x}, RAX={:#x}", 
-               thread.id, thread.context.rip, thread.context.rsp, thread.context.rax);
+    log::info!("Restored userspace context for thread {}: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}, RFLAGS={:#x}", 
+               thread.id, thread.context.rip, thread.context.rsp, 
+               thread.context.cs, thread.context.ss, thread.context.rflags);
 }

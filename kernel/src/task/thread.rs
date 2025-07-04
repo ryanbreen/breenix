@@ -97,9 +97,10 @@ impl CpuContext {
             // Set default flags based on privilege
             // For kernel threads, start with interrupts disabled to prevent
             // immediate preemption before critical initialization
+            // CRITICAL: Bit 1 (0x2) must ALWAYS be set in RFLAGS!
             rflags: match privilege {
                 ThreadPrivilege::Kernel => 0x002, // No IF flag - interrupts disabled
-                ThreadPrivilege::User => 0x200,   // IF flag set - interrupts enabled
+                ThreadPrivilege::User => 0x202,   // IF flag set + mandatory bit 1 - interrupts enabled
             },
             
             // Segments based on privilege level

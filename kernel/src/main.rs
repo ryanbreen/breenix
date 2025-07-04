@@ -39,6 +39,7 @@ mod syscall;
 mod elf;
 mod userspace_test;
 mod process;
+mod test_exec;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +170,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             serial_println!("Testing Fork System Call (Debug Mode)");
             userspace_test::test_fork_debug();
             serial_println!("Fork debug test scheduled. Press keys to continue...");
+        },
+        || {
+            // EXECTEST handler
+            serial_println!("Testing Exec System Call");
+            test_exec::test_exec_directly();
+            serial_println!("Exec test scheduled. Press keys to continue...");
         }
     );
     
@@ -331,6 +338,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("  Ctrl+P - Test multiple concurrent processes");
         log::info!("  Ctrl+U - Run single userspace test");
         log::info!("  Ctrl+F - Test fork() system call");
+        log::info!("  Ctrl+E - Test exec() system call");
         log::info!("  Ctrl+T - Show time debug info");
         log::info!("  Ctrl+M - Show memory debug info");
     }

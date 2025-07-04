@@ -2,7 +2,27 @@
 
 ## Project Overview
 
-Breenix is an experimental x86_64 operating system kernel written in Rust. The project appears to be in early development stages, focusing on building a minimal kernel that can boot on both UEFI and BIOS systems.
+Breenix is an x86_64 operating system kernel written in Rust. **This is NOT a toy or learning project - we are building a production-quality operating system for the long haul.**
+
+## 🚨 CRITICAL DESIGN PRINCIPLE 🚨
+
+**ALWAYS FOLLOW OS-STANDARD PRACTICES - NO SHORTCUTS**
+
+Under **NO CIRCUMSTANCES** should you choose "easy" workarounds that deviate from standard OS development practices. When implementing any feature:
+
+- **Follow Linux/FreeBSD patterns**: If real operating systems do it a certain way, that's our standard
+- **No quick hacks**: Don't implement temporary solutions that avoid complexity  
+- **Build for production**: Every design decision must scale to a real OS
+- **Quality over speed**: Take the time to implement features correctly the first time
+
+**Examples of REQUIRED standard practices:**
+- Page table switching during exec() ELF loading (not double-mapping)
+- Proper copy-on-write fork() implementation
+- Standard syscall interfaces and semantics
+- Real virtual memory management with proper isolation
+- Proper interrupt and exception handling
+
+**If it's good enough for Linux, it's the standard we follow.**
 
 ### Current Status
 - Basic bootloader integration using the `bootloader` crate

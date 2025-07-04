@@ -9,6 +9,7 @@ global syscall_return_to_userspace
 ; External Rust functions
 extern rust_syscall_handler
 extern check_need_resched_and_switch
+extern get_next_page_table
 
 ; Syscall entry point from INT 0x80
 ; This is called when userspace executes INT 0x80
@@ -76,6 +77,25 @@ syscall_entry:
     pop r13
     pop r14
     pop r15
+
+    ; Check if we need to switch page tables before returning to userspace
+    ; We know we're returning to userspace since this is a syscall
+    push rax                    ; Save syscall return value
+    push rcx                    ; Save rcx
+    push rdx                    ; Save rdx
+    
+    ; Get the page table to switch to
+    call get_next_page_table
+    test rax, rax              ; Is there a page table to switch to?
+    jz .no_page_table_switch
+    
+    ; Switch to the process page table
+    mov cr3, rax
+    
+.no_page_table_switch:
+    pop rdx                    ; Restore rdx
+    pop rcx                    ; Restore rcx
+    pop rax                    ; Restore syscall return value
 
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack

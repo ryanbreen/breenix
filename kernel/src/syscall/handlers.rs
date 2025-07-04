@@ -267,8 +267,16 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             return SyscallResult::Err(22); // EINVAL
         } else {
             // Use embedded test program for now
-            log::info!("sys_exec: Using embedded fork test program");
-            include_bytes!("../userspace_test.rs")
+            #[cfg(feature = "testing")]
+            {
+                log::info!("sys_exec: Using embedded hello_time test program");
+                crate::userspace_test::HELLO_TIME_ELF
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: No ELF data provided and testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
         };
         
         // Find current process
@@ -298,11 +306,16 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                     log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
                                new_entry_point);
                     
-                    // exec() never returns - the process is replaced
-                    // The new program will start executing from its entry point
-                    // We should never reach this point in a proper implementation
-                    log::error!("sys_exec: Unexpected return from exec_process");
-                    SyscallResult::Err(12) // ENOMEM
+                    // CRITICAL OS-STANDARD VIOLATION:
+                    // exec() should NEVER return on success - the process is completely replaced
+                    // In a proper implementation, exec_process would:
+                    // 1. Replace the address space
+                    // 2. Update the thread context
+                    // 3. Jump directly to the new program (never returning here)
+                    // 
+                    // For now, we return success, but this violates POSIX semantics
+                    // The interrupt return path will handle the actual switch
+                    SyscallResult::Ok(0)
                 }
                 Err(e) => {
                     log::error!("sys_exec: Failed to exec process: {}", e);

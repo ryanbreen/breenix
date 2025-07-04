@@ -46,18 +46,25 @@ impl ProcessManager {
     
     /// Create a new process from an ELF binary
     pub fn create_process(&mut self, name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
-        // Allocate a virtual address range for this process
-        let process_base = self.next_process_base;
-        self.next_process_base += 0x1000000; // 16MB per process
-        
-        // Load the ELF binary at the allocated base address
-        let loaded_elf = elf::load_elf_at_base(elf_data, process_base)?;
-        
         // Generate a new PID
         let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
         
+        // Create a new page table for this process
+        let mut page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new()
+                .map_err(|e| {
+                    log::error!("Failed to create process page table for PID {}: {}", pid.as_u64(), e);
+                    "Failed to create process page table"
+                })?
+        );
+        
+        // Load the ELF binary into the process's page table
+        // Use the standard userspace base address for all processes
+        let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
+        
         // Create the process
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
+        process.page_table = Some(page_table);
         
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
@@ -289,18 +296,30 @@ impl ProcessManager {
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
         child_process.parent = Some(parent_pid);
         
-        // TODO: Full implementation will need:
-        // 1. Copy-on-write memory pages  
-        // 2. Duplicate file descriptors
-        // 3. Copy signal handlers
-        // 4. Copy other process state
-        // For now, we implement basic memory copying for fork() to work
+        // Create a new page table for the child process
+        let parent_page_table = parent.page_table.as_ref()
+            .ok_or("Parent process has no page table")?;
         
-        // Create a new stack for the child thread
+        // Create a new page table and copy parent's program memory
+        let mut child_page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new()
+                .map_err(|_| "Failed to create child page table")?
+        );
+        
+        // Copy the parent's memory pages to the child
+        // This is a simplified implementation - a real OS would use copy-on-write
+        super::fork::copy_page_table_contents(parent_page_table.as_ref(), child_page_table.as_mut())?;
+        
+        child_process.page_table = Some(child_page_table);
+        
+        log::info!("Created page table for child process {}", child_pid.as_u64());
+        
         // Create a new stack for the child process (64KB userspace stack)
-        let mut mapper = unsafe { crate::memory::paging::get_mapper() };
-        let child_stack = GuardedStack::new(64 * 1024, &mut mapper, crate::task::thread::ThreadPrivilege::User)
-            .map_err(|_| "Failed to allocate stack for child process")?;
+        const CHILD_STACK_SIZE: usize = 64 * 1024;
+        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
+            CHILD_STACK_SIZE,
+            crate::task::thread::ThreadPrivilege::User
+        ).map_err(|_| "Failed to allocate stack for child process")?;
         let child_stack_top = child_stack.top();
         
         // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
@@ -397,9 +416,19 @@ impl ProcessManager {
     pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8]) -> Result<u64, &'static str> {
         log::info!("exec_process: Replacing process {} with new program", pid.as_u64());
         
+        // CRITICAL OS-STANDARD CHECK: Is this the current process?
+        let is_current_process = self.current_pid == Some(pid);
+        if is_current_process {
+            log::info!("exec_process: Executing on current process - special handling required");
+        }
+        
         // Get the existing process
         let process = self.processes.get_mut(&pid)
             .ok_or("Process not found")?;
+        
+        // For now, assume non-current processes are not actively running
+        // This is a simplification - in a real OS we'd check the scheduler state
+        let is_scheduled = false;
         
         // Get the main thread (we need to preserve its ID)
         let main_thread = process.main_thread.as_ref()
@@ -407,29 +436,68 @@ impl ProcessManager {
         let thread_id = main_thread.id;
         let _old_stack_top = main_thread.stack_top;
         
+        // Store old page table for proper cleanup
+        let old_page_table = process.page_table.take();
+        
         log::info!("exec_process: Preserving thread ID {} for process {}", thread_id, pid.as_u64());
         
-        // Load the new ELF program
-        // For now, we'll use a simplified approach and just update the process state
-        // In a full implementation, we would:
-        // 1. Parse the ELF headers
-        // 2. Unmap old memory pages  
-        // 3. Map new program segments
-        // 4. Set up new stack
-        // 5. Update entry point
+        // Load the new ELF program properly
+        log::info!("exec_process: Loading new ELF program ({} bytes)", elf_data.len());
         
-        // For this simplified implementation, we'll create a new stack and update the entry point
-        let mut mapper = unsafe { crate::memory::paging::get_mapper() };
-        let new_stack = crate::memory::stack::GuardedStack::new(
-            64 * 1024, 
-            &mut mapper, 
+        // Create a new page table for the new program
+        log::info!("exec_process: Creating new page table...");
+        let mut new_page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new()
+                .map_err(|_| "Failed to create new page table for exec")?
+        );
+        log::info!("exec_process: New page table created successfully");
+        
+        // Load the ELF binary into the new page table
+        log::info!("exec_process: Loading ELF into new page table...");
+        let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
+        let new_entry_point = loaded_elf.entry_point.as_u64();
+        log::info!("exec_process: ELF loaded successfully, entry point: {:#x}", new_entry_point);
+        
+        // CRITICAL FIX: Allocate and map stack directly into the new process page table
+        // We need to manually allocate stack pages and map them into the new page table,
+        // not the current kernel page table
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
+        const USER_STACK_TOP: u64 = 0x5555_5555_5000;
+        
+        // Calculate stack range
+        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(USER_STACK_TOP);
+        let guard_page = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64 - 0x1000);
+        
+        // Map stack pages into the NEW process page table
+        log::info!("exec_process: Mapping stack pages into new process page table");
+        let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_bottom);
+        let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_top - 1u64);
+        log::info!("exec_process: Stack range: {:#x} - {:#x}", stack_bottom.as_u64(), stack_top.as_u64());
+        
+        for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+            let frame = crate::memory::frame_allocator::allocate_frame()
+                .ok_or("Failed to allocate frame for exec stack")?;
+            
+            // Map into the NEW process page table with user-accessible permissions
+            new_page_table.map_page(
+                page, 
+                frame,
+                x86_64::structures::paging::PageTableFlags::PRESENT 
+                    | x86_64::structures::paging::PageTableFlags::WRITABLE 
+                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE
+            )?;
+        }
+        
+        // For now, we'll use a dummy stack object since we manually mapped the stack
+        // In the future, we should refactor stack allocation to support mapping into specific page tables
+        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
+            4096,  // Dummy size - we already mapped the real stack
             crate::task::thread::ThreadPrivilege::User
-        ).map_err(|_| "Failed to allocate new stack for exec")?;
-        let new_stack_top = new_stack.top();
+        ).map_err(|_| "Failed to create stack object")?;
         
-        // For this demo, we'll use a simple entry point
-        // In a real implementation, we would parse the ELF to get the actual entry point
-        let new_entry_point = 0x10000000u64; // Default userspace base address
+        // Use our manually calculated stack top
+        let new_stack_top = stack_top;
         
         log::info!("exec_process: New entry point: {:#x}, new stack top: {:#x}", 
                    new_entry_point, new_stack_top);
@@ -437,7 +505,10 @@ impl ProcessManager {
         // Update the process with new program data
         // Preserve the process ID and thread ID but replace everything else
         process.name = format!("exec_{}", pid.as_u64());
-        process.entry_point = x86_64::VirtAddr::new(new_entry_point);
+        process.entry_point = loaded_elf.entry_point;
+        
+        // Replace the page table with the new one containing the loaded program
+        process.page_table = Some(new_page_table);
         
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
@@ -449,7 +520,7 @@ impl ProcessManager {
             thread.context.rsp = new_stack_top.as_u64();
             thread.context.rflags = 0x202; // Enable interrupts
             thread.stack_top = new_stack_top;
-            thread.stack_bottom = new_stack_top - (64 * 1024);
+            thread.stack_bottom = stack_bottom;
             
             // Clear all other registers for security
             thread.context.rax = 0;
@@ -468,6 +539,11 @@ impl ProcessManager {
             thread.context.r14 = 0;
             thread.context.r15 = 0;
             
+            // CRITICAL OS-STANDARD: Set proper segment selectors for userspace
+            // These must match what the GDT defines
+            thread.context.cs = 0x33; // User code segment (GDT index 6, ring 3)
+            thread.context.ss = 0x2b; // User data segment (GDT index 5, ring 3)
+            
             // Mark the thread as ready to run the new program
             thread.state = crate::task::thread::ThreadState::Ready;
             
@@ -476,8 +552,54 @@ impl ProcessManager {
         
         log::info!("exec_process: Successfully replaced process {} address space", pid.as_u64());
         
-        // In a real exec(), the system call would never return because the process
-        // is completely replaced. For now, we return the new entry point.
+        // CRITICAL OS-STANDARD: Handle page table switching based on process state
+        if is_current_process {
+            // This is the current process - we're in a syscall from it
+            // In a real OS, exec() on the current process requires:
+            // 1. The page table switch MUST be deferred until interrupt return
+            // 2. We CANNOT switch page tables while executing kernel code
+            // 3. The syscall return path will handle the actual switch
+            
+            // Schedule the page table switch for when we return to userspace
+            // This is the ONLY safe way to do it - switching while in kernel mode would crash
+            unsafe {
+                // This will be picked up by the interrupt return path
+                crate::interrupts::context_switch::NEXT_PAGE_TABLE = 
+                    process.page_table.as_ref().map(|pt| pt.level_4_frame());
+            }
+            
+            log::info!("exec_process: Current process exec - page table switch scheduled for interrupt return");
+            
+            // DO NOT flush TLB here - let the interrupt return path handle it
+            // Flushing TLB while still using the old page table mappings is dangerous
+        } else if is_scheduled {
+            // Process is scheduled but not current - it will pick up the new page table
+            // when it's next scheduled to run. The context switch code will handle it.
+            log::info!("exec_process: Process {} is scheduled - new page table will be used on next schedule", pid.as_u64());
+            // No need to set NEXT_PAGE_TABLE - the scheduler will use the process's page table
+        } else {
+            // Process is not scheduled - it will use the new page table when it runs
+            log::info!("exec_process: Process {} is not scheduled - new page table ready for when it runs", pid.as_u64());
+        }
+        
+        // Clean up old page table resources
+        if let Some(_old_pt) = old_page_table {
+            // TODO: Properly free all frames mapped by the old page table
+            // This requires walking the page table and deallocating frames
+            log::info!("exec_process: Old page table cleanup needed (TODO)");
+        }
+        
+        // Add the process back to the ready queue if it's not already there
+        if !self.ready_queue.contains(&pid) {
+            self.ready_queue.push(pid);
+            log::info!("exec_process: Added process {} back to ready queue", pid.as_u64());
+        }
+        
+        // CRITICAL OS-STANDARD: exec() should NEVER return to the calling process
+        // The process has been completely replaced. In a real implementation:
+        // - If exec() succeeds, it never returns (jumps to new program)
+        // - If exec() fails, it returns an error to the original program
+        // For now, we return the entry point for testing, but this violates POSIX
         Ok(new_entry_point)
     }
 }

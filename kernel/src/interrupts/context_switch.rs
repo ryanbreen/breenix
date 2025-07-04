@@ -5,9 +5,14 @@
 //! has completed its minimal work.
 
 use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::structures::paging::PhysFrame;
 use crate::task::process_context::{SavedRegisters, save_userspace_context, restore_userspace_context};
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
+
+/// Thread-local storage for the page table to switch to when returning to userspace
+/// This is set when we're about to return to a userspace process
+pub(crate) static mut NEXT_PAGE_TABLE: Option<PhysFrame> = None;
 
 /// Check if rescheduling is needed and perform context switch if necessary
 /// 
@@ -57,15 +62,20 @@ fn save_current_thread_context(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // Find the thread and save its context
-    crate::process::with_process_manager(|manager| {
-        if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-            if let Some(ref mut thread) = process.main_thread {
-                save_userspace_context(thread, interrupt_frame, saved_regs);
-                log::trace!("Saved context for process {} (thread {})", pid.as_u64(), thread_id);
+    // CRITICAL: Use try_manager in interrupt context to avoid deadlock
+    // Never use with_process_manager() from interrupt handlers!
+    if let Some(mut manager_guard) = crate::process::try_manager() {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                if let Some(ref mut thread) = process.main_thread {
+                    save_userspace_context(thread, interrupt_frame, saved_regs);
+                    log::trace!("Saved context for process {} (thread {})", pid.as_u64(), thread_id);
+                }
             }
         }
-    });
+    } else {
+        log::warn!("Could not acquire process manager lock in interrupt context for thread {}", thread_id);
+    }
 }
 
 /// Switch to a different thread
@@ -110,6 +120,9 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             frame.instruction_pointer = x86_64::VirtAddr::new(idle_loop as *const () as u64);
             frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
         });
+        
+        // Clear any pending page table switch - we're staying in kernel mode
+        NEXT_PAGE_TABLE = None;
     }
     log::trace!("Set up return to idle loop");
 }
@@ -162,6 +175,11 @@ fn setup_kernel_thread_return(
         }
         
         log::trace!("Set up kernel thread {} '{}' to run at {:#x}", thread_id, name, rip);
+        
+        // Clear any pending page table switch - we're staying in kernel mode
+        unsafe {
+            NEXT_PAGE_TABLE = None;
+        }
     }
 }
 
@@ -171,29 +189,64 @@ fn restore_userspace_thread_context(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    crate::process::with_process_manager(|manager| {
-        if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-            if let Some(ref mut thread) = process.main_thread {
-                if thread.privilege == ThreadPrivilege::User {
-                    restore_userspace_context(thread, interrupt_frame, saved_regs);
-                    log::trace!("Restored context for process {} (thread {})", pid.as_u64(), thread_id);
-                    
-                    // Update TSS RSP0 for the new thread's kernel stack
-                    // CRITICAL: Use the kernel stack, not the userspace stack!
-                    if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                        crate::gdt::set_kernel_stack(kernel_stack_top);
-                    } else {
-                        log::error!("Userspace thread {} has no kernel stack!", thread_id);
+    // CRITICAL: Use try_manager in interrupt context to avoid deadlock
+    // Never use with_process_manager() from interrupt handlers!
+    if let Some(mut manager_guard) = crate::process::try_manager() {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                if let Some(ref mut thread) = process.main_thread {
+                    if thread.privilege == ThreadPrivilege::User {
+                        restore_userspace_context(thread, interrupt_frame, saved_regs);
+                        log::trace!("Restored context for process {} (thread {})", pid.as_u64(), thread_id);
+                        
+                        // Store the page table to switch to when we return to userspace
+                        // The actual switch will happen in assembly code right before iretq
+                        if let Some(ref page_table) = process.page_table {
+                            let page_table_frame = page_table.level_4_frame();
+                            unsafe {
+                                NEXT_PAGE_TABLE = Some(page_table_frame);
+                            }
+                            log::info!("Scheduled page table switch for process {} on return: frame={:#x}", 
+                                     pid.as_u64(), page_table_frame.start_address().as_u64());
+                        } else {
+                            log::warn!("Process {} has no page table!", pid.as_u64());
+                        }
+                        
+                        // Update TSS RSP0 for the new thread's kernel stack
+                        // CRITICAL: Use the kernel stack, not the userspace stack!
+                        if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                            crate::gdt::set_kernel_stack(kernel_stack_top);
+                        } else {
+                            log::error!("Userspace thread {} has no kernel stack!", thread_id);
+                        }
                     }
                 }
             }
         }
-    });
+    } else {
+        log::warn!("Could not acquire process manager lock in interrupt context for thread {}", thread_id);
+    }
 }
 
 /// Simple idle loop
 fn idle_loop() -> ! {
     loop {
         x86_64::instructions::hlt();
+    }
+}
+
+/// Get the next page table to switch to (if any)
+/// This is called from assembly code before returning to userspace
+#[no_mangle]
+pub extern "C" fn get_next_page_table() -> u64 {
+    unsafe {
+        if let Some(frame) = NEXT_PAGE_TABLE.take() {
+            let addr = frame.start_address().as_u64();
+            // Log this for debugging
+            log::info!("get_next_page_table: Returning page table frame {:#x} for switch", addr);
+            addr
+        } else {
+            0 // No page table switch needed
+        }
     }
 }
