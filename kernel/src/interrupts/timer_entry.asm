@@ -8,6 +8,7 @@
 global timer_interrupt_entry
 extern timer_interrupt_handler
 extern check_need_resched_and_switch
+extern get_next_page_table
 
 section .text
 bits 64
@@ -30,6 +31,17 @@ timer_interrupt_entry:
     push r14
     push r15
     
+    ; CRITICAL: Check if we came from userspace and need to swap GS
+    ; Get CS from interrupt frame to check privilege level
+    mov rax, [rsp + 15*8 + 8]   ; Skip saved regs + RIP to get CS
+    and rax, 3                   ; Check privilege level
+    cmp rax, 3                   ; Ring 3?
+    jne .skip_swapgs_entry       ; If not from userspace, skip swapgs
+    
+    ; We came from userspace, swap to kernel GS
+    swapgs
+    
+.skip_swapgs_entry:
     ; Call the timer handler
     ; This ONLY updates ticks, quantum, and sets need_resched flag
     call timer_interrupt_handler
@@ -58,5 +70,41 @@ timer_interrupt_entry:
     pop rcx
     pop rax
     
-    ; Return from interrupt
+    ; Check if we need to switch page tables before returning to userspace
+    ; This is critical - we must do this right before iretq
+    push rax                    ; Save rax
+    push rcx                    ; Save rcx
+    push rdx                    ; Save rdx
+    
+    ; Check if we're returning to ring 3 (userspace)
+    mov rax, [rsp + 24 + 8]    ; Get CS from interrupt frame (3 pushes + RIP)
+    and rax, 3                 ; Check privilege level
+    cmp rax, 3                 ; Ring 3?
+    jne .no_userspace_return
+    
+    ; We're returning to userspace, check if we need to switch page tables
+    call get_next_page_table
+    test rax, rax              ; Is there a page table to switch to?
+    jz .skip_page_table_switch
+    
+    ; Switch to the process page table
+    mov cr3, rax
+    
+.skip_page_table_switch:
+    ; CRITICAL: Swap back to userspace GS before returning to ring 3
+    swapgs
+    
+    pop rdx                    ; Restore rdx
+    pop rcx                    ; Restore rcx
+    pop rax                    ; Restore rax
+    
+    ; Return from interrupt to userspace
+    iretq
+    
+.no_userspace_return:
+    pop rdx                    ; Restore rdx
+    pop rcx                    ; Restore rcx
+    pop rax                    ; Restore rax
+    
+    ; Return from interrupt to kernel
     iretq

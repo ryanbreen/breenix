@@ -134,6 +134,10 @@ pub async fn keyboard_task() {
                     log::info!("Ctrl+F pressed - testing fork system call (debug mode)");
                     crate::userspace_test::test_fork_debug();
                     log::info!("Fork debug test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('e') {
+                    log::info!("Ctrl+E pressed - testing exec system call");
+                    crate::test_exec::test_exec_directly();
+                    log::info!("Exec test scheduled. Press keys to continue...");
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);

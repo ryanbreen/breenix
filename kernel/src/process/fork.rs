@@ -5,7 +5,9 @@
 
 use crate::process::{Process, ProcessId};
 use crate::task::thread::Thread;
+use crate::memory::process_memory::ProcessPageTable;
 use x86_64::VirtAddr;
+use x86_64::structures::paging::{Page, PageSize, Size4KiB, FrameAllocator};
 
 /// Copy memory from parent process to child process
 /// 
@@ -106,5 +108,92 @@ pub fn copy_process_state(
     // TODO: Copy process groups and session information
     
     log::debug!("copy_process_state: state copying not yet fully implemented");
+    Ok(())
+}
+
+/// Copy page table contents from parent to child
+/// 
+/// This implements a simplified copy of all mapped pages from parent to child.
+/// In a real implementation, this would use copy-on-write for efficiency.
+pub fn copy_page_table_contents(
+    parent_page_table: &ProcessPageTable,
+    child_page_table: &mut ProcessPageTable,
+) -> Result<(), &'static str> {
+    log::info!("copy_page_table_contents: copying parent's memory pages to child");
+    
+    // For a minimal implementation, we'll copy the program's memory regions
+    // These are typically at standard userspace addresses:
+    // - 0x10000000: Code segment 
+    // - 0x10001000: Data segment
+    // - 0x10002000: BSS segment
+    
+    // Define the address ranges we know contain program data
+    let program_regions = [
+        (VirtAddr::new(0x10000000), VirtAddr::new(0x10001000)), // Code
+        (VirtAddr::new(0x10001000), VirtAddr::new(0x10002000)), // Data  
+        (VirtAddr::new(0x10002000), VirtAddr::new(0x10003000)), // BSS
+    ];
+    
+    for (start_addr, end_addr) in program_regions.iter() {
+        copy_memory_region(*start_addr, *end_addr, parent_page_table, child_page_table)?;
+    }
+    
+    log::info!("copy_page_table_contents: completed successfully");
+    Ok(())
+}
+
+/// Copy a specific memory region from parent to child
+fn copy_memory_region(
+    start_addr: VirtAddr,
+    end_addr: VirtAddr,
+    parent_page_table: &ProcessPageTable,
+    child_page_table: &mut ProcessPageTable,
+) -> Result<(), &'static str> {
+    let start_page: Page<Size4KiB> = Page::containing_address(start_addr);
+    let end_page: Page<Size4KiB> = Page::containing_address(end_addr - 1u64);
+    
+    log::debug!("copy_memory_region: copying region {:#x}..{:#x}", start_addr, end_addr);
+    
+    for page in Page::range_inclusive(start_page, end_page) {
+        // Check if the page is mapped in the parent
+        if let Some(parent_frame) = parent_page_table.translate_page(page.start_address()) {
+            log::debug!("copy_memory_region: copying page {:#x} (frame {:#x})", 
+                       page.start_address(), parent_frame);
+            
+            // Allocate a new frame for the child
+            use crate::memory::frame_allocator::BootInfoFrameAllocator;
+            let mut allocator = BootInfoFrameAllocator::new();
+            let child_frame = allocator.allocate_frame()
+                .ok_or("Failed to allocate frame for child page")?;
+            
+            // Copy the page contents
+            unsafe {
+                // Get physical addresses from frames  
+                let parent_phys = parent_frame;
+                let child_phys = child_frame.start_address();
+                
+                // Convert to virtual addresses using physical memory offset
+                let phys_offset = crate::memory::physical_memory_offset();
+                let parent_virt = phys_offset + parent_phys.as_u64();
+                let child_virt = phys_offset + child_phys.as_u64();
+                
+                // Copy the entire page (4KB)
+                core::ptr::copy_nonoverlapping(
+                    parent_virt.as_ptr::<u8>(),
+                    child_virt.as_mut_ptr::<u8>(),
+                    Size4KiB::SIZE as usize
+                );
+            }
+            
+            // Map the copied page in the child's page table
+            use x86_64::structures::paging::PageTableFlags;
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+            child_page_table.map_page(page, child_frame, flags)
+                .map_err(|_| "Failed to map copied page in child page table")?;
+            
+            log::debug!("copy_memory_region: successfully copied page {:#x}", page.start_address());
+        }
+    }
+    
     Ok(())
 }

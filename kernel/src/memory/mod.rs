@@ -2,6 +2,7 @@ pub mod frame_allocator;
 pub mod paging;
 pub mod heap;
 pub mod stack;
+pub mod process_memory;
 
 use bootloader_api::info::MemoryRegions;
 use x86_64::{PhysAddr, VirtAddr};
@@ -28,6 +29,9 @@ pub fn init(
     // Initialize paging
     log::info!("Initializing paging...");
     let mapper = unsafe { paging::init(physical_memory_offset) };
+    
+    // Save the kernel page table for later switching
+    process_memory::init_kernel_page_table();
     
     // Initialize heap
     log::info!("Initializing heap allocator...");
