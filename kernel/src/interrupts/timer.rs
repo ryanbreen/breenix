@@ -1,64 +1,37 @@
-//! Timer interrupt handler with userspace preemption support
+//! Timer interrupt handler following OS design best practices
+//!
+//! This handler ONLY:
+//! 1. Updates the timer tick count
+//! 2. Decrements current thread's time quantum
+//! 3. Sets need_resched flag if quantum expired
+//! 4. Sends EOI
+//!
+//! All context switching happens on the interrupt return path.
 
-use x86_64::structures::idt::InterruptStackFrame;
-use crate::task::process_context::{SavedRegisters, save_userspace_context, restore_userspace_context};
 use crate::task::scheduler;
-use crate::task::thread::ThreadPrivilege;
 
-/// Timer interrupt handler called from assembly
-/// 
-/// This is called with:
-/// - saved_regs: pointer to saved general purpose registers (mutable)
-/// - interrupt_frame: pointer to the interrupt stack frame (mutable)
+/// Time quantum in timer ticks (10ms per tick, 100ms quantum = 10 ticks)
+const TIME_QUANTUM: u32 = 10;
+
+/// Current thread's remaining time quantum
+static mut CURRENT_QUANTUM: u32 = TIME_QUANTUM;
+
+/// Timer interrupt handler - absolutely minimal work
 #[no_mangle]
-pub extern "C" fn timer_interrupt_rust_handler(
-    saved_regs: &mut SavedRegisters,
-    interrupt_frame: &mut InterruptStackFrame,
-) {
-    // Update timer tick count
+pub extern "C" fn timer_interrupt_handler() {
+    // Update global timer tick count
     crate::time::timer_interrupt();
     
-    // Check if we came from userspace
-    let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
-    
-    // Check if we have a current thread and if it's terminated
-    let current_thread_id = scheduler::current_thread_id();
-    let current_terminated = if let Some(id) = current_thread_id {
-        scheduler::with_scheduler(|sched| {
-            sched.get_thread(id).map(|t| t.state == crate::task::thread::ThreadState::Terminated).unwrap_or(false)
-        }).unwrap_or(false)
-    } else {
-        // No current thread means the previous one terminated and was cleaned up
-        true
-    };
-    
-    if current_terminated && from_userspace {
-        log::debug!("Current userspace thread is terminated or cleaned up, need to switch");
-    }
-    
-    // Perform scheduling
-    if let Some((old_id, new_id)) = scheduler::schedule() {
-        if old_id != new_id {
-            log::info!("Timer preemption: {} -> {} (from_userspace: {})", 
-                       old_id, new_id, from_userspace);
-            
-            // Handle context switching
-            handle_context_switch(old_id, new_id, from_userspace, saved_regs, interrupt_frame);
+    // Decrement current thread's quantum
+    unsafe {
+        if CURRENT_QUANTUM > 0 {
+            CURRENT_QUANTUM -= 1;
         }
-    } else if current_terminated && from_userspace {
-        // No threads to switch to, but we need to get out of userspace
-        // Switch to idle thread
-        log::debug!("No runnable threads, switching to idle from userspace");
         
-        // Get the idle thread ID from scheduler
-        let idle_id = scheduler::with_scheduler(|sched| sched.idle_thread()).unwrap_or(0);
-        
-        // If we have a current thread ID, do proper cleanup; otherwise just switch to idle
-        if let Some(current_id) = current_thread_id {
-            handle_context_switch(current_id, idle_id, from_userspace, saved_regs, interrupt_frame);
-        } else {
-            // No current thread, just set up to run idle thread
-            handle_idle_transition(idle_id, interrupt_frame);
+        // If quantum expired, set need_resched flag
+        if CURRENT_QUANTUM == 0 {
+            scheduler::set_need_resched();
+            CURRENT_QUANTUM = TIME_QUANTUM; // Reset for next thread
         }
     }
     
@@ -69,136 +42,9 @@ pub extern "C" fn timer_interrupt_rust_handler(
     }
 }
 
-/// Handle context switching between threads
-fn handle_context_switch(
-    old_id: u64,
-    new_id: u64,
-    from_userspace: bool,
-    saved_regs: &mut SavedRegisters,
-    interrupt_frame: &mut InterruptStackFrame,
-) {
-    // We need to save the old thread's context and restore the new thread's context
-    // This is tricky because we need to access scheduler internals
-    
-    // First, switch TLS (only for threads that need it)
-    // Kernel threads don't have TLS entries
-    let is_kernel_thread = scheduler::with_thread_mut(new_id, |thread| {
-        thread.privilege == crate::task::thread::ThreadPrivilege::Kernel
-    }).unwrap_or(false);
-    
-    if !is_kernel_thread {
-        if let Err(e) = crate::tls::switch_tls(new_id) {
-            log::error!("Failed to switch TLS for thread {}: {}", new_id, e);
-            return;
-        }
-    } else {
-        log::trace!("Switching to kernel thread {}, no TLS switch needed", new_id);
-    }
-    
-    // If we're coming from userspace, we need to save the context
-    if from_userspace {
-        // Find the process by thread ID and save its context
-        if let Some(ref mut manager) = *crate::process::manager() {
-            if let Some((pid, process)) = manager.find_process_by_thread_mut(old_id) {
-                if let Some(ref mut thread) = process.main_thread {
-                    save_userspace_context(thread, interrupt_frame, saved_regs);
-                    log::trace!("Saved context for process {} (thread {})", pid.as_u64(), old_id);
-                }
-            }
-        }
-    }
-    
-    // Now check if we need to restore a userspace context for the new thread
-    // First check if this is the idle thread
-    let is_idle_thread = scheduler::with_scheduler(|sched| new_id == sched.idle_thread()).unwrap_or(false);
-    
-    if is_idle_thread {
-        // Switching to idle thread - ensure we return to kernel mode
-        log::debug!("Switching to idle thread {}, setting up kernel mode return", new_id);
-        handle_idle_transition(new_id, interrupt_frame);
-    } else {
-        // Check if this is a kernel thread that's not associated with a process
-        scheduler::with_thread_mut(new_id, |thread| {
-            if thread.privilege == ThreadPrivilege::Kernel {
-                log::info!("Switching to kernel thread {} '{}', entry={:#x}", 
-                         new_id, thread.name, thread.context.rip);
-                
-                // For kernel threads, we need to set up the interrupt frame
-                // to return to the thread's entry point
-                unsafe {
-                    interrupt_frame.as_mut().update(|frame| {
-                        frame.instruction_pointer = x86_64::VirtAddr::new(thread.context.rip);
-                        frame.stack_pointer = x86_64::VirtAddr::new(thread.context.rsp);
-                        frame.code_segment = crate::gdt::kernel_code_selector();
-                        frame.stack_segment = crate::gdt::kernel_data_selector();
-                        frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
-                        
-                        // Set up the RDI register with the argument
-                        saved_regs.rdi = thread.context.rdi;
-                    });
-                }
-                
-                log::info!("Set up kernel thread {} to run at {:#x}", new_id, thread.context.rip);
-            }
-        });
-        
-        // Also check for userspace threads in the process manager
-        if let Some(ref mut manager) = *crate::process::manager() {
-            if let Some((pid, process)) = manager.find_process_by_thread_mut(new_id) {
-                if let Some(ref mut thread) = process.main_thread {
-                    if thread.privilege == ThreadPrivilege::User {
-                        // With the spawn mechanism, all userspace threads have already
-                        // transitioned to userspace via exec, so we only need to restore
-                        // their saved context.
-                        log::trace!("Restoring saved context for thread {}", new_id);
-                        restore_userspace_context(thread, interrupt_frame, saved_regs);
-                        log::trace!("Restored context for process {} (thread {})", pid.as_u64(), new_id);
-                        
-                        // Update TSS RSP0 for the new thread's kernel stack
-                        crate::gdt::set_kernel_stack(thread.stack_top);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Handle transition to idle thread when no current thread exists
-fn handle_idle_transition(
-    idle_id: u64,
-    interrupt_frame: &mut InterruptStackFrame,
-) {
-    // Switch TLS to idle thread
-    if let Err(e) = crate::tls::switch_tls(idle_id) {
-        log::error!("Failed to switch TLS to idle thread: {}", e);
-        return;
-    }
-    
-    // The idle thread should just halt and wait for interrupts
-    // We'll set up the interrupt frame to return to a safe idle loop
+/// Reset the quantum counter (called when switching threads)
+pub fn reset_quantum() {
     unsafe {
-        interrupt_frame.as_mut().update(|frame| {
-            // Set kernel code/data segments
-            frame.code_segment = crate::gdt::kernel_code_selector();
-            frame.stack_segment = crate::gdt::kernel_data_selector();
-            
-            // Set RIP to the idle function
-            frame.instruction_pointer = x86_64::VirtAddr::new(idle_loop as *const () as u64);
-            
-            // Use the current kernel stack (it should be safe)
-            // frame.stack_pointer is already set correctly for kernel mode
-            
-            frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
-        });
-    }
-    
-    log::debug!("Transitioned to idle thread {}", idle_id);
-}
-
-/// Simple idle loop that halts and waits for interrupts
-fn idle_loop() -> ! {
-    loop {
-        // Halt and wait for next interrupt
-        x86_64::instructions::hlt();
+        CURRENT_QUANTUM = TIME_QUANTUM;
     }
 }

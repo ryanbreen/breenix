@@ -58,6 +58,21 @@ breenix/
 
 **CRITICAL: Always use MCP for ALL Breenix development and testing. NEVER run QEMU or kernel tests directly without MCP.**
 
+**ABSOLUTE REQUIREMENT: YOU MUST NEVER RUN QEMU DIRECTLY**
+- NEVER use `cargo run --bin qemu-uefi` or `cargo run --bin qemu-bios` directly
+- NEVER manually start QEMU processes
+- ALWAYS use the MCP tools (`mcp__breenix__start`, etc.) for ALL kernel execution
+- This is a HARD REQUIREMENT - no exceptions!
+
+**CRITICAL: ALWAYS STOP BEFORE START**
+- **YOU MUST ALWAYS call `mcp__breenix__stop` before `mcp__breenix__start`**
+- This prevents "Breenix is already running" errors
+- Even if you think Breenix isn't running, ALWAYS stop first
+- The correct sequence is ALWAYS:
+  1. `mcp__breenix__stop`
+  2. `mcp__breenix__start`
+- No exceptions to this rule!
+
 Breenix includes a comprehensive MCP (Model Context Protocol) server that enables programmatic interaction with the kernel for development and testing. This is REQUIRED for Claude Code integration and provides essential visibility for debugging.
 
 **Why MCP is mandatory:**
@@ -279,21 +294,17 @@ On all systems:
 # Build kernel with custom target (kernel uses x86_64-breenix.json)
 cargo build
 
-# Run with QEMU (UEFI mode)
-cargo run --bin qemu-uefi
+# NEVER RUN QEMU DIRECTLY - USE MCP INSTEAD:
+# DO NOT USE: cargo run --bin qemu-uefi
+# DO NOT USE: cargo run --bin qemu-bios
+# INSTEAD USE MCP TOOLS:
+# - mcp__breenix__start
+# - mcp__breenix__stop
+# - mcp__breenix__send
+# etc.
 
-# Run with QEMU (BIOS mode)
-cargo run --bin qemu-bios
-
-# Run tests
+# Run tests (these are OK as they use controlled QEMU instances)
 cargo test --test simple_kernel_test
-./scripts/test_kernel.sh
-```
-
-On x86_64 systems:
-```bash
-cargo run --bin qemu-uefi
-cargo run --bin qemu-bios
 ```
 
 ## Important Notes

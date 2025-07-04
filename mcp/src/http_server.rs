@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
+use std::fs::File;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -61,6 +62,7 @@ struct BreenixSession {
     last_command_time: Instant,
     last_prompt_time: Instant,
     log_sender: mpsc::UnboundedSender<LogEntry>,
+    log_file: Arc<Mutex<Option<File>>>,
 }
 
 impl BreenixSession {
@@ -71,10 +73,11 @@ impl BreenixSession {
             last_command_time: Instant::now(),
             last_prompt_time: Instant::now(),
             log_sender,
+            log_file: Arc::new(Mutex::new(None)),
         }
     }
 
-    fn start(&mut self, display: bool) -> Result<()> {
+    fn start(&mut self, display: bool, testing: bool) -> Result<()> {
         if self.process.is_some() {
             return Err(anyhow!("Breenix is already running"));
         }
@@ -82,10 +85,23 @@ impl BreenixSession {
         // Ensure the log directory exists and create/truncate log file
         std::fs::create_dir_all("/tmp/breenix-mcp").ok();
         let log_path = "/tmp/breenix-mcp/kernel.log";
-        std::fs::write(log_path, "").ok(); // Truncate the file
+        
+        // Open the log file once and share it between stdout/stderr readers
+        let log_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(log_path)
+            .map_err(|e| anyhow!("Failed to open log file: {}", e))?;
+        
+        *self.log_file.lock().unwrap() = Some(log_file);
 
         let mut cmd = Command::new("cargo");
-        cmd.args(&["run", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        if testing {
+            cmd.args(&["run", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        } else {
+            cmd.args(&["run", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        }
         
         if !display {
             cmd.args(&["-display", "none"]);
@@ -108,32 +124,19 @@ impl BreenixSession {
         if let Some(stdout) = child.stdout.take() {
             let reader = BufReader::new(stdout);
             let sender = self.log_sender.clone();
+            let log_file = self.log_file.clone();
             
             std::thread::spawn(move || {
-                // Try to open the log file for appending
-                let log_path = "/tmp/breenix-mcp/kernel.log";
-                let mut log_writer = match OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(log_path) {
-                    Ok(f) => {
-                        eprintln!("✅ Opened log file for stdout writing: {}", log_path);
-                        Some(f)
-                    },
-                    Err(e) => {
-                        eprintln!("❌ Failed to open log file {}: {}", log_path, e);
-                        None
-                    }
-                };
-                
                 for line in reader.lines() {
                     if let Ok(line) = line {
-                        // Write to log file if available
-                        if let Some(ref mut writer) = log_writer {
-                            if let Err(e) = writeln!(writer, "{}", line) {
-                                eprintln!("❌ Failed to write to log file: {}", e);
-                            } else {
-                                let _ = writer.flush();
+                        // Write to log file
+                        if let Ok(mut guard) = log_file.lock() {
+                            if let Some(ref mut writer) = *guard {
+                                if let Err(e) = writeln!(writer, "{}", line) {
+                                    eprintln!("❌ Failed to write to log file: {}", e);
+                                } else {
+                                    let _ = writer.flush();
+                                }
                             }
                         }
                         
@@ -151,34 +154,21 @@ impl BreenixSession {
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             let sender = self.log_sender.clone();
+            let log_file = self.log_file.clone();
             
             std::thread::spawn(move || {
-                // Try to open the log file for appending
-                let log_path = "/tmp/breenix-mcp/kernel.log";
-                let mut log_writer = match OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(log_path) {
-                    Ok(f) => {
-                        eprintln!("✅ Opened log file for stderr writing: {}", log_path);
-                        Some(f)
-                    },
-                    Err(e) => {
-                        eprintln!("❌ Failed to open log file {}: {}", log_path, e);
-                        None
-                    }
-                };
-                
                 for line in reader.lines() {
                     if let Ok(line) = line {
                         let stderr_line = format!("[STDERR] {}", line);
                         
-                        // Write to log file if available
-                        if let Some(ref mut writer) = log_writer {
-                            if let Err(e) = writeln!(writer, "{}", stderr_line) {
-                                eprintln!("❌ Failed to write to log file: {}", e);
-                            } else {
-                                let _ = writer.flush();
+                        // Write to log file
+                        if let Ok(mut guard) = log_file.lock() {
+                            if let Some(ref mut writer) = *guard {
+                                if let Err(e) = writeln!(writer, "{}", stderr_line) {
+                                    eprintln!("❌ Failed to write to log file: {}", e);
+                                } else {
+                                    let _ = writer.flush();
+                                }
                             }
                         }
                         
@@ -197,6 +187,9 @@ impl BreenixSession {
     }
 
     fn stop(&mut self) -> Result<()> {
+        // Close the log file
+        *self.log_file.lock().unwrap() = None;
+        
         // First try to stop a managed process
         if let Some(mut process) = self.process.take() {
             process.kill()?;
@@ -305,6 +298,7 @@ fn count_qemu_processes() -> usize {
 #[derive(Debug, Deserialize)]
 struct StartRequest {
     display: Option<bool>,
+    testing: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -369,10 +363,11 @@ async fn handle_start(
     session: Arc<Mutex<BreenixSession>>,
 ) -> Result<impl Reply, Rejection> {
     let display = req.display.unwrap_or(false);
+    let testing = req.testing.unwrap_or(false);
     
     let start_result = {
         let mut session = session.lock().unwrap();
-        session.start(display)
+        session.start(display, testing)
     };
     
     match start_result {
@@ -593,6 +588,11 @@ async fn handle_mcp_request(
                                 "type": "boolean",
                                 "description": "Show QEMU display window",
                                 "default": false
+                            },
+                            "testing": {
+                                "type": "boolean",
+                                "description": "Enable kernel testing features",
+                                "default": false
                             }
                         }
                     }),
@@ -718,9 +718,10 @@ async fn handle_mcp_request(
             match tool_name {
                 "mcp__breenix__start" => {
                     let display = args["display"].as_bool().unwrap_or(false);
+                    let testing = args["testing"].as_bool().unwrap_or(false);
                     let mut session = session.lock().unwrap();
                     
-                    match session.start(display) {
+                    match session.start(display, testing) {
                         Ok(_) => McpResponse {
                             jsonrpc: "2.0".to_string(),
                             id: request.id,

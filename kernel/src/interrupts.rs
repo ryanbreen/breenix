@@ -6,6 +6,7 @@ use pic8259::ChainedPics;
 use spin::Once;
 
 mod timer;
+mod context_switch;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -66,7 +67,7 @@ pub fn init_idt() {
         idt.page_fault.set_handler_fn(page_fault_handler);
         
         // Hardware interrupt handlers
-        // Use raw handler for timer to support userspace preemption
+        // Timer interrupt with proper interrupt return path handling
         unsafe {
             idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_interrupt_entry as u64));
         }

@@ -93,37 +93,8 @@ pub struct SavedRegisters {
     pub rax: u64,  // pushed first, so at RSP+14*8
 }
 
-/// Perform context switch with userspace support
-/// 
-/// This handles switching between any combination of kernel/user threads
-pub unsafe fn switch_with_privilege(
-    old_thread: &mut Thread,
-    new_thread: &Thread,
-) -> Result<(), &'static str> {
-    // If switching to a userspace thread for the first time
-    if new_thread.privilege == ThreadPrivilege::User && 
-       new_thread.entry_point.is_some() &&
-       new_thread.context.rip == new_thread.entry_point.unwrap() as *const () as u64 {
-        // Initial switch to userspace
-        log::debug!("Initial switch to userspace thread {}", new_thread.id);
-        
-        // Use the userspace switch mechanism
-        crate::task::userspace_switch::switch_to_userspace(
-            VirtAddr::new(new_thread.context.rip),
-            VirtAddr::new(new_thread.context.rsp),
-            new_thread.context.cs as u16,
-            new_thread.context.ss as u16,
-        );
-    } else {
-        // Regular context switch
-        context::perform_context_switch(
-            &mut old_thread.context,
-            &new_thread.context,
-        );
-    }
-    
-    Ok(())
-}
+// Note: switch_with_privilege function removed as part of spawn mechanism cleanup
+// The new architecture doesn't need kernel-to-userspace transitions
 
 /// Save userspace context from interrupt
 /// Called from timer interrupt when preempting userspace
@@ -190,7 +161,16 @@ pub fn restore_userspace_context(
             frame.instruction_pointer = VirtAddr::new(thread.context.rip);
             frame.stack_pointer = VirtAddr::new(thread.context.rsp);
             frame.cpu_flags = x86_64::registers::rflags::RFlags::from_bits_truncate(thread.context.rflags);
-            // CS and SS are already correct from the saved context
+            
+            // CRITICAL: Set CS and SS for userspace
+            if thread.privilege == ThreadPrivilege::User {
+                // Use the actual selectors from the GDT module
+                frame.code_segment = crate::gdt::user_code_selector();
+                frame.stack_segment = crate::gdt::user_data_selector();
+            } else {
+                frame.code_segment = crate::gdt::kernel_code_selector();
+                frame.stack_segment = crate::gdt::kernel_data_selector();
+            }
         });
     }
     

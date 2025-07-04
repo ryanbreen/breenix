@@ -33,6 +33,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Yield => handlers::sys_yield(),
         SyscallNumber::GetTime => handlers::sys_get_time(),
         SyscallNumber::Fork => handlers::sys_fork(),
+        SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
         SyscallNumber::GetPid => handlers::sys_getpid(),
         SyscallNumber::GetTid => handlers::sys_gettid(),
     }

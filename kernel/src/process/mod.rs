@@ -8,8 +8,8 @@ use spin::Mutex;
 
 pub mod process;
 pub mod manager;
-pub mod exec;
-pub mod spawn;
+pub mod fork;
+pub mod creation;
 
 pub use process::{Process, ProcessId};
 pub use manager::ProcessManager;
@@ -25,8 +25,23 @@ pub fn init() {
 }
 
 /// Get a reference to the global process manager
+/// NOTE: This acquires a lock without disabling interrupts. 
+/// For operations that could be called while holding scheduler locks,
+/// use with_process_manager() instead.
 pub fn manager() -> spin::MutexGuard<'static, Option<ProcessManager>> {
     PROCESS_MANAGER.lock()
+}
+
+/// Execute a function with the process manager while interrupts are disabled
+/// This prevents deadlock when the timer interrupt tries to access the process manager
+pub fn with_process_manager<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut ProcessManager) -> R,
+{
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut manager_lock = PROCESS_MANAGER.lock();
+        manager_lock.as_mut().map(f)
+    })
 }
 
 /// Try to get the process manager without blocking (for interrupt contexts)
@@ -34,12 +49,9 @@ pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>
     PROCESS_MANAGER.try_lock()
 }
 
-/// Create and spawn a new process from an ELF binary
-pub fn spawn_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
-    let mut manager_lock = PROCESS_MANAGER.lock();
-    let manager = manager_lock.as_mut().ok_or("Process manager not initialized")?;
-    
-    manager.create_process(name, elf_data)
+/// Create a new user process using the new architecture
+pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
+    creation::create_user_process(name, elf_data)
 }
 
 /// Get the current process ID

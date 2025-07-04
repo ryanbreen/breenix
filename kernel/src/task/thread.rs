@@ -94,17 +94,24 @@ impl CpuContext {
             // Set instruction pointer to entry point
             rip: entry_point.as_u64(),
             
-            // Set default flags (interrupt enabled)
-            rflags: 0x200, // IF (Interrupt Flag) set
+            // Set default flags based on privilege
+            // For kernel threads, start with interrupts disabled to prevent
+            // immediate preemption before critical initialization
+            rflags: match privilege {
+                ThreadPrivilege::Kernel => 0x002, // No IF flag - interrupts disabled
+                ThreadPrivilege::User => 0x200,   // IF flag set - interrupts enabled
+            },
             
             // Segments based on privilege level
+            // Note: These values are just placeholders - the actual segment selectors
+            // will be set correctly during context restore based on the GDT
             cs: match privilege {
                 ThreadPrivilege::Kernel => 0x08, // Kernel code segment
-                ThreadPrivilege::User => 0x2b,   // User code segment (0x28 | 3)
+                ThreadPrivilege::User => 0x33,   // User code segment (based on GDT log)
             },
             ss: match privilege {
                 ThreadPrivilege::Kernel => 0x10, // Kernel data segment
-                ThreadPrivilege::User => 0x23,   // User data segment (0x20 | 3)
+                ThreadPrivilege::User => 0x2b,   // User data segment (based on GDT log)
             },
         }
     }
@@ -127,6 +134,9 @@ pub struct Thread {
     /// Stack information
     pub stack_top: VirtAddr,
     pub stack_bottom: VirtAddr,
+    
+    /// Kernel stack for syscalls/interrupts (only for userspace threads)
+    pub kernel_stack_top: Option<VirtAddr>,
     
     /// TLS block address
     pub tls_block: VirtAddr,
@@ -153,6 +163,7 @@ impl Clone for Thread {
             context: self.context.clone(),
             stack_top: self.stack_top,
             stack_bottom: self.stack_bottom,
+            kernel_stack_top: self.kernel_stack_top,
             tls_block: self.tls_block,
             priority: self.priority,
             time_slice: self.time_slice,
@@ -199,6 +210,7 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
+            kernel_stack_top: None, // Kernel threads don't need a separate kernel stack
             tls_block,
             priority: 64, // Higher priority for kernel threads
             time_slice: 20, // Longer time slice
@@ -233,6 +245,7 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
+            kernel_stack_top: None, // Will be set separately for userspace threads
             tls_block,
             priority: 128, // Default medium priority
             time_slice: 10, // Default time slice
@@ -282,6 +295,7 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
+            kernel_stack_top: None, // Will be set separately
             tls_block: actual_tls_block,
             priority: 128, // Default medium priority
             time_slice: 10, // Default time slice
@@ -346,6 +360,7 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
+            kernel_stack_top: None, // Will be set separately for userspace threads
             tls_block,
             priority: 128, // Default medium priority
             time_slice: 10, // Default time slice
