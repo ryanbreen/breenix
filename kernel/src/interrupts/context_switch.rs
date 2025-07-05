@@ -215,6 +215,7 @@ fn restore_userspace_thread_context(
                         // Update TSS RSP0 for the new thread's kernel stack
                         // CRITICAL: Use the kernel stack, not the userspace stack!
                         if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                            log::info!("Setting kernel stack for thread {} to {:#x}", thread_id, kernel_stack_top.as_u64());
                             crate::gdt::set_kernel_stack(kernel_stack_top);
                         } else {
                             log::error!("Userspace thread {} has no kernel stack!", thread_id);

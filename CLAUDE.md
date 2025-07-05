@@ -84,14 +84,12 @@ breenix/
 - ALWAYS use the MCP tools (`mcp__breenix__start`, etc.) for ALL kernel execution
 - This is a HARD REQUIREMENT - no exceptions!
 
-**CRITICAL: ALWAYS STOP BEFORE START**
-- **YOU MUST ALWAYS call `mcp__breenix__stop` before `mcp__breenix__start`**
-- This prevents "Breenix is already running" errors
-- Even if you think Breenix isn't running, ALWAYS stop first
-- The correct sequence is ALWAYS:
-  1. `mcp__breenix__stop`
-  2. `mcp__breenix__start`
-- No exceptions to this rule!
+**CRITICAL: MCP START AUTOMATICALLY CLEANS UP**
+- **`mcp__breenix__start` now automatically kills any existing QEMU processes before starting**
+- This prevents "Breenix is already running" errors and stuck processes
+- You no longer need to manually stop before starting
+- The MCP start tool is now fully self-contained and reliable
+- If you still get errors, use `mcp__breenix__kill` to force cleanup
 
 Breenix includes a comprehensive MCP (Model Context Protocol) server that enables programmatic interaction with the kernel for development and testing. This is REQUIRED for Claude Code integration and provides essential visibility for debugging.
 
@@ -121,7 +119,22 @@ The server provides these tools for interacting with Breenix:
 
 - **Process Management**: `mcp__breenix__start`, `mcp__breenix__stop`, `mcp__breenix__running`, `mcp__breenix__kill`
 - **Communication**: `mcp__breenix__send`, `mcp__breenix__wait_prompt`, `mcp__breenix__run_command`
-- **Logging**: `mcp__breenix__logs`
+
+**IMPORTANT: Log Analysis**
+- **NEVER use MCP tools to access logs** - there is no `mcp__breenix__logs` tool
+- **ALWAYS use standard Unix tools on `/tmp/breenix-mcp/kernel.log`** for log analysis
+- When reviewing kernel execution results, use:
+  ```bash
+  # Search for specific patterns
+  grep "pattern" /tmp/breenix-mcp/kernel.log
+  
+  # View recent logs
+  tail -n 50 /tmp/breenix-mcp/kernel.log
+  
+  # Search through logs interactively
+  less /tmp/breenix-mcp/kernel.log
+  ```
+- This ensures proper log access and prevents reliance on MCP for log retrieval
 
 ### Manual Usage
 
@@ -335,6 +348,36 @@ cargo test --test simple_kernel_test
 - The kernel is built with the custom x86_64-breenix.json target
 - QEMU runners and build system run on the host platform
 - Tests properly separate host and target concerns
+
+## 🚨 CRITICAL DEBUGGING REQUIREMENT 🚨
+
+**NEVER declare success without definitive proof from kernel logs**
+
+When implementing or debugging features:
+1. **Require explicit log evidence**: Must show exact log lines proving functionality works
+2. **No assumptions**: "Should work" or "likely works" is NOT acceptable  
+3. **Trace execution**: For userspace execution, need logs showing:
+   - Instructions actually executing in userspace (not just preparing to)
+   - Successful transitions between kernel/user mode
+   - System calls completing successfully
+4. **Double fault ≠ success**: A double fault at userspace address is NOT proof of execution
+5. **Be skeptical**: If you don't see explicit logs of success, it didn't happen
+
+**Example of what constitutes proof:**
+```
+[INFO] Userspace instruction executed at 0x10000000
+[INFO] Syscall 0x80 received from userspace  
+[INFO] Returning to userspace at 0x10000005
+```
+
+**Example of what is NOT proof:**
+```
+[INFO] Scheduled page table switch for process 1
+[DEBUG] TSS RSP0 updated
+DOUBLE FAULT at 0x10000005  <-- This is a CRASH, not execution!
+```
+
+**Current state**: Exec() appears to complete but double faults immediately. No evidence of actual userspace execution in logs.
 
 ## Development Notes
 All commits should be signed as co-developed by Ryan Breen and Claude Code because we're best buds!

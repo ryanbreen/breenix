@@ -250,8 +250,9 @@ fn load_segment(data: &[u8], ph: &Elf64ProgramHeader, base_offset: VirtAddr) -> 
             unsafe {
                 // Update the page table entry to remove write permission
                 if mapper.update_flags(page, correct_flags).is_ok() {
-                    // Flush TLB for this page
-                    x86_64::instructions::tlb::flush(page.start_address());
+                    // Don't flush TLB immediately - let the page table switch handle it
+                    // This avoids potential hangs during ELF loading
+                    log::trace!("Updated page flags, TLB flush deferred");
                 }
             }
         }

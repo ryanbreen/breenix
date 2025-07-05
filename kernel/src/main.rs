@@ -173,9 +173,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         },
         || {
             // EXECTEST handler
-            serial_println!("Testing Exec System Call");
-            test_exec::test_exec_directly();
-            serial_println!("Exec test scheduled. Press keys to continue...");
+            serial_println!("Testing Exec System Call with Real Userspace Programs");
+            test_exec::test_exec_real_userspace();
+            serial_println!("Real userspace exec test scheduled. Press keys to continue...");
         }
     );
     

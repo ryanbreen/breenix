@@ -5,9 +5,13 @@ use x86_64::structures::paging::{
 use x86_64::VirtAddr;
 use crate::task::thread::ThreadPrivilege;
 
-/// Base address for stack allocation area
-/// Using a high address area to avoid conflicts with heap
-pub const STACK_ALLOC_START: u64 = 0x_5555_5555_0000;
+/// Base address for user stack allocation area
+/// Using a high userspace address area to avoid conflicts with heap
+pub const USER_STACK_ALLOC_START: u64 = 0x_5555_5555_0000;
+
+/// Base address for kernel stack allocation area
+/// Must be in kernel space (high canonical addresses)
+pub const KERNEL_STACK_ALLOC_START: u64 = 0xFFFF_C900_0000_0000;
 
 /// Stack with guard page protection
 pub struct GuardedStack {
@@ -41,8 +45,8 @@ impl GuardedStack {
         let total_pages = (stack_size / 4096) + 1; // +1 for guard page
         let total_size = total_pages * 4096;
         
-        // Find available virtual address space
-        let allocation_start = Self::find_free_virtual_space(total_size)?;
+        // Find available virtual address space based on privilege
+        let allocation_start = Self::find_free_virtual_space(total_size, privilege)?;
         
         log::debug!("Allocating guarded stack at {:#x}, size {} KiB", 
             allocation_start.as_u64(), total_size / 1024);
@@ -105,21 +109,37 @@ impl GuardedStack {
     }
     
     /// Find free virtual address space for stack allocation
-    fn find_free_virtual_space(size: usize) -> Result<VirtAddr, &'static str> {
+    fn find_free_virtual_space(size: usize, privilege: ThreadPrivilege) -> Result<VirtAddr, &'static str> {
         // For now, use a simple incrementing allocator
         // TODO: Implement proper virtual memory management
-        static mut NEXT_STACK_ADDR: u64 = STACK_ALLOC_START;
+        static mut NEXT_USER_STACK_ADDR: u64 = USER_STACK_ALLOC_START;
+        static mut NEXT_KERNEL_STACK_ADDR: u64 = KERNEL_STACK_ALLOC_START;
         
         unsafe {
-            let addr = VirtAddr::new(NEXT_STACK_ADDR);
-            NEXT_STACK_ADDR += size as u64;
-            
-            // Simple bounds check
-            if NEXT_STACK_ADDR > 0x_6666_6666_0000 {
-                return Err("Out of virtual address space for stacks");
+            match privilege {
+                ThreadPrivilege::User => {
+                    let addr = VirtAddr::new(NEXT_USER_STACK_ADDR);
+                    NEXT_USER_STACK_ADDR += size as u64;
+                    
+                    // Simple bounds check for user stacks
+                    if NEXT_USER_STACK_ADDR > 0x_6666_6666_0000 {
+                        return Err("Out of virtual address space for user stacks");
+                    }
+                    
+                    Ok(addr)
+                }
+                ThreadPrivilege::Kernel => {
+                    let addr = VirtAddr::new(NEXT_KERNEL_STACK_ADDR);
+                    NEXT_KERNEL_STACK_ADDR += size as u64;
+                    
+                    // Simple bounds check for kernel stacks
+                    if NEXT_KERNEL_STACK_ADDR > 0xFFFF_CA00_0000_0000 {
+                        return Err("Out of virtual address space for kernel stacks");
+                    }
+                    
+                    Ok(addr)
+                }
             }
-            
-            Ok(addr)
         }
     }
     

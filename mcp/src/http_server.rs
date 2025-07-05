@@ -82,6 +82,9 @@ impl BreenixSession {
             return Err(anyhow!("Breenix is already running"));
         }
         
+        // Kill any existing QEMU processes before starting
+        let _ = kill_all_qemu();
+        
         // Ensure the log directory exists and create/truncate log file
         std::fs::create_dir_all("/tmp/breenix-mcp").ok();
         let log_path = "/tmp/breenix-mcp/kernel.log";
@@ -306,10 +309,6 @@ struct SendCommandRequest {
     command: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct LogsRequest {
-    lines: Option<usize>,
-}
 
 #[derive(Debug, Deserialize)]
 struct WaitPromptRequest {
@@ -427,21 +426,6 @@ async fn handle_send_command(
     }
 }
 
-async fn handle_logs(
-    req: LogsRequest,
-    session: Arc<Mutex<BreenixSession>>,
-) -> Result<impl Reply, Rejection> {
-    let lines = req.lines.unwrap_or(50);
-    let session = session.lock().unwrap();
-    let logs = session.get_logs(Some(lines), None);
-    
-    Ok(warp::reply::json(&ApiResponse::ok_with_data(
-        "Logs retrieved",
-        serde_json::json!({
-            "logs": logs.iter().map(|entry| &entry.line).collect::<Vec<_>>()
-        })
-    )))
-}
 
 async fn handle_wait_prompt(
     req: WaitPromptRequest,
@@ -633,20 +617,6 @@ async fn handle_mcp_request(
                             }
                         },
                         "required": ["command"]
-                    }),
-                },
-                Tool {
-                    name: "mcp__breenix__logs".to_string(),
-                    description: "Get recent Breenix logs".to_string(),
-                    input_schema: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "lines": {
-                                "type": "integer",
-                                "description": "Number of recent lines to return",
-                                "default": 50
-                            }
-                        }
                     }),
                 },
                 Tool {
@@ -856,29 +826,6 @@ async fn handle_mcp_request(
                     }
                 }
                 
-                "mcp__breenix__logs" => {
-                    let lines = args["lines"].as_u64().unwrap_or(50) as usize;
-                    let session = session.lock().unwrap();
-                    let logs = session.get_logs(Some(lines), None);
-                    let log_text = logs
-                        .iter()
-                        .map(|entry| &entry.line)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    
-                    McpResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: request.id,
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": log_text
-                            }]
-                        })),
-                        error: None,
-                    }
-                }
                 
                 "mcp__breenix__wait_prompt" => {
                     let timeout = args["timeout"].as_f64().unwrap_or(5.0);
@@ -1148,11 +1095,6 @@ pub async fn run_server(port: u16) -> Result<()> {
         .and(session_filter.clone())
         .and_then(handle_send_command);
     
-    let logs = warp::path("logs")
-        .and(warp::get())
-        .and(warp::query())
-        .and(session_filter.clone())
-        .and_then(handle_logs);
     
     let wait_prompt = warp::path("wait-prompt")
         .and(warp::post())
@@ -1173,7 +1115,6 @@ pub async fn run_server(port: u16) -> Result<()> {
         .or(status)
         .or(kill_all)
         .or(send)
-        .or(logs)
         .or(wait_prompt)
         .or(run_command);
     
