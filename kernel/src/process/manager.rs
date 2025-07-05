@@ -245,6 +245,23 @@ impl ProcessManager {
         self.processes.len()
     }
     
+    /// Remove a process from the ready queue
+    pub fn remove_from_ready_queue(&mut self, pid: ProcessId) -> bool {
+        if let Some(index) = self.ready_queue.iter().position(|&p| p == pid) {
+            self.ready_queue.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// Add a process to the ready queue
+    pub fn add_to_ready_queue(&mut self, pid: ProcessId) {
+        if !self.ready_queue.contains(&pid) {
+            self.ready_queue.push(pid);
+        }
+    }
+    
     /// Find a process by its main thread ID
     pub fn find_process_by_thread(&self, thread_id: u64) -> Option<(ProcessId, &Process)> {
         self.processes.iter()
@@ -452,6 +469,30 @@ impl ProcessManager {
         );
         log::info!("exec_process: New page table created successfully");
         
+        // Clear any user mappings that might have been copied from the current page table
+        // This prevents conflicts when loading the new program
+        new_page_table.clear_user_entries();
+        
+        // Unmap the old program's pages in common userspace ranges
+        // This is necessary because entry 0 contains both kernel and user mappings
+        // Typical userspace code location: 0x10000000 - 0x10100000 (1MB range)
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(0x10000000), 
+            VirtAddr::new(0x10100000)
+        ) {
+            log::warn!("Failed to unmap old user code pages: {}", e);
+        }
+        
+        // Also unmap any pages in the BSS/data area (just after code)
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(0x10001000), 
+            VirtAddr::new(0x10010000)
+        ) {
+            log::warn!("Failed to unmap old user data pages: {}", e);
+        }
+        
+        log::info!("exec_process: Cleared potential user mappings from new page table");
+        
         // Load the ELF binary into the new page table
         log::info!("exec_process: Loading ELF into new page table...");
         let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
@@ -515,12 +556,19 @@ impl ProcessManager {
         
         // Update the main thread context for the new program
         if let Some(ref mut thread) = process.main_thread {
+            // CRITICAL: Preserve the kernel stack - userspace threads need it for syscalls
+            let preserved_kernel_stack_top = thread.kernel_stack_top;
+            log::info!("exec_process: Preserving kernel stack top: {:?}", preserved_kernel_stack_top);
+            
             // Reset the CPU context for the new program
             thread.context.rip = new_entry_point;
             thread.context.rsp = new_stack_top.as_u64();
             thread.context.rflags = 0x202; // Enable interrupts
             thread.stack_top = new_stack_top;
             thread.stack_bottom = stack_bottom;
+            
+            // CRITICAL: Restore the preserved kernel stack - exec() doesn't change kernel stack
+            thread.kernel_stack_top = preserved_kernel_stack_top;
             
             // Clear all other registers for security
             thread.context.rax = 0;
@@ -572,6 +620,7 @@ impl ProcessManager {
             
             // DO NOT flush TLB here - let the interrupt return path handle it
             // Flushing TLB while still using the old page table mappings is dangerous
+            // The assembly code will handle the TLB flush after the page table switch
         } else if is_scheduled {
             // Process is scheduled but not current - it will pick up the new page table
             // when it's next scheduled to run. The context switch code will handle it.

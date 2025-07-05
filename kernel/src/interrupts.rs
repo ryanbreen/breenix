@@ -57,7 +57,14 @@ pub fn init_idt() {
         
         // CPU exception handlers
         idt.divide_error.set_handler_fn(divide_by_zero_handler);
-        idt.breakpoint.set_handler_fn(breakpoint_handler);
+        
+        // Breakpoint handler - must be callable from userspace
+        // Set DPL=3 to allow INT3 from Ring 3
+        unsafe {
+            idt.breakpoint.set_handler_fn(breakpoint_handler)
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+        }
+        
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         unsafe {
@@ -95,8 +102,18 @@ pub fn init_idt() {
         idt
     });
     
-    IDT.get().unwrap().load();
-    log::info!("IDT loaded successfully");
+    let idt = IDT.get().unwrap();
+    
+    // Log IDT address for debugging
+    let idt_ptr = idt as *const _ as u64;
+    log::info!("IDT address: {:#x}", idt_ptr);
+    
+    // Calculate which PML4 entry contains the IDT
+    let pml4_index = (idt_ptr >> 39) & 0x1FF;
+    log::info!("IDT is in PML4 entry {}", pml4_index);
+    
+    idt.load();
+    log::info!("IDT loaded successfully at {:#x}", idt_ptr);
 }
 
 pub fn init_pic() {
@@ -113,13 +130,36 @@ pub fn init_pic() {
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    log::info!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+    // Check if we came from userspace
+    let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
+    
+    if from_userspace {
+        log::info!("BREAKPOINT from USERSPACE at {:#x}", stack_frame.instruction_pointer.as_u64());
+        log::info!("Stack: {:#x}, CS: {:?}, SS: {:?}", 
+                  stack_frame.stack_pointer.as_u64(),
+                  stack_frame.code_segment,
+                  stack_frame.stack_segment);
+    } else {
+        log::info!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+    }
 }
 
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
-    _error_code: u64,
+    error_code: u64,
 ) -> ! {
+    // Log additional debug info before panicking
+    log::error!("DOUBLE FAULT - Error Code: {:#x}", error_code);
+    log::error!("Instruction Pointer: {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::error!("Stack Pointer: {:#x}", stack_frame.stack_pointer.as_u64());
+    log::error!("Code Segment: {:?}", stack_frame.code_segment);
+    log::error!("Stack Segment: {:?}", stack_frame.stack_segment);
+    
+    // Check current page table
+    use x86_64::registers::control::Cr3;
+    let (frame, _) = Cr3::read();
+    log::error!("Current page table frame: {:?}", frame);
+    
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 

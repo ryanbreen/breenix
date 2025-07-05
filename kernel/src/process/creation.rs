@@ -22,17 +22,21 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     log::info!("create_user_process: Creating user process '{}' with new model", name);
     
     // Create the process using existing infrastructure
-    let pid = {
+    // CRITICAL: Disable interrupts during process creation to prevent
+    // context switches that could leave the process in an inconsistent state
+    let pid = x86_64::instructions::interrupts::without_interrupts(|| {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
             manager.create_process(name.clone(), elf_data)
         } else {
-            return Err("Process manager not available");
+            Err("Process manager not available")
         }
-    }?;
+    })?;
     
     // The key difference: Add the thread directly to scheduler as a user thread
     // without going through the spawn mechanism
+    // Note: spawn() already has its own interrupt protection, so we don't need
+    // to wrap this part
     {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
@@ -41,6 +45,7 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                     // Verify it's a user thread
                     if main_thread.privilege == crate::task::thread::ThreadPrivilege::User {
                         // Add directly to scheduler - no spawn thread needed!
+                        // Note: spawn() internally uses without_interrupts
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
                         log::info!("create_user_process: Added user thread {} directly to scheduler", 
                                    main_thread.id);

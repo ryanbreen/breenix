@@ -3,6 +3,7 @@ pub mod paging;
 pub mod heap;
 pub mod stack;
 pub mod process_memory;
+pub mod tlb;
 
 use bootloader_api::info::MemoryRegions;
 use x86_64::{PhysAddr, VirtAddr};
@@ -112,8 +113,9 @@ pub fn debug_memory_info() {
     log::info!("  - Test vector ptr: {:p}", test_vec.as_ptr());
     
     // Stack allocation area info
-    log::info!("\nStack Allocation Area:");
-    log::info!("  - STACK_ALLOC_START: {:#x}", stack::STACK_ALLOC_START);
+    log::info!("\nStack Allocation Areas:");
+    log::info!("  - USER_STACK_ALLOC_START: {:#x}", stack::USER_STACK_ALLOC_START);
+    log::info!("  - KERNEL_STACK_ALLOC_START: {:#x}", stack::KERNEL_STACK_ALLOC_START);
     
     log::info!("=============================");
 }

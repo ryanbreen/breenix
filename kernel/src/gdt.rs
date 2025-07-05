@@ -41,6 +41,7 @@ pub fn init() {
         };
         
         // Set up privilege level 0 (kernel) stack for syscalls/interrupts from userspace
+        // Use the legacy RSP0 field for Ring 3 -> Ring 0 transitions
         tss.privilege_stack_table[0] = {
             const STACK_SIZE: usize = 16384; // 16KB kernel stack
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
@@ -143,7 +144,9 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
     let tss_ptr = TSS_PTR.load(Ordering::Acquire);
     if !tss_ptr.is_null() {
         unsafe {
+            let old_stack = (*tss_ptr).privilege_stack_table[0];
             (*tss_ptr).privilege_stack_table[0] = stack_top;
+            log::debug!("TSS RSP0 updated: {:#x} -> {:#x}", old_stack.as_u64(), stack_top.as_u64());
         }
     } else {
         panic!("TSS not initialized");

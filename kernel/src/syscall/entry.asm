@@ -91,6 +91,17 @@ syscall_entry:
     
     ; Switch to the process page table
     mov cr3, rax
+    ; CRITICAL: Ensure TLB is fully flushed after page table switch
+    ; On some systems, mov cr3 might not flush all TLB entries completely
+    ; Add explicit full TLB flush for absolute certainty  
+    push rax                     ; Save rax
+    mov rax, cr4
+    mov rcx, rax
+    and rcx, 0xFFFFFFFFFFFFFF7F  ; Clear PGE bit (bit 7)
+    mov cr4, rcx                  ; Disable global pages (flushes TLB)
+    mov cr4, rax                  ; Re-enable global pages
+    pop rax                      ; Restore rax
+    mfence
     
 .no_page_table_switch:
     pop rdx                    ; Restore rdx
