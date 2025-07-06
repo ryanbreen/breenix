@@ -11,7 +11,6 @@ use x86_64::VirtAddr;
 use super::{Process, ProcessId};
 use crate::elf;
 use crate::task::thread::Thread;
-use crate::memory::stack::GuardedStack;
 
 /// Process manager handles all processes in the system
 pub struct ProcessManager {

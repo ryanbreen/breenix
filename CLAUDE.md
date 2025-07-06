@@ -69,102 +69,92 @@ breenix/
      - PCI support
 
 4. **MCP Integration** (`mcp/`): Model Context Protocol server for programmatic kernel interaction
-   - HTTP server providing tools for Claude Code integration
+   - HTTP server providing tools for Claude Code integration  
    - Real-time kernel log streaming and command injection
    - Process lifecycle management for QEMU/Breenix sessions
    - RESTful API and JSON-RPC endpoints for automation
+   - **Note**: MCP is now optional - see direct cargo commands below
 
-## MCP Server Usage (REQUIRED - ALWAYS USE MCP)
+## Running Breenix (Direct Cargo Commands)
 
-**CRITICAL: Always use MCP for ALL Breenix development and testing. NEVER run QEMU or kernel tests directly without MCP.**
+**IMPORTANT: All kernel runs produce timestamped log files in the `logs/` directory**
 
-**ABSOLUTE REQUIREMENT: YOU MUST NEVER RUN QEMU DIRECTLY**
-- NEVER use `cargo run --bin qemu-uefi` or `cargo run --bin qemu-bios` directly
-- NEVER manually start QEMU processes
-- ALWAYS use the MCP tools (`mcp__breenix__start`, etc.) for ALL kernel execution
-- This is a HARD REQUIREMENT - no exceptions!
-
-**CRITICAL: MCP START AUTOMATICALLY CLEANS UP**
-- **`mcp__breenix__start` now automatically kills any existing QEMU processes before starting**
-- This prevents "Breenix is already running" errors and stuck processes
-- You no longer need to manually stop before starting
-- The MCP start tool is now fully self-contained and reliable
-- If you still get errors, use `mcp__breenix__kill` to force cleanup
-
-Breenix includes a comprehensive MCP (Model Context Protocol) server that enables programmatic interaction with the kernel for development and testing. This is REQUIRED for Claude Code integration and provides essential visibility for debugging.
-
-**Why MCP is mandatory:**
-- Provides real-time visibility into kernel behavior through tmux panes
-- Enables proper debugging with Ryan's assistance
-- Maintains consistent testing environment
-- Prevents stuck QEMU processes
-- Tracks all kernel interactions and logs
-
-### Quick Start with tmuxinator
-
-The recommended way to work with Breenix is using tmuxinator, which provides a complete development environment:
+### Quick Start
 
 ```bash
-# Start the MCP development environment
-tmuxinator start breenix-mcp
+# Run Breenix with automatic logging
+./scripts/run_breenix.sh
+
+# Run with specific options
+./scripts/run_breenix.sh uefi -display none
+./scripts/run_breenix.sh bios
+
+# Run tests
+./scripts/run_test.sh
 ```
 
-This creates a horizontal split terminal with:
-- **Top pane**: MCP HTTP server running on port 8080
-- **Bottom pane**: Live kernel logs streaming from `/tmp/breenix-mcp/kernel.log`
+### Direct Cargo Commands
 
-### MCP Tools Available
-
-The server provides these tools for interacting with Breenix:
-
-- **Process Management**: `mcp__breenix__start`, `mcp__breenix__stop`, `mcp__breenix__running`, `mcp__breenix__kill`
-- **Communication**: `mcp__breenix__send`, `mcp__breenix__wait_prompt`, `mcp__breenix__run_command`
-
-**IMPORTANT: Log Analysis**
-- **NEVER use MCP tools to access logs** - there is no `mcp__breenix__logs` tool
-- **ALWAYS use standard Unix tools on `/tmp/breenix-mcp/kernel.log`** for log analysis
-- When reviewing kernel execution results, use:
-  ```bash
-  # Search for specific patterns
-  grep "pattern" /tmp/breenix-mcp/kernel.log
-  
-  # View recent logs
-  tail -n 50 /tmp/breenix-mcp/kernel.log
-  
-  # Search through logs interactively
-  less /tmp/breenix-mcp/kernel.log
-  ```
-- This ensures proper log access and prevents reliance on MCP for log retrieval
-
-### Manual Usage
-
-If you prefer manual control:
+You can also run directly with cargo, but logs will only go to console:
 
 ```bash
-# Start MCP server manually
-cd mcp && BREENIX_MCP_PORT=8080 cargo run --bin breenix-http-server
+# Run UEFI mode
+cargo run --release --bin qemu-uefi -- -serial stdio -display none
 
-# Test the HTTP API
-curl http://localhost:8080/health
-curl -X POST http://localhost:8080/start -d '{"display": false}' -H "Content-Type: application/json"
+# Run BIOS mode  
+cargo run --release --bin qemu-bios -- -serial stdio -display none
+
+# Run with testing features
+cargo run --release --features testing --bin qemu-uefi -- -serial stdio
 ```
 
-### Development Workflow with MCP
+### Log Files
 
-1. **Start Environment**: `tmuxinator start breenix-mcp`
-2. **Use Claude Code**: Claude automatically discovers and uses MCP tools
-3. **Monitor Logs**: Watch the bottom pane for real-time kernel output
-4. **Restart if needed**: `./scripts/restart_mcp.sh` or `tmuxinator restart breenix-mcp`
+All log files are automatically saved to `logs/` with timestamps:
+- Format: `breenix_YYYYMMDD_HHMMSS.log`
+- Example: `logs/breenix_20250105_143022.log`
 
-### Key Benefits
+To analyze logs after a run:
 
-- **Automated Testing**: Run kernel tests programmatically via Claude Code
-- **Real-time Monitoring**: Live log streaming in dedicated terminal pane
-- **Command Injection**: Send commands to running kernel via serial interface
-- **Session Management**: Controlled QEMU process lifecycle
-- **HTTP API**: RESTful endpoints for external tool integration
+```bash
+# View latest log
+ls -t logs/*.log | head -1 | xargs less
 
-See `docs/MCP_INTEGRATION.md` for complete documentation.
+# Search in latest log
+ls -t logs/*.log | head -1 | xargs grep "DOUBLE FAULT"
+
+# Tail latest log
+ls -t logs/*.log | head -1 | xargs tail -f
+```
+
+### Development Workflow
+
+1. **Make code changes**
+2. **Run with logging**: `./scripts/run_breenix.sh`
+3. **Test specific functionality**: Type commands in QEMU console
+4. **Analyze logs**: Check the timestamped log file in `logs/`
+5. **Debug issues**: Search/grep through the log file
+
+### Testing Commands
+
+Once Breenix is running, you can type these commands in the serial console:
+- `exectest` - Test exec() system call
+- `Ctrl+U` - Run single userspace test
+- `Ctrl+P` - Test multiple concurrent processes
+- `Ctrl+F` - Test fork() system call
+- `Ctrl+E` - Test exec() system call
+- `Ctrl+T` - Show time debug info
+- `Ctrl+M` - Show memory debug info
+
+### Cleanup
+
+```bash
+# Kill any stuck QEMU processes
+pkill -f qemu-system-x86_64
+
+# Clean old logs (keeps last 10)
+ls -t logs/*.log | tail -n +11 | xargs rm -f
+```
 
 ## Coding Practices
 
@@ -327,16 +317,14 @@ On all systems:
 # Build kernel with custom target (kernel uses x86_64-breenix.json)
 cargo build
 
-# NEVER RUN QEMU DIRECTLY - USE MCP INSTEAD:
-# DO NOT USE: cargo run --bin qemu-uefi
-# DO NOT USE: cargo run --bin qemu-bios
-# INSTEAD USE MCP TOOLS:
-# - mcp__breenix__start
-# - mcp__breenix__stop
-# - mcp__breenix__send
-# etc.
+# Run Breenix with logging
+./scripts/run_breenix.sh
 
-# Run tests (these are OK as they use controlled QEMU instances)
+# Or use direct cargo commands (logs to console only)
+cargo run --release --bin qemu-uefi -- -serial stdio -display none
+cargo run --release --bin qemu-bios -- -serial stdio -display none
+
+# Run tests (these use controlled QEMU instances)
 cargo test --test simple_kernel_test
 ```
 

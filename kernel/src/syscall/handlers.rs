@@ -65,7 +65,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 /// 
 /// Currently only supports stdout/stderr writing to serial port.
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
-    // log::debug!("sys_write: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+    log::info!("USERSPACE: sys_write called: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
     
     // Validate file descriptor
     if fd != FD_STDOUT && fd != FD_STDERR {
@@ -165,7 +165,7 @@ pub fn sys_fork() -> SyscallResult {
     }
     
     // Find the current process by thread ID
-    let mut manager_guard = crate::process::manager();
+    let manager_guard = crate::process::manager();
     let process_info = if let Some(ref manager) = *manager_guard {
         manager.find_process_by_thread(current_thread_id)
     } else {
@@ -269,8 +269,8 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             // Use embedded test program for now
             #[cfg(feature = "testing")]
             {
-                log::info!("sys_exec: Using embedded hello_time test program");
-                crate::userspace_test::HELLO_TIME_ELF
+                log::info!("sys_exec: Using embedded hello_world test program");
+                crate::userspace_test::HELLO_WORLD_ELF
             }
             #[cfg(not(feature = "testing"))]
             {

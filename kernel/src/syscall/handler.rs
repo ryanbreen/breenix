@@ -4,22 +4,23 @@ use super::{SyscallNumber, SyscallResult};
 #[derive(Debug)]
 pub struct SyscallFrame {
     // General purpose registers (in memory order after all pushes)
-    // Stack grows down, so first field is at lowest address (where RSP points)
-    pub r15: u64,  // pushed last, so at RSP+0
-    pub r14: u64,  // at RSP+8
-    pub r13: u64,
-    pub r12: u64,
-    pub r11: u64,
-    pub r10: u64,
-    pub r9: u64,
-    pub r8: u64,
-    pub rdi: u64,
-    pub rsi: u64,
-    pub rbp: u64,
-    pub rbx: u64,
-    pub rdx: u64,
-    pub rcx: u64,
-    pub rax: u64,  // Syscall number - pushed first, so at RSP+0x70
+    // Stack grows down, so last pushed is at lowest address (where RSP points)
+    // Assembly pushes in reverse order: r15 first, rax last
+    pub rax: u64,  // Syscall number - pushed last, so at RSP+0
+    pub rcx: u64,  // at RSP+8
+    pub rdx: u64,  // at RSP+16
+    pub rbx: u64,  // at RSP+24
+    pub rbp: u64,  // at RSP+32
+    pub rsi: u64,  // at RSP+40
+    pub rdi: u64,  // at RSP+48
+    pub r8: u64,   // at RSP+56
+    pub r9: u64,   // at RSP+64
+    pub r10: u64,  // at RSP+72
+    pub r11: u64,  // at RSP+80
+    pub r12: u64,  // at RSP+88
+    pub r13: u64,  // at RSP+96
+    pub r14: u64,  // at RSP+104
+    pub r15: u64,  // pushed first, so at RSP+112
     
     // Interrupt frame (pushed by CPU before our code)
     pub rip: u64,

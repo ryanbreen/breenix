@@ -4,7 +4,6 @@
 //! userspace process contexts, including privilege level transitions.
 
 use super::thread::{Thread, ThreadPrivilege, CpuContext};
-use super::context;
 use x86_64::VirtAddr;
 use x86_64::structures::idt::InterruptStackFrame;
 
