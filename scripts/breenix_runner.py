@@ -39,17 +39,18 @@ class BreenixRunner:
         return log_path
         
     def start(self):
-        """Start Breenix with PTY for serial interaction"""
-        # Create a pseudo-terminal
-        self.master_fd, slave_fd = pty.openpty()
+        """Start Breenix with stdio for serial output"""
+        # No need for PTY when using stdio
+        self.master_fd = None
+        slave_fd = None
         
         # Build the cargo command
         bin_name = f"qemu-{self.mode}"
         cmd = ["cargo", "run", "--release", "--bin", bin_name, "--"]
         
         # Add QEMU arguments
-        # Use pty for bidirectional serial communication
-        cmd.extend(["-serial", f"pty"])
+        # Use stdio for serial communication to capture logs properly
+        cmd.extend(["-serial", "stdio"])
         if not self.display:
             cmd.extend(["-display", "none"])
             
@@ -58,14 +59,10 @@ class BreenixRunner:
         # Start the process
         self.process = subprocess.Popen(
             cmd,
-            pass_fds=(slave_fd,),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True
         )
-        
-        # Close the slave end in parent
-        os.close(slave_fd)
         
         # Start threads to handle output
         self._start_output_threads()
@@ -76,21 +73,9 @@ class BreenixRunner:
         
     def _start_output_threads(self):
         """Start threads to handle serial and process output"""
-        # Thread to read from PTY and log
+        # No need for serial reading when using stdio
         def read_serial():
-            while self.process and self.process.poll() is None:
-                try:
-                    # Check if data is available
-                    r, _, _ = select.select([self.master_fd], [], [], 0.1)
-                    if r:
-                        data = os.read(self.master_fd, 1024).decode('utf-8', errors='ignore')
-                        if data:
-                            sys.stdout.write(data)
-                            sys.stdout.flush()
-                            self.log_file.write(data)
-                            self.log_file.flush()
-                except:
-                    break
+            pass  # Disabled for stdio mode
                     
         # Thread to read process stdout
         def read_stdout():

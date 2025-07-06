@@ -85,7 +85,7 @@ impl ProcessManager {
         process.stack = Some(Box::new(user_stack));
         
         // Create the main thread
-        let thread = self.create_main_thread(&process, stack_top)?;
+        let thread = self.create_main_thread(&mut process, stack_top)?;
         process.set_main_thread(thread);
         
         // Add to ready queue
@@ -100,7 +100,7 @@ impl ProcessManager {
     }
     
     /// Create the main thread for a process
-    fn create_main_thread(&self, process: &Process, stack_top: x86_64::VirtAddr) -> Result<Thread, &'static str> {
+    fn create_main_thread(&self, process: &mut Process, stack_top: x86_64::VirtAddr) -> Result<Thread, &'static str> {
         
         // For now, use a null TLS block (we'll implement TLS later)
         let _tls_block = x86_64::VirtAddr::new(0);
@@ -127,6 +127,22 @@ impl ProcessManager {
             crate::task::thread::ThreadPrivilege::Kernel
         ).map_err(|_| "Failed to allocate kernel stack for thread")?;
         let kernel_stack_top = kernel_stack.top();
+        
+        // CRITICAL FIX: Copy kernel stack mappings to process page table
+        // The kernel stack was mapped in the kernel page table, but userspace needs access
+        // for Ring 3 -> Ring 0 transitions during syscalls
+        log::debug!("Copying kernel stack mappings to process page table...");
+        if let Some(ref mut page_table) = process.page_table {
+            crate::memory::process_memory::copy_kernel_stack_to_process(page_table, 
+                kernel_stack.bottom(), kernel_stack.top())
+                .map_err(|e| {
+                    log::error!("Failed to copy kernel stack to process page table: {}", e);
+                    "Failed to map kernel stack in process page table"
+                })?;
+            log::debug!("✓ Kernel stack mapped in process page table");
+        } else {
+            return Err("Process page table not available for kernel stack mapping");
+        }
         
         // Store the kernel stack (we'll need to manage this properly later)
         // For now, we'll leak it - TODO: proper cleanup
@@ -362,6 +378,10 @@ impl ProcessManager {
             ).map_err(|_| "Failed to allocate kernel stack for child thread")?;
             let kernel_stack_top = kernel_stack.top();
             
+            // Store kernel_stack data for later use
+            let kernel_stack_bottom = kernel_stack.bottom();
+            let kernel_stack_top = kernel_stack.top();
+            
             // Store the kernel stack (we'll need to manage this properly later)
             // For now, we'll leak it - TODO: proper cleanup
             Box::leak(Box::new(kernel_stack));
@@ -413,6 +433,28 @@ impl ProcessManager {
         
         // Add the child process to the process table
         self.processes.insert(child_pid, child_process);
+        
+        // CRITICAL FIX: Copy kernel stack mappings to child process page table (if userspace)
+        if let Some(kernel_stack_top) = child_kernel_stack_top {
+            log::debug!("Copying child kernel stack mappings to process page table...");
+            if let Some(child_process) = self.processes.get_mut(&child_pid) {
+                if let Some(ref mut page_table) = child_process.page_table {
+                    // Use the stored kernel stack bounds
+                    let kernel_stack_bottom = kernel_stack_top.as_u64() - 16 * 1024; // 16KB stack size
+                    crate::memory::process_memory::copy_kernel_stack_to_process(page_table, 
+                        x86_64::VirtAddr::new(kernel_stack_bottom), kernel_stack_top)
+                        .map_err(|e| {
+                            log::error!("Failed to copy child kernel stack to process page table: {}", e);
+                            "Failed to map child kernel stack in process page table"
+                        })?;
+                    log::debug!("✓ Child kernel stack mapped in process page table");
+                } else {
+                    return Err("Child process page table not available for kernel stack mapping");
+                }
+            } else {
+                return Err("Child process not found for kernel stack mapping");
+            }
+        }
         
         // Add the child to the ready queue so it can be scheduled
         self.ready_queue.push(child_pid);

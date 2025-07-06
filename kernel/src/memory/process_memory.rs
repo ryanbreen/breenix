@@ -5,7 +5,7 @@
 use x86_64::{
     structures::paging::{
         OffsetPageTable, PageTable, PageTableFlags, Page, Size4KiB, 
-        Mapper, PhysFrame, Translate
+        Mapper, PhysFrame, Translate, mapper::TranslateResult
     },
     VirtAddr, PhysAddr,
     registers::control::Cr3,
@@ -302,4 +302,60 @@ pub unsafe fn switch_to_kernel_page_table() {
     } else {
         log::error!("Kernel page table frame not initialized!");
     }
+}
+
+/// Copy kernel stack mappings from kernel page table to process page table
+/// This is critical for Ring 3 -> Ring 0 transitions during syscalls
+pub fn copy_kernel_stack_to_process(
+    process_page_table: &mut ProcessPageTable,
+    stack_bottom: VirtAddr,
+    stack_top: VirtAddr,
+) -> Result<(), &'static str> {
+    log::debug!("copy_kernel_stack_to_process: copying stack range {:#x} - {:#x}", 
+        stack_bottom.as_u64(), stack_top.as_u64());
+    
+    // Get access to the kernel page table
+    let kernel_mapper = unsafe { crate::memory::paging::get_mapper() };
+    
+    // Calculate page range to copy
+    let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+    let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
+    
+    let mut copied_pages = 0;
+    
+    // Copy each page mapping from kernel to process page table
+    for page in Page::range_inclusive(start_page, end_page) {
+        // Look up the mapping in the kernel page table
+        match kernel_mapper.translate(page.start_address()) {
+            TranslateResult::Mapped { frame, offset, flags: _ } => {
+                let phys_addr = frame.start_address() + offset;
+                let frame = PhysFrame::containing_address(phys_addr);
+                
+                // Map the same physical frame in the process page table
+                // Use kernel permissions (not user accessible)
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+                
+                match process_page_table.map_page(page, frame, flags) {
+                    Ok(()) => {
+                        copied_pages += 1;
+                        log::trace!("Mapped kernel stack page {:#x} -> frame {:#x}", 
+                            page.start_address().as_u64(), frame.start_address().as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to map kernel stack page {:#x}: {}", 
+                            page.start_address().as_u64(), e);
+                        return Err("Failed to map kernel stack page");
+                    }
+                }
+            }
+            _ => {
+                log::error!("Kernel stack page {:#x} not mapped in kernel page table!", 
+                    page.start_address().as_u64());
+                return Err("Kernel stack page not found in kernel page table");
+            }
+        }
+    }
+    
+    log::debug!("✓ Successfully copied {} kernel stack pages to process page table", copied_pages);
+    Ok(())
 }

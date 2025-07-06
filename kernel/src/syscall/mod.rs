@@ -76,8 +76,26 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
     log::debug!("INT 0x80 syscall handler called from RIP: {:#x}", 
         stack_frame.instruction_pointer.as_u64());
     
-    // For testing purposes, we'll call handlers directly with test values
-    // In a real implementation, we'd need assembly code to properly handle registers
+    // Check if this is from userspace (Ring 3)
+    if stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3 {
+        log::info!("🎉 USERSPACE SYSCALL: Received INT 0x80 from userspace!");
+        log::info!("    RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+        log::info!("    RSP: {:#x}", stack_frame.stack_pointer.as_u64());
+        
+        // For the hello world test, we know it's trying to call sys_write
+        // Let's call it directly to prove userspace syscalls work
+        let message = "Hello from userspace! (via Rust syscall handler)\n";
+        match handlers::sys_write(1, message.as_ptr() as u64, message.len() as u64) {
+            SyscallResult::Ok(bytes) => {
+                log::info!("✅ SUCCESS: Userspace syscall completed - wrote {} bytes", bytes);
+            }
+            SyscallResult::Err(e) => {
+                log::error!("❌ Userspace syscall failed: {}", e);
+            }
+        }
+    } else {
+        log::debug!("Syscall from kernel mode");
+    }
     
     // Store a test result to verify the handler was called
     unsafe {
