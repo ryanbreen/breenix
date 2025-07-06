@@ -82,12 +82,12 @@ pub fn init_idt() {
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         
         // System call handler (INT 0x80)
-        // Use raw handler for proper register handling
+        // Use Rust handler - it works for both kernel and userspace calls
         unsafe {
-            let syscall_options = idt[SYSCALL_INTERRUPT_ID].set_handler_addr(VirtAddr::new(syscall_entry as u64));
-            // Set DPL=3 to allow userspace to call INT 0x80
-            syscall_options.set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+            idt[SYSCALL_INTERRUPT_ID].set_handler_fn(crate::syscall::syscall_handler)
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         }
+        log::info!("Syscall handler configured with Rust function");
         
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {

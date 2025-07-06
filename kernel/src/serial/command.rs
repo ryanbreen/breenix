@@ -198,6 +198,10 @@ fn process_command(command: &str) {
             }
         }
         
+        "forkexec" | "fe" => {
+            serial_println!("Fork+exec command not implemented in serial - use Ctrl+X in keyboard mode");
+        }
+        
         "echo" => {
             let rest: Vec<&str> = parts.collect();
             if rest.is_empty() {

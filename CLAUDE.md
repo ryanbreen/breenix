@@ -130,19 +130,57 @@ ls -t logs/*.log | head -1 | xargs tail -f
 ### Development Workflow
 
 1. **Make code changes**
-2. **Run with logging**: `./scripts/run_breenix.sh`
-3. **Test specific functionality**: Type commands in QEMU console
-4. **Analyze logs**: Check the timestamped log file in `logs/`
-5. **Debug issues**: Search/grep through the log file
+2. **Run with automated testing**: `./scripts/breenix_runner.py` (runs in background)
+3. **Monitor execution**: Check timestamped log files in `logs/` directory
+4. **Analyze results**: Use grep to search logs for specific events
+5. **Debug issues**: Compare log patterns between working and broken runs
+
+### Testing and Log Analysis Best Practices
+
+**Running Breenix for Testing:**
+```bash
+# Automated testing (preferred method)
+./scripts/breenix_runner.py > /dev/null 2>&1 &
+sleep 15  # Wait for kernel to boot and run tests
+
+# Check latest log
+ls -t logs/*.log | head -1
+
+# Analyze specific functionality
+grep -E "Fork succeeded|exec succeeded|DOUBLE FAULT" logs/breenix_YYYYMMDD_HHMMSS.log
+```
+
+**Log Analysis Patterns:**
+- Look for timestamped kernel messages: `NNNNNNNNNN - [LEVEL] module::function: message`
+- Successful operations: Look for `✓` or "succeeded" messages
+- Failures: Look for `✗`, "failed", "ERROR", or "DOUBLE FAULT"
+- Process execution: Check for userspace context switches and syscalls
+- Memory issues: Check for page fault details and memory mapping logs
+- **CRITICAL BASELINE**: Look for "Hello from userspace!" output from direct test
+- **Page table issues**: Look for "get_next_page_table" and "page table switch" messages
+
+**Modified breenix_runner.py:**
+- Changed from `-serial pty` to `-serial stdio` for proper log capture
+- Captures all kernel output to timestamped log files
+- Runs automatic tests during kernel initialization
+- No longer requires interactive PTY communication
 
 ### Testing Commands
 
-Once Breenix is running, you can type these commands in the serial console:
+**Automatic Tests (run during kernel boot):**
+- **CRITICAL**: Direct hello world test runs first to validate baseline syscall functionality
+- Fork/exec pattern test runs after direct test
+- Check logs for "BASELINE TEST: Direct userspace execution" and "REGRESSION TEST: Fork/exec pattern"
+- **IMPORTANT**: Direct test MUST work before attempting fork/exec debugging
+
+**Interactive Commands (if using interactive mode):**
 - `exectest` - Test exec() system call
 - `Ctrl+U` - Run single userspace test
 - `Ctrl+P` - Test multiple concurrent processes
 - `Ctrl+F` - Test fork() system call
 - `Ctrl+E` - Test exec() system call
+- `Ctrl+X` - Test fork+exec pattern
+- `Ctrl+H` - Test shell-style fork+exec
 - `Ctrl+T` - Show time debug info
 - `Ctrl+M` - Show memory debug info
 
