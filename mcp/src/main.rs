@@ -39,13 +39,20 @@ impl BreenixSession {
         }
     }
 
-    fn start(&mut self, display: bool) -> Result<()> {
+    fn start(&mut self, display: bool, testing: bool) -> Result<()> {
         if self.process.is_some() {
             return Err(anyhow!("Breenix is already running"));
         }
+        
+        // Kill any existing QEMU processes before starting
+        let _ = kill_all_qemu();
 
         let mut cmd = Command::new("cargo");
-        cmd.args(&["run", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        if testing {
+            cmd.args(&["run", "--features", "testing", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        } else {
+            cmd.args(&["run", "--bin", "qemu-uefi", "--", "-serial", "stdio"]);
+        }
         
         if !display {
             cmd.args(&["-display", "none"]);
@@ -165,7 +172,13 @@ impl BreenixSession {
     }
 
     fn update_logs(&mut self, entry: LogEntry) {
-        // Check for prompt - Breenix outputs just "> " as prompt
+        // Check for serial command task started - this indicates the kernel is ready
+        if entry.line.contains("kernel::serial::command: Serial command task started") {
+            self.last_prompt_time = Instant::now();
+            eprintln!("🎯 Detected kernel ready: Serial command task started");
+        }
+        
+        // Also check for traditional prompt - Breenix outputs just "> " as prompt
         let trimmed = entry.line.trim();
         if trimmed == ">" || trimmed == "> " || trimmed.ends_with("> ") {
             self.last_prompt_time = Instant::now();
@@ -277,6 +290,11 @@ async fn handle_request(
                                 "type": "boolean",
                                 "description": "Show QEMU display window",
                                 "default": false
+                            },
+                            "testing": {
+                                "type": "boolean",
+                                "description": "Enable kernel testing features",
+                                "default": false
                             }
                         }
                     }),
@@ -317,20 +335,6 @@ async fn handle_request(
                             }
                         },
                         "required": ["command"]
-                    }),
-                },
-                Tool {
-                    name: "mcp__breenix__logs".to_string(),
-                    description: "Get recent Breenix logs".to_string(),
-                    input_schema: serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "lines": {
-                                "type": "integer",
-                                "description": "Number of recent lines to return",
-                                "default": 50
-                            }
-                        }
                     }),
                 },
                 Tool {
@@ -405,9 +409,14 @@ async fn handle_request(
             match tool_name {
                 "mcp__breenix__start" => {
                     let display = args["display"].as_bool().unwrap_or(false);
+                    let testing = args["testing"].as_bool().unwrap_or(false);
+                    
+                    // First kill any existing QEMU processes
+                    let _ = kill_all_qemu();
+                    
                     let mut session = session.lock().unwrap();
                     
-                    match session.start(display) {
+                    match session.start(display, testing) {
                         Ok(_) => {
                             drop(session);
                             // Wait for boot
@@ -548,38 +557,22 @@ async fn handle_request(
                     }
                 }
                 
-                "mcp__breenix__logs" => {
-                    let lines = args["lines"].as_u64().unwrap_or(50) as usize;
-                    let session = session.lock().unwrap();
-                    let logs = session.get_logs(Some(lines), None);
-                    let log_text = logs
-                        .iter()
-                        .map(|entry| &entry.line)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    
-                    McpResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: request.id,
-                        result: Some(serde_json::json!({
-                            "content": [{
-                                "type": "text",
-                                "text": log_text
-                            }]
-                        })),
-                        error: None,
-                    }
-                }
                 
                 "mcp__breenix__wait_prompt" => {
                     let timeout = args["timeout"].as_f64().unwrap_or(5.0);
                     let start = Instant::now();
                     
                     loop {
-                        let session = session.lock().unwrap();
-                        if session.last_prompt_time > session.last_command_time {
-                            drop(session);
+                        // Check the log file directly for the serial command task started message
+                        let output = match Command::new("grep")
+                            .args(&["-q", "kernel::serial::command: Serial command task started", "/tmp/breenix-mcp/kernel.log"])
+                            .status()
+                        {
+                            Ok(status) => status.success(),
+                            Err(_) => false,
+                        };
+                        
+                        if output {
                             return McpResponse {
                                 jsonrpc: "2.0".to_string(),
                                 id: request.id,
@@ -592,7 +585,6 @@ async fn handle_request(
                                 error: None,
                             };
                         }
-                        drop(session);
                         
                         if start.elapsed().as_secs_f64() > timeout {
                             return McpResponse {

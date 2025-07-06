@@ -18,6 +18,7 @@ struct CommandRegistry {
     mem_handler: Option<CommandHandler>,
     test_handler: Option<CommandHandler>,
     fork_test_handler: Option<CommandHandler>,
+    exec_test_handler: Option<CommandHandler>,
 }
 
 impl CommandRegistry {
@@ -27,17 +28,19 @@ impl CommandRegistry {
             mem_handler: None,
             test_handler: None,
             fork_test_handler: None,
+            exec_test_handler: None,
         }
     }
 }
 
 /// Register command handlers from the kernel binary
-pub fn register_handlers(ps: CommandHandler, mem: CommandHandler, test: CommandHandler, fork_test: CommandHandler) {
+pub fn register_handlers(ps: CommandHandler, mem: CommandHandler, test: CommandHandler, fork_test: CommandHandler, exec_test: CommandHandler) {
     COMMAND_REGISTRY.call_once(|| CommandRegistry {
         ps_handler: Some(ps),
         mem_handler: Some(mem),
         test_handler: Some(test),
         fork_test_handler: Some(fork_test),
+        exec_test_handler: Some(exec_test),
     });
 }
 
@@ -127,6 +130,7 @@ fn process_command(command: &str) {
             serial_println!("  mem         - Show memory statistics");
             serial_println!("  test        - Run test processes");
             serial_println!("  forktest    - Test fork system call");
+            serial_println!("  exectest    - Test exec system call");
             serial_println!("  echo <msg>  - Echo a message");
         }
         
@@ -180,6 +184,22 @@ fn process_command(command: &str) {
             } else {
                 serial_println!("Command handlers not registered");
             }
+        }
+        
+        "exectest" | "e" => {
+            if let Some(registry) = COMMAND_REGISTRY.get() {
+                if let Some(handler) = registry.exec_test_handler {
+                    handler();
+                } else {
+                    serial_println!("Exec test command not available");
+                }
+            } else {
+                serial_println!("Command handlers not registered");
+            }
+        }
+        
+        "forkexec" | "fe" => {
+            serial_println!("Fork+exec command not implemented in serial - use Ctrl+X in keyboard mode");
         }
         
         "echo" => {

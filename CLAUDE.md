@@ -2,7 +2,27 @@
 
 ## Project Overview
 
-Breenix is an experimental x86_64 operating system kernel written in Rust. The project appears to be in early development stages, focusing on building a minimal kernel that can boot on both UEFI and BIOS systems.
+Breenix is an x86_64 operating system kernel written in Rust. **This is NOT a toy or learning project - we are building a production-quality operating system for the long haul.**
+
+## 🚨 CRITICAL DESIGN PRINCIPLE 🚨
+
+**ALWAYS FOLLOW OS-STANDARD PRACTICES - NO SHORTCUTS**
+
+Under **NO CIRCUMSTANCES** should you choose "easy" workarounds that deviate from standard OS development practices. When implementing any feature:
+
+- **Follow Linux/FreeBSD patterns**: If real operating systems do it a certain way, that's our standard
+- **No quick hacks**: Don't implement temporary solutions that avoid complexity  
+- **Build for production**: Every design decision must scale to a real OS
+- **Quality over speed**: Take the time to implement features correctly the first time
+
+**Examples of REQUIRED standard practices:**
+- Page table switching during exec() ELF loading (not double-mapping)
+- Proper copy-on-write fork() implementation
+- Standard syscall interfaces and semantics
+- Real virtual memory management with proper isolation
+- Proper interrupt and exception handling
+
+**If it's good enough for Linux, it's the standard we follow.**
 
 ### Current Status
 - Basic bootloader integration using the `bootloader` crate
@@ -49,74 +69,130 @@ breenix/
      - PCI support
 
 4. **MCP Integration** (`mcp/`): Model Context Protocol server for programmatic kernel interaction
-   - HTTP server providing tools for Claude Code integration
+   - HTTP server providing tools for Claude Code integration  
    - Real-time kernel log streaming and command injection
    - Process lifecycle management for QEMU/Breenix sessions
    - RESTful API and JSON-RPC endpoints for automation
+   - **Note**: MCP is now optional - see direct cargo commands below
 
-## MCP Server Usage (REQUIRED - ALWAYS USE MCP)
+## Running Breenix (Direct Cargo Commands)
 
-**CRITICAL: Always use MCP for ALL Breenix development and testing. NEVER run QEMU or kernel tests directly without MCP.**
+**IMPORTANT: All kernel runs produce timestamped log files in the `logs/` directory**
 
-Breenix includes a comprehensive MCP (Model Context Protocol) server that enables programmatic interaction with the kernel for development and testing. This is REQUIRED for Claude Code integration and provides essential visibility for debugging.
-
-**Why MCP is mandatory:**
-- Provides real-time visibility into kernel behavior through tmux panes
-- Enables proper debugging with Ryan's assistance
-- Maintains consistent testing environment
-- Prevents stuck QEMU processes
-- Tracks all kernel interactions and logs
-
-### Quick Start with tmuxinator
-
-The recommended way to work with Breenix is using tmuxinator, which provides a complete development environment:
+### Quick Start
 
 ```bash
-# Start the MCP development environment
-tmuxinator start breenix-mcp
+# Run Breenix with automatic logging
+./scripts/run_breenix.sh
+
+# Run with specific options
+./scripts/run_breenix.sh uefi -display none
+./scripts/run_breenix.sh bios
+
+# Run tests
+./scripts/run_test.sh
 ```
 
-This creates a horizontal split terminal with:
-- **Top pane**: MCP HTTP server running on port 8080
-- **Bottom pane**: Live kernel logs streaming from `/tmp/breenix-mcp/kernel.log`
+### Direct Cargo Commands
 
-### MCP Tools Available
-
-The server provides these tools for interacting with Breenix:
-
-- **Process Management**: `mcp__breenix__start`, `mcp__breenix__stop`, `mcp__breenix__running`, `mcp__breenix__kill`
-- **Communication**: `mcp__breenix__send`, `mcp__breenix__wait_prompt`, `mcp__breenix__run_command`
-- **Logging**: `mcp__breenix__logs`
-
-### Manual Usage
-
-If you prefer manual control:
+You can also run directly with cargo, but logs will only go to console:
 
 ```bash
-# Start MCP server manually
-cd mcp && BREENIX_MCP_PORT=8080 cargo run --bin breenix-http-server
+# Run UEFI mode
+cargo run --release --bin qemu-uefi -- -serial stdio -display none
 
-# Test the HTTP API
-curl http://localhost:8080/health
-curl -X POST http://localhost:8080/start -d '{"display": false}' -H "Content-Type: application/json"
+# Run BIOS mode  
+cargo run --release --bin qemu-bios -- -serial stdio -display none
+
+# Run with testing features
+cargo run --release --features testing --bin qemu-uefi -- -serial stdio
 ```
 
-### Development Workflow with MCP
+### Log Files
 
-1. **Start Environment**: `tmuxinator start breenix-mcp`
-2. **Use Claude Code**: Claude automatically discovers and uses MCP tools
-3. **Monitor Logs**: Watch the bottom pane for real-time kernel output
-4. **Restart if needed**: `./scripts/restart_mcp.sh` or `tmuxinator restart breenix-mcp`
+All log files are automatically saved to `logs/` with timestamps:
+- Format: `breenix_YYYYMMDD_HHMMSS.log`
+- Example: `logs/breenix_20250105_143022.log`
 
-### Key Benefits
+To analyze logs after a run:
 
-- **Automated Testing**: Run kernel tests programmatically via Claude Code
-- **Real-time Monitoring**: Live log streaming in dedicated terminal pane
-- **Command Injection**: Send commands to running kernel via serial interface
-- **Session Management**: Controlled QEMU process lifecycle
-- **HTTP API**: RESTful endpoints for external tool integration
+```bash
+# View latest log
+ls -t logs/*.log | head -1 | xargs less
 
-See `docs/MCP_INTEGRATION.md` for complete documentation.
+# Search in latest log
+ls -t logs/*.log | head -1 | xargs grep "DOUBLE FAULT"
+
+# Tail latest log
+ls -t logs/*.log | head -1 | xargs tail -f
+```
+
+### Development Workflow
+
+1. **Make code changes**
+2. **Run with automated testing**: `./scripts/breenix_runner.py` (runs in background)
+3. **Monitor execution**: Check timestamped log files in `logs/` directory
+4. **Analyze results**: Use grep to search logs for specific events
+5. **Debug issues**: Compare log patterns between working and broken runs
+
+### Testing and Log Analysis Best Practices
+
+**Running Breenix for Testing:**
+```bash
+# Automated testing (preferred method)
+./scripts/breenix_runner.py > /dev/null 2>&1 &
+sleep 15  # Wait for kernel to boot and run tests
+
+# Check latest log
+ls -t logs/*.log | head -1
+
+# Analyze specific functionality
+grep -E "Fork succeeded|exec succeeded|DOUBLE FAULT" logs/breenix_YYYYMMDD_HHMMSS.log
+```
+
+**Log Analysis Patterns:**
+- Look for timestamped kernel messages: `NNNNNNNNNN - [LEVEL] module::function: message`
+- Successful operations: Look for `✓` or "succeeded" messages
+- Failures: Look for `✗`, "failed", "ERROR", or "DOUBLE FAULT"
+- Process execution: Check for userspace context switches and syscalls
+- Memory issues: Check for page fault details and memory mapping logs
+- **CRITICAL BASELINE**: Look for "Hello from userspace!" output from direct test
+- **Page table issues**: Look for "get_next_page_table" and "page table switch" messages
+
+**Modified breenix_runner.py:**
+- Changed from `-serial pty` to `-serial stdio` for proper log capture
+- Captures all kernel output to timestamped log files
+- Runs automatic tests during kernel initialization
+- No longer requires interactive PTY communication
+
+### Testing Commands
+
+**Automatic Tests (run during kernel boot):**
+- **CRITICAL**: Direct hello world test runs first to validate baseline syscall functionality
+- Fork/exec pattern test runs after direct test
+- Check logs for "BASELINE TEST: Direct userspace execution" and "REGRESSION TEST: Fork/exec pattern"
+- **IMPORTANT**: Direct test MUST work before attempting fork/exec debugging
+
+**Interactive Commands (if using interactive mode):**
+- `exectest` - Test exec() system call
+- `Ctrl+U` - Run single userspace test
+- `Ctrl+P` - Test multiple concurrent processes
+- `Ctrl+F` - Test fork() system call
+- `Ctrl+E` - Test exec() system call
+- `Ctrl+X` - Test fork+exec pattern
+- `Ctrl+H` - Test shell-style fork+exec
+- `Ctrl+T` - Show time debug info
+- `Ctrl+M` - Show memory debug info
+
+### Cleanup
+
+```bash
+# Kill any stuck QEMU processes
+pkill -f qemu-system-x86_64
+
+# Clean old logs (keeps last 10)
+ls -t logs/*.log | tail -n +11 | xargs rm -f
+```
 
 ## Coding Practices
 
@@ -279,21 +355,15 @@ On all systems:
 # Build kernel with custom target (kernel uses x86_64-breenix.json)
 cargo build
 
-# Run with QEMU (UEFI mode)
-cargo run --bin qemu-uefi
+# Run Breenix with logging
+./scripts/run_breenix.sh
 
-# Run with QEMU (BIOS mode)
-cargo run --bin qemu-bios
+# Or use direct cargo commands (logs to console only)
+cargo run --release --bin qemu-uefi -- -serial stdio -display none
+cargo run --release --bin qemu-bios -- -serial stdio -display none
 
-# Run tests
+# Run tests (these use controlled QEMU instances)
 cargo test --test simple_kernel_test
-./scripts/test_kernel.sh
-```
-
-On x86_64 systems:
-```bash
-cargo run --bin qemu-uefi
-cargo run --bin qemu-bios
 ```
 
 ## Important Notes
@@ -304,6 +374,36 @@ cargo run --bin qemu-bios
 - The kernel is built with the custom x86_64-breenix.json target
 - QEMU runners and build system run on the host platform
 - Tests properly separate host and target concerns
+
+## 🚨 CRITICAL DEBUGGING REQUIREMENT 🚨
+
+**NEVER declare success without definitive proof from kernel logs**
+
+When implementing or debugging features:
+1. **Require explicit log evidence**: Must show exact log lines proving functionality works
+2. **No assumptions**: "Should work" or "likely works" is NOT acceptable  
+3. **Trace execution**: For userspace execution, need logs showing:
+   - Instructions actually executing in userspace (not just preparing to)
+   - Successful transitions between kernel/user mode
+   - System calls completing successfully
+4. **Double fault ≠ success**: A double fault at userspace address is NOT proof of execution
+5. **Be skeptical**: If you don't see explicit logs of success, it didn't happen
+
+**Example of what constitutes proof:**
+```
+[INFO] Userspace instruction executed at 0x10000000
+[INFO] Syscall 0x80 received from userspace  
+[INFO] Returning to userspace at 0x10000005
+```
+
+**Example of what is NOT proof:**
+```
+[INFO] Scheduled page table switch for process 1
+[DEBUG] TSS RSP0 updated
+DOUBLE FAULT at 0x10000005  <-- This is a CRASH, not execution!
+```
+
+**Current state**: Exec() appears to complete but double faults immediately. No evidence of actual userspace execution in logs.
 
 ## Development Notes
 All commits should be signed as co-developed by Ryan Breen and Claude Code because we're best buds!

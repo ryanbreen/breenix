@@ -101,8 +101,11 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+U: Run userspace test program
 /// - Ctrl+P: Test multiple processes
 /// - Ctrl+F: Test fork system call
+/// - Ctrl+E: Test exec system call directly
+/// - Ctrl+X: Test fork+exec pattern
+/// - Ctrl+H: Test shell-style fork+exec
 pub async fn keyboard_task() {
-    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F for special actions)");
+    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H for special actions)");
     
     let mut scancodes = ScancodeStream::new();
     
@@ -134,6 +137,18 @@ pub async fn keyboard_task() {
                     log::info!("Ctrl+F pressed - testing fork system call (debug mode)");
                     crate::userspace_test::test_fork_debug();
                     log::info!("Fork debug test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('e') {
+                    log::info!("Ctrl+E pressed - testing exec system call");
+                    crate::test_exec::test_exec_directly();
+                    log::info!("Exec test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('x') {
+                    log::info!("Ctrl+X pressed - testing fork+exec pattern");
+                    crate::test_exec::test_fork_exec();
+                    log::info!("Fork+exec test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('h') {
+                    log::info!("Ctrl+H pressed - testing shell-style fork+exec");
+                    crate::test_exec::test_shell_fork_exec();
+                    log::info!("Shell fork+exec test scheduled. Press keys to continue...");
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);

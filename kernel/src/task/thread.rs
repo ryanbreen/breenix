@@ -94,17 +94,25 @@ impl CpuContext {
             // Set instruction pointer to entry point
             rip: entry_point.as_u64(),
             
-            // Set default flags (interrupt enabled)
-            rflags: 0x200, // IF (Interrupt Flag) set
+            // Set default flags based on privilege
+            // For kernel threads, start with interrupts disabled to prevent
+            // immediate preemption before critical initialization
+            // CRITICAL: Bit 1 (0x2) must ALWAYS be set in RFLAGS!
+            rflags: match privilege {
+                ThreadPrivilege::Kernel => 0x002, // No IF flag - interrupts disabled
+                ThreadPrivilege::User => 0x202,   // IF flag set + mandatory bit 1 - interrupts enabled
+            },
             
             // Segments based on privilege level
+            // Note: These values are just placeholders - the actual segment selectors
+            // will be set correctly during context restore based on the GDT
             cs: match privilege {
                 ThreadPrivilege::Kernel => 0x08, // Kernel code segment
-                ThreadPrivilege::User => 0x2b,   // User code segment (0x28 | 3)
+                ThreadPrivilege::User => 0x33,   // User code segment (based on GDT log)
             },
             ss: match privilege {
                 ThreadPrivilege::Kernel => 0x10, // Kernel data segment
-                ThreadPrivilege::User => 0x23,   // User data segment (0x20 | 3)
+                ThreadPrivilege::User => 0x2b,   // User data segment (based on GDT log)
             },
         }
     }
@@ -127,6 +135,9 @@ pub struct Thread {
     /// Stack information
     pub stack_top: VirtAddr,
     pub stack_bottom: VirtAddr,
+    
+    /// Kernel stack for syscalls/interrupts (only for userspace threads)
+    pub kernel_stack_top: Option<VirtAddr>,
     
     /// TLS block address
     pub tls_block: VirtAddr,
@@ -153,6 +164,7 @@ impl Clone for Thread {
             context: self.context.clone(),
             stack_top: self.stack_top,
             stack_bottom: self.stack_bottom,
+            kernel_stack_top: self.kernel_stack_top,
             tls_block: self.tls_block,
             priority: self.priority,
             time_slice: self.time_slice,
@@ -163,6 +175,51 @@ impl Clone for Thread {
 }
 
 impl Thread {
+    /// Create a new kernel thread with an argument
+    pub fn new_kernel(
+        name: alloc::string::String,
+        entry_point: extern "C" fn(u64) -> !,
+        arg: u64,
+    ) -> Result<Self, &'static str> {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+        
+        // Allocate a kernel stack
+        const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16 KiB
+        let stack = crate::memory::alloc_kernel_stack(KERNEL_STACK_SIZE)
+            .ok_or("Failed to allocate kernel stack")?;
+        
+        let stack_top = stack.top();
+        let stack_bottom = stack.bottom();
+        
+        // Set up initial context for kernel thread
+        let mut context = CpuContext::new(
+            VirtAddr::new(entry_point as u64),
+            stack_top,
+            ThreadPrivilege::Kernel,
+        );
+        
+        // Pass argument in RDI (System V ABI)
+        context.rdi = arg;
+        
+        // Kernel threads don't need TLS
+        let tls_block = VirtAddr::new(0);
+        
+        Ok(Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: None, // Kernel threads don't need a separate kernel stack
+            tls_block,
+            priority: 64, // Higher priority for kernel threads
+            time_slice: 20, // Longer time slice
+            entry_point: None, // Kernel threads use direct entry
+            privilege: ThreadPrivilege::Kernel,
+        })
+    }
+    
     /// Create a new thread
     pub fn new(
         name: alloc::string::String,
@@ -189,6 +246,7 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
+            kernel_stack_top: None, // Will be set separately for userspace threads
             tls_block,
             priority: 128, // Default medium priority
             time_slice: 10, // Default time slice
@@ -238,6 +296,7 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
+            kernel_stack_top: None, // Will be set separately
             tls_block: actual_tls_block,
             priority: 128, // Default medium priority
             time_slice: 10, // Default time slice
@@ -276,6 +335,39 @@ impl Thread {
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         self.state = ThreadState::Terminated;
+    }
+    
+    /// Create a new thread with a specific ID (used for fork)
+    pub fn new_with_id(
+        id: u64,
+        name: alloc::string::String,
+        entry_point: fn(),
+        stack_top: VirtAddr,
+        stack_bottom: VirtAddr,
+        tls_block: VirtAddr,
+        privilege: ThreadPrivilege,
+    ) -> Self {
+        // Set up initial context
+        let context = CpuContext::new(
+            VirtAddr::new(thread_entry_trampoline as u64),
+            stack_top,
+            privilege,
+        );
+        
+        Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: None, // Will be set separately for userspace threads
+            tls_block,
+            priority: 128, // Default medium priority
+            time_slice: 10, // Default time slice
+            entry_point: Some(entry_point),
+            privilege,
+        }
     }
 }
 
