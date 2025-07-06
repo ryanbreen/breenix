@@ -5,7 +5,7 @@
 use x86_64::{
     structures::paging::{
         OffsetPageTable, PageTable, PageTableFlags, Page, Size4KiB, 
-        Mapper, PhysFrame, FrameAllocator, Translate
+        Mapper, PhysFrame, Translate
     },
     VirtAddr, PhysAddr,
     registers::control::Cr3,

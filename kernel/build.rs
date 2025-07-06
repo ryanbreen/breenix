@@ -43,7 +43,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
     
     // Build userspace test program if it exists
-    let userspace_test_dir = Path::new("../userspace/tests");
+    let userspace_test_dir = Path::new("../../userspace/tests");
     if userspace_test_dir.exists() {
         // Check if build script exists
         let build_script = userspace_test_dir.join("build.sh");
@@ -60,8 +60,8 @@ fn main() {
                 println!("cargo:warning=Failed to build userspace test program");
             } else {
                 // Tell cargo to rerun if userspace source changes
-                println!("cargo:rerun-if-changed=../userspace/tests/hello_time.rs");
-                println!("cargo:rerun-if-changed=../userspace/tests/build.sh");
+                println!("cargo:rerun-if-changed=../../userspace/tests/hello_time.rs");
+                println!("cargo:rerun-if-changed=../../userspace/tests/build.sh");
             }
         }
     }

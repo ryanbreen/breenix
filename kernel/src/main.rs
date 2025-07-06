@@ -39,7 +39,7 @@ mod syscall;
 mod elf;
 mod userspace_test;
 mod process;
-mod test_exec;
+pub mod test_exec;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,10 +172,19 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             serial_println!("Fork debug test scheduled. Press keys to continue...");
         },
         || {
-            // EXECTEST handler
-            serial_println!("Testing Exec System Call with Real Userspace Programs");
-            test_exec::test_exec_real_userspace();
-            serial_println!("Real userspace exec test scheduled. Press keys to continue...");
+            // EXECTEST handler - comprehensive test when testing feature enabled
+            #[cfg(feature = "testing")]
+            {
+                serial_println!("Testing Comprehensive Userspace Programs and Syscalls");
+                test_exec::test_comprehensive_userspace();
+                serial_println!("Comprehensive userspace test completed. Press keys to continue...");
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                serial_println!("Testing Exec System Call with Real Userspace Programs");
+                test_exec::test_exec_real_userspace();
+                serial_println!("Real userspace exec test scheduled. Press keys to continue...");
+            }
         }
     );
     
@@ -415,6 +424,7 @@ fn test_exception_handlers() {
 }
 
 /// Test system calls from kernel mode
+#[allow(dead_code)]
 fn test_syscalls() {
     log::info!("Testing system call infrastructure...");
     
@@ -504,6 +514,7 @@ fn test_syscalls() {
 
 /// Test basic threading functionality
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 fn test_threading() {
     log::info!("Testing threading infrastructure...");
     

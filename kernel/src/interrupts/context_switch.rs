@@ -29,7 +29,12 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
     
-    log::debug!("check_need_resched_and_switch: Reschedule needed, performing schedule()");
+    // Rate limit the debug message
+    static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if count % 30 == 0 {
+        log::debug!("check_need_resched_and_switch: Reschedule needed (count: {})", count);
+    }
     
     // Perform scheduling decision
     if let Some((old_thread_id, new_thread_id)) = scheduler::schedule() {

@@ -6,7 +6,6 @@
 use crate::process::{ProcessId};
 use crate::task::thread::{Thread, ThreadPrivilege};
 use crate::task::scheduler;
-use alloc::boxed::Box;
 
 /// Integration functions for scheduling processes as tasks
 pub struct ProcessScheduler;

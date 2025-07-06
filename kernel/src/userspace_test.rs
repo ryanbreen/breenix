@@ -93,7 +93,6 @@ pub fn run_userspace_test() {
         
         log::info!("Creating userspace test process ({} bytes)", HELLO_TIME_ELF.len());
         log::info!("ELF entry point from header: 0x{:x}", {
-            use core::mem;
             use crate::elf::Elf64Header;
             let header: &Elf64Header = unsafe { 
                 &*(HELLO_TIME_ELF.as_ptr() as *const Elf64Header) 
