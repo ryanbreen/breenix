@@ -18,6 +18,8 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        log::debug!("sys_exit: Current thread ID from scheduler: {}", thread_id);
+        
         // Handle thread exit through ProcessScheduler
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
         
@@ -27,9 +29,6 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
                 thread.set_terminated();
             }
         });
-        
-        // Yield to scheduler to pick next thread
-        crate::task::scheduler::yield_current();
         
         // Check if there are any other userspace threads to run
         let has_other_userspace_threads = crate::task::scheduler::with_scheduler(|sched| {
@@ -43,72 +42,30 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
             // Wake the keyboard task to ensure it can process any pending input
             crate::keyboard::stream::wake_keyboard_task();
             log::info!("Woke keyboard task to ensure input processing continues");
-            
-            // The timer interrupt will eventually switch us to the idle thread
-            log::info!("Waiting for timer interrupt to switch to idle thread");
-        } else {
-            // The scheduler should switch to another thread on next timer interrupt
-            log::debug!("Other userspace threads available, waiting for timer interrupt");
         }
     } else {
         log::error!("sys_exit: No current thread in scheduler");
     }
     
-    // If we get here, there are no more processes to run
-    log::info!("No more processes to run, returning to kernel");
+    // Force an immediate reschedule by setting the need_resched flag
+    // This ensures the terminated thread won't continue executing
+    crate::task::scheduler::set_need_resched();
     
-    // Don't panic - just log that we're out of processes
-    log::info!("All processes have exited. Kernel continuing...");
-    
-    // Ensure keyboard remains responsive
-    log::info!("Keyboard should still be active - try pressing keys!");
-    
-    // Return 0 to indicate we handled the exit  
+    // The terminated thread should never run again
+    // The reschedule will happen when we return from the syscall
     SyscallResult::Ok(0)
 }
 
 /// Perform context switch after process exit
 /// This should never return if there's another process to run
-fn perform_process_exit_switch() {
-    // Check if there's another process ready to run
-    if let Some(ref mut manager) = *crate::process::manager() {
-        if let Some(next_pid) = manager.schedule_next() {
-            log::info!("Switching to next process (PID {})", next_pid.as_u64());
-            
-            // Get the process info
-            if let Some(process) = manager.get_process(next_pid) {
-                if let Some(ref thread) = process.main_thread {
-                    // Prepare for context switch
-                    unsafe {
-                        // Get selectors
-                        let user_cs = crate::gdt::USER_CODE_SELECTOR.0 | 3;
-                        let user_ds = crate::gdt::USER_DATA_SELECTOR.0 | 3;
-                        
-                        // Note: In a real implementation, we'd restore the thread's saved context
-                        // For now, we assume the process hasn't been run before
-                        log::info!("Switching to process at {:#x}", process.entry_point);
-                        
-                        // This will switch to the new process and never return
-                        crate::task::userspace_switch::switch_to_userspace(
-                            process.entry_point,
-                            thread.stack_top,
-                            user_cs,
-                            user_ds,
-                        );
-                    }
-                }
-            }
-        } else {
-            log::info!("No ready processes in queue");
-        }
-    }
-}
+// Note: perform_process_exit_switch function removed as part of spawn mechanism cleanup
+// Process switching now happens through the scheduler and new timer interrupt system
 
 /// sys_write - Write to a file descriptor
 /// 
 /// Currently only supports stdout/stderr writing to serial port.
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
-    // log::debug!("sys_write: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+    log::info!("USERSPACE: sys_write called: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
     
     // Validate file descriptor
     if fd != FD_STDOUT && fd != FD_STDERR {
@@ -183,21 +140,24 @@ pub fn sys_get_time() -> SyscallResult {
 
 /// sys_fork - Basic fork implementation
 pub fn sys_fork() -> SyscallResult {
-    log::info!("sys_fork called - implementing basic fork");
-    
-    // Get current thread ID from scheduler (not TLS, since we're in kernel mode after SWAPGS)
-    let scheduler_thread_id = crate::task::scheduler::current_thread_id();
-    
-    log::info!("sys_fork: Scheduler thread ID: {:?}", scheduler_thread_id);
-    
-    // Use scheduler thread ID as the authoritative source
-    let current_thread_id = match scheduler_thread_id {
-        Some(id) => id,
-        None => {
-            log::error!("sys_fork: No current thread in scheduler");
-            return SyscallResult::Err(22); // EINVAL
-        }
-    };
+    // Disable interrupts for the entire fork operation to ensure atomicity
+    // This prevents race conditions when accessing process manager and scheduler
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        log::info!("sys_fork called - implementing basic fork");
+        
+        // Get current thread ID from scheduler (not TLS, since we're in kernel mode after SWAPGS)
+        let scheduler_thread_id = crate::task::scheduler::current_thread_id();
+        
+        log::info!("sys_fork: Scheduler thread ID: {:?}", scheduler_thread_id);
+        
+        // Use scheduler thread ID as the authoritative source
+        let current_thread_id = match scheduler_thread_id {
+            Some(id) => id,
+            None => {
+                log::error!("sys_fork: No current thread in scheduler");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
     
     if current_thread_id == 0 {
         log::error!("sys_fork: Cannot fork from idle thread");
@@ -205,7 +165,7 @@ pub fn sys_fork() -> SyscallResult {
     }
     
     // Find the current process by thread ID
-    let mut manager_guard = crate::process::manager();
+    let manager_guard = crate::process::manager();
     let process_info = if let Some(ref manager) = *manager_guard {
         manager.find_process_by_thread(current_thread_id)
     } else {
@@ -262,4 +222,157 @@ pub fn sys_fork() -> SyscallResult {
         log::error!("sys_fork: Process manager not available");
         SyscallResult::Err(12) // ENOMEM
     }
+    }) // End of without_interrupts block
+}
+
+/// sys_exec - Replace the current process with a new program
+/// 
+/// This implements the exec() family of system calls, which replace the current
+/// process's address space with a new program. The process ID remains the same,
+/// but the program code, data, and stack are completely replaced.
+/// 
+/// Parameters:
+/// - arg1: pointer to program name (currently unused in this simple implementation)
+/// - arg2: pointer to ELF data in memory (for embedded programs)
+/// 
+/// Returns: Never returns on success (process is replaced)
+/// Returns: Error code on failure
+pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        log::info!("sys_exec called: program_name_ptr={:#x}, elf_data_ptr={:#x}", 
+                   program_name_ptr, elf_data_ptr);
+        
+        // Get current process and thread
+        let current_thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("sys_exec: No current thread");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+        
+        // For now, we'll implement a simplified exec that loads from embedded ELF data
+        // In a real implementation, we would:
+        // 1. Parse the program name from user memory
+        // 2. Load the program from filesystem
+        // 3. Validate permissions
+        
+        // For testing purposes, we'll use a hardcoded ELF program
+        // This would normally come from disk or be passed as a parameter
+        let elf_data = if elf_data_ptr != 0 {
+            // In a real implementation, we'd safely copy from user memory
+            log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
+            // For now, return an error since we don't have safe user memory access yet
+            log::error!("sys_exec: User memory access not implemented yet");
+            return SyscallResult::Err(22); // EINVAL
+        } else {
+            // Use embedded test program for now
+            #[cfg(feature = "testing")]
+            {
+                log::info!("sys_exec: Using embedded hello_world test program");
+                crate::userspace_test::HELLO_WORLD_ELF
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: No ELF data provided and testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+        
+        // Find current process
+        let current_pid = {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                    pid
+                } else {
+                    log::error!("sys_exec: Thread {} not found in any process", current_thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            } else {
+                log::error!("sys_exec: Process manager not available");
+                return SyscallResult::Err(12); // ENOMEM
+            }
+        };
+        
+        log::info!("sys_exec: Replacing process {} (thread {}) with new program", 
+                   current_pid.as_u64(), current_thread_id);
+        
+        // Replace the process's address space
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            match manager.exec_process(current_pid, elf_data) {
+                Ok(new_entry_point) => {
+                    log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
+                               new_entry_point);
+                    
+                    // CRITICAL OS-STANDARD VIOLATION:
+                    // exec() should NEVER return on success - the process is completely replaced
+                    // In a proper implementation, exec_process would:
+                    // 1. Replace the address space
+                    // 2. Update the thread context
+                    // 3. Jump directly to the new program (never returning here)
+                    // 
+                    // For now, we return success, but this violates POSIX semantics
+                    // The interrupt return path will handle the actual switch
+                    SyscallResult::Ok(0)
+                }
+                Err(e) => {
+                    log::error!("sys_exec: Failed to exec process: {}", e);
+                    SyscallResult::Err(12) // ENOMEM
+                }
+            }
+        } else {
+            log::error!("sys_exec: Process manager not available");
+            SyscallResult::Err(12) // ENOMEM
+        }
+    })
+}
+
+/// sys_getpid - Get the current process ID
+pub fn sys_getpid() -> SyscallResult {
+    // Disable interrupts when accessing process manager
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        log::info!("sys_getpid called");
+        
+        // Get current thread ID from scheduler
+        let scheduler_thread_id = crate::task::scheduler::current_thread_id();
+        log::info!("sys_getpid: scheduler_thread_id = {:?}", scheduler_thread_id);
+        
+        if let Some(thread_id) = scheduler_thread_id {
+            // Find the process that owns this thread
+        if let Some(ref manager) = *crate::process::manager() {
+            if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
+                // Return the process ID
+                log::info!("sys_getpid: Found process {} for thread {}", pid.as_u64(), thread_id);
+                return SyscallResult::Ok(pid.as_u64());
+            }
+        }
+        
+        // If no process found, we might be in kernel/idle thread
+        if thread_id == 0 {
+            log::info!("sys_getpid: Thread 0 is kernel/idle thread");
+            return SyscallResult::Ok(0); // Kernel/idle process
+        }
+        
+        log::warn!("sys_getpid: Thread {} has no associated process", thread_id);
+        return SyscallResult::Ok(0); // Return 0 as fallback
+    }
+    
+    log::error!("sys_getpid: No current thread");
+    SyscallResult::Ok(0) // Return 0 as fallback
+    }) // End of without_interrupts block
+}
+
+/// sys_gettid - Get the current thread ID
+pub fn sys_gettid() -> SyscallResult {
+    // Get current thread ID from scheduler
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        // In Linux, the main thread of a process has TID = PID
+        // For now, we just return the thread ID directly
+        return SyscallResult::Ok(thread_id);
+    }
+    
+    log::error!("sys_gettid: No current thread");
+    SyscallResult::Ok(0) // Return 0 as fallback
 }

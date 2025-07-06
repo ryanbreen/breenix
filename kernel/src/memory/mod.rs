@@ -2,6 +2,8 @@ pub mod frame_allocator;
 pub mod paging;
 pub mod heap;
 pub mod stack;
+pub mod process_memory;
+pub mod tlb;
 
 use bootloader_api::info::MemoryRegions;
 use x86_64::{PhysAddr, VirtAddr};
@@ -29,6 +31,9 @@ pub fn init(
     log::info!("Initializing paging...");
     let mapper = unsafe { paging::init(physical_memory_offset) };
     
+    // Save the kernel page table for later switching
+    process_memory::init_kernel_page_table();
+    
     // Initialize heap
     log::info!("Initializing heap allocator...");
     heap::init(&mapper).expect("heap initialization failed");
@@ -48,6 +53,11 @@ pub fn physical_memory_offset() -> VirtAddr {
 /// Convert a physical address to a virtual address using the offset mapping
 pub fn phys_to_virt(phys: PhysAddr, offset: VirtAddr) -> VirtAddr {
     VirtAddr::new(phys.as_u64() + offset.as_u64())
+}
+
+/// Allocate a kernel stack
+pub fn alloc_kernel_stack(size: usize) -> Option<stack::GuardedStack> {
+    stack::allocate_stack(size).ok()
 }
 
 /// Display comprehensive memory debug information
@@ -103,8 +113,9 @@ pub fn debug_memory_info() {
     log::info!("  - Test vector ptr: {:p}", test_vec.as_ptr());
     
     // Stack allocation area info
-    log::info!("\nStack Allocation Area:");
-    log::info!("  - STACK_ALLOC_START: {:#x}", stack::STACK_ALLOC_START);
+    log::info!("\nStack Allocation Areas:");
+    log::info!("  - USER_STACK_ALLOC_START: {:#x}", stack::USER_STACK_ALLOC_START);
+    log::info!("  - KERNEL_STACK_ALLOC_START: {:#x}", stack::KERNEL_STACK_ALLOC_START);
     
     log::info!("=============================");
 }

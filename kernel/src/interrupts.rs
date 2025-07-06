@@ -6,6 +6,7 @@ use pic8259::ChainedPics;
 use spin::Once;
 
 mod timer;
+pub(crate) mod context_switch;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
@@ -56,7 +57,14 @@ pub fn init_idt() {
         
         // CPU exception handlers
         idt.divide_error.set_handler_fn(divide_by_zero_handler);
-        idt.breakpoint.set_handler_fn(breakpoint_handler);
+        
+        // Breakpoint handler - must be callable from userspace
+        // Set DPL=3 to allow INT3 from Ring 3
+        unsafe {
+            idt.breakpoint.set_handler_fn(breakpoint_handler)
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+        }
+        
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         unsafe {
@@ -66,7 +74,7 @@ pub fn init_idt() {
         idt.page_fault.set_handler_fn(page_fault_handler);
         
         // Hardware interrupt handlers
-        // Use raw handler for timer to support userspace preemption
+        // Timer interrupt with proper interrupt return path handling
         unsafe {
             idt[InterruptIndex::Timer.as_u8()].set_handler_addr(VirtAddr::new(timer_interrupt_entry as u64));
         }
@@ -74,12 +82,12 @@ pub fn init_idt() {
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         
         // System call handler (INT 0x80)
-        // Use raw handler for proper register handling
+        // Use Rust handler - it works for both kernel and userspace calls
         unsafe {
-            let syscall_options = idt[SYSCALL_INTERRUPT_ID].set_handler_addr(VirtAddr::new(syscall_entry as u64));
-            // Set DPL=3 to allow userspace to call INT 0x80
-            syscall_options.set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+            idt[SYSCALL_INTERRUPT_ID].set_handler_fn(crate::syscall::syscall_handler)
+                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         }
+        log::info!("Syscall handler configured with Rust function");
         
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {
@@ -94,8 +102,18 @@ pub fn init_idt() {
         idt
     });
     
-    IDT.get().unwrap().load();
-    log::info!("IDT loaded successfully");
+    let idt = IDT.get().unwrap();
+    
+    // Log IDT address for debugging
+    let idt_ptr = idt as *const _ as u64;
+    log::info!("IDT address: {:#x}", idt_ptr);
+    
+    // Calculate which PML4 entry contains the IDT
+    let pml4_index = (idt_ptr >> 39) & 0x1FF;
+    log::info!("IDT is in PML4 entry {}", pml4_index);
+    
+    idt.load();
+    log::info!("IDT loaded successfully at {:#x}", idt_ptr);
 }
 
 pub fn init_pic() {
@@ -112,13 +130,36 @@ pub fn init_pic() {
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    log::info!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+    // Check if we came from userspace
+    let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
+    
+    if from_userspace {
+        log::info!("BREAKPOINT from USERSPACE at {:#x}", stack_frame.instruction_pointer.as_u64());
+        log::info!("Stack: {:#x}, CS: {:?}, SS: {:?}", 
+                  stack_frame.stack_pointer.as_u64(),
+                  stack_frame.code_segment,
+                  stack_frame.stack_segment);
+    } else {
+        log::info!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+    }
 }
 
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
-    _error_code: u64,
+    error_code: u64,
 ) -> ! {
+    // Log additional debug info before panicking
+    log::error!("DOUBLE FAULT - Error Code: {:#x}", error_code);
+    log::error!("Instruction Pointer: {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::error!("Stack Pointer: {:#x}", stack_frame.stack_pointer.as_u64());
+    log::error!("Code Segment: {:?}", stack_frame.code_segment);
+    log::error!("Stack Segment: {:?}", stack_frame.stack_segment);
+    
+    // Check current page table
+    use x86_64::registers::control::Cr3;
+    let (frame, _) = Cr3::read();
+    log::error!("Current page table frame: {:?}", frame);
+    
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
 
@@ -206,6 +247,8 @@ extern "x86-interrupt" fn page_fault_handler(
     log::error!("EXCEPTION: PAGE FAULT");
     log::error!("Accessed Address: {:?}", accessed_addr);
     log::error!("Error Code: {:?}", error_code);
+    log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::error!("CS: {:#x}", stack_frame.code_segment.0);
     log::error!("{:#?}", stack_frame);
     
     #[cfg(feature = "test_page_fault")]
@@ -220,7 +263,15 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
-    log::warn!("UNHANDLED INTERRUPT\n{:#?}", stack_frame);
+    // Get the interrupt number from the stack
+    // Note: This is a bit hacky but helps with debugging
+    let interrupt_num = unsafe {
+        // The interrupt number is pushed by the CPU before calling the handler
+        // We need to look at the return address to figure out which IDT entry was used
+        0 // Placeholder - can't easily get interrupt number in generic handler
+    };
+    log::warn!("UNHANDLED INTERRUPT from RIP {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::warn!("{:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(
@@ -228,6 +279,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     error_code: u64,
 ) {
     log::error!("EXCEPTION: GENERAL PROTECTION FAULT");
+    log::error!("RIP: {:#x}, CS: {:#x}", stack_frame.instruction_pointer.as_u64(), stack_frame.code_segment.0);
     log::error!("Error Code: {:#x} (selector: {:#x})", error_code, error_code & 0xFFF8);
     
     // Decode error code

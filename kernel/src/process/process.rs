@@ -6,6 +6,7 @@ use alloc::boxed::Box;
 use x86_64::VirtAddr;
 use crate::task::thread::Thread;
 use crate::memory::stack::GuardedStack;
+use crate::memory::process_memory::ProcessPageTable;
 
 /// Process ID type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +71,9 @@ pub struct Process {
     
     /// Stack allocated for this process
     pub stack: Option<Box<GuardedStack>>,
+    
+    /// Per-process page table
+    pub page_table: Option<Box<ProcessPageTable>>,
 }
 
 /// Memory usage tracking
@@ -98,6 +102,7 @@ impl Process {
             exit_code: None,
             memory_usage: MemoryUsage::default(),
             stack: None,
+            page_table: None,
         }
     }
     

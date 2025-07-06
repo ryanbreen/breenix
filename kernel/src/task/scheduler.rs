@@ -5,9 +5,13 @@
 use super::thread::{Thread, ThreadState};
 use alloc::{collections::VecDeque, boxed::Box};
 use spin::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
+
+/// Global need_resched flag for timer interrupt
+static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 
 /// The kernel scheduler
 pub struct Scheduler {
@@ -79,10 +83,13 @@ impl Scheduler {
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
                 if let Some(current) = self.get_thread_mut(current_id) {
-                    if current.is_runnable() {
+                    // Check if thread is NOT terminated (Running threads can go back to Ready)
+                    if current.state != ThreadState::Terminated {
                         current.set_ready();
                         self.ready_queue.push_back(current_id);
                         // log::trace!("Put thread {} back in ready queue", current_id);
+                    } else {
+                        log::info!("Thread {} is terminated, not putting back in ready queue", current_id);
                     }
                 }
             }
@@ -181,6 +188,11 @@ impl Scheduler {
     pub fn idle_thread(&self) -> u64 {
         self.idle_thread
     }
+    
+    /// Set the current thread (used by spawn mechanism)
+    pub fn set_current_thread(&mut self, thread_id: u64) {
+        self.current_thread = Some(thread_id);
+    }
 }
 
 /// Initialize the global scheduler
@@ -218,29 +230,38 @@ pub fn schedule() -> Option<(u64, u64)> {
 }
 
 /// Get access to the scheduler
+/// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Scheduler) -> R,
 {
-    let mut scheduler_lock = SCHEDULER.lock();
-    scheduler_lock.as_mut().map(f)
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        scheduler_lock.as_mut().map(f)
+    })
 }
 
 /// Get mutable access to a specific thread (for timer interrupt handler)
+/// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
 where
     F: FnOnce(&mut super::thread::Thread) -> R,
 {
-    let mut scheduler_lock = SCHEDULER.lock();
-    scheduler_lock.as_mut().and_then(|sched| {
-        sched.get_thread_mut(thread_id).map(f)
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        scheduler_lock.as_mut().and_then(|sched| {
+            sched.get_thread_mut(thread_id).map(f)
+        })
     })
 }
 
 /// Get the current thread ID
+/// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn current_thread_id() -> Option<u64> {
-    let scheduler_lock = SCHEDULER.lock();
-    scheduler_lock.as_ref().and_then(|s| s.current_thread)
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let scheduler_lock = SCHEDULER.lock();
+        scheduler_lock.as_ref().and_then(|s| s.current_thread)
+    })
 }
 
 /// Yield the current thread
@@ -264,4 +285,14 @@ pub fn get_pending_switch() -> Option<(u64, u64)> {
 /// Allocate a new thread ID
 pub fn allocate_thread_id() -> Option<u64> {
     Some(super::thread::allocate_thread_id())
+}
+
+/// Set the need_resched flag (called from timer interrupt)
+pub fn set_need_resched() {
+    NEED_RESCHED.store(true, Ordering::Relaxed);
+}
+
+/// Check and clear the need_resched flag (called from interrupt return path)
+pub fn check_and_clear_need_resched() -> bool {
+    NEED_RESCHED.swap(false, Ordering::Relaxed)
 }

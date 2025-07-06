@@ -11,7 +11,6 @@ pub mod thread;
 pub mod context;
 pub mod scheduler;
 pub mod spawn;
-pub mod userspace_switch;
 pub mod process_task;
 pub mod process_context;
 

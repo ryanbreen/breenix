@@ -85,6 +85,11 @@ fn num_to_str(mut num: u64, buf: &mut [u8]) -> &str {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    // DEBUGGING: First try a breakpoint to test kernel transitions
+    unsafe {
+        core::arch::asm!("int 3");
+    }
+    
     // Get current time
     let ticks = unsafe { syscall0(SYS_GET_TIME) };
     
