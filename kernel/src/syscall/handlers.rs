@@ -3,14 +3,104 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
-use core::slice;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 /// File descriptors
 #[allow(dead_code)]
 const FD_STDIN: u64 = 0;
 const FD_STDOUT: u64 = 1;
 const FD_STDERR: u64 = 2;
+
+/// Copy data from userspace memory
+/// 
+/// For now, this is a simple implementation that attempts to access memory
+/// that should be mapped in both kernel and user page tables.
+fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
+    if user_ptr == 0 {
+        return Err("null pointer");
+    }
+    
+    // Basic validation - check if address is in reasonable userspace range
+    if user_ptr < 0x10000000 || user_ptr >= 0x80000000 {
+        log::error!("copy_from_user: Invalid userspace address {:#x}", user_ptr);
+        return Err("invalid userspace address");
+    }
+    
+    // Get current thread to find process
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("copy_from_user: No current thread");
+            return Err("no current thread");
+        }
+    };
+    
+    // Find the process that owns this thread
+    let process_page_table = {
+        let manager_guard = crate::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some((pid, process)) = manager.find_process_by_thread(current_thread_id) {
+                log::debug!("copy_from_user: Found process {:?} for thread {}", pid, current_thread_id);
+                // Get the process's page table CR3 value
+                if let Some(ref page_table) = process.page_table {
+                    page_table.level_4_frame()
+                } else {
+                    log::error!("copy_from_user: Process has no page table");
+                    return Err("process has no page table");
+                }
+            } else {
+                log::error!("copy_from_user: No process found for thread {}", current_thread_id);
+                return Err("no process for thread");
+            }
+        } else {
+            log::error!("copy_from_user: No process manager");
+            return Err("no process manager");
+        }
+    };
+    
+    // Allocate buffer in kernel memory BEFORE switching page tables
+    let mut buffer = Vec::with_capacity(len);
+    
+    // Allocate a temporary array on kernel stack to hold the data
+    // We use a fixed-size buffer and copy in chunks to avoid stack overflow
+    const CHUNK_SIZE: usize = 256;
+    let mut temp_buffer = [0u8; CHUNK_SIZE];
+    
+    // Temporarily switch to process page table to access user memory
+    let old_cr3 = x86_64::registers::control::Cr3::read();
+    
+    let mut offset = 0;
+    while offset < len {
+        let chunk_len = core::cmp::min(CHUNK_SIZE, len - offset);
+        
+        unsafe {
+            // Switch to process page table
+            x86_64::registers::control::Cr3::write(
+                process_page_table,
+                x86_64::registers::control::Cr3Flags::empty()
+            );
+            
+            // Copy data into kernel stack buffer (stack should be mapped in process page table)
+            for i in 0..chunk_len {
+                let addr = user_ptr + (offset + i) as u64;
+                temp_buffer[i] = *(addr as *const u8);
+            }
+            
+            // Switch back to kernel page table
+            x86_64::registers::control::Cr3::write(
+                old_cr3.0,
+                old_cr3.1
+            );
+        }
+        
+        // Now back in kernel page table - can safely access kernel heap
+        buffer.extend_from_slice(&temp_buffer[..chunk_len]);
+        offset += chunk_len;
+    }
+    
+    Ok(buffer)
+}
 
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
@@ -77,23 +167,24 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         return SyscallResult::Ok(0);
     }
     
-    // TODO: Once we have userspace, validate that buf_ptr is in user memory
-    // For now, assume it's a valid kernel pointer
-    
-    // Safety: We're trusting the caller for now (kernel mode only)
-    let buffer = unsafe {
-        slice::from_raw_parts(buf_ptr as *const u8, count as usize)
+    // Copy data from userspace
+    let buffer = match copy_from_user(buf_ptr, count as usize) {
+        Ok(buf) => buf,
+        Err(e) => {
+            log::error!("sys_write: Failed to copy from user: {}", e);
+            return SyscallResult::Err(14); // EFAULT
+        }
     };
     
     // Write to serial port
     let mut bytes_written = 0;
-    for &byte in buffer {
+    for &byte in &buffer {
         crate::serial::write_byte(byte);
         bytes_written += 1;
     }
     
     // Log the output for userspace writes
-    if let Ok(s) = core::str::from_utf8(buffer) {
+    if let Ok(s) = core::str::from_utf8(&buffer) {
         log::info!("USERSPACE OUTPUT: {}", s.trim_end());
     }
     

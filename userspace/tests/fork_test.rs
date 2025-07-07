@@ -4,7 +4,7 @@
 #![no_main]
 
 mod libbreenix;
-use libbreenix::{sys_write, sys_exit, sys_getpid, sys_fork};
+use libbreenix::{sys_write, sys_exit, sys_getpid, sys_fork, sys_exec};
 
 /// Buffer for number to string conversion
 static mut BUFFER: [u8; 32] = [0; 32];
@@ -59,14 +59,13 @@ pub extern "C" fn _start() -> ! {
             let _ = sys_write(1, b"CHILD: Fork returned 0\n");
             print_number("CHILD: PID after fork: ", pid_after);
             
-            // Do some child work
-            for i in 0..3 {
-                print_number("CHILD: iteration ", i);
-                // Small delay
-                for _ in 0..1000000 {
-                    unsafe { core::ptr::read_volatile(&0u8); }
-                }
-            }
+            // Exec hello_time.elf in the child process
+            let _ = sys_write(1, b"CHILD: Executing hello_time.elf...\n");
+            let exec_result = sys_exec("/userspace/tests/hello_time.elf", "");
+            
+            // If exec succeeds, this code should never run
+            let _ = sys_write(1, b"CHILD: ERROR - exec returned, this shouldn't happen!\n");
+            print_number("CHILD: exec returned: ", exec_result);
             
             let _ = sys_write(1, b"CHILD: Exiting with code 42\n");
             sys_exit(42);

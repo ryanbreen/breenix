@@ -9,6 +9,7 @@ const SYS_READ: u64 = 2;
 const SYS_YIELD: u64 = 3;
 const SYS_GET_TIME: u64 = 4;
 const SYS_FORK: u64 = 5;
+const SYS_EXEC: u64 = 11;
 const SYS_GETPID: u64 = 39;
 
 // Inline assembly for INT 0x80 syscalls
@@ -31,6 +32,20 @@ unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
         "int 0x80",
         in("rax") num,
         in("rdi") arg1,
+        lateout("rax") ret,
+        options(nostack, preserves_flags),
+    );
+    ret
+}
+
+#[inline(always)]
+unsafe fn syscall2(num: u64, arg1: u64, arg2: u64) -> u64 {
+    let ret: u64;
+    asm!(
+        "int 0x80",
+        in("rax") num,
+        in("rdi") arg1,
+        in("rsi") arg2,
         lateout("rax") ret,
         options(nostack, preserves_flags),
     );
@@ -76,6 +91,10 @@ pub unsafe fn sys_get_time() -> u64 {
 
 pub unsafe fn sys_fork() -> u64 {
     syscall0(SYS_FORK)
+}
+
+pub unsafe fn sys_exec(path: &str, args: &str) -> u64 {
+    syscall2(SYS_EXEC, path.as_ptr() as u64, args.as_ptr() as u64)
 }
 
 pub unsafe fn sys_getpid() -> u64 {
