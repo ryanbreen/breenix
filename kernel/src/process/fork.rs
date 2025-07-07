@@ -123,6 +123,20 @@ pub fn copy_page_table_contents(
 ) -> Result<(), &'static str> {
     log::info!("copy_page_table_contents: copying parent's memory pages to child");
     
+    // DEBUG: Check current CR3 during fork
+    let current_cr3 = x86_64::registers::control::Cr3::read();
+    log::debug!("copy_page_table_contents: Current CR3 during fork: {:#x}", current_cr3.0.start_address());
+    log::debug!("copy_page_table_contents: Parent page table CR3: {:#x}", parent_page_table.level_4_frame().start_address());
+    
+    // DEBUG: Test if parent page table can translate addresses we know should work
+    let test_addresses = [0x10000000u64, 0x10001000u64, 0x10001001u64, 0x10001082u64, 0x10002000u64];
+    for &addr in &test_addresses {
+        match parent_page_table.translate_page(VirtAddr::new(addr)) {
+            Some(phys) => log::debug!("Parent page table translates {:#x} -> {:#x}", addr, phys),
+            None => log::debug!("Parent page table CANNOT translate {:#x}", addr),
+        }
+    }
+    
     // For a minimal implementation, we'll copy the program's memory regions
     // These are typically at standard userspace addresses:
     // - 0x10000000: Code segment 
