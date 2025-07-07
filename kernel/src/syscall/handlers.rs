@@ -59,46 +59,49 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
         }
     };
     
+    // Check what page table we're currently using
+    let current_cr3 = x86_64::registers::control::Cr3::read();
+    log::debug!("copy_from_user: Current CR3: {:#x}, Process CR3: {:#x}", 
+               current_cr3.0.start_address(), process_page_table.start_address());
+    
     // Allocate buffer in kernel memory BEFORE switching page tables
     let mut buffer = Vec::with_capacity(len);
     
-    // Allocate a temporary array on kernel stack to hold the data
-    // We use a fixed-size buffer and copy in chunks to avoid stack overflow
-    const CHUNK_SIZE: usize = 256;
-    let mut temp_buffer = [0u8; CHUNK_SIZE];
-    
-    // Temporarily switch to process page table to access user memory
-    let old_cr3 = x86_64::registers::control::Cr3::read();
-    
-    let mut offset = 0;
-    while offset < len {
-        let chunk_len = core::cmp::min(CHUNK_SIZE, len - offset);
+    // Try a single byte first to see if it's accessible
+    unsafe {
+        log::debug!("copy_from_user: Testing single byte access at {:#x}", user_ptr);
         
-        unsafe {
-            // Switch to process page table
-            x86_64::registers::control::Cr3::write(
-                process_page_table,
-                x86_64::registers::control::Cr3Flags::empty()
-            );
-            
-            // Copy data into kernel stack buffer (stack should be mapped in process page table)
-            for i in 0..chunk_len {
-                let addr = user_ptr + (offset + i) as u64;
-                temp_buffer[i] = *(addr as *const u8);
-            }
-            
-            // Switch back to kernel page table
-            x86_64::registers::control::Cr3::write(
-                old_cr3.0,
-                old_cr3.1
-            );
-        }
+        // Switch to process page table
+        x86_64::registers::control::Cr3::write(
+            process_page_table,
+            x86_64::registers::control::Cr3Flags::empty()
+        );
         
-        // Now back in kernel page table - can safely access kernel heap
-        buffer.extend_from_slice(&temp_buffer[..chunk_len]);
-        offset += chunk_len;
+        // Try to read just one byte
+        let test_byte = *(user_ptr as *const u8);
+        log::debug!("copy_from_user: Single byte test successful: {:#x}", test_byte);
+        
+        // Switch back to kernel page table
+        x86_64::registers::control::Cr3::write(current_cr3.0, current_cr3.1);
+        
+        // If that worked, do the full copy
+        log::debug!("copy_from_user: Proceeding with full copy of {} bytes", len);
+        
+        // Switch back to process page table for full copy
+        x86_64::registers::control::Cr3::write(
+            process_page_table,
+            x86_64::registers::control::Cr3Flags::empty()
+        );
+        
+        // Copy all the data
+        let slice = core::slice::from_raw_parts(user_ptr as *const u8, len);
+        buffer.extend_from_slice(slice);
+        
+        // Switch back to kernel page table
+        x86_64::registers::control::Cr3::write(current_cr3.0, current_cr3.1);
     }
     
+    log::debug!("copy_from_user: Successfully copied {} bytes", len);
     Ok(buffer)
 }
 
@@ -294,6 +297,8 @@ pub fn sys_fork() -> SyscallResult {
                             parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
                         
                         // Return the child PID to the parent
+                        log::info!("sys_fork: Parent process (thread {}) will receive return value: {}", 
+                                   current_thread_id, child_pid.as_u64());
                         SyscallResult::Ok(child_pid.as_u64())
                     } else {
                         log::error!("sys_fork: Child process has no main thread");

@@ -158,6 +158,7 @@ fn copy_memory_region(
     
     for page in Page::range_inclusive(start_page, end_page) {
         // Check if the page is mapped in the parent
+        log::debug!("copy_memory_region: checking if page {:#x} is mapped in parent", page.start_address());
         if let Some(parent_frame) = parent_page_table.translate_page(page.start_address()) {
             log::debug!("copy_memory_region: copying page {:#x} (frame {:#x})", 
                        page.start_address(), parent_frame);
@@ -203,6 +204,8 @@ fn copy_memory_region(
                 .map_err(|_| "Failed to map copied page in child page table")?;
             
             log::debug!("copy_memory_region: successfully copied page {:#x}", page.start_address());
+        } else {
+            log::debug!("copy_memory_region: page {:#x} not mapped in parent, skipping", page.start_address());
         }
     }
     

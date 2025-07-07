@@ -353,6 +353,10 @@ impl ProcessManager {
                 .map_err(|_| "Failed to create child page table")?
         );
         
+        // Log page table addresses for debugging
+        log::debug!("Parent page table CR3: {:#x}", parent_page_table.level_4_frame().start_address());
+        log::debug!("Child page table CR3: {:#x}", child_page_table.level_4_frame().start_address());
+        
         // Copy the parent's memory pages to the child
         // This is a simplified implementation - a real OS would use copy-on-write
         super::fork::copy_page_table_contents(parent_page_table.as_ref(), child_page_table.as_mut())?;
