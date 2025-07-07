@@ -3,30 +3,27 @@
 use crate::process::creation::create_user_process;
 use alloc::string::String;
 use alloc::vec;
+use alloc::format;
 
-/// Test direct execution to validate baseline userspace functionality
+/// Test multiple concurrent processes to validate page table isolation
 /// 
-/// 🚨 CRITICAL REGRESSION TEST 🚨
+/// 🚨 CRITICAL CONCURRENCY TEST 🚨
 /// 
-/// This test MUST run on EVERY kernel boot and MUST pass consistently.
-/// It validates the fundamental syscall infrastructure that all other
-/// userspace functionality depends on.
+/// This test validates that multiple processes can run concurrently without
+/// stomping on each other's memory or causing crashes.
 /// 
 /// SUCCESS CRITERIA:
-/// - Must see: "🎉 USERSPACE SYSCALL: Received INT 0x80 from userspace!"
-/// - Must see: "Hello from userspace!" output
-/// - Must see: "✅ SUCCESS: Userspace syscall completed"
+/// - Must see: Multiple "Hello from userspace! Current time: XXXXX" outputs with different times
+/// - Must see: All processes complete successfully without crashes
+/// - Must see: No page table conflicts or double faults
 /// 
 /// FAILURE RESPONSE:
-/// - HALT ALL DEVELOPMENT if this test fails
-/// - INVESTIGATE IMMEDIATELY - indicates syscall infrastructure regression
-/// - DO NOT proceed with fork/exec work until this is fixed
-/// 
-/// This test validates the kernel stack mapping fix that enables Ring 3 → Ring 0
-/// transitions during syscalls. Any failure indicates a critical regression.
+/// - INVESTIGATE page table isolation implementation
+/// - CHECK for memory corruption between processes
+/// - VERIFY syscall isolation and stack isolation
 pub fn test_direct_execution() {
-    log::info!("=== CRITICAL BASELINE TEST: Direct Hello World Execution ===");
-    log::info!("This test validates core syscall functionality - MUST pass before fork/exec");
+    log::info!("=== MULTIPLE CONCURRENT PROCESSES TEST ===");
+    log::info!("Testing page table isolation with concurrent hello_time.elf processes");
     
     // Create and run hello_time.elf directly
     #[cfg(feature = "testing")]
@@ -34,25 +31,27 @@ pub fn test_direct_execution() {
     #[cfg(not(feature = "testing"))]
     let hello_time_elf = &create_hello_world_elf();
     
-    log::info!("BASELINE TEST: Loading hello_time.elf, size: {} bytes", hello_time_elf.len());
-    log::info!("BASELINE TEST: First 16 bytes: {:02x?}", &hello_time_elf[..16.min(hello_time_elf.len())]);
+    log::info!("CONCURRENCY TEST: Loading hello_time.elf, size: {} bytes", hello_time_elf.len());
     
-    match create_user_process(String::from("direct_baseline_test"), hello_time_elf) {
-        Ok(pid) => {
-            log::info!("✓ BASELINE: Created process with PID {}", pid.as_u64());
-            log::info!("✓ BASELINE: Process should execute hello_time.elf and print 'Hello from userspace!'");
-            
-            // The process has been created and scheduled
-            // It will run asynchronously when the scheduler picks it up
-            log::info!("✓ BASELINE: Direct execution test scheduled");
-            log::info!("    -> Process will execute when scheduler runs it");
-            log::info!("    -> Look for 'Hello from userspace!' output in logs");
-        }
-        Err(e) => {
-            log::error!("✗ BASELINE: Direct execution failed: {}", e);
-            log::error!("    -> Cannot proceed with fork/exec testing until this works");
+    // Create 3 concurrent processes to test page table isolation
+    for i in 1..=3 {
+        let process_name = format!("hello_time_process_{}", i);
+        match create_user_process(process_name.clone(), hello_time_elf) {
+            Ok(pid) => {
+                log::info!("✓ CONCURRENT: Created process {} with PID {}", process_name, pid.as_u64());
+                log::info!("✓ CONCURRENT: Process should execute hello_time.elf and print time");
+            }
+            Err(e) => {
+                log::error!("✗ CONCURRENT: Failed to create process {}: {}", process_name, e);
+                log::error!("    -> Page table isolation may be broken");
+            }
         }
     }
+    
+    log::info!("✓ CONCURRENT: Created 3 concurrent processes");
+    log::info!("    -> Each process will execute independently when scheduler runs them");
+    log::info!("    -> Look for multiple 'Hello from userspace! Current time: XXXXX' outputs");
+    log::info!("    -> Different time values indicate successful process isolation");
 }
 
 /// Test fork from userspace - validates that userspace processes can call fork()

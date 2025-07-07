@@ -24,7 +24,7 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     // Basic validation - check if address is in reasonable userspace range
     // Accept both code/data range (0x10000000-0x80000000) and stack range (around 0x555555555000)
     let is_code_data_range = user_ptr >= 0x10000000 && user_ptr < 0x80000000;
-    let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5556_0000;
+    let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5570_0000; // Expanded to cover full stack region
     
     if !is_code_data_range && !is_stack_range {
         log::error!("copy_from_user: Invalid userspace address {:#x} (not in code/data or stack range)", user_ptr);
