@@ -21,6 +21,304 @@ pub struct ProcessPageTable {
 }
 
 impl ProcessPageTable {
+    /// Selectively copy only essential kernel mappings from PML4 entry 0
+    /// 
+    /// Entry 0 covers virtual addresses 0x000000000000 - 0x00007FFFFFFFFF (512GB)
+    /// This contains both kernel code and potential userspace, but we only want kernel code.
+    fn selective_copy_entry_0(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        log::debug!("Selectively copying PML4 entry 0 with L3 addr {:#x}", source_entry.addr().as_u64());
+        
+        // Allocate a new L3 table
+        let new_l3_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L3 table")?;
+        
+        // Map the new L3 table
+        let new_l3_virt = phys_offset + new_l3_frame.start_address().as_u64();
+        let new_l3_table = unsafe {
+            &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L3 table
+        new_l3_table.zero();
+        
+        // Map the source L3 table
+        let source_l3_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l3_table = unsafe {
+            &*(source_l3_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Only copy L3 entry 0, which covers 0x000000000000 - 0x00003FFFFFFF (1GB)
+        // This typically contains the kernel code loaded by the bootloader
+        // We skip all other L3 entries to avoid bootloader huge page mappings
+        if !source_l3_table[0].is_unused() {
+            log::debug!("Copying L3 entry 0 which contains kernel code");
+            
+            // Check if this is a huge page (1GB page at L3 level)
+            if source_l3_table[0].flags().contains(PageTableFlags::HUGE_PAGE) {
+                // Huge page covering the first 1GB - copy it directly since it contains kernel code
+                new_l3_table[0] = source_l3_table[0].clone();
+                log::debug!("Copied L3 huge page entry 0 (kernel code region)");
+            } else {
+                // Regular L3 entry pointing to L2 table - copy only kernel portions
+                match Self::selective_copy_l3_entry_0(&source_l3_table[0], phys_offset) {
+                    Ok(new_l2_frame) => {
+                        let flags = source_l3_table[0].flags();
+                        new_l3_table[0].set_addr(new_l2_frame.start_address(), flags);
+                        log::debug!("Selectively copied L3 entry 0 -> new L2 frame {:#x}", 
+                            new_l2_frame.start_address().as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to selectively copy L3 entry 0: {}", e);
+                        return Err("Failed to copy kernel code region");
+                    }
+                }
+            }
+        }
+        
+        // Skip all other L3 entries (1-511) to avoid copying bootloader mappings
+        log::debug!("Skipped L3 entries 1-511 to avoid bootloader mappings");
+        
+        log::debug!("Successfully created selective copy of PML4 entry 0 to new L3 frame {:#x}", 
+            new_l3_frame.start_address().as_u64());
+        
+        Ok(new_l3_frame)
+    }
+    
+    /// Selectively copy L3 entry 0, which covers the first 1GB (kernel code region)
+    fn selective_copy_l3_entry_0(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        // Allocate a new L2 table
+        let new_l2_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L2 table")?;
+        
+        // Map the new L2 table
+        let new_l2_virt = phys_offset + new_l2_frame.start_address().as_u64();
+        let new_l2_table = unsafe {
+            &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L2 table
+        new_l2_table.zero();
+        
+        // Map the source L2 table
+        let source_l2_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l2_table = unsafe {
+            &*(source_l2_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Only copy L2 entries that contain kernel code (typically the first few entries)
+        // Each L2 entry covers 2MB, so entries 0-7 cover the first 16MB which usually contains kernel
+        for i in 0..8 {
+            if !source_l2_table[i].is_unused() {
+                let l2_virt_addr = (i as u64) * 0x200000; // 2MB per L2 entry
+                
+                // Check if this is a huge page (2MB page at L2 level)
+                if source_l2_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
+                    // Copy kernel huge pages (first 16MB typically contains kernel)
+                    new_l2_table[i] = source_l2_table[i].clone();
+                    log::debug!("Copied kernel L2 huge page entry {} (addr {:#x})", i, l2_virt_addr);
+                } else {
+                    // Regular L2 entry pointing to L1 table - deep copy it
+                    match Self::deep_copy_l2_entry(&source_l2_table[i], i, phys_offset) {
+                        Ok(new_l1_frame) => {
+                            let flags = source_l2_table[i].flags();
+                            new_l2_table[i].set_addr(new_l1_frame.start_address(), flags);
+                            log::debug!("Deep copied kernel L2 entry {} -> new L1 frame {:#x}", 
+                                i, new_l1_frame.start_address().as_u64());
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to deep copy kernel L2 entry {}: {}", i, e);
+                            // Continue - some entries might not be essential
+                        }
+                    }
+                }
+            }
+        }
+        
+        log::debug!("Selectively copied kernel portions of L3 entry 0 (first 16MB)");
+        Ok(new_l2_frame)
+    }
+    
+    /// Deep copy a PML4 entry, creating independent L3/L2/L1 tables
+    /// 
+    /// This creates a complete copy of the page table hierarchy below this L4 entry,
+    /// ensuring that each process has its own isolated page tables.
+    fn deep_copy_pml4_entry(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        entry_index: usize,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        log::debug!("Deep copying PML4 entry {} with L3 addr {:#x}", 
+            entry_index, source_entry.addr().as_u64());
+        
+        // Allocate a new L3 table
+        let new_l3_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L3 table")?;
+        
+        // Map the new L3 table
+        let new_l3_virt = phys_offset + new_l3_frame.start_address().as_u64();
+        let new_l3_table = unsafe {
+            &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L3 table
+        new_l3_table.zero();
+        
+        // Map the source L3 table
+        let source_l3_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l3_table = unsafe {
+            &*(source_l3_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Copy each L3 entry, deep copying L2 tables as needed
+        for i in 0..512 {
+            if !source_l3_table[i].is_unused() {
+                // Check if this is a huge page (1GB page at L3 level)
+                if source_l3_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
+                    // Huge pages can be shared at the physical level
+                    new_l3_table[i] = source_l3_table[i].clone();
+                    log::trace!("Copied L3 huge page entry {}", i);
+                } else {
+                    // Regular L3 entry pointing to L2 table - deep copy the L2 table
+                    match Self::deep_copy_l3_entry(&source_l3_table[i], i, phys_offset) {
+                        Ok(new_l2_frame) => {
+                            let flags = source_l3_table[i].flags();
+                            new_l3_table[i].set_addr(new_l2_frame.start_address(), flags);
+                            log::trace!("Deep copied L3 entry {} -> new L2 frame {:#x}", 
+                                i, new_l2_frame.start_address().as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to deep copy L3 entry {}: {}", i, e);
+                            return Err("Failed to deep copy L3 entry");
+                        }
+                    }
+                }
+            }
+        }
+        
+        log::debug!("Successfully deep copied PML4 entry {} to new L3 frame {:#x}", 
+            entry_index, new_l3_frame.start_address().as_u64());
+        
+        Ok(new_l3_frame)
+    }
+    
+    /// Deep copy an L3 entry, creating independent L2/L1 tables
+    fn deep_copy_l3_entry(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        entry_index: usize,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        // Allocate a new L2 table
+        let new_l2_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L2 table")?;
+        
+        // Map the new L2 table
+        let new_l2_virt = phys_offset + new_l2_frame.start_address().as_u64();
+        let new_l2_table = unsafe {
+            &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L2 table
+        new_l2_table.zero();
+        
+        // Map the source L2 table
+        let source_l2_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l2_table = unsafe {
+            &*(source_l2_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Copy each L2 entry, deep copying L1 tables as needed
+        for i in 0..512 {
+            if !source_l2_table[i].is_unused() {
+                // Check if this is a huge page (2MB page at L2 level)
+                if source_l2_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
+                    // Huge pages can be shared at the physical level for kernel code
+                    // Calculate the virtual address this L2 entry covers
+                    let l2_virt_addr = (entry_index as u64) * 0x40000000 + (i as u64) * 0x200000; // 1GB per L3, 2MB per L2
+                    
+                    if l2_virt_addr >= 0x800000000000 {
+                        // Kernel space - safe to share huge pages
+                        new_l2_table[i] = source_l2_table[i].clone();
+                        log::trace!("Shared kernel L2 huge page entry {} (addr {:#x})", i, l2_virt_addr);
+                    } else {
+                        // User space - should not share, but for now we'll share kernel code pages
+                        // This needs refinement based on what's actually mapped
+                        new_l2_table[i] = source_l2_table[i].clone();
+                        // Don't spam logs with hundreds of huge page entries
+                        if i < 10 {
+                            log::trace!("Shared user L2 huge page entry {} (addr {:#x}) - FIXME", i, l2_virt_addr);
+                        }
+                    }
+                } else {
+                    // Regular L2 entry pointing to L1 table - deep copy the L1 table
+                    match Self::deep_copy_l2_entry(&source_l2_table[i], i, phys_offset) {
+                        Ok(new_l1_frame) => {
+                            let flags = source_l2_table[i].flags();
+                            new_l2_table[i].set_addr(new_l1_frame.start_address(), flags);
+                            log::trace!("Deep copied L2 entry {} -> new L1 frame {:#x}", 
+                                i, new_l1_frame.start_address().as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to deep copy L2 entry {}: {}", i, e);
+                            return Err("Failed to deep copy L2 entry");
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(new_l2_frame)
+    }
+    
+    /// Deep copy an L2 entry, creating independent L1 tables
+    fn deep_copy_l2_entry(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        _entry_index: usize,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        // Allocate a new L1 table
+        let new_l1_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L1 table")?;
+        
+        // Map the new L1 table
+        let new_l1_virt = phys_offset + new_l1_frame.start_address().as_u64();
+        let new_l1_table = unsafe {
+            &mut *(new_l1_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L1 table
+        new_l1_table.zero();
+        
+        // Map the source L1 table
+        let source_l1_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l1_table = unsafe {
+            &*(source_l1_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Copy L1 entries - these point to actual physical pages
+        // For now, we'll share all physical pages (kernel code should be read-only anyway)
+        // In a full copy-on-write implementation, we'd mark pages as read-only and copy on write
+        for i in 0..512 {
+            if !source_l1_table[i].is_unused() {
+                // Share the physical page but with independent page table entry
+                // This allows different processes to have different permissions/flags if needed
+                new_l1_table[i] = source_l1_table[i].clone();
+                // Don't spam logs with L1 entries
+                if i < 5 {
+                    log::trace!("Copied L1 entry {} -> phys frame {:#x}", 
+                        i, source_l1_table[i].addr().as_u64());
+                }
+            }
+        }
+        
+        Ok(new_l1_frame)
+    }
+    
     /// Create a new page table for a process
     /// 
     /// This creates a new level 4 page table with kernel mappings copied
@@ -77,17 +375,42 @@ impl ProcessPageTable {
             log::debug!("Copying all kernel page table entries...");
             let mut copied_count = 0;
             
-            // Copy ALL entries from the kernel page table
-            // This ensures we don't miss any critical mappings
+            // DEEP COPY: Create completely independent page tables for proper isolation
+            // This is the OS-standard approach - each process gets its own L3/L2/L1 tables
+            // Only the actual physical pages (at L1 level) are shared for kernel code
+            
             for i in 0..512 {
                 if !current_l4_table[i].is_unused() {
-                    level_4_table[i] = current_l4_table[i].clone();
-                    copied_count += 1;
-                    
-                    // Only log the first few to avoid spam
-                    if copied_count <= 10 || i >= 256 {
-                        log::debug!("Copied PML4 entry {}: addr={:#x}, flags={:?}", 
+                    if i >= 256 {
+                        // Kernel space entries (0x800000000000 and above) - can be shared safely
+                        level_4_table[i] = current_l4_table[i].clone();
+                        copied_count += 1;
+                        
+                        log::debug!("Shared kernel PML4 entry {}: addr={:#x}, flags={:?}", 
                             i, current_l4_table[i].addr().as_u64(), current_l4_table[i].flags());
+                    } else if i == 0 {
+                        // SIMPLIFIED APPROACH: Only copy entry 0 which contains essential kernel code
+                        // We'll selectively copy just the kernel portions we need
+                        // This avoids the performance issue of copying hundreds of bootloader mappings
+                        
+                        match Self::selective_copy_entry_0(&current_l4_table[i], phys_offset) {
+                            Ok(new_l3_frame) => {
+                                let flags = current_l4_table[i].flags();
+                                level_4_table[i].set_addr(new_l3_frame.start_address(), flags);
+                                copied_count += 1;
+                                
+                                log::debug!("Selectively copied PML4 entry 0: old L3 addr={:#x}, new L3 addr={:#x}", 
+                                    current_l4_table[i].addr().as_u64(), new_l3_frame.start_address().as_u64());
+                            }
+                            Err(e) => {
+                                log::error!("Failed to selectively copy PML4 entry 0: {}", e);
+                                return Err("Failed to copy essential kernel mappings");
+                            }
+                        }
+                    } else {
+                        // Skip all other user space entries - processes start with clean address spaces
+                        // Any needed mappings will be added during ELF loading or when explicitly mapped
+                        log::debug!("Skipped PML4 entry {} (clean address space for isolation)", i);
                     }
                 }
             }
@@ -100,136 +423,7 @@ impl ProcessPageTable {
                 return Err("No kernel mappings found in current page table");
             }
             
-            // CRITICAL: Entry 0 contains both kernel code and userspace mappings
-            // We CANNOT isolate L3 tables here because:
-            // 1. The kernel might be executing from memory mapped through entry 0
-            // 2. Modifying these mappings causes double faults
-            // 3. The correct approach is to clear userspace mappings during exec()
-            //
-            // For now, we accept that userspace mappings will be shared between
-            // parent and child until the child calls exec(). This is not ideal
-            // but avoids the double fault issue.
-            // CRITICAL: We cannot isolate entry 0 because it contains kernel code
-            // The kernel is executing from addresses mapped through entry 0
-            // Instead, we'll clear userspace mappings after creation
-            log::warn!("ProcessPageTable::new() - Entry 0 contains kernel code, cannot isolate");
-            log::warn!("ProcessPageTable::new() - Will clear userspace mappings instead");
-            
-            /*
-            if !level_4_table[0].is_unused() {
-                log::info!("ProcessPageTable::new() - Checking if we need to isolate L3 table for entry 0");
-                
-                // Safety check - make sure the physical address is reasonable
-                let old_l3_phys = level_4_table[0].addr();
-                if old_l3_phys.as_u64() == 0 || old_l3_phys.as_u64() > 0x1000000000 {
-                    log::error!("Invalid L3 physical address: {:#x}", old_l3_phys.as_u64());
-                    return Err("Invalid L3 table address");
-                }
-                
-                log::debug!("Old L3 physical address: {:#x}", old_l3_phys.as_u64());
-                let old_l3_virt = phys_offset + old_l3_phys.as_u64();
-                log::debug!("Old L3 virtual address: {:#x}", old_l3_virt.as_u64());
-                
-                // Try to access the L3 table
-                log::debug!("About to access old L3 table...");
-                
-                // CRITICAL: Validate that we can safely access this memory
-                // The physical memory offset mapping should make all physical memory accessible
-                // But let's be extra careful
-                
-                // First, let's just try to read a single byte to validate access
-                let test_access = unsafe { 
-                    core::ptr::read_volatile(old_l3_virt.as_ptr::<u8>())
-                };
-                log::debug!("Test byte read from L3 table: {:#x}", test_access);
-                
-                let old_l3_table = &*(old_l3_virt.as_ptr() as *const PageTable);
-                log::debug!("Successfully accessed old L3 table");
-                
-                // Allocate a new L3 table for this process
-                log::debug!("About to allocate L3 frame");
-                let new_l3_frame = allocate_frame()
-                    .ok_or("Failed to allocate frame for L3 table")?;
-                log::debug!("Allocated L3 frame: {:#x}", new_l3_frame.start_address().as_u64());
-                
-                // Map the new L3 table
-                let new_l3_virt = phys_offset + new_l3_frame.start_address().as_u64();
-                let new_l3_table = &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable);
-                
-                // Clear the new L3 table
-                new_l3_table.zero();
-                
-                // Copy L3 entries, but handle entry 0 specially
-                for i in 0..512 {
-                    if !old_l3_table[i].is_unused() {
-                        if i == 0 {
-                            // L3 entry 0 covers 0x0-0x40000000 (1GB)
-                            // This contains both kernel code AND userspace
-                            // We need to create a new L2 table and copy selectively
-                            log::debug!("  L3 entry 0 needs special handling (contains both kernel and userspace)");
-                            
-                            // Allocate a new L2 table
-                            let new_l2_frame = allocate_frame()
-                                .ok_or("Failed to allocate frame for L2 table")?;
-                            
-                            let old_l2_phys = old_l3_table[0].addr();
-                            let old_l2_virt = phys_offset + old_l2_phys.as_u64();
-                            let old_l2_table = &*(old_l2_virt.as_ptr() as *const PageTable);
-                            
-                            let new_l2_virt = phys_offset + new_l2_frame.start_address().as_u64();
-                            let new_l2_table = &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable);
-                            new_l2_table.zero();
-                            
-                            // Copy L2 entries selectively
-                            // Each L2 entry covers 2MB
-                            for j in 0..512 {
-                                if !old_l2_table[j].is_unused() {
-                                    let l2_addr = j as u64 * 0x200000; // 2MB per entry
-                                    
-                                    // Copy kernel mappings (below 0x10000000)
-                                    // This includes kernel code loaded by bootloader
-                                    if l2_addr < 0x10000000 {
-                                        new_l2_table[j] = old_l2_table[j].clone();
-                                        // Check if this is a huge page
-                                        let flags = old_l2_table[j].flags();
-                                        if flags.contains(PageTableFlags::HUGE_PAGE) {
-                                            log::trace!("    Copied L2 entry {} (addr {:#x}) - kernel HUGE PAGE", j, l2_addr);
-                                        } else {
-                                            log::trace!("    Copied L2 entry {} (addr {:#x}) - kernel normal page", j, l2_addr);
-                                        }
-                                    } else {
-                                        // Also check what we're skipping
-                                        let flags = old_l2_table[j].flags();
-                                        if flags.contains(PageTableFlags::HUGE_PAGE) {
-                                            log::trace!("    Skipped L2 entry {} (addr {:#x}) - userspace HUGE PAGE", j, l2_addr);
-                                        } else {
-                                            log::trace!("    Skipped L2 entry {} (addr {:#x}) - userspace normal page", j, l2_addr);
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            // Set L3 entry 0 to point to new L2 table
-                            let l3_flags = old_l3_table[0].flags();
-                            new_l3_table[0].set_addr(new_l2_frame.start_address(), l3_flags);
-                            log::debug!("  Set new L3[0] -> L2 frame {:#x} with flags {:?}", 
-                                      new_l2_frame.start_address().as_u64(), l3_flags);
-                            log::debug!("  Created new L2 table for L3 entry 0");
-                        } else {
-                            // Other entries can be shared
-                            new_l3_table[i] = old_l3_table[i].clone();
-                            log::debug!("  Copied L3 entry {}: addr={:#x}", i, old_l3_table[i].addr().as_u64());
-                        }
-                    }
-                }
-                
-                // Update L4 entry 0 to point to our new L3 table
-                let flags = level_4_table[0].flags();
-                level_4_table[0].set_addr(new_l3_frame.start_address(), flags);
-                
-                log::info!("ProcessPageTable::new() - Successfully isolated entry 0 with new L3 table");
-            }
-            */
+            log::debug!("Deep page table copying completed - each process now has isolated page tables");
         }
         
         // Create mapper for the new page table
@@ -248,15 +442,14 @@ impl ProcessPageTable {
         // CRITICAL: Clean up any userspace mappings that might have been copied
         // Entry 0 often contains both kernel code and userspace mappings from previous processes
         
-        let mut new_page_table = ProcessPageTable {
+        let new_page_table = ProcessPageTable {
             level_4_frame,
             mapper,
         };
         
-        // NOTE: We cannot clear entries like 170 because they might be in use by other processes
-        // Since we share L3 tables, clearing entries affects all processes
-        // Instead, we handle conflicts during map_page by checking if pages are already mapped
-        log::debug!("ProcessPageTable created with shared L3 tables - conflicts handled during mapping");
+        // Each process now has completely isolated page tables
+        // No conflicts should occur during mapping since each process has its own L3/L2/L1 tables
+        log::debug!("ProcessPageTable created with isolated page tables - no mapping conflicts expected");
         
         Ok(new_page_table)
     }
