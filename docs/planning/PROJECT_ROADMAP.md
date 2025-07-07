@@ -87,22 +87,71 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
   - Implemented load_elf_into_page_table() for process-specific ELF loading
   - Added automatic page table switching during context switches
 
-### Recently Completed (This Session) - January 6, 2025
+### Recently Completed (This Session) - January 7, 2025
 
-- ✅ **Fork/Exec Pattern Implementation**
-  - Implemented `test_fork_exec()` and `test_shell_fork_exec()` functions
-  - Added automatic fork/exec test to kernel startup sequence
-  - Updated breenix_runner.py to use stdio instead of PTY for proper log capture
-  - Fork and exec operations complete successfully (no API errors)
-  - However: Discovered critical bug where fork/exec breaks userspace execution
+- ✅ **Critical Baseline Test Infrastructure Fixes**
+  - **FIXED: User Stack Not Mapped in Process Page Table**
+    - Root cause: User stack allocated in kernel page table but not mapped to process
+    - Stack page fault at 0x555555560ff8 when userspace tried to use stack
+    - Solution: Implemented `map_user_stack_to_process()` function
+    - Result: Stack pages now properly mapped with USER_ACCESSIBLE flag
+  
+  - **FIXED: Syscall Entry Assembly Missing**
+    - syscall_entry function was declared but not defined
+    - INT 0x80 was jumping to undefined address causing random behavior
+    - Solution: Identified existing assembly in `/kernel/src/syscall/entry.asm`
+    - Result: Syscalls now properly handled through assembly entry point
+  
+  - **FIXED: Wrong ELF Being Loaded**
+    - breenix_runner.py was not passing `--features testing` flag
+    - Loading minimal 336-byte fallback ELFs instead of real test binaries
+    - Solution: Updated breenix_runner.py to include testing feature
+    - Result: Now loading correct hello_time.elf (9024 bytes)
 
-- ✅ **🎉 MONUMENTAL ACHIEVEMENT: HELLO WORLD FROM USERSPACE!**
-  - **FIXED: Syscall Register Alignment Bug**
-    - Root cause: SyscallFrame struct field order didn't match assembly push order
-    - Assembly pushed RAX last (lowest address), but struct expected r15 at lowest
-    - Result: All registers misaligned, causing wrong syscall numbers and arguments
-    - Solution: Reordered SyscallFrame fields to match actual stack layout
-  - **RESULT: First successful userspace hello world!**
+### Currently Working On - January 7, 2025
+
+- 🚧 **Baseline "Hello from userspace!" Test Not Executing**
+  - **Current Status**: All infrastructure appears correct but no userspace output
+  - **What Works**:
+    - ✅ Timer interrupts are firing correctly
+    - ✅ Process creation succeeds (PID 1 added to scheduler)  
+    - ✅ Scheduling infrastructure triggers ("check_need_resched" called)
+    - ✅ Kernel continues execution after process creation
+  - **What Should Happen**:
+    1. Process 1 (hello_time.elf) created and added to scheduler
+    2. Timer interrupt fires (every 100ms at 10Hz)
+    3. Scheduler switches from thread 0 (kernel) to thread 1 (userspace)
+    4. Context switch includes page table switch to process page table
+    5. Userspace executes `int 3` (breakpoint) as first instruction
+    6. Then syscalls to print "Hello from userspace!"
+  - **What Actually Happens**:
+    - Process created but never scheduled/executed
+    - No evidence of thread 0 → thread 1 context switch
+    - No userspace breakpoint or syscall output
+  - **Investigation Focus**: Scheduler not returning thread switch decision
+
+### Immediate Next Steps
+
+1. **Debug Scheduler Decision Making**
+   - Add logging to `scheduler::schedule()` to see why it's not returning thread switches
+   - Check if thread 1 is actually in the ready queue when schedule() is called
+   - Verify current_thread is properly set (might be None causing issues)
+
+2. **Verify Thread State**
+   - Ensure thread 1 is in Ready state, not Blocked or Running
+   - Check if idle thread (thread 0) is properly configured
+   - Verify scheduler has both threads registered
+
+3. **Check Scheduling Algorithm**
+   - Review round-robin implementation in scheduler
+   - Ensure need_resched flag is properly handled
+   - Verify quantum expiration logic (currently set to 10 ticks)
+
+4. **Once Baseline Test Works**
+   - Run fork test to verify fork() still works with all fixes
+   - Test exec() with proper page table switching
+   - Implement fork+exec pattern test
+
     - Process executes from Ring 3 (CS=0x33)
     - Makes proper write syscall with correct parameters
     - Prints "Hello from userspace!" to console

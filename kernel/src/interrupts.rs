@@ -82,12 +82,15 @@ pub fn init_idt() {
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         
         // System call handler (INT 0x80)
-        // Use Rust handler - it works for both kernel and userspace calls
+        // Use assembly handler for proper syscall dispatching
+        extern "C" {
+            fn syscall_entry();
+        }
         unsafe {
-            idt[SYSCALL_INTERRUPT_ID].set_handler_fn(crate::syscall::syscall_handler)
+            idt[SYSCALL_INTERRUPT_ID].set_handler_addr(x86_64::VirtAddr::new(syscall_entry as u64))
                 .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         }
-        log::info!("Syscall handler configured with Rust function");
+        log::info!("Syscall handler configured with assembly entry point");
         
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {

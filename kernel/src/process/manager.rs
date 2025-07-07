@@ -84,6 +84,21 @@ impl ProcessManager {
         // Store the stack in the process
         process.stack = Some(Box::new(user_stack));
         
+        // CRITICAL: Map the user stack pages into the process page table
+        // The stack was allocated in the kernel page table, but userspace needs it mapped
+        log::debug!("Mapping user stack pages into process page table...");
+        if let Some(ref mut page_table) = process.page_table {
+            let stack_bottom = stack_top - USER_STACK_SIZE as u64;
+            crate::memory::process_memory::map_user_stack_to_process(page_table, stack_bottom, stack_top)
+                .map_err(|e| {
+                    log::error!("Failed to map user stack to process page table: {}", e);
+                    "Failed to map user stack in process page table"
+                })?;
+            log::debug!("✓ User stack mapped in process page table");
+        } else {
+            return Err("Process page table not available for stack mapping");
+        }
+        
         // Create the main thread
         let thread = self.create_main_thread(&mut process, stack_top)?;
         process.set_main_thread(thread);

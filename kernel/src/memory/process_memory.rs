@@ -100,10 +100,33 @@ impl ProcessPageTable {
             OffsetPageTable::new(level_4_table, phys_offset)
         };
         
-        Ok(ProcessPageTable {
+        // CRITICAL: Clean up any userspace mappings that might have been copied
+        // Entry 0 often contains both kernel code and userspace mappings from previous processes
+        // We need to unmap the common userspace areas to prevent conflicts
+        let mut new_page_table = ProcessPageTable {
             level_4_frame,
             mapper,
-        })
+        };
+        
+        // Unmap common userspace areas that might have been copied
+        // This prevents "PageAlreadyMapped" errors when loading new programs
+        log::debug!("Cleaning up potential userspace mappings in new page table...");
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(0x10000000), 
+            VirtAddr::new(0x10100000)  // 1MB range for code
+        ) {
+            log::debug!("No userspace code pages to unmap (or error): {}", e);
+        }
+        
+        // Also clean up stack area
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(0x555555550000), 
+            VirtAddr::new(0x555555570000)  // Stack area
+        ) {
+            log::debug!("No userspace stack pages to unmap (or error): {}", e);
+        }
+        
+        Ok(new_page_table)
     }
     
     /// Get the physical frame of the level 4 page table
@@ -335,16 +358,32 @@ pub fn copy_kernel_stack_to_process(
                 // Use kernel permissions (not user accessible)
                 let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
                 
-                match process_page_table.map_page(page, frame, flags) {
-                    Ok(()) => {
-                        copied_pages += 1;
-                        log::trace!("Mapped kernel stack page {:#x} -> frame {:#x}", 
+                // Check if the page is already mapped in the process page table
+                if let Some(existing_frame) = process_page_table.translate_page(page.start_address()) {
+                    // Page is already mapped, verify it maps to the same frame
+                    let existing_frame = PhysFrame::containing_address(existing_frame);
+                    if existing_frame == frame {
+                        log::trace!("Kernel stack page {:#x} already mapped correctly to frame {:#x}", 
                             page.start_address().as_u64(), frame.start_address().as_u64());
+                        copied_pages += 1;
+                    } else {
+                        log::error!("Kernel stack page {:#x} already mapped to different frame: expected {:#x}, found {:#x}", 
+                            page.start_address().as_u64(), frame.start_address().as_u64(), existing_frame.start_address().as_u64());
+                        return Err("Kernel stack page already mapped to different frame");
                     }
-                    Err(e) => {
-                        log::error!("Failed to map kernel stack page {:#x}: {}", 
-                            page.start_address().as_u64(), e);
-                        return Err("Failed to map kernel stack page");
+                } else {
+                    // Page not mapped, map it now
+                    match process_page_table.map_page(page, frame, flags) {
+                        Ok(()) => {
+                            copied_pages += 1;
+                            log::trace!("Mapped kernel stack page {:#x} -> frame {:#x}", 
+                                page.start_address().as_u64(), frame.start_address().as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to map kernel stack page {:#x}: {}", 
+                                page.start_address().as_u64(), e);
+                            return Err("Failed to map kernel stack page");
+                        }
                     }
                 }
             }
@@ -357,5 +396,76 @@ pub fn copy_kernel_stack_to_process(
     }
     
     log::debug!("✓ Successfully copied {} kernel stack pages to process page table", copied_pages);
+    Ok(())
+}
+
+/// Map user stack pages from kernel page table to process page table
+/// This is critical for userspace execution - the stack must be accessible
+pub fn map_user_stack_to_process(
+    process_page_table: &mut ProcessPageTable,
+    stack_bottom: VirtAddr,
+    stack_top: VirtAddr,
+) -> Result<(), &'static str> {
+    log::debug!("map_user_stack_to_process: mapping stack range {:#x} - {:#x}", 
+        stack_bottom.as_u64(), stack_top.as_u64());
+    
+    // Get access to the kernel page table
+    let kernel_mapper = unsafe { crate::memory::paging::get_mapper() };
+    
+    // Calculate page range to copy
+    let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+    let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
+    
+    let mut mapped_pages = 0;
+    
+    // Copy each page mapping from kernel to process page table
+    for page in Page::range_inclusive(start_page, end_page) {
+        // Look up the mapping in the kernel page table
+        match kernel_mapper.translate(page.start_address()) {
+            TranslateResult::Mapped { frame, offset, flags: _ } => {
+                let phys_addr = frame.start_address() + offset;
+                let frame = PhysFrame::containing_address(phys_addr);
+                
+                // Map the same physical frame in the process page table
+                // Use user-accessible permissions for user stack
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+                
+                // Check if already mapped
+                if let Some(existing_frame) = process_page_table.translate_page(page.start_address()) {
+                    let existing_frame = PhysFrame::containing_address(existing_frame);
+                    if existing_frame == frame {
+                        log::trace!("User stack page {:#x} already mapped correctly to frame {:#x}", 
+                            page.start_address().as_u64(), frame.start_address().as_u64());
+                        mapped_pages += 1;
+                    } else {
+                        log::error!("User stack page {:#x} already mapped to different frame: expected {:#x}, found {:#x}", 
+                            page.start_address().as_u64(), frame.start_address().as_u64(), existing_frame.start_address().as_u64());
+                        return Err("User stack page already mapped to different frame");
+                    }
+                } else {
+                    // Page not mapped, map it now
+                    match process_page_table.map_page(page, frame, flags) {
+                        Ok(()) => {
+                            mapped_pages += 1;
+                            log::trace!("Mapped user stack page {:#x} -> frame {:#x}", 
+                                page.start_address().as_u64(), frame.start_address().as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to map user stack page {:#x}: {}", 
+                                page.start_address().as_u64(), e);
+                            return Err("Failed to map user stack page");
+                        }
+                    }
+                }
+            }
+            _ => {
+                log::error!("User stack page {:#x} not mapped in kernel page table!", 
+                    page.start_address().as_u64());
+                return Err("User stack page not found in kernel page table");
+            }
+        }
+    }
+    
+    log::debug!("✓ Successfully mapped {} user stack pages to process page table", mapped_pages);
     Ok(())
 }
