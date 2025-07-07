@@ -29,8 +29,7 @@ pub extern "C" fn timer_interrupt_handler() {
     // }
     
     // Update global timer tick count
-    // TEMPORARILY DISABLED TO DEBUG DEADLOCK
-    // crate::time::timer_interrupt();
+    crate::time::increment_ticks();
     
     // Decrement current thread's quantum
     unsafe {
