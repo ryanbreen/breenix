@@ -3,7 +3,7 @@ pub mod timer;
 pub mod rtc;
 
 pub use time::Time;
-pub use timer::{init, time_since_start, timer_interrupt};
+pub use timer::{init, time_since_start};
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

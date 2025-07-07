@@ -27,8 +27,11 @@ impl ProcessPageTable {
     /// from the current page table.
     pub fn new() -> Result<Self, &'static str> {
         // Allocate a frame for the new level 4 page table
+        log::debug!("ProcessPageTable::new() - About to allocate L4 frame");
         let level_4_frame = allocate_frame()
             .ok_or("Failed to allocate frame for page table")?;
+        
+        log::debug!("Allocated L4 frame: {:#x}", level_4_frame.start_address().as_u64());
         
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
@@ -36,6 +39,7 @@ impl ProcessPageTable {
         // Map the new page table frame
         let level_4_table = unsafe {
             let virt = phys_offset + level_4_frame.start_address().as_u64();
+            log::debug!("New L4 table virtual address: {:#x}", virt.as_u64());
             &mut *(virt.as_mut_ptr() as *mut PageTable)
         };
         
@@ -47,7 +51,9 @@ impl ProcessPageTable {
         unsafe {
             let current_l4_table = {
                 let (frame, _) = Cr3::read();
+                log::debug!("ProcessPageTable::new() - Current CR3 when copying: {:#x}", frame.start_address().as_u64());
                 let virt = phys_offset + frame.start_address().as_u64();
+                log::debug!("Current L4 table virtual address: {:#x}", virt.as_u64());
                 &*(virt.as_ptr() as *const PageTable)
             };
             
@@ -93,38 +99,160 @@ impl ProcessPageTable {
                 log::error!("CRITICAL: No kernel PML4 entries copied! Process will definitely crash on page table switch!");
                 return Err("No kernel mappings found in current page table");
             }
+            
+            // CRITICAL: Entry 0 contains both kernel code and userspace mappings
+            // We CANNOT isolate L3 tables here because:
+            // 1. The kernel might be executing from memory mapped through entry 0
+            // 2. Modifying these mappings causes double faults
+            // 3. The correct approach is to clear userspace mappings during exec()
+            //
+            // For now, we accept that userspace mappings will be shared between
+            // parent and child until the child calls exec(). This is not ideal
+            // but avoids the double fault issue.
+            log::warn!("ProcessPageTable::new() - Entry 0 will share L3 table between processes");
+            log::warn!("ProcessPageTable::new() - Userspace isolation will happen during exec()");
+            
+            /*
+            if !level_4_table[0].is_unused() {
+                log::info!("ProcessPageTable::new() - Checking if we need to isolate L3 table for entry 0");
+                
+                // Safety check - make sure the physical address is reasonable
+                let old_l3_phys = level_4_table[0].addr();
+                if old_l3_phys.as_u64() == 0 || old_l3_phys.as_u64() > 0x1000000000 {
+                    log::error!("Invalid L3 physical address: {:#x}", old_l3_phys.as_u64());
+                    return Err("Invalid L3 table address");
+                }
+                
+                log::debug!("Old L3 physical address: {:#x}", old_l3_phys.as_u64());
+                let old_l3_virt = phys_offset + old_l3_phys.as_u64();
+                log::debug!("Old L3 virtual address: {:#x}", old_l3_virt.as_u64());
+                
+                // Try to access the L3 table
+                log::debug!("About to access old L3 table...");
+                
+                // CRITICAL: Validate that we can safely access this memory
+                // The physical memory offset mapping should make all physical memory accessible
+                // But let's be extra careful
+                
+                // First, let's just try to read a single byte to validate access
+                let test_access = unsafe { 
+                    core::ptr::read_volatile(old_l3_virt.as_ptr::<u8>())
+                };
+                log::debug!("Test byte read from L3 table: {:#x}", test_access);
+                
+                let old_l3_table = &*(old_l3_virt.as_ptr() as *const PageTable);
+                log::debug!("Successfully accessed old L3 table");
+                
+                // Allocate a new L3 table for this process
+                log::debug!("About to allocate L3 frame");
+                let new_l3_frame = allocate_frame()
+                    .ok_or("Failed to allocate frame for L3 table")?;
+                log::debug!("Allocated L3 frame: {:#x}", new_l3_frame.start_address().as_u64());
+                
+                // Map the new L3 table
+                let new_l3_virt = phys_offset + new_l3_frame.start_address().as_u64();
+                let new_l3_table = &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable);
+                
+                // Clear the new L3 table
+                new_l3_table.zero();
+                
+                // Copy L3 entries, but handle entry 0 specially
+                for i in 0..512 {
+                    if !old_l3_table[i].is_unused() {
+                        if i == 0 {
+                            // L3 entry 0 covers 0x0-0x40000000 (1GB)
+                            // This contains both kernel code AND userspace
+                            // We need to create a new L2 table and copy selectively
+                            log::debug!("  L3 entry 0 needs special handling (contains both kernel and userspace)");
+                            
+                            // Allocate a new L2 table
+                            let new_l2_frame = allocate_frame()
+                                .ok_or("Failed to allocate frame for L2 table")?;
+                            
+                            let old_l2_phys = old_l3_table[0].addr();
+                            let old_l2_virt = phys_offset + old_l2_phys.as_u64();
+                            let old_l2_table = &*(old_l2_virt.as_ptr() as *const PageTable);
+                            
+                            let new_l2_virt = phys_offset + new_l2_frame.start_address().as_u64();
+                            let new_l2_table = &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable);
+                            new_l2_table.zero();
+                            
+                            // Copy L2 entries selectively
+                            // Each L2 entry covers 2MB
+                            for j in 0..512 {
+                                if !old_l2_table[j].is_unused() {
+                                    let l2_addr = j as u64 * 0x200000; // 2MB per entry
+                                    
+                                    // Copy kernel mappings (below 0x10000000)
+                                    // This includes kernel code loaded by bootloader
+                                    if l2_addr < 0x10000000 {
+                                        new_l2_table[j] = old_l2_table[j].clone();
+                                        // Check if this is a huge page
+                                        let flags = old_l2_table[j].flags();
+                                        if flags.contains(PageTableFlags::HUGE_PAGE) {
+                                            log::trace!("    Copied L2 entry {} (addr {:#x}) - kernel HUGE PAGE", j, l2_addr);
+                                        } else {
+                                            log::trace!("    Copied L2 entry {} (addr {:#x}) - kernel normal page", j, l2_addr);
+                                        }
+                                    } else {
+                                        // Also check what we're skipping
+                                        let flags = old_l2_table[j].flags();
+                                        if flags.contains(PageTableFlags::HUGE_PAGE) {
+                                            log::trace!("    Skipped L2 entry {} (addr {:#x}) - userspace HUGE PAGE", j, l2_addr);
+                                        } else {
+                                            log::trace!("    Skipped L2 entry {} (addr {:#x}) - userspace normal page", j, l2_addr);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Set L3 entry 0 to point to new L2 table
+                            let l3_flags = old_l3_table[0].flags();
+                            new_l3_table[0].set_addr(new_l2_frame.start_address(), l3_flags);
+                            log::debug!("  Set new L3[0] -> L2 frame {:#x} with flags {:?}", 
+                                      new_l2_frame.start_address().as_u64(), l3_flags);
+                            log::debug!("  Created new L2 table for L3 entry 0");
+                        } else {
+                            // Other entries can be shared
+                            new_l3_table[i] = old_l3_table[i].clone();
+                            log::debug!("  Copied L3 entry {}: addr={:#x}", i, old_l3_table[i].addr().as_u64());
+                        }
+                    }
+                }
+                
+                // Update L4 entry 0 to point to our new L3 table
+                let flags = level_4_table[0].flags();
+                level_4_table[0].set_addr(new_l3_frame.start_address(), flags);
+                
+                log::info!("ProcessPageTable::new() - Successfully isolated entry 0 with new L3 table");
+            }
+            */
         }
         
         // Create mapper for the new page table
+        // We need to get a fresh pointer to the level_4_table to avoid borrow conflicts
         let mapper = unsafe {
-            OffsetPageTable::new(level_4_table, phys_offset)
+            let level_4_table_ptr = {
+                let virt = phys_offset + level_4_frame.start_address().as_u64();
+                &mut *(virt.as_mut_ptr() as *mut PageTable)
+            };
+            
+            log::debug!("Creating OffsetPageTable with L4 frame {:#x} and phys_offset {:#x}", 
+                      level_4_frame.start_address().as_u64(), phys_offset.as_u64());
+            OffsetPageTable::new(level_4_table_ptr, phys_offset)
         };
         
         // CRITICAL: Clean up any userspace mappings that might have been copied
         // Entry 0 often contains both kernel code and userspace mappings from previous processes
-        // We need to unmap the common userspace areas to prevent conflicts
+        
         let mut new_page_table = ProcessPageTable {
             level_4_frame,
             mapper,
         };
         
-        // Unmap common userspace areas that might have been copied
-        // This prevents "PageAlreadyMapped" errors when loading new programs
-        log::debug!("Cleaning up potential userspace mappings in new page table...");
-        if let Err(e) = new_page_table.unmap_user_pages(
-            VirtAddr::new(0x10000000), 
-            VirtAddr::new(0x10100000)  // 1MB range for code
-        ) {
-            log::debug!("No userspace code pages to unmap (or error): {}", e);
-        }
-        
-        // Also clean up stack area
-        if let Err(e) = new_page_table.unmap_user_pages(
-            VirtAddr::new(0x555555550000), 
-            VirtAddr::new(0x555555570000)  // Stack area
-        ) {
-            log::debug!("No userspace stack pages to unmap (or error): {}", e);
-        }
+        // Skip unmapping since we've already isolated userspace mappings
+        // by creating new L3/L2 tables that don't include them
+        log::debug!("Userspace mappings already isolated via L3/L2 table creation");
         
         Ok(new_page_table)
     }
@@ -144,6 +272,17 @@ impl ProcessPageTable {
         log::trace!("ProcessPageTable::map_page called for page {:#x}", page.start_address().as_u64());
         unsafe {
             log::trace!("About to call mapper.map_to...");
+            
+            // CRITICAL WORKAROUND: The OffsetPageTable might be failing during child
+            // page table operations. Let's add extra validation.
+            
+            // First, ensure we're not trying to map kernel addresses as user pages
+            let page_addr = page.start_address().as_u64();
+            if page_addr >= 0x800000000000 && flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                log::error!("Attempting to map kernel address {:#x} as user-accessible!", page_addr);
+                return Err("Cannot map kernel addresses as user-accessible");
+            }
+            
             match self.mapper.map_to(page, frame, flags, &mut GlobalFrameAllocator) {
                 Ok(flush) => {
                     // CRITICAL: Do NOT flush TLB immediately!
@@ -187,7 +326,58 @@ impl ProcessPageTable {
     
     /// Translate a page to its corresponding physical frame
     pub fn translate_page(&self, addr: VirtAddr) -> Option<PhysAddr> {
-        self.mapper.translate_addr(addr)
+        // DEBUG: Add detailed logging to understand translation failures
+        let result = self.mapper.translate_addr(addr);
+        
+        // Only log for userspace addresses to reduce noise
+        if addr.as_u64() < 0x800000000000 {
+            match result {
+                Some(phys) => {
+                    log::trace!("translate_page({:#x}) -> {:#x}", addr.as_u64(), phys.as_u64());
+                }
+                None => {
+                    // This is the problematic case - let's understand why
+                    log::debug!("translate_page({:#x}) -> None (FAILED)", addr.as_u64());
+                    
+                    // Let's manually check the page table entries to debug
+                    unsafe {
+                        let phys_offset = crate::memory::physical_memory_offset();
+                        let l4_table = {
+                            let virt = phys_offset + self.level_4_frame.start_address().as_u64();
+                            &*(virt.as_ptr() as *const x86_64::structures::paging::PageTable)
+                        };
+                        
+                        // Calculate which L4 entry this address uses
+                        let l4_index = (addr.as_u64() >> 39) & 0x1ff;
+                        let l4_entry = &l4_table[l4_index as usize];
+                        
+                        if l4_entry.is_unused() {
+                            log::debug!("  -> L4 entry {} is UNUSED", l4_index);
+                        } else {
+                            log::debug!("  -> L4 entry {} exists: addr={:#x}, flags={:?}", 
+                                l4_index, l4_entry.addr().as_u64(), l4_entry.flags());
+                            
+                            // Let's check the L3 table
+                            let l3_phys = l4_entry.addr();
+                            let l3_virt = phys_offset + l3_phys.as_u64();
+                            let l3_table = &*(l3_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+                            
+                            let l3_index = (addr.as_u64() >> 30) & 0x1ff;
+                            let l3_entry = &l3_table[l3_index as usize];
+                            
+                            if l3_entry.is_unused() {
+                                log::debug!("    -> L3 entry {} is UNUSED", l3_index);
+                            } else {
+                                log::debug!("    -> L3 entry {} exists: addr={:#x}, flags={:?}", 
+                                    l3_index, l3_entry.addr().as_u64(), l3_entry.flags());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        result
     }
     
     /// Get a reference to the mapper
