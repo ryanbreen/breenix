@@ -109,8 +109,11 @@ impl ProcessPageTable {
             // For now, we accept that userspace mappings will be shared between
             // parent and child until the child calls exec(). This is not ideal
             // but avoids the double fault issue.
-            log::warn!("ProcessPageTable::new() - Entry 0 will share L3 table between processes");
-            log::warn!("ProcessPageTable::new() - Userspace isolation will happen during exec()");
+            // CRITICAL: We cannot isolate entry 0 because it contains kernel code
+            // The kernel is executing from addresses mapped through entry 0
+            // Instead, we'll clear userspace mappings after creation
+            log::warn!("ProcessPageTable::new() - Entry 0 contains kernel code, cannot isolate");
+            log::warn!("ProcessPageTable::new() - Will clear userspace mappings instead");
             
             /*
             if !level_4_table[0].is_unused() {
@@ -250,9 +253,10 @@ impl ProcessPageTable {
             mapper,
         };
         
-        // Skip unmapping since we've already isolated userspace mappings
-        // by creating new L3/L2 tables that don't include them
-        log::debug!("Userspace mappings already isolated via L3/L2 table creation");
+        // NOTE: We cannot clear entries like 170 because they might be in use by other processes
+        // Since we share L3 tables, clearing entries affects all processes
+        // Instead, we handle conflicts during map_page by checking if pages are already mapped
+        log::debug!("ProcessPageTable created with shared L3 tables - conflicts handled during mapping");
         
         Ok(new_page_table)
     }
@@ -283,6 +287,25 @@ impl ProcessPageTable {
                 return Err("Cannot map kernel addresses as user-accessible");
             }
             
+            // CRITICAL FIX: Check if page is already mapped before attempting to map
+            // This handles the case where L3 tables are shared between processes
+            if let Ok(existing_frame) = self.mapper.translate_page(page) {
+                if existing_frame == frame {
+                    // Page is already mapped to the correct frame, skip
+                    log::trace!("Page {:#x} already mapped to frame {:#x}, skipping", 
+                              page.start_address().as_u64(), frame.start_address().as_u64());
+                    return Ok(());
+                } else {
+                    // Page is mapped to a different frame, this is an error
+                    log::error!("Page {:#x} already mapped to different frame {:#x} (wanted {:#x})",
+                              page.start_address().as_u64(), 
+                              existing_frame.start_address().as_u64(),
+                              frame.start_address().as_u64());
+                    return Err("Page already mapped to different frame");
+                }
+            }
+            
+            // Page is not mapped, proceed with mapping
             match self.mapper.map_to(page, frame, flags, &mut GlobalFrameAllocator) {
                 Ok(flush) => {
                     // CRITICAL: Do NOT flush TLB immediately!
@@ -385,8 +408,39 @@ impl ProcessPageTable {
         &mut self.mapper
     }
     
+    /// Clear specific userspace mappings before loading a new program
+    /// 
+    /// WORKAROUND: Since we share L3 tables between processes, we need to
+    /// unmap pages that might conflict with the new program.
+    pub fn clear_userspace_for_exec(&mut self) -> Result<(), &'static str> {
+        log::debug!("clear_userspace_for_exec: Clearing common userspace regions");
+        
+        // Clear the standard userspace regions that programs typically use
+        // This prevents "page already mapped" errors when loading ELF files
+        
+        // 1. Clear code/data region (0x10000000 - 0x10010000)
+        let code_start = VirtAddr::new(0x10000000);
+        let code_end = VirtAddr::new(0x10010000);
+        match self.unmap_user_pages(code_start, code_end) {
+            Ok(()) => log::debug!("Cleared code region {:#x}-{:#x}", code_start, code_end),
+            Err(e) => log::warn!("Failed to clear code region: {}", e),
+        }
+        
+        // 2. Clear user stack region if it exists
+        let stack_bottom = VirtAddr::new(0x555555550000);
+        let stack_top = VirtAddr::new(0x555555572000);
+        match self.unmap_user_pages(stack_bottom, stack_top) {
+            Ok(()) => log::debug!("Cleared stack region {:#x}-{:#x}", stack_bottom, stack_top),
+            Err(e) => log::warn!("Failed to clear stack region: {}", e),
+        }
+        
+        Ok(())
+    }
+    
     /// Clear specific PML4 entries that might contain user mappings
     /// This is used during exec() to clear out old process mappings
+    /// 
+    /// NOTE: This doesn't work well when L3 tables are shared between processes
     pub fn clear_user_entries(&mut self) {
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();

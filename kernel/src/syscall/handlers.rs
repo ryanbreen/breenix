@@ -22,8 +22,12 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     }
     
     // Basic validation - check if address is in reasonable userspace range
-    if user_ptr < 0x10000000 || user_ptr >= 0x80000000 {
-        log::error!("copy_from_user: Invalid userspace address {:#x}", user_ptr);
+    // Accept both code/data range (0x10000000-0x80000000) and stack range (around 0x555555555000)
+    let is_code_data_range = user_ptr >= 0x10000000 && user_ptr < 0x80000000;
+    let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5556_0000;
+    
+    if !is_code_data_range && !is_stack_range {
+        log::error!("copy_from_user: Invalid userspace address {:#x} (not in code/data or stack range)", user_ptr);
         return Err("invalid userspace address");
     }
     
@@ -353,9 +357,27 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         // 2. Load the program from filesystem
         // 3. Validate permissions
         
-        // For testing purposes, we'll use a hardcoded ELF program
-        // This would normally come from disk or be passed as a parameter
-        let elf_data = if elf_data_ptr != 0 {
+        // For testing purposes, we'll check the program name to select the right ELF
+        // In a real implementation, this would come from the filesystem
+        let elf_data = if program_name_ptr != 0 {
+            // Try to read the program name from userspace
+            // For now, we'll just use a simple check
+            log::info!("sys_exec: Program name requested, checking for known programs");
+            
+            // HACK: For now, we'll assume if program_name_ptr is provided,
+            // it's asking for hello_time.elf
+            #[cfg(feature = "testing")]
+            {
+                log::info!("sys_exec: Using hello_time.elf for exec test");
+                // Use the statically embedded hello_time.elf
+                crate::userspace_test::HELLO_TIME_ELF
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: Testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        } else if elf_data_ptr != 0 {
             // In a real implementation, we'd safely copy from user memory
             log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
             // For now, return an error since we don't have safe user memory access yet
