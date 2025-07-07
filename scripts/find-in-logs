@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Script to search in the latest Breenix log file
+# Reads search parameters from /tmp/log-query.txt
+# Format: -AN "search string"
+# Example: -A50 "Creating user process"
+
+# Check if log query file exists
+if [ ! -f /tmp/log-query.txt ]; then
+    echo "Error: /tmp/log-query.txt not found"
+    echo "Create it with content like: -A10 \"search string\""
+    exit 1
+fi
+
+# Read the search parameters
+SEARCH_PARAMS=$(cat /tmp/log-query.txt)
+
+# Find the latest log file
+LATEST_LOG=$(ls -t logs/*.log 2>/dev/null | head -1)
+
+if [ -z "$LATEST_LOG" ]; then
+    echo "Error: No log files found in logs/ directory"
+    exit 1
+fi
+
+# Execute the grep command
+echo "Searching in: $LATEST_LOG"
+echo "Search params: $SEARCH_PARAMS"
+echo "---"
+
+# Use eval to properly handle the parameters including quotes
+eval "grep $SEARCH_PARAMS \"$LATEST_LOG\""

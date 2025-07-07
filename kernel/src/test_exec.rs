@@ -34,24 +34,57 @@ pub fn test_direct_execution() {
     #[cfg(not(feature = "testing"))]
     let hello_time_elf = &create_hello_world_elf();
     
+    log::info!("BASELINE TEST: Loading hello_time.elf, size: {} bytes", hello_time_elf.len());
+    log::info!("BASELINE TEST: First 16 bytes: {:02x?}", &hello_time_elf[..16.min(hello_time_elf.len())]);
+    
     match create_user_process(String::from("direct_baseline_test"), hello_time_elf) {
         Ok(pid) => {
             log::info!("✓ BASELINE: Created process with PID {}", pid.as_u64());
             log::info!("✓ BASELINE: Process should execute hello_time.elf and print 'Hello from userspace!'");
             
-            // Give it significant time to run and make syscalls
-            // Look for "Hello from userspace!" output in logs as success indicator
-            for _ in 0..5000000 {
-                core::hint::spin_loop();
-            }
-            
-            log::info!("✓ BASELINE: Direct execution test completed");
-            log::info!("    -> Check logs above for 'Hello from userspace!' output");
-            log::info!("    -> If missing, syscall infrastructure is broken");
+            // The process has been created and scheduled
+            // It will run asynchronously when the scheduler picks it up
+            log::info!("✓ BASELINE: Direct execution test scheduled");
+            log::info!("    -> Process will execute when scheduler runs it");
+            log::info!("    -> Look for 'Hello from userspace!' output in logs");
         }
         Err(e) => {
             log::error!("✗ BASELINE: Direct execution failed: {}", e);
             log::error!("    -> Cannot proceed with fork/exec testing until this works");
+        }
+    }
+}
+
+/// Test fork from userspace - validates that userspace processes can call fork()
+pub fn test_userspace_fork() {
+    log::info!("=== Testing fork() syscall from userspace ===");
+    log::info!("This test runs a userspace program that calls fork()");
+    
+    // Use the real fork_test.elf that calls fork() from userspace
+    #[cfg(feature = "testing")]
+    let fork_test_elf = crate::userspace_test::FORK_TEST_ELF;
+    #[cfg(not(feature = "testing"))]
+    let fork_test_elf = &create_fork_test_elf();
+    
+    log::info!("fork_test.elf size: {} bytes", fork_test_elf.len());
+    log::info!("FORK TEST: First 16 bytes: {:02x?}", &fork_test_elf[..16.min(fork_test_elf.len())]);
+    
+    match create_user_process(String::from("fork_test"), fork_test_elf) {
+        Ok(pid) => {
+            log::info!("✓ Created fork test process with PID {}", pid.as_u64());
+            log::info!("✓ Process should:");
+            log::info!("   1. Print its PID before fork");
+            log::info!("   2. Call fork() syscall from userspace");
+            log::info!("   3. Parent prints child PID, child prints 0");
+            log::info!("   4. Both processes do some work and exit");
+            
+            // The process has been created and scheduled
+            log::info!("✓ Fork test process scheduled");
+            log::info!("    -> Process will run fork_test.elf when scheduler picks it up");
+            log::info!("    -> Look for fork syscall output in logs");
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create fork test process: {}", e);
         }
     }
 }
@@ -445,6 +478,117 @@ pub fn test_exec_without_scheduling() {
             }
         }
     }
+}
+
+/// Create a fork test ELF that tests syscalls
+fn create_fork_test_elf() -> alloc::vec::Vec<u8> {
+    use alloc::vec::Vec;
+    
+    let mut elf = Vec::new();
+    
+    // ELF header (64 bytes)
+    elf.extend_from_slice(&[
+        0x7f, 0x45, 0x4c, 0x46, // Magic
+        0x02, 0x01, 0x01, 0x00, // 64-bit, little-endian, current version
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding
+        0x02, 0x00, // ET_EXEC
+        0x3e, 0x00, // EM_X86_64
+        0x01, 0x00, 0x00, 0x00, // version
+        0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // entry = 0x10000000
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // phoff
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // shoff
+        0x00, 0x00, 0x00, 0x00, // flags
+        0x40, 0x00, // ehsize
+        0x38, 0x00, // phentsize
+        0x02, 0x00, // phnum (2 segments - code and data)
+        0x00, 0x00, // shentsize
+        0x00, 0x00, // shnum
+        0x00, 0x00, // shstrndx
+    ]);
+    
+    // Program header 1 - code segment
+    elf.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, // PT_LOAD
+        0x05, 0x00, 0x00, 0x00, // flags (R+X)
+        0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // offset = 176
+        0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // vaddr = 0x10000000
+        0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // paddr
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // filesz = 128 bytes
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // memsz = 128 bytes
+        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // align
+    ]);
+    
+    // Program header 2 - data segment
+    elf.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, // PT_LOAD
+        0x06, 0x00, 0x00, 0x00, // flags (R+W)
+        0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // offset = 304 (176 + 128)
+        0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // vaddr = 0x10001000
+        0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // paddr
+        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // filesz = 32 bytes
+        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // memsz = 32 bytes
+        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // align
+    ]);
+    
+    // Code section at offset 176
+    let code = vec![
+        // Print "Before fork\n"
+        0xb8, 0x01, 0x00, 0x00, 0x00,                // mov eax, 1 (sys_write)
+        0xbf, 0x01, 0x00, 0x00, 0x00,                // mov edi, 1 (stdout)
+        0x48, 0xbe, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,  // mov rsi, 0x10001000 (string address)
+        0xba, 0x0c, 0x00, 0x00, 0x00,                // mov edx, 12 (string length)
+        0xcd, 0x80,                                   // int 0x80 (syscall)
+        
+        // Call fork()
+        0xb8, 0x05, 0x00, 0x00, 0x00,                // mov eax, 5 (sys_fork)
+        0xcd, 0x80,                                   // int 0x80 (syscall)
+        
+        // Test if we're parent or child
+        0x48, 0x85, 0xc0,                             // test rax, rax
+        0x74, 0x18,                                   // jz child_code (jump if zero)
+        
+        // Parent: print "Parent\n" and exit
+        0xb8, 0x01, 0x00, 0x00, 0x00,                // mov eax, 1 (sys_write)
+        0xbf, 0x01, 0x00, 0x00, 0x00,                // mov edi, 1 (stdout)
+        0x48, 0xbe, 0x0c, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,  // mov rsi, 0x1000100c
+        0xba, 0x07, 0x00, 0x00, 0x00,                // mov edx, 7
+        0xcd, 0x80,                                   // int 0x80
+        0xeb, 0x16,                                   // jmp exit_parent
+        
+        // Child: print "Child\n" and exit
+        0xb8, 0x01, 0x00, 0x00, 0x00,                // mov eax, 1 (sys_write)
+        0xbf, 0x01, 0x00, 0x00, 0x00,                // mov edi, 1 (stdout)
+        0x48, 0xbe, 0x13, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,  // mov rsi, 0x10001013
+        0xba, 0x06, 0x00, 0x00, 0x00,                // mov edx, 6
+        0xcd, 0x80,                                   // int 0x80
+        
+        // Exit
+        0xb8, 0x00, 0x00, 0x00, 0x00,                // mov eax, 0 (sys_exit)
+        0x31, 0xff,                                   // xor edi, edi (exit code 0)
+        0xcd, 0x80,                                   // int 0x80 (syscall)
+        
+        // Should never reach here
+        0xeb, 0xfe,                                   // jmp $ (infinite loop)
+    ];
+    
+    // Pad code section to 128 bytes
+    elf.extend_from_slice(&code);
+    for _ in code.len()..128 {
+        elf.push(0x90); // NOP padding
+    }
+    
+    // Data section at offset 304
+    elf.extend_from_slice(b"Before fork\n");
+    elf.extend_from_slice(b"Parent\n");
+    elf.extend_from_slice(b"Child\n");
+    
+    // Pad data section to 32 bytes
+    let data_len = 12 + 7 + 6; // lengths of strings
+    for _ in data_len..32 {
+        elf.push(0x00);
+    }
+    
+    elf
 }
 
 /// Create a minimal ELF without BSS segment for testing

@@ -19,6 +19,13 @@ static mut CURRENT_QUANTUM: u32 = TIME_QUANTUM;
 /// Timer interrupt handler - absolutely minimal work
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler() {
+    // Log the first few timer interrupts for debugging
+    static TIMER_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if count < 5 {
+        log::debug!("Timer interrupt #{}", count);
+    }
+    
     // Update global timer tick count
     crate::time::timer_interrupt();
     
@@ -30,6 +37,9 @@ pub extern "C" fn timer_interrupt_handler() {
         
         // If quantum expired, set need_resched flag
         if CURRENT_QUANTUM == 0 {
+            if count < 5 {
+                log::debug!("Timer quantum expired, setting need_resched");
+            }
             scheduler::set_need_resched();
             CURRENT_QUANTUM = TIME_QUANTUM; // Reset for next thread
         }
@@ -40,6 +50,10 @@ pub extern "C" fn timer_interrupt_handler() {
         super::PICS.lock()
             .notify_end_of_interrupt(super::InterruptIndex::Timer.as_u8());
     }
+    
+    if count < 5 {
+        log::debug!("Timer interrupt #{} complete", count);
+    }
 }
 
 /// Reset the quantum counter (called when switching threads)
@@ -47,4 +61,10 @@ pub fn reset_quantum() {
     unsafe {
         CURRENT_QUANTUM = TIME_QUANTUM;
     }
+}
+
+/// Timer interrupt handler for assembly entry point
+#[no_mangle]
+pub extern "C" fn timer_interrupt_handler_asm() {
+    timer_interrupt_handler();
 }
