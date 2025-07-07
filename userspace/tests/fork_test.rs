@@ -51,10 +51,15 @@ pub extern "C" fn _start() -> ! {
         let _ = sys_write(1, b"Calling fork()...\n");
         let fork_result = sys_fork();
         
+        // Debug: Print the actual fork result value
+        print_number("Fork returned value: ", fork_result);
+        
         // Get PID after fork
         let pid_after = sys_getpid();
         
+        // Add explicit debugging for fork result values
         if fork_result == 0 {
+            let _ = sys_write(1, b"DETECTED: fork_result == 0, this is the CHILD process\n");
             // Child process
             let _ = sys_write(1, b"CHILD: Fork returned 0\n");
             print_number("CHILD: PID after fork: ", pid_after);
@@ -70,7 +75,8 @@ pub extern "C" fn _start() -> ! {
             let _ = sys_write(1, b"CHILD: Exiting with code 42\n");
             sys_exit(42);
         } else {
-            // Parent process
+            // Parent process  
+            let _ = sys_write(1, b"DETECTED: fork_result != 0, this is the PARENT process\n");
             let _ = sys_write(1, b"PARENT: Fork returned child PID: ");
             print_number("", fork_result);
             print_number("PARENT: PID after fork: ", pid_after);
