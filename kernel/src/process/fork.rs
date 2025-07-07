@@ -7,7 +7,7 @@ use crate::process::{Process, ProcessId};
 use crate::task::thread::Thread;
 use crate::memory::process_memory::ProcessPageTable;
 use x86_64::VirtAddr;
-use x86_64::structures::paging::{Page, PageSize, Size4KiB, FrameAllocator};
+use x86_64::structures::paging::{Page, Size4KiB};
 
 /// Copy memory from parent process to child process
 /// 
@@ -165,11 +165,11 @@ pub fn copy_page_table_contents(
 fn copy_memory_region(
     start_addr: VirtAddr,
     end_addr: VirtAddr,
-    parent_page_table: &ProcessPageTable,
-    child_page_table: &mut ProcessPageTable,
+    _parent_page_table: &ProcessPageTable,
+    _child_page_table: &mut ProcessPageTable,
 ) -> Result<(), &'static str> {
-    let start_page: Page<Size4KiB> = Page::containing_address(start_addr);
-    let end_page: Page<Size4KiB> = Page::containing_address(end_addr - 1u64);
+    let _start_page: Page<Size4KiB> = Page::containing_address(start_addr);
+    let _end_page: Page<Size4KiB> = Page::containing_address(end_addr - 1u64);
     
     log::debug!("copy_memory_region: copying region {:#x}..{:#x}", start_addr, end_addr);
     

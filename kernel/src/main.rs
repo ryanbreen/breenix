@@ -481,12 +481,14 @@ fn test_syscalls() {
     log::info!("DEBUG: About to return from test_syscalls");
     return; // Temporarily skip syscall tests
     
-    log::info!("Testing system call infrastructure...");
-    
-    // Test 1: Verify INT 0x80 handler is installed
-    log::info!("Test 1: INT 0x80 handler installation");
-    let _pre_result = unsafe { syscall::SYSCALL_RESULT };
-    unsafe {
+    #[allow(unreachable_code)]
+    {
+        log::info!("Testing system call infrastructure...");
+        
+        // Test 1: Verify INT 0x80 handler is installed
+        log::info!("Test 1: INT 0x80 handler installation");
+        let _pre_result = unsafe { syscall::SYSCALL_RESULT };
+        unsafe {
         core::arch::asm!(
             "mov rax, 4",  // SyscallNumber::GetTime
             "int 0x80",
@@ -565,6 +567,7 @@ fn test_syscalls() {
     log::info!("DEBUG: All tests done, about to print final message");
     log::info!("System call infrastructure test completed successfully!");
     log::info!("DEBUG: About to return from test_syscalls");
+    }
 }
 
 /// Test basic threading functionality

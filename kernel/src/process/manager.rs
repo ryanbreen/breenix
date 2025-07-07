@@ -356,10 +356,14 @@ impl ProcessManager {
         }
         
         // Create a new page table and copy parent's program memory
+        log::debug!("fork_process: About to create child page table");
+        let child_page_table_result = crate::memory::process_memory::ProcessPageTable::new();
+        log::debug!("fork_process: ProcessPageTable::new() returned");
         let mut child_page_table = Box::new(
-            crate::memory::process_memory::ProcessPageTable::new()
+            child_page_table_result
                 .map_err(|_| "Failed to create child page table")?
         );
+        log::debug!("fork_process: Child page table created successfully");
         
         // DEBUG: Test parent page table after creating child
         log::debug!("AFTER creating child page table:");
@@ -430,8 +434,7 @@ impl ProcessManager {
             let kernel_stack_top = kernel_stack.top();
             
             // Store kernel_stack data for later use
-            let kernel_stack_bottom = kernel_stack.bottom();
-            let kernel_stack_top = kernel_stack.top();
+            let _kernel_stack_bottom = kernel_stack.bottom();
             
             // Store the kernel stack (we'll need to manage this properly later)
             // For now, we'll leak it - TODO: proper cleanup
@@ -600,7 +603,7 @@ impl ProcessManager {
         // Calculate stack range
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
         let stack_top = VirtAddr::new(USER_STACK_TOP);
-        let guard_page = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64 - 0x1000);
+        let _guard_page = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64 - 0x1000);
         
         // Map stack pages into the NEW process page table
         log::info!("exec_process: Mapping stack pages into new process page table");
