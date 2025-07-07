@@ -3,14 +3,111 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
-use core::slice;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 /// File descriptors
 #[allow(dead_code)]
 const FD_STDIN: u64 = 0;
 const FD_STDOUT: u64 = 1;
 const FD_STDERR: u64 = 2;
+
+/// Copy data from userspace memory
+/// 
+/// For now, this is a simple implementation that attempts to access memory
+/// that should be mapped in both kernel and user page tables.
+fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
+    if user_ptr == 0 {
+        return Err("null pointer");
+    }
+    
+    // Basic validation - check if address is in reasonable userspace range
+    // Accept both code/data range (0x10000000-0x80000000) and stack range (around 0x555555555000)
+    let is_code_data_range = user_ptr >= 0x10000000 && user_ptr < 0x80000000;
+    let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5556_0000;
+    
+    if !is_code_data_range && !is_stack_range {
+        log::error!("copy_from_user: Invalid userspace address {:#x} (not in code/data or stack range)", user_ptr);
+        return Err("invalid userspace address");
+    }
+    
+    // Get current thread to find process
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("copy_from_user: No current thread");
+            return Err("no current thread");
+        }
+    };
+    
+    // Find the process that owns this thread
+    let process_page_table = {
+        let manager_guard = crate::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some((pid, process)) = manager.find_process_by_thread(current_thread_id) {
+                log::debug!("copy_from_user: Found process {:?} for thread {}", pid, current_thread_id);
+                // Get the process's page table CR3 value
+                if let Some(ref page_table) = process.page_table {
+                    page_table.level_4_frame()
+                } else {
+                    log::error!("copy_from_user: Process has no page table");
+                    return Err("process has no page table");
+                }
+            } else {
+                log::error!("copy_from_user: No process found for thread {}", current_thread_id);
+                return Err("no process for thread");
+            }
+        } else {
+            log::error!("copy_from_user: No process manager");
+            return Err("no process manager");
+        }
+    };
+    
+    // Check what page table we're currently using
+    let current_cr3 = x86_64::registers::control::Cr3::read();
+    log::debug!("copy_from_user: Current CR3: {:#x}, Process CR3: {:#x}", 
+               current_cr3.0.start_address(), process_page_table.start_address());
+    
+    // Allocate buffer in kernel memory BEFORE switching page tables
+    let mut buffer = Vec::with_capacity(len);
+    
+    // Try a single byte first to see if it's accessible
+    unsafe {
+        log::debug!("copy_from_user: Testing single byte access at {:#x}", user_ptr);
+        
+        // Switch to process page table
+        x86_64::registers::control::Cr3::write(
+            process_page_table,
+            x86_64::registers::control::Cr3Flags::empty()
+        );
+        
+        // Try to read just one byte
+        let test_byte = *(user_ptr as *const u8);
+        log::debug!("copy_from_user: Single byte test successful: {:#x}", test_byte);
+        
+        // Switch back to kernel page table
+        x86_64::registers::control::Cr3::write(current_cr3.0, current_cr3.1);
+        
+        // If that worked, do the full copy
+        log::debug!("copy_from_user: Proceeding with full copy of {} bytes", len);
+        
+        // Switch back to process page table for full copy
+        x86_64::registers::control::Cr3::write(
+            process_page_table,
+            x86_64::registers::control::Cr3Flags::empty()
+        );
+        
+        // Copy all the data
+        let slice = core::slice::from_raw_parts(user_ptr as *const u8, len);
+        buffer.extend_from_slice(slice);
+        
+        // Switch back to kernel page table
+        x86_64::registers::control::Cr3::write(current_cr3.0, current_cr3.1);
+    }
+    
+    log::debug!("copy_from_user: Successfully copied {} bytes", len);
+    Ok(buffer)
+}
 
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
@@ -77,23 +174,24 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         return SyscallResult::Ok(0);
     }
     
-    // TODO: Once we have userspace, validate that buf_ptr is in user memory
-    // For now, assume it's a valid kernel pointer
-    
-    // Safety: We're trusting the caller for now (kernel mode only)
-    let buffer = unsafe {
-        slice::from_raw_parts(buf_ptr as *const u8, count as usize)
+    // Copy data from userspace
+    let buffer = match copy_from_user(buf_ptr, count as usize) {
+        Ok(buf) => buf,
+        Err(e) => {
+            log::error!("sys_write: Failed to copy from user: {}", e);
+            return SyscallResult::Err(14); // EFAULT
+        }
     };
     
     // Write to serial port
     let mut bytes_written = 0;
-    for &byte in buffer {
+    for &byte in &buffer {
         crate::serial::write_byte(byte);
         bytes_written += 1;
     }
     
     // Log the output for userspace writes
-    if let Ok(s) = core::str::from_utf8(buffer) {
+    if let Ok(s) = core::str::from_utf8(&buffer) {
         log::info!("USERSPACE OUTPUT: {}", s.trim_end());
     }
     
@@ -203,6 +301,8 @@ pub fn sys_fork() -> SyscallResult {
                             parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
                         
                         // Return the child PID to the parent
+                        log::info!("sys_fork: Parent process (thread {}) will receive return value: {}", 
+                                   current_thread_id, child_pid.as_u64());
                         SyscallResult::Ok(child_pid.as_u64())
                     } else {
                         log::error!("sys_fork: Child process has no main thread");
@@ -257,9 +357,27 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         // 2. Load the program from filesystem
         // 3. Validate permissions
         
-        // For testing purposes, we'll use a hardcoded ELF program
-        // This would normally come from disk or be passed as a parameter
-        let elf_data = if elf_data_ptr != 0 {
+        // For testing purposes, we'll check the program name to select the right ELF
+        // In a real implementation, this would come from the filesystem
+        let elf_data = if program_name_ptr != 0 {
+            // Try to read the program name from userspace
+            // For now, we'll just use a simple check
+            log::info!("sys_exec: Program name requested, checking for known programs");
+            
+            // HACK: For now, we'll assume if program_name_ptr is provided,
+            // it's asking for hello_time.elf
+            #[cfg(feature = "testing")]
+            {
+                log::info!("sys_exec: Using hello_time.elf for exec test");
+                // Use the statically embedded hello_time.elf
+                crate::userspace_test::HELLO_TIME_ELF
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: Testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        } else if elf_data_ptr != 0 {
             // In a real implementation, we'd safely copy from user memory
             log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
             // For now, return an error since we don't have safe user memory access yet

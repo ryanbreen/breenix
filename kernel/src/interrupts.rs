@@ -60,10 +60,8 @@ pub fn init_idt() {
         
         // Breakpoint handler - must be callable from userspace
         // Set DPL=3 to allow INT3 from Ring 3
-        unsafe {
-            idt.breakpoint.set_handler_fn(breakpoint_handler)
-                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
-        }
+        idt.breakpoint.set_handler_fn(breakpoint_handler)
+            .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
@@ -82,12 +80,15 @@ pub fn init_idt() {
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
         
         // System call handler (INT 0x80)
-        // Use Rust handler - it works for both kernel and userspace calls
+        // Use assembly handler for proper syscall dispatching
+        extern "C" {
+            fn syscall_entry();
+        }
         unsafe {
-            idt[SYSCALL_INTERRUPT_ID].set_handler_fn(crate::syscall::syscall_handler)
+            idt[SYSCALL_INTERRUPT_ID].set_handler_addr(x86_64::VirtAddr::new(syscall_entry as u64))
                 .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         }
-        log::info!("Syscall handler configured with Rust function");
+        log::info!("Syscall handler configured with assembly entry point");
         
         // Set up a generic handler for all unhandled interrupts
         for i in 32..=255 {
@@ -265,7 +266,7 @@ extern "x86-interrupt" fn page_fault_handler(
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     // Get the interrupt number from the stack
     // Note: This is a bit hacky but helps with debugging
-    let interrupt_num = unsafe {
+    let _interrupt_num = {
         // The interrupt number is pushed by the CPU before calling the handler
         // We need to look at the return address to figure out which IDT entry was used
         0 // Placeholder - can't easily get interrupt number in generic handler
