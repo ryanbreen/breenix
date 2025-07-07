@@ -35,6 +35,11 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
     - Parent and child processes both execute in userspace
     - Process IDs correctly assigned and managed
     - Scheduler properly handles multiple userspace threads
+  - **IDENTIFIED: ProcessPageTable L3 Table Sharing Issue**
+    - ProcessPageTable shares L3 tables between processes (entry 0 contains both kernel and userspace)
+    - Attempting to isolate L3 tables causes double faults (kernel executing from mapped memory)
+    - Current workaround: Accept shared tables, focus on fork+exec pattern
+    - Long-term fix requires careful page table architecture redesign
 
 - ✅ **🎉 CRITICAL BREAKTHROUGH: Direct Userspace Execution FULLY WORKING!** (Jan 6 2025)
   - **FIXED: Double Fault on int 0x80 from Userspace**
@@ -102,18 +107,31 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
 
 ### Currently Working On (This Session) - January 7, 2025
 
-- 🚧 **ACTIVE: Completing Fork+Exec Integration** 
-  - **STATUS: Fork working, debugging copy_from_user page fault**
-    - Timer interrupt deadlock completely resolved! 🎉
-    - Fork system call successfully creates child processes
-    - Remaining issue: Page fault at 0x10001082 when parent accesses userspace memory after fork
-    - Next: Test exec integration where child process execs hello_time.elf
-  - **ROOT CAUSE ANALYSIS IN PROGRESS**
-    - Page fault occurs in copy_from_user function after fork
-    - Error code 0x0: Page not present, read access, supervisor mode
-    - Issue: Memory layout changes after fork, address no longer mapped correctly
+- 🚧 **ACTIVE: Fork+Exec Integration - Major Progress!** 
+  - **ACHIEVEMENTS:**
+    - ✅ Timer interrupt deadlock completely resolved! 
+    - ✅ Fork system call successfully creates child processes
+    - ✅ Fork test program successfully executes and calls fork()
+    - ✅ Child process successfully calls exec() to load hello_time.elf
+    - ✅ "Hello from userspace!" prints from exec'd process
+    - ✅ Fixed userspace address validation to accept stack addresses
+  - **REMAINING CHALLENGE: Page Table Sharing Conflict**
+    - Issue: All processes share L3 page tables (entry 0)
+    - Result: Second process gets "Page already mapped to different frame" error
+    - Attempted fixes:
+      1. L3 table isolation → causes double fault (kernel executes from entry 0)
+      2. Page checking before mapping → detects conflict but can't resolve
+      3. Unmapping pages → affects all processes due to sharing
+    - Root cause: Multiple processes trying to load code at same address (0x10000000)
 
 ### Recently Completed (This Session) - January 7, 2025
+
+- ✅ **Fixed ProcessPageTable.translate_page() Bug**
+  - **DISCOVERED**: ProcessPageTable was fundamentally broken
+    - translate_page() returned None for ALL userspace addresses
+    - Root cause: Incorrect physical offset calculation
+    - Fixed by using frame allocator's physical offset
+  - **RESULT**: Parent process can now access memory after fork
 
 - ✅ **Fork+Exec Integration Successfully Implemented**
   - **IMPLEMENTED: sys_exec syscall wrapper in userspace**

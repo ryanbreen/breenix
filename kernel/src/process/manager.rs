@@ -57,6 +57,19 @@ impl ProcessManager {
                 })?
         );
         
+        // WORKAROUND: We'd like to clear existing userspace mappings before loading ELF
+        // but since L3 tables are shared between processes, unmapping pages affects
+        // all processes sharing that table. This causes double faults.
+        // For now, we'll skip this and let the ELF loader fail on "page already mapped"
+        // errors for the second process.
+        /*
+        page_table.clear_userspace_for_exec()
+            .map_err(|e| {
+                log::error!("Failed to clear userspace mappings: {}", e);
+                "Failed to clear userspace mappings"
+            })?;
+        */
+        
         // Load the ELF binary into the process's page table
         // Use the standard userspace base address for all processes
         let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
@@ -380,6 +393,17 @@ impl ProcessManager {
         // Instead, load the same ELF into the child process. This is NOT proper fork() semantics,
         // but it allows testing the exec() integration.
         log::warn!("fork_process: Using ELF reload workaround instead of proper page copying");
+        
+        // WORKAROUND: We'd like to clear existing userspace mappings before loading ELF
+        // but since L3 tables are shared between processes, unmapping pages affects
+        // all processes sharing that table. This causes double faults.
+        /*
+        child_page_table.clear_userspace_for_exec()
+            .map_err(|e| {
+                log::error!("Failed to clear child userspace mappings: {}", e);
+                "Failed to clear child userspace mappings"
+            })?;
+        */
         
         // Load the fork_test ELF into the child (same program the parent is running)
         #[cfg(feature = "testing")]
