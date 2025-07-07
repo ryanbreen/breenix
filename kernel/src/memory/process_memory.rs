@@ -21,128 +21,7 @@ pub struct ProcessPageTable {
 }
 
 impl ProcessPageTable {
-    /// Selectively copy only essential kernel mappings from PML4 entry 0
-    /// 
-    /// Entry 0 covers virtual addresses 0x000000000000 - 0x00007FFFFFFFFF (512GB)
-    /// This contains both kernel code and potential userspace, but we only want kernel code.
-    fn selective_copy_entry_0(
-        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
-        phys_offset: VirtAddr
-    ) -> Result<PhysFrame, &'static str> {
-        log::debug!("Selectively copying PML4 entry 0 with L3 addr {:#x}", source_entry.addr().as_u64());
-        
-        // Allocate a new L3 table
-        let new_l3_frame = allocate_frame()
-            .ok_or("Failed to allocate frame for L3 table")?;
-        
-        // Map the new L3 table
-        let new_l3_virt = phys_offset + new_l3_frame.start_address().as_u64();
-        let new_l3_table = unsafe {
-            &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable)
-        };
-        
-        // Clear the new L3 table
-        new_l3_table.zero();
-        
-        // Map the source L3 table
-        let source_l3_virt = phys_offset + source_entry.addr().as_u64();
-        let source_l3_table = unsafe {
-            &*(source_l3_virt.as_ptr() as *const PageTable)
-        };
-        
-        // Only copy L3 entry 0, which covers 0x000000000000 - 0x00003FFFFFFF (1GB)
-        // This typically contains the kernel code loaded by the bootloader
-        // We skip all other L3 entries to avoid bootloader huge page mappings
-        if !source_l3_table[0].is_unused() {
-            log::debug!("Copying L3 entry 0 which contains kernel code");
-            
-            // Check if this is a huge page (1GB page at L3 level)
-            if source_l3_table[0].flags().contains(PageTableFlags::HUGE_PAGE) {
-                // Huge page covering the first 1GB - copy it directly since it contains kernel code
-                new_l3_table[0] = source_l3_table[0].clone();
-                log::debug!("Copied L3 huge page entry 0 (kernel code region)");
-            } else {
-                // Regular L3 entry pointing to L2 table - copy only kernel portions
-                match Self::selective_copy_l3_entry_0(&source_l3_table[0], phys_offset) {
-                    Ok(new_l2_frame) => {
-                        let flags = source_l3_table[0].flags();
-                        new_l3_table[0].set_addr(new_l2_frame.start_address(), flags);
-                        log::debug!("Selectively copied L3 entry 0 -> new L2 frame {:#x}", 
-                            new_l2_frame.start_address().as_u64());
-                    }
-                    Err(e) => {
-                        log::error!("Failed to selectively copy L3 entry 0: {}", e);
-                        return Err("Failed to copy kernel code region");
-                    }
-                }
-            }
-        }
-        
-        // Skip all other L3 entries (1-511) to avoid copying bootloader mappings
-        log::debug!("Skipped L3 entries 1-511 to avoid bootloader mappings");
-        
-        log::debug!("Successfully created selective copy of PML4 entry 0 to new L3 frame {:#x}", 
-            new_l3_frame.start_address().as_u64());
-        
-        Ok(new_l3_frame)
-    }
-    
-    /// Selectively copy L3 entry 0, which covers the first 1GB (kernel code region)
-    fn selective_copy_l3_entry_0(
-        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
-        phys_offset: VirtAddr
-    ) -> Result<PhysFrame, &'static str> {
-        // Allocate a new L2 table
-        let new_l2_frame = allocate_frame()
-            .ok_or("Failed to allocate frame for L2 table")?;
-        
-        // Map the new L2 table
-        let new_l2_virt = phys_offset + new_l2_frame.start_address().as_u64();
-        let new_l2_table = unsafe {
-            &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable)
-        };
-        
-        // Clear the new L2 table
-        new_l2_table.zero();
-        
-        // Map the source L2 table
-        let source_l2_virt = phys_offset + source_entry.addr().as_u64();
-        let source_l2_table = unsafe {
-            &*(source_l2_virt.as_ptr() as *const PageTable)
-        };
-        
-        // Only copy L2 entries that contain kernel code (typically the first few entries)
-        // Each L2 entry covers 2MB, so entries 0-7 cover the first 16MB which usually contains kernel
-        for i in 0..8 {
-            if !source_l2_table[i].is_unused() {
-                let l2_virt_addr = (i as u64) * 0x200000; // 2MB per L2 entry
-                
-                // Check if this is a huge page (2MB page at L2 level)
-                if source_l2_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
-                    // Copy kernel huge pages (first 16MB typically contains kernel)
-                    new_l2_table[i] = source_l2_table[i].clone();
-                    log::debug!("Copied kernel L2 huge page entry {} (addr {:#x})", i, l2_virt_addr);
-                } else {
-                    // Regular L2 entry pointing to L1 table - deep copy it
-                    match Self::deep_copy_l2_entry(&source_l2_table[i], i, phys_offset) {
-                        Ok(new_l1_frame) => {
-                            let flags = source_l2_table[i].flags();
-                            new_l2_table[i].set_addr(new_l1_frame.start_address(), flags);
-                            log::debug!("Deep copied kernel L2 entry {} -> new L1 frame {:#x}", 
-                                i, new_l1_frame.start_address().as_u64());
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to deep copy kernel L2 entry {}: {}", i, e);
-                            // Continue - some entries might not be essential
-                        }
-                    }
-                }
-            }
-        }
-        
-        log::debug!("Selectively copied kernel portions of L3 entry 0 (first 16MB)");
-        Ok(new_l2_frame)
-    }
+
     
     /// Deep copy a PML4 entry, creating independent L3/L2/L1 tables
     /// 
@@ -375,42 +254,35 @@ impl ProcessPageTable {
             log::debug!("Copying all kernel page table entries...");
             let mut copied_count = 0;
             
-            // DEEP COPY: Create completely independent page tables for proper isolation
-            // This is the OS-standard approach - each process gets its own L3/L2/L1 tables
-            // Only the actual physical pages (at L1 level) are shared for kernel code
+            // PERFORMANCE-OPTIMIZED APPROACH: Share L3 tables for speed, handle conflicts intelligently
+            // This avoids the deep copying performance problem while enabling multiple processes
+            // 
+            // Strategy:
+            // 1. Share all essential kernel mappings (fast - no deep copying)
+            // 2. Handle mapping conflicts in ELF loader by checking existing mappings
+            // 3. Only allow same-frame mappings for shared pages
             
             for i in 0..512 {
                 if !current_l4_table[i].is_unused() {
                     if i >= 256 {
-                        // Kernel space entries (0x800000000000 and above) - can be shared safely
+                        // Kernel space entries (0x800000000000 and above) - shared safely
                         level_4_table[i] = current_l4_table[i].clone();
                         copied_count += 1;
                         
                         log::debug!("Shared kernel PML4 entry {}: addr={:#x}, flags={:?}", 
                             i, current_l4_table[i].addr().as_u64(), current_l4_table[i].flags());
-                    } else if i == 0 {
-                        // SIMPLIFIED APPROACH: Only copy entry 0 which contains essential kernel code
-                        // We'll selectively copy just the kernel portions we need
-                        // This avoids the performance issue of copying hundreds of bootloader mappings
+                    } else if (i >= 2 && i <= 7) || i == 136 {
+                        // Essential low memory kernel entries - shared for performance
+                        // These contain kernel code needed for syscalls and userspace execution
+                        // CRITICAL: Skip entry 0 as it contains userspace mappings!
+                        level_4_table[i] = current_l4_table[i].clone();
+                        copied_count += 1;
                         
-                        match Self::selective_copy_entry_0(&current_l4_table[i], phys_offset) {
-                            Ok(new_l3_frame) => {
-                                let flags = current_l4_table[i].flags();
-                                level_4_table[i].set_addr(new_l3_frame.start_address(), flags);
-                                copied_count += 1;
-                                
-                                log::debug!("Selectively copied PML4 entry 0: old L3 addr={:#x}, new L3 addr={:#x}", 
-                                    current_l4_table[i].addr().as_u64(), new_l3_frame.start_address().as_u64());
-                            }
-                            Err(e) => {
-                                log::error!("Failed to selectively copy PML4 entry 0: {}", e);
-                                return Err("Failed to copy essential kernel mappings");
-                            }
-                        }
+                        log::debug!("Shared essential kernel PML4 entry {}: addr={:#x}, flags={:?}", 
+                            i, current_l4_table[i].addr().as_u64(), current_l4_table[i].flags());
                     } else {
-                        // Skip all other user space entries - processes start with clean address spaces
-                        // Any needed mappings will be added during ELF loading or when explicitly mapped
-                        log::debug!("Skipped PML4 entry {} (clean address space for isolation)", i);
+                        // Skip other user space entries for clean address spaces
+                        log::debug!("Skipped PML4 entry {} (clean address space)", i);
                     }
                 }
             }
