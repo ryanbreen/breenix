@@ -29,15 +29,33 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
     
+    // log::debug!("check_need_resched_and_switch: Need resched is true, proceeding...");
+    
     // Rate limit the debug message
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if count % 30 == 0 {
+    if count < 5 || count % 30 == 0 {
         log::debug!("check_need_resched_and_switch: Reschedule needed (count: {})", count);
     }
     
     // Perform scheduling decision
-    if let Some((old_thread_id, new_thread_id)) = scheduler::schedule() {
+    let schedule_result = scheduler::schedule();
+    // Always log the first few results
+    if count < 10 || schedule_result.is_some() {
+        log::info!("scheduler::schedule() returned: {:?} (count: {})", schedule_result, count);
+    } else if count % 30 == 0 {
+        log::debug!("scheduler::schedule() returned: {:?} (count: {})", schedule_result, count);
+    }
+    
+    // Always log if we didn't get a schedule result
+    if schedule_result.is_none() {
+        if count < 20 {
+            log::warn!("scheduler::schedule() returned None - no thread switch available (count: {})", count);
+        }
+        // Early return if no scheduling decision
+        return;
+    }
+    if let Some((old_thread_id, new_thread_id)) = schedule_result {
         if old_thread_id == new_thread_id {
             // Same thread continues running
             return;
@@ -47,6 +65,7 @@ pub extern "C" fn check_need_resched_and_switch(
         
         // Check if we're coming from userspace
         let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
+        log::debug!("Context switch: from_userspace={}, CS={:#x}", from_userspace, interrupt_frame.code_segment.0);
         
         // Save current thread's context if coming from userspace
         if from_userspace {
@@ -124,6 +143,14 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             frame.stack_segment = crate::gdt::kernel_data_selector();
             frame.instruction_pointer = x86_64::VirtAddr::new(idle_loop as *const () as u64);
             frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+            
+            // CRITICAL: Must set kernel stack pointer when returning to idle!
+            // The idle thread runs in kernel mode and needs a kernel stack.
+            // Get the kernel stack pointer from the current CPU stack
+            let current_rsp: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+            // Add some space to account for the interrupt frame
+            frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
         });
         
         // Clear any pending page table switch - we're staying in kernel mode
@@ -194,12 +221,17 @@ fn restore_userspace_thread_context(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    log::info!("restore_userspace_thread_context: Restoring thread {}", thread_id);
+    
     // CRITICAL: Use try_manager in interrupt context to avoid deadlock
     // Never use with_process_manager() from interrupt handlers!
     if let Some(mut manager_guard) = crate::process::try_manager() {
+        log::debug!("Got process manager lock");
         if let Some(ref mut manager) = *manager_guard {
             if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                log::debug!("Found process {} for thread {}", pid.as_u64(), thread_id);
                 if let Some(ref mut thread) = process.main_thread {
+                    log::debug!("Thread privilege: {:?}", thread.privilege);
                     if thread.privilege == ThreadPrivilege::User {
                         restore_userspace_context(thread, interrupt_frame, saved_regs);
                         log::trace!("Restored context for process {} (thread {})", pid.as_u64(), thread_id);

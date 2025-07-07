@@ -46,7 +46,7 @@ class BreenixRunner:
         
         # Build the cargo command
         bin_name = f"qemu-{self.mode}"
-        cmd = ["cargo", "run", "--release", "--bin", bin_name, "--"]
+        cmd = ["cargo", "run", "--release", "--features", "testing", "--bin", bin_name, "--"]
         
         # Add QEMU arguments
         # Use stdio for serial communication to capture logs properly

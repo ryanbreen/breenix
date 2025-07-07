@@ -75,22 +75,39 @@ impl Scheduler {
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
-        // Only log scheduling events when something interesting happens
-        // log::trace!("Schedule called: current={:?}, ready_queue={:?}", 
-        //            self.current_thread, self.ready_queue);
+        // Always log the first few scheduling decisions
+        static SCHEDULE_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        
+        // Log the first few scheduling decisions
+        if count < 10 {
+            log::info!("schedule() called #{}: current={:?}, ready_queue={:?}, idle_thread={}", 
+                      count, self.current_thread, self.ready_queue, self.idle_thread);
+        }
         
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
-                if let Some(current) = self.get_thread_mut(current_id) {
-                    // Check if thread is NOT terminated (Running threads can go back to Ready)
-                    if current.state != ThreadState::Terminated {
+                // First check the state and update it
+                let (is_terminated, prev_state) = if let Some(current) = self.get_thread_mut(current_id) {
+                    let was_terminated = current.state == ThreadState::Terminated;
+                    let prev = current.state;
+                    if !was_terminated {
                         current.set_ready();
-                        self.ready_queue.push_back(current_id);
-                        // log::trace!("Put thread {} back in ready queue", current_id);
-                    } else {
-                        log::info!("Thread {} is terminated, not putting back in ready queue", current_id);
                     }
+                    (was_terminated, prev)
+                } else {
+                    (true, ThreadState::Terminated)
+                };
+                
+                // Then modify the ready queue
+                if !is_terminated {
+                    self.ready_queue.push_back(current_id);
+                    if count < 10 {
+                        log::info!("Put thread {} back in ready queue, state was {:?}", current_id, prev_state);
+                    }
+                } else {
+                    log::info!("Thread {} is terminated, not putting back in ready queue", current_id);
                 }
             }
         }
@@ -99,21 +116,33 @@ impl Scheduler {
         let mut next_thread_id = self.ready_queue.pop_front()
             .or(Some(self.idle_thread))?; // Use idle thread if nothing ready
         
+        if count < 10 {
+            log::info!("Next thread from queue: {}, ready_queue after pop: {:?}", 
+                      next_thread_id, self.ready_queue);
+        }
+        
         // Important: Don't skip if it's the same thread when there are other threads waiting
         // This was causing the issue where yielding wouldn't switch to other ready threads
         if Some(next_thread_id) == self.current_thread && !self.ready_queue.is_empty() {
             // Put current thread back and get the next one
             self.ready_queue.push_back(next_thread_id);
             next_thread_id = self.ready_queue.pop_front()?;
-            log::debug!("Forced switch from {} to {} (other threads waiting)", 
+            log::info!("Forced switch from {} to {} (other threads waiting)", 
                        self.current_thread.unwrap_or(0), next_thread_id);
         } else if Some(next_thread_id) == self.current_thread {
             // No other threads ready, stay with current
+            if count < 10 {
+                log::info!("Staying with current thread {} (no other threads ready)", next_thread_id);
+            }
             return None;
         }
         
         let old_thread_id = self.current_thread?;
         self.current_thread = Some(next_thread_id);
+        
+        if count < 10 {
+            log::info!("Switching from thread {} to thread {}", old_thread_id, next_thread_id);
+        }
         
         // Mark new thread as running
         if let Some(next) = self.get_thread_mut(next_thread_id) {

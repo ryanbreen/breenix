@@ -107,23 +107,35 @@ impl Log for CombinedLogger {
             let target = record.target();
             let args = record.args();
 
-            let state = self.state.lock();
-            
-            // Get current timestamp if available
-            let timestamp = if let Ok(rtc_time) = crate::time::rtc::read_rtc_time() {
-                let elapsed = crate::time::time_since_start();
-                rtc_time + elapsed.seconds
-            } else {
-                0
+            // Use try_lock to avoid deadlocks from interrupt context
+            let state = match self.state.try_lock() {
+                Some(state) => state,
+                None => {
+                    // If we can't acquire the lock, fall back to basic serial output
+                    // This prevents deadlocks when logging from interrupt handlers
+                    serial_println!("[INTR] {}: {}", target, args);
+                    return;
+                }
             };
+            
+            // Get current timestamp if available  
+            // TEMPORARILY DISABLE TIMESTAMPS TO DEBUG TIMER INTERRUPT HANG
+            let timestamp = 0;
             
             match *state {
                 LoggerState::Buffering => {
                     // Buffer the message without timestamp (we don't have time yet)
                     drop(state); // Release lock before acquiring buffer lock
-                    let mut buffer = self.buffer.lock();
-                    // Format directly into buffer
-                    let _ = write!(&mut *buffer, "[{:>5}] {}: {}\n", level, target, args);
+                    match self.buffer.try_lock() {
+                        Some(mut buffer) => {
+                            // Format directly into buffer
+                            let _ = write!(&mut *buffer, "[{:>5}] {}: {}\n", level, target, args);
+                        }
+                        None => {
+                            // Fall back to serial if buffer is locked
+                            serial_println!("[BUFF] {}: {}", target, args);
+                        }
+                    }
                 }
                 LoggerState::SerialReady => {
                     // Output to serial only with timestamp if available

@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Script to check ELF file contents
+# Usage: ./scripts/check-elf <elf-file>
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <elf-file>"
+    exit 1
+fi
+
+ELF_FILE=$1
+
+if [ ! -f "$ELF_FILE" ]; then
+    echo "Error: File $ELF_FILE not found"
+    exit 1
+fi
+
+echo "=== ELF Header Info ==="
+echo "File: $ELF_FILE"
+echo "Size: $(ls -lh "$ELF_FILE" | awk '{print $5}')"
+echo "Modified: $(ls -lh "$ELF_FILE" | awk '{print $6, $7, $8}')"
+echo
+
+echo "=== First 64 bytes (hex) ==="
+hexdump -C "$ELF_FILE" | head -4
+echo
+
+echo "=== Code section at 0x1000 ==="
+# hexdump doesn't support -s on macOS, use dd instead
+dd if="$ELF_FILE" bs=1 skip=4096 count=64 2>/dev/null | hexdump -C
+echo
+
+echo "=== Disassembly of entry point ==="
+if command -v objdump >/dev/null 2>&1; then
+    objdump -d "$ELF_FILE" | head -30
+else
+    echo "objdump not available"
+fi
