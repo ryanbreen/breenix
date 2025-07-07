@@ -4,6 +4,18 @@
 
 Breenix is an x86_64 operating system kernel written in Rust. **This is NOT a toy or learning project - we are building a production-quality operating system for the long haul.**
 
+## 🚨 CRITICAL COMMAND LINE POLICY 🚨
+
+**NEVER generate unique bash commands that require user approval**
+
+Claude Code MUST use reusable utilities and scripts instead of creating new command lines each time:
+- Use `./scripts/find-in-logs` for ALL log searching (configure via `/tmp/log-query.txt`)
+- Create reusable scripts for common operations rather than inline commands
+- Avoid commands with varying parameters that trigger approval prompts
+- If a new utility is needed, create it as a script FIRST, then use it consistently
+
+This policy ensures smooth workflow without constant approval interruptions.
+
 ## 🚨 CRITICAL DESIGN PRINCIPLE 🚨
 
 **ALWAYS FOLLOW OS-STANDARD PRACTICES - NO SHORTCUTS**
