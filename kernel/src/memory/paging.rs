@@ -1,8 +1,7 @@
-use x86_64::structures::paging::{OffsetPageTable, PageTable, PageTableFlags, Page, Size4KiB, Mapper, PhysFrame};
+use x86_64::structures::paging::{OffsetPageTable, PageTable};
 use x86_64::VirtAddr;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
-use crate::task::thread::ThreadPrivilege;
 
 /// The global page table mapper
 static PAGE_TABLE_MAPPER: OnceCell<Mutex<OffsetPageTable<'static>>> = OnceCell::uninit();
@@ -62,45 +61,3 @@ pub unsafe fn get_mapper_with_offset(physical_memory_offset: VirtAddr) -> Offset
     OffsetPageTable::new(level_4_table, physical_memory_offset)
 }
 
-/// Base address for the kernel/user split
-/// Addresses >= this value are kernel-only
-pub const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
-
-/// Check if an address is in kernel space
-pub fn is_kernel_address(addr: VirtAddr) -> bool {
-    addr.as_u64() >= KERNEL_BASE
-}
-
-/// Get appropriate page flags based on privilege level
-pub fn get_page_flags(privilege: ThreadPrivilege, writable: bool) -> PageTableFlags {
-    let mut flags = PageTableFlags::PRESENT;
-    
-    if writable {
-        flags |= PageTableFlags::WRITABLE;
-    }
-    
-    match privilege {
-        ThreadPrivilege::User => flags | PageTableFlags::USER_ACCESSIBLE,
-        ThreadPrivilege::Kernel => flags,
-    }
-}
-
-/// Map a single page with appropriate permissions
-/// 
-/// # Safety
-/// Caller must ensure the mapper is valid and the frame is not already mapped
-pub unsafe fn map_page(
-    mapper: &mut OffsetPageTable,
-    page: Page<Size4KiB>,
-    frame: PhysFrame<Size4KiB>,
-    privilege: ThreadPrivilege,
-    writable: bool,
-) -> Result<(), &'static str> {
-    let flags = get_page_flags(privilege, writable);
-    
-    mapper.map_to(page, frame, flags, &mut crate::memory::frame_allocator::GlobalFrameAllocator)
-        .map_err(|_| "Failed to map page")?
-        .flush();
-    
-    Ok(())
-}

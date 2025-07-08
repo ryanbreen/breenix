@@ -4,7 +4,7 @@
 //! allowing processes to be scheduled as tasks.
 
 use crate::process::{ProcessId};
-use crate::task::thread::{Thread, ThreadPrivilege};
+// Note: Thread and ThreadPrivilege imports removed after dead code cleanup
 use crate::task::scheduler;
 
 /// Integration functions for scheduling processes as tasks
@@ -38,33 +38,6 @@ impl ProcessScheduler {
         // Find process that owns this thread
         crate::process::manager().as_ref().and_then(|manager| {
             manager.find_process_by_thread(thread_id)
-                .map(|(pid, _)| pid)
-        })
-    }
-}
-
-/// Extension trait for Thread to support process operations
-pub trait ProcessThread {
-    /// Check if this thread belongs to a userspace process
-    fn is_process_thread(&self) -> bool;
-    
-    /// Get the process ID if this is a process thread
-    fn process_id(&self) -> Option<ProcessId>;
-}
-
-impl ProcessThread for Thread {
-    fn is_process_thread(&self) -> bool {
-        self.privilege == ThreadPrivilege::User
-    }
-    
-    fn process_id(&self) -> Option<ProcessId> {
-        if !self.is_process_thread() {
-            return None;
-        }
-        
-        // Find process that owns this thread
-        crate::process::manager().as_ref().and_then(|manager| {
-            manager.find_process_by_thread(self.id)
                 .map(|(pid, _)| pid)
         })
     }

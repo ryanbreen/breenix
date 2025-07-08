@@ -24,6 +24,7 @@ pub struct ProcessContext {
 
 impl ProcessContext {
     /// Create a new process context from a Thread
+    #[allow(dead_code)] // API for future context switching
     pub fn from_thread(thread: &Thread) -> Self {
         ProcessContext {
             cpu_context: thread.context.clone(),
@@ -33,6 +34,7 @@ impl ProcessContext {
     }
     
     /// Create from an interrupt stack frame (for saving userspace state)
+    #[allow(dead_code)] // API for future interrupt-based context saving
     pub fn from_interrupt_frame(frame: &InterruptStackFrame, saved_regs: &SavedRegisters) -> Self {
         let context = CpuContext {
             rax: saved_regs.rax,

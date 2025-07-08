@@ -21,17 +21,8 @@ struct CommandRegistry {
     exec_test_handler: Option<CommandHandler>,
 }
 
-impl CommandRegistry {
-    const fn new() -> Self {
-        Self {
-            ps_handler: None,
-            mem_handler: None,
-            test_handler: None,
-            fork_test_handler: None,
-            exec_test_handler: None,
-        }
-    }
-}
+// Note: CommandRegistry::new removed as unused.
+// The struct is created directly in register_handlers.
 
 /// Register command handlers from the kernel binary
 pub fn register_handlers(ps: CommandHandler, mem: CommandHandler, test: CommandHandler, fork_test: CommandHandler, exec_test: CommandHandler) {

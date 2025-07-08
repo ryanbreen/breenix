@@ -130,6 +130,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
 
 // Assembly functions defined in entry.s
 extern "C" {
+    #[allow(dead_code)] // Assembly entry point used by IDT
     pub fn syscall_entry();
+    #[allow(dead_code)] // Assembly function for returning to userspace
     pub fn syscall_return_to_userspace(user_rip: u64, user_rsp: u64, user_rflags: u64) -> !;
 }

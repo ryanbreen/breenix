@@ -229,6 +229,29 @@ pkill -f qemu-system-x86_64
 ls -t logs/*.log | tail -n +11 | xargs rm -f
 ```
 
+## 🚨 CRITICAL QUALITY REQUIREMENTS 🚨
+
+**ZERO TOLERANCE POLICY**
+
+1. **NO COMPILER WARNINGS**: The code MUST compile with ZERO warnings
+   - Fix ALL unused code warnings
+   - Fix ALL unreachable code warnings  
+   - Fix ALL unused variable warnings
+   - Use `#[allow(dead_code)]` ONLY for legitimate API functions
+
+2. **ALL TESTS MUST PASS**: Every change must pass the full test suite
+   - Run `cargo test` before declaring any work complete
+   - The concurrent process test MUST succeed
+   - POST tests MUST all pass
+   - Never commit code that breaks tests
+
+3. **CLEAN BUILDS REQUIRED**: 
+   - Always ensure `cargo build --release` completes without warnings
+   - Fix clippy warnings when available
+   - The code is NOT done until it builds clean
+
+**These are non-negotiable requirements. Work is NOT complete with warnings or failing tests.**
+
 ## Coding Practices
 
 ### Rust-Specific Conventions

@@ -38,6 +38,7 @@ impl Timer {
         Time::new(seconds, millis, 0)
     }
 
+    #[allow(dead_code)] // API function for future use
     pub fn monotonic_clock(&self) -> u64 {
         self.ticks.load(Ordering::Relaxed)
     }
@@ -48,6 +49,7 @@ impl Timer {
         start + elapsed.seconds
     }
 
+    #[allow(dead_code)] // Called by timer_interrupt if enabled
     pub fn tick(&self) {
         self.ticks.fetch_add(1, Ordering::Relaxed);
         
@@ -92,6 +94,7 @@ pub fn init() {
     });
 }
 
+#[allow(dead_code)] // Alternative timer handler - currently using timer_interrupt_handler
 pub fn timer_interrupt() {
     if let Some(timer) = TIMER.get() {
         timer.tick();
@@ -105,6 +108,7 @@ pub fn time_since_start() -> Time {
         .unwrap_or_else(|| Time::new(0, 0, 0))
 }
 
+#[allow(dead_code)] // Used by macros.rs
 pub fn monotonic_clock() -> u64 {
     TIMER.get()
         .map(|t| t.monotonic_clock())

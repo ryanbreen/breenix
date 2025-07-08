@@ -123,6 +123,7 @@ extern "C" {
 /// 
 /// # Safety
 /// Both context pointers must be valid and properly aligned
+#[allow(dead_code)] // Core API function for future scheduler implementations
 pub unsafe fn perform_context_switch(
     old_context: &mut CpuContext,
     new_context: &CpuContext,
@@ -137,6 +138,7 @@ pub unsafe fn perform_context_switch(
 /// 
 /// # Safety
 /// The context must be valid and properly initialized
+#[allow(dead_code)] // Core API function for future scheduler implementations
 pub unsafe fn perform_initial_switch(new_context: &CpuContext) -> ! {
     switch_to_thread(new_context as *const CpuContext);
 }

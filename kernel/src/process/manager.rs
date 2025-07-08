@@ -26,8 +26,6 @@ pub struct ProcessManager {
     /// Queue of ready processes
     ready_queue: Vec<ProcessId>,
     
-    /// Next available process base address (for virtual address allocation)
-    next_process_base: VirtAddr,
 }
 
 impl ProcessManager {
@@ -38,8 +36,6 @@ impl ProcessManager {
             current_pid: None,
             next_pid: AtomicU64::new(1), // PIDs start at 1 (0 is kernel)
             ready_queue: Vec::new(),
-            // Start process virtual addresses at 0x10000000, with 16MB spacing
-            next_process_base: VirtAddr::new(0x10000000),
         }
     }
     
@@ -206,76 +202,9 @@ impl ProcessManager {
         self.current_pid
     }
     
-    /// Set the current process ID (for direct execution)
-    pub fn set_current_pid(&mut self, pid: ProcessId) {
-        self.current_pid = Some(pid);
-        
-        // Update process state
-        if let Some(process) = self.processes.get_mut(&pid) {
-            process.set_running();
-        }
-    }
-    
     /// Get a reference to a process
     pub fn get_process(&self, pid: ProcessId) -> Option<&Process> {
         self.processes.get(&pid)
-    }
-    
-    /// Get a mutable reference to a process
-    pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {
-        self.processes.get_mut(&pid)
-    }
-    
-    /// Exit a process with the given exit code
-    pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
-        if let Some(process) = self.processes.get_mut(&pid) {
-            log::info!("Process {} (PID {}) exiting with code {}", 
-                process.name, pid.as_u64(), exit_code);
-            
-            process.terminate(exit_code);
-            
-            // Remove from ready queue
-            self.ready_queue.retain(|&p| p != pid);
-            
-            // If this was the current process, clear it
-            if self.current_pid == Some(pid) {
-                self.current_pid = None;
-            }
-            
-            // TODO: Clean up process resources
-            // - Unmap memory pages
-            // - Close file descriptors
-            // - Signal waiting processes
-            // - Reparent children to init
-        }
-    }
-    
-    /// Get the next ready process to run
-    pub fn schedule_next(&mut self) -> Option<ProcessId> {
-        // Simple round-robin for now
-        if let Some(pid) = self.ready_queue.first().cloned() {
-            // Move to back of queue
-            self.ready_queue.remove(0);
-            self.ready_queue.push(pid);
-            
-            // Update states
-            if let Some(old_pid) = self.current_pid {
-                if let Some(old_process) = self.processes.get_mut(&old_pid) {
-                    if !old_process.is_terminated() {
-                        old_process.set_ready();
-                    }
-                }
-            }
-            
-            if let Some(new_process) = self.processes.get_mut(&pid) {
-                new_process.set_running();
-            }
-            
-            self.current_pid = Some(pid);
-            Some(pid)
-        } else {
-            None
-        }
     }
     
     /// Get all process IDs
@@ -340,7 +269,7 @@ impl ProcessManager {
             .ok_or("Parent process not found")?;
         
         // Get parent's main thread
-        let parent_thread = parent.main_thread.as_ref()
+        let _parent_thread = parent.main_thread.as_ref()
             .ok_or("Parent process has no main thread")?;
         
         // Allocate a new PID for the child
@@ -372,7 +301,7 @@ impl ProcessManager {
         log::debug!("fork_process: About to create child page table");
         let child_page_table_result = crate::memory::process_memory::ProcessPageTable::new();
         log::debug!("fork_process: ProcessPageTable::new() returned");
-        let mut child_page_table = Box::new(
+        let child_page_table = Box::new(
             child_page_table_result
                 .map_err(|_| "Failed to create child page table")?
         );
@@ -421,9 +350,12 @@ impl ProcessManager {
             return Err("Cannot implement fork without testing feature");
         }
         
-        child_process.page_table = Some(child_page_table);
-        
-        log::info!("Created page table for child process {}", child_pid.as_u64());
+        // All remaining fork implementation requires testing feature
+        #[cfg(feature = "testing")]
+        {
+            child_process.page_table = Some(child_page_table);
+            
+            log::info!("Created page table for child process {}", child_pid.as_u64());
         
         // Create a new stack for the child process (64KB userspace stack)
         const CHILD_STACK_SIZE: usize = 64 * 1024;
@@ -504,10 +436,6 @@ impl ProcessManager {
         // Set the child thread as the main thread of the child process
         child_process.set_main_thread(child_thread);
         
-        // Add child to parent's children list
-        if let Some(parent) = self.processes.get_mut(&parent_pid) {
-            parent.add_child(child_pid);
-        }
         
         // Add the child process to the process table
         self.processes.insert(child_pid, child_process);
@@ -540,8 +468,9 @@ impl ProcessManager {
         log::info!("Fork complete: parent {} -> child {}", 
             parent_pid.as_u64(), child_pid.as_u64());
         
-        // Return the child PID to the parent
-        Ok(child_pid)
+            // Return the child PID to the parent
+            Ok(child_pid)
+        }
     }
 
     /// Replace a process's address space with a new program (exec)

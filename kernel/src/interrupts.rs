@@ -28,17 +28,15 @@ pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 
 // Assembly entry points
 extern "C" {
+    #[allow(dead_code)] // Used by IDT assembly code
     fn syscall_entry();
+    #[allow(dead_code)] // Used by IDT assembly code
     fn timer_interrupt_entry();
 }
 
 impl InterruptIndex {
     pub fn as_u8(self) -> u8 {
         self as u8
-    }
-
-    pub fn as_usize(self) -> usize {
-        usize::from(self.as_u8())
     }
 }
 

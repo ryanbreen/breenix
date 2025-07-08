@@ -163,34 +163,6 @@ impl Scheduler {
         }
     }
     
-    /// Block the current thread
-    pub fn block_current(&mut self) {
-        if let Some(current) = self.current_thread_mut() {
-            current.set_blocked();
-        }
-    }
-    
-    /// Unblock a thread by ID
-    pub fn unblock(&mut self, thread_id: u64) {
-        if let Some(thread) = self.get_thread_mut(thread_id) {
-            if thread.state == ThreadState::Blocked {
-                thread.set_ready();
-                if thread_id != self.idle_thread {
-                    self.ready_queue.push_back(thread_id);
-                }
-            }
-        }
-    }
-    
-    /// Terminate the current thread
-    pub fn terminate_current(&mut self) {
-        if let Some(current) = self.current_thread_mut() {
-            current.set_terminated();
-            // Don't put back in ready queue
-        }
-        self.current_thread = None;
-    }
-    
     /// Check if scheduler has any runnable threads
     pub fn has_runnable_threads(&self) -> bool {
         !self.ready_queue.is_empty() || 
@@ -216,11 +188,6 @@ impl Scheduler {
     /// Get the idle thread ID
     pub fn idle_thread(&self) -> u64 {
         self.idle_thread
-    }
-    
-    /// Set the current thread (used by spawn mechanism)
-    pub fn set_current_thread(&mut self, thread_id: u64) {
-        self.current_thread = Some(thread_id);
     }
 }
 
@@ -303,18 +270,6 @@ pub fn yield_current() {
     }
 }
 
-/// Get pending context switch if any
-/// Returns Some((old_thread_id, new_thread_id)) if a switch is pending
-pub fn get_pending_switch() -> Option<(u64, u64)> {
-    // For now, just call schedule to see if we would switch
-    // In a real implementation, we might cache this decision
-    schedule()
-}
-
-/// Allocate a new thread ID
-pub fn allocate_thread_id() -> Option<u64> {
-    Some(super::thread::allocate_thread_id())
-}
 
 /// Set the need_resched flag (called from timer interrupt)
 pub fn set_need_resched() {

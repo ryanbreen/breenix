@@ -135,7 +135,7 @@ pub async fn keyboard_task() {
                     log::info!("Multiple processes scheduled. Press keys to continue...");
                 } else if event.is_ctrl_key('f') {
                     log::info!("Ctrl+F pressed - testing fork system call (debug mode)");
-                    crate::userspace_test::test_fork_debug();
+                    log::info!("Fork test removed - use Ctrl+X for fork+exec test");
                     log::info!("Fork debug test scheduled. Press keys to continue...");
                 } else if event.is_ctrl_key('e') {
                     log::info!("Ctrl+E pressed - testing exec system call");

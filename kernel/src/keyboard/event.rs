@@ -40,11 +40,6 @@ impl KeyEvent {
         self.ctrl && self.character == Some('m')
     }
     
-    /// Check if this is Ctrl+U (userspace test)
-    pub fn is_ctrl_u(&self) -> bool {
-        self.ctrl && self.character == Some('u')
-    }
-    
     /// Generic Ctrl+key check
     pub fn is_ctrl_key(&self, key: char) -> bool {
         self.ctrl && self.character == Some(key)

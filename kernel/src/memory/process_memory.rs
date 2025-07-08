@@ -568,6 +568,7 @@ impl ProcessPageTable {
 /// - The new page table is valid
 /// - The kernel mappings are present in the new page table
 /// - This is called from a safe context (e.g., during interrupt return)
+#[allow(dead_code)] // Core API for future process switching
 pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
     let (current_frame, flags) = Cr3::read();
     let new_frame = page_table.level_4_frame();
@@ -599,8 +600,7 @@ pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
         
         log::trace!("Switching page table: {:?} -> {:?}", current_frame, new_frame);
         Cr3::write(new_frame, flags);
-        // Ensure TLB consistency after page table switch
-        super::tlb::flush_after_page_table_switch();
+        // Note: CR3 write automatically flushes TLB on x86_64
         log::debug!("Page table switch completed successfully with TLB flush");
     }
 }
@@ -622,14 +622,14 @@ pub fn init_kernel_page_table() {
 /// 
 /// # Safety
 /// Caller must ensure this is called from a safe context
+#[allow(dead_code)] // Core API for returning to kernel page table
 pub unsafe fn switch_to_kernel_page_table() {
     if let Some(kernel_frame) = KERNEL_PAGE_TABLE_FRAME {
         let (current_frame, flags) = Cr3::read();
         if current_frame != kernel_frame {
             log::trace!("Switching back to kernel page table: {:?} -> {:?}", current_frame, kernel_frame);
             Cr3::write(kernel_frame, flags);
-            // Ensure TLB consistency after page table switch
-            super::tlb::flush_after_page_table_switch();
+            // Note: CR3 write automatically flushes TLB on x86_64
         }
     } else {
         log::error!("Kernel page table frame not initialized!");

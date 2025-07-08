@@ -1,5 +1,4 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct Time {
     pub seconds: u64,
     pub millis: u64,

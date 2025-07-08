@@ -3,12 +3,9 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 /// File descriptors
-#[allow(dead_code)]
-const FD_STDIN: u64 = 0;
 const FD_STDOUT: u64 = 1;
 const FD_STDERR: u64 = 2;
 
@@ -198,18 +195,10 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     SyscallResult::Ok(bytes_written)
 }
 
-/// sys_read - Read from a file descriptor
-/// 
-/// Currently returns 0 (no data available) as keyboard is async-only.
-#[allow(dead_code)]
-pub fn sys_read(fd: u64, _buf_ptr: u64, _count: u64) -> SyscallResult {
-    // Validate file descriptor
-    if fd != FD_STDIN {
-        return SyscallResult::Err(22); // EINVAL
-    }
-    
-    // TODO: Implement synchronous keyboard reading
-    // For now, always return 0 (no data available)
+
+/// sys_read - Read from a file descriptor (stub)
+pub fn sys_read(_fd: u64, _buf_ptr: u64, _count: u64) -> SyscallResult {
+    // Not implemented - return 0 (no data available)
     SyscallResult::Ok(0)
 }
 
@@ -295,7 +284,7 @@ pub fn sys_fork() -> SyscallResult {
                         let child_thread_clone = child_thread.clone();
                         
                         // Add the child thread to the scheduler
-                        crate::task::scheduler::spawn(Box::new(child_thread_clone));
+                        crate::task::scheduler::spawn(alloc::boxed::Box::new(child_thread_clone));
                         
                         log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
                             parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
@@ -343,7 +332,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                    program_name_ptr, elf_data_ptr);
         
         // Get current process and thread
-        let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        let _current_thread_id = match crate::task::scheduler::current_thread_id() {
             Some(id) => id,
             None => {
                 log::error!("sys_exec: No current thread");
@@ -357,8 +346,16 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         // 2. Load the program from filesystem
         // 3. Validate permissions
         
+        // Without the testing feature, exec is not supported
+        #[cfg(not(feature = "testing"))]
+        {
+            log::error!("sys_exec: Testing feature not enabled - exec not supported");
+            return SyscallResult::Err(22); // EINVAL
+        }
+        
         // For testing purposes, we'll check the program name to select the right ELF
         // In a real implementation, this would come from the filesystem
+        #[cfg(feature = "testing")]
         let elf_data = if program_name_ptr != 0 {
             // Try to read the program name from userspace
             // For now, we'll just use a simple check
@@ -366,17 +363,9 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             
             // HACK: For now, we'll assume if program_name_ptr is provided,
             // it's asking for hello_time.elf
-            #[cfg(feature = "testing")]
-            {
-                log::info!("sys_exec: Using hello_time.elf for exec test");
-                // Use the statically embedded hello_time.elf
-                crate::userspace_test::HELLO_TIME_ELF
-            }
-            #[cfg(not(feature = "testing"))]
-            {
-                log::error!("sys_exec: Testing feature not enabled");
-                return SyscallResult::Err(22); // EINVAL
-            }
+            log::info!("sys_exec: Using hello_time.elf for exec test");
+            // Use the statically embedded hello_time.elf
+            crate::userspace_test::HELLO_TIME_ELF
         } else if elf_data_ptr != 0 {
             // In a real implementation, we'd safely copy from user memory
             log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
@@ -385,26 +374,19 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             return SyscallResult::Err(22); // EINVAL
         } else {
             // Use embedded test program for now
-            #[cfg(feature = "testing")]
-            {
-                log::info!("sys_exec: Using embedded hello_world test program");
-                crate::userspace_test::HELLO_WORLD_ELF
-            }
-            #[cfg(not(feature = "testing"))]
-            {
-                log::error!("sys_exec: No ELF data provided and testing feature not enabled");
-                return SyscallResult::Err(22); // EINVAL
-            }
+            log::info!("sys_exec: Using embedded hello_world test program");
+            crate::userspace_test::HELLO_WORLD_ELF
         };
         
         // Find current process
+        #[cfg(feature = "testing")]
         let current_pid = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
-                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                if let Some((pid, _)) = manager.find_process_by_thread(_current_thread_id) {
                     pid
                 } else {
-                    log::error!("sys_exec: Thread {} not found in any process", current_thread_id);
+                    log::error!("sys_exec: Thread {} not found in any process", _current_thread_id);
                     return SyscallResult::Err(3); // ESRCH
                 }
             } else {
@@ -413,13 +395,16 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             }
         };
         
+        #[cfg(feature = "testing")]
         log::info!("sys_exec: Replacing process {} (thread {}) with new program", 
-                   current_pid.as_u64(), current_thread_id);
+                   current_pid.as_u64(), _current_thread_id);
         
         // Replace the process's address space
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            match manager.exec_process(current_pid, elf_data) {
+        #[cfg(feature = "testing")]
+        {
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                match manager.exec_process(current_pid, elf_data) {
                 Ok(new_entry_point) => {
                     log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
                                new_entry_point);
@@ -440,9 +425,10 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                     SyscallResult::Err(12) // ENOMEM
                 }
             }
-        } else {
-            log::error!("sys_exec: Process manager not available");
-            SyscallResult::Err(12) // ENOMEM
+            } else {
+                log::error!("sys_exec: Process manager not available");
+                SyscallResult::Err(12) // ENOMEM
+            }
         }
     })
 }
