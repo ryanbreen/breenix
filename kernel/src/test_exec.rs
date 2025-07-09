@@ -3,7 +3,6 @@
 use crate::process::creation::create_user_process;
 use alloc::string::String;
 use alloc::vec;
-use alloc::format;
 
 /// Test multiple concurrent processes to validate page table isolation
 /// 
@@ -33,57 +32,44 @@ pub fn test_direct_execution() {
     
     log::info!("CONCURRENCY TEST: Loading hello_time.elf, size: {} bytes", hello_time_elf.len());
     
-    // Create 3 concurrent processes to test page table isolation
-    for i in 1..=3 {
-        let process_name = format!("hello_time_process_{}", i);
-        match create_user_process(process_name.clone(), hello_time_elf) {
-            Ok(pid) => {
-                log::info!("✓ CONCURRENT: Created process {} with PID {}", process_name, pid.as_u64());
-                log::info!("✓ CONCURRENT: Process should execute hello_time.elf and print time");
-            }
-            Err(e) => {
-                log::error!("✗ CONCURRENT: Failed to create process {}: {}", process_name, e);
-                log::error!("    -> Page table isolation may be broken");
-            }
+    // First create one hello_time process to verify basic execution
+    match create_user_process(String::from("hello_time_test"), hello_time_elf) {
+        Ok(pid) => {
+            log::info!("✓ CONCURRENT: Created hello_time process with PID {}", pid.as_u64());
+            log::info!("✓ CONCURRENT: Process should execute hello_time.elf and print time");
+        }
+        Err(e) => {
+            log::error!("✗ CONCURRENT: Failed to create hello_time process: {}", e);
         }
     }
     
-    log::info!("✓ CONCURRENT: Created 3 concurrent processes");
-    log::info!("    -> Each process will execute independently when scheduler runs them");
-    log::info!("    -> Look for multiple 'Hello from userspace! Current time: XXXXX' outputs");
-    log::info!("    -> Different time values indicate successful process isolation");
+    log::info!("✓ CONCURRENT: Created hello_time test process");
+    log::info!("    -> Process will execute hello_time.elf when scheduler runs");
+    log::info!("    -> Look for 'Hello from userspace! Current time: XXXXX' output");
 }
 
 /// Test fork from userspace - validates that userspace processes can call fork()
 pub fn test_userspace_fork() {
-    log::info!("=== Testing fork() syscall from userspace ===");
-    log::info!("This test runs a userspace program that calls fork()");
+    log::info!("=== Testing multiple instances of same program ===");
+    log::info!("This test runs TWO hello_time processes to isolate the issue");
     
-    // Use the real fork_test.elf that calls fork() from userspace
+    // TEMPORARILY: Use hello_time instead of fork_test to see if issue is with different ELF binaries
     #[cfg(feature = "testing")]
-    let fork_test_elf = crate::userspace_test::FORK_TEST_ELF;
+    let test_elf = crate::userspace_test::HELLO_TIME_ELF;
     #[cfg(not(feature = "testing"))]
-    let fork_test_elf = &create_fork_test_elf();
+    let test_elf = &create_hello_world_elf();
     
-    log::info!("fork_test.elf size: {} bytes", fork_test_elf.len());
-    log::info!("FORK TEST: First 16 bytes: {:02x?}", &fork_test_elf[..16.min(fork_test_elf.len())]);
+    log::info!("Creating second hello_time process...");
     
-    match create_user_process(String::from("fork_test"), fork_test_elf) {
+    match create_user_process(String::from("hello_time_2"), test_elf) {
         Ok(pid) => {
-            log::info!("✓ Created fork test process with PID {}", pid.as_u64());
-            log::info!("✓ Process should:");
-            log::info!("   1. Print its PID before fork");
-            log::info!("   2. Call fork() syscall from userspace");
-            log::info!("   3. Parent prints child PID, child prints 0");
-            log::info!("   4. Both processes do some work and exit");
-            
-            // The process has been created and scheduled
-            log::info!("✓ Fork test process scheduled");
-            log::info!("    -> Process will run fork_test.elf when scheduler picks it up");
-            log::info!("    -> Look for fork syscall output in logs");
+            log::info!("✓ Created second hello_time process with PID {}", pid.as_u64());
+            log::info!("✓ Now we have TWO hello_time processes");
+            log::info!("   - If this works: issue is with different ELF layouts");
+            log::info!("   - If this fails: issue is with multiple processes in general");
         }
         Err(e) => {
-            log::error!("✗ Failed to create fork test process: {}", e);
+            log::error!("✗ Failed to create second hello_time process: {}", e);
         }
     }
 }

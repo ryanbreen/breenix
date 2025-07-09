@@ -35,7 +35,20 @@ impl BootInfoFrameAllocator {
     
     /// Get the nth usable frame
     fn get_usable_frame(n: usize) -> Option<PhysFrame> {
-        let info = MEMORY_INFO.lock();
+        // Check if we're in a problematic allocation
+        if n > 1500 && n < 1600 {
+            log::debug!("get_usable_frame: Allocating frame number {}", n);
+        }
+        
+        // Try to detect potential deadlock
+        let info = match MEMORY_INFO.try_lock() {
+            Some(guard) => guard,
+            None => {
+                log::error!("MEMORY_INFO lock is already held - potential deadlock!");
+                // Force a panic with more info
+                panic!("Frame allocator deadlock detected during allocation #{}", n);
+            }
+        };
         let info = info.as_ref()?;
         
         let mut count = 0;
@@ -46,6 +59,13 @@ impl BootInfoFrameAllocator {
                 if count + region_frames as usize > n {
                     let frame_offset = n - count;
                     let frame_addr = region.start + (frame_offset as u64 * 4096);
+                    
+                    // Log problematic frame allocations
+                    if frame_addr == 0x62f000 {
+                        log::warn!("Allocating problematic frame 0x62f000 (frame #{}, region {}, offset {})", 
+                                  n, i, frame_offset);
+                    }
+                    
                     return Some(PhysFrame::containing_address(PhysAddr::new(frame_addr)));
                 }
                 count += region_frames as usize;
@@ -58,7 +78,13 @@ impl BootInfoFrameAllocator {
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         let current = NEXT_FREE_FRAME.fetch_add(1, Ordering::SeqCst);
-        Self::get_usable_frame(current)
+        log::trace!("Frame allocator: Attempting to allocate frame #{}", current);
+        let frame = Self::get_usable_frame(current);
+        if let Some(f) = frame {
+            log::trace!("Frame allocator: Allocated frame {:#x} (allocation #{})", 
+                      f.start_address().as_u64(), current);
+        }
+        frame
     }
 }
 

@@ -22,11 +22,11 @@ test_userspace = []
 test_all_exceptions = []
 
 [dependencies]
-bootloader_api = "0.11.10"
+bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
 embedded-graphics = "0.8.1"
 x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }
 conquer-once = { version = "0.4.0", default-features = false }
-bootloader-x86_64-common = "0.11.10"
+bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
 log = { version = "0.4.17", default-features = false }
 pic8259 = "0.10.4"
 spin = "0.9.8"

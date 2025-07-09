@@ -4,6 +4,9 @@ pub mod heap;
 pub mod stack;
 pub mod process_memory;
 pub mod tlb;
+pub mod kernel_page_table;
+pub mod kernel_stack;
+pub mod per_cpu_stack;
 
 use bootloader_api::info::MemoryRegions;
 use x86_64::{PhysAddr, VirtAddr};
@@ -34,6 +37,13 @@ pub fn init(
     // Save the kernel page table for later switching
     process_memory::init_kernel_page_table();
     
+    // Initialize global kernel page table system
+    log::info!("Initializing global kernel page tables...");
+    kernel_page_table::init(physical_memory_offset);
+    
+    // Migrate any existing processes (though there shouldn't be any yet)
+    kernel_page_table::migrate_existing_processes();
+    
     // Initialize heap
     log::info!("Initializing heap allocator...");
     heap::init(&mapper).expect("heap initialization failed");
@@ -41,6 +51,16 @@ pub fn init(
     // Initialize stack allocation system
     log::info!("Initializing stack allocation system...");
     stack::init();
+    
+    // Initialize kernel stack allocator
+    log::info!("Initializing kernel stack allocator...");
+    kernel_stack::init();
+    
+    // Initialize per-CPU emergency stacks
+    log::info!("Initializing per-CPU emergency stacks...");
+    // For now, assume single CPU. In SMP systems, this would be the actual CPU count
+    let _emergency_stacks = per_cpu_stack::init_per_cpu_stacks(1)
+        .expect("Failed to initialize per-CPU stacks");
     
     log::info!("Memory management initialized");
 }
