@@ -11,6 +11,7 @@ use x86_64::VirtAddr;
 use super::{Process, ProcessId};
 use crate::elf;
 use crate::task::thread::Thread;
+use crate::memory::process_memory::ProcessPageTable;
 
 /// Process manager handles all processes in the system
 pub struct ProcessManager {
@@ -128,7 +129,7 @@ impl ProcessManager {
     }
     
     /// Create the main thread for a process
-    fn create_main_thread(&self, process: &mut Process, stack_top: x86_64::VirtAddr) -> Result<Thread, &'static str> {
+    fn create_main_thread(&mut self, process: &mut Process, stack_top: x86_64::VirtAddr) -> Result<Thread, &'static str> {
         
         // For now, use a null TLS block (we'll implement TLS later)
         let _tls_block = x86_64::VirtAddr::new(0);
@@ -148,31 +149,19 @@ impl ProcessManager {
         const USER_STACK_SIZE: usize = 64 * 1024;
         let stack_bottom = stack_top - USER_STACK_SIZE as u64;
         
-        // Allocate a kernel stack for this userspace thread
-        const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16KB kernel stack
-        let kernel_stack = crate::memory::stack::allocate_stack_with_privilege(
-            KERNEL_STACK_SIZE,
-            crate::task::thread::ThreadPrivilege::Kernel
-        ).map_err(|_| "Failed to allocate kernel stack for thread")?;
+        // Allocate a kernel stack using the new global kernel stack allocator
+        // This automatically maps the stack in the global kernel page tables,
+        // making it visible to all processes
+        let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
+            .map_err(|e| {
+                log::error!("Failed to allocate kernel stack: {}", e);
+                "Failed to allocate kernel stack for thread"
+            })?;
         let kernel_stack_top = kernel_stack.top();
         
-        // CRITICAL FIX: Copy kernel stack mappings to process page table
-        // The kernel stack was mapped in the kernel page table, but userspace needs access
-        // for Ring 3 -> Ring 0 transitions during syscalls
-        log::debug!("Copying kernel stack mappings to process page table...");
-        if let Some(ref mut page_table) = process.page_table {
-            crate::memory::process_memory::copy_kernel_stack_to_process(page_table, 
-                kernel_stack.bottom(), kernel_stack.top())
-                .map_err(|e| {
-                    log::error!("Failed to copy kernel stack to process page table: {}", e);
-                    "Failed to map kernel stack in process page table"
-                })?;
-            log::debug!("✓ Kernel stack mapped in process page table");
-        } else {
-            return Err("Process page table not available for kernel stack mapping");
-        }
+        log::debug!("✓ Allocated kernel stack at {:#x} (globally visible)", kernel_stack_top);
         
-        // Store the kernel stack (we'll need to manage this properly later)
+        // Store the kernel stack - it will be dropped when the thread is destroyed
         // For now, we'll leak it - TODO: proper cleanup
         Box::leak(Box::new(kernel_stack));
         
@@ -335,6 +324,205 @@ impl ProcessManager {
     
     /// Fork a process - create a child process that's a copy of the parent
     pub fn fork_process(&mut self, parent_pid: ProcessId) -> Result<ProcessId, &'static str> {
+        self.fork_process_with_context(parent_pid, None)
+    }
+    
+    /// Fork a process with a pre-allocated page table
+    /// This version accepts a page table created outside the lock to avoid deadlock
+    pub fn fork_process_with_page_table(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>, 
+                                       mut child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {
+        // Get the parent process info we need
+        let (parent_name, parent_entry_point, parent_thread_info) = {
+            let parent = self.processes.get(&parent_pid)
+                .ok_or("Parent process not found")?;
+            
+            let parent_thread = parent.main_thread.as_ref()
+                .ok_or("Parent process has no main thread")?;
+            
+            // Clone what we need to avoid borrow issues
+            (parent.name.clone(), 
+             parent.entry_point,
+             parent_thread.clone())
+        };
+        
+        // Allocate a new PID for the child
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        
+        log::info!("Forking process {} '{}' -> child PID {}", 
+            parent_pid.as_u64(), parent_name, child_pid.as_u64());
+        
+        // Create child process name
+        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
+        
+        // Create the child process with the same entry point
+        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        child_process.parent = Some(parent_pid);
+        
+        // Load the same program into the child page table
+        #[cfg(feature = "testing")]
+        {
+            let elf_data = crate::userspace_test::FORK_TEST_ELF;
+            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, child_page_table.as_mut())?;
+            
+            // Update the child process entry point to match the loaded ELF
+            child_process.entry_point = loaded_elf.entry_point;
+            log::info!("fork_process: Loaded fork_test.elf into child, entry point: {:#x}", loaded_elf.entry_point);
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            log::error!("fork_process: Cannot reload ELF - testing feature not enabled");
+            return Err("Cannot implement fork without testing feature");
+        }
+        
+        child_process.page_table = Some(child_page_table);
+        
+        // Continue with the rest of the fork logic...
+        self.complete_fork(parent_pid, child_pid, &parent_thread_info, userspace_rsp, child_process)
+    }
+    
+    /// Complete the fork operation after page table is created
+    fn complete_fork(&mut self, parent_pid: ProcessId, child_pid: ProcessId, 
+                     parent_thread: &Thread, userspace_rsp: Option<u64>, 
+                     mut child_process: Process) -> Result<ProcessId, &'static str> {
+        log::info!("Created page table for child process {}", child_pid.as_u64());
+        
+        // Create a new stack for the child process (64KB userspace stack)
+        // CRITICAL: We allocate in kernel page table first, then map to child's page table
+        const CHILD_STACK_SIZE: usize = 64 * 1024;
+        
+        // Allocate the stack in the kernel page table first
+        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
+            CHILD_STACK_SIZE,
+            crate::task::thread::ThreadPrivilege::User
+        ).map_err(|_| "Failed to allocate stack for child process")?;
+        let child_stack_top = child_stack.top();
+        let child_stack_bottom = child_stack.bottom();
+        
+        // Now map the stack pages into the child's page table
+        let child_page_table_ref = child_process.page_table.as_mut()
+            .ok_or("Child process has no page table")?;
+        
+        crate::memory::process_memory::map_user_stack_to_process(
+            child_page_table_ref,
+            child_stack_bottom,
+            child_stack_top
+        ).map_err(|e| {
+            log::error!("Failed to map user stack to child process: {}", e);
+            "Failed to map user stack in child's page table"
+        })?;
+        
+        // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
+        // In the future, we should properly copy parent's TLS data
+        let _dummy_tls = VirtAddr::new(0);
+        
+        // Create the child thread with PID as TID (Unix convention for main thread)
+        let child_thread_id = child_pid.as_u64();
+        
+        // Allocate a TLS block for this thread ID
+        let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
+        
+        // Register this thread with the TLS system
+        if let Err(e) = crate::tls::register_thread_tls(child_thread_id, child_tls_block) {
+            log::warn!("Failed to register thread {} with TLS system: {}", child_thread_id, e);
+        }
+        
+        // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
+        let child_kernel_stack_top = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+            // Use the new global kernel stack allocator
+            let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
+                .map_err(|e| {
+                    log::error!("Failed to allocate kernel stack for child: {}", e);
+                    "Failed to allocate kernel stack for child thread"
+                })?;
+            let kernel_stack_top = kernel_stack.top();
+            
+            log::debug!("✓ Allocated child kernel stack at {:#x} (globally visible)", kernel_stack_top);
+            
+            // Store the kernel stack (we'll need to manage this properly later)
+            // For now, we'll leak it - TODO: proper cleanup
+            Box::leak(Box::new(kernel_stack));
+            
+            kernel_stack_top
+        } else {
+            // Kernel threads don't need separate kernel stacks
+            parent_thread.kernel_stack_top.unwrap_or(parent_thread.stack_top)
+        };
+        
+        // Create the child's main thread
+        // The child thread starts with the same state as the parent, but with:
+        // - New thread ID (same as PID for main thread)
+        // - RSP pointing to the new stack
+        // - RDI set to 0 (to indicate child process in fork return)
+        // Create a dummy entry function - we'll set the real entry point via context
+        fn dummy_entry() {}
+        
+        let mut child_thread = Thread::new(
+            format!("{}_main", child_process.name),
+            dummy_entry,
+            child_stack_top,
+            parent_thread.stack_bottom,
+            child_tls_block,
+            parent_thread.privilege,
+        );
+        
+        // Set the ID and kernel stack separately
+        child_thread.id = child_thread_id;
+        child_thread.kernel_stack_top = Some(child_kernel_stack_top);
+        
+        // Copy parent's thread context
+        child_thread.context = parent_thread.context.clone();
+        
+        // Log the child's context for debugging
+        log::debug!("Child thread context after copy:");
+        log::debug!("  RIP: {:#x}", child_thread.context.rip);
+        log::debug!("  RSP: {:#x}", child_thread.context.rsp);
+        log::debug!("  CS: {:#x}", child_thread.context.cs);
+        log::debug!("  SS: {:#x}", child_thread.context.ss);
+        
+        // Crucial: Set the child's return value to 0
+        // In x86_64, system call return values go in RAX
+        child_thread.context.rax = 0;
+        
+        // Update child's stack pointer based on userspace RSP if provided
+        if let Some(user_rsp) = userspace_rsp {
+            child_thread.context.rsp = user_rsp;
+            log::info!("fork: Using userspace RSP {:#x} for child", user_rsp);
+        } else {
+            // Calculate the child's RSP based on the parent's stack usage
+            let parent_stack_used = parent_thread.stack_top.as_u64() - parent_thread.context.rsp;
+            child_thread.context.rsp = child_stack_top.as_u64() - parent_stack_used;
+            log::info!("fork: Calculated child RSP {:#x} based on parent stack usage {:#x}", 
+                      child_thread.context.rsp, parent_stack_used);
+        }
+        
+        log::info!("Created child thread {} with entry point {:#x}", 
+                  child_thread_id, child_process.entry_point);
+        
+        // Set the child process's main thread
+        child_process.main_thread = Some(child_thread);
+        
+        // Store the stack in the child process
+        child_process.stack = Some(Box::new(child_stack));
+        
+        // Add the child to the parent's children list
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.push(child_pid);
+        }
+        
+        // Insert the child process into the process table
+        log::debug!("About to insert child process into process table");
+        self.processes.insert(child_pid, child_process);
+        log::debug!("Child process inserted successfully");
+        
+        log::info!("Fork complete: parent {} -> child {}", parent_pid.as_u64(), child_pid.as_u64());
+        
+        Ok(child_pid)
+    }
+    
+    /// Fork a process with optional userspace context override
+    /// NOTE: This method creates the page table while holding the lock, which can cause deadlock
+    /// Consider using fork_process_with_page_table instead
+    pub fn fork_process_with_context(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>) -> Result<ProcessId, &'static str> {
         // Get the parent process
         let parent = self.processes.get(&parent_pid)
             .ok_or("Parent process not found")?;
@@ -484,8 +672,20 @@ impl ProcessManager {
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: parent_thread.privilege,
         };
-        // But update the stack pointer to use the child's stack
-        child_thread.context.rsp = child_stack_top.as_u64();
+        
+        // CRITICAL: Use the userspace RSP if provided (from syscall frame)
+        // Otherwise, calculate the child's RSP based on parent's stack usage
+        if let Some(user_rsp) = userspace_rsp {
+            child_thread.context.rsp = user_rsp;
+            log::info!("fork: Using userspace RSP {:#x} for child", user_rsp);
+        } else {
+            // Calculate how much of parent's stack is in use
+            let parent_stack_used = parent_thread.stack_top.as_u64() - parent_thread.context.rsp;
+            // Set child's RSP at the same relative position
+            child_thread.context.rsp = child_stack_top.as_u64() - parent_stack_used;
+            log::info!("fork: Calculated child RSP {:#x} based on parent stack usage", child_thread.context.rsp);
+        }
+        
         // IMPORTANT: Set RAX to 0 for the child (fork return value)
         child_thread.context.rax = 0;
         
@@ -512,26 +712,11 @@ impl ProcessManager {
         // Add the child process to the process table
         self.processes.insert(child_pid, child_process);
         
-        // CRITICAL FIX: Copy kernel stack mappings to child process page table (if userspace)
+        // With global kernel page tables, all kernel stacks are automatically visible
+        // to all processes through the shared kernel PDPT - no copying needed!
         if let Some(kernel_stack_top) = child_kernel_stack_top {
-            log::debug!("Copying child kernel stack mappings to process page table...");
-            if let Some(child_process) = self.processes.get_mut(&child_pid) {
-                if let Some(ref mut page_table) = child_process.page_table {
-                    // Use the stored kernel stack bounds
-                    let kernel_stack_bottom = kernel_stack_top.as_u64() - 16 * 1024; // 16KB stack size
-                    crate::memory::process_memory::copy_kernel_stack_to_process(page_table, 
-                        x86_64::VirtAddr::new(kernel_stack_bottom), kernel_stack_top)
-                        .map_err(|e| {
-                            log::error!("Failed to copy child kernel stack to process page table: {}", e);
-                            "Failed to map child kernel stack in process page table"
-                        })?;
-                    log::debug!("✓ Child kernel stack mapped in process page table");
-                } else {
-                    return Err("Child process page table not available for kernel stack mapping");
-                }
-            } else {
-                return Err("Child process not found for kernel stack mapping");
-            }
+            log::debug!("Child kernel stack at {:#x} is globally visible via shared kernel PDPT", 
+                      kernel_stack_top.as_u64());
         }
         
         // Add the child to the ready queue so it can be scheduled

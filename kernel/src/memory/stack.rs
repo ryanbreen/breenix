@@ -153,20 +153,36 @@ impl GuardedStack {
         let start_page = Page::<Size4KiB>::containing_address(start);
         let end_page = Page::<Size4KiB>::containing_address(start + size as u64 - 1u64);
         
+        log::trace!("map_stack_pages: start_page={:#x}, end_page={:#x}", 
+                   start_page.start_address(), end_page.start_address());
+        
         let flags = match privilege {
             ThreadPrivilege::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             ThreadPrivilege::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
         };
         
+        log::trace!("map_stack_pages: About to iterate over page range");
         for page in Page::range_inclusive(start_page, end_page) {
+            log::trace!("map_stack_pages: Got page from iterator, about to log address");
+            log::trace!("map_stack_pages: Mapping page {:#x}", page.start_address());
+            
+            log::trace!("map_stack_pages: About to call allocate_frame()");
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("out of memory")?;
+            log::trace!("map_stack_pages: allocate_frame() returned successfully");
+            
+            log::trace!("map_stack_pages: Allocated frame {:#x} for page {:#x}", 
+                       frame.start_address(), page.start_address());
             
             unsafe {
                 let mut frame_allocator = crate::memory::frame_allocator::GlobalFrameAllocator;
+                log::trace!("map_stack_pages: About to call mapper.map_to...");
+                
                 mapper.map_to(page, frame, flags, &mut frame_allocator)
                     .map_err(|_| "failed to map stack page")?
                     .flush();
+                    
+                log::trace!("map_stack_pages: Successfully mapped page {:#x}", page.start_address());
             }
         }
         

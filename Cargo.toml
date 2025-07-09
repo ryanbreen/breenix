@@ -27,13 +27,13 @@ ovmf-prebuilt = "0.2.3"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 conquer-once = { version = "0.4.0", default-features = false }
-bootloader-x86_64-common = "0.11.10"
+bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
 log = { version = "0.4.17", default-features = false }
 x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }
 
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
-bootloader = "0.11.10"
+bootloader = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
 
 [dev-dependencies]
 libc = "0.2"

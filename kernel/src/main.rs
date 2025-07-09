@@ -16,6 +16,8 @@ use crate::syscall::SyscallResult;
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(Mapping::Dynamic);
+    // TODO: Enable higher-half kernel once we make kernel PIE
+    // config.mappings.kernel_base = Mapping::FixedAddress(0xFFFF800000000000);
     config
 };
 
@@ -104,6 +106,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     };
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+    
+    // Update IST stack with per-CPU emergency stack
+    let emergency_stack_top = memory::per_cpu_stack::current_cpu_emergency_stack();
+    gdt::update_ist_stack(emergency_stack_top);
+    log::info!("Updated IST[0] with per-CPU emergency stack");
     
     // Test heap allocation
     log::info!("Testing heap allocation...");
@@ -372,14 +379,23 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("=== BASELINE TEST: Direct userspace execution ===");
         test_exec::test_direct_execution();
         log::info!("Direct execution test completed.");
-    });
-    
-    // Test fork from userspace
-    x86_64::instructions::interrupts::without_interrupts(|| {
+        
+        // Test fork from userspace
         log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
         test_exec::test_userspace_fork();
         log::info!("Userspace fork test completed.");
     });
+    
+    // Give the scheduler a chance to run the created processes
+    log::info!("Enabling interrupts to allow scheduler to run...");
+    x86_64::instructions::interrupts::enable();
+    
+    // Wait briefly for processes to run
+    for _ in 0..1000000 {
+        x86_64::instructions::nop();
+    }
+    
+    log::info!("Disabling interrupts after scheduler test...");
     
     log::info!("DEBUG: About to print POST marker");
     // Signal that all POST-testable initialization is complete
