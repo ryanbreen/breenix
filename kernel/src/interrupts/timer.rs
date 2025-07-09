@@ -37,11 +37,14 @@ pub extern "C" fn timer_interrupt_handler() {
             CURRENT_QUANTUM -= 1;
         }
         
-        // If quantum expired, set need_resched flag
-        if CURRENT_QUANTUM == 0 {
+        // Check if there are user threads ready to run
+        let has_user_threads = scheduler::with_scheduler(|s| s.has_userspace_threads()).unwrap_or(false);
+        
+        // If quantum expired OR there are user threads ready (for idle thread), set need_resched flag
+        if CURRENT_QUANTUM == 0 || has_user_threads {
             // TEMPORARILY DISABLE LOGGING
             // if count < 5 {
-            //     log::debug!("Timer quantum expired, setting need_resched");
+            //     log::debug!("Timer quantum expired or user threads ready, setting need_resched");
             //     log::debug!("About to call scheduler::set_need_resched()");
             // }
             scheduler::set_need_resched();

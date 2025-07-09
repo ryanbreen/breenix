@@ -237,18 +237,24 @@ pub fn sys_get_time() -> SyscallResult {
 }
 
 /// sys_fork - Basic fork implementation
-pub fn sys_fork() -> SyscallResult {
+/// sys_fork with syscall frame - provides access to actual userspace context
+pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
+    // Store the userspace RSP for the child to inherit
+    let userspace_rsp = frame.rsp;
+    log::info!("sys_fork_with_frame: userspace RSP = {:#x}", userspace_rsp);
+    
+    // Call fork with the userspace context
+    sys_fork_with_rsp(userspace_rsp)
+}
+
+/// sys_fork with explicit RSP - used by sys_fork_with_frame
+fn sys_fork_with_rsp(userspace_rsp: u64) -> SyscallResult {
     // Disable interrupts for the entire fork operation to ensure atomicity
-    // This prevents race conditions when accessing process manager and scheduler
     x86_64::instructions::interrupts::without_interrupts(|| {
-        log::info!("sys_fork called - implementing basic fork");
+        log::info!("sys_fork_with_rsp called with RSP {:#x}", userspace_rsp);
         
-        // Get current thread ID from scheduler (not TLS, since we're in kernel mode after SWAPGS)
+        // Get current thread ID from scheduler
         let scheduler_thread_id = crate::task::scheduler::current_thread_id();
-        
-        log::info!("sys_fork: Scheduler thread ID: {:?}", scheduler_thread_id);
-        
-        // Use scheduler thread ID as the authoritative source
         let current_thread_id = match scheduler_thread_id {
             Some(id) => id,
             None => {
@@ -256,73 +262,95 @@ pub fn sys_fork() -> SyscallResult {
                 return SyscallResult::Err(22); // EINVAL
             }
         };
-    
-    if current_thread_id == 0 {
-        log::error!("sys_fork: Cannot fork from idle thread");
-        return SyscallResult::Err(22); // EINVAL
-    }
-    
-    // Find the current process by thread ID
-    let manager_guard = crate::process::manager();
-    let process_info = if let Some(ref manager) = *manager_guard {
-        manager.find_process_by_thread(current_thread_id)
-    } else {
-        log::error!("sys_fork: Process manager not available");
-        return SyscallResult::Err(12); // ENOMEM
-    };
-    
-    let (parent_pid, parent_process) = match process_info {
-        Some((pid, process)) => (pid, process),
-        None => {
-            log::error!("sys_fork: Current thread {} not found in any process", current_thread_id);
-            return SyscallResult::Err(3); // ESRCH
+        
+        if current_thread_id == 0 {
+            log::error!("sys_fork: Cannot fork from idle thread");
+            return SyscallResult::Err(22); // EINVAL
         }
-    };
-    
-    log::info!("sys_fork: Found parent process {} (PID {})", parent_process.name, parent_pid.as_u64());
-    
-    // Perform the actual fork
-    drop(manager_guard); // Drop the lock before calling fork to avoid deadlock
-    
-    let mut manager_guard = crate::process::manager();
-    if let Some(ref mut manager) = *manager_guard {
-        match manager.fork_process(parent_pid) {
-            Ok(child_pid) => {
-                // Get the child's thread ID to add to scheduler
-                if let Some(child_process) = manager.get_process(child_pid) {
-                    if let Some(child_thread) = &child_process.main_thread {
-                        let child_thread_id = child_thread.id;
-                        let child_thread_clone = child_thread.clone();
-                        
-                        // Add the child thread to the scheduler
-                        crate::task::scheduler::spawn(Box::new(child_thread_clone));
-                        
-                        log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
-                            parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
-                        
-                        // Return the child PID to the parent
-                        log::info!("sys_fork: Parent process (thread {}) will receive return value: {}", 
-                                   current_thread_id, child_pid.as_u64());
-                        SyscallResult::Ok(child_pid.as_u64())
+        
+        // Find the current process by thread ID
+        let manager_guard = crate::process::manager();
+        let process_info = if let Some(ref manager) = *manager_guard {
+            manager.find_process_by_thread(current_thread_id)
+        } else {
+            log::error!("sys_fork: Process manager not available");
+            return SyscallResult::Err(12); // ENOMEM
+        };
+        
+        let (parent_pid, parent_process) = match process_info {
+            Some((pid, process)) => (pid, process),
+            None => {
+                log::error!("sys_fork: Current thread {} not found in any process", current_thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+        
+        log::info!("sys_fork: Found parent process {} (PID {})", parent_process.name, parent_pid.as_u64());
+        
+        // Drop the lock before creating page table to avoid deadlock
+        drop(manager_guard);
+        
+        // Create the child page table BEFORE re-acquiring the lock
+        // This avoids deadlock during memory allocation
+        log::info!("sys_fork: Creating page table for child process");
+        let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+            Ok(pt) => Box::new(pt),
+            Err(e) => {
+                log::error!("sys_fork: Failed to create child page table: {}", e);
+                return SyscallResult::Err(12); // ENOMEM
+            }
+        };
+        log::info!("sys_fork: Child page table created successfully");
+        
+        // Now re-acquire the lock and complete the fork
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            let rsp_option = if userspace_rsp != 0 { Some(userspace_rsp) } else { None };
+            match manager.fork_process_with_page_table(parent_pid, rsp_option, child_page_table) {
+                Ok(child_pid) => {
+                    // Get the child's thread ID to add to scheduler
+                    if let Some(child_process) = manager.get_process(child_pid) {
+                        if let Some(child_thread) = &child_process.main_thread {
+                            let child_thread_id = child_thread.id;
+                            let child_thread_clone = child_thread.clone();
+                            
+                            // Drop the lock before spawning to avoid issues
+                            drop(manager_guard);
+                            
+                            // Add the child thread to the scheduler
+                            log::info!("sys_fork: Spawning child thread {} to scheduler", child_thread_id);
+                            crate::task::scheduler::spawn(Box::new(child_thread_clone));
+                            log::info!("sys_fork: Child thread spawned successfully");
+                            
+                            log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
+                                parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
+                            
+                            // Return the child PID to the parent
+                            SyscallResult::Ok(child_pid.as_u64())
+                        } else {
+                            log::error!("sys_fork: Child process has no main thread");
+                            SyscallResult::Err(12) // ENOMEM
+                        }
                     } else {
-                        log::error!("sys_fork: Child process has no main thread");
+                        log::error!("sys_fork: Failed to find newly created child process");
                         SyscallResult::Err(12) // ENOMEM
                     }
-                } else {
-                    log::error!("sys_fork: Failed to find newly created child process");
+                }
+                Err(e) => {
+                    log::error!("sys_fork: Failed to fork process: {}", e);
                     SyscallResult::Err(12) // ENOMEM
                 }
             }
-            Err(e) => {
-                log::error!("sys_fork: Failed to fork process: {}", e);
-                SyscallResult::Err(12) // ENOMEM
-            }
+        } else {
+            log::error!("sys_fork: Process manager not available");
+            SyscallResult::Err(12) // ENOMEM
         }
-    } else {
-        log::error!("sys_fork: Process manager not available");
-        SyscallResult::Err(12) // ENOMEM
-    }
-    }) // End of without_interrupts block
+    })
+}
+
+pub fn sys_fork() -> SyscallResult {
+    // Call fork without userspace context (use calculated RSP)
+    sys_fork_with_rsp(0)
 }
 
 /// sys_exec - Replace the current process with a new program
