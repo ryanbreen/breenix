@@ -30,20 +30,15 @@ pub fn init() {
     TSS.init_once(|| {
         let mut tss = TaskStateSegment::new();
         
-        // Set up double fault stack
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
-            const STACK_SIZE: usize = 8192; // 8KB stack (improved from 4KB)
-            static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
-
-            let stack_start = VirtAddr::from_ptr(&raw const STACK);
-            let stack_end = stack_start + STACK_SIZE as u64;
-            stack_end
-        };
+        // Set up double fault stack using per-CPU emergency stack
+        // This will be properly initialized after memory system is up
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = VirtAddr::new(0);
+        // Note: We'll update this later with update_ist_stack()
         
         // Set up privilege level 0 (kernel) stack for syscalls/interrupts from userspace
         // Use the legacy RSP0 field for Ring 3 -> Ring 0 transitions
         tss.privilege_stack_table[0] = {
-            const STACK_SIZE: usize = 16384; // 16KB kernel stack
+            const STACK_SIZE: usize = 32768; // 32KB kernel stack (increased from 16KB)
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
 
             let stack_start = VirtAddr::from_ptr(&raw const STACK);
@@ -158,5 +153,19 @@ pub fn double_fault_stack_top() -> VirtAddr {
     TSS.get()
         .expect("TSS not initialized")
         .interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize]
+}
+
+/// Update the IST stack with the per-CPU emergency stack
+/// This should be called after the memory system is initialized
+pub fn update_ist_stack(stack_top: VirtAddr) {
+    let tss_ptr = TSS_PTR.load(Ordering::Acquire);
+    if !tss_ptr.is_null() {
+        unsafe {
+            (*tss_ptr).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stack_top;
+            log::info!("Updated IST[0] (double fault stack) to {:#x}", stack_top.as_u64());
+        }
+    } else {
+        panic!("TSS not initialized");
+    }
 }
 

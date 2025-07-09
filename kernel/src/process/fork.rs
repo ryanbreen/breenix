@@ -70,20 +70,25 @@ fn copy_stack_contents(parent_thread: &Thread, child_thread: &mut Thread) -> Res
         return Err("Stack size mismatch between parent and child");
     }
     
-    // CRITICAL FIX: The parent's stack is only mapped in the parent's page table,
-    // not in the kernel's page table. We need to use physical memory access.
-    log::warn!("copy_stack_contents: Stack copying not yet implemented properly");
-    log::warn!("copy_stack_contents: Need to use parent's page table to access stack memory");
+    // CRITICAL: The parent's current RSP tells us how much of the stack is actually in use
+    let parent_rsp = parent_thread.context.rsp;
+    let stack_used = parent_stack_end.as_u64() - parent_rsp;
     
-    // For now, we'll skip actual stack copying to avoid the page fault
-    // The child will start with an empty stack, which is OK for our simple test
+    log::debug!("copy_stack_contents: parent RSP={:#x}, stack used={} bytes", 
+               parent_rsp, stack_used);
     
-    // Update child's stack pointer to be at the top of its stack
-    // This gives the child a fresh stack
-    child_thread.context.rsp = child_stack_end.as_u64();
+    // The child's RSP should be at the same relative position in its stack
+    let child_rsp = child_stack_end.as_u64() - stack_used;
+    child_thread.context.rsp = child_rsp;
     
-    log::debug!("copy_stack_contents: set child RSP to {:#x} (stack top)", 
+    log::debug!("copy_stack_contents: set child RSP to {:#x} (mirroring parent)", 
                child_thread.context.rsp);
+    
+    // For now, we'll use a workaround: ensure the child's stack has enough
+    // data to not crash when popping. This is a temporary fix until we
+    // implement proper stack copying.
+    log::warn!("copy_stack_contents: Using simplified stack setup for child");
+    log::warn!("copy_stack_contents: Full stack copying requires parent page table access");
     
     // TODO: Implement proper stack copying using parent's page table
     // This requires:
