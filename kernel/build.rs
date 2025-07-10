@@ -3,6 +3,9 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
+    // Tell Cargo to rerun this build script if BREENIX_TEST changes
+    println!("cargo:rerun-if-env-changed=BREENIX_TEST");
+    
     // Get the output directory
     let out_dir = env::var("OUT_DIR").unwrap();
     

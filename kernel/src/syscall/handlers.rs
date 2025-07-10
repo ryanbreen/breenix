@@ -193,6 +193,23 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     // Log the output for userspace writes
     if let Ok(s) = core::str::from_utf8(&buffer) {
         log::info!("USERSPACE OUTPUT: {}", s.trim_end());
+        
+        // Track output during tests
+        #[cfg(feature = "kernel_tests")]
+        {
+            if crate::test_harness::is_test_mode() {
+                // Get current process ID
+                if let Some(current_thread) = crate::task::scheduler::current_thread_id() {
+                    if let Some(ref manager) = *crate::process::manager() {
+                        if let Some((pid, _)) = manager.find_process_by_thread(current_thread) {
+                            log::debug!("Recording output from process {}", pid.as_u64());
+                            crate::test_harness::TEST_OUTPUT_TRACKER.lock()
+                                .record_output(pid.as_u64());
+                        }
+                    }
+                }
+            }
+        }
     }
     
     SyscallResult::Ok(bytes_written)

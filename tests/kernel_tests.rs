@@ -26,6 +26,11 @@ fn test_page_fault() {
     run_kernel_test("page_fault");
 }
 
+#[test]
+fn test_multiple_processes() {
+    run_kernel_test("multiple_processes");
+}
+
 fn run_kernel_test(test_name: &str) {
     // Acquire lock to ensure only one test runs at a time
     let _lock = QEMU_LOCK.lock().unwrap();
@@ -40,7 +45,16 @@ fn run_kernel_test(test_name: &str) {
     // Wait a moment for processes to die and locks to be released
     thread::sleep(Duration::from_millis(500));
     
+    // Clean the kernel target to ensure fresh build with new env var
+    println!("Cleaning kernel target...");
+    let clean_status = Command::new("cargo")
+        .args(&["clean", "-p", "kernel", "--release"])
+        .status()
+        .expect("Failed to clean kernel");
+    assert!(clean_status.success(), "Clean failed");
+    
     // Build the kernel with the test harness feature and test name
+    println!("Building kernel with BREENIX_TEST=tests={}", test_name);
     let build_status = Command::new("cargo")
         .args(&["build", "--release", "--features", "kernel_tests"])
         .env("BREENIX_TEST", format!("tests={}", test_name))
@@ -48,8 +62,10 @@ fn run_kernel_test(test_name: &str) {
         .expect("Failed to build kernel");
     
     assert!(build_status.success(), "Kernel build failed");
+    println!("Build complete for test: {}", test_name);
     
     // Run QEMU with the test
+    // Important: Also set the env var when running, in case cargo run rebuilds
     let mut qemu = Command::new("cargo")
         .args(&[
             "run",
@@ -62,6 +78,7 @@ fn run_kernel_test(test_name: &str) {
             "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
             "-no-reboot",
         ])
+        .env("BREENIX_TEST", format!("tests={}", test_name))
         .spawn()
         .expect("Failed to start QEMU");
     
