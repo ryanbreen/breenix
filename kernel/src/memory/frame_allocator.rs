@@ -78,12 +78,7 @@ impl BootInfoFrameAllocator {
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
         let current = NEXT_FREE_FRAME.fetch_add(1, Ordering::SeqCst);
-        log::trace!("Frame allocator: Attempting to allocate frame #{}", current);
         let frame = Self::get_usable_frame(current);
-        if let Some(f) = frame {
-            log::trace!("Frame allocator: Allocated frame {:#x} (allocation #{})", 
-                      f.start_address().as_u64(), current);
-        }
         frame
     }
 }
@@ -135,12 +130,6 @@ pub fn allocate_frame() -> Option<PhysFrame> {
     allocator.allocate_frame()
 }
 
-/// Deallocate a physical frame (currently a no-op)
-/// TODO: Implement proper frame deallocation
-pub fn deallocate_frame(_frame: PhysFrame) {
-    // For now, we don't reclaim frames
-    // A proper implementation would add the frame back to a free list
-}
 
 /// A wrapper that allows using the global frame allocator with the mapper
 pub struct GlobalFrameAllocator;

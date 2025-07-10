@@ -70,15 +70,3 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     Ok(pid)
 }
 
-/// Initialize the first user process (init)
-/// 
-/// This creates PID 1 as a proper user process without spawn mechanisms.
-pub fn init_user_process(elf_data: &[u8]) -> Result<ProcessId, &'static str> {
-    log::info!("init_user_process: Creating init process (PID 1)");
-    
-    let pid = create_user_process(String::from("init"), elf_data)?;
-    
-    log::info!("init_user_process: Successfully created init process with PID {}", pid.as_u64());
-    
-    Ok(pid)
-}

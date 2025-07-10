@@ -9,7 +9,6 @@ use core::sync::atomic::{self, AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
 use super::{Process, ProcessId};
-use crate::elf;
 use crate::task::thread::Thread;
 use crate::memory::process_memory::ProcessPageTable;
 
@@ -18,8 +17,6 @@ pub struct ProcessManager {
     /// All processes indexed by PID
     processes: BTreeMap<ProcessId, Process>,
     
-    /// Currently running process
-    current_pid: Option<ProcessId>,
     
     /// Next available PID
     next_pid: AtomicU64,
@@ -27,8 +24,6 @@ pub struct ProcessManager {
     /// Queue of ready processes
     ready_queue: Vec<ProcessId>,
     
-    /// Next available process base address (for virtual address allocation)
-    next_process_base: VirtAddr,
 }
 
 impl ProcessManager {
@@ -36,11 +31,8 @@ impl ProcessManager {
     pub fn new() -> Self {
         ProcessManager {
             processes: BTreeMap::new(),
-            current_pid: None,
             next_pid: AtomicU64::new(1), // PIDs start at 1 (0 is kernel)
             ready_queue: Vec::new(),
-            // Start process virtual addresses at 0x10000000, with 16MB spacing
-            next_process_base: VirtAddr::new(0x10000000),
         }
     }
     
@@ -73,7 +65,7 @@ impl ProcessManager {
         
         // Load the ELF binary into the process's page table
         // Use the standard userspace base address for all processes
-        let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
+        let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
         
         // Create the process
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
@@ -84,13 +76,9 @@ impl ProcessManager {
         
         // Allocate a stack for the process
         use crate::memory::stack;
-        use crate::task::thread::ThreadPrivilege;
         
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        let user_stack = stack::allocate_stack_with_privilege(
-            USER_STACK_SIZE,
-            ThreadPrivilege::User
-        ).map_err(|_| "Failed to allocate user stack")?;
+        let user_stack = stack::allocate_stack(USER_STACK_SIZE).map_err(|_| "Failed to allocate user stack")?;
         
         let stack_top = user_stack.top();
         process.memory_usage.stack_size = USER_STACK_SIZE;
@@ -100,7 +88,6 @@ impl ProcessManager {
         
         // CRITICAL: Map the user stack pages into the process page table
         // The stack was allocated in the kernel page table, but userspace needs it mapped
-        log::debug!("Mapping user stack pages into process page table...");
         if let Some(ref mut page_table) = process.page_table {
             let stack_bottom = stack_top - USER_STACK_SIZE as u64;
             crate::memory::process_memory::map_user_stack_to_process(page_table, stack_bottom, stack_top)
@@ -108,7 +95,6 @@ impl ProcessManager {
                     log::error!("Failed to map user stack to process page table: {}", e);
                     "Failed to map user stack in process page table"
                 })?;
-            log::debug!("✓ User stack mapped in process page table");
         } else {
             return Err("Process page table not available for stack mapping");
         }
@@ -159,7 +145,6 @@ impl ProcessManager {
             })?;
         let kernel_stack_top = kernel_stack.top();
         
-        log::debug!("✓ Allocated kernel stack at {:#x} (globally visible)", kernel_stack_top);
         
         // Store the kernel stack - it will be dropped when the thread is destroyed
         // For now, we'll leak it - TODO: proper cleanup
@@ -190,82 +175,13 @@ impl ProcessManager {
         Ok(thread)
     }
     
-    /// Get the current process ID
-    pub fn current_pid(&self) -> Option<ProcessId> {
-        self.current_pid
-    }
-    
-    /// Set the current process ID (for direct execution)
-    pub fn set_current_pid(&mut self, pid: ProcessId) {
-        self.current_pid = Some(pid);
-        
-        // Update process state
-        if let Some(process) = self.processes.get_mut(&pid) {
-            process.set_running();
-        }
-    }
     
     /// Get a reference to a process
     pub fn get_process(&self, pid: ProcessId) -> Option<&Process> {
         self.processes.get(&pid)
     }
     
-    /// Get a mutable reference to a process
-    pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {
-        self.processes.get_mut(&pid)
-    }
     
-    /// Exit a process with the given exit code
-    pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
-        if let Some(process) = self.processes.get_mut(&pid) {
-            log::info!("Process {} (PID {}) exiting with code {}", 
-                process.name, pid.as_u64(), exit_code);
-            
-            process.terminate(exit_code);
-            
-            // Remove from ready queue
-            self.ready_queue.retain(|&p| p != pid);
-            
-            // If this was the current process, clear it
-            if self.current_pid == Some(pid) {
-                self.current_pid = None;
-            }
-            
-            // TODO: Clean up process resources
-            // - Unmap memory pages
-            // - Close file descriptors
-            // - Signal waiting processes
-            // - Reparent children to init
-        }
-    }
-    
-    /// Get the next ready process to run
-    pub fn schedule_next(&mut self) -> Option<ProcessId> {
-        // Simple round-robin for now
-        if let Some(pid) = self.ready_queue.first().cloned() {
-            // Move to back of queue
-            self.ready_queue.remove(0);
-            self.ready_queue.push(pid);
-            
-            // Update states
-            if let Some(old_pid) = self.current_pid {
-                if let Some(old_process) = self.processes.get_mut(&old_pid) {
-                    if !old_process.is_terminated() {
-                        old_process.set_ready();
-                    }
-                }
-            }
-            
-            if let Some(new_process) = self.processes.get_mut(&pid) {
-                new_process.set_running();
-            }
-            
-            self.current_pid = Some(pid);
-            Some(pid)
-        } else {
-            None
-        }
-    }
     
     /// Get all process IDs
     pub fn all_pids(&self) -> Vec<ProcessId> {
@@ -318,7 +234,6 @@ impl ProcessManager {
                 process.state
             );
         }
-        log::info!("Current PID: {:?}", self.current_pid);
         log::info!("Ready queue: {:?}", self.ready_queue);
     }
     
@@ -329,10 +244,10 @@ impl ProcessManager {
     
     /// Fork a process with a pre-allocated page table
     /// This version accepts a page table created outside the lock to avoid deadlock
-    pub fn fork_process_with_page_table(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>, 
-                                       mut child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {
+    pub fn fork_process_with_page_table(&mut self, parent_pid: ProcessId, _userspace_rsp: Option<u64>, 
+                                       mut _child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need
-        let (parent_name, parent_entry_point, parent_thread_info) = {
+        let (parent_name, parent_entry_point, _parent_thread_info) = {
             let parent = self.processes.get(&parent_pid)
                 .ok_or("Parent process not found")?;
             
@@ -362,7 +277,7 @@ impl ProcessManager {
         #[cfg(feature = "testing")]
         {
             let elf_data = crate::userspace_test::FORK_TEST_ELF;
-            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, child_page_table.as_mut())?;
+            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, _child_page_table.as_mut())?;
             
             // Update the child process entry point to match the loaded ELF
             child_process.entry_point = loaded_elf.entry_point;
@@ -374,10 +289,8 @@ impl ProcessManager {
             return Err("Cannot implement fork without testing feature");
         }
         
-        child_process.page_table = Some(child_page_table);
-        
         // Continue with the rest of the fork logic...
-        self.complete_fork(parent_pid, child_pid, &parent_thread_info, userspace_rsp, child_process)
+        self.complete_fork(parent_pid, child_pid, &_parent_thread_info, _userspace_rsp, child_process)
     }
     
     /// Complete the fork operation after page table is created
@@ -391,10 +304,7 @@ impl ProcessManager {
         const CHILD_STACK_SIZE: usize = 64 * 1024;
         
         // Allocate the stack in the kernel page table first
-        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
-            CHILD_STACK_SIZE,
-            crate::task::thread::ThreadPrivilege::User
-        ).map_err(|_| "Failed to allocate stack for child process")?;
+        let child_stack = crate::memory::stack::allocate_stack(CHILD_STACK_SIZE).map_err(|_| "Failed to allocate stack for child process")?;
         let child_stack_top = child_stack.top();
         let child_stack_bottom = child_stack.bottom();
         
@@ -436,7 +346,6 @@ impl ProcessManager {
                 })?;
             let kernel_stack_top = kernel_stack.top();
             
-            log::debug!("✓ Allocated child kernel stack at {:#x} (globally visible)", kernel_stack_top);
             
             // Store the kernel stack (we'll need to manage this properly later)
             // For now, we'll leak it - TODO: proper cleanup
@@ -609,16 +518,11 @@ impl ProcessManager {
             return Err("Cannot implement fork without testing feature");
         }
         
-        child_process.page_table = Some(child_page_table);
-        
         log::info!("Created page table for child process {}", child_pid.as_u64());
         
         // Create a new stack for the child process (64KB userspace stack)
         const CHILD_STACK_SIZE: usize = 64 * 1024;
-        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
-            CHILD_STACK_SIZE,
-            crate::task::thread::ThreadPrivilege::User
-        ).map_err(|_| "Failed to allocate stack for child process")?;
+        let child_stack = crate::memory::stack::allocate_stack(CHILD_STACK_SIZE).map_err(|_| "Failed to allocate stack for child process")?;
         let child_stack_top = child_stack.top();
         
         // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
@@ -639,10 +543,8 @@ impl ProcessManager {
         // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
         let child_kernel_stack_top = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
             const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16KB kernel stack
-            let kernel_stack = crate::memory::stack::allocate_stack_with_privilege(
-                KERNEL_STACK_SIZE,
-                crate::task::thread::ThreadPrivilege::Kernel
-            ).map_err(|_| "Failed to allocate kernel stack for child thread")?;
+            let kernel_stack = crate::memory::stack::allocate_stack(KERNEL_STACK_SIZE)
+                .map_err(|_| "Failed to allocate kernel stack for child thread")?;
             let kernel_stack_top = kernel_stack.top();
             
             // Store kernel_stack data for later use
@@ -715,8 +617,6 @@ impl ProcessManager {
         // With global kernel page tables, all kernel stacks are automatically visible
         // to all processes through the shared kernel PDPT - no copying needed!
         if let Some(kernel_stack_top) = child_kernel_stack_top {
-            log::debug!("Child kernel stack at {:#x} is globally visible via shared kernel PDPT", 
-                      kernel_stack_top.as_u64());
         }
         
         // Add the child to the ready queue so it can be scheduled
@@ -738,7 +638,8 @@ impl ProcessManager {
         log::info!("exec_process: Replacing process {} with new program", pid.as_u64());
         
         // CRITICAL OS-STANDARD CHECK: Is this the current process?
-        let is_current_process = self.current_pid == Some(pid);
+        // For now, we'll assume it's not the current process since we don't track that anymore
+        let is_current_process = false;
         if is_current_process {
             log::info!("exec_process: Executing on current process - special handling required");
         }
@@ -836,10 +737,8 @@ impl ProcessManager {
         
         // For now, we'll use a dummy stack object since we manually mapped the stack
         // In the future, we should refactor stack allocation to support mapping into specific page tables
-        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
-            4096,  // Dummy size - we already mapped the real stack
-            crate::task::thread::ThreadPrivilege::User
-        ).map_err(|_| "Failed to create stack object")?;
+        let new_stack = crate::memory::stack::allocate_stack(4096)  // Dummy size - we already mapped the real stack
+            .map_err(|_| "Failed to create stack object")?;
         
         // Use our manually calculated stack top
         let new_stack_top = stack_top;

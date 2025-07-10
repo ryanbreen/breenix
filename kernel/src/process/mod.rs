@@ -3,7 +3,6 @@
 //! This module handles process creation, scheduling, and lifecycle management.
 //! A process is a running instance of a program with its own address space.
 
-use alloc::string::String;
 use spin::Mutex;
 
 pub mod process;
@@ -81,36 +80,3 @@ pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>
     PROCESS_MANAGER.try_lock()
 }
 
-/// Create a new user process using the new architecture
-pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
-    creation::create_user_process(name, elf_data)
-}
-
-/// Get the current process ID
-pub fn current_pid() -> Option<ProcessId> {
-    log::trace!("Getting current PID...");
-    log::debug!("current_pid: Acquiring PROCESS_MANAGER lock");
-    let manager_lock = PROCESS_MANAGER.lock();
-    log::debug!("current_pid: PROCESS_MANAGER lock acquired");
-    let manager = manager_lock.as_ref()?;
-    let pid = manager.current_pid();
-    log::trace!("Current PID: {:?}", pid);
-    log::debug!("current_pid: Releasing PROCESS_MANAGER lock");
-    pid
-}
-
-/// Exit the current process
-pub fn exit_current(exit_code: i32) {
-    log::debug!("exit_current called with code {}", exit_code);
-    
-    if let Some(pid) = current_pid() {
-        log::debug!("Current PID is {}", pid.as_u64());
-        if let Some(ref mut manager) = *PROCESS_MANAGER.lock() {
-            manager.exit_process(pid, exit_code);
-        } else {
-            log::error!("Process manager not available!");
-        }
-    } else {
-        log::error!("No current PID set!");
-    }
-}
