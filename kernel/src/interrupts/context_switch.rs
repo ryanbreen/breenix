@@ -278,7 +278,7 @@ fn idle_loop() -> ! {
 #[no_mangle]
 pub extern "C" fn get_next_page_table() -> u64 {
     unsafe {
-        if let Some(frame) = NEXT_PAGE_TABLE.take() {
+        if let Some(frame) = core::mem::replace(unsafe { &mut *(&raw mut NEXT_PAGE_TABLE) }, None) {
             let addr = frame.start_address().as_u64();
             // Log this for debugging
             log::info!("get_next_page_table: Returning page table frame {:#x} for switch", addr);

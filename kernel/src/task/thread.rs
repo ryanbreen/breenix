@@ -9,11 +9,6 @@ use x86_64::VirtAddr;
 /// Global thread ID counter
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is reserved for kernel thread
 
-/// Allocate a new thread ID
-pub fn allocate_thread_id() -> u64 {
-    NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst)
-}
-
 /// Thread states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
@@ -21,8 +16,6 @@ pub enum ThreadState {
     Running,
     /// Thread is ready to run and in scheduler queue
     Ready,
-    /// Thread is blocked waiting for something
-    Blocked,
     /// Thread has terminated
     Terminated,
 }
@@ -255,56 +248,6 @@ impl Thread {
         }
     }
     
-    /// Create a new userspace thread
-    pub fn new_userspace(
-        name: alloc::string::String,
-        entry_point: VirtAddr,
-        stack_top: VirtAddr,
-        tls_block: VirtAddr,
-    ) -> Self {
-        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
-        
-        // For userspace threads, we'll use a simple TLS setup for now
-        // TODO: Properly integrate with the TLS allocation system
-        let actual_tls_block = if tls_block.is_null() {
-            // Allocate a simple TLS block address for this thread
-            VirtAddr::new(0x10000 + id * 0x1000)
-        } else {
-            tls_block
-        };
-        
-        // Register this thread with the TLS system
-        if let Err(e) = crate::tls::register_thread_tls(id, actual_tls_block) {
-            log::warn!("Failed to register thread {} with TLS system: {}", id, e);
-        }
-        
-        // Calculate stack bottom (stack grows down)
-        const USER_STACK_SIZE: usize = 128 * 1024;
-        let stack_bottom = stack_top - USER_STACK_SIZE as u64;
-        
-        // Set up initial context for userspace
-        let context = CpuContext::new(
-            entry_point,
-            stack_top,
-            ThreadPrivilege::User,
-        );
-        
-        Self {
-            id,
-            name,
-            state: ThreadState::Ready,
-            context,
-            stack_top,
-            stack_bottom,
-            kernel_stack_top: None, // Will be set separately
-            tls_block: actual_tls_block,
-            priority: 128, // Default medium priority
-            time_slice: 10, // Default time slice
-            entry_point: None, // Userspace threads don't have kernel entry points
-            privilege: ThreadPrivilege::User,
-        }
-    }
-    
     /// Get the thread ID
     pub fn id(&self) -> u64 {
         self.id
@@ -327,47 +270,9 @@ impl Thread {
         }
     }
     
-    /// Mark thread as blocked
-    pub fn set_blocked(&mut self) {
-        self.state = ThreadState::Blocked;
-    }
-    
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         self.state = ThreadState::Terminated;
-    }
-    
-    /// Create a new thread with a specific ID (used for fork)
-    pub fn new_with_id(
-        id: u64,
-        name: alloc::string::String,
-        entry_point: fn(),
-        stack_top: VirtAddr,
-        stack_bottom: VirtAddr,
-        tls_block: VirtAddr,
-        privilege: ThreadPrivilege,
-    ) -> Self {
-        // Set up initial context
-        let context = CpuContext::new(
-            VirtAddr::new(thread_entry_trampoline as u64),
-            stack_top,
-            privilege,
-        );
-        
-        Self {
-            id,
-            name,
-            state: ThreadState::Ready,
-            context,
-            stack_top,
-            stack_bottom,
-            kernel_stack_top: None, // Will be set separately for userspace threads
-            tls_block,
-            priority: 128, // Default medium priority
-            time_slice: 10, // Default time slice
-            entry_point: Some(entry_point),
-            privilege,
-        }
     }
 }
 

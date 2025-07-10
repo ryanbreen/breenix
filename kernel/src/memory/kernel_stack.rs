@@ -39,8 +39,6 @@ static STACK_BITMAP: Mutex<[u64; BITMAP_SIZE]> =
 pub struct KernelStack {
     /// Index in the bitmap
     index: usize,
-    /// Bottom of the stack (lowest address, above guard page)
-    bottom: VirtAddr,
     /// Top of the stack (highest address)
     top: VirtAddr,
 }
@@ -49,16 +47,6 @@ impl KernelStack {
     /// Get the top of the stack (for RSP initialization)
     pub fn top(&self) -> VirtAddr {
         self.top
-    }
-    
-    /// Get the bottom of the stack
-    pub fn bottom(&self) -> VirtAddr {
-        self.bottom
-    }
-    
-    /// Get the guard page address
-    pub fn guard_page(&self) -> VirtAddr {
-        VirtAddr::new(self.bottom.as_u64() - GUARD_PAGE_SIZE)
     }
 }
 
@@ -136,12 +124,9 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
         }
     }
     
-    log::debug!("Allocated kernel stack {} at {:#x}-{:#x} (guard at {:#x})",
-               index, stack_bottom, stack_top, guard_page);
     
     Ok(KernelStack {
         index,
-        bottom: stack_bottom,
         top: stack_top,
     })
 }
