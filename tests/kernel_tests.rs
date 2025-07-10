@@ -26,6 +26,11 @@ fn test_page_fault() {
     run_kernel_test("page_fault");
 }
 
+#[test]
+fn test_fork() {
+    run_kernel_test("fork");
+}
+
 fn run_kernel_test(test_name: &str) {
     // Acquire lock to ensure only one test runs at a time
     let _lock = QEMU_LOCK.lock().unwrap();
