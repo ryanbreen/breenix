@@ -605,6 +605,23 @@ This will transform Breenix from a kernel with built-in programs to a true OS th
 
 ## Development Workflow
 
+### 🚨 MANDATORY PRE-COMMIT TESTING 🚨
+
+**NEVER commit without running the FULL test suite!**
+
+**Before EVERY Commit:**
+1. **Run the complete test suite**: `cargo test`
+2. **Verify ALL tests pass**:
+   - `test_divide_by_zero` - Exception handling
+   - `test_invalid_opcode` - Exception handling
+   - `test_page_fault` - Exception handling
+   - `test_multiple_processes` - 5 concurrent processes
+3. **Check test output details**:
+   - `test_multiple_processes`: Must see 5 "Hello from userspace!" messages
+   - Exception tests: Must see TEST_MARKER output
+4. **If ANY test fails**: DO NOT COMMIT - fix the issue first
+5. **When adding features**: ADD A TEST to the test harness
+
 ### Branch Strategy
 - `main` branch for stable code
 - Feature branches for all development
@@ -613,6 +630,7 @@ This will transform Breenix from a kernel with built-in programs to a true OS th
 - Co-authorship credits (Ryan Breen + Claude)
 
 ### Code Quality Standards
+- **Run `cargo test` after EVERY change**
 - Zero compiler warnings policy
 - Clean up dead code before merging
 - Follow existing code patterns
