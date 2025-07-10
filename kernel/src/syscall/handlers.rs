@@ -202,6 +202,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 if let Some(current_thread) = crate::task::scheduler::current_thread_id() {
                     if let Some(ref manager) = *crate::process::manager() {
                         if let Some((pid, _)) = manager.find_process_by_thread(current_thread) {
+                            log::debug!("Recording output from process {}", pid.as_u64());
                             crate::test_harness::TEST_OUTPUT_TRACKER.lock()
                                 .record_output(pid.as_u64());
                         }
