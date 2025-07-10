@@ -27,8 +27,8 @@ fn test_page_fault() {
 }
 
 #[test]
-fn test_fork() {
-    run_kernel_test("fork");
+fn test_multiple_processes() {
+    run_kernel_test("multiple_processes");
 }
 
 fn run_kernel_test(test_name: &str) {
