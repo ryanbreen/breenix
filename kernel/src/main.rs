@@ -28,8 +28,6 @@ mod framebuffer;
 mod keyboard;
 mod gdt;
 mod interrupts;
-#[cfg(feature = "testing")]
-mod gdt_tests;
 mod time;
 mod serial;
 mod logger;

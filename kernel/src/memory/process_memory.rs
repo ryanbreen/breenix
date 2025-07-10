@@ -266,7 +266,7 @@ impl ProcessPageTable {
         // Only log for userspace addresses to reduce noise
         if addr.as_u64() < 0x800000000000 {
             match result {
-                Some(phys) => {
+                Some(_phys) => {
                 }
                 None => {
                     // This is the problematic case - let's understand why
@@ -402,7 +402,7 @@ pub fn map_user_stack_to_process(
     let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
     let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
     
-    let mut mapped_pages = 0;
+    let mut _mapped_pages = 0;
     
     // Copy each page mapping from kernel to process page table
     for page in Page::range_inclusive(start_page, end_page) {
@@ -422,7 +422,7 @@ pub fn map_user_stack_to_process(
                     if existing_frame == frame {
                         log::trace!("User stack page {:#x} already mapped correctly to frame {:#x}", 
                             page.start_address().as_u64(), frame.start_address().as_u64());
-                        mapped_pages += 1;
+                        _mapped_pages += 1;
                     } else {
                         log::error!("User stack page {:#x} already mapped to different frame: expected {:#x}, found {:#x}", 
                             page.start_address().as_u64(), frame.start_address().as_u64(), existing_frame.start_address().as_u64());
@@ -432,7 +432,7 @@ pub fn map_user_stack_to_process(
                     // Page not mapped, map it now
                     match process_page_table.map_page(page, frame, flags) {
                         Ok(()) => {
-                            mapped_pages += 1;
+                            _mapped_pages += 1;
                             log::trace!("Mapped user stack page {:#x} -> frame {:#x}", 
                                 page.start_address().as_u64(), frame.start_address().as_u64());
                         }

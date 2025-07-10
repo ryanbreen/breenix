@@ -178,8 +178,8 @@ impl Thread {
         
         // Allocate a kernel stack
         const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16 KiB
-        let stack = crate::memory::alloc_kernel_stack(KERNEL_STACK_SIZE)
-            .ok_or("Failed to allocate kernel stack")?;
+        let stack = crate::memory::stack::allocate_stack(KERNEL_STACK_SIZE)
+            .map_err(|_| "Failed to allocate kernel stack")?;
         
         let stack_top = stack.top();
         let stack_bottom = stack.bottom();

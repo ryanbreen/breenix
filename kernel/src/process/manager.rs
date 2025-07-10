@@ -183,15 +183,6 @@ impl ProcessManager {
     
     
     
-    /// Get all process IDs
-    pub fn all_pids(&self) -> Vec<ProcessId> {
-        self.processes.keys().cloned().collect()
-    }
-    
-    /// Get process count
-    pub fn process_count(&self) -> usize {
-        self.processes.len()
-    }
     
     /// Remove a process from the ready queue
     pub fn remove_from_ready_queue(&mut self, pid: ProcessId) -> bool {
@@ -616,7 +607,7 @@ impl ProcessManager {
         
         // With global kernel page tables, all kernel stacks are automatically visible
         // to all processes through the shared kernel PDPT - no copying needed!
-        if let Some(kernel_stack_top) = child_kernel_stack_top {
+        if let Some(_kernel_stack_top) = child_kernel_stack_top {
         }
         
         // Add the child to the ready queue so it can be scheduled

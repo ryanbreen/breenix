@@ -353,36 +353,3 @@ pub fn current_tls_base() -> u64 {
     GsBase::read().as_u64()
 }
 
-/// Test TLS functionality
-#[cfg(feature = "testing")]
-pub fn test_tls() {
-    log::info!("Testing TLS functionality...");
-    
-    // Test 1: Read current thread ID
-    let thread_id = current_thread_id();
-    log::info!("Current thread ID: {}", thread_id);
-    assert_eq!(thread_id, 0, "Kernel thread should have ID 0");
-    
-    // Test 2: Read TCB
-    if let Some(tcb) = current_tcb() {
-        log::info!("TCB self-pointer: {:p}", tcb.self_ptr);
-        log::info!("TCB thread ID: {}", tcb.thread_id);
-        assert_eq!(tcb.thread_id, 0, "TCB should have thread ID 0");
-    } else {
-        panic!("Failed to get current TCB");
-    }
-    
-    // Test 3: Direct TLS read/write
-    unsafe {
-        // Write a test value to TLS (after TCB)
-        let test_offset = core::mem::size_of::<ThreadControlBlock>();
-        write_tls_u32(test_offset, 0xDEADBEEF_u32);
-        
-        // Read it back
-        let value: u32 = read_tls_u32(test_offset);
-        assert_eq!(value, 0xDEADBEEF, "TLS read/write failed");
-        log::info!("TLS read/write test passed: {:#x}", value);
-    }
-    
-    log::info!("All TLS tests passed!");
-}

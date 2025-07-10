@@ -99,7 +99,7 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
     
     // Calculate addresses
     let slot_base = KERNEL_STACK_BASE + (index as u64 * STACK_SLOT_SIZE);
-    let guard_page = VirtAddr::new(slot_base);
+    let _guard_page = VirtAddr::new(slot_base);
     let stack_bottom = VirtAddr::new(slot_base + GUARD_PAGE_SIZE);
     let stack_top = VirtAddr::new(slot_base + STACK_SLOT_SIZE);
     
