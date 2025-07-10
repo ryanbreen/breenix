@@ -15,8 +15,7 @@ test = false
 
 [features]
 testing = []
-test_divide_by_zero = []
-test_invalid_opcode = []
+kernel_tests = []
 test_page_fault = []
 test_userspace = []
 test_all_exceptions = []

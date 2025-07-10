@@ -42,6 +42,7 @@ mod elf;
 mod userspace_test;
 mod process;
 pub mod test_exec;
+pub mod test_harness;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,12 +52,17 @@ pub enum QemuExitCode {
     Failed = 0x11,
 }
 
-pub fn test_exit_qemu(exit_code: QemuExitCode) {
+pub fn test_exit_qemu(exit_code: QemuExitCode) -> ! {
     use x86_64::instructions::port::Port;
     
     unsafe {
         let mut port = Port::new(0xf4);
         port.write(exit_code as u32);
+    }
+    
+    // Halt the CPU to prevent further execution
+    loop {
+        x86_64::instructions::hlt();
     }
 }
 
@@ -299,30 +305,29 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     log::info!("About to check exception test features...");
     
-    // Test specific exceptions if enabled
-    #[cfg(feature = "test_divide_by_zero")]
+    // Check if we should run kernel tests
+    // For now, we'll use a feature flag until we confirm command line support
+    #[cfg(feature = "kernel_tests")]
     {
-        log::info!("Testing divide by zero exception...");
-        unsafe {
-            // Use inline assembly to trigger divide by zero
-            core::arch::asm!(
-                "mov rax, 1",
-                "xor rdx, rdx",
-                "xor rcx, rcx",
-                "div rcx",  // Divide by zero
-            );
-        }
-        log::error!("SHOULD NOT REACH HERE - divide by zero should have triggered exception");
+        log::warn!("Kernel test mode enabled - running tests");
+        
+        // For testing, use an environment variable set at compile time
+        // This can be overridden by setting BREENIX_TEST at build time
+        let test_cmdline = match option_env!("BREENIX_TEST") {
+            Some(test) => test,
+            None => "tests=all", // Default to running all tests
+        };
+        
+        log::warn!("Test command line: {}", test_cmdline);
+        
+        let tests = test_harness::get_all_tests();
+        test_harness::run_tests(&tests, test_cmdline);
+        
+        // If we reach here, no tests were selected or run
+        log::warn!("Test harness completed");
     }
     
-    #[cfg(feature = "test_invalid_opcode")]
-    {
-        log::info!("Testing invalid opcode exception...");
-        unsafe {
-            core::arch::asm!("ud2");
-        }
-        log::error!("SHOULD NOT REACH HERE - invalid opcode should have triggered exception");
-    }
+    
     
     #[cfg(feature = "test_page_fault")]
     {

@@ -97,7 +97,14 @@ impl CombinedLogger {
 
 impl Log for CombinedLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Trace
+        #[cfg(feature = "kernel_tests")]
+        {
+            metadata.level() <= Level::Warn
+        }
+        #[cfg(not(feature = "kernel_tests"))]
+        {
+            metadata.level() <= Level::Trace
+        }
     }
 
     fn log(&self, record: &Record) {
@@ -199,6 +206,12 @@ pub fn init_early() {
     // Set up the logger immediately so all log calls work
     log::set_logger(&COMBINED_LOGGER)
         .expect("Logger already set");
+    
+    // Use WARN level for tests to reduce noise
+    #[cfg(feature = "kernel_tests")]
+    log::set_max_level(LevelFilter::Warn);
+    
+    #[cfg(not(feature = "kernel_tests"))]
     log::set_max_level(LevelFilter::Trace);
 }
 

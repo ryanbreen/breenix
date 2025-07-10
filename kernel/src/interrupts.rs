@@ -201,27 +201,29 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFrame) {
     log::error!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
-    #[cfg(feature = "test_divide_by_zero")]
-    {
-        log::info!("TEST_MARKER: DIVIDE_BY_ZERO_HANDLED");
+    
+    // Check if we're in test mode
+    if crate::test_harness::is_test_mode() {
+        log::warn!("TEST_MARKER: DIVIDE_BY_ZERO_HANDLED");
         // For testing, we'll exit cleanly instead of panicking
         crate::test_exit_qemu(crate::QemuExitCode::Success);
+    } else {
+        panic!("Kernel halted due to divide by zero exception");
     }
-    #[cfg(not(feature = "test_divide_by_zero"))]
-    panic!("Kernel halted due to divide by zero exception");
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
     log::error!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}", 
         stack_frame.instruction_pointer.as_u64(), stack_frame);
-    #[cfg(feature = "test_invalid_opcode")]
-    {
-        log::info!("TEST_MARKER: INVALID_OPCODE_HANDLED");
+    
+    // Check if we're in test mode
+    if crate::test_harness::is_test_mode() {
+        log::warn!("TEST_MARKER: INVALID_OPCODE_HANDLED");
         crate::test_exit_qemu(crate::QemuExitCode::Success);
-    }
-    #[cfg(not(feature = "test_invalid_opcode"))]
-    loop {
-        x86_64::instructions::hlt();
+    } else {
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
 }
 
@@ -251,6 +253,12 @@ extern "x86-interrupt" fn page_fault_handler(
     log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
     log::error!("CS: {:#x}", stack_frame.code_segment.0);
     log::error!("{:#?}", stack_frame);
+    
+    // Check if we're in test mode
+    if crate::test_harness::is_test_mode() {
+        log::warn!("TEST_MARKER: PAGE_FAULT_HANDLED");
+        crate::test_exit_qemu(crate::QemuExitCode::Success);
+    }
     
     #[cfg(feature = "test_page_fault")]
     {
