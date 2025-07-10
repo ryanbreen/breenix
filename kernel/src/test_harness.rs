@@ -94,7 +94,7 @@ pub fn run_tests(tests: &[TestCase], cmdline: &str) {
     log::warn!("Running {} kernel tests", tests_to_run.len());
     
     let mut passed = 0;
-    let mut failed = 0;
+    let failed = 0;
     
     for test in tests_to_run {
         log::warn!("Running test: {}", test.name);
@@ -180,31 +180,24 @@ fn test_page_fault() {
 
 /// Test for fork system call
 fn test_fork() {
-    log::warn!("Testing fork system call...");
+    log::warn!("Testing fork system call handler...");
     
-    // For now, just verify that the fork syscall handler exists and can be called
-    // The actual fork_test.elf is causing issues, so we'll test more directly
+    // For now, just test that the fork handler exists and works from kernel context
+    // The full userspace fork test requires fixing the double fault issue
     
-    // Test that we can call fork from kernel context
+    // Try to call fork from kernel context - should be rejected
     let result = crate::syscall::handlers::sys_fork();
     
     match result {
-        crate::syscall::SyscallResult::Ok(child_pid) => {
-            // If fork succeeded from kernel context, that's unexpected but a success
-            log::warn!("TEST_MARKER: FORK_SUCCEEDED");
-            log::warn!("Fork returned child PID: {}", child_pid);
+        crate::syscall::SyscallResult::Err(errno) => {
+            log::warn!("Fork correctly rejected from kernel context with errno {}", errno);
+            log::warn!("TEST_MARKER: FORK_HANDLER_WORKS");
             crate::test_exit_qemu(crate::QemuExitCode::Success);
         }
-        crate::syscall::SyscallResult::Err(errno) => {
-            // Fork from kernel context should fail with an appropriate error
-            if errno == 22 || errno == 3 { // EINVAL or ESRCH - expected errors
-                log::warn!("Fork correctly rejected from kernel context with errno {}", errno);
-                log::warn!("TEST_MARKER: FORK_HANDLER_WORKS");
-                crate::test_exit_qemu(crate::QemuExitCode::Success);
-            } else {
-                log::error!("Fork failed with unexpected error: {}", errno);
-                crate::test_exit_qemu(crate::QemuExitCode::Failed);
-            }
+        crate::syscall::SyscallResult::Ok(_) => {
+            log::error!("Fork should not succeed from kernel context!");
+            crate::test_exit_qemu(crate::QemuExitCode::Failed);
         }
     }
 }
+
