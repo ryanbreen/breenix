@@ -325,24 +325,35 @@ When implementing new features, the build/test loop is KEY to our development pr
 
 ### Development Workflow
 
-## 🚨 MANDATORY PRE-COMMIT TESTING 🚨
+## 🚨 MANDATORY PRE-COMMIT TESTING & CLEAN BUILD 🚨
 
-**NEVER commit without running the FULL test suite!**
+**NEVER commit without BOTH clean builds AND passing tests!**
 
 ### Before EVERY Commit:
-1. **Run the complete test suite**:
+
+1. **Ensure ZERO compiler warnings**:
+   ```bash
+   cargo build 2>&1 | grep -E "(warning|error)" || echo "BUILD CLEAN!"
+   ```
+   - If ANY warnings appear: DO NOT COMMIT - fix them first
+   - We maintain a zero-warning policy for code quality
+
+2. **Run the complete test suite**:
    ```bash
    cargo test
    ```
-2. **Verify ALL tests pass**:
+   
+3. **Verify ALL tests pass**:
    - `test_divide_by_zero` - Exception handling works
    - `test_invalid_opcode` - Exception handling works
    - `test_page_fault` - Exception handling works
    - `test_multiple_processes` - 5 processes run concurrently
-3. **Check test output** - Don't just look for green checkmarks:
+   
+4. **Check test output** - Don't just look for green checkmarks:
    - For `test_multiple_processes`: Verify you see 5 "Hello from userspace!" messages
    - For exception tests: Verify you see the TEST_MARKER output
-4. **If ANY test fails**: DO NOT COMMIT - fix the issue first
+   
+5. **If ANY warnings OR test failures**: DO NOT COMMIT - fix the issues first
 
 ### Standard Development Workflow:
 1. Kernel code changes are made in `kernel/src/`

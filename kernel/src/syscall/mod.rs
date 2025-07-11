@@ -21,6 +21,7 @@ pub enum SyscallNumber {
     Fork = 5,
     Exec = 11,    // Linux syscall number for execve
     GetPid = 39,  // Linux syscall number for getpid
+    Spawn = 57,   // Using clone() syscall number for spawn
     GetTid = 186, // Linux syscall number for gettid
 }
 
@@ -37,6 +38,7 @@ impl SyscallNumber {
             5 => Some(Self::Fork),
             11 => Some(Self::Exec),
             39 => Some(Self::GetPid),
+            57 => Some(Self::Spawn),
             186 => Some(Self::GetTid),
             _ => None,
         }

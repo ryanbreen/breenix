@@ -41,7 +41,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
     - Resolved unreachable code warnings in syscall handlers
     - Added #[allow(dead_code)] only for legitimate future APIs
     - Fixed a critical userspace execution regression during cleanup
-  - **Result**: 
+  - **Result**:
     - ✅ Zero compiler warnings - completely clean build
     - ✅ All tests pass, including critical multiple_processes test
     - ✅ Improved code clarity and maintainability
@@ -56,7 +56,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
     - **O(1) kernel mappings**: New map_kernel_page() API makes mappings instantly visible to all processes
     - **Bitmap stack allocator**: Kernel stacks at 0xffffc900_0000_0000 with 8KB stacks + 4KB guard pages
     - **Per-CPU emergency stacks**: IST[0] uses per-CPU stacks at 0xffffc980_xxxx_xxxx
-  - **Result**: 
+  - **Result**:
     - ✅ Multiple concurrent processes run without double faults
     - ✅ Both hello_time processes execute successfully
     - ✅ Clean exits with code 0
@@ -67,7 +67,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
   - **Root Cause**: Process page tables missing critical kernel mappings
   - **Issue**: Timer interrupt handler crashed after switching to process page table
   - **Solution**: Copy ALL kernel-only PML4 entries (those without USER_ACCESSIBLE flag)
-  - **Result**: 
+  - **Result**:
     - ✅ Userspace processes now execute successfully
     - ✅ "Hello from userspace!" messages print with timestamps
     - ✅ System calls work (exit syscall completes successfully)
@@ -89,7 +89,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
     - Result: ✅ Multiple processes can be created without conflicts
   - **ACHIEVED: Proper OS-Standard Page Table Architecture**
     - ✅ Kernel space entries (256+): Shared safely between processes
-    - ✅ Essential low memory (entry 0): Deep copied selectively for isolation  
+    - ✅ Essential low memory (entry 0): Deep copied selectively for isolation
     - ✅ Other user space entries: Clean address spaces for each process
     - ✅ No "PageAlreadyMapped" errors in latest kernel runs
     - ✅ Context switching works between multiple processes
@@ -188,7 +188,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
   - **Performance Optimized**: Only copies first 16MB containing kernel code, skips bootloader huge pages
   - **Result**: ✅ No more "PageAlreadyMapped" errors, multiple processes can coexist
        - Map out current PML4 entry usage
-    
+
     2. **Deep Copy Implementation**:
        - When creating new process, allocate fresh L4 table
        - For kernel entries (256-511), must deep copy:
@@ -196,18 +196,18 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
          - Copy L3 entries, allocating new L2 tables
          - Only share L1 entries (actual physical pages)
        - For user entries (0-255), start empty
-    
+
     3. **Fix Current Bug**:
        - Current code just copies PML4 entries (shares L3 tables)
        - Must implement recursive copying to create isolated tables
        - This is why second process gets "already mapped" errors
-    
+
     4. **Why This Is The Only Correct Solution**:
        - **Security**: Process isolation is fundamental to OS security
        - **Stability**: Shared tables mean one process can corrupt another
        - **Standards**: Every production OS uses this approach (Linux, BSD, Windows)
        - **No Shortcuts**: Any "workaround" violates our core principle
-  
+
   - **Expected Outcome**:
     - Each process has completely independent page tables
     - Multiple processes can load code at the same virtual address
@@ -228,7 +228,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
     - Added SYS_EXEC constant (11) to libbreenix.rs
     - Added syscall2 function for 2-argument syscalls
     - Added sys_exec wrapper function: `sys_exec(path: &str, args: &str) -> u64`
-  
+
   - **IMPLEMENTED: Fork test integration with exec**
     - Modified fork_test.rs to exec hello_time.elf in child process
     - Child process now calls `sys_exec("/userspace/tests/hello_time.elf", "")`
@@ -283,7 +283,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
    - Profile context switching overhead
    - Optimize TLB flushing strategies
    - Implement lazy FPU state saving
- 
+
 
 **CURRENT STATUS:**
 ```
@@ -778,7 +778,7 @@ Each phase is considered complete when:
 
 ### Overall Project Milestones
 1. **"Hello World" OS** ✅ - Can print to screen
-2. **Interactive OS** ✅ - Can respond to keyboard  
+2. **Interactive OS** ✅ - Can respond to keyboard
 3. **Multitasking OS** ✅ - Can run multiple programs
 4. **Process Creation OS** ✅ - Has fork() and exec() (NEW!)
 5. **Storage OS** 🎯 - Can load programs from disk (NEXT)

@@ -95,7 +95,7 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// Special key combinations:
 /// - Ctrl+C: Interrupt signal
 /// - Ctrl+D: End of input
-/// - Ctrl+S: Suspend output
+/// - Ctrl+S: Test spawn system call
 /// - Ctrl+T: Time debug information
 /// - Ctrl+M: Memory debug information
 /// - Ctrl+U: Run userspace test program
@@ -118,7 +118,9 @@ pub async fn keyboard_task() {
                 } else if event.is_ctrl_d() {
                     log::info!("Ctrl+D pressed - end of input");
                 } else if event.is_ctrl_s() {
-                    log::info!("Ctrl+S pressed - suspend output");
+                    log::info!("Ctrl+S pressed - testing spawn system call");
+                    crate::userspace_test::test_spawn();
+                    log::info!("Spawn test scheduled. Press keys to continue...");
                 } else if event.is_ctrl_t() {
                     log::info!("Ctrl+T pressed - showing time debug info");
                     crate::time::debug_time_info();

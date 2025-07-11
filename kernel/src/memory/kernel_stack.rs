@@ -1,7 +1,7 @@
 //! Kernel stack allocator with bitmap management
 //! 
 //! Reserves VA range 0xffffc900_0000_0000 – 0xffffc900_00ff_ffff for kernel stacks.
-//! Each stack gets 8 KiB RW page + 4 KiB guard page (total 12 KiB per stack).
+//! Each stack gets 32 KiB RW pages + 4 KiB guard page (total 36 KiB per stack).
 
 use x86_64::{
     structures::paging::PageTableFlags,
@@ -16,8 +16,8 @@ const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 /// End address for kernel stack allocation (16 MiB total space)
 const KERNEL_STACK_END: u64 = 0xffffc900_0100_0000;
 
-/// Size of each kernel stack (8 KiB)
-const KERNEL_STACK_SIZE: u64 = 8 * 1024;
+/// Size of each kernel stack (32 KiB)
+const KERNEL_STACK_SIZE: u64 = 32 * 1024;
 
 /// Size of guard page (4 KiB)
 const GUARD_PAGE_SIZE: u64 = 4 * 1024;
