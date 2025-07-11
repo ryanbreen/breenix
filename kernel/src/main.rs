@@ -382,6 +382,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
         test_exec::test_userspace_fork();
         log::info!("Userspace fork test completed.");
+        
+        // Test spawn syscall
+        log::info!("=== USERSPACE TEST: Spawn syscall ===");
+        userspace_test::test_spawn();
+        log::info!("Spawn test completed.");
     });
     
     // Give the scheduler a chance to run the created processes
@@ -413,6 +418,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("  Ctrl+U - Run single userspace test");
         log::info!("  Ctrl+F - Test fork() system call");
         log::info!("  Ctrl+E - Test exec() system call");
+        log::info!("  Ctrl+S - Test spawn() system call");
+        log::info!("  Ctrl+X - Test fork+exec pattern");
+        log::info!("  Ctrl+H - Test shell-style fork+exec");
         log::info!("  Ctrl+T - Show time debug info");
         log::info!("  Ctrl+M - Show memory debug info");
     }

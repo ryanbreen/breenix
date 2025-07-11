@@ -535,3 +535,60 @@ pub fn sys_gettid() -> SyscallResult {
     log::error!("sys_gettid: No current thread");
     SyscallResult::Ok(0) // Return 0 as fallback
 }
+
+/// sys_spawn - Create a new process from an ELF binary (combines fork+exec)
+/// 
+/// This is a more efficient alternative to fork+exec, creating a new process
+/// directly from an ELF binary without copying the parent's address space.
+/// 
+/// Parameters:
+/// - path_ptr: pointer to path string (currently unused, uses embedded ELF)
+/// - elf_data_ptr: pointer to ELF data in memory
+/// 
+/// Returns: PID of the new process on success, error code on failure
+pub fn sys_spawn(path_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
+    log::info!("sys_spawn called: path_ptr={:#x}, elf_data_ptr={:#x}", path_ptr, elf_data_ptr);
+    
+    // For now, we'll use embedded test programs
+    // In a real implementation, we'd load from filesystem
+    #[cfg(feature = "testing")]
+    let elf_data = if path_ptr != 0 {
+        // Try to determine which program to load based on path
+        // For now, default to hello_time.elf
+        log::info!("sys_spawn: Using hello_time.elf for spawn");
+        crate::userspace_test::HELLO_TIME_ELF
+    } else if elf_data_ptr != 0 {
+        // In a real implementation, we'd copy from user memory
+        log::error!("sys_spawn: Direct ELF data not yet supported");
+        return SyscallResult::Err(22); // EINVAL
+    } else {
+        // Default to hello_world for testing
+        log::info!("sys_spawn: Using hello_world.elf as default");
+        crate::userspace_test::HELLO_WORLD_ELF
+    };
+    
+    #[cfg(not(feature = "testing"))]
+    {
+        log::error!("sys_spawn: Testing feature not enabled");
+        return SyscallResult::Err(22); // EINVAL
+    }
+    
+    #[cfg(feature = "testing")]
+    {
+        // Generate a process name
+        let process_name = alloc::string::String::from("spawned_process");
+        
+        // Create the new process directly
+        match crate::process::creation::create_user_process(process_name, elf_data) {
+            Ok(pid) => {
+                log::info!("✓ sys_spawn: Successfully created process with PID {}", pid.as_u64());
+                log::info!("✓ sys_spawn: New process will execute hello_time.elf");
+                SyscallResult::Ok(pid.as_u64())
+            }
+            Err(e) => {
+                log::error!("✗ sys_spawn: Failed to create process: {}", e);
+                SyscallResult::Err(12) // ENOMEM
+            }
+        }
+    }
+}

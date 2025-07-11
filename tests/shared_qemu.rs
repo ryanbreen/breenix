@@ -61,6 +61,8 @@ pub fn get_kernel_output() -> &'static str {
             let mut child = Command::new("cargo")
                 .args(&[
                     "run",
+                    "--features",
+                    "testing",
                     "--bin",
                     "qemu-uefi",
                     "--",
