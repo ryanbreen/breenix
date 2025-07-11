@@ -388,7 +388,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                    program_name_ptr, elf_data_ptr);
         
         // Get current process and thread
-        let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        let _current_thread_id = match crate::task::scheduler::current_thread_id() {
             Some(id) => id,
             None => {
                 log::error!("sys_exec: No current thread");
@@ -404,24 +404,24 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         
         // For testing purposes, we'll check the program name to select the right ELF
         // In a real implementation, this would come from the filesystem
-        let elf_data = if program_name_ptr != 0 {
+        
+        #[cfg(not(feature = "testing"))]
+        {
+            log::error!("sys_exec: Testing feature not enabled");
+            return SyscallResult::Err(22); // EINVAL
+        }
+        
+        #[cfg(feature = "testing")]
+        let _elf_data = if program_name_ptr != 0 {
             // Try to read the program name from userspace
             // For now, we'll just use a simple check
             log::info!("sys_exec: Program name requested, checking for known programs");
             
             // HACK: For now, we'll assume if program_name_ptr is provided,
             // it's asking for hello_time.elf
-            #[cfg(feature = "testing")]
-            {
-                log::info!("sys_exec: Using hello_time.elf for exec test");
-                // Use the statically embedded hello_time.elf
-                crate::userspace_test::HELLO_TIME_ELF
-            }
-            #[cfg(not(feature = "testing"))]
-            {
-                log::error!("sys_exec: Testing feature not enabled");
-                return SyscallResult::Err(22); // EINVAL
-            }
+            log::info!("sys_exec: Using hello_time.elf for exec test");
+            // Use the statically embedded hello_time.elf
+            crate::userspace_test::HELLO_TIME_ELF
         } else if elf_data_ptr != 0 {
             // In a real implementation, we'd safely copy from user memory
             log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
@@ -430,26 +430,19 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             return SyscallResult::Err(22); // EINVAL
         } else {
             // Use embedded test program for now
-            #[cfg(feature = "testing")]
-            {
-                log::info!("sys_exec: Using embedded hello_world test program");
-                crate::userspace_test::HELLO_WORLD_ELF
-            }
-            #[cfg(not(feature = "testing"))]
-            {
-                log::error!("sys_exec: No ELF data provided and testing feature not enabled");
-                return SyscallResult::Err(22); // EINVAL
-            }
+            log::info!("sys_exec: Using embedded hello_world test program");
+            crate::userspace_test::HELLO_WORLD_ELF
         };
         
         // Find current process
+        #[cfg(feature = "testing")]
         let current_pid = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
-                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                if let Some((pid, _)) = manager.find_process_by_thread(_current_thread_id) {
                     pid
                 } else {
-                    log::error!("sys_exec: Thread {} not found in any process", current_thread_id);
+                    log::error!("sys_exec: Thread {} not found in any process", _current_thread_id);
                     return SyscallResult::Err(3); // ESRCH
                 }
             } else {
@@ -458,36 +451,39 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             }
         };
         
-        log::info!("sys_exec: Replacing process {} (thread {}) with new program", 
-                   current_pid.as_u64(), current_thread_id);
-        
-        // Replace the process's address space
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            match manager.exec_process(current_pid, elf_data) {
-                Ok(new_entry_point) => {
-                    log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
-                               new_entry_point);
-                    
-                    // CRITICAL OS-STANDARD VIOLATION:
-                    // exec() should NEVER return on success - the process is completely replaced
-                    // In a proper implementation, exec_process would:
-                    // 1. Replace the address space
-                    // 2. Update the thread context
-                    // 3. Jump directly to the new program (never returning here)
-                    // 
-                    // For now, we return success, but this violates POSIX semantics
-                    // The interrupt return path will handle the actual switch
-                    SyscallResult::Ok(0)
+        #[cfg(feature = "testing")]
+        {
+            log::info!("sys_exec: Replacing process {} (thread {}) with new program", 
+                       current_pid.as_u64(), _current_thread_id);
+            
+            // Replace the process's address space
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                match manager.exec_process(current_pid, _elf_data) {
+                    Ok(new_entry_point) => {
+                        log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
+                                   new_entry_point);
+                        
+                        // CRITICAL OS-STANDARD VIOLATION:
+                        // exec() should NEVER return on success - the process is completely replaced
+                        // In a proper implementation, exec_process would:
+                        // 1. Replace the address space
+                        // 2. Update the thread context
+                        // 3. Jump directly to the new program (never returning here)
+                        // 
+                        // For now, we return success, but this violates POSIX semantics
+                        // The interrupt return path will handle the actual switch
+                        SyscallResult::Ok(0)
+                    }
+                    Err(e) => {
+                        log::error!("sys_exec: Failed to exec process: {}", e);
+                        SyscallResult::Err(12) // ENOMEM
+                    }
                 }
-                Err(e) => {
-                    log::error!("sys_exec: Failed to exec process: {}", e);
-                    SyscallResult::Err(12) // ENOMEM
-                }
+            } else {
+                log::error!("sys_exec: Process manager not available");
+                SyscallResult::Err(12) // ENOMEM
             }
-        } else {
-            log::error!("sys_exec: Process manager not available");
-            SyscallResult::Err(12) // ENOMEM
         }
     })
 }

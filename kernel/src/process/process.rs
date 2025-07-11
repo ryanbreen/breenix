@@ -55,6 +55,7 @@ pub struct Process {
     pub parent: Option<ProcessId>,
     
     /// Child processes
+    #[allow(dead_code)]
     pub children: Vec<ProcessId>,
     
     /// Exit code (if terminated)
@@ -112,6 +113,7 @@ impl Process {
     
     
     /// Add a child process
+    #[allow(dead_code)]
     pub fn add_child(&mut self, child_id: ProcessId) {
         self.children.push(child_id);
     }

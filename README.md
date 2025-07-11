@@ -15,15 +15,48 @@ See [docs/planning/PROJECT_ROADMAP.md](docs/planning/PROJECT_ROADMAP.md) for cur
 
 ## Quick Start
 
-```bash
-# Run with QEMU (UEFI mode)
-cargo run --bin qemu-uefi
+### Running Breenix Interactively
 
-# Run tests
+```bash
+# Run Breenix in UEFI mode with display
+cargo run --release --bin qemu-uefi
+
+# Run Breenix in UEFI mode headless (recommended for development)
+cargo run --release --bin qemu-uefi -- -serial stdio -display none
+
+# Run with testing features enabled (includes userspace test programs)
+cargo run --release --features testing --bin qemu-uefi -- -serial stdio -display none
+```
+
+### Interactive Commands
+
+When running interactively, you can use these keyboard shortcuts:
+- `Ctrl+P` - Test multiple concurrent processes
+- `Ctrl+U` - Run single userspace test
+- `Ctrl+F` - Test fork() system call
+- `Ctrl+E` - Test exec() system call
+- `Ctrl+X` - Test fork+exec pattern
+- `Ctrl+H` - Test shell-style fork+exec
+- `Ctrl+T` - Show time debug info
+- `Ctrl+M` - Show memory debug info
+
+### Running Tests
+
+```bash
+# Run all tests (uses shared QEMU instance for efficiency)
 cargo test
 
-# Build with userspace programs
-cargo build --features testing
+# Run specific test
+cargo test test_name
+
+# Run kernel tests with specific test harness
+cargo test --test kernel_tests
+
+# Run a specific kernel test (e.g., multiple_processes)
+cargo test test_multiple_processes --test kernel_tests
+
+# Run tests with visual QEMU window
+BREENIX_VISUAL_TEST=1 cargo test
 ```
 
 ## Documentation
