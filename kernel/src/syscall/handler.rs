@@ -128,8 +128,3 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // Note: Context switches after sys_yield happen on the next timer interrupt
 }
 
-// Assembly functions defined in entry.s
-extern "C" {
-    pub fn syscall_entry();
-    pub fn syscall_return_to_userspace(user_rip: u64, user_rsp: u64, user_rflags: u64) -> !;
-}

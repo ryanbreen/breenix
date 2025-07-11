@@ -29,10 +29,6 @@ pub enum ProcessState {
     Creating,
     /// Process is ready to run
     Ready,
-    /// Process is currently running
-    Running,
-    /// Process is blocked waiting for something
-    Blocked,
     /// Process has terminated
     Terminated(i32), // exit code
 }
@@ -54,13 +50,12 @@ pub struct Process {
     /// Main thread of the process
     pub main_thread: Option<Thread>,
     
-    /// Additional threads (for future multi-threading support)
-    pub threads: Vec<u64>, // Thread IDs
     
     /// Parent process ID (if any)
     pub parent: Option<ProcessId>,
     
     /// Child processes
+    #[allow(dead_code)]
     pub children: Vec<ProcessId>,
     
     /// Exit code (if terminated)
@@ -81,8 +76,6 @@ pub struct Process {
 pub struct MemoryUsage {
     /// Size of loaded program segments in bytes
     pub code_size: usize,
-    /// Size of allocated heap in bytes
-    pub heap_size: usize,
     /// Size of allocated stack in bytes
     pub stack_size: usize,
 }
@@ -96,7 +89,6 @@ impl Process {
             state: ProcessState::Creating,
             entry_point,
             main_thread: None,
-            threads: Vec::new(),
             parent: None,
             children: Vec::new(),
             exit_code: None,
@@ -112,20 +104,6 @@ impl Process {
         self.state = ProcessState::Ready;
     }
     
-    /// Mark process as running
-    pub fn set_running(&mut self) {
-        self.state = ProcessState::Running;
-    }
-    
-    /// Mark process as blocked
-    pub fn set_blocked(&mut self) {
-        self.state = ProcessState::Blocked;
-    }
-    
-    /// Mark process as ready
-    pub fn set_ready(&mut self) {
-        self.state = ProcessState::Ready;
-    }
     
     /// Terminate the process
     pub fn terminate(&mut self, exit_code: i32) {
@@ -133,18 +111,11 @@ impl Process {
         self.exit_code = Some(exit_code);
     }
     
-    /// Check if process is terminated
-    pub fn is_terminated(&self) -> bool {
-        matches!(self.state, ProcessState::Terminated(_))
-    }
     
     /// Add a child process
+    #[allow(dead_code)]
     pub fn add_child(&mut self, child_id: ProcessId) {
         self.children.push(child_id);
     }
     
-    /// Remove a child process
-    pub fn remove_child(&mut self, child_id: ProcessId) {
-        self.children.retain(|&id| id != child_id);
-    }
 }

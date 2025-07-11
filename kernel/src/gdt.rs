@@ -148,12 +148,6 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
     }
 }
 
-#[cfg(feature = "testing")]
-pub fn double_fault_stack_top() -> VirtAddr {
-    TSS.get()
-        .expect("TSS not initialized")
-        .interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize]
-}
 
 /// Update the IST stack with the per-CPU emergency stack
 /// This should be called after the memory system is initialized

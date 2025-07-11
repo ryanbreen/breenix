@@ -75,10 +75,6 @@ pub fn phys_to_virt(phys: PhysAddr, offset: VirtAddr) -> VirtAddr {
     VirtAddr::new(phys.as_u64() + offset.as_u64())
 }
 
-/// Allocate a kernel stack
-pub fn alloc_kernel_stack(size: usize) -> Option<stack::GuardedStack> {
-    stack::allocate_stack(size).ok()
-}
 
 /// Display comprehensive memory debug information
 pub fn debug_memory_info() {
