@@ -36,5 +36,6 @@ pub fn dispatch_syscall(
         SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
         SyscallNumber::GetPid => handlers::sys_getpid(),
         SyscallNumber::GetTid => handlers::sys_gettid(),
+        SyscallNumber::Spawn => handlers::sys_spawn(arg1, arg2),
     }
 }

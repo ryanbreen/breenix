@@ -17,6 +17,9 @@ pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.el
 #[cfg(feature = "testing")]
 pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
 
+#[cfg(feature = "testing")]
+pub static SPAWN_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/spawn_test.elf");
+
 // Add test to ensure binaries are included
 #[cfg(feature = "testing")]
 fn _test_binaries_included() {
@@ -25,6 +28,7 @@ fn _test_binaries_included() {
     assert!(COUNTER_ELF.len() > 0, "counter.elf not included");
     assert!(SPINNER_ELF.len() > 0, "spinner.elf not included");
     assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
+    assert!(SPAWN_TEST_ELF.len() > 0, "spawn_test.elf not included");
 }
 
 
@@ -174,6 +178,35 @@ pub fn test_fork_debug() {
     }
     
     log::info!("Fork test completed - no userspace process testing available without --features testing");
+}
+
+/// Test spawn system call
+#[cfg(feature = "testing")]
+pub fn test_spawn() {
+    log::info!("=== Testing Spawn System Call ===");
+    
+    use alloc::string::String;
+    
+    log::info!("Creating process that will test spawn() syscall...");
+    
+    match crate::process::creation::create_user_process(
+        String::from("spawn_test"), 
+        SPAWN_TEST_ELF
+    ) {
+        Ok(pid) => {
+            log::info!("✓ Created spawn test process with PID {}", pid.as_u64());
+            log::info!("Spawn test will create multiple processes using spawn() syscall");
+            log::info!("Each spawned process runs hello_time.elf");
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create spawn test process: {}", e);
+        }
+    }
+}
+
+#[cfg(not(feature = "testing"))]
+pub fn test_spawn() {
+    log::warn!("Spawn test not available - compile with --features testing");
 }
 
 
