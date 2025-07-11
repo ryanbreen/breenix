@@ -235,8 +235,9 @@ impl ProcessManager {
     
     /// Fork a process with a pre-allocated page table
     /// This version accepts a page table created outside the lock to avoid deadlock
-    pub fn fork_process_with_page_table(&mut self, parent_pid: ProcessId, _userspace_rsp: Option<u64>, 
-                                       mut _child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {
+    #[allow(unused_variables, unused_mut)]
+    pub fn fork_process_with_page_table(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>, 
+                                       mut child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need
         let (parent_name, parent_entry_point, _parent_thread_info) = {
             let parent = self.processes.get(&parent_pid)
@@ -268,7 +269,7 @@ impl ProcessManager {
         #[cfg(feature = "testing")]
         {
             let elf_data = crate::userspace_test::FORK_TEST_ELF;
-            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, _child_page_table.as_mut())?;
+            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, child_page_table.as_mut())?;
             
             // Update the child process entry point to match the loaded ELF
             child_process.entry_point = loaded_elf.entry_point;
@@ -280,11 +281,15 @@ impl ProcessManager {
             return Err("Cannot implement fork without testing feature");
         }
         
-        // Continue with the rest of the fork logic...
-        self.complete_fork(parent_pid, child_pid, &_parent_thread_info, _userspace_rsp, child_process)
+        #[cfg(feature = "testing")]
+        {
+            // Continue with the rest of the fork logic...
+            self.complete_fork(parent_pid, child_pid, &_parent_thread_info, userspace_rsp, child_process)
+        }
     }
     
     /// Complete the fork operation after page table is created
+    #[allow(dead_code)]
     fn complete_fork(&mut self, parent_pid: ProcessId, child_pid: ProcessId, 
                      parent_thread: &Thread, userspace_rsp: Option<u64>, 
                      mut child_process: Process) -> Result<ProcessId, &'static str> {
@@ -422,6 +427,7 @@ impl ProcessManager {
     /// Fork a process with optional userspace context override
     /// NOTE: This method creates the page table while holding the lock, which can cause deadlock
     /// Consider using fork_process_with_page_table instead
+    #[allow(unused_variables, unused_mut)]
     pub fn fork_process_with_context(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>) -> Result<ProcessId, &'static str> {
         // Get the parent process
         let parent = self.processes.get(&parent_pid)
@@ -509,6 +515,8 @@ impl ProcessManager {
             return Err("Cannot implement fork without testing feature");
         }
         
+        #[cfg(feature = "testing")]
+        {
         log::info!("Created page table for child process {}", child_pid.as_u64());
         
         // Create a new stack for the child process (64KB userspace stack)
@@ -618,6 +626,7 @@ impl ProcessManager {
         
         // Return the child PID to the parent
         Ok(child_pid)
+        }
     }
 
     /// Replace a process's address space with a new program (exec)

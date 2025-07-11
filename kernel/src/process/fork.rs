@@ -11,6 +11,7 @@ use crate::task::thread::Thread;
 /// This implements a simplified copy for fork() semantics.
 /// For now, we'll copy the parent's stack contents to the child.
 /// In the future, this should implement full copy-on-write.
+#[allow(dead_code)]
 pub fn copy_process_memory(
     parent_pid: ProcessId,
     child_process: &mut Process,
@@ -47,6 +48,7 @@ pub fn copy_process_memory(
 /// 
 /// This ensures the child has the same execution context as the parent
 /// and can properly return from the fork() system call.
+#[allow(dead_code)]
 fn copy_stack_contents(parent_thread: &Thread, child_thread: &mut Thread) -> Result<(), &'static str> {
     let parent_stack_start = parent_thread.stack_bottom;
     let parent_stack_end = parent_thread.stack_top;
@@ -101,6 +103,7 @@ fn copy_stack_contents(parent_thread: &Thread, child_thread: &mut Thread) -> Res
 /// 
 /// This includes things like signal handlers, file descriptors, etc.
 /// For now, this is mostly a placeholder for future implementation.
+#[allow(dead_code)]
 pub fn copy_process_state(
     _parent_process: &Process,
     _child_process: &mut Process,
