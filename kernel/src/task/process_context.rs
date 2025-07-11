@@ -3,67 +3,10 @@
 //! This module extends the basic context switching to properly handle
 //! userspace process contexts, including privilege level transitions.
 
-use super::thread::{Thread, ThreadPrivilege, CpuContext};
+use super::thread::{Thread, ThreadPrivilege};
 use x86_64::VirtAddr;
 use x86_64::structures::idt::InterruptStackFrame;
 
-/// Extended context for userspace processes
-/// This includes additional state needed for Ring 3 processes
-#[derive(Debug, Clone)]
-#[repr(C)]
-pub struct ProcessContext {
-    /// Base CPU context
-    pub cpu_context: CpuContext,
-    
-    /// Kernel stack pointer (RSP0) for syscalls
-    pub kernel_rsp: u64,
-    
-    /// Whether this context is from userspace
-    pub from_userspace: bool,
-}
-
-impl ProcessContext {
-    /// Create a new process context from a Thread
-    pub fn from_thread(thread: &Thread) -> Self {
-        ProcessContext {
-            cpu_context: thread.context.clone(),
-            kernel_rsp: thread.stack_top.as_u64(), // Kernel stack for syscalls
-            from_userspace: thread.privilege == ThreadPrivilege::User,
-        }
-    }
-    
-    /// Create from an interrupt stack frame (for saving userspace state)
-    pub fn from_interrupt_frame(frame: &InterruptStackFrame, saved_regs: &SavedRegisters) -> Self {
-        let context = CpuContext {
-            rax: saved_regs.rax,
-            rbx: saved_regs.rbx,
-            rcx: saved_regs.rcx,
-            rdx: saved_regs.rdx,
-            rsi: saved_regs.rsi,
-            rdi: saved_regs.rdi,
-            rbp: saved_regs.rbp,
-            rsp: frame.stack_pointer.as_u64(),
-            r8: saved_regs.r8,
-            r9: saved_regs.r9,
-            r10: saved_regs.r10,
-            r11: saved_regs.r11,
-            r12: saved_regs.r12,
-            r13: saved_regs.r13,
-            r14: saved_regs.r14,
-            r15: saved_regs.r15,
-            rip: frame.instruction_pointer.as_u64(),
-            rflags: frame.cpu_flags.bits(),
-            cs: frame.code_segment.0 as u64,
-            ss: frame.stack_segment.0 as u64,
-        };
-        
-        ProcessContext {
-            cpu_context: context,
-            kernel_rsp: 0, // Will be set by caller
-            from_userspace: (frame.code_segment.0 & 3) == 3, // Check RPL
-        }
-    }
-}
 
 /// Saved general purpose registers
 /// This matches the layout pushed in syscall_entry and timer interrupt

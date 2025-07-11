@@ -22,15 +22,6 @@ struct CommandRegistry {
 }
 
 impl CommandRegistry {
-    const fn new() -> Self {
-        Self {
-            ps_handler: None,
-            mem_handler: None,
-            test_handler: None,
-            fork_test_handler: None,
-            exec_test_handler: None,
-        }
-    }
 }
 
 /// Register command handlers from the kernel binary

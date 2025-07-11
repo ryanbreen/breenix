@@ -3,7 +3,6 @@
 //! This module provides the low-level context switching functionality
 //! for preemptive multitasking.
 
-use super::thread::CpuContext;
 use core::arch::global_asm;
 
 // Assembly implementation of context switch
@@ -111,32 +110,3 @@ switch_to_thread:
     jmp rax
 "#);
 
-extern "C" {
-    /// Switch from old_context to new_context
-    pub fn switch_context(old_context: *mut CpuContext, new_context: *const CpuContext);
-    
-    /// Switch to a thread for the first time (doesn't save current context)
-    pub fn switch_to_thread(new_context: *const CpuContext) -> !;
-}
-
-/// Perform a context switch between two threads
-/// 
-/// # Safety
-/// Both context pointers must be valid and properly aligned
-pub unsafe fn perform_context_switch(
-    old_context: &mut CpuContext,
-    new_context: &CpuContext,
-) {
-    switch_context(
-        old_context as *mut CpuContext,
-        new_context as *const CpuContext,
-    );
-}
-
-/// Switch to a thread for the first time
-/// 
-/// # Safety
-/// The context must be valid and properly initialized
-pub unsafe fn perform_initial_switch(new_context: &CpuContext) -> ! {
-    switch_to_thread(new_context as *const CpuContext);
-}

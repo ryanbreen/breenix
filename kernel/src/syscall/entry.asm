@@ -4,7 +4,6 @@
 section .text
 
 global syscall_entry
-global syscall_return_to_userspace
 
 ; External Rust functions
 extern rust_syscall_handler
@@ -112,55 +111,3 @@ syscall_entry:
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
     iretq
 
-; This function switches from kernel to userspace
-; Used when starting a new userspace thread
-; Arguments:
-;   rdi - user RIP (entry point)
-;   rsi - user RSP (stack pointer)
-;   rdx - user RFLAGS
-syscall_return_to_userspace:
-    ; Disable interrupts during the switch
-    cli
-
-    ; Switch to user GS for userspace
-    swapgs
-
-    ; Build IRETQ frame on stack
-    ; We need: SS, RSP, RFLAGS, CS, RIP
-
-    ; User data segment selector (SS)
-    mov rax, 0x2b  ; User data selector with RPL=3
-    push rax
-
-    ; User stack pointer
-    push rsi
-
-    ; RFLAGS (with interrupts enabled)
-    push rdx
-
-    ; User code segment selector (CS)
-    mov rax, 0x33  ; User code selector with RPL=3
-    push rax
-
-    ; User instruction pointer
-    push rdi
-
-    ; Clear all registers to prevent information leaks
-    xor rax, rax
-    xor rbx, rbx
-    xor rcx, rcx
-    xor rdx, rdx
-    xor rsi, rsi
-    xor rdi, rdi
-    xor rbp, rbp
-    xor r8, r8
-    xor r9, r9
-    xor r10, r10
-    xor r11, r11
-    xor r12, r12
-    xor r13, r13
-    xor r14, r14
-    xor r15, r15
-
-    ; Jump to userspace
-    iretq

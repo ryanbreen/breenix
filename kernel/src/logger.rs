@@ -207,9 +207,9 @@ pub fn init_early() {
     log::set_logger(&COMBINED_LOGGER)
         .expect("Logger already set");
     
-    // Use WARN level for tests to reduce noise
+    // Use DEBUG level for tests to help debug issues
     #[cfg(feature = "kernel_tests")]
-    log::set_max_level(LevelFilter::Warn);
+    log::set_max_level(LevelFilter::Debug);
     
     #[cfg(not(feature = "kernel_tests"))]
     log::set_max_level(LevelFilter::Trace);
