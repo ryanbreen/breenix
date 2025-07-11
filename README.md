@@ -59,6 +59,16 @@ cargo test test_multiple_processes --test kernel_tests
 BREENIX_VISUAL_TEST=1 cargo test
 ```
 
+## Development Requirements
+
+### 🚨 MANDATORY: Clean Builds & Passing Tests
+
+**All commits MUST have:**
+1. **Zero compiler warnings** - Run `cargo build` and verify no warnings
+2. **All tests passing** - Run `cargo test` and verify all tests pass
+
+We maintain strict code quality standards. No exceptions.
+
 ## Documentation
 
 - [PROJECT_ROADMAP.md](docs/planning/PROJECT_ROADMAP.md) - Development roadmap and current status

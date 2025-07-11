@@ -11,6 +11,7 @@ const SYS_GET_TIME: u64 = 4;
 const SYS_FORK: u64 = 5;
 const SYS_EXEC: u64 = 11;
 const SYS_GETPID: u64 = 39;
+const SYS_SPAWN: u64 = 57;
 
 // Inline assembly for INT 0x80 syscalls
 #[inline(always)]
@@ -99,4 +100,8 @@ pub unsafe fn sys_exec(path: &str, args: &str) -> u64 {
 
 pub unsafe fn sys_getpid() -> u64 {
     syscall0(SYS_GETPID)
+}
+
+pub unsafe fn sys_spawn(path: &str, args: &str) -> u64 {
+    syscall2(SYS_SPAWN, path.as_ptr() as u64, args.as_ptr() as u64)
 }
