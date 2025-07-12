@@ -58,6 +58,9 @@ pub fn init_idt() {
         idt.breakpoint.set_handler_fn(breakpoint_handler)
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         
+        // Debug exception handler for single-step
+        idt.debug.set_handler_fn(debug_exception_handler);
+        
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         unsafe {
@@ -125,6 +128,28 @@ pub fn init_pic() {
     }
 }
 
+/// Debug function to temporarily disable timer interrupts
+pub fn disable_timer_interrupt() {
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port: Port<u8> = Port::new(0x21); // PIC1 data port
+        let mask = port.read() | 0b00000001; // Set bit 0 (timer) to mask it
+        port.write(mask);
+        log::warn!("DEBUG: Timer interrupt disabled");
+    }
+}
+
+/// Debug function to re-enable timer interrupts
+pub fn enable_timer_interrupt() {
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port: Port<u8> = Port::new(0x21); // PIC1 data port
+        let mask = port.read() & !0b00000001; // Clear bit 0 (timer) to unmask it
+        port.write(mask);
+        log::warn!("DEBUG: Timer interrupt enabled");
+    }
+}
+
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     // Check if we came from userspace
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
@@ -135,9 +160,20 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
                   stack_frame.stack_pointer.as_u64(),
                   stack_frame.code_segment,
                   stack_frame.stack_segment);
+        
+        // Get current thread ID to check if it's the child
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            log::warn!("INT3 HIT: Thread {} executed instruction at {:#x}!", 
+                     thread_id, stack_frame.instruction_pointer.as_u64());
+        }
     } else {
         log::info!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
     }
+}
+
+extern "x86-interrupt" fn debug_exception_handler(_stack_frame: InterruptStackFrame) {
+    // Debug exceptions should not occur in normal operation
+    // This handler is kept for completeness but does nothing
 }
 
 extern "x86-interrupt" fn double_fault_handler(

@@ -179,6 +179,9 @@ pub fn get_all_tests() -> Vec<TestCase> {
     // Register multiple processes test
     tests.push(TestCase::new("multiple_processes", test_multiple_processes));
     
+    // Register fork progress test
+    tests.push(TestCase::new("fork_progress", test_fork_progress));
+    
     tests
 }
 
@@ -276,5 +279,27 @@ fn test_multiple_processes() {
     loop {
         x86_64::instructions::hlt();
     }
+}
+
+/// Test for fork progress - verifies child can execute instructions
+fn test_fork_progress() {
+    log::warn!("Testing fork progress (child execution)...");
+    
+    // Set up the test
+    crate::userspace_test::test_fork_progress();
+    
+    // Wait a bit for the test to complete
+    for _ in 0..100 {
+        // Allow some scheduling to happen
+        crate::task::scheduler::yield_current();
+        
+        // Small delay
+        for _ in 0..100000 {
+            core::hint::spin_loop();
+        }
+    }
+    
+    // The test should have printed success or failure message
+    log::warn!("Fork progress test completed - check logs for result");
 }
 

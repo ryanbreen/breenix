@@ -61,6 +61,9 @@ pub struct Process {
     /// Exit code (if terminated)
     pub exit_code: Option<i32>,
     
+    /// Exit status for wait/waitpid (8-bit value)
+    pub exit_status: Option<u8>,
+    
     /// Memory usage statistics
     pub memory_usage: MemoryUsage,
     
@@ -92,6 +95,7 @@ impl Process {
             parent: None,
             children: Vec::new(),
             exit_code: None,
+            exit_status: None,
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,

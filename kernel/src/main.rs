@@ -40,6 +40,7 @@ mod userspace_test;
 mod process;
 pub mod test_exec;
 pub mod test_harness;
+pub mod test_waitpid;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,6 +387,17 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         // Test spawn syscall
         log::info!("=== USERSPACE TEST: Spawn syscall ===");
         userspace_test::test_spawn();
+        
+        // Test wait/waitpid infrastructure
+        log::info!("=== WAITPID TEST: Testing wait/waitpid syscalls ===");
+        test_waitpid::run_automated_tests();
+        
+        // Run a simple wait test if testing enabled
+        #[cfg(feature = "testing")]
+        {
+            log::info!("=== WAITPID TEST: Running simple wait userspace test ===");
+            test_waitpid::test_wait_infrastructure();
+        }
         log::info!("Spawn test completed.");
     });
     

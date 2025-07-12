@@ -170,6 +170,8 @@ impl ProcessManager {
             time_slice: 10,
             entry_point: None,
             privilege: crate::task::thread::ThreadPrivilege::User,
+            first_run: false,  // New thread hasn't run yet
+            ticks_run: 0,      // No timer ticks yet
         };
         
         Ok(thread)
@@ -181,8 +183,10 @@ impl ProcessManager {
         self.processes.get(&pid)
     }
     
-    
-    
+    /// Get a mutable reference to a process
+    pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {
+        self.processes.get_mut(&pid)
+    }
     
     /// Remove a process from the ready queue
     pub fn remove_from_ready_queue(&mut self, pid: ProcessId) -> bool {
@@ -233,7 +237,59 @@ impl ProcessManager {
         self.fork_process_with_context(parent_pid, None)
     }
     
-    /// Fork a process with a pre-allocated page table
+    /// Fork a process with full syscall frame context
+    /// This version uses the actual syscall context instead of stale saved context
+    pub fn fork_process_with_frame(&mut self, parent_pid: ProcessId, 
+                                   frame: &crate::syscall::handler::SyscallFrame,
+                                   mut child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {
+        // Get the parent process info we need
+        let (parent_name, parent_entry_point) = {
+            let parent = self.processes.get(&parent_pid)
+                .ok_or("Parent process not found")?;
+            
+            // Clone what we need to avoid borrow issues
+            (parent.name.clone(), parent.entry_point)
+        };
+        
+        // Allocate a new PID for the child
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        
+        log::info!("Forking process {} '{}' -> child PID {} with syscall frame", 
+            parent_pid.as_u64(), parent_name, child_pid.as_u64());
+        
+        // Create child process name
+        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
+        
+        // Create the child process with the same entry point
+        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        child_process.parent = Some(parent_pid);
+        
+        // Get parent page table for memory cloning
+        let parent_page_table = self.processes.get(&parent_pid)
+            .ok_or("Parent process not found")?
+            .page_table.as_ref()
+            .ok_or("Parent process has no page table")?;
+        
+        // Clone parent's memory to child using fork helpers
+        log::info!("fork_process: Cloning parent memory to child");
+        let (copied_pages, shared_pages) = crate::memory::fork_helpers::clone_process_memory(
+            parent_page_table,
+            child_page_table.as_mut(),
+            parent_pid.as_u64(),
+            child_pid.as_u64(),
+        )?;
+        
+        log::info!("fork_process: Memory clone complete - {} pages copied, {} pages shared",
+                  copied_pages, shared_pages);
+        
+        // Store the page table in the child process
+        child_process.page_table = Some(child_page_table);
+        
+        // Complete the fork with the syscall frame context
+        self.complete_fork_with_frame(parent_pid, child_pid, frame, child_process)
+    }
+
+    /// Fork a process with a pre-allocated page table (OLD VERSION - uses stale context)
     /// This version accepts a page table created outside the lock to avoid deadlock
     #[allow(unused_variables, unused_mut)]
     pub fn fork_process_with_page_table(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>, 
@@ -265,57 +321,147 @@ impl ProcessManager {
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
         child_process.parent = Some(parent_pid);
         
-        // Load the same program into the child page table
-        #[cfg(feature = "testing")]
-        {
-            let elf_data = crate::userspace_test::FORK_TEST_ELF;
-            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, child_page_table.as_mut())?;
-            
-            // Update the child process entry point to match the loaded ELF
-            child_process.entry_point = loaded_elf.entry_point;
-            log::info!("fork_process: Loaded fork_test.elf into child, entry point: {:#x}", loaded_elf.entry_point);
-        }
-        #[cfg(not(feature = "testing"))]
-        {
-            log::error!("fork_process: Cannot reload ELF - testing feature not enabled");
-            return Err("Cannot implement fork without testing feature");
-        }
+        // Get parent page table for memory cloning
+        let parent_page_table = self.processes.get(&parent_pid)
+            .ok_or("Parent process not found")?
+            .page_table.as_ref()
+            .ok_or("Parent process has no page table")?;
         
-        #[cfg(feature = "testing")]
-        {
-            // Continue with the rest of the fork logic...
-            self.complete_fork(parent_pid, child_pid, &_parent_thread_info, userspace_rsp, child_process)
-        }
+        // Clone parent's memory to child using fork helpers
+        log::info!("fork_process: Cloning parent memory to child");
+        let (copied_pages, shared_pages) = crate::memory::fork_helpers::clone_process_memory(
+            parent_page_table,
+            child_page_table.as_mut(),
+            parent_pid.as_u64(),
+            child_pid.as_u64(),
+        )?;
+        
+        log::info!("fork_process: Memory clone complete - {} pages copied, {} pages shared",
+                  copied_pages, shared_pages);
+        
+        // Store the page table in the child process
+        child_process.page_table = Some(child_page_table);
+        
+        // Continue with the rest of the fork logic...
+        self.complete_fork(parent_pid, child_pid, &_parent_thread_info, userspace_rsp, child_process)
     }
     
-    /// Complete the fork operation after page table is created
+    /// Complete the fork operation with syscall frame context
+    fn complete_fork_with_frame(&mut self, parent_pid: ProcessId, child_pid: ProcessId, 
+                               frame: &crate::syscall::handler::SyscallFrame,
+                               mut child_process: Process) -> Result<ProcessId, &'static str> {
+        log::info!("Completing fork with syscall frame context");
+        
+        // Get parent thread for stack bounds
+        let parent_thread = self.processes.get(&parent_pid)
+            .ok_or("Parent process not found")?
+            .main_thread.as_ref()
+            .ok_or("Parent process has no main thread")?;
+        
+        // CRITICAL: Child uses same stack addresses as parent (already cloned)
+        let child_stack_top = parent_thread.stack_top;
+        let child_stack_bottom = parent_thread.stack_bottom;
+        
+        // Create the child thread ID (same as PID for main thread)
+        let child_thread_id = child_pid.as_u64();
+        
+        // Allocate a TLS block for this thread ID
+        let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
+        
+        // Register this thread with the TLS system
+        if let Err(e) = crate::tls::register_thread_tls(child_thread_id, child_tls_block) {
+            log::warn!("Failed to register thread {} with TLS system: {}", child_thread_id, e);
+        }
+        
+        // Allocate a kernel stack for the child thread
+        let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack()
+            .map_err(|e| {
+                log::error!("Failed to allocate kernel stack for child: {}", e);
+                "Failed to allocate kernel stack for child thread"
+            })?;
+        let child_kernel_stack_top = kernel_stack.top();
+        
+        // Store the kernel stack (we'll need to manage this properly later)
+        Box::leak(Box::new(kernel_stack));
+        
+        // Create the child thread with context from syscall frame
+        let mut child_thread = Thread::new(
+            format!("{}_main", child_process.name),
+            || {}, // dummy entry - we use context
+            child_stack_top,
+            child_stack_bottom,
+            child_tls_block,
+            crate::task::thread::ThreadPrivilege::User,
+        );
+        
+        // Set the ID and kernel stack
+        child_thread.id = child_thread_id;
+        child_thread.kernel_stack_top = Some(child_kernel_stack_top);
+        
+        // CRITICAL: Copy context from syscall frame, not stale saved context
+        log::info!("Fork: Copying syscall frame to child context");
+        log::info!("  Frame RIP: {:#x}, RSP: {:#x}, RAX: {:#x}", frame.rip, frame.rsp, frame.rax);
+        
+        // Copy all registers from syscall frame
+        child_thread.context.rax = 0;  // Fork returns 0 in child
+        child_thread.context.rbx = frame.rbx;
+        child_thread.context.rcx = frame.rcx;
+        child_thread.context.rdx = frame.rdx;
+        child_thread.context.rsi = frame.rsi;
+        child_thread.context.rdi = frame.rdi;
+        child_thread.context.rbp = frame.rbp;
+        child_thread.context.rsp = frame.rsp;
+        child_thread.context.r8 = frame.r8;
+        child_thread.context.r9 = frame.r9;
+        child_thread.context.r10 = frame.r10;
+        child_thread.context.r11 = frame.r11;
+        child_thread.context.r12 = frame.r12;
+        child_thread.context.r13 = frame.r13;
+        child_thread.context.r14 = frame.r14;
+        child_thread.context.r15 = frame.r15;
+        child_thread.context.rip = frame.rip;
+        child_thread.context.cs = frame.cs;
+        child_thread.context.ss = frame.ss;
+        child_thread.context.rflags = frame.rflags;
+        
+        
+        log::info!("Fork: Child context set - RIP: {:#x}, RSP: {:#x}, RAX: 0", 
+                  child_thread.context.rip, child_thread.context.rsp);
+        
+        // Set the child process's main thread
+        child_process.main_thread = Some(child_thread);
+        
+        // Add the child to the parent's children list
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.push(child_pid);
+        }
+        
+        // Insert the child process into the process table
+        self.processes.insert(child_pid, child_process);
+        
+        log::info!("Fork complete: parent {} -> child {}", parent_pid.as_u64(), child_pid.as_u64());
+        
+        // DEBUG: Keep timer interrupts enabled since they're needed for scheduling
+        // Previous test showed disabling timer prevents child from being scheduled at all
+        
+        // DEBUG: Skip INT3 installation since code pages are read-only
+        // The trap flag should be sufficient for debugging
+        
+        Ok(child_pid)
+    }
+
+    /// Complete the fork operation after page table is created (OLD VERSION)
     #[allow(dead_code)]
     fn complete_fork(&mut self, parent_pid: ProcessId, child_pid: ProcessId, 
                      parent_thread: &Thread, userspace_rsp: Option<u64>, 
                      mut child_process: Process) -> Result<ProcessId, &'static str> {
         log::info!("Created page table for child process {}", child_pid.as_u64());
         
-        // Create a new stack for the child process (64KB userspace stack)
-        // CRITICAL: We allocate in kernel page table first, then map to child's page table
-        const CHILD_STACK_SIZE: usize = 64 * 1024;
-        
-        // Allocate the stack in the kernel page table first
-        let child_stack = crate::memory::stack::allocate_stack(CHILD_STACK_SIZE).map_err(|_| "Failed to allocate stack for child process")?;
-        let child_stack_top = child_stack.top();
-        let child_stack_bottom = child_stack.bottom();
-        
-        // Now map the stack pages into the child's page table
-        let child_page_table_ref = child_process.page_table.as_mut()
-            .ok_or("Child process has no page table")?;
-        
-        crate::memory::process_memory::map_user_stack_to_process(
-            child_page_table_ref,
-            child_stack_bottom,
-            child_stack_top
-        ).map_err(|e| {
-            log::error!("Failed to map user stack to child process: {}", e);
-            "Failed to map user stack in child's page table"
-        })?;
+        // CRITICAL FORK FIX: The child uses the SAME stack addresses as parent
+        // The stack pages are already cloned by clone_process_memory
+        // We just need to use the parent's stack bounds
+        let child_stack_top = parent_thread.stack_top;
+        let _child_stack_bottom = parent_thread.stack_bottom;
         
         // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
         // In the future, we should properly copy parent's TLS data
@@ -378,26 +524,27 @@ impl ProcessManager {
         child_thread.context = parent_thread.context.clone();
         
         // Log the child's context for debugging
-        log::debug!("Child thread context after copy:");
-        log::debug!("  RIP: {:#x}", child_thread.context.rip);
-        log::debug!("  RSP: {:#x}", child_thread.context.rsp);
+        log::info!("Fork: Parent context RIP: {:#x}, RSP: {:#x}, RAX: {:#x}", 
+                 parent_thread.context.rip, parent_thread.context.rsp, parent_thread.context.rax);
+        log::info!("Fork: Child context after copy - RIP: {:#x}, RSP: {:#x}", 
+                 child_thread.context.rip, child_thread.context.rsp);
         log::debug!("  CS: {:#x}", child_thread.context.cs);
         log::debug!("  SS: {:#x}", child_thread.context.ss);
         
         // Crucial: Set the child's return value to 0
         // In x86_64, system call return values go in RAX
         child_thread.context.rax = 0;
+        log::info!("Fork: Child RAX set to 0 (fork return value)");
         
-        // Update child's stack pointer based on userspace RSP if provided
+        // CRITICAL: Child uses SAME RSP as parent (fork semantics)
+        // The userspace_rsp is the parent's RSP at time of fork
         if let Some(user_rsp) = userspace_rsp {
             child_thread.context.rsp = user_rsp;
-            log::info!("fork: Using userspace RSP {:#x} for child", user_rsp);
+            log::info!("fork: Child uses parent's RSP {:#x}", user_rsp);
         } else {
-            // Calculate the child's RSP based on the parent's stack usage
-            let parent_stack_used = parent_thread.stack_top.as_u64() - parent_thread.context.rsp;
-            child_thread.context.rsp = child_stack_top.as_u64() - parent_stack_used;
-            log::info!("fork: Calculated child RSP {:#x} based on parent stack usage {:#x}", 
-                      child_thread.context.rsp, parent_stack_used);
+            // This shouldn't happen - we should always have the parent's RSP
+            log::error!("fork: No userspace RSP provided!");
+            child_thread.context.rsp = parent_thread.context.rsp;
         }
         
         log::info!("Created child thread {} with entry point {:#x}", 
@@ -406,8 +553,7 @@ impl ProcessManager {
         // Set the child process's main thread
         child_process.main_thread = Some(child_thread);
         
-        // Store the stack in the child process
-        child_process.stack = Some(Box::new(child_stack));
+        // NOTE: Stack is not stored because child uses parent's stack addresses (cloned pages)
         
         // Add the child to the parent's children list
         if let Some(parent) = self.processes.get_mut(&parent_pid) {
@@ -483,46 +629,22 @@ impl ProcessManager {
         log::debug!("Parent page table CR3: {:#x}", parent_page_table.level_4_frame().start_address());
         log::debug!("Child page table CR3: {:#x}", child_page_table.level_4_frame().start_address());
         
-        // CRITICAL WORKAROUND: ProcessPageTable.translate_page() is broken, so we can't copy pages.
-        // Instead, load the same ELF into the child process. This is NOT proper fork() semantics,
-        // but it allows testing the exec() integration.
-        log::warn!("fork_process: Using ELF reload workaround instead of proper page copying");
+        // Clone parent's memory to child using fork helpers
+        log::info!("fork_process: Cloning parent memory to child");
+        let (copied_pages, shared_pages) = crate::memory::fork_helpers::clone_process_memory(
+            parent_page_table,
+            child_page_table.as_mut(),
+            parent_pid.as_u64(),
+            child_pid.as_u64(),
+        )?;
         
-        // WORKAROUND: We'd like to clear existing userspace mappings before loading ELF
-        // but since L3 tables are shared between processes, unmapping pages affects
-        // all processes sharing that table. This causes double faults.
-        /*
-        child_page_table.clear_userspace_for_exec()
-            .map_err(|e| {
-                log::error!("Failed to clear child userspace mappings: {}", e);
-                "Failed to clear child userspace mappings"
-            })?;
-        */
-        
-        // Load the fork_test ELF into the child (same program the parent is running)
-        #[cfg(feature = "testing")]
-        {
-            let elf_data = crate::userspace_test::FORK_TEST_ELF;
-            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, child_page_table.as_mut())?;
-            
-            // Update the child process entry point to match the loaded ELF
-            child_process.entry_point = loaded_elf.entry_point;
-            log::info!("fork_process: Loaded fork_test.elf into child, entry point: {:#x}", loaded_elf.entry_point);
-        }
-        #[cfg(not(feature = "testing"))]
-        {
-            log::error!("fork_process: Cannot reload ELF - testing feature not enabled");
-            return Err("Cannot implement fork without testing feature");
-        }
-        
-        #[cfg(feature = "testing")]
-        {
+        log::info!("fork_process: Memory clone complete - {} pages copied, {} pages shared",
+                  copied_pages, shared_pages);
         log::info!("Created page table for child process {}", child_pid.as_u64());
         
-        // Create a new stack for the child process (64KB userspace stack)
-        const CHILD_STACK_SIZE: usize = 64 * 1024;
-        let child_stack = crate::memory::stack::allocate_stack(CHILD_STACK_SIZE).map_err(|_| "Failed to allocate stack for child process")?;
-        let child_stack_top = child_stack.top();
+        // CRITICAL FORK FIX: The child uses the SAME stack addresses as parent
+        // The stack pages are already cloned by clone_process_memory
+        let child_stack_top = parent_thread.stack_top;
         
         // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
         // In the future, we should properly copy parent's TLS data
@@ -564,27 +686,27 @@ impl ProcessManager {
             name: child_name,
             state: crate::task::thread::ThreadState::Ready,
             context: parent_thread.context.clone(), // Will be modified below
-            stack_top: child_stack_top,
-            stack_bottom: child_stack_top - (64 * 1024),
+            stack_top: parent_thread.stack_top,
+            stack_bottom: parent_thread.stack_bottom,
             kernel_stack_top: child_kernel_stack_top,
             tls_block: child_tls_block,
             priority: parent_thread.priority,
             time_slice: parent_thread.time_slice,
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: parent_thread.privilege,
+            first_run: false,  // New child thread hasn't run yet
+            ticks_run: 0,      // No timer ticks yet
         };
         
-        // CRITICAL: Use the userspace RSP if provided (from syscall frame)
-        // Otherwise, calculate the child's RSP based on parent's stack usage
+        // CRITICAL: Child uses SAME RSP as parent (fork semantics)
+        // The userspace_rsp is the parent's RSP at time of fork
         if let Some(user_rsp) = userspace_rsp {
             child_thread.context.rsp = user_rsp;
-            log::info!("fork: Using userspace RSP {:#x} for child", user_rsp);
+            log::info!("fork: Child uses parent's RSP {:#x}", user_rsp);
         } else {
-            // Calculate how much of parent's stack is in use
-            let parent_stack_used = parent_thread.stack_top.as_u64() - parent_thread.context.rsp;
-            // Set child's RSP at the same relative position
-            child_thread.context.rsp = child_stack_top.as_u64() - parent_stack_used;
-            log::info!("fork: Calculated child RSP {:#x} based on parent stack usage", child_thread.context.rsp);
+            // This shouldn't happen - we should always have the parent's RSP
+            log::error!("fork: No userspace RSP provided!");
+            child_thread.context.rsp = parent_thread.context.rsp;
         }
         
         // IMPORTANT: Set RAX to 0 for the child (fork return value)
@@ -595,8 +717,7 @@ impl ProcessManager {
         // Mark child as ready to run
         child_thread.state = crate::task::thread::ThreadState::Ready;
         
-        // Store the stack in the child process
-        child_process.stack = Some(Box::new(child_stack));
+        // NOTE: Stack is not stored because child uses parent's stack addresses (cloned pages)
         
         // Copy process memory from parent to child (this modifies child_thread)
         super::fork::copy_process_memory(parent_pid, &mut child_process, parent_thread, &mut child_thread)?;
@@ -626,7 +747,6 @@ impl ProcessManager {
         
         // Return the child PID to the parent
         Ok(child_pid)
-        }
     }
 
     /// Replace a process's address space with a new program (exec)

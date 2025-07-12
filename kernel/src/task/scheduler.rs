@@ -2,16 +2,37 @@
 //!
 //! This module implements a round-robin scheduler for kernel threads.
 
-use super::thread::{Thread, ThreadState};
-use alloc::{collections::VecDeque, boxed::Box};
+use super::thread::{Thread, ThreadState, BlockedReason};
+use alloc::{collections::VecDeque, boxed::Box, vec::Vec};
 use spin::Mutex;
 use core::sync::atomic::{AtomicBool, Ordering};
+use crate::process::ProcessId;
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
 /// Global need_resched flag for timer interrupt
 static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
+
+/// Mode of waiting for child processes
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WaitMode {
+    /// Wait for any child
+    AnyChild,
+    /// Wait for specific child
+    SpecificChild(ProcessId),
+}
+
+/// Represents a waiting parent
+#[derive(Debug)]
+pub struct Waiter {
+    /// Thread ID of the waiting parent
+    pub thread_id: u64,
+    /// Process ID of the parent process
+    pub parent_pid: ProcessId,
+    /// What we're waiting for
+    pub mode: WaitMode,
+}
 
 /// The kernel scheduler
 pub struct Scheduler {
@@ -26,6 +47,9 @@ pub struct Scheduler {
     
     /// Idle thread ID (runs when no other threads are ready)
     idle_thread: u64,
+    
+    /// List of threads waiting for child processes
+    waiters: Vec<Waiter>,
 }
 
 impl Scheduler {
@@ -37,6 +61,7 @@ impl Scheduler {
             ready_queue: VecDeque::new(),
             current_thread: Some(idle_id),
             idle_thread: idle_id,
+            waiters: Vec::new(),
         };
         
         // Don't put idle thread in ready queue
@@ -50,10 +75,13 @@ impl Scheduler {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
+        let thread_state = thread.state;
         self.threads.push(thread);
         self.ready_queue.push_back(thread_id);
-        log::info!("Added thread {} '{}' to scheduler (user: {}, ready_queue: {:?})", 
-                  thread_id, thread_name, is_user, self.ready_queue);
+        log::info!("Added thread {} '{}' to scheduler (user: {}, state: {:?}, ready_queue: {:?})", 
+                  thread_id, thread_name, is_user, thread_state, self.ready_queue);
+        
+        // Child threads are now added to the ready queue successfully
     }
     
     
@@ -70,46 +98,45 @@ impl Scheduler {
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
-        // Always log the first few scheduling decisions
-        static SCHEDULE_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        let count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        
-        // Log the first few scheduling decisions
-        if count < 10 {
-            log::info!("schedule() called #{}: current={:?}, ready_queue={:?}, idle_thread={}", 
-                      count, self.current_thread, self.ready_queue, self.idle_thread);
-        }
+        // Scheduler entry point
         
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
                 // First check the state and update it
-                let (is_terminated, prev_state) = if let Some(current) = self.get_thread_mut(current_id) {
-                    let was_terminated = current.state == ThreadState::Terminated;
+                let (should_requeue, prev_state) = if let Some(current) = self.get_thread_mut(current_id) {
                     let prev = current.state;
-                    if !was_terminated {
-                        current.set_ready();
+                    match current.state {
+                        ThreadState::Terminated => (false, prev),
+                        ThreadState::Blocked(_) => (false, prev), // Keep blocked threads out of ready queue
+                        _ => {
+                            current.set_ready();
+                            (true, prev)
+                        }
                     }
-                    (was_terminated, prev)
                 } else {
-                    (true, ThreadState::Terminated)
+                    (false, ThreadState::Terminated)
                 };
                 
                 // Then modify the ready queue
-                if !is_terminated {
+                if should_requeue {
                     self.ready_queue.push_back(current_id);
                     if count < 10 {
                         log::info!("Put thread {} back in ready queue, state was {:?}", current_id, prev_state);
                     }
                 } else {
-                    log::info!("Thread {} is terminated, not putting back in ready queue", current_id);
+                    log::info!("Thread {} is {:?}, not putting back in ready queue", current_id, prev_state);
                 }
             }
         }
         
         // Get next thread from ready queue
+        log::info!("DEBUG: ready_queue before pop: {:?}", self.ready_queue);
         let mut next_thread_id = self.ready_queue.pop_front()
             .or(Some(self.idle_thread))?; // Use idle thread if nothing ready
+        
+        log::info!("DEBUG: Next thread from queue: {}, ready_queue after pop: {:?}", 
+                  next_thread_id, self.ready_queue);
         
         if count < 10 {
             log::info!("Next thread from queue: {}, ready_queue after pop: {:?}", 
@@ -185,6 +212,58 @@ impl Scheduler {
         self.idle_thread
     }
     
+    /// Add a waiter for a child process
+    pub fn add_waiter(&mut self, waiter: Waiter) {
+        log::info!("Adding waiter: thread {} waiting for {:?}", waiter.thread_id, waiter.mode);
+        
+        // Mark the thread as blocked
+        if let Some(thread) = self.get_thread_mut(waiter.thread_id) {
+            thread.set_blocked(BlockedReason::Wait);
+        }
+        
+        self.waiters.push(waiter);
+    }
+    
+    /// Wake up waiters that match the given child process
+    pub fn wake_waiters(&mut self, child_pid: ProcessId, parent_pid: Option<ProcessId>) {
+        log::info!("Waking waiters for child {} (parent: {:?})", child_pid.as_u64(), parent_pid);
+        
+        // Find waiters to wake
+        let mut threads_to_wake = Vec::new();
+        
+        self.waiters.retain(|waiter| {
+            let should_wake = match (&waiter.mode, &parent_pid) {
+                // If we know the parent, only wake if it matches
+                (_, Some(parent)) if waiter.parent_pid != *parent => false,
+                // Wake if waiting for any child
+                (WaitMode::AnyChild, _) => true,
+                // Wake if waiting for this specific child
+                (WaitMode::SpecificChild(pid), _) => *pid == child_pid,
+            };
+            
+            if should_wake {
+                threads_to_wake.push(waiter.thread_id);
+                false // Remove from waiters list
+            } else {
+                true // Keep in waiters list
+            }
+        });
+        
+        // Wake the threads
+        for thread_id in threads_to_wake {
+            log::info!("Waking thread {} from wait", thread_id);
+            if let Some(thread) = self.get_thread_mut(thread_id) {
+                thread.set_ready();
+                self.ready_queue.push_back(thread_id);
+            }
+        }
+    }
+    
+    /// Remove all waiters for a given parent (e.g., when parent dies)
+    #[allow(dead_code)]
+    pub fn remove_waiters_for_parent(&mut self, parent_pid: ProcessId) {
+        self.waiters.retain(|waiter| waiter.parent_pid != parent_pid);
+    }
 }
 
 /// Initialize the global scheduler
@@ -231,6 +310,15 @@ where
         let mut scheduler_lock = SCHEDULER.lock();
         scheduler_lock.as_mut().map(f)
     })
+}
+
+/// Get mutable access to the scheduler (alias for with_scheduler)
+/// This function disables interrupts to prevent deadlock with timer interrupt
+pub fn with_scheduler_mut<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut Scheduler) -> R,
+{
+    with_scheduler(f)
 }
 
 /// Get mutable access to a specific thread (for timer interrupt handler)

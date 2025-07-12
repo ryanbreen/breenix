@@ -18,6 +18,15 @@ pub enum ThreadState {
     Ready,
     /// Thread has terminated
     Terminated,
+    /// Thread is blocked waiting for something
+    Blocked(BlockedReason),
+}
+
+/// Reasons why a thread might be blocked
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockedReason {
+    /// Waiting for a child process to exit
+    Wait,
 }
 
 /// Thread privilege level
@@ -146,6 +155,12 @@ pub struct Thread {
     
     /// Privilege level
     pub privilege: ThreadPrivilege,
+    
+    /// First run flag - false until thread executes at least one userspace instruction
+    pub first_run: bool,
+    
+    /// Number of timer ticks this thread has been scheduled for
+    pub ticks_run: u32,
 }
 
 impl Clone for Thread {
@@ -163,6 +178,8 @@ impl Clone for Thread {
             time_slice: self.time_slice,
             entry_point: self.entry_point, // fn pointers can be copied
             privilege: self.privilege,
+            first_run: self.first_run,
+            ticks_run: self.ticks_run,
         }
     }
 }
@@ -201,6 +218,8 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
+            first_run: false, // Initialize to false for all threads
+            ticks_run: 0,     // No ticks run yet
         }
     }
     
@@ -214,6 +233,11 @@ impl Thread {
         self.state == ThreadState::Ready
     }
     
+    /// Mark thread as blocked
+    pub fn set_blocked(&mut self, reason: BlockedReason) {
+        self.state = ThreadState::Blocked(reason);
+    }
+    
     /// Mark thread as running
     pub fn set_running(&mut self) {
         self.state = ThreadState::Running;
@@ -221,8 +245,9 @@ impl Thread {
     
     /// Mark thread as ready
     pub fn set_ready(&mut self) {
-        if self.state != ThreadState::Terminated {
-            self.state = ThreadState::Ready;
+        match self.state {
+            ThreadState::Terminated => {}, // Don't revive terminated threads
+            _ => self.state = ThreadState::Ready,
         }
     }
     
