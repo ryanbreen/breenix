@@ -4,7 +4,7 @@ use x86_64::instructions::port::Port;
 use super::Time;
 
 const PIT_FREQUENCY: u32 = 1193182;
-pub const TIMER_INTERRUPT_HZ: u32 = 10;   // Further reduced to 10Hz (100ms intervals) for userspace testing
+pub const TIMER_INTERRUPT_HZ: u32 = 10;   // Back to 10Hz (100ms intervals)
 const TIMER_DIVIDER: u16 = (PIT_FREQUENCY / TIMER_INTERRUPT_HZ) as u16;
 pub const SUBTICKS_PER_TICK: u64 = 1000;  // Adjusted to match 10Hz frequency
 
