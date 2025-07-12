@@ -99,9 +99,11 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Yield) => super::handlers::sys_yield(),
         Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
         Some(SyscallNumber::Fork) => super::handlers::sys_fork_with_frame(frame),
+        Some(SyscallNumber::Wait) => super::handlers::sys_wait(args.0),
         Some(SyscallNumber::Exec) => super::handlers::sys_exec(args.0, args.1),
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
         Some(SyscallNumber::Spawn) => super::handlers::sys_spawn(args.0, args.1),
+        Some(SyscallNumber::Waitpid) => super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
         None => {
             log::warn!("Unknown syscall number: {}", syscall_num);

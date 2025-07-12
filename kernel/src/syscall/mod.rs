@@ -19,9 +19,11 @@ pub enum SyscallNumber {
     Yield = 3,
     GetTime = 4,
     Fork = 5,
+    Wait = 7,     // Linux syscall number for waitpid (wait4 is deprecated)
     Exec = 11,    // Linux syscall number for execve
     GetPid = 39,  // Linux syscall number for getpid
     Spawn = 57,   // Using clone() syscall number for spawn
+    Waitpid = 61, // Linux syscall number for wait4/waitpid
     GetTid = 186, // Linux syscall number for gettid
 }
 
@@ -36,9 +38,11 @@ impl SyscallNumber {
             3 => Some(Self::Yield),
             4 => Some(Self::GetTime),
             5 => Some(Self::Fork),
+            7 => Some(Self::Wait),
             11 => Some(Self::Exec),
             39 => Some(Self::GetPid),
             57 => Some(Self::Spawn),
+            61 => Some(Self::Waitpid),
             186 => Some(Self::GetTid),
             _ => None,
         }
@@ -58,6 +62,10 @@ pub enum SyscallError {
     PermissionDenied = -1,
     /// I/O error
     IoError = -5,
+    /// No child processes
+    NoChild = -10,
+    /// Interrupted system call
+    Interrupted = -4,
 }
 
 /// System call result type

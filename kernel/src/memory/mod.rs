@@ -7,6 +7,7 @@ pub mod tlb;
 pub mod kernel_page_table;
 pub mod kernel_stack;
 pub mod per_cpu_stack;
+pub mod fork_helpers;
 
 use bootloader_api::info::MemoryRegions;
 use x86_64::{PhysAddr, VirtAddr};

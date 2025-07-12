@@ -86,7 +86,7 @@ pub extern "C" fn _start() -> ! {
                 print_number("PARENT: iteration ", i);
                 // Small delay
                 for _ in 0..1000000 {
-                    unsafe { core::ptr::read_volatile(&0u8); }
+                    core::ptr::read_volatile(&0u8);
                 }
             }
             
