@@ -104,8 +104,9 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+E: Test exec system call directly
 /// - Ctrl+X: Test fork+exec pattern
 /// - Ctrl+H: Test shell-style fork+exec
+/// - Ctrl+G: Test fork progress (child execution)
 pub async fn keyboard_task() {
-    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H for special actions)");
+    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H/G for special actions)");
     
     let mut scancodes = ScancodeStream::new();
     
@@ -151,6 +152,30 @@ pub async fn keyboard_task() {
                     log::info!("Ctrl+H pressed - testing shell-style fork+exec");
                     crate::test_exec::test_shell_fork_exec();
                     log::info!("Shell fork+exec test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('w') {
+                    log::info!("Ctrl+W pressed - testing simple wait");
+                    crate::userspace_test::test_simple_wait();
+                    log::info!("Simple wait test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('q') {
+                    log::info!("Ctrl+Q pressed - testing wait with multiple children");
+                    crate::userspace_test::test_wait_many();
+                    log::info!("Wait many test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('s') {
+                    log::info!("Ctrl+S pressed - testing waitpid specific");
+                    crate::userspace_test::test_waitpid_specific();
+                    log::info!("Waitpid specific test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('n') {
+                    log::info!("Ctrl+N pressed - testing ECHILD error");
+                    crate::userspace_test::test_echld_error();
+                    log::info!("ECHILD error test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('g') {
+                    log::info!("Ctrl+G pressed - testing fork progress");
+                    crate::userspace_test::test_fork_progress();
+                    log::info!("Fork progress test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('z') {
+                    log::info!("Ctrl+Z pressed - testing fork spin stress (50 children)");
+                    crate::userspace_test::test_fork_spin_stress();
+                    log::info!("Fork spin stress test scheduled. Press keys to continue...");
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);
