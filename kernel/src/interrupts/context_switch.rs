@@ -50,7 +50,7 @@ pub extern "C" fn check_need_resched_and_switch(
     // Always log if we didn't get a schedule result
     if schedule_result.is_none() {
         if count < 20 {
-            log::warn!("scheduler::schedule() returned None - no thread switch available (count: {})", count);
+            log::debug!("scheduler::schedule() returned None - no thread switch available (count: {})", count);
         }
         // Early return if no scheduling decision
         return;
@@ -280,8 +280,11 @@ pub extern "C" fn get_next_page_table() -> u64 {
     unsafe {
         if let Some(frame) = core::mem::replace(&mut *(&raw mut NEXT_PAGE_TABLE), None) {
             let addr = frame.start_address().as_u64();
-            // Log this for debugging
-            log::info!("get_next_page_table: Returning page table frame {:#x} for switch", addr);
+            
+            // DEBUG: Log current CR3 for comparison
+            let current_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+            log::info!("get_next_page_table: Current CR3={:#x}, switching to CR3={:#x}", current_cr3, addr);
+            
             addr
         } else {
             0 // No page table switch needed

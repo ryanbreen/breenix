@@ -7,6 +7,7 @@ use core::panic::PanicInfo;
 const SYS_EXIT: u64 = 0;
 const SYS_WRITE: u64 = 1;
 const SYS_YIELD: u64 = 3;
+#[allow(dead_code)]
 const SYS_GET_TIME: u64 = 4;
 
 // File descriptors
