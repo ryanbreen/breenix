@@ -19,16 +19,24 @@ kernel_tests = ["testing"]
 test_page_fault = []
 test_userspace = []
 test_all_exceptions = []
+sched_debug = []
+instr_trace = ["sched_debug"]       # single-step
+all_exc_trace = ["sched_debug"]     # 0-255 vector print
+heap_trace = ["sched_debug"]        # heap alloc/dealloc tracing
+heap_watch = []                     # watch specific heap addresses for deallocation
+arc_guard = []                      # guard Arc slots in scheduler Vec
+int3_boot = []                      # INT3 breakpoint at userspace entry for testing
 
 [dependencies]
-bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
+bootloader_api = "0.11"
 embedded-graphics = "0.8.1"
-x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }
+x86_64.workspace = true
 conquer-once = { version = "0.4.0", default-features = false }
-bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
+bootloader-x86_64-common = "0.11"
 log = { version = "0.4.17", default-features = false }
 pic8259 = "0.10.4"
 spin = "0.9.8"
 uart_16550 = "0.3.2"
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3.17", default-features = false, features = ["alloc"] }
+compiler_builtins = { version = "0.1", features = ["mem"] }

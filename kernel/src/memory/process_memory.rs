@@ -12,6 +12,65 @@ use x86_64::{
 };
 use crate::memory::frame_allocator::{allocate_frame, GlobalFrameAllocator};
 
+/// Recursively copy the full paging hierarchy of a present PML4 entry
+fn duplicate_pml4_entry(
+    dst_pml4: &mut PageTable, 
+    src_pml4: &PageTable,
+    src_index: usize,
+    phys_offset: VirtAddr
+) -> Result<(), &'static str> {
+    let src_entry = &src_pml4[src_index];
+    if src_entry.is_unused() { 
+        return Ok(()); 
+    }
+
+    // Allocate fresh L3 table
+    let new_l3_frame = allocate_frame().ok_or("no frames for L3")?;
+    dst_pml4[src_index].set_addr(new_l3_frame.start_address(), src_entry.flags());
+
+    recursive_clone(src_entry.addr(), new_l3_frame.start_address(), phys_offset)
+}
+
+/// Depth-first clone of a 4-KiB page-table page
+fn recursive_clone(
+    src_phys: PhysAddr, 
+    dst_phys: PhysAddr,
+    phys_offset: VirtAddr
+) -> Result<(), &'static str> {
+    // Map source and destination page tables
+    let src = unsafe { 
+        let virt_addr = phys_offset + src_phys.as_u64();
+        &*(virt_addr.as_ptr::<PageTable>())
+    };
+    let dst = unsafe { 
+        let virt_addr = phys_offset + dst_phys.as_u64();
+        &mut *(virt_addr.as_mut_ptr::<PageTable>())
+    };
+
+    // Clear destination table first
+    dst.zero();
+
+    for (i, s) in src.iter().enumerate() {
+        if s.is_unused() { 
+            continue; 
+        }
+        
+        let d = &mut dst[i];
+        
+        // Check if this is a huge page (2MB or 1GB)
+        if s.flags().contains(PageTableFlags::HUGE_PAGE) {
+            // For huge pages, just copy the entry directly
+            *d = s.clone();
+        } else {
+            // For regular entries, we need to recurse deeper
+            let new_child_frame = allocate_frame().ok_or("no frames for child page table")?;
+            d.set_addr(new_child_frame.start_address(), s.flags());
+            recursive_clone(s.addr(), new_child_frame.start_address(), phys_offset)?;
+        }
+    }
+    Ok(())
+}
+
 /// A per-process page table
 pub struct ProcessPageTable {
     /// Physical frame containing the level 4 page table
@@ -29,17 +88,24 @@ impl ProcessPageTable {
     /// from the current page table.
     pub fn new() -> Result<Self, &'static str> {
         // Check stack pointer before allocating
-        let rsp: u64;
+        let initial_rsp: u64;
         unsafe {
-            core::arch::asm!("mov {}, rsp", out(reg) rsp);
+            core::arch::asm!("mov {}, rsp", out(reg) initial_rsp);
         }
         
-        // Check if we're running low on stack
-        // Kernel stacks typically start around 0x180000xxxxx and grow down
-        // If we're below 0x180000010000, we might be in trouble
-        if rsp < 0x180000010000 {
-            log::error!("WARNING: Low stack detected! RSP={:#x}", rsp);
-            log::error!("This might cause a stack overflow!");
+        // Check if we're running low on stack space
+        // The bootloader provides an initial stack. Based on RSP value analysis:
+        // RSP=0x10000011180, Guard page top=0x10000012000
+        // Remaining = 0x10000012000 - 0x10000011180 = 0xE80 = 3712 bytes
+        let guard_page_top = 0x10000012000u64;
+        let remaining_stack = if initial_rsp < guard_page_top {
+            guard_page_top - initial_rsp
+        } else {
+            0
+        };
+        
+        if remaining_stack < 4096 { // Less than 4KB remaining
+            log::warn!("Low stack space: RSP={:#x}, remaining={}B", initial_rsp, remaining_stack);
         }
         
         // Allocate a frame for the new level 4 page table
@@ -81,6 +147,7 @@ impl ProcessPageTable {
             log::debug!("Physical memory offset: {:#x}", phys_offset.as_u64());
             let virt = phys_offset + level_4_frame.start_address().as_u64();
             log::debug!("New L4 table virtual address: {:#x}", virt.as_u64());
+            
             log::debug!("About to create mutable reference to page table at {:#x}", virt.as_u64());
             
             // Test if we can read the memory first
@@ -132,35 +199,89 @@ impl ProcessPageTable {
             
             log::debug!("Using global kernel PDPT frame: {:?}", kernel_pdpt_frame);
             
-            // Set up PML4 entries 256-511 to point to the shared kernel PDPT
-            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-            
-            for i in 256..512 {
-                level_4_table[i].set_frame(kernel_pdpt_frame, flags);
+            // -------------------------------------------------------------------
+            // Make the entire canonical-high-half (PML4 slots 256-511) visible
+            // in every user CR3. We clear USER_ACCESSIBLE so ring-3 cannot peek.
+            // -------------------------------------------------------------------
+            let mut high_half_copied = 0;
+            for idx in 256..512 {
+                if !current_l4_table[idx].is_unused() {
+                    // Copy *exactly* the entry the kernel is using
+                    let mut entry = current_l4_table[idx].clone();
+                    entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
+                    level_4_table[idx] = entry;
+                    high_half_copied += 1;
+                }
             }
             
-            log::debug!("Set up global kernel page table entries 256-511");
+            log::debug!("Set up global kernel page table entries 256-511 (copied {} entries)", high_half_copied);
             
-            // Copy essential low-memory kernel mappings (entries 0-255)
-            // These are needed for kernel code that lives in low memory
-            let copied_count = {
-                let mut count = 0;
-                for i in 0..256 {
-                    if !current_l4_table[i].is_unused() {
-                        let has_user_accessible = current_l4_table[i].flags().contains(PageTableFlags::USER_ACCESSIBLE);
-                        
-                        // Copy kernel-only entries in low memory (e.g., kernel code at 0x10000000)
-                        if (i >= 2 && i <= 7) || (!has_user_accessible && i != 0 && i != 1) {
-                            level_4_table[i] = current_l4_table[i].clone();
-                            count += 1;
-                            log::debug!("Copied low-memory kernel PML4 entry {}", i);
-                        }
-                    }
+            // CRITICAL: Ensure ALL kernel code is accessible after CR3 switch
+            // The bootloader maps kernel .text/.rodata/.data at 0x200000-0x320000 region
+            // This falls in PML4 entry 0, but we need to ensure the ENTIRE mapping is present
+            log::debug!("Sharing ALL kernel PML4 entries (0-7) to ensure ISR code accessibility after CR3 switch");
+            let mut copied_count = 0;
+            
+            // Share ALL low-memory kernel entries to ensure complete kernel code access
+            // This includes the ISR assembly code that executes after CR3 switch
+            for idx in 0..8 {
+                if !current_l4_table[idx].is_unused() {
+                    level_4_table[idx] = current_l4_table[idx].clone();
+                    copied_count += 1;
+                    log::debug!("Shared kernel PML4 entry {} (flags: {:?}) for complete ISR access after CR3 switch", 
+                        idx, current_l4_table[idx].flags());
+                } else if idx == 1 {
+                    // CRITICAL: PML4 entry 1 might have kernel code that .is_unused() doesn't detect
+                    // Force copy entry 1 even if it appears unused - the bootloader might map code there
+                    level_4_table[idx] = current_l4_table[idx].clone();
+                    copied_count += 1;
+                    log::debug!("FORCED copy of PML4 entry {} (appears unused but may contain kernel code)", idx);
+                } else {
+                    log::debug!("PML4 entry {} is UNUSED in kernel page table - skipping", idx);
                 }
-                count
-            };
+            }
+            
+            // CRITICAL FIX: Copy PML4 entries that map the kernel heap (0x444444440000)
+            // The kernel heap starts at 0x444444440000, which maps to PML4 entry:
+            // (0x444444440000 >> 39) & 0x1FF = 0x88 & 0x1FF = 0x88 = 136
+            const KERNEL_HEAP_PML4_ENTRY: usize = 136;
+            log::debug!("Copying kernel heap PML4 entry {} (maps 0x444444440000)", KERNEL_HEAP_PML4_ENTRY);
+            
+            if !current_l4_table[KERNEL_HEAP_PML4_ENTRY].is_unused() {
+                level_4_table[KERNEL_HEAP_PML4_ENTRY] = current_l4_table[KERNEL_HEAP_PML4_ENTRY].clone();
+                copied_count += 1;
+                log::debug!("Copied kernel heap PML4 entry {} (flags: {:?}) for heap access after CR3 switch", 
+                    KERNEL_HEAP_PML4_ENTRY, current_l4_table[KERNEL_HEAP_PML4_ENTRY].flags());
+            } else {
+                log::warn!("Kernel heap PML4 entry {} is UNUSED - this will cause page faults!", KERNEL_HEAP_PML4_ENTRY);
+            }
             
             log::debug!("Process page table created with global kernel mappings ({} low entries + 256 high entries)", copied_count);
+            
+            // CRITICAL FIX: Map 8 pages around the RSP0 region for interrupt handling
+            // RSP0 addresses are in the 0xffffc90000000000 range (kernel stack allocator)
+            // Without these mappings, triple fault occurs when CPU tries to push interrupt frame
+            let rsp0_range_start = 0xffffc90000000000u64;
+            let rsp0_range_end = 0xffffc90000020000u64; // 128KB range (32 pages) to cover all possible RSP0 values
+            
+            // Map this range from the kernel's current page table to the new process page table
+            let phys_offset = crate::memory::physical_memory_offset();
+            let kernel_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(KERNEL_CR3));
+            let kernel_l4_table = &*(phys_offset + kernel_frame.start_address().as_u64()).as_ptr::<PageTable>();
+            
+            // Calculate PML4 index for RSP0 region: (0xffffc90000000000 >> 39) & 0x1ff = 0x192 = 402
+            const RSP0_PML4_INDEX: usize = 402;
+            log::debug!("Mapping RSP0 region: PML4 entry {} for addresses {:#x}-{:#x}", 
+                RSP0_PML4_INDEX, rsp0_range_start, rsp0_range_end);
+            
+            if !kernel_l4_table[RSP0_PML4_INDEX].is_unused() {
+                let mut entry = kernel_l4_table[RSP0_PML4_INDEX].clone();
+                entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
+                level_4_table[RSP0_PML4_INDEX] = entry;
+                log::info!("TRIPLE_FAULT_FIX: Mapped RSP0 PML4 entry {} for interrupt frame handling", RSP0_PML4_INDEX);
+            } else {
+                log::error!("RSP0 PML4 entry {} is UNUSED in kernel page table - this will cause triple faults!", RSP0_PML4_INDEX);
+            }
         }
         
         // Create mapper for the new page table
@@ -400,12 +521,49 @@ pub fn map_user_stack_to_process(
     
     // Calculate page range to copy
     let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-    let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
+    // CRITICAL FIX: Include the page containing stack_top
+    // stack_top points to the first byte AFTER the stack (where RSP will be)
+    // We need to map up to and including the page that contains (stack_top - 1)
+    // But since RSP starts AT stack_top and grows down, we need the page containing stack_top
+    let end_page = Page::<Size4KiB>::containing_address(stack_top);
     
     let mut _mapped_pages = 0;
+    const MAX_STACK_PAGES: usize = 256; // 1MB max stack size
+    
+    // Safety check - prevent infinite loops
+    let page_count = (end_page.start_address().as_u64() - start_page.start_address().as_u64()) / 4096;
+    if page_count > MAX_STACK_PAGES as u64 {
+        log::error!("Stack mapping too large: {} pages (max {}), range {:#x}-{:#x}", 
+                   page_count, MAX_STACK_PAGES, stack_bottom.as_u64(), stack_top.as_u64());
+        return Err("Stack mapping exceeds maximum size");
+    }
+    
+    // Calculate the actual page count - Page::range_inclusive includes both start and end
+    let page_count = ((end_page.start_address().as_u64() - start_page.start_address().as_u64()) / 4096) + 1;
+    
+    crate::serial_println!("STACK_MAP: mapping {} pages from {:#x} to {:#x}", 
+                          page_count, stack_bottom.as_u64(), stack_top.as_u64());
+    crate::serial_println!("STACK_MAP: start_page={:#x}, end_page={:#x} (inclusive)",
+                          start_page.start_address().as_u64(), 
+                          end_page.start_address().as_u64());
+    
+    // DEBUG: Log what RSP will be and what page it's in
+    crate::serial_println!("STACK_MAP: RSP will be {:#x}, which is in page {:#x}",
+                          stack_top.as_u64(),
+                          Page::<Size4KiB>::containing_address(stack_top).start_address().as_u64());
+    
+    // Guard pattern to detect source of 0xB1 pointer
+    let sentinel: u8 = 0xB1;
+    let ptr = &sentinel as *const _ as usize;
+    crate::serial_println!("STACK-MAP start, stack var @ {:#x}", ptr);
     
     // Copy each page mapping from kernel to process page table
     for page in Page::range_inclusive(start_page, end_page) {
+        _mapped_pages += 1;
+        if _mapped_pages > MAX_STACK_PAGES {
+            log::error!("Stack mapping exceeded MAX_STACK_PAGES during loop!");
+            return Err("Stack mapping infinite loop detected");
+        }
         // Look up the mapping in the kernel page table
         match kernel_mapper.translate(page.start_address()) {
             TranslateResult::Mapped { frame, offset, flags: _ } => {

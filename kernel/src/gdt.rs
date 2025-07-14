@@ -5,6 +5,7 @@ use conquer_once::spin::OnceCell;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const DEBUG_DF_IST_INDEX: u16 = 1;  // For Ring 3 timer debugging
 
 static TSS: OnceCell<TaskStateSegment> = OnceCell::uninit();
 static GDT: OnceCell<(GlobalDescriptorTable, Selectors)> = OnceCell::uninit();
@@ -35,10 +36,18 @@ pub fn init() {
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = VirtAddr::new(0);
         // Note: We'll update this later with update_ist_stack()
         
+        // Set up debug double fault stack (IST[1]) with static stack
+        tss.interrupt_stack_table[DEBUG_DF_IST_INDEX as usize] = {
+            const DEBUG_STACK_SIZE: usize = 4096; // 4KB debug stack
+            static mut DEBUG_STACK: [u8; DEBUG_STACK_SIZE] = [0; DEBUG_STACK_SIZE];
+            let stack_start = VirtAddr::from_ptr(&raw const DEBUG_STACK);
+            stack_start + DEBUG_STACK_SIZE as u64
+        };
+        
         // Set up privilege level 0 (kernel) stack for syscalls/interrupts from userspace
         // Use the legacy RSP0 field for Ring 3 -> Ring 0 transitions
         tss.privilege_stack_table[0] = {
-            const STACK_SIZE: usize = 32768; // 32KB kernel stack (increased from 16KB)
+            const STACK_SIZE: usize = 65536; // 64KB kernel stack (DOUBLED to test stack overflow)
             static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
 
             let stack_start = VirtAddr::from_ptr(&raw const STACK);
@@ -98,6 +107,36 @@ pub fn init() {
     log::debug!("  TSS: {:#x}", selectors.tss_selector.0);
     log::debug!("  User data: {:#x}", selectors.user_data_selector.0);
     log::debug!("  User code: {:#x}", selectors.user_code_selector.0);
+    
+    // DEBUG: Dump raw GDT entries to verify attributes
+    unsafe {
+        use x86_64::instructions::tables::sgdt;
+        use x86_64::structures::DescriptorTablePointer;
+        
+        let gdtr: DescriptorTablePointer = sgdt();
+        let gdt_ptr = gdtr.base.as_u64() as *const u64;
+        
+        // Dump user code descriptor (index 6, selector 0x33)
+        let user_code_desc = *gdt_ptr.add(6);
+        crate::serial_println!("GDT[6] User Code: {:#016x}", user_code_desc);
+        
+        // Dump user data descriptor (index 5, selector 0x2b)  
+        let user_data_desc = *gdt_ptr.add(5);
+        crate::serial_println!("GDT[5] User Data: {:#016x}", user_data_desc);
+        
+        // Decode user code descriptor attributes
+        let dpl = (user_code_desc >> 45) & 0x3;
+        let p = (user_code_desc >> 47) & 0x1;
+        let l = (user_code_desc >> 53) & 0x1;  // 64-bit code flag
+        let d = (user_code_desc >> 54) & 0x1;
+        crate::serial_println!("  User Code: DPL={} P={} L={} D={}", dpl, p, l, d);
+        
+        // Decode user data descriptor attributes
+        let data_dpl = (user_data_desc >> 45) & 0x3;
+        let data_p = (user_data_desc >> 47) & 0x1;
+        let data_type = (user_data_desc >> 40) & 0xF;
+        crate::serial_println!("  User Data: DPL={} P={} Type={:#x}", data_dpl, data_p, data_type);
+    }
     
     // Log TSS setup
     let tss = TSS.get().unwrap();

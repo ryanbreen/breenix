@@ -56,6 +56,9 @@ impl SyscallFrame {
 /// Main syscall handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
+    // Critical debug: Print immediately when syscall is received
+    crate::serial_println!("SYSCALL_ENTRY: Received syscall from userspace! RAX={:#x}", frame.rax);
+    
     // Debug: Log raw RAX value
     log::debug!("rust_syscall_handler: Raw frame.rax = {:#x} ({})", frame.rax, frame.rax as i64);
     

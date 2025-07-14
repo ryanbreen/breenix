@@ -14,6 +14,7 @@ use crate::task::thread::ThreadPrivilege;
 /// This is set when we're about to return to a userspace process
 pub(crate) static mut NEXT_PAGE_TABLE: Option<PhysFrame> = None;
 
+
 /// Check if rescheduling is needed and perform context switch if necessary
 /// 
 /// This is called from the assembly interrupt return path and is the
@@ -27,6 +28,17 @@ pub extern "C" fn check_need_resched_and_switch(
     if !scheduler::check_and_clear_need_resched() {
         // No reschedule needed, just return
         return;
+    }
+    
+    // EXTENDED INTERRUPT MASKING TEST:
+    // Disable interrupts for the ENTIRE context switch operation
+    // to test if timing is the root cause of heap corruption
+    log::debug!("EXTENDED_MASKING: Disabling interrupts for entire context switch");
+    x86_64::instructions::interrupts::disable();
+    
+    // Step 4: Confirm context switch code is reached
+    unsafe {
+        core::arch::asm!("out 0x80, al"); // QEMU logs this magic I/O
     }
     
     // log::debug!("check_need_resched_and_switch: Need resched is true, proceeding...");
@@ -78,6 +90,11 @@ pub extern "C" fn check_need_resched_and_switch(
         // Reset the timer quantum for the new thread
         super::timer::reset_quantum();
     }
+    
+    // NOTE: Interrupts remain DISABLED for extended masking test
+    // They will be re-enabled by IRETQ when returning to userspace
+    // or by the kernel when appropriate for kernel threads
+    log::debug!("Context switch completed with extended interrupt masking");
 }
 
 /// Save the current thread's userspace context
@@ -239,6 +256,23 @@ fn restore_userspace_thread_context(
                         // Store the page table to switch to when we return to userspace
                         // The actual switch will happen in assembly code right before iretq
                         if let Some(ref page_table) = process.page_table {
+                            // CRITICAL USER-MAP-CHECK: Verify user RSP and RIP are mapped
+                            // This is the single deterministic experiment to diagnose IRETQ triple fault
+                            {
+                                use x86_64::VirtAddr;
+                                
+                                let user_rsp = thread.context.rsp;
+                                let user_rip = thread.context.rip;
+                                
+                                let rsp_ok = page_table.translate_page(VirtAddr::new(user_rsp));
+                                let rip_ok = page_table.translate_page(VirtAddr::new(user_rip));
+                                
+                                log::info!(
+                                    "USER-MAP-CHECK: RSP={:#x} {:?}, RIP={:#x} {:?}",
+                                    user_rsp, rsp_ok, user_rip, rip_ok
+                                );
+                            }
+                            
                             let page_table_frame = page_table.level_4_frame();
                             unsafe {
                                 NEXT_PAGE_TABLE = Some(page_table_frame);
@@ -283,7 +317,14 @@ pub extern "C" fn get_next_page_table() -> u64 {
             
             // DEBUG: Log current CR3 for comparison
             let current_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+            crate::serial_println!("ASM_CR3_SWITCH: Current CR3={:#x}, switching to CR3={:#x}", current_cr3, addr);
             log::info!("get_next_page_table: Current CR3={:#x}, switching to CR3={:#x}", current_cr3, addr);
+            
+            // Verify the page table frame is valid
+            if addr == 0 || addr >= 0x100000000 {
+                crate::serial_println!("INVALID_CR3: Attempted to switch to invalid CR3={:#x}", addr);
+                return 0;
+            }
             
             addr
         } else {
