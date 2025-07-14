@@ -16,8 +16,8 @@ const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 /// End address for kernel stack allocation (16 MiB total space)
 const KERNEL_STACK_END: u64 = 0xffffc900_0100_0000;
 
-/// Size of each kernel stack (32 KiB)
-const KERNEL_STACK_SIZE: u64 = 32 * 1024;
+/// Size of each kernel stack (64 KiB - DOUBLED to test stack overflow hypothesis)
+const KERNEL_STACK_SIZE: u64 = 64 * 1024;
 
 /// Size of guard page (4 KiB)
 const GUARD_PAGE_SIZE: u64 = 4 * 1024;
@@ -107,12 +107,22 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
     
     let num_pages = (KERNEL_STACK_SIZE / 4096) as usize;
+    crate::serial_println!("KSTACK: about to map {} pages for slot {}", num_pages, index);
+    
     for i in 0..num_pages {
+        // Bounds check as suggested in triage guide
+        if i > 100 {
+            crate::serial_println!("KSTACK: ABORT - loop iteration {} exceeded limit", i);
+            return Err("Kernel stack allocation loop exceeded limit");
+        }
+        
         let virt_addr = stack_bottom + (i as u64 * 4096);
+        crate::serial_println!("KSTACK: mapping page {} at {:#x}", i, virt_addr);
         
         // Allocate a physical frame
         let frame = allocate_frame()
             .ok_or("Out of memory for kernel stack")?;
+        crate::serial_println!("KSTACK: got frame {:#x}", frame.start_address());
         
         // Map it in the global kernel page tables
         unsafe {
@@ -122,7 +132,10 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
                 flags,
             )?;
         }
+        crate::serial_println!("KSTACK: mapped page {} successfully", i);
     }
+    
+    crate::serial_println!("KSTACK: all {} pages mapped successfully", num_pages);
     
     
     Ok(KernelStack {

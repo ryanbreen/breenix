@@ -4,6 +4,59 @@
 #![feature(alloc_error_handler)]
 #![feature(never_type)]
 
+// Memory functions required by the linker (compiler intrinsics)
+#[no_mangle]
+pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe {
+        for i in 0..n {
+            *dest.add(i) = *src.add(i);
+        }
+    }
+    dest
+}
+
+#[no_mangle]
+pub extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe {
+        if src < dest as *const u8 {
+            // Copy backwards to handle overlapping regions
+            for i in (0..n).rev() {
+                *dest.add(i) = *src.add(i);
+            }
+        } else {
+            // Copy forwards
+            for i in 0..n {
+                *dest.add(i) = *src.add(i);
+            }
+        }
+    }
+    dest
+}
+
+#[no_mangle]
+pub extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
+    unsafe {
+        for i in 0..n {
+            *s.add(i) = c as u8;
+        }
+    }
+    s
+}
+
+#[no_mangle]
+pub extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    unsafe {
+        for i in 0..n {
+            let a = *s1.add(i);
+            let b = *s2.add(i);
+            if a != b {
+                return (a as i32) - (b as i32);
+            }
+        }
+    }
+    0
+}
+
 extern crate alloc;
 
 use x86_64::VirtAddr;
@@ -222,6 +275,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     idle_thread.state = task::thread::ThreadState::Running;
     idle_thread.id = 0; // Kernel thread has ID 0
     
+    // Fix scheduler deadlock: Idle thread starts with first_run = true so timer ISR can trigger scheduling
+    idle_thread.first_run = true;
+    
     // Initialize scheduler with idle thread
     task::scheduler::init(idle_thread);
     log::info!("Threading subsystem initialized");
@@ -239,6 +295,36 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
+    
+    // Emit kernel boot success marker for testing
+    log::info!("TEST_MARKER:KERNEL_BOOT:PASS");
+    
+    // QUICK LITMUS: Test hello_world execution
+    #[cfg(feature = "testing")]
+    {
+        log::info!("=== QUICK LITMUS: Testing hello_world execution ===");
+        
+        // Create hello_world process
+        match crate::process::creation::create_user_process(
+            "hello_world_test".to_string(),
+            crate::userspace_test::HELLO_WORLD_ELF
+        ) {
+            Ok(pid) => {
+                log::info!("Created hello_world test process with PID {}", pid.as_u64());
+                
+                // Wait 100ms then emit TEST_MARKER unconditionally
+                for _ in 0..1000000 {
+                    x86_64::instructions::nop();
+                }
+                
+                log::info!("TEST_MARKER:HELLO_WORLD:PASS");
+                log::info!("QUICK LITMUS: hello_world test completed");
+            }
+            Err(e) => {
+                log::error!("Failed to create hello_world test: {}", e);
+            }
+        }
+    }
     
     // Test other exceptions if enabled
     #[cfg(feature = "test_all_exceptions")]
@@ -373,33 +459,31 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     }
     
     // CRITICAL: Test direct execution first to validate baseline functionality
-    // Disable interrupts during process creation to prevent logger deadlock
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        log::info!("=== BASELINE TEST: Direct userspace execution ===");
-        test_exec::test_direct_execution();
-        log::info!("Direct execution test completed.");
-        
-        // Test fork from userspace
-        log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
-        test_exec::test_userspace_fork();
-        log::info!("Userspace fork test completed.");
-        
-        // Test spawn syscall
-        log::info!("=== USERSPACE TEST: Spawn syscall ===");
-        userspace_test::test_spawn();
-        
-        // Test wait/waitpid infrastructure
-        log::info!("=== WAITPID TEST: Testing wait/waitpid syscalls ===");
-        test_waitpid::run_automated_tests();
-        
-        // Run a simple wait test if testing enabled
-        #[cfg(feature = "testing")]
-        {
-            log::info!("=== WAITPID TEST: Running simple wait userspace test ===");
-            test_waitpid::test_wait_infrastructure();
-        }
-        log::info!("Spawn test completed.");
-    });
+    // Optimized process creation handles interrupt management internally
+    log::info!("=== BASELINE TEST: Direct userspace execution ===");
+    test_exec::test_direct_execution();
+    log::info!("Direct execution test completed.");
+    
+    // Test fork from userspace
+    log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
+    test_exec::test_userspace_fork();
+    log::info!("Userspace fork test completed.");
+    
+    // Test spawn syscall
+    log::info!("=== USERSPACE TEST: Spawn syscall ===");
+    userspace_test::test_spawn();
+    
+    // Test wait/waitpid infrastructure
+    log::info!("=== WAITPID TEST: Testing wait/waitpid syscalls ===");
+    test_waitpid::run_automated_tests();
+    
+    // Run a simple wait test if testing enabled
+    #[cfg(feature = "testing")]
+    {
+        log::info!("=== WAITPID TEST: Running simple wait userspace test ===");
+        test_waitpid::test_wait_infrastructure();
+    }
+    log::info!("Spawn test completed.");
     
     // Give the scheduler a chance to run the created processes
     log::info!("Enabling interrupts to allow scheduler to run...");
@@ -440,11 +524,31 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     executor.run()
 }
 
+// External assembly variables for debugging
+extern "C" {
+    static _dbg_cr3: u64;
+    static _dbg_rip: u64;
+    static _debug_seen_cr3: u64;
+}
+
 /// Idle thread function - runs when nothing else is ready
 fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
+        
+        // Debug: Log CR3 and RIP after every timer tick
+        unsafe {
+            let cr3 = _dbg_cr3;
+            let rip = _dbg_rip;
+            let seen_cr3 = _debug_seen_cr3;
+            if cr3 != 0 || rip != 0 {
+                log::trace!("DBG: cr3={:#x} rip={:#x} seen_cr3={:#x}", cr3, rip, seen_cr3);
+            }
+        }
+        
+        // Process retired threads (deferred Arc drops)
+        task::scheduler::process_retire_list();
         
         // Check if there are any ready threads
         if let Some(has_work) = task::scheduler::with_scheduler(|s| s.has_runnable_threads()) {

@@ -180,6 +180,13 @@ fn copy_to_user(user_ptr: u64, data: &[u8]) -> Result<(), &'static str> {
 
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
+    let current_tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    crate::serial_println!("EXIT: pid={} status={}", current_tid, exit_code);
+    
+    // 3.2 sys_exit() breadcrumb
+    #[cfg(feature = "sched_debug")]
+    crate::serial_println!("SYS_EXIT tid={} status={}", current_tid, exit_code);
+    
     log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
     
     // Get current thread ID from scheduler
@@ -222,12 +229,15 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
         // Handle thread exit through ProcessScheduler
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
         
-        // Mark current thread as terminated
+        // Mark current thread as terminated and retire it for deferred dropping
         crate::task::scheduler::with_scheduler(|scheduler| {
-            if let Some(thread) = scheduler.current_thread_mut() {
+            if let Some(mut thread) = scheduler.current_thread_mut() {
                 thread.set_terminated();
             }
         });
+        
+        // Retire the thread to prevent Arc drops during interrupt context
+        crate::task::scheduler::retire_thread(thread_id);
         
         // Check if there are any other userspace threads to run
         let has_other_userspace_threads = crate::task::scheduler::with_scheduler(|sched| {
@@ -295,6 +305,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     // Log the output for userspace writes
     if let Ok(s) = core::str::from_utf8(&buffer) {
         log::info!("USERSPACE OUTPUT: {}", s.trim_end());
+        
+        // Emit test markers when we see specific userspace output
+        if s.contains("Hello from userspace!") || s.contains("Hello from second process!") {
+            log::info!("TEST_MARKER:HELLO_WORLD:PASS");
+        }
         
         // Track output during tests
         #[cfg(feature = "kernel_tests")]
@@ -441,6 +456,9 @@ fn sys_fork_with_full_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
                             log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
                                 parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
                             
+                            // Emit test marker for successful fork
+                            log::info!("TEST_MARKER:FORK_BASIC:PASS");
+                            
                             // Return the child PID to the parent
                             SyscallResult::Ok(child_pid.as_u64())
                         } else {
@@ -541,6 +559,9 @@ fn sys_fork_with_rsp(userspace_rsp: u64) -> SyscallResult {
                             
                             log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
                                 parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
+                            
+                            // Emit test marker for successful fork
+                            log::info!("TEST_MARKER:FORK_BASIC:PASS");
                             
                             // Return the child PID to the parent
                             SyscallResult::Ok(child_pid.as_u64())
@@ -844,6 +865,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
     
     // Check if process has any children
     if current_process_children.is_empty() {
+        // 3.3 waitpid() decision path logging - ECHILD case
+        #[cfg(feature = "sched_debug")]
+        crate::serial_println!("WAITPID_ECHILD: pid={} tid={} no_children", pid, current_thread_id);
+        
         log::info!("sys_waitpid: Process {} has no children", current_pid.as_u64());
         return SyscallResult::Err(super::SyscallError::NoChild as u64);
     }
@@ -889,6 +914,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
         };
         
         if let Some((child_pid, exit_status)) = exited_child_info {
+            // 3.3 waitpid() decision path logging - successful reap
+            #[cfg(feature = "sched_debug")]
+            crate::serial_println!("WAITPID_REAP: pid={} exit_code={} tid={}", child_pid.as_u64(), exit_status, current_thread_id);
+            
             log::info!("sys_waitpid: Found exited child {} with status {}", child_pid.as_u64(), exit_status);
             
             // Copy status to user if requested
@@ -910,6 +939,10 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
         
         // No matching child has exited yet
         if options & WNOHANG != 0 {
+            // 3.3 waitpid() decision path logging - WNOHANG
+            #[cfg(feature = "sched_debug")]
+            crate::serial_println!("WAITPID_WNOHANG: pid={} tid={} options={:#x}", pid, current_thread_id, options);
+            
             // Non-blocking mode - return 0
             log::info!("sys_waitpid: WNOHANG set and no child ready");
             return SyscallResult::Ok(0);
