@@ -550,3 +550,56 @@ pub fn set_need_resched() {
 pub fn check_and_clear_need_resched() -> bool {
     NEED_RESCHED.swap(false, Ordering::Relaxed)
 }
+
+/// Terminate the current thread (called from sys_exit)
+/// 
+/// This function marks the current thread as terminated and removes it from the scheduler.
+/// It then triggers a context switch to the next available thread.
+/// 
+/// # Safety
+/// This function never returns - it terminates the current thread execution.
+pub fn terminate_current_thread() -> ! {
+    let thread_id = current_thread_id().expect("No current thread to terminate");
+    
+    log::info!("Terminating thread {}", thread_id);
+    
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            // Mark the thread as terminated
+            if let Some(mut thread) = scheduler.get_thread_mut(thread_id) {
+                thread.state = ThreadState::Terminated;
+                log::debug!("Thread {} marked as terminated", thread_id);
+            }
+            
+            // Remove from ready queue if present
+            scheduler.ready_queue.retain(|&id| id != thread_id);
+            
+            // Clear current thread
+            scheduler.current_thread = None;
+            
+            // Retire the thread for cleanup
+            scheduler.retire_thread(thread_id);
+            
+            log::debug!("Thread {} removed from scheduler", thread_id);
+        }
+    });
+    
+    // Force a context switch to the next available thread
+    // This should never return to the terminated thread
+    loop {
+        if let Some((old_id, new_id)) = schedule() {
+            log::debug!("Terminated thread {} switching to thread {}", old_id, new_id);
+            // The context switch will be performed by the caller (interrupt handler)
+            // Since we're terminating, we should never return here
+            
+            // For now, just loop forever to prevent returning to terminated thread
+            // In a real implementation, we would trigger a context switch here
+            x86_64::instructions::hlt();
+        } else {
+            // No threads available, go to idle
+            log::debug!("No threads available after termination, going to idle");
+            x86_64::instructions::hlt();
+        }
+    }
+}

@@ -120,6 +120,9 @@ fn build_userspace_tests() {
         "fork_deep_stack",
         "fork_progress_test",
         "fork_spin_stress",
+        "exec_target",
+        "exec_basic",
+        "fork_exec_chain",
     ];
     
     // Copy built binaries to .elf files

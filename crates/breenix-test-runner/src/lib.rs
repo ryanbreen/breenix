@@ -40,6 +40,18 @@ impl KernelRun {
         );
     }
     
+    /// Assert that multiple markers appear in the kernel output in any order
+    pub fn assert_marker_sequence(&self, markers: &[&str]) {
+        let stdout = self.stdout_str();
+        for marker in markers {
+            assert!(
+                stdout.contains(marker),
+                "marker '{}' not found in kernel output:\n{}", 
+                marker, stdout
+            );
+        }
+    }
+    
     /// Count occurrences of a pattern in the output
     pub fn count_pattern(&self, pattern: &str) -> usize {
         self.stdout_str().matches(pattern).count()

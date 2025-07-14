@@ -122,4 +122,20 @@ impl Process {
         self.children.push(child_id);
     }
     
+    /// Replace the process's page table (used by execve)
+    /// This keeps the new page table alive and drops the old one
+    pub fn replace_page_table(&mut self, new_page_table: ProcessPageTable) {
+        log::debug!("Process {}: Replacing page table", self.id.as_u64());
+        
+        // Drop the old page table (if any)
+        if let Some(ref old_pt) = self.page_table {
+            log::debug!("Process {}: Dropping old page table", self.id.as_u64());
+        }
+        
+        // Store the new page table
+        self.page_table = Some(Box::new(new_page_table));
+        
+        log::debug!("Process {}: Page table replaced successfully", self.id.as_u64());
+    }
+    
 }

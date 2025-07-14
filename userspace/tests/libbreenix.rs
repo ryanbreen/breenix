@@ -15,6 +15,7 @@ const SYS_FORK: u64 = 5;
 const SYS_WAIT: u64 = 7;
 #[allow(dead_code)]
 const SYS_EXEC: u64 = 11;
+pub const SYS_EXECVE: u64 = 11;  // Public constant for Phase 4C testing
 #[allow(dead_code)]
 const SYS_GETPID: u64 = 39;
 #[allow(dead_code)]
@@ -115,6 +116,22 @@ pub unsafe fn sys_fork() -> u64 {
 #[allow(dead_code)]
 pub unsafe fn sys_exec(path: &str, args: &str) -> u64 {
     syscall2(SYS_EXEC, path.as_ptr() as u64, args.as_ptr() as u64)
+}
+
+/// POSIX-compliant execve syscall for Phase 4C testing
+/// Returns only on failure (negative errno), never returns on success
+#[inline(always)]
+pub unsafe fn sys_execve(path: *const u8, argv: *const *const u8) -> isize {
+    let ret: isize;
+    asm!(
+        "int 0x80",
+        in("rax") SYS_EXECVE,
+        in("rdi") path,   // char *filename
+        in("rsi") argv,   // char **argv (envp omitted for now)
+        lateout("rax") ret,
+        options(nostack, preserves_flags),
+    );
+    ret
 }
 
 #[allow(dead_code)]

@@ -140,6 +140,8 @@ fn load_segment_into_page_table(
     
     log::debug!("Loading segment into page table: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}", 
         vaddr.as_u64(), file_size, mem_size, ph.p_flags);
+    crate::serial_println!("ELF-FLAGS: seg at {:#x} p_flags={:#x} (W={} X={})", 
+        vaddr.as_u64(), ph.p_flags, ph.p_flags & 2 != 0, ph.p_flags & 1 != 0);
     
     // Calculate pages needed
     let start_page = Page::<Size4KiB>::containing_address(vaddr);
@@ -158,6 +160,9 @@ fn load_segment_into_page_table(
     if !segment_executable {
         flags |= PageTableFlags::NO_EXECUTE;
     }
+    
+    crate::serial_println!("ELF-PAGEFLAGS: seg at {:#x} final_flags={:?} NX={}", 
+        vaddr.as_u64(), flags, flags.contains(PageTableFlags::NO_EXECUTE));
     
     log::debug!("Linux-style ELF loading: staying in kernel space, using physical memory access");
     
@@ -226,16 +231,16 @@ fn load_segment_into_page_table(
             log::debug!("Copied {} bytes to frame {:#x} (page {:#x}) at offset {} using physical access", 
                 copy_size, frame_phys_addr.as_u64(), page_start_vaddr.as_u64(), page_offset);
             
-            // INT3 hot-patch for future triage - only enabled with feature flag
-            #[cfg(feature = "testing")]
-            if page_start_vaddr.as_u64() == 0x10000000 && page_offset == 0 {
-                unsafe {
-                    let code_ptr = phys_ptr as *mut u8;
-                    *code_ptr.add(0) = 0xCC;  // INT3 instruction
-                }
-                crate::serial_println!("INT3_BOOT: INT3 patch at 0x10000000 (physical {:#x})", 
-                    frame_phys_addr.as_u64());
-            }
+            // INT3 hot-patch DISABLED for Step 1: test normal execution path
+            // #[cfg(feature = "testing")]
+            // if page_start_vaddr.as_u64() == 0x10000000 && page_offset == 0 {
+            //     unsafe {
+            //         let code_ptr = phys_ptr as *mut u8;
+            //         *code_ptr.add(0) = 0xCC;  // INT3 instruction
+            //     }
+            //     crate::serial_println!("INT3_BOOT: INT3 patch at 0x10000000 (physical {:#x})", 
+            //         frame_phys_addr.as_u64());
+            // }
             
             // Remove all test patches - let the original hello_world.elf run
             // The hello_world binary will execute its syscall

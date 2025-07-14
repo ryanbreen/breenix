@@ -134,6 +134,33 @@ pub fn test_fork_exec() {
     }
 }
 
+/// Test exec_basic binary to validate sys_exec syscall
+pub fn test_exec_basic() {
+    log::info!("=== Testing exec_basic binary (Phase 4C validation) ===");
+    
+    #[cfg(feature = "testing")]
+    {
+        // Create and run exec_basic.elf which will exec into exec_target
+        match create_user_process(String::from("exec_basic_test"), crate::userspace_test::EXEC_BASIC_ELF) {
+            Ok(pid) => {
+                log::info!("✓ Created exec_basic test process with PID {}", pid.as_u64());
+                log::info!("  -> Process will call sys_exec to replace itself with exec_target");
+                log::info!("  -> Expected output: EXEC_OK (from exec_target)");
+                log::info!("TEST_MARKER:EXEC_BASIC:STARTED");
+            }
+            Err(e) => {
+                log::error!("✗ Failed to create exec_basic process: {}", e);
+                log::info!("TEST_MARKER:EXEC_BASIC:FAILED");
+            }
+        }
+    }
+    
+    #[cfg(not(feature = "testing"))]
+    {
+        log::warn!("exec_basic test requires testing feature");
+    }
+}
+
 /// Test exec directly by creating a process and then calling exec on it
 pub fn test_exec_directly() {
     log::info!("=== Testing exec() directly ===");

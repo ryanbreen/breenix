@@ -21,15 +21,34 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
 
 ## Current Development Status
 
-### Currently Working On (July 11 2025)
+### Currently Working On (January 14 2025)
 
-- 🚧 **Next Phase**: Implementing advanced userspace features
-  - Shell-style fork+exec patterns
-  - Process wait/waitpid support
-  - More complex userspace programs
-  - Performance optimizations
+- 🚧 **Phase 4B**: Building Syscall Infrastructure
+  - Syscall dispatch table (4B-1)
+  - sys_write for userspace printf (4B-2)
+  - sys_exit for clean termination (4B-3)
+  - Following narrow PR approach: one syscall, one test, one merge
 
-### Recently Completed (Last Sprint) - July 2025
+### Recently Completed (Last Sprint) - January 2025
+
+- ✅ **🎉 PHASE 4A COMPLETE: INT 0x80 Syscall Gate Working!** (Jan 14 2025)
+  - **Tagged**: v0.3-syscall-gate-ok
+  - **Problem Solved**: Userspace execution hanging at CR3 switch
+  - **Root Causes Fixed**:
+    - Kernel stack not mapped in process page table (fixed PML4 entry 2)
+    - Kernel code not mapped in process page table (fixed PML4 entry 0)
+  - **Key Achievements**:
+    - INT 0x80 successfully fires from userspace with DPL=3
+    - Syscall handler receives control with test value RAX=0x1234
+    - Integration test `integ_syscall_gate` passes consistently
+    - Guard-rail tests documented to prevent regressions
+  - **Technical Details**:
+    - IDT[0x80] set to privilege level 3 for user access
+    - Both kernel mappings remain non-USER accessible (maintaining isolation)
+    - Systematic debugging with INT3 test revealed execution issues
+  - **Evidence**: Logs show "SYSCALL_ENTRY: Received syscall from userspace!" and "TEST_MARKER: SYSCALL_OK"
+
+### Recently Completed (Previous Sprints) - July 2025
 
 - ✅ **🎉 ACHIEVED ZERO COMPILER WARNINGS!** (Jul 11 2025)
   - **Starting Point**: 85+ compiler warnings cluttering the build output

@@ -69,6 +69,35 @@ path = "fork_progress_test.rs"
 name = "fork_spin_stress"
 path = "fork_spin_stress.rs"
 
+[[bin]]
+name = "syscall_gate_test"
+path = "syscall_gate_test.rs"
+
+[[bin]]
+name = "syscall_unknown_test"
+path = "syscall_unknown_test.rs"
+
+[[bin]]
+name = "hello_breenix_test"
+path = "hello_breenix_test.rs"
+
+[[bin]]
+name = "sys_exit_test"
+path = "sys_exit_test.rs"
+
+# Phase 4C exec testing binaries
+[[bin]]
+name = "exec_target"
+path = "exec_target.rs"
+
+[[bin]]
+name = "exec_basic"
+path = "exec_basic.rs"
+
+[[bin]]
+name = "fork_exec_chain"
+path = "fork_exec_chain.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

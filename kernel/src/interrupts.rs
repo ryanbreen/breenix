@@ -447,6 +447,12 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    // CRITICAL: Test mode check must be FIRST to prevent panic during tests
+    if crate::test_harness::is_test_mode() {
+        log::warn!("TEST_MARKER: PF_OK");
+        crate::test_exit_qemu(crate::QemuExitCode::Success);
+    }
+    
     // 3-A: PF exception breadcrumb
     #[cfg(feature = "testing")]
     {
@@ -554,17 +560,7 @@ extern "x86-interrupt" fn page_fault_handler(
     log::error!("CS: {:#x}", stack_frame.code_segment.0);
     log::error!("{:#?}", stack_frame);
     
-    // Check if we're in test mode
-    if crate::test_harness::is_test_mode() {
-        log::warn!("TEST_MARKER: PF_OK");
-        crate::test_exit_qemu(crate::QemuExitCode::Success);
-    }
-    
-    #[cfg(feature = "testing")]
-    {
-        log::info!("TEST_MARKER: PF_OK");
-        crate::test_exit_qemu(crate::QemuExitCode::Success);
-    }
+    // Test mode check moved to beginning of function
     #[cfg(not(feature = "testing"))]
     loop {
         x86_64::instructions::hlt();

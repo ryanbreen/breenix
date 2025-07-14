@@ -638,11 +638,9 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             // For now, we'll just use a simple check
             log::info!("sys_exec: Program name requested, checking for known programs");
             
-            // HACK: For now, we'll assume if program_name_ptr is provided,
-            // it's asking for hello_time.elf
-            log::info!("sys_exec: Using hello_time.elf for exec test");
-            // Use the statically embedded hello_time.elf
-            crate::userspace_test::HELLO_TIME_ELF
+            // Use the exec_target.elf which prints "EXEC_OK"
+            log::info!("sys_exec: Using exec_target.elf for exec test");
+            crate::userspace_test::EXEC_TARGET_ELF
         } else if elf_data_ptr != 0 {
             // In a real implementation, we'd safely copy from user memory
             log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
@@ -650,9 +648,9 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             log::error!("sys_exec: User memory access not implemented yet");
             return SyscallResult::Err(22); // EINVAL
         } else {
-            // Use embedded test program for now
-            log::info!("sys_exec: Using embedded hello_world test program");
-            crate::userspace_test::HELLO_WORLD_ELF
+            // Use exec_target.elf which prints "EXEC_OK" for testing
+            log::info!("sys_exec: Using exec_target.elf for exec test");
+            crate::userspace_test::EXEC_TARGET_ELF
         };
         
         // Find current process
@@ -677,34 +675,14 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             log::info!("sys_exec: Replacing process {} (thread {}) with new program", 
                        current_pid.as_u64(), _current_thread_id);
             
-            // Replace the process's address space
-            let mut manager_guard = crate::process::manager();
-            if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, _elf_data) {
-                    Ok(new_entry_point) => {
-                        log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
-                                   new_entry_point);
-                        
-                        // CRITICAL OS-STANDARD VIOLATION:
-                        // exec() should NEVER return on success - the process is completely replaced
-                        // In a proper implementation, exec_process would:
-                        // 1. Replace the address space
-                        // 2. Update the thread context
-                        // 3. Jump directly to the new program (never returning here)
-                        // 
-                        // For now, we return success, but this violates POSIX semantics
-                        // The interrupt return path will handle the actual switch
-                        SyscallResult::Ok(0)
-                    }
-                    Err(e) => {
-                        log::error!("sys_exec: Failed to exec process: {}", e);
-                        SyscallResult::Err(12) // ENOMEM
-                    }
-                }
-            } else {
-                log::error!("sys_exec: Process manager not available");
-                SyscallResult::Err(12) // ENOMEM
-            }
+            // Use the new POSIX-compliant exec_replace function
+            // This function never returns on success - it replaces the process image
+            let program_name = alloc::string::String::from("exec_target");
+            let result = crate::syscall::exec::exec_replace(program_name, _elf_data);
+            
+            // If we reach here, exec failed
+            log::error!("sys_exec: exec_replace returned {}, but should never return on success", result);
+            SyscallResult::Err(result as u64)
         }
     })
 }

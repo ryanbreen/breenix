@@ -27,9 +27,9 @@ echo ""
 
 # Build and run based on mode
 if [ "$MODE" = "bios" ]; then
-    cargo run --release --features testing --bin qemu-bios -- -serial stdio "$@" 2>&1 | tee "$LOG_FILE"
+    cargo run --release --bin qemu-bios -- -serial stdio "$@" 2>&1 | tee "$LOG_FILE"
 else
-    cargo run --release --features testing --bin qemu-uefi -- -serial stdio "$@" 2>&1 | tee "$LOG_FILE"
+    cargo run --release --bin qemu-uefi -- -serial stdio "$@" 2>&1 | tee "$LOG_FILE"
 fi
 
 echo ""

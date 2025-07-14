@@ -315,29 +315,29 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         crate::test_exit_qemu(crate::QemuExitCode::Failed);
     }
     
-    // QUICK LITMUS: Test hello_world execution (only if no specific test requested)
+    // EXEC TEST: Test exec_basic execution to validate exec syscall
     #[cfg(feature = "testing")]
     {
-        log::info!("=== QUICK LITMUS: Testing hello_world execution ===");
+        log::info!("=== EXEC TEST: Testing exec_basic execution ===");
         
-        // Create hello_world process
+        // Create exec_basic process to test sys_exec syscall
         match crate::process::creation::create_user_process(
-            "hello_world_test".to_string(),
-            crate::userspace_test::HELLO_WORLD_ELF
+            "exec_basic_test".to_string(),
+            crate::userspace_test::EXEC_BASIC_ELF
         ) {
             Ok(pid) => {
-                log::info!("Created hello_world test process with PID {}", pid.as_u64());
+                log::info!("Created exec_basic test process with PID {}", pid.as_u64());
                 
-                // Wait 100ms then emit TEST_MARKER unconditionally
-                for _ in 0..1000000 {
+                // Wait longer for exec test to complete
+                for _ in 0..5000000 {
                     x86_64::instructions::nop();
                 }
                 
-                log::info!("TEST_MARKER:HELLO_WORLD:PASS");
-                log::info!("QUICK LITMUS: hello_world test completed");
+                log::info!("TEST_MARKER:EXEC_BASIC:COMPLETE");
+                log::info!("EXEC TEST: exec_basic test completed");
             }
             Err(e) => {
-                log::error!("Failed to create hello_world test: {}", e);
+                log::error!("Failed to create exec_basic test: {}", e);
             }
         }
     }
@@ -468,6 +468,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Test spawn syscall
     log::info!("=== USERSPACE TEST: Spawn syscall ===");
     userspace_test::test_spawn();
+    
+    // Test exec syscall with exec_basic binary
+    log::info!("=== PHASE 4C TEST: Exec syscall validation ===");
+    test_exec::test_exec_basic();
+    log::info!("Exec basic test completed.");
     
     // Test wait/waitpid infrastructure
     log::info!("=== WAITPID TEST: Testing wait/waitpid syscalls ===");

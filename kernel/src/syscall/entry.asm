@@ -8,7 +8,7 @@ global syscall_entry
 ; External Rust functions
 extern rust_syscall_handler
 extern check_need_resched_and_switch
-extern get_next_page_table
+extern get_thread_cr3
 
 ; Syscall entry point from INT 0x80
 ; This is called when userspace executes INT 0x80
@@ -90,7 +90,7 @@ syscall_entry:
     push rdx                    ; Save rdx
     
     ; Get the page table to switch to
-    call get_next_page_table
+    call get_thread_cr3
     test rax, rax              ; Is there a page table to switch to?
     jz .no_page_table_switch
     

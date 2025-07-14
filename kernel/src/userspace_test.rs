@@ -48,7 +48,30 @@ pub static FORK_DEEP_STACK_ELF: &[u8] = include_bytes!("../../userspace/tests/fo
 pub static FORK_PROGRESS_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_progress_test.elf");
 
 #[cfg(feature = "testing")]
+pub static EXEC_TARGET_ELF: &[u8] = include_bytes!("../../userspace/tests/exec_target.elf");
+
+#[cfg(feature = "testing")]
+pub static EXEC_BASIC_ELF: &[u8] = include_bytes!("../../userspace/tests/exec_basic.elf");
+
+#[cfg(feature = "testing")]
+pub static FORK_EXEC_CHAIN_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_exec_chain.elf");
+
+#[cfg(feature = "testing")]
 pub static FORK_SPIN_STRESS_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_spin_stress.elf");
+
+#[cfg(feature = "testing")]
+pub static SYSCALL_GATE_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/syscall_gate_test.elf");
+
+#[cfg(feature = "testing")]
+pub static SYSCALL_UNKNOWN_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/syscall_unknown_test.elf");
+
+#[cfg(feature = "testing")]
+pub static HELLO_BREENIX_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_breenix_test.elf");
+
+#[cfg(feature = "testing")]
+pub static SYS_EXIT_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/sys_exit_test.elf");
+
+// Phase 4C exec testing binaries are already defined above
 
 // Add test to ensure binaries are included
 #[cfg(feature = "testing")]

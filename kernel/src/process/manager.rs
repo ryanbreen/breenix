@@ -194,6 +194,7 @@ impl ProcessManager {
             privilege: crate::task::thread::ThreadPrivilege::User,
             first_run: false,  // New thread hasn't run yet
             ticks_run: 0,      // No timer ticks yet
+            page_table_frame: process.page_table.as_ref().map(|pt| pt.level_4_frame()),
         };
         
         Ok(thread)
@@ -718,6 +719,7 @@ impl ProcessManager {
             privilege: parent_thread.privilege,
             first_run: false,  // New child thread hasn't run yet
             ticks_run: 0,      // No timer ticks yet
+            page_table_frame: parent_thread.page_table_frame, // Inherit from parent
         };
         
         // CRITICAL: Child uses SAME RSP as parent (fork semantics)
@@ -953,15 +955,8 @@ impl ProcessManager {
             // 2. We CANNOT switch page tables while executing kernel code
             // 3. The syscall return path will handle the actual switch
             
-            // Schedule the page table switch for when we return to userspace
-            // This is the ONLY safe way to do it - switching while in kernel mode would crash
-            unsafe {
-                // This will be picked up by the interrupt return path
-                crate::interrupts::context_switch::NEXT_PAGE_TABLE = 
-                    process.page_table.as_ref().map(|pt| pt.level_4_frame());
-            }
-            
-            log::info!("exec_process: Current process exec - page table switch scheduled for interrupt return");
+            // Page table will be loaded from thread context on next interrupt return
+            log::info!("exec_process: Current process exec - page table ready for context switch");
             
             // DO NOT flush TLB here - let the interrupt return path handle it
             // Flushing TLB while still using the old page table mappings is dangerous
@@ -970,7 +965,7 @@ impl ProcessManager {
             // Process is scheduled but not current - it will pick up the new page table
             // when it's next scheduled to run. The context switch code will handle it.
             log::info!("exec_process: Process {} is scheduled - new page table will be used on next schedule", pid.as_u64());
-            // No need to set NEXT_PAGE_TABLE - the scheduler will use the process's page table
+            // The scheduler will use the process's page table on next context switch
         } else {
             // Process is not scheduled - it will use the new page table when it runs
             log::info!("exec_process: Process {} is not scheduled - new page table ready for when it runs", pid.as_u64());

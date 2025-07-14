@@ -7,6 +7,8 @@
 pub(crate) mod dispatcher;
 pub mod handlers;
 pub mod handler;
+pub mod table;
+pub mod exec;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

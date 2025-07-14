@@ -5,14 +5,12 @@
 //! has completed its minimal work.
 
 use x86_64::structures::idt::InterruptStackFrame;
-use x86_64::structures::paging::PhysFrame;
+// PhysFrame import removed - now using thread's page_table_frame field
 use crate::task::process_context::{SavedRegisters, save_userspace_context, restore_userspace_context};
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
 
-/// Thread-local storage for the page table to switch to when returning to userspace
-/// This is set when we're about to return to a userspace process
-pub(crate) static mut NEXT_PAGE_TABLE: Option<PhysFrame> = None;
+// NEXT_PAGE_TABLE removed - now using thread CR3 field directly
 
 
 /// Check if rescheduling is needed and perform context switch if necessary
@@ -170,8 +168,7 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
         });
         
-        // Clear any pending page table switch - we're staying in kernel mode
-        NEXT_PAGE_TABLE = None;
+        // No page table switch needed - staying in kernel mode
     }
     log::trace!("Set up return to idle loop");
 }
@@ -225,10 +222,7 @@ fn setup_kernel_thread_return(
         
         log::trace!("Set up kernel thread {} '{}' to run at {:#x}", thread_id, name, rip);
         
-        // Clear any pending page table switch - we're staying in kernel mode
-        unsafe {
-            NEXT_PAGE_TABLE = None;
-        }
+        // No page table switch needed - staying in kernel mode
     }
 }
 
@@ -253,31 +247,59 @@ fn restore_userspace_thread_context(
                         restore_userspace_context(thread, interrupt_frame, saved_regs);
                         log::trace!("Restored context for process {} (thread {})", pid.as_u64(), thread_id);
                         
-                        // Store the page table to switch to when we return to userspace
+                        // Load page table frame from thread (updated by exec)
                         // The actual switch will happen in assembly code right before iretq
-                        if let Some(ref page_table) = process.page_table {
-                            // CRITICAL USER-MAP-CHECK: Verify user RSP and RIP are mapped
-                            // This is the single deterministic experiment to diagnose IRETQ triple fault
-                            {
+                        if let Some(page_table_frame) = thread.page_table_frame {
+                            // Validate with process page table if available
+                            if let Some(ref page_table) = process.page_table {
+                                // STEP 2: Verify user pages are present & executable
                                 use x86_64::VirtAddr;
                                 
                                 let user_rsp = thread.context.rsp;
                                 let user_rip = thread.context.rip;
                                 
+                                crate::serial_println!("USER-MAP-DEBUG: About to check RSP={:#x}, RIP={:#x}", user_rsp, user_rip);
+                                
                                 let rsp_ok = page_table.translate_page(VirtAddr::new(user_rsp));
                                 let rip_ok = page_table.translate_page(VirtAddr::new(user_rip));
                                 
-                                log::info!(
-                                    "USER-MAP-CHECK: RSP={:#x} {:?}, RIP={:#x} {:?}",
-                                    user_rsp, rsp_ok, user_rip, rip_ok
+                                crate::serial_println!(
+                                    "USER-MAP: RIP={:#x} {:?}, RSP={:#x} {:?}",
+                                    user_rip, rip_ok, user_rsp, rsp_ok
                                 );
+                                
+                                // Also check RSP-8 for safety as suggested in checklist
+                                let rsp_safe = page_table.translate_page(VirtAddr::new(user_rsp - 8));
+                                crate::serial_println!("USER-MAP: RSP-8={:#x} {:?}", user_rsp - 8, rsp_safe);
+                                
+                                // STEP 4: Check if current kernel stack is mapped in new CR3
+                                let current_kernel_rsp: u64;
+                                unsafe {
+                                    core::arch::asm!("mov {}, rsp", out(reg) current_kernel_rsp);
+                                }
+                                let kstack_ok = page_table.translate_page(VirtAddr::new(current_kernel_rsp));
+                                crate::serial_println!("USER-MAP: KSTACK={:#x} {:?}", current_kernel_rsp, kstack_ok);
+                                
+                                // STEP 5: Log userspace RIP to see where we're returning
+                                crate::serial_println!("USER-RIP: About to return to userspace at RIP={:#x}", user_rip);
+                                
+                                // Additional debug: Check segment registers
+                                let cs: u16;
+                                let ss: u16;
+                                unsafe {
+                                    core::arch::asm!("mov {cs:x}, cs", cs = out(reg) cs);
+                                    core::arch::asm!("mov {ss:x}, ss", ss = out(reg) ss);
+                                }
+                                crate::serial_println!("CURRENT-SEGS: CS={:#x} SS={:#x}", cs, ss);
                             }
                             
+                            // Use thread's page table frame for CR3 loading
+                            log::info!("Process {} will use page table frame={:#x} (from thread)", 
+                                     pid.as_u64(), page_table_frame.start_address().as_u64());
+                        } else if let Some(ref page_table) = process.page_table {
+                            // Fallback to process page table if thread doesn't have one
                             let page_table_frame = page_table.level_4_frame();
-                            unsafe {
-                                NEXT_PAGE_TABLE = Some(page_table_frame);
-                            }
-                            log::info!("Scheduled page table switch for process {} on return: frame={:#x}", 
+                            log::info!("Process {} will use page table frame={:#x} (from process)", 
                                      pid.as_u64(), page_table_frame.start_address().as_u64());
                         } else {
                             log::warn!("Process {} has no page table!", pid.as_u64());
@@ -307,28 +329,55 @@ fn idle_loop() -> ! {
     }
 }
 
-/// Get the next page table to switch to (if any)
+/// Set the next page table to switch to on interrupt return
+/// This is used by execve() to schedule a page table switch
+// set_next_page_table() removed - now using thread CR3 field directly
+
+/// Get the page table frame (CR3) for the current thread
 /// This is called from assembly code before returning to userspace
 #[no_mangle]
-pub extern "C" fn get_next_page_table() -> u64 {
-    unsafe {
-        if let Some(frame) = core::mem::replace(&mut *(&raw mut NEXT_PAGE_TABLE), None) {
-            let addr = frame.start_address().as_u64();
-            
-            // DEBUG: Log current CR3 for comparison
-            let current_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
-            crate::serial_println!("ASM_CR3_SWITCH: Current CR3={:#x}, switching to CR3={:#x}", current_cr3, addr);
-            log::info!("get_next_page_table: Current CR3={:#x}, switching to CR3={:#x}", current_cr3, addr);
-            
-            // Verify the page table frame is valid
-            if addr == 0 || addr >= 0x100000000 {
-                crate::serial_println!("INVALID_CR3: Attempted to switch to invalid CR3={:#x}", addr);
-                return 0;
+pub extern "C" fn get_thread_cr3() -> u64 {
+    // Get the current thread ID
+    if let Some(thread_id) = scheduler::current_thread_id() {
+        // Get the thread's page table frame
+        let cr3 = scheduler::with_scheduler(|scheduler| {
+            if let Some(thread) = scheduler.get_thread(thread_id) {
+                if let Some(page_table_frame) = thread.page_table_frame {
+                    let addr = page_table_frame.start_address().as_u64();
+                    
+                    // DEBUG: Log current CR3 for comparison
+                    let current_cr3 = x86_64::registers::control::Cr3::read().0.start_address().as_u64();
+                    crate::serial_println!("THREAD_CR3_SWITCH: Current CR3={:#x}, switching to CR3={:#x}", current_cr3, addr);
+                    
+                    // Verify the page table frame is valid
+                    if addr == 0 || addr >= 0x100000000 {
+                        crate::serial_println!("INVALID_CR3: Attempted to switch to invalid CR3={:#x}", addr);
+                        return 0;
+                    }
+                    
+                    return addr;
+                }
             }
-            
-            addr
-        } else {
-            0 // No page table switch needed
+            0
+        }).unwrap_or(0);
+        
+        if cr3 == 0 {
+            // Fallback to process page table
+            if let Some(mut manager_guard) = crate::process::try_manager() {
+                if let Some(ref manager) = *manager_guard {
+                    if let Some((_, process)) = manager.find_process_by_thread(thread_id) {
+                        if let Some(ref page_table) = process.page_table {
+                            let addr = page_table.level_4_frame().start_address().as_u64();
+                            crate::serial_println!("FALLBACK_CR3: Using process page table CR3={:#x}", addr);
+                            return addr;
+                        }
+                    }
+                }
+            }
         }
+        
+        cr3
+    } else {
+        0 // No thread, no page table switch
     }
 }

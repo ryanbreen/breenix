@@ -8,7 +8,7 @@
 global timer_interrupt_entry
 extern timer_interrupt_handler
 extern check_need_resched_and_switch
-extern get_next_page_table
+extern get_thread_cr3
 
 section .data
 global _dbg_cr3
@@ -179,7 +179,7 @@ timer_interrupt_entry:
     jne .no_userspace_return
     
     ; We're returning to userspace, check if we need to switch page tables
-    call get_next_page_table
+    call get_thread_cr3
     test rax, rax              ; Is there a page table to switch to?
     jz .skip_page_table_switch
     

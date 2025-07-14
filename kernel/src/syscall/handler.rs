@@ -1,4 +1,25 @@
-use super::{SyscallNumber, SyscallResult};
+use super::table;
+
+/// Number of bytes pushed for GP registers in syscall_entry.asm
+/// 15 registers * 8 bytes each = 120 bytes
+const GP_SAVE_BYTES: usize = 15 * 8;
+
+/// Hardware interrupt frame pushed by CPU on INT 0x80
+#[repr(C)]
+#[derive(Debug)]
+pub struct InterruptFrame {
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+/// Get mutable reference to the actual IRET frame
+/// The frame parameter points to the GP save area, so we need to skip past it
+unsafe fn get_iret_frame_mut(gp_save_ptr: *mut SyscallFrame) -> *mut InterruptFrame {
+    (gp_save_ptr as *mut u8).add(GP_SAVE_BYTES) as *mut InterruptFrame
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -58,6 +79,13 @@ impl SyscallFrame {
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // Critical debug: Print immediately when syscall is received
     crate::serial_println!("SYSCALL_ENTRY: Received syscall from userspace! RAX={:#x}", frame.rax);
+    crate::serial_println!("STEP6-BREADCRUMB: INT 0x80 fired successfully from userspace!");
+    
+    // DEBUG: Verify frame pointer location
+    let current_rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) current_rsp); }
+    crate::serial_println!("DEBUG: frame ptr = {:#x}, rsp in ASM = {:#x}",
+                          frame as *const _ as u64, current_rsp);
     
     // Debug: Log raw RAX value
     log::debug!("rust_syscall_handler: Raw frame.rax = {:#x} ({})", frame.rax, frame.rax as i64);
@@ -94,32 +122,49 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         );
     }
     
-    // Dispatch to the appropriate syscall handler
-    let result = match SyscallNumber::from_u64(syscall_num) {
-        Some(SyscallNumber::Exit) => super::handlers::sys_exit(args.0 as i32),
-        Some(SyscallNumber::Write) => super::handlers::sys_write(args.0, args.1, args.2),
-        Some(SyscallNumber::Read) => super::handlers::sys_read(args.0, args.1, args.2),
-        Some(SyscallNumber::Yield) => super::handlers::sys_yield(),
-        Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
-        Some(SyscallNumber::Fork) => super::handlers::sys_fork_with_frame(frame),
-        Some(SyscallNumber::Wait) => super::handlers::sys_wait(args.0),
-        Some(SyscallNumber::Exec) => super::handlers::sys_exec(args.0, args.1),
-        Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
-        Some(SyscallNumber::Spawn) => super::handlers::sys_spawn(args.0, args.1),
-        Some(SyscallNumber::Waitpid) => super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32),
-        Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
-        None => {
-            log::warn!("Unknown syscall number: {}", syscall_num);
-            SyscallResult::Err(u64::MAX)
-        }
-    };
+    // Dispatch using the new table-driven approach
+    let result = table::dispatch(syscall_num as usize, frame);
     
-    // Set return value in RAX
-    match result {
-        SyscallResult::Ok(val) => frame.set_return_value(val),
-        SyscallResult::Err(errno) => {
-            // Return -errno in RAX for errors (Linux convention)
-            frame.set_return_value((-(errno as i64)) as u64);
+    // Set return value in RAX (result is already isize, following Linux ABI)
+    frame.set_return_value(result as u64);
+    
+    // Check if exec() just happened and we need to update the interrupt frame
+    crate::serial_println!("EXEC_DEBUG: Checking exec pending flag");
+    if crate::syscall::exec::check_and_clear_exec_pending() {
+        crate::serial_println!("EXEC_DEBUG: Exec pending detected - updating IRET frame");
+        log::info!("Exec pending detected - updating IRET frame with new context");
+        
+        // Get current thread info and update the REAL interrupt frame
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+                // Log thread context values first
+                crate::serial_println!("EXEC_DEBUG: Thread context: RIP={:#x}, RSP={:#x}", 
+                                     thread.context.rip, thread.context.rsp);
+                
+                // Get the actual IRET frame (not the GP save area)
+                let iret_frame_ptr = unsafe { get_iret_frame_mut(frame) };
+                crate::serial_println!("EXEC_DEBUG: GP save area at {:#x}, IRET frame at {:#x}", 
+                                     frame as *const _ as u64, iret_frame_ptr as u64);
+                
+                let iret_frame = unsafe { &mut *iret_frame_ptr };
+                
+                // Log old values
+                crate::serial_println!("EXEC_DEBUG: Old IRET frame: RIP={:#x}, RSP={:#x}", 
+                                     iret_frame.rip, iret_frame.rsp);
+                
+                // Update the IRET frame with the new context
+                iret_frame.rip = thread.context.rip;
+                iret_frame.cs = thread.context.cs;
+                iret_frame.rflags = thread.context.rflags;
+                iret_frame.rsp = thread.context.rsp;
+                iret_frame.ss = thread.context.ss;
+                
+                // Log new values
+                crate::serial_println!("EXEC_DEBUG: New IRET frame: RIP={:#x}, RSP={:#x}", 
+                                     iret_frame.rip, iret_frame.rsp);
+                log::info!("Updated IRET frame for exec: RIP={:#x}, RSP={:#x}", 
+                          iret_frame.rip, iret_frame.rsp);
+            });
         }
     }
     

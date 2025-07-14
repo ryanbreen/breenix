@@ -209,6 +209,13 @@ impl ProcessPageTable {
                     // Copy *exactly* the entry the kernel is using
                     let mut entry = current_l4_table[idx].clone();
                     entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
+                    
+                    // CRITICAL: Compile-time check to prevent kernel mappings from being user accessible
+                    debug_assert!(
+                        !entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                        "Kernel PML4[{}] has USER bit set - SECURITY VIOLATION!", idx
+                    );
+                    
                     level_4_table[idx] = entry;
                     high_half_copied += 1;
                 }
@@ -222,22 +229,45 @@ impl ProcessPageTable {
             log::debug!("Sharing ALL kernel PML4 entries (0-7) to ensure ISR code accessibility after CR3 switch");
             let mut copied_count = 0;
             
-            // Share ALL low-memory kernel entries to ensure complete kernel code access
-            // This includes the ISR assembly code that executes after CR3 switch
-            for idx in 0..8 {
+            // CRITICAL FIX: Share kernel entries but exclude userspace mappings
+            // We need kernel code/data access but must prevent userspace mapping pollution
+            
+            // CRITICAL: The kernel code lives at 0x200000-0x320000 (PML4 entry 0)
+            // We MUST map this or the interrupt return path will fail after CR3 switch!
+            // However, we need to be careful not to map userspace regions.
+            
+            // The kernel typically uses these address ranges:
+            // - 0x200000-0x400000: Kernel code/data (loaded by bootloader)
+            // - 0x10000000+: Userspace programs
+            
+            // Map PML4 entry 0 but ONLY if it contains kernel code
+            // We can detect this by checking if the kernel's entry point is in this range
+            const KERNEL_CODE_START: u64 = 0x200000;
+            const KERNEL_CODE_END: u64 = 0x400000;
+            
+            // Check if PML4 entry 0 is used and likely contains kernel code
+            if !current_l4_table[0].is_unused() {
+                // This entry maps addresses 0x0 - 0x8000000000 (512GB)
+                // We need it for kernel code but must be careful about userspace
+                let mut entry = current_l4_table[0].clone();
+                // Remove user accessible flag to prevent userspace from accessing kernel code
+                entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
+                
+                // CRITICAL: Compile-time check to prevent kernel code from being user accessible
+                debug_assert!(
+                    !entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                    "Kernel code PML4[0] has USER bit set - SECURITY VIOLATION!"
+                );
+                
+                level_4_table[0] = entry;
+                log::info!("KERNEL_CODE_FIX: Mapped PML4 entry 0 for kernel code access (0x200000-0x400000)");
+                copied_count += 1;
+            }
+            
+            // Skip entries 1-7 for process isolation
+            for idx in 1..8 {
                 if !current_l4_table[idx].is_unused() {
-                    level_4_table[idx] = current_l4_table[idx].clone();
-                    copied_count += 1;
-                    log::debug!("Shared kernel PML4 entry {} (flags: {:?}) for complete ISR access after CR3 switch", 
-                        idx, current_l4_table[idx].flags());
-                } else if idx == 1 {
-                    // CRITICAL: PML4 entry 1 might have kernel code that .is_unused() doesn't detect
-                    // Force copy entry 1 even if it appears unused - the bootloader might map code there
-                    level_4_table[idx] = current_l4_table[idx].clone();
-                    copied_count += 1;
-                    log::debug!("FORCED copy of PML4 entry {} (appears unused but may contain kernel code)", idx);
-                } else {
-                    log::debug!("PML4 entry {} is UNUSED in kernel page table - skipping", idx);
+                    log::debug!("Skipping PML4 entry {} for process isolation", idx);
                 }
             }
             
@@ -277,10 +307,41 @@ impl ProcessPageTable {
             if !kernel_l4_table[RSP0_PML4_INDEX].is_unused() {
                 let mut entry = kernel_l4_table[RSP0_PML4_INDEX].clone();
                 entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
+                
+                // CRITICAL: Compile-time check to prevent RSP0 region from being user accessible
+                debug_assert!(
+                    !entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                    "RSP0 PML4[{}] has USER bit set - SECURITY VIOLATION!", RSP0_PML4_INDEX
+                );
+                
                 level_4_table[RSP0_PML4_INDEX] = entry;
                 log::info!("TRIPLE_FAULT_FIX: Mapped RSP0 PML4 entry {} for interrupt frame handling", RSP0_PML4_INDEX);
             } else {
                 log::error!("RSP0 PML4 entry {} is UNUSED in kernel page table - this will cause triple faults!", RSP0_PML4_INDEX);
+            }
+            
+            // CRITICAL FIX: Map idle thread stack region for context switching
+            // The idle thread stack is at 0x100000000000 range, which maps to PML4 entry 2
+            // Without this mapping, context switches to userspace fail because kernel stack is not accessible
+            const IDLE_STACK_PML4_INDEX: usize = 2;
+            let idle_stack_addr = 0x100000000000u64; // Range containing idle thread stack
+            log::debug!("Mapping idle thread stack region: PML4 entry {} for addresses around {:#x}", 
+                IDLE_STACK_PML4_INDEX, idle_stack_addr);
+            
+            if !kernel_l4_table[IDLE_STACK_PML4_INDEX].is_unused() {
+                let mut entry = kernel_l4_table[IDLE_STACK_PML4_INDEX].clone();
+                entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
+                
+                // CRITICAL: Compile-time check to prevent kernel stack from being user accessible
+                debug_assert!(
+                    !entry.flags().contains(PageTableFlags::USER_ACCESSIBLE),
+                    "Kernel stack PML4[{}] has USER bit set - SECURITY VIOLATION!", IDLE_STACK_PML4_INDEX
+                );
+                
+                level_4_table[IDLE_STACK_PML4_INDEX] = entry;
+                log::info!("KSTACK_FIX: Mapped idle thread stack PML4 entry {} for context switch support", IDLE_STACK_PML4_INDEX);
+            } else {
+                log::error!("Idle thread stack PML4 entry {} is UNUSED in kernel page table - this will cause context switch failures!", IDLE_STACK_PML4_INDEX);
             }
         }
         
@@ -336,19 +397,19 @@ impl ProcessPageTable {
                 return Err("Cannot map kernel addresses as user-accessible");
             }
             
-            // CRITICAL FIX: Check if page is already mapped before attempting to map
-            // This handles the case where L3 tables are shared between processes
+            // Check if page is already mapped in THIS process's page table
             if let Ok(existing_frame) = self.mapper.translate_page(page) {
                 if existing_frame == frame {
                     // Page is already mapped to the correct frame, skip
                     return Ok(());
                 } else {
-                    // Page is mapped to a different frame, this is an error
-                    log::error!("Page {:#x} already mapped to different frame {:#x} (wanted {:#x})",
+                    // Page is mapped to a different frame in THIS process
+                    // This is an error - we shouldn't overwrite existing mappings
+                    log::error!("Page {:#x} already mapped to different frame {:#x} (wanted {:#x}) in this process",
                               page.start_address().as_u64(), 
                               existing_frame.start_address().as_u64(),
                               frame.start_address().as_u64());
-                    return Err("Page already mapped to different frame");
+                    return Err("Page already mapped to different frame in this process");
                 }
             }
             

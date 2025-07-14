@@ -162,6 +162,9 @@ pub struct Thread {
     
     /// Number of timer ticks this thread has been scheduled for
     pub ticks_run: u32,
+    
+    /// Page table frame (CR3 value) for this thread
+    pub page_table_frame: Option<x86_64::structures::paging::PhysFrame>,
 }
 
 impl Clone for Thread {
@@ -181,6 +184,7 @@ impl Clone for Thread {
             privilege: self.privilege,
             first_run: self.first_run,
             ticks_run: self.ticks_run,
+            page_table_frame: self.page_table_frame,
         }
     }
 }
@@ -221,6 +225,7 @@ impl Thread {
             privilege,
             first_run: false, // Initialize to false for all threads
             ticks_run: 0,     // No ticks run yet
+            page_table_frame: None, // Will be set when thread is associated with a process
         }
     }
     
