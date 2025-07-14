@@ -117,7 +117,7 @@ pub fn restore_userspace_context(
                 frame.stack_segment = crate::gdt::kernel_data_selector();
             }
             
-            #[cfg(feature = "instr_trace")]
+            #[cfg(feature = "testing")]
             {
                 const TF: u64 = 1 << 8;
                 frame.cpu_flags =

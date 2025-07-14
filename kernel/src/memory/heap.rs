@@ -6,7 +6,7 @@ use x86_64::VirtAddr;
 use spin::Mutex;
 
 /// Watch pointer for heap debugging - tracks a specific address for deallocation
-#[cfg(feature = "heap_watch")]
+#[cfg(feature = "testing")]
 pub static WATCH_PTR: core::sync::atomic::AtomicU64 = 
     core::sync::atomic::AtomicU64::new(0x4444_4444_1748);
 
@@ -62,7 +62,7 @@ unsafe impl core::alloc::GlobalAlloc for GlobalAllocator {
             let ptr = alloc_start as *mut u8;
             
             // Heap tracing for fault address
-            #[cfg(feature = "heap_trace")]
+            #[cfg(feature = "testing")]
             {
                 crate::serial_println!("HT ALLOC ptr={:#x} sz={} count={}", ptr as u64, layout.size(), allocator.allocations);
             }
@@ -73,14 +73,14 @@ unsafe impl core::alloc::GlobalAlloc for GlobalAllocator {
     
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {
         // Heap tracing for fault address  
-        #[cfg(feature = "heap_trace")]
+        #[cfg(feature = "testing")]
         {
             let count_before = self.0.lock().allocations;
             crate::serial_println!("HT FREE  ptr={:#x} sz={} count_before={}", _ptr as u64, _layout.size(), count_before);
         }
         
         // Watch for specific address deallocation
-        #[cfg(feature = "heap_watch")]
+        #[cfg(feature = "testing")]
         {
             if _ptr as u64 == WATCH_PTR.load(core::sync::atomic::Ordering::Relaxed) {
                 crate::serial_println!("WATCH-DEALLOC  ptr={:#x} sz={}", _ptr as u64, _layout.size());
@@ -93,7 +93,7 @@ unsafe impl core::alloc::GlobalAlloc for GlobalAllocator {
         allocator.allocations -= 1;
         
         // Log heap reset condition
-        #[cfg(feature = "heap_trace")]
+        #[cfg(feature = "testing")]
         {
             if allocator.allocations == 0 {
                 crate::serial_println!("HT RESET: Heap reset triggered! All allocations freed, resetting to start");
@@ -148,7 +148,7 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 }
 
 /// Dump a backtrace for heap debugging
-#[cfg(feature = "heap_watch")]
+#[cfg(feature = "testing")]
 pub fn dump_backtrace() {
     unsafe {
         let mut rbp: u64;

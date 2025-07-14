@@ -299,7 +299,23 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Emit kernel boot success marker for testing
     log::info!("TEST_MARKER:KERNEL_BOOT:PASS");
     
-    // QUICK LITMUS: Test hello_world execution
+    // Check if we should run kernel tests via test harness
+    #[cfg(feature = "testing")]
+    if let Some(test_spec) = option_env!("BREENIX_TEST") {
+        log::warn!("✅ BREENIX_TEST='{}' - running test harness ONLY", test_spec);
+        log::warn!("Kernel test mode enabled - running tests");
+        
+        let tests = test_harness::get_all_tests();
+        test_harness::run_tests(&tests, test_spec);
+        
+        // If we reach here, no tests were selected or run
+        log::warn!("Test harness completed");
+        
+        // Test harness should exit QEMU, but if we get here, exit anyway
+        crate::test_exit_qemu(crate::QemuExitCode::Failed);
+    }
+    
+    // QUICK LITMUS: Test hello_world execution (only if no specific test requested)
     #[cfg(feature = "testing")]
     {
         log::info!("=== QUICK LITMUS: Testing hello_world execution ===");
@@ -327,7 +343,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     }
     
     // Test other exceptions if enabled
-    #[cfg(feature = "test_all_exceptions")]
+    #[cfg(feature = "testing")]
     {
         test_exception_handlers();
     }
@@ -389,31 +405,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     log::info!("About to check exception test features...");
     
-    // Check if we should run kernel tests
-    // For now, we'll use a feature flag until we confirm command line support
-    #[cfg(feature = "kernel_tests")]
-    {
-        log::warn!("Kernel test mode enabled - running tests");
-        
-        // For testing, use an environment variable set at compile time
-        // This can be overridden by setting BREENIX_TEST at build time
-        let test_cmdline = match option_env!("BREENIX_TEST") {
-            Some(test) => test,
-            None => "tests=all", // Default to running all tests
-        };
-        
-        log::warn!("Test command line: {}", test_cmdline);
-        
-        let tests = test_harness::get_all_tests();
-        test_harness::run_tests(&tests, test_cmdline);
-        
-        // If we reach here, no tests were selected or run
-        log::warn!("Test harness completed");
-    }
+    // (Test harness moved up to run first when BREENIX_TEST is specified)
     
     
     
-    #[cfg(feature = "test_page_fault")]
+    #[cfg(feature = "testing")]
     {
         log::info!("Testing page fault exception...");
         unsafe {
@@ -451,10 +447,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     #[cfg(feature = "testing")]
     
     // Test userspace execution (if enabled)
-    #[cfg(feature = "test_userspace")]
+    #[cfg(feature = "testing")]
     {
         log::info!("Testing userspace execution...");
-        userspace_test::test_userspace();
+        userspace_test::test_multiple_processes();
         // This won't return if successful
     }
     
@@ -587,7 +583,7 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 // Test function for exception handlers
-#[cfg(feature = "test_all_exceptions")]
+#[cfg(feature = "testing")]
 fn test_exception_handlers() {
     log::info!("🧪 EXCEPTION_HANDLER_TESTS_START 🧪");
     

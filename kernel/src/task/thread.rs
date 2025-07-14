@@ -255,7 +255,7 @@ impl Thread {
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
         // 3-D: Thread finalizer trace - thread marked terminated
-        #[cfg(feature = "sched_debug")]
+        #[cfg(feature = "testing")]
         crate::serial_println!("SCHED_TERMINATE tid={}", self.id);
         
         self.state = ThreadState::Terminated;

@@ -12,16 +12,16 @@ use core::sync::atomic::{AtomicBool, Ordering};
 static TEST_MODE: AtomicBool = AtomicBool::new(false);
 
 /// Track output from processes during tests
-#[cfg(feature = "kernel_tests")]
+#[cfg(feature = "testing")]
 pub static TEST_OUTPUT_TRACKER: spin::Mutex<TestOutputTracker> = spin::Mutex::new(TestOutputTracker::new());
 
-#[cfg(feature = "kernel_tests")]
+#[cfg(feature = "testing")]
 pub struct TestOutputTracker {
     process_outputs: [(u64, bool); 8], // Track up to 8 processes
     total_outputs: u32,
 }
 
-#[cfg(feature = "kernel_tests")]
+#[cfg(feature = "testing")]
 impl TestOutputTracker {
     const fn new() -> Self {
         Self {
@@ -113,12 +113,17 @@ impl Filter {
 
 /// Test runner that executes tests based on filter
 pub fn run_tests(tests: &[TestCase], cmdline: &str) {
+    log::warn!("🔍 TEST HARNESS: cmdline='{}'", cmdline);
+    log::warn!("🔍 Available tests: {:?}", tests.iter().map(|t| t.name).collect::<Vec<_>>());
+    
     let filter = Filter::from_cmdline(cmdline);
     
     let tests_to_run: Vec<&TestCase> = tests
         .iter()
         .filter(|test| filter.should_run(test.name))
         .collect();
+    
+    log::warn!("🔍 Selected tests: {:?}", tests_to_run.iter().map(|t| t.name).collect::<Vec<_>>());
     
     if tests_to_run.is_empty() {
         log::warn!("No tests selected to run");

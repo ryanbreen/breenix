@@ -227,7 +227,7 @@ fn load_segment_into_page_table(
                 copy_size, frame_phys_addr.as_u64(), page_start_vaddr.as_u64(), page_offset);
             
             // INT3 hot-patch for future triage - only enabled with feature flag
-            #[cfg(feature = "int3_boot")]
+            #[cfg(feature = "testing")]
             if page_start_vaddr.as_u64() == 0x10000000 && page_offset == 0 {
                 unsafe {
                     let code_ptr = phys_ptr as *mut u8;

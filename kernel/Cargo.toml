@@ -14,18 +14,9 @@ path = "src/lib.rs"
 test = false
 
 [features]
-testing = []
-kernel_tests = ["testing"]
-test_page_fault = []
-test_userspace = []
-test_all_exceptions = []
-sched_debug = []
-instr_trace = ["sched_debug"]       # single-step
-all_exc_trace = ["sched_debug"]     # 0-255 vector print
-heap_trace = ["sched_debug"]        # heap alloc/dealloc tracing
-heap_watch = []                     # watch specific heap addresses for deallocation
-arc_guard = []                      # guard Arc slots in scheduler Vec
-int3_boot = []                      # INT3 breakpoint at userspace entry for testing
+# Core test infrastructure
+testing = []                        # Enables kernel test harness and extra logging
+release-tests = ["testing"]         # Heavy stress tests and comprehensive validation
 
 [dependencies]
 bootloader_api = "0.11"

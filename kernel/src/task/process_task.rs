@@ -13,7 +13,7 @@ impl ProcessScheduler {
     /// Called when a userspace thread exits
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
         // 3-D: Thread finalizer trace
-        #[cfg(feature = "sched_debug")]
+        #[cfg(feature = "testing")]
         crate::serial_println!("SCHED_EXIT tid={} exit_code={}", thread_id, exit_code);
         
         log::debug!("Thread {} exited with code {}", thread_id, exit_code);

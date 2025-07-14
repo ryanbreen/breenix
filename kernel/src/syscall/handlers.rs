@@ -184,7 +184,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     crate::serial_println!("EXIT: pid={} status={}", current_tid, exit_code);
     
     // 3.2 sys_exit() breadcrumb
-    #[cfg(feature = "sched_debug")]
+    #[cfg(feature = "testing")]
     crate::serial_println!("SYS_EXIT tid={} status={}", current_tid, exit_code);
     
     log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
@@ -312,7 +312,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         
         // Track output during tests
-        #[cfg(feature = "kernel_tests")]
+        #[cfg(feature = "testing")]
         {
             if crate::test_harness::is_test_mode() {
                 // Get current process ID
@@ -866,7 +866,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
     // Check if process has any children
     if current_process_children.is_empty() {
         // 3.3 waitpid() decision path logging - ECHILD case
-        #[cfg(feature = "sched_debug")]
+        #[cfg(feature = "testing")]
         crate::serial_println!("WAITPID_ECHILD: pid={} tid={} no_children", pid, current_thread_id);
         
         log::info!("sys_waitpid: Process {} has no children", current_pid.as_u64());
@@ -915,7 +915,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
         
         if let Some((child_pid, exit_status)) = exited_child_info {
             // 3.3 waitpid() decision path logging - successful reap
-            #[cfg(feature = "sched_debug")]
+            #[cfg(feature = "testing")]
             crate::serial_println!("WAITPID_REAP: pid={} exit_code={} tid={}", child_pid.as_u64(), exit_status, current_thread_id);
             
             log::info!("sys_waitpid: Found exited child {} with status {}", child_pid.as_u64(), exit_status);
@@ -940,7 +940,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
         // No matching child has exited yet
         if options & WNOHANG != 0 {
             // 3.3 waitpid() decision path logging - WNOHANG
-            #[cfg(feature = "sched_debug")]
+            #[cfg(feature = "testing")]
             crate::serial_println!("WAITPID_WNOHANG: pid={} tid={} options={:#x}", pid, current_thread_id, options);
             
             // Non-blocking mode - return 0

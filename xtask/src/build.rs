@@ -40,6 +40,13 @@ pub fn build_kernel(features: &[&str], release: bool) -> Result<PathBuf> {
         cmd.args(&["--features", &features_arg]);
     }
     
+    // Pass through any BREENIX_* environment variables to the kernel build
+    for (key, value) in std::env::vars() {
+        if key.starts_with("BREENIX_") {
+            cmd.env(&key, &value);
+        }
+    }
+    
     let output = cmd.output()
         .context("Failed to execute cargo build")?;
     

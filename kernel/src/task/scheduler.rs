@@ -89,7 +89,7 @@ impl Scheduler {
         let thread_state = thread.state;
         
         // HEAP CORRUPTION GUARD: Log thread allocation 
-        #[cfg(feature = "heap_trace")]
+        #[cfg(feature = "testing")]
         {
             let ptr = thread.as_ref() as *const Thread as u64;
             crate::serial_println!("SCHED_ADD: ptr={:#x} id={} state={:?}", ptr, thread_id, thread_state);
@@ -104,7 +104,7 @@ impl Scheduler {
         let new_arc = Arc::new(Mutex::new(*thread));
         
         // ARC GUARD: Log Arc value before push
-        #[cfg(feature = "arc_guard")]
+        #[cfg(feature = "testing")]
         {
             let arc_ptr = &new_arc as *const _ as u64;
             let arc_inner = Arc::as_ptr(&new_arc) as u64;
@@ -114,7 +114,7 @@ impl Scheduler {
         self.threads.push(new_arc);
         
         // ARC GUARD: Check all Arc slots after push
-        #[cfg(feature = "arc_guard")]
+        #[cfg(feature = "testing")]
         {
             self.debug_arc_slots("After push");
         }
@@ -130,7 +130,7 @@ impl Scheduler {
     
     /// Get a mutable thread by ID (returns MutexGuard to prevent use-after-free)
     pub fn get_thread_mut(&self, id: u64) -> Option<spin::MutexGuard<'_, Thread>> {
-        #[cfg(feature = "arc_guard")]
+        #[cfg(feature = "testing")]
         {
             // Check for corruption before accessing
             for (i, arc) in self.threads.iter().enumerate() {
@@ -146,7 +146,7 @@ impl Scheduler {
             let guard = t.lock();
             
             // HEAP CORRUPTION GUARD: Log access for debugging  
-            #[cfg(feature = "heap_trace")]
+            #[cfg(feature = "testing")]
             {
                 crate::serial_println!("ARC ACCESS id={} state={:?}", id, guard.state);
             }
@@ -165,7 +165,7 @@ impl Scheduler {
     pub fn schedule(&mut self) -> Option<(u64, u64)> {
         // Scheduler entry point
         
-        #[cfg(feature = "arc_guard")]
+        #[cfg(feature = "testing")]
         {
             self.debug_arc_slots("schedule() entry");
         }
@@ -216,7 +216,7 @@ impl Scheduler {
                   next_thread_id, self.ready_queue);
         
         // 3.1 Process-state tracer: Log thread state transitions
-        #[cfg(feature = "sched_debug")]
+        #[cfg(feature = "testing")]
         {
             if let Some(current) = self.current_thread {
                 if let Some(thread) = self.get_thread(current) {
@@ -291,7 +291,7 @@ impl Scheduler {
     }
     
     /// Debug function to check Arc slots for corruption
-    #[cfg(feature = "arc_guard")]
+    #[cfg(feature = "testing")]
     fn debug_arc_slots(&self, context: &str) {
         crate::serial_println!("ARC_GUARD: {} - checking {} slots", context, self.threads.len());
         for (i, arc) in self.threads.iter().enumerate() {
@@ -371,7 +371,7 @@ impl Scheduler {
     pub fn retire_thread(&mut self, thread_id: u64) {
         // Find and remove the thread from the active list
         if let Some(pos) = self.threads.iter().position(|t| t.lock().id() == thread_id) {
-            #[cfg(feature = "arc_guard")]
+            #[cfg(feature = "testing")]
             {
                 crate::serial_println!("ARC_GUARD: retire_thread removing tid={} at pos={}", thread_id, pos);
                 self.debug_arc_slots("Before retire_thread remove");
@@ -379,14 +379,14 @@ impl Scheduler {
             
             let retired_thread = self.threads.remove(pos);
             
-            #[cfg(feature = "arc_guard")]
+            #[cfg(feature = "testing")]
             {
                 self.debug_arc_slots("After retire_thread remove");
                 let arc_inner = Arc::as_ptr(&retired_thread) as u64;
                 crate::serial_println!("ARC_GUARD: Retired thread Arc points to {:#x}", arc_inner);
             }
             
-            #[cfg(feature = "heap_trace")]
+            #[cfg(feature = "testing")]
             {
                 crate::serial_println!("RETIRE_THREAD: tid={} moved to retire_list", thread_id);
             }
@@ -398,11 +398,11 @@ impl Scheduler {
     /// Process retire list (should be called from idle thread)
     pub fn process_retire_list(&mut self) {
         if !self.retire_list.is_empty() {
-            let _count = self.retire_list.len();
+            let count = self.retire_list.len();
             
-            #[cfg(feature = "heap_trace")]
+            #[cfg(feature = "testing")]
             {
-                crate::serial_println!("RETIRE_DRAIN: processing {} threads", _count);
+                crate::serial_println!("RETIRE_DRAIN: processing {} threads", count);
             }
             
             // Debug assert to catch reference count issues
@@ -414,7 +414,7 @@ impl Scheduler {
             // Clear the retire list - this will drop all the Arc<Mutex<Thread>>s
             self.retire_list.clear();
             
-            #[cfg(feature = "heap_trace")]
+            #[cfg(feature = "testing")]
             {
                 crate::serial_println!("RETIRE_COMPLETE: dropped {} threads", count);
             }

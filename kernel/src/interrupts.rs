@@ -59,9 +59,9 @@ pub fn init_idt() {
             .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
         
         // Debug exception handler for single-step
-        #[cfg(feature = "instr_trace")]
+        #[cfg(feature = "testing")]
         idt.debug.set_handler_fn(debug_exception);
-        #[cfg(not(feature = "instr_trace"))]
+        #[cfg(not(feature = "testing"))]
         idt.debug.set_handler_fn(debug_exception_handler);
         
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
@@ -155,7 +155,7 @@ pub fn init_idt() {
     }
     
     // CRITICAL CHECK: Verify IDT[1] debug gate configuration
-    #[cfg(feature = "instr_trace")]
+    #[cfg(feature = "testing")]
     unsafe {
         let debug_entry_ptr = (idt_ptr + (1 * 16)) as *const u64;
         let debug_low = *debug_entry_ptr;
@@ -234,7 +234,7 @@ pub fn enable_timer_interrupt() {
     }
 }
 
-#[cfg(feature = "instr_trace")]
+#[cfg(feature = "testing")]
 extern "x86-interrupt" fn debug_exception(
     mut stack: x86_64::structures::idt::InterruptStackFrame
 ) {
@@ -307,7 +307,7 @@ extern "x86-interrupt" fn debug_exception_handler(mut stack_frame: InterruptStac
     crate::serial_println!("#DB rip={:#x} cs={:#x}", rip, cs);
     
     // 3-E: Userspace single-step tracing
-    #[cfg(feature = "instr_trace")]
+    #[cfg(feature = "testing")]
     {
         static mut STEP_COUNT: u32 = 0;
         const MAX_STEPS: u32 = 10; // Trace first 10 instructions
@@ -415,7 +415,7 @@ extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFram
     
     // Check if we're in test mode
     if crate::test_harness::is_test_mode() {
-        log::warn!("TEST_MARKER: DIVIDE_BY_ZERO_HANDLED");
+        log::warn!("TEST_MARKER: DIV0_OK");
         // For testing, we'll exit cleanly instead of panicking
         crate::test_exit_qemu(crate::QemuExitCode::Success);
     } else {
@@ -448,7 +448,7 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     // 3-A: PF exception breadcrumb
-    #[cfg(feature = "sched_debug")]
+    #[cfg(feature = "testing")]
     {
         let rip = stack_frame.instruction_pointer.as_u64();
         let cs = stack_frame.code_segment.0;
@@ -560,12 +560,12 @@ extern "x86-interrupt" fn page_fault_handler(
         crate::test_exit_qemu(crate::QemuExitCode::Success);
     }
     
-    #[cfg(feature = "test_page_fault")]
+    #[cfg(feature = "testing")]
     {
         log::info!("TEST_MARKER: PAGE_FAULT_HANDLED");
         crate::test_exit_qemu(crate::QemuExitCode::Success);
     }
-    #[cfg(not(feature = "test_page_fault"))]
+    #[cfg(not(feature = "testing"))]
     loop {
         x86_64::instructions::hlt();
     }
@@ -573,7 +573,7 @@ extern "x86-interrupt" fn page_fault_handler(
 
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     // 3-B: IDT vector trace - log all unhandled interrupts
-    #[cfg(feature = "sched_debug")]
+    #[cfg(feature = "testing")]
     {
         let rip = stack_frame.instruction_pointer.as_u64();
         let cs = stack_frame.code_segment.0;
@@ -596,7 +596,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     error_code: u64,
 ) {
     // 3-A: GP exception breadcrumb
-    #[cfg(feature = "sched_debug")]
+    #[cfg(feature = "testing")]
     {
         let rip = stack_frame.instruction_pointer.as_u64();
         let cs = stack_frame.code_segment.0;

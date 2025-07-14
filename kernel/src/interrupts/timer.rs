@@ -75,7 +75,7 @@ pub extern "C" fn timer_interrupt_handler() {
                 }
                 
                 // 3.4 Timer-tick accounting per thread
-                #[cfg(feature = "sched_debug")]
+                #[cfg(feature = "testing")]
                 if count < 10 || thread.ticks_run % 50 == 0 {
                     crate::serial_println!("TIMER_TICK: tid={} ticks={} quantum={} privilege={:?}", 
                         current_tid, thread.ticks_run, unsafe { CURRENT_QUANTUM }, thread.privilege);
@@ -108,7 +108,7 @@ pub extern "C" fn timer_interrupt_handler() {
                 // If quantum expired OR there are user threads ready (for idle thread), set need_resched flag
                 if CURRENT_QUANTUM == 0 || has_user_threads {
                     // 3.4 Timer-tick accounting - reschedule decision
-                    #[cfg(feature = "sched_debug")]
+                    #[cfg(feature = "testing")]
                     crate::serial_println!("TIMER_RESCHED: tid={} quantum_expired={} has_user_threads={}", 
                         current_tid, CURRENT_QUANTUM == 0, has_user_threads);
                     

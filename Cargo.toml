@@ -26,9 +26,7 @@ resolver = "2"
 [workspace.dependencies]
 x86_64 = { version = "0.15.2", features = ["instructions"] }
 
-# Patch to override pic8259 with our local version using x86_64 v0.15
-[patch.crates-io]
-pic8259 = { path = "vendor/pic8259" }
+# Dependencies patched for workspace consistency
 
 # All dependencies moved to xtask to avoid architecture conflicts during testing
 # [dependencies]
