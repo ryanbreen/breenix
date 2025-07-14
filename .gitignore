@@ -50,4 +50,19 @@ coverage/
 *.img
 ovmf/
 
+# Debugging artifacts
+**/debug/
+*_ANALYSIS.md
+*_DIAGNOSIS.md
+*_INVESTIGATION.md
+*_FIX_RESULTS.md
+*_DEBUG_RESULTS.md
+*_FINDINGS.md
+*_REPORT.md
+*_STATUS.md
+*_EXPERIMENT_*.md
+capture_*.sh
+*disabled*
+vendor/
+
 **/target/*

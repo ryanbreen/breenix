@@ -182,6 +182,9 @@ pub fn get_all_tests() -> Vec<TestCase> {
     // Register fork progress test
     tests.push(TestCase::new("fork_progress", test_fork_progress));
     
+    // Register all userspace tests
+    tests.push(TestCase::new("all_userspace", test_all_userspace));
+    
     tests
 }
 
@@ -262,7 +265,7 @@ fn test_multiple_processes() {
     
     // Exit immediately - don't even enable interrupts
     // The test just verifies we can create multiple processes
-    log::warn!("TEST_MARKER: MULTIPLE_PROCESSES_SUCCESS");
+    log::warn!("TEST_MARKER:MULTIPLE_PROCESSES_SUCCESS:PASS");
     log::warn!("✓ Successfully created {} concurrent processes!", NUM_PROCESSES);
     
     // Disable interrupts and force exit
@@ -301,5 +304,96 @@ fn test_fork_progress() {
     
     // The test should have printed success or failure message
     log::warn!("Fork progress test completed - check logs for result");
+}
+
+/// Test all userspace programs systematically (inline version for POST)
+pub fn test_all_userspace_inline() {
+    test_all_userspace_impl();
+}
+
+/// Test all userspace programs systematically (test harness version)
+fn test_all_userspace() {
+    test_all_userspace_impl();
+}
+
+/// Internal implementation of userspace test suite
+fn test_all_userspace_impl() {
+    log::warn!("🧪 Breenix Comprehensive Userspace Test Suite");
+    log::warn!("==============================================");
+    
+    #[cfg(feature = "testing")]
+    {
+        use crate::userspace_test::USERSPACE_TESTS;
+        
+        log::warn!("Running {} userspace tests...", USERSPACE_TESTS.len());
+        
+        // Run each test
+        for (test_name, test_elf) in USERSPACE_TESTS {
+            log::warn!("\n📋 Running {} test...", test_name);
+            
+            // Create the test process
+            match crate::process::creation::create_user_process(
+                format!("{}_test", test_name),
+                test_elf
+            ) {
+                Ok(pid) => {
+                    log::warn!("✓ Created {} process with PID {}", test_name, pid.as_u64());
+                    
+                    // Wait for the test to complete
+                    let start_ticks = crate::time::get_ticks();
+                    let timeout_ticks = 100; // 1 second timeout per test
+                    
+                    loop {
+                        // Allow scheduling
+                        crate::task::scheduler::yield_current();
+                        
+                        // Check if process has terminated
+                        let terminated = {
+                            let manager = crate::process::manager();
+                            if let Some(ref pm) = *manager {
+                                if let Some(process) = pm.get_process(pid) {
+                                    matches!(process.state, crate::process::process::ProcessState::Terminated(_))
+                                } else {
+                                    true // Process not found, assume terminated
+                                }
+                            } else {
+                                true // No process manager, assume terminated
+                            }
+                        };
+                        
+                        if terminated {
+                            log::warn!("✓ {} test completed", test_name);
+                            break;
+                        }
+                        
+                        // Check timeout
+                        if crate::time::get_ticks() - start_ticks > timeout_ticks {
+                            log::error!("✗ {} test timed out!", test_name);
+                            break;
+                        }
+                        
+                        // Small delay
+                        for _ in 0..10000 {
+                            core::hint::spin_loop();
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("✗ Failed to create {} process: {}", test_name, e);
+                }
+            }
+        }
+        
+        log::warn!("\n✅ All userspace tests completed!");
+        log::warn!("Check logs for individual test results");
+        
+        // Mark test completion
+        log::warn!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
+    }
+    
+    #[cfg(not(feature = "testing"))]
+    {
+        log::warn!("Userspace tests not available - compile with --features testing");
+    }
 }
 
