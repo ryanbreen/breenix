@@ -37,8 +37,8 @@ impl GuardedStack {
             return Err("Stack size must be page-aligned");
         }
         
-        // Calculate total allocation size (guard page + stack)
-        let total_pages = (stack_size / 4096) + 1; // +1 for guard page
+        // Calculate total allocation size (guard page + stack + extra page for RSP)
+        let total_pages = (stack_size / 4096) + 2; // +1 for guard page, +1 for RSP page
         let total_size = total_pages * 4096;
         
         // Find available virtual address space
@@ -48,6 +48,9 @@ impl GuardedStack {
         // Map the stack pages (excluding guard page)
         let stack_start = allocation_start + 4096u64; // Skip guard page
         let stack_top = stack_start + stack_size as u64;
+        
+        // CRITICAL: stack_top points to the first byte AFTER the stack (where RSP starts)
+        // We need to map the page containing stack_top so RSP has a valid page to point to
         
         Self::map_stack_pages(stack_start, stack_size, mapper)?;
         
@@ -125,7 +128,9 @@ impl GuardedStack {
         mapper: &mut OffsetPageTable
     ) -> Result<(), &'static str> {
         let start_page = Page::<Size4KiB>::containing_address(start);
-        let end_page = Page::<Size4KiB>::containing_address(start + size as u64 - 1u64);
+        // CRITICAL FIX: Map the page that contains stack_top (start + size)
+        // RSP is set to stack_top, so we need to map the page containing that address
+        let end_page = Page::<Size4KiB>::containing_address(start + size as u64);
         
         // Use user flags for user stacks
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;

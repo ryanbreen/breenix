@@ -68,8 +68,29 @@ fn _test_binaries_included() {
     assert!(FORK_MEM_INDEPENDENT_ELF.len() > 0, "fork_mem_independent.elf not included");
     assert!(FORK_DEEP_STACK_ELF.len() > 0, "fork_deep_stack.elf not included");
     assert!(FORK_PROGRESS_TEST_ELF.len() > 0, "fork_progress_test.elf not included");
+    assert!(FORK_SPIN_STRESS_ELF.len() > 0, "fork_spin_stress.elf not included");
 }
 
+// Array of all available userspace tests for systematic testing
+#[cfg(feature = "testing")]
+pub const USERSPACE_TESTS: &[(&str, &[u8])] = &[
+    ("hello_world", HELLO_WORLD_ELF),
+    ("hello_time", HELLO_TIME_ELF),
+    ("counter", COUNTER_ELF),
+    ("spinner", SPINNER_ELF),
+    ("fork_test", FORK_TEST_ELF),
+    ("spawn_test", SPAWN_TEST_ELF),
+    ("simple_wait_test", SIMPLE_WAIT_TEST_ELF),
+    ("wait_many", WAIT_MANY_ELF),
+    ("waitpid_specific", WAITPID_SPECIFIC_ELF),
+    ("wait_nohang_polling", WAIT_NOHANG_POLLING_ELF),
+    ("echld_error", ECHLD_ERROR_ELF),
+    ("fork_basic", FORK_BASIC_ELF),
+    ("fork_mem_independent", FORK_MEM_INDEPENDENT_ELF),
+    ("fork_deep_stack", FORK_DEEP_STACK_ELF),
+    ("fork_progress_test", FORK_PROGRESS_TEST_ELF),
+    ("fork_spin_stress", FORK_SPIN_STRESS_ELF),
+];
 
 /// Run userspace test - callable from keyboard handler
 pub fn run_userspace_test() {
@@ -334,6 +355,7 @@ pub fn test_waitpid_specific() {
 
 /// Test wait with WNOHANG polling
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_wait_nohang_polling() {
     log::info!("=== Testing Wait WNOHANG Polling ===");
     
@@ -356,6 +378,7 @@ pub fn test_wait_nohang_polling() {
 }
 
 #[cfg(not(feature = "testing"))]
+#[allow(dead_code)]
 pub fn test_wait_nohang_polling() {
     log::warn!("Wait WNOHANG polling test not available - compile with --features testing");
 }
@@ -411,6 +434,7 @@ pub fn test_all_wait() {
 
 /// Test basic fork functionality
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_fork_basic() {
     log::info!("=== Testing Basic Fork ===");
     
@@ -432,12 +456,14 @@ pub fn test_fork_basic() {
 }
 
 #[cfg(not(feature = "testing"))]
+#[allow(dead_code)]
 pub fn test_fork_basic() {
     log::warn!("Fork basic test not available - compile with --features testing");
 }
 
 /// Test fork memory independence
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_fork_mem_independent() {
     log::info!("=== Testing Fork Memory Independence ===");
     
@@ -459,12 +485,14 @@ pub fn test_fork_mem_independent() {
 }
 
 #[cfg(not(feature = "testing"))]
+#[allow(dead_code)]
 pub fn test_fork_mem_independent() {
     log::warn!("Fork memory independence test not available - compile with --features testing");
 }
 
 /// Test fork with deep stack
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_fork_deep_stack() {
     log::info!("=== Testing Fork Deep Stack ===");
     
@@ -486,6 +514,7 @@ pub fn test_fork_deep_stack() {
 }
 
 #[cfg(not(feature = "testing"))]
+#[allow(dead_code)]
 pub fn test_fork_deep_stack() {
     log::warn!("Fork deep stack test not available - compile with --features testing");
 }
@@ -553,6 +582,7 @@ pub fn test_fork_spin_stress() {
 
 /// Test all fork functionality
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_all_fork() {
     log::info!("=== Running All Fork Tests ===");
     test_fork_basic();
@@ -566,6 +596,7 @@ pub fn test_all_fork() {
 }
 
 #[cfg(not(feature = "testing"))]
+#[allow(dead_code)]
 pub fn test_all_fork() {
     log::warn!("Fork tests not available - compile with --features testing");
 }

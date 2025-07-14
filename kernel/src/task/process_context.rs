@@ -102,9 +102,12 @@ pub fn restore_userspace_context(
         interrupt_frame.as_mut().update(|frame| {
             frame.instruction_pointer = VirtAddr::new(thread.context.rip);
             frame.stack_pointer = VirtAddr::new(thread.context.rsp);
+            
+            // Set CPU flags from thread context
             frame.cpu_flags = x86_64::registers::rflags::RFlags::from_bits_truncate(thread.context.rflags);
             
-            // CRITICAL: Set CS and SS for userspace
+            // --- after you finish writing the five IRET words -----
+            // CRITICAL: Set CS and SS for userspace FIRST
             if thread.privilege == ThreadPrivilege::User {
                 // Use the actual selectors from the GDT module
                 frame.code_segment = crate::gdt::user_code_selector();
@@ -112,6 +115,24 @@ pub fn restore_userspace_context(
             } else {
                 frame.code_segment = crate::gdt::kernel_code_selector();
                 frame.stack_segment = crate::gdt::kernel_data_selector();
+            }
+            
+            #[cfg(feature = "instr_trace")]
+            {
+                const TF: u64 = 1 << 8;
+                frame.cpu_flags =
+                    x86_64::registers::rflags::RFlags::from_bits_truncate(frame.cpu_flags.bits() | TF);
+                
+                crate::serial_println!("TF‑TRACE: armed (thread {} → RIP={:#x})",
+                                       thread.id, thread.context.rip);
+                
+                // CRITICAL CHECK: Verify TF bit actually reaches IRET frame (AFTER setting segments)
+                crate::serial_println!("IRET STACK: RIP={:#x} CS={:#x} RFLAGS={:#x} RSP={:#x} SS={:#x}",
+                    frame.instruction_pointer.as_u64(),
+                    frame.code_segment.0,
+                    frame.cpu_flags.bits(),
+                    frame.stack_pointer.as_u64(),
+                    frame.stack_segment.0);
             }
         });
     }

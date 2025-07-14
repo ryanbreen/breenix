@@ -157,6 +157,7 @@ pub struct Thread {
     pub privilege: ThreadPrivilege,
     
     /// First run flag - false until thread executes at least one userspace instruction
+    /// NOTE: Idle thread starts with first_run = true so timer ISR can trigger scheduling
     pub first_run: bool,
     
     /// Number of timer ticks this thread has been scheduled for
@@ -253,6 +254,10 @@ impl Thread {
     
     /// Mark thread as terminated
     pub fn set_terminated(&mut self) {
+        // 3-D: Thread finalizer trace - thread marked terminated
+        #[cfg(feature = "sched_debug")]
+        crate::serial_println!("SCHED_TERMINATE tid={}", self.id);
+        
         self.state = ThreadState::Terminated;
     }
 }

@@ -36,6 +36,28 @@ impl ProcessManager {
         }
     }
     
+    /// Get the next available PID without creating a process
+    pub fn get_next_pid(&mut self) -> u64 {
+        self.next_pid.fetch_add(1, Ordering::SeqCst)
+    }
+    
+    /// Create main thread for a process (public helper for optimized creation)
+    pub fn create_main_thread_for_process(&mut self, process: &mut Process, stack_top: VirtAddr) -> Result<Thread, &'static str> {
+        self.create_main_thread(process, stack_top)
+    }
+    
+    /// Add a fully constructed process to the process table and ready queue
+    pub fn add_process_to_tables(&mut self, pid: ProcessId, process: Process) -> Result<(), &'static str> {
+        // Add to ready queue
+        self.ready_queue.push(pid);
+        
+        // Insert into process table
+        self.processes.insert(pid, process);
+        
+        log::info!("Added process {} to tables", pid.as_u64());
+        Ok(())
+    }
+    
     /// Create a new process from an ELF binary
     pub fn create_process(&mut self, name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
         // Generate a new PID

@@ -18,6 +18,12 @@ extern get_next_page_table
 ;   - Interrupts are disabled
 ;   - We're in Ring 0
 syscall_entry:
+    ; 3-B: INT 0x80 arrival breadcrumb
+    push rax
+    mov al, 0x80
+    out 0x80, al
+    pop rax
+    
     ; Save all general purpose registers
     push r15
     push r14

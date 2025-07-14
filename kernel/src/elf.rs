@@ -88,6 +88,7 @@ pub fn load_elf_into_page_table(
     }
     
     log::info!("Loading ELF into process page table: entry={:#x}, {} program headers", header.entry, header.phnum);
+    crate::serial_println!("ELF: loading {} segments", header.phnum);
     
     // Load program segments
     for i in 0..header.phnum {
@@ -105,6 +106,7 @@ pub fn load_elf_into_page_table(
         let ph: &Elf64ProgramHeader = unsafe { &*(ph_bytes.as_ptr() as *const Elf64ProgramHeader) };
         
         if ph.p_type == SegmentType::Load as u32 {
+            crate::serial_println!("ELF: seg{} vaddr={:#x} memsz={:#x}", i, ph.p_vaddr, ph.p_memsz);
             load_segment_into_page_table(data, ph, page_table)?;
         }
     }
@@ -223,6 +225,21 @@ fn load_segment_into_page_table(
             
             log::debug!("Copied {} bytes to frame {:#x} (page {:#x}) at offset {} using physical access", 
                 copy_size, frame_phys_addr.as_u64(), page_start_vaddr.as_u64(), page_offset);
+            
+            // INT3 hot-patch for future triage - only enabled with feature flag
+            #[cfg(feature = "int3_boot")]
+            if page_start_vaddr.as_u64() == 0x10000000 && page_offset == 0 {
+                unsafe {
+                    let code_ptr = phys_ptr as *mut u8;
+                    *code_ptr.add(0) = 0xCC;  // INT3 instruction
+                }
+                crate::serial_println!("INT3_BOOT: INT3 patch at 0x10000000 (physical {:#x})", 
+                    frame_phys_addr.as_u64());
+            }
+            
+            // Remove all test patches - let the original hello_world.elf run
+            // The hello_world binary will execute its syscall
+            
         }
     }
     
