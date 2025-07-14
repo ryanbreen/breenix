@@ -429,7 +429,7 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
     
     // Check if we're in test mode
     if crate::test_harness::is_test_mode() {
-        log::warn!("TEST_MARKER: INVALID_OPCODE_HANDLED");
+        log::warn!("TEST_MARKER: UD_OK");
         crate::test_exit_qemu(crate::QemuExitCode::Success);
     } else {
         loop {
@@ -556,13 +556,13 @@ extern "x86-interrupt" fn page_fault_handler(
     
     // Check if we're in test mode
     if crate::test_harness::is_test_mode() {
-        log::warn!("TEST_MARKER: PAGE_FAULT_HANDLED");
+        log::warn!("TEST_MARKER: PF_OK");
         crate::test_exit_qemu(crate::QemuExitCode::Success);
     }
     
     #[cfg(feature = "testing")]
     {
-        log::info!("TEST_MARKER: PAGE_FAULT_HANDLED");
+        log::info!("TEST_MARKER: PF_OK");
         crate::test_exit_qemu(crate::QemuExitCode::Success);
     }
     #[cfg(not(feature = "testing"))]

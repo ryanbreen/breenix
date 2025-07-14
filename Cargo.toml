@@ -18,7 +18,7 @@ default = []
 # test = false
 
 [workspace]
-members = ["kernel", "xtask"]
+members = ["kernel", "xtask", "crates/breenix-test-runner"]
 default-members = ["xtask"]
 resolver = "2"
 
@@ -39,3 +39,4 @@ x86_64 = { version = "0.15.2", features = ["instructions"] }
 [dev-dependencies]
 libc = "0.2"
 xtask = { path = "xtask" }
+breenix-test-runner = { path = "crates/breenix-test-runner" }
