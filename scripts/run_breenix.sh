@@ -25,12 +25,8 @@ echo "Starting Breenix in $MODE mode..."
 echo "Logging to: $LOG_FILE"
 echo ""
 
-# Build and run based on mode
-if [ "$MODE" = "bios" ]; then
-    cargo run --release --features testing --bin qemu-bios -- -serial stdio "$@" 2>&1 | tee "$LOG_FILE"
-else
-    cargo run --release --features testing --bin qemu-uefi -- -serial stdio "$@" 2>&1 | tee "$LOG_FILE"
-fi
+# Build and run using xtask
+cargo run -p xtask -- build-and-run --features testing --timeout 60 2>&1 | tee "$LOG_FILE"
 
 echo ""
 echo "Log saved to: $LOG_FILE"
