@@ -227,15 +227,16 @@ fn load_segment_into_page_table(
                 copy_size, frame_phys_addr.as_u64(), page_start_vaddr.as_u64(), page_offset);
             
             // INT3 hot-patch for future triage - only enabled with feature flag
-            #[cfg(feature = "testing")]
-            if page_start_vaddr.as_u64() == 0x10000000 && page_offset == 0 {
-                unsafe {
-                    let code_ptr = phys_ptr as *mut u8;
-                    *code_ptr.add(0) = 0xCC;  // INT3 instruction
-                }
-                crate::serial_println!("INT3_BOOT: INT3 patch at 0x10000000 (physical {:#x})", 
-                    frame_phys_addr.as_u64());
-            }
+            // INT3 patching removed to allow normal userspace execution
+            // #[cfg(feature = "testing")]
+            // if page_start_vaddr.as_u64() == 0x10000000 && page_offset == 0 {
+            //     unsafe {
+            //         let code_ptr = phys_ptr as *mut u8;
+            //         *code_ptr.add(0) = 0xCC;  // INT3 instruction
+            //     }
+            //     crate::serial_println!("INT3_BOOT: INT3 patch at 0x10000000 (physical {:#x})", 
+            //         frame_phys_addr.as_u64());
+            // }
             
             // Remove all test patches - let the original hello_world.elf run
             // The hello_world binary will execute its syscall
