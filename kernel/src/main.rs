@@ -318,21 +318,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     // Check for focused test mode
     #[cfg(feature = "testing")]
-    {
-        log::info!("DEBUG: Checking for FOCUSED_TEST environment variable");
-        log::info!("DEBUG: FOCUSED_TEST compile time value: {:?}", option_env!("FOCUSED_TEST"));
-        if let Some(focused_test) = option_env!("FOCUSED_TEST") {
-            log::warn!("🎯 FOCUSED_TEST='{}' - running focused test ONLY", focused_test);
-            log::info!("DEBUG: About to call run_focused_test");
-            run_focused_test(focused_test);
-            log::info!("DEBUG: run_focused_test returned");
-            
-            // Exit after focused test
-            log::info!("DEBUG: About to exit QEMU");
-            crate::test_exit_qemu(crate::QemuExitCode::Success);
-        } else {
-            log::info!("DEBUG: FOCUSED_TEST not set, continuing with normal execution");
-        }
+    if let Some(focused_test) = option_env!("FOCUSED_TEST") {
+        log::warn!("🎯 FOCUSED_TEST='{}' - running focused test ONLY", focused_test);
+        run_focused_test(focused_test);
+        
+        // Exit after focused test
+        crate::test_exit_qemu(crate::QemuExitCode::Success);
     }
     
     // QUICK LITMUS: Test hello_world execution (only if no specific test requested)

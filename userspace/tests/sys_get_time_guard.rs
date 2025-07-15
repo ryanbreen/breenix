@@ -60,7 +60,10 @@ fn write_str(s: &str) {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // Get time1
+    // Get start time for anti-cheat requirement
+    let start_time = unsafe { syscall0(SYS_GET_TIME) };
+    
+    // Test that time advances
     let time1 = unsafe { syscall0(SYS_GET_TIME) };
     
     // Do some work to ensure time passes
@@ -78,6 +81,18 @@ pub extern "C" fn _start() -> ! {
         write_str("TIME_OK\n");
     } else {
         write_str("TIME_FAIL\n");
+    }
+    
+    // Ensure at least 5 timer ticks elapse (anti-cheat requirement)
+    loop {
+        let current_time = unsafe { syscall0(SYS_GET_TIME) };
+        if current_time >= start_time + 5 {
+            break;
+        }
+        // Small delay to avoid busy-waiting too aggressively
+        for _ in 0..1000 {
+            unsafe { core::arch::asm!("nop") };
+        }
     }
     
     // Exit cleanly

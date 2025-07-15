@@ -189,11 +189,7 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     
     log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
     
-    // Emit EXIT_OK for Phase 4B guard test
-    #[cfg(feature = "testing")]
-    if exit_code == 7 {
-        log::info!("EXIT_OK");
-    }
+    // EXIT_OK is now printed by the userspace program itself
     
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
