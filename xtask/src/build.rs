@@ -47,6 +47,11 @@ pub fn build_kernel(features: &[&str], release: bool) -> Result<PathBuf> {
         }
     }
     
+    // Pass through FOCUSED_TEST environment variable for focused test mode
+    if let Ok(focused_test) = std::env::var("FOCUSED_TEST") {
+        cmd.env("FOCUSED_TEST", &focused_test);
+    }
+    
     let output = cmd.output()
         .context("Failed to execute cargo build")?;
     

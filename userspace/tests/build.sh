@@ -16,6 +16,9 @@ cp target/x86_64-breenix/release/fork_test fork_test.elf
 cp target/x86_64-breenix/release/fork_basic fork_basic.elf
 cp target/x86_64-breenix/release/fork_mem_independent fork_mem_independent.elf
 cp target/x86_64-breenix/release/fork_deep_stack fork_deep_stack.elf
+cp target/x86_64-breenix/release/sys_write_guard sys_write_guard.elf
+cp target/x86_64-breenix/release/sys_exit_guard sys_exit_guard.elf
+cp target/x86_64-breenix/release/sys_get_time_guard sys_get_time_guard.elf
 
 # Create flat binaries
 rust-objcopy -O binary hello_time.elf hello_time.bin
@@ -26,6 +29,9 @@ rust-objcopy -O binary fork_test.elf fork_test.bin
 rust-objcopy -O binary fork_basic.elf fork_basic.bin
 rust-objcopy -O binary fork_mem_independent.elf fork_mem_independent.bin
 rust-objcopy -O binary fork_deep_stack.elf fork_deep_stack.bin
+rust-objcopy -O binary sys_write_guard.elf sys_write_guard.bin
+rust-objcopy -O binary sys_exit_guard.elf sys_exit_guard.bin
+rust-objcopy -O binary sys_get_time_guard.elf sys_get_time_guard.bin
 
 echo "Built all ELF files"
 echo "hello_time size: $(stat -f%z hello_time.bin 2>/dev/null || stat -c%s hello_time.bin) bytes"

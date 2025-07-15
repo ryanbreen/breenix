@@ -69,6 +69,18 @@ path = "fork_progress_test.rs"
 name = "fork_spin_stress"
 path = "fork_spin_stress.rs"
 
+[[bin]]
+name = "sys_write_guard"
+path = "sys_write_guard.rs"
+
+[[bin]]
+name = "sys_exit_guard"
+path = "sys_exit_guard.rs"
+
+[[bin]]
+name = "sys_get_time_guard"
+path = "sys_get_time_guard.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

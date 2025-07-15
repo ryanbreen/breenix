@@ -63,6 +63,7 @@ use x86_64::VirtAddr;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use bootloader_api::config::{BootloaderConfig, Mapping};
+use crate::process::creation::create_user_process;
 
 /// Bootloader configuration to enable physical memory mapping
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
@@ -313,6 +314,25 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         
         // Test harness should exit QEMU, but if we get here, exit anyway
         crate::test_exit_qemu(crate::QemuExitCode::Failed);
+    }
+    
+    // Check for focused test mode
+    #[cfg(feature = "testing")]
+    {
+        log::info!("DEBUG: Checking for FOCUSED_TEST environment variable");
+        log::info!("DEBUG: FOCUSED_TEST compile time value: {:?}", option_env!("FOCUSED_TEST"));
+        if let Some(focused_test) = option_env!("FOCUSED_TEST") {
+            log::warn!("🎯 FOCUSED_TEST='{}' - running focused test ONLY", focused_test);
+            log::info!("DEBUG: About to call run_focused_test");
+            run_focused_test(focused_test);
+            log::info!("DEBUG: run_focused_test returned");
+            
+            // Exit after focused test
+            log::info!("DEBUG: About to exit QEMU");
+            crate::test_exit_qemu(crate::QemuExitCode::Success);
+        } else {
+            log::info!("DEBUG: FOCUSED_TEST not set, continuing with normal execution");
+        }
     }
     
     // QUICK LITMUS: Test hello_world execution (only if no specific test requested)
@@ -615,6 +635,69 @@ fn test_syscalls() {
     log::info!("DEBUG: About to return from test_syscalls");
     // Syscall tests are skipped - INT 0x80 is now handled by assembly entry point
 }
+
+/// Run a focused test based on the FOCUSED_TEST environment variable
+#[cfg(feature = "testing")]
+fn run_focused_test(focused_test: &str) {
+    use alloc::string::String;
+    
+    log::info!("Running focused test: {}", focused_test);
+    
+    match focused_test {
+        "WRITE_GUARD" => {
+            log::info!("TEST_MARKER:WRITE_GUARD:START");
+            match create_user_process(
+                String::from("sys_write_guard"),
+                userspace_test::SYS_WRITE_GUARD_ELF
+            ) {
+                Ok(pid) => {
+                    log::info!("Created sys_write_guard process with PID {}", pid.as_u64());
+                    // PASS marker will be emitted by process exit handler
+                }
+                Err(e) => {
+                    log::error!("Failed to create sys_write_guard process: {}", e);
+                    log::info!("TEST_MARKER:WRITE_GUARD:FAIL");
+                }
+            }
+        }
+        "EXIT_GUARD" => {
+            log::info!("TEST_MARKER:EXIT_GUARD:START");
+            match create_user_process(
+                String::from("sys_exit_guard"),
+                userspace_test::SYS_EXIT_GUARD_ELF
+            ) {
+                Ok(pid) => {
+                    log::info!("Created sys_exit_guard process with PID {}", pid.as_u64());
+                    // PASS marker will be emitted by process exit handler
+                }
+                Err(e) => {
+                    log::error!("Failed to create sys_exit_guard process: {}", e);
+                    log::info!("TEST_MARKER:EXIT_GUARD:FAIL");
+                }
+            }
+        }
+        "TIME_GUARD" => {
+            log::info!("TEST_MARKER:TIME_GUARD:START");
+            match create_user_process(
+                String::from("sys_get_time_guard"),
+                userspace_test::SYS_GET_TIME_GUARD_ELF
+            ) {
+                Ok(pid) => {
+                    log::info!("Created sys_get_time_guard process with PID {}", pid.as_u64());
+                    // PASS marker will be emitted by process exit handler
+                }
+                Err(e) => {
+                    log::error!("Failed to create sys_get_time_guard process: {}", e);
+                    log::info!("TEST_MARKER:TIME_GUARD:FAIL");
+                }
+            }
+        }
+        _ => {
+            log::error!("Unknown focused test: {}", focused_test);
+        }
+    }
+}
+
 
 /// Test basic threading functionality
 #[cfg(feature = "testing")]

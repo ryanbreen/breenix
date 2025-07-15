@@ -50,6 +50,15 @@ pub static FORK_PROGRESS_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests
 #[cfg(feature = "testing")]
 pub static FORK_SPIN_STRESS_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_spin_stress.elf");
 
+#[cfg(feature = "testing")]
+pub static SYS_WRITE_GUARD_ELF: &[u8] = include_bytes!("../../userspace/tests/sys_write_guard.elf");
+
+#[cfg(feature = "testing")]
+pub static SYS_EXIT_GUARD_ELF: &[u8] = include_bytes!("../../userspace/tests/sys_exit_guard.elf");
+
+#[cfg(feature = "testing")]
+pub static SYS_GET_TIME_GUARD_ELF: &[u8] = include_bytes!("../../userspace/tests/sys_get_time_guard.elf");
+
 // Add test to ensure binaries are included
 #[cfg(feature = "testing")]
 fn _test_binaries_included() {
@@ -69,6 +78,9 @@ fn _test_binaries_included() {
     assert!(FORK_DEEP_STACK_ELF.len() > 0, "fork_deep_stack.elf not included");
     assert!(FORK_PROGRESS_TEST_ELF.len() > 0, "fork_progress_test.elf not included");
     assert!(FORK_SPIN_STRESS_ELF.len() > 0, "fork_spin_stress.elf not included");
+    assert!(SYS_WRITE_GUARD_ELF.len() > 0, "sys_write_guard.elf not included");
+    assert!(SYS_EXIT_GUARD_ELF.len() > 0, "sys_exit_guard.elf not included");
+    assert!(SYS_GET_TIME_GUARD_ELF.len() > 0, "sys_get_time_guard.elf not included");
 }
 
 // Array of all available userspace tests for systematic testing
@@ -90,6 +102,9 @@ pub const USERSPACE_TESTS: &[(&str, &[u8])] = &[
     ("fork_deep_stack", FORK_DEEP_STACK_ELF),
     ("fork_progress_test", FORK_PROGRESS_TEST_ELF),
     ("fork_spin_stress", FORK_SPIN_STRESS_ELF),
+    ("sys_write_guard", SYS_WRITE_GUARD_ELF),
+    ("sys_exit_guard", SYS_EXIT_GUARD_ELF),
+    ("sys_get_time_guard", SYS_GET_TIME_GUARD_ELF),
 ];
 
 /// Run userspace test - callable from keyboard handler

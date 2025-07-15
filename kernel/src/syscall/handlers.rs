@@ -189,6 +189,12 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     
     log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
     
+    // Emit EXIT_OK for Phase 4B guard test
+    #[cfg(feature = "testing")]
+    if exit_code == 7 {
+        log::info!("EXIT_OK");
+    }
+    
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         log::debug!("sys_exit: Current thread ID from scheduler: {}", thread_id);
@@ -216,6 +222,38 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
                         process.exit_status = Some((exit_code & 0xFF) as u8);
                         process.terminate(exit_code);
                         log::info!("sys_exit: Set exit status {} for process {}", exit_code & 0xFF, pid.as_u64());
+                        
+                        // Emit test markers for Phase 4B guard tests
+                        #[cfg(feature = "testing")]
+                        {
+                            let process_name = &process.name;
+                            match process_name.as_str() {
+                                "sys_write_guard" => {
+                                    if exit_code == 0 {
+                                        log::info!("TEST_MARKER:WRITE_GUARD:PASS");
+                                    } else {
+                                        log::info!("TEST_MARKER:WRITE_GUARD:FAIL");
+                                    }
+                                }
+                                "sys_exit_guard" => {
+                                    if exit_code == 7 {
+                                        log::info!("TEST_MARKER:EXIT_GUARD:PASS");
+                                    } else {
+                                        log::info!("TEST_MARKER:EXIT_GUARD:FAIL");
+                                    }
+                                }
+                                "sys_get_time_guard" => {
+                                    if exit_code == 0 {
+                                        log::info!("TEST_MARKER:TIME_GUARD:PASS");
+                                    } else {
+                                        log::info!("TEST_MARKER:TIME_GUARD:FAIL");
+                                    }
+                                }
+                                _ => {
+                                    // Not a guard test process
+                                }
+                            }
+                        }
                     }
                 }
             }
