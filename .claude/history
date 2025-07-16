@@ -5,3 +5,4 @@ claude-20250716-120849 | confirm WRITE_GUARD completes – first 128 chars recor
 claude-20250716-121535 | confirm tick progression – first 128 chars recorded
 claude-20250716-122738 | prove that the exact serial_println! we inserted is in the loaded kernel image
 claude-20250716-123239 | prove definitively whether the sys_get_time body is actually reached
+claude-20250716-124050 | Replace serial_println! with port 0xE9 probe to watch tick values change
