@@ -1,3 +1,4 @@
 claude-20250716-073103: okay, from NOW ON we are going to drop a tag in git every single time i give you a prompt.  this is so we can backtrace our progr
 claude-20250716-114129 | Below is the only technical task to perform next, plus the standing reminder about the mandatory-tag ritual. 🔧 Single micro-task #2 – clear th
 claude-20250716-115941 | 🔧 Single micro‑task #3 – back out the serial_dump_qwords misuse
+claude-20250716-120849 | confirm WRITE_GUARD completes – first 128 chars recorded
