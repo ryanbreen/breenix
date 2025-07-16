@@ -8,3 +8,4 @@ claude-20250716-123239 | prove definitively whether the sys_get_time body is act
 claude-20250716-124050 | Replace serial_println! with port 0xE9 probe to watch tick values change
 claude-20250716-132010 | Single micro-task to confirm tick advancement via port 0xE9 probe bytes
 claude-20250716-133344 | Add kernel-side probe inside increment_ticks() to verify ISR is bumping counter
+claude-20250716-135616 | Instrument both places to print address of atomic counter to verify same word
