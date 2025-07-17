@@ -1,3 +1,4 @@
+# Cargo configuration for Breenix cross-compilation
 
 [unstable]
 bindeps = true

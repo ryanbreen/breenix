@@ -37,3 +37,7 @@ bootloader = { git = "https://github.com/rust-osdev/bootloader.git", branch = "m
 
 [dev-dependencies]
 libc = "0.2"
+
+[patch.crates-io]
+# Force the older x86_64 v0.14.13 to be replaced with v0.15.2 which has ARM-safe guards
+x86_64 = { git = "https://github.com/rust-osdev/x86_64", tag = "v0.15.2" }

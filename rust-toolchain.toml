@@ -1,5 +1,6 @@
 [toolchain]
-channel = "nightly"
-profile = "default"
+# last nightly before the ABI regression
+channel = "nightly-2025-06-24"
+profile = "minimal"
 targets = ["x86_64-unknown-none"]
 components = ["rust-src", "llvm-tools-preview"]
