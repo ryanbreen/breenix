@@ -1,6 +1,7 @@
 use crate::gdt;
 
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use crate::process::ProcessId;
 use x86_64::VirtAddr;
 use pic8259::ChainedPics;
 use spin::Once;
@@ -244,6 +245,15 @@ extern "x86-interrupt" fn page_fault_handler(
         
         panic!("Stack overflow - guard page accessed");
     }
+    
+    // Get current PID for page fault tracking
+    let current_pid = crate::process::current_pid().unwrap_or(ProcessId::new(0));
+    
+    log::error!("PAGE-FAULT: pid={}, rip={:#x}, addr={:#x}, err={:#x}",
+                current_pid.as_u64(),
+                stack_frame.instruction_pointer.as_u64(),
+                accessed_addr.as_u64(),
+                error_code.bits());
     
     log::error!("EXCEPTION: PAGE FAULT");
     log::error!("Accessed Address: {:?}", accessed_addr);

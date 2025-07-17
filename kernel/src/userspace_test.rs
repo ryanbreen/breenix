@@ -17,6 +17,12 @@ pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.el
 #[cfg(feature = "testing")]
 pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
 
+#[cfg(feature = "testing")]
+pub static ISOLATION_ELF: &[u8] = include_bytes!("../../userspace/tests/isolation.elf");
+
+#[cfg(feature = "testing")]
+pub static ISOLATION_ATTACKER_ELF: &[u8] = include_bytes!("../../userspace/tests/isolation_attacker.elf");
+
 // Add test to ensure binaries are included
 #[cfg(feature = "testing")]
 fn _test_binaries_included() {

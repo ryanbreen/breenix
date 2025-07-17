@@ -102,6 +102,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Exec) => super::handlers::sys_exec(args.0, args.1),
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
+        #[cfg(feature = "testing")]
+        Some(SyscallNumber::ShareTestPage) => super::handlers::sys_share_test_page(args.0),
+        #[cfg(feature = "testing")]
+        Some(SyscallNumber::GetSharedTestPage) => super::handlers::sys_get_shared_test_page(),
         None => {
             log::warn!("Unknown syscall number: {}", syscall_num);
             SyscallResult::Err(u64::MAX)

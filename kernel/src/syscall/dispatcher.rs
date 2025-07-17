@@ -36,5 +36,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
         SyscallNumber::GetPid => handlers::sys_getpid(),
         SyscallNumber::GetTid => handlers::sys_gettid(),
+        #[cfg(feature = "testing")]
+        SyscallNumber::ShareTestPage => handlers::sys_share_test_page(arg1),
+        #[cfg(feature = "testing")]
+        SyscallNumber::GetSharedTestPage => handlers::sys_get_shared_test_page(),
     }
 }

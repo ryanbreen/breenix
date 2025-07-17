@@ -25,6 +25,14 @@ path = "spinner.rs"
 name = "fork_test"
 path = "fork_test.rs"
 
+[[bin]]
+name = "isolation"
+path = "isolation.rs"
+
+[[bin]]
+name = "isolation_attacker"
+path = "isolation_attacker.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

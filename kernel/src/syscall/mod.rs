@@ -23,6 +23,12 @@ pub enum SyscallNumber {
     Exec = 11,    // Linux syscall number for execve
     GetPid = 39,  // Linux syscall number for getpid
     GetTid = 186, // Linux syscall number for gettid
+    
+    // Test-only syscalls (only available with testing feature)
+    #[cfg(feature = "testing")]
+    ShareTestPage = 100,
+    #[cfg(feature = "testing")]
+    GetSharedTestPage = 101,
 }
 
 #[allow(dead_code)]
@@ -39,6 +45,10 @@ impl SyscallNumber {
             11 => Some(Self::Exec),
             39 => Some(Self::GetPid),
             186 => Some(Self::GetTid),
+            #[cfg(feature = "testing")]
+            100 => Some(Self::ShareTestPage),
+            #[cfg(feature = "testing")]
+            101 => Some(Self::GetSharedTestPage),
             _ => None,
         }
     }

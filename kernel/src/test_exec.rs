@@ -48,6 +48,46 @@ pub fn test_direct_execution() {
     log::info!("    -> Look for 'Hello from userspace! Current time: XXXXX' output");
 }
 
+/// Test process isolation with a security test
+/// 
+/// This test creates a victim process that allocates a page and an attacker
+/// process that tries to read from that page. The attacker should fail with
+/// a page fault, proving that memory isolation is working.
+#[cfg(feature = "testing")]
+pub fn test_isolation() {
+    log::info!("=== PROCESS ISOLATION TEST ===");
+    log::info!("Testing memory isolation between processes");
+    
+    // Create victim process
+    let isolation_elf = crate::userspace_test::ISOLATION_ELF;
+    match create_user_process(String::from("isolation_victim"), isolation_elf) {
+        Ok(pid) => {
+            log::info!("✓ ISOLATION: Created victim process with PID {}", pid.as_u64());
+        }
+        Err(e) => {
+            log::error!("✗ ISOLATION: Failed to create victim process: {}", e);
+            return;
+        }
+    }
+    
+    // Create attacker process
+    let attacker_elf = crate::userspace_test::ISOLATION_ATTACKER_ELF;
+    match create_user_process(String::from("isolation_attacker"), attacker_elf) {
+        Ok(pid) => {
+            log::info!("✓ ISOLATION: Created attacker process with PID {}", pid.as_u64());
+        }
+        Err(e) => {
+            log::error!("✗ ISOLATION: Failed to create attacker process: {}", e);
+            return;
+        }
+    }
+    
+    log::info!("✓ ISOLATION: Both processes created");
+    log::info!("    -> Victim should allocate and share a page address");
+    log::info!("    -> Attacker should fail with page fault when trying to read victim's page");
+    log::info!("    -> Look for 'PAGE-FAULT: pid=X' where X is the attacker PID");
+}
+
 /// Test fork from userspace - validates that userspace processes can call fork()
 pub fn test_userspace_fork() {
     log::info!("=== Testing multiple instances of same program ===");

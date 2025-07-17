@@ -1,0 +1,90 @@
+name: Process Isolation Test
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  isolation-test:
+    runs-on: macos-14
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: nightly-2025-06-24
+        components: rust-src, llvm-tools-preview
+        targets: x86_64-unknown-none
+    
+    - name: Install dependencies
+      run: |
+        brew install qemu llvm
+    
+    - name: Build userspace test programs
+      run: |
+        cd userspace/tests
+        bash build.sh
+    
+    - name: Run isolation test
+      run: |
+        timeout 60s cargo run --features testing --bin qemu-uefi -- -serial stdio -display none > isolation_test.log 2>&1 || true
+        
+        # Check test results
+        echo "=== Checking isolation test results ==="
+        
+        # Test 1: Victim process should start and share page
+        if grep -q "ISOLATION.*Victim process started" isolation_test.log; then
+          echo "✓ Victim process started successfully"
+        else
+          echo "✗ Victim process failed to start"
+          exit 1
+        fi
+        
+        # Test 2: Attacker process should start
+        if grep -q "ATTACKER.*Process started" isolation_test.log; then
+          echo "✓ Attacker process started successfully"
+        else
+          echo "✗ Attacker process failed to start"
+          exit 1
+        fi
+        
+        # Test 3: Page fault should occur when attacker tries to access victim's memory
+        if grep -q "PAGE-FAULT: pid=" isolation_test.log; then
+          echo "✓ Page fault occurred - memory isolation working"
+          # Extract PID from page fault log
+          FAULT_PID=$(grep -o "PAGE-FAULT: pid=[0-9]*" isolation_test.log | head -1 | grep -o "[0-9]*$")
+          echo "  - Page fault occurred for PID: $FAULT_PID"
+        else
+          echo "✗ No page fault detected - memory isolation may be broken"
+          exit 1
+        fi
+        
+        # Test 4: Security bug message should NOT appear
+        if grep -q "SECURITY BUG: read succeeded" isolation_test.log; then
+          echo "✗ CRITICAL: Attacker successfully read victim's memory!"
+          echo "  This indicates a serious security vulnerability"
+          exit 1
+        else
+          echo "✓ No security bug detected - attacker could not read victim's memory"
+        fi
+        
+        # Test 5: Verify victim process remains running
+        if grep -q "ISOLATION.*Entering yield loop" isolation_test.log; then
+          echo "✓ Victim process reached yield loop and remained running"
+        else
+          echo "✗ Victim process did not reach yield loop"
+          exit 1
+        fi
+        
+        echo "=== All isolation tests passed! ==="
+    
+    - name: Upload test logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: isolation-test-logs
+        path: isolation_test.log
