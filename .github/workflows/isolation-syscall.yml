@@ -37,7 +37,11 @@ jobs:
       run: cargo build --release --features testing
     
     - name: Build disk image
-      run: cargo run --release --bin qemu-uefi --features testing
+      run: |
+        cargo build --release --bin qemu-uefi --features testing
+        # Copy disk image to expected location
+        mkdir -p target/x86_64-unknown-none/release/
+        cp $(find target/release/build -name "breenix-uefi.img" -type f | head -1) target/x86_64-unknown-none/release/breenix-uefi.img
     
     - name: Run kernel and capture logs
       run: |
