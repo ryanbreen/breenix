@@ -17,6 +17,14 @@ pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.el
 #[cfg(feature = "testing")]
 pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
 
+#[cfg(feature = "testing")]
+pub static ISOLATION_ELF: &[u8] = include_bytes!("../../userspace/tests/isolation.elf");
+
+#[cfg(feature = "testing")]
+pub static ISOLATION_ATTACKER_ELF: &[u8] = include_bytes!("../../userspace/tests/isolation_attacker.elf");
+#[cfg(feature = "testing")]
+pub static SYSCALL_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/syscall_test.elf");
+
 // Add test to ensure binaries are included
 #[cfg(feature = "testing")]
 fn _test_binaries_included() {
@@ -25,6 +33,9 @@ fn _test_binaries_included() {
     assert!(COUNTER_ELF.len() > 0, "counter.elf not included");
     assert!(SPINNER_ELF.len() > 0, "spinner.elf not included");
     assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
+    assert!(ISOLATION_ELF.len() > 0, "isolation.elf not included");
+    assert!(ISOLATION_ATTACKER_ELF.len() > 0, "isolation_attacker.elf not included");
+    assert!(SYSCALL_TEST_ELF.len() > 0, "syscall_test.elf not included");
 }
 
 /// Test running a userspace program

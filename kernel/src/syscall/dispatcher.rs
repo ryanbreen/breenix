@@ -4,6 +4,7 @@
 
 use super::{SyscallNumber, SyscallResult};
 use super::handlers;
+use super::syscall_consts::*;
 
 /// Dispatch a system call to the appropriate handler
 #[allow(dead_code)]
@@ -16,25 +17,23 @@ pub fn dispatch_syscall(
     _arg5: u64,
     _arg6: u64,
 ) -> SyscallResult {
-    // Convert syscall number
-    let syscall = match SyscallNumber::from_u64(syscall_num) {
-        Some(s) => s,
-        None => {
-            log::warn!("Invalid syscall number: {}", syscall_num);
-            return SyscallResult::Err(38); // ENOSYS
+    // Dispatch to appropriate handler using constants
+    match syscall_num {
+        SYS_READ => handlers::sys_read(arg1, arg2, arg3),
+        SYS_WRITE => handlers::sys_write(arg1, arg2, arg3),
+        SYS_GET_TIME => handlers::sys_get_time(),
+        SYS_YIELD => handlers::sys_yield(),
+        SYS_GETPID => handlers::sys_getpid(),
+        SYS_FORK => handlers::sys_fork(),
+        SYS_EXEC => handlers::sys_exec(arg1, arg2),
+        SYS_EXIT => handlers::sys_exit(arg1 as i32),
+        #[cfg(feature = "testing")]
+        SYS_SHARE_TEST_PAGE => handlers::sys_share_test_page(arg1),
+        #[cfg(feature = "testing")]
+        SYS_GET_SHARED_TEST_PAGE => handlers::sys_get_shared_test_page(),
+        _ => {
+            log::warn!("Unknown syscall number: {}", syscall_num);
+            SyscallResult::Err(38) // ENOSYS
         }
-    };
-    
-    // Dispatch to appropriate handler
-    match syscall {
-        SyscallNumber::Exit => handlers::sys_exit(arg1 as i32),
-        SyscallNumber::Write => handlers::sys_write(arg1, arg2, arg3),
-        SyscallNumber::Read => handlers::sys_read(arg1, arg2, arg3),
-        SyscallNumber::Yield => handlers::sys_yield(),
-        SyscallNumber::GetTime => handlers::sys_get_time(),
-        SyscallNumber::Fork => handlers::sys_fork(),
-        SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
-        SyscallNumber::GetPid => handlers::sys_getpid(),
-        SyscallNumber::GetTid => handlers::sys_gettid(),
     }
 }

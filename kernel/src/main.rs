@@ -384,6 +384,22 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
         test_exec::test_userspace_fork();
         log::info!("Userspace fork test completed.");
+        
+        // Test syscalls 400/401 first
+        #[cfg(feature = "testing")]
+        {
+            log::info!("=== SYSCALL 400/401 TEST ===");
+            test_exec::run_syscall_test();
+            log::info!("Syscall 400/401 test completed.");
+        }
+        
+        // Test process isolation
+        #[cfg(feature = "testing")]
+        {
+            log::info!("=== PROCESS ISOLATION TEST ===");
+            test_exec::test_process_isolation();
+            log::info!("Process isolation test completed.");
+        }
     });
     
     // Give the scheduler a chance to run the created processes

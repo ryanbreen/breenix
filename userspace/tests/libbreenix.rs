@@ -2,15 +2,17 @@
 
 use core::arch::asm;
 
-// System call numbers
-const SYS_EXIT: u64 = 0;
-const SYS_WRITE: u64 = 1;
-const SYS_READ: u64 = 2;
-const SYS_YIELD: u64 = 3;
-const SYS_GET_TIME: u64 = 4;
-const SYS_FORK: u64 = 5;
-const SYS_EXEC: u64 = 11;
-const SYS_GETPID: u64 = 39;
+// Include shared syscall constants from kernel
+include!("../../kernel/src/syscall/syscall_consts.rs");
+
+// Legacy syscall numbers still used by some code - use aliases to avoid conflicts
+const SYS_EXIT_LEGACY: u64 = 0;
+const SYS_EXEC_LEGACY: u64 = 11;
+const SYS_GETPID_LEGACY: u64 = 39;
+
+// Test syscalls - define them here since we can't use feature gates in userspace
+const SYS_SHARE_TEST_PAGE: u64 = 400;
+const SYS_GET_SHARED_TEST_PAGE: u64 = 401;
 
 // Inline assembly for INT 0x80 syscalls
 #[inline(always)]
@@ -77,6 +79,10 @@ pub unsafe fn sys_write(fd: u64, buf: &[u8]) -> u64 {
     syscall3(SYS_WRITE, fd, buf.as_ptr() as u64, buf.len() as u64)
 }
 
+pub unsafe fn sys_write_const(buf: &[u8]) -> u64 {
+    syscall3(SYS_WRITE, 1, buf.as_ptr() as u64, buf.len() as u64)
+}
+
 pub unsafe fn sys_read(fd: u64, buf: &mut [u8]) -> u64 {
     syscall3(SYS_READ, fd, buf.as_mut_ptr() as u64, buf.len() as u64)
 }
@@ -99,4 +105,12 @@ pub unsafe fn sys_exec(path: &str, args: &str) -> u64 {
 
 pub unsafe fn sys_getpid() -> u64 {
     syscall0(SYS_GETPID)
+}
+
+pub unsafe fn sys_share_test_page(addr: u64) -> u64 {
+    syscall1(SYS_SHARE_TEST_PAGE, addr)
+}
+
+pub unsafe fn sys_get_shared_test_page() -> u64 {
+    syscall0(SYS_GET_SHARED_TEST_PAGE)
 }

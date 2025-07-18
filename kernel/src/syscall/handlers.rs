@@ -3,6 +3,7 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
+use super::syscall_consts::*;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -522,3 +523,30 @@ pub fn sys_gettid() -> SyscallResult {
     log::error!("sys_gettid: No current thread");
     SyscallResult::Ok(0) // Return 0 as fallback
 }
+
+// Test-only syscalls for isolation testing
+#[cfg(feature = "testing")]
+mod test_syscalls {
+    use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
+    
+    // Global storage for the shared test page address
+    static SHARED_TEST_PAGE: AtomicU64 = AtomicU64::new(0);
+    
+    /// sys_share_test_page - Share a test page address (test only)
+    pub fn sys_share_test_page(addr: u64) -> SyscallResult {
+        log::info!("TEST: share_page({:#x})", addr);
+        SHARED_TEST_PAGE.store(addr, Ordering::SeqCst);
+        SyscallResult::Ok(0)
+    }
+    
+    /// sys_get_shared_test_page - Get the shared test page address (test only)
+    pub fn sys_get_shared_test_page() -> SyscallResult {
+        let addr = SHARED_TEST_PAGE.load(Ordering::SeqCst);
+        log::info!("TEST: get_page -> {:#x}", addr);
+        SyscallResult::Ok(addr)
+    }
+}
+
+#[cfg(feature = "testing")]
+pub use test_syscalls::{sys_share_test_page, sys_get_shared_test_page};
