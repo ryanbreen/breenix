@@ -18,6 +18,9 @@ cp target/x86_64-breenix/release/hello_world hello_world.elf
 cp target/x86_64-breenix/release/counter counter.elf
 cp target/x86_64-breenix/release/spinner spinner.elf
 cp target/x86_64-breenix/release/fork_test fork_test.elf
+cp target/x86_64-breenix/release/isolation isolation.elf
+cp target/x86_64-breenix/release/isolation_attacker isolation_attacker.elf
+cp target/x86_64-breenix/release/syscall_test syscall_test_rust.elf
 
 # Create flat binaries
 rust-objcopy -O binary syscall_test.elf syscall_test.bin
@@ -26,6 +29,8 @@ rust-objcopy -O binary hello_world.elf hello_world.bin
 rust-objcopy -O binary counter.elf counter.bin
 rust-objcopy -O binary spinner.elf spinner.bin
 rust-objcopy -O binary fork_test.elf fork_test.bin
+rust-objcopy -O binary isolation.elf isolation.bin
+rust-objcopy -O binary isolation_attacker.elf isolation_attacker.bin
 
 echo "Built all ELF files"
 echo "syscall_test size: $(stat -f%z syscall_test.bin 2>/dev/null || stat -c%s syscall_test.bin) bytes"
