@@ -389,7 +389,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         #[cfg(feature = "testing")]
         {
             log::info!("=== SYSCALL 400/401 TEST ===");
+            log::info!("🚀 CI DEBUG: About to run syscall test");
             test_exec::run_syscall_test();
+            log::info!("🚀 CI DEBUG: Syscall test function returned");
             log::info!("Syscall 400/401 test completed.");
         }
         

@@ -834,6 +834,7 @@ pub fn test_syscall_400_401() {
 #[cfg(feature = "testing")]
 pub fn run_syscall_test() {
     log::info!("=== RUN syscall_test ===");
+    log::info!("🚀 CI DEBUG: Creating syscall_test process");
     match create_user_process("syscall_test".into(), crate::userspace_test::SYSCALL_TEST_ELF) {
         Ok(pid) => {
             log::info!("Created syscall_test process with PID {}", pid.as_u64());
@@ -873,10 +874,12 @@ pub fn run_syscall_test() {
                 
                 // SIMPLE APPROACH: Just wait for the process to complete through normal scheduling
                 // Allow enough time for the process to complete both syscalls
-                log::info!("Waiting for syscall_test to complete through normal scheduling...");
+                log::info!("🚀 CI DEBUG: Waiting for syscall_test to complete through normal scheduling...");
                 
                 // Wait longer to allow for context switching delays
                 let status = crate::task::scheduler::wait_for_pid_exit(pid, 2000);
+                
+                log::info!("🚀 CI DEBUG: wait_for_pid_exit returned");
                 
                 match status {
                     crate::task::scheduler::ProcessExitStatus::Exited(0) => {
