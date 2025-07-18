@@ -66,7 +66,7 @@ pub fn init_idt() {
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         unsafe {
-            idt.double_fault.set_handler_fn(double_fault_handler as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !)
+            idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
         idt.page_fault.set_handler_fn(page_fault_handler);
@@ -148,7 +148,7 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
-) -> ! {
+) {
     // Log additional debug info before panicking
     log::error!("DOUBLE FAULT - Error Code: {:#x}", _error_code);
     log::error!("Instruction Pointer: {:#x}", stack_frame.instruction_pointer.as_u64());
