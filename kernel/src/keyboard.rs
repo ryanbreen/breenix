@@ -149,6 +149,13 @@ pub async fn keyboard_task() {
                     log::info!("Ctrl+H pressed - testing shell-style fork+exec");
                     crate::test_exec::test_shell_fork_exec();
                     log::info!("Shell fork+exec test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('i') {
+                    log::info!("Ctrl+I pressed - testing process isolation");
+                    #[cfg(feature = "testing")]
+                    crate::test_exec::test_process_isolation();
+                    #[cfg(not(feature = "testing"))]
+                    log::warn!("Process isolation test requires testing feature");
+                    log::info!("Process isolation test scheduled. Press keys to continue...");
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);

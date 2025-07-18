@@ -34,25 +34,14 @@ pub extern "C" fn check_need_resched_and_switch(
     // Rate limit the debug message
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if count < 5 || count % 30 == 0 {
-        log::debug!("check_need_resched_and_switch: Reschedule needed (count: {})", count);
-    }
+    // Rate limit the debug message (disabled for now)
     
     // Perform scheduling decision
     let schedule_result = scheduler::schedule();
-    // Always log the first few results
-    if count < 10 || schedule_result.is_some() {
-        log::info!("scheduler::schedule() returned: {:?} (count: {})", schedule_result, count);
-    } else if count % 30 == 0 {
-        log::debug!("scheduler::schedule() returned: {:?} (count: {})", schedule_result, count);
-    }
+    // Logging disabled for clean output
     
-    // Always log if we didn't get a schedule result
+    // Early return if no scheduling decision
     if schedule_result.is_none() {
-        if count < 20 {
-            log::warn!("scheduler::schedule() returned None - no thread switch available (count: {})", count);
-        }
-        // Early return if no scheduling decision
         return;
     }
     if let Some((old_thread_id, new_thread_id)) = schedule_result {
@@ -221,7 +210,7 @@ fn restore_userspace_thread_context(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    log::info!("restore_userspace_thread_context: Restoring thread {}", thread_id);
+    // Restoring thread context
     
     // CRITICAL: Use try_manager in interrupt context to avoid deadlock
     // Never use with_process_manager() from interrupt handlers!
@@ -243,8 +232,7 @@ fn restore_userspace_thread_context(
                             unsafe {
                                 NEXT_PAGE_TABLE = Some(page_table_frame);
                             }
-                            log::info!("Scheduled page table switch for process {} on return: frame={:#x}", 
-                                     pid.as_u64(), page_table_frame.start_address().as_u64());
+                            // Page table switch scheduled
                         } else {
                             log::warn!("Process {} has no page table!", pid.as_u64());
                         }
@@ -252,7 +240,7 @@ fn restore_userspace_thread_context(
                         // Update TSS RSP0 for the new thread's kernel stack
                         // CRITICAL: Use the kernel stack, not the userspace stack!
                         if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                            log::info!("Setting kernel stack for thread {} to {:#x}", thread_id, kernel_stack_top.as_u64());
+                            // Kernel stack set
                             crate::gdt::set_kernel_stack(kernel_stack_top);
                         } else {
                             log::error!("Userspace thread {} has no kernel stack!", thread_id);
@@ -281,7 +269,7 @@ pub extern "C" fn get_next_page_table() -> u64 {
         if let Some(frame) = NEXT_PAGE_TABLE.take() {
             let addr = frame.start_address().as_u64();
             // Log this for debugging
-            log::info!("get_next_page_table: Returning page table frame {:#x} for switch", addr);
+            // Returning page table frame for switch
             addr
         } else {
             0 // No page table switch needed

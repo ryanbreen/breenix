@@ -1,7 +1,7 @@
 //! Test exec functionality directly
 
 use crate::process::creation::create_user_process;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 
 /// Test multiple concurrent processes to validate page table isolation
@@ -747,4 +747,155 @@ fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
     ]);
     
     elf
+}
+
+/// Test process isolation by running two processes and verifying they can't access each other's memory
+#[cfg(feature = "testing")]
+pub fn test_process_isolation() {
+    log::info!("=== PROCESS ISOLATION TEST ===");
+    log::info!("Creating victim process that will share a page address...");
+    
+    // First create the victim process
+    match create_user_process(String::from("isolation_victim"), crate::userspace_test::ISOLATION_ELF) {
+        Ok(victim_pid) => {
+            log::info!("✓ Created victim process with PID {}", victim_pid.as_u64());
+            log::info!("Victim will fill a page with 0xA5 and share the address");
+            
+            // Give the victim time to run and share its page
+            for _ in 0..100 {
+                crate::task::scheduler::yield_current();
+            }
+            
+            // Now create the attacker process
+            log::info!("Creating attacker process that will try to read victim's page...");
+            match create_user_process(String::from("isolation_attacker"), crate::userspace_test::ISOLATION_ATTACKER_ELF) {
+                Ok(attacker_pid) => {
+                    log::info!("✓ Created attacker process with PID {}", attacker_pid.as_u64());
+                    log::info!("Attacker will attempt to read from victim's page");
+                    log::info!("Expected result: PAGE-FAULT with attacker PID");
+                    
+                    // Give the attacker time to run and trigger the page fault
+                    for _ in 0..100 {
+                        crate::task::scheduler::yield_current();
+                    }
+                    
+                    // Check process states
+                    if let Some(ref manager) = *crate::process::manager() {
+                        if let Some(victim) = manager.get_process(victim_pid) {
+                            log::info!("Victim process state: {:?}", victim.state);
+                        }
+                        if let Some(attacker) = manager.get_process(attacker_pid) {
+                            log::info!("Attacker process state: {:?}", attacker.state);
+                            if matches!(attacker.state, crate::process::process::ProcessState::Terminated(_)) {
+                                log::info!("✓ ISOLATION TEST PASSED: Attacker process terminated (page fault)");
+                            } else {
+                                log::error!("✗ ISOLATION TEST FAILED: Attacker still running!");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("✗ Failed to create attacker process: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create victim process: {}", e);
+        }
+    }
+    
+    log::info!("Process isolation test completed - check logs for PAGE-FAULT entries");
+}
+
+/// Test that syscalls 400 and 401 work correctly
+#[cfg(feature = "testing")]
+pub fn test_syscall_400_401() {
+    log::info!("=== SYSCALL 400/401 TEST ===");
+    
+    // Create a process that calls the test syscalls
+    match crate::process::creation::create_user_process(
+        "syscall_test".to_string(),
+        crate::userspace_test::SYSCALL_TEST_ELF
+    ) {
+        Ok(pid) => {
+            log::info!("✓ Created syscall test process with PID {:?}", pid);
+            log::info!("✓ Process will call sys_share_test_page(0xdead_beef) and sys_get_shared_test_page()");
+            log::info!("✓ Look for 'SYSCALL entry: rax=400' and 'SYSCALL entry: rax=401' in logs");
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create syscall test process: {}", e);
+        }
+    }
+    
+    log::info!("Syscall 400/401 test completed.");
+}
+
+/// Run syscall test and wait for completion
+#[cfg(feature = "testing")]
+pub fn run_syscall_test() {
+    log::info!("=== RUN syscall_test ===");
+    match create_user_process("syscall_test".into(), crate::userspace_test::SYSCALL_TEST_ELF) {
+        Ok(pid) => {
+            log::info!("Created syscall_test process with PID {}", pid.as_u64());
+            
+            // Get the thread ID from the process
+            let thread_id = x86_64::instructions::interrupts::without_interrupts(|| {
+                let manager = crate::process::manager();
+                if let Some(ref manager) = *manager {
+                    if let Some(process) = manager.get_process(pid) {
+                        if let Some(ref thread) = process.main_thread {
+                            return Some(thread.id);
+                        }
+                    }
+                }
+                None
+            });
+            
+            if let Some(thread_id) = thread_id {
+                log::info!("Forcing cooperative switch to thread {} for immediate execution", thread_id);
+                
+                // Force the scheduler to run this thread immediately
+                x86_64::instructions::interrupts::without_interrupts(|| {
+                    // Set as current thread
+                    crate::task::scheduler::with_scheduler(|s| {
+                        s.set_current_thread(thread_id);
+                    });
+                    
+                    // Force a reschedule which will switch to our thread
+                    crate::task::scheduler::set_need_resched();
+                });
+                
+                // Yield multiple times to let the process complete
+                log::info!("Yielding to run syscall_test...");
+                
+                // Give the process multiple chances to run and complete
+                for i in 0..10 {
+                    crate::task::scheduler::yield_current();
+                    
+                    // After each yield, check if process completed
+                    if let Some(ref manager) = *crate::process::manager() {
+                        if let Some(process) = manager.get_process(pid) {
+                            if let crate::process::process::ProcessState::Terminated(code) = process.state {
+                                if code == 0 {
+                                    log::info!("✓ syscall_test exited 0");
+                                } else {
+                                    log::error!("✗ syscall_test exited {}", code);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    
+                    log::trace!("Yield {}: Process still running, yielding again...", i + 1);
+                }
+                
+                log::error!("✗ syscall_test did not complete after 10 yields");
+            } else {
+                log::error!("✗ Could not get thread ID for syscall_test process");
+            }
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create syscall_test process: {}", e);
+        }
+    }
 }

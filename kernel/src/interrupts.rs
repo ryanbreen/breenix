@@ -245,6 +245,15 @@ extern "x86-interrupt" fn page_fault_handler(
         panic!("Stack overflow - guard page accessed");
     }
     
+    // Get current PID for isolation testing
+    let current_pid = crate::process::current_pid().unwrap_or(crate::process::ProcessId::new(0));
+    
+    log::error!("PAGE-FAULT: pid={}, rip={:#x}, addr={:#x}, err={:#x}",
+                current_pid.as_u64(),
+                stack_frame.instruction_pointer.as_u64(),
+                accessed_addr.as_u64(),
+                error_code.bits());
+    
     log::error!("EXCEPTION: PAGE FAULT");
     log::error!("Accessed Address: {:?}", accessed_addr);
     log::error!("Error Code: {:?}", error_code);

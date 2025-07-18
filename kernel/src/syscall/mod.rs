@@ -8,6 +8,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 pub(crate) mod dispatcher;
 pub mod handlers;
 pub mod handler;
+pub mod syscall_consts;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,12 @@ pub enum SyscallNumber {
     Exec = 11,    // Linux syscall number for execve
     GetPid = 39,  // Linux syscall number for getpid
     GetTid = 186, // Linux syscall number for gettid
+    
+    // Test-only syscalls (high numbers to avoid conflicts)
+    #[cfg(feature = "testing")]
+    ShareTestPage = 400,
+    #[cfg(feature = "testing")]
+    GetSharedTestPage = 401,
 }
 
 #[allow(dead_code)]
@@ -39,6 +46,10 @@ impl SyscallNumber {
             11 => Some(Self::Exec),
             39 => Some(Self::GetPid),
             186 => Some(Self::GetTid),
+            #[cfg(feature = "testing")]
+            400 => Some(Self::ShareTestPage),
+            #[cfg(feature = "testing")]
+            401 => Some(Self::GetSharedTestPage),
             _ => None,
         }
     }

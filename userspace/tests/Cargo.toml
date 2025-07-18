@@ -3,6 +3,9 @@ name = "userspace_tests"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+testing = []
+
 [dependencies]
 
 [[bin]]
@@ -24,6 +27,18 @@ path = "spinner.rs"
 [[bin]]
 name = "fork_test"
 path = "fork_test.rs"
+
+[[bin]]
+name = "isolation"
+path = "isolation.rs"
+
+[[bin]]
+name = "isolation_attacker"
+path = "isolation_attacker.rs"
+
+[[bin]]
+name = "syscall_test"
+path = "syscall_test.rs"
 
 [profile.release]
 panic = "abort"

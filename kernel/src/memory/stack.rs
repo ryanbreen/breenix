@@ -9,6 +9,15 @@ use crate::task::thread::ThreadPrivilege;
 /// Using a high userspace address area to avoid conflicts with heap
 pub const USER_STACK_ALLOC_START: u64 = 0x_5555_5555_0000;
 
+/// Maximum address for user stack allocation (must be below kernel space)
+pub const USER_STACK_ALLOC_END: u64 = 0x_6666_6666_0000;
+
+// Compile-time assert that user stacks are in userspace
+const _: () = {
+    assert!(USER_STACK_ALLOC_START < crate::memory::paging::KERNEL_BASE);
+    assert!(USER_STACK_ALLOC_END < crate::memory::paging::KERNEL_BASE);
+};
+
 /// Base address for kernel stack allocation area
 /// Must be in kernel space (high canonical addresses)
 pub const KERNEL_STACK_ALLOC_START: u64 = 0xFFFF_C900_0000_0000;
@@ -122,7 +131,7 @@ impl GuardedStack {
                     NEXT_USER_STACK_ADDR += size as u64;
                     
                     // Simple bounds check for user stacks
-                    if NEXT_USER_STACK_ADDR > 0x_6666_6666_0000 {
+                    if NEXT_USER_STACK_ADDR > USER_STACK_ALLOC_END {
                         return Err("Out of virtual address space for user stacks");
                     }
                     
