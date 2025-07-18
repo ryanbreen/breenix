@@ -1,4 +1,4 @@
-use super::{SyscallNumber, SyscallResult};
+use super::SyscallResult;
 use super::syscall_consts::*;
 
 #[repr(C)]

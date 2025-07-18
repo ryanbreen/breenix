@@ -36,7 +36,7 @@ pub extern "C" fn check_need_resched_and_switch(
     
     // Rate limit the debug message
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    let count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let _count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     // Rate limit the debug message (disabled for now)
     
     // Perform scheduling decision

@@ -1,7 +1,7 @@
 //! Test exec functionality directly
 
 use crate::process::creation::create_user_process;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 
 /// Test multiple concurrent processes to validate page table isolation
@@ -869,7 +869,7 @@ pub fn run_syscall_test() {
                 log::info!("Yielding to run syscall_test...");
                 
                 // Debug: Check scheduler state
-                crate::task::scheduler::debug_state();
+                // crate::task::scheduler::debug_state(); // Function removed
                 
                 // CRITICAL: Force an immediate context switch to the new process
                 // This ensures it gets a chance to run right away
@@ -879,12 +879,12 @@ pub fn run_syscall_test() {
                     crate::task::scheduler::set_need_resched();
                     
                     // Try to switch directly to the thread
-                    if let Some(scheduler) = crate::task::scheduler::SCHEDULER.get() {
+                    crate::task::scheduler::with_scheduler(|scheduler| {
                         // Mark current thread as yielding
                         scheduler.yield_current_thread();
                         // Try to run the specific thread next
                         scheduler.set_next_thread(thread_id);
-                    }
+                    });
                 });
                 
                 // Now yield to trigger the context switch
@@ -918,13 +918,13 @@ pub fn run_syscall_test() {
                         log::info!("Yield {}: Process still running...", i + 1);
                         // Check if thread is still in ready queue
                         x86_64::instructions::interrupts::without_interrupts(|| {
-                            if let Some(scheduler) = crate::task::scheduler::SCHEDULER.get() {
+                            crate::task::scheduler::with_scheduler(|scheduler| {
                                 if let Some(thread) = scheduler.get_thread(thread_id) {
                                     log::debug!("Thread {} state: {:?}", thread_id, thread.state);
                                 } else {
                                     log::warn!("Thread {} not found in scheduler!", thread_id);
                                 }
-                            }
+                            });
                         });
                     }
                 }

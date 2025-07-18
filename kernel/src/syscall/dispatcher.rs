@@ -2,7 +2,7 @@
 //! 
 //! Routes system calls to their appropriate handlers based on the syscall number.
 
-use super::{SyscallNumber, SyscallResult};
+use super::SyscallResult;
 use super::handlers;
 use super::syscall_consts::*;
 

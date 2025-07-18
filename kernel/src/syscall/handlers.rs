@@ -3,7 +3,7 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
-use super::syscall_consts::*;
+// use super::syscall_consts::*; // Unused import removed
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
