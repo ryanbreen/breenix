@@ -216,8 +216,12 @@ extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFram
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    log::error!("EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}", 
-        stack_frame.instruction_pointer.as_u64(), stack_frame);
+    // Get current PID for debugging
+    let current_pid = crate::process::current_pid().unwrap_or(crate::process::ProcessId::new(0));
+    
+    log::error!("EXCEPTION: INVALID OPCODE - PID {} at {:#x}", 
+        current_pid.as_u64(), stack_frame.instruction_pointer.as_u64());
+    log::error!("{:#?}", stack_frame);
     #[cfg(feature = "test_invalid_opcode")]
     {
         log::info!("TEST_MARKER: INVALID_OPCODE_HANDLED");
@@ -292,7 +296,10 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    log::error!("EXCEPTION: GENERAL PROTECTION FAULT");
+    // Get current PID for debugging
+    let current_pid = crate::process::current_pid().unwrap_or(crate::process::ProcessId::new(0));
+    
+    log::error!("EXCEPTION: GENERAL PROTECTION FAULT - PID {}", current_pid.as_u64());
     log::error!("RIP: {:#x}, CS: {:#x}", stack_frame.instruction_pointer.as_u64(), stack_frame.code_segment.0);
     log::error!("Error Code: {:#x} (selector: {:#x})", error_code, error_code & 0xFFF8);
     

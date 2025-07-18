@@ -222,6 +222,27 @@ impl Scheduler {
     pub fn set_current_thread(&mut self, thread_id: u64) {
         self.current_thread = Some(thread_id);
     }
+    
+    /// Mark current thread as yielding (moves to back of ready queue)
+    pub fn yield_current_thread(&mut self) {
+        if let Some(current) = self.current_thread {
+            // If current thread is in ready queue, move it to the back
+            if let Some(pos) = self.ready_queue.iter().position(|&id| id == current) {
+                self.ready_queue.remove(pos);
+                self.ready_queue.push_back(current);
+            }
+        }
+    }
+    
+    /// Set the next thread to run (moves it to front of ready queue)
+    pub fn set_next_thread(&mut self, thread_id: u64) {
+        // Remove from ready queue if present
+        if let Some(pos) = self.ready_queue.iter().position(|&id| id == thread_id) {
+            self.ready_queue.remove(pos);
+        }
+        // Add to front of ready queue
+        self.ready_queue.push_front(thread_id);
+    }
 }
 
 /// Initialize the global scheduler

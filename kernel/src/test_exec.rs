@@ -871,6 +871,25 @@ pub fn run_syscall_test() {
                 // Debug: Check scheduler state
                 crate::task::scheduler::debug_state();
                 
+                // CRITICAL: Force an immediate context switch to the new process
+                // This ensures it gets a chance to run right away
+                log::info!("Forcing context switch to thread {}...", thread_id);
+                x86_64::instructions::interrupts::without_interrupts(|| {
+                    // Set need_resched flag to force a context switch
+                    crate::task::scheduler::set_need_resched();
+                    
+                    // Try to switch directly to the thread
+                    if let Some(scheduler) = crate::task::scheduler::SCHEDULER.get() {
+                        // Mark current thread as yielding
+                        scheduler.yield_current_thread();
+                        // Try to run the specific thread next
+                        scheduler.set_next_thread(thread_id);
+                    }
+                });
+                
+                // Now yield to trigger the context switch
+                crate::task::scheduler::yield_current();
+                
                 // Give the process multiple chances to run and complete
                 for i in 0..30 {
                     crate::task::scheduler::yield_current();

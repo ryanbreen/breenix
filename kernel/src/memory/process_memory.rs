@@ -210,14 +210,6 @@ impl ProcessPageTable {
         }
         log::debug!("ProcessPageTable::new() - Current RSP: {:#x}", rsp);
         
-        // Check if we're running low on stack
-        // Kernel stacks typically start around 0x180000xxxxx and grow down
-        // If we're below 0x180000010000, we might be in trouble
-        if rsp < 0x180000010000 {
-            log::error!("WARNING: Low stack detected! RSP={:#x}", rsp);
-            log::error!("This might cause a stack overflow!");
-        }
-        
         // Allocate a frame for the new level 4 page table
         log::debug!("ProcessPageTable::new() - About to allocate L4 frame");
         

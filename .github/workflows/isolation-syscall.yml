@@ -35,10 +35,22 @@ jobs:
     - name: Build kernel with testing features
       run: cargo build --release --features testing
     
+    - name: Build disk image
+      run: cargo run --release --bin qemu-uefi --features testing
+    
     - name: Run kernel and capture logs
       run: |
-        timeout 15s cargo run --release --features testing --bin qemu-uefi -- \
-          -serial stdio -display none | tee test_output.log || true
+        timeout 18s qemu-system-x86_64 \
+          -machine accel=tcg \
+          -serial stdio \
+          -display none \
+          -no-reboot \
+          -no-shutdown \
+          -m 512M \
+          -smp 1 \
+          -cpu qemu64 \
+          -drive format=raw,file=target/x86_64-unknown-none/release/breenix-uefi.img \
+          | tee test_output.log || true
     
     - name: Verify syscall 400 executed
       run: |
@@ -94,6 +106,26 @@ jobs:
         fi
         echo "✓ No unknown syscall errors for 400/401"
     
+    - name: Check for IRET to PID 3
+      if: failure()
+      run: |
+        echo "=== Checking if process reached userspace ==="
+        if grep -q "IRET to pid=3" test_output.log; then
+          echo "✓ Process 3 reached userspace (IRET executed)"
+          echo "=== IRET lines ==="
+          grep "IRET to pid=3" test_output.log
+        else
+          echo "✗ Process 3 never reached userspace"
+          echo "=== Process creation ==="
+          grep -A5 "Created syscall_test process" test_output.log || true
+        fi
+
+    - name: Check for exceptions
+      if: failure()
+      run: |
+        echo "=== Checking for exceptions ==="
+        grep -E "DOUBLE FAULT|PAGE-FAULT|GENERAL PROTECTION|INVALID OPCODE" test_output.log || echo "No exceptions found"
+
     - name: Upload test logs
       if: always()
       uses: actions/upload-artifact@v4

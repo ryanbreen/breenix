@@ -14,6 +14,9 @@ use crate::task::thread::ThreadPrivilege;
 /// This is set when we're about to return to a userspace process
 pub(crate) static mut NEXT_PAGE_TABLE: Option<PhysFrame> = None;
 
+/// Thread-local storage for the current process ID (for logging)
+pub(crate) static mut CURRENT_PID: u64 = 0;
+
 /// Check if rescheduling is needed and perform context switch if necessary
 /// 
 /// This is called from the assembly interrupt return path and is the
@@ -231,6 +234,7 @@ fn restore_userspace_thread_context(
                             let page_table_frame = page_table.level_4_frame();
                             unsafe {
                                 NEXT_PAGE_TABLE = Some(page_table_frame);
+                                CURRENT_PID = pid.as_u64();
                             }
                             // Page table switch scheduled
                         } else {
@@ -275,4 +279,17 @@ pub extern "C" fn get_next_page_table() -> u64 {
             0 // No page table switch needed
         }
     }
+}
+
+/// Log IRET to userspace for debugging (called from assembly)
+#[no_mangle]
+pub extern "C" fn log_iret_to_userspace(
+    rip: u64,
+    rsp: u64,
+    cs: u64,
+    ss: u64,
+) {
+    let pid = unsafe { CURRENT_PID };
+    log::info!("IRET to pid={}, rip={:#x}, rsp={:#x}, cs={:#x}, ss={:#x}",
+               pid, rip, rsp, cs, ss);
 }

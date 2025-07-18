@@ -72,6 +72,10 @@ pub struct CpuContext {
 impl CpuContext {
     /// Create a new CPU context for a thread entry point
     pub fn new(entry_point: VirtAddr, stack_pointer: VirtAddr, privilege: ThreadPrivilege) -> Self {
+        // CRITICAL: Ensure stack pointer is 16-byte aligned and has initial space
+        // x86-64 ABI requires 16-byte stack alignment
+        let aligned_rsp = (stack_pointer.as_u64() - 8) & !0xF;
+        
         Self {
             // Zero all general purpose registers
             rax: 0,
@@ -81,7 +85,7 @@ impl CpuContext {
             rsi: 0,
             rdi: 0,
             rbp: 0,
-            rsp: stack_pointer.as_u64(),
+            rsp: aligned_rsp,
             r8: 0,
             r9: 0,
             r10: 0,

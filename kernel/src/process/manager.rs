@@ -166,6 +166,9 @@ impl ProcessManager {
         Box::leak(Box::new(kernel_stack));
         
         // Set up initial context for userspace
+        log::info!("Creating userspace thread for '{}' with entry point {:#x}, stack top {:#x}", 
+                  process.name, process.entry_point.as_u64(), stack_top.as_u64());
+        
         let context = crate::task::thread::CpuContext::new(
             process.entry_point,
             stack_top,

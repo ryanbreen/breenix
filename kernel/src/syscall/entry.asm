@@ -10,6 +10,7 @@ global syscall_return_to_userspace
 extern rust_syscall_handler
 extern check_need_resched_and_switch
 extern get_next_page_table
+extern log_iret_to_userspace
 
 ; Syscall entry point from INT 0x80
 ; This is called when userspace executes INT 0x80
@@ -107,6 +108,34 @@ syscall_entry:
     pop rdx                    ; Restore rdx
     pop rcx                    ; Restore rcx
     pop rax                    ; Restore syscall return value
+
+    ; Log IRET details for debugging (only for syscall returns)
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    
+    ; Get interrupt frame values from stack
+    mov rdi, [rsp + 9*8]         ; RIP (9 pushes above)
+    mov rsi, [rsp + 9*8 + 24]    ; RSP (RIP + CS + RFLAGS)
+    mov rdx, [rsp + 9*8 + 8]     ; CS
+    mov rcx, [rsp + 9*8 + 32]    ; SS
+    call log_iret_to_userspace
+    
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
 
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
