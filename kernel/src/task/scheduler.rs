@@ -366,10 +366,9 @@ pub fn wait_for_pid_exit(pid: crate::process::ProcessId, timeout_ms: u64) -> Pro
             }
         }
         
-        // Small delay to prevent busy waiting
-        for _ in 0..100000 {
-            core::hint::spin_loop();
-        }
+        // Actually yield control to allow other processes to run
+        // This is the key fix - we need to yield so the context switch can happen
+        yield_current();
     }
     
     ProcessExitStatus::StillRunning
