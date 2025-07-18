@@ -45,6 +45,9 @@ jobs:
     
     - name: Run kernel and capture logs
       run: |
+        echo "=== Pre-run checks ==="
+        ls -la target/x86_64-unknown-none/release/breenix-uefi.img || echo "Image not found"
+        echo "=== Starting QEMU ==="
         timeout 45s qemu-system-x86_64 \
           -machine accel=tcg \
           -serial stdio \
@@ -56,6 +59,12 @@ jobs:
           -cpu qemu64 \
           -drive format=raw,file=target/x86_64-unknown-none/release/breenix-uefi.img \
           > qemu.log 2>&1 || true
+        echo "=== QEMU finished, exit code: $? ==="
+        echo "=== Log file size: $(wc -c < qemu.log) bytes ==="
+        echo "=== First 10 lines of log ==="
+        head -10 qemu.log || echo "No log content"
+        echo "=== Last 10 lines of log ==="
+        tail -10 qemu.log || echo "No log content"
         cp qemu.log test_output.log
     
     - name: Verify syscall 400 executed
