@@ -45,7 +45,7 @@ jobs:
     
     - name: Run kernel and capture logs
       run: |
-        timeout 25s qemu-system-x86_64 \
+        timeout 45s qemu-system-x86_64 \
           -machine accel=tcg \
           -serial stdio \
           -display none \

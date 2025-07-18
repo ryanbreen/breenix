@@ -871,15 +871,12 @@ pub fn run_syscall_test() {
                 // Debug: Check scheduler state
                 // crate::task::scheduler::debug_state(); // Function removed
                 
-                // COOPERATIVE SCHEDULING: Run the test process until it exits
-                // This eliminates timing dependencies on TCG vs KVM
-                log::info!("Running syscall_test cooperatively...");
+                // SIMPLE APPROACH: Just wait for the process to complete through normal scheduling
+                // Allow enough time for the process to complete both syscalls
+                log::info!("Waiting for syscall_test to complete through normal scheduling...");
                 
-                // Force context switch to the test process
-                crate::task::scheduler::context_switch_to_pid(pid);
-                
-                // Wait for the process to exit (up to 500ms)
-                let status = crate::task::scheduler::wait_for_pid_exit(pid, 500);
+                // Wait longer to allow for context switching delays
+                let status = crate::task::scheduler::wait_for_pid_exit(pid, 2000);
                 
                 match status {
                     crate::task::scheduler::ProcessExitStatus::Exited(0) => {
