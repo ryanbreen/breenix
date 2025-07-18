@@ -4,7 +4,7 @@ use x86_64::instructions::port::Port;
 use super::Time;
 
 const PIT_FREQUENCY: u32 = 1193182;
-pub const TIMER_INTERRUPT_HZ: u32 = 10;   // Back to 10Hz (100ms intervals)
+pub const TIMER_INTERRUPT_HZ: u32 = 10;   // Further reduced to 10Hz (100ms intervals) for userspace testing
 const TIMER_DIVIDER: u16 = (PIT_FREQUENCY / TIMER_INTERRUPT_HZ) as u16;
 pub const SUBTICKS_PER_TICK: u64 = 1000;  // Adjusted to match 10Hz frequency
 
@@ -17,6 +17,7 @@ const PIT_CMD_MODE2: u8 = 0x04;
 
 pub struct Timer {
     start: AtomicU64,
+    ticks: AtomicU64,
     seconds: AtomicU64,
     millis: AtomicU64,
 }
@@ -25,6 +26,7 @@ impl Timer {
     const fn new() -> Self {
         Self {
             start: AtomicU64::new(0),
+            ticks: AtomicU64::new(0),
             seconds: AtomicU64::new(0),
             millis: AtomicU64::new(0),
         }
@@ -36,10 +38,25 @@ impl Timer {
         Time::new(seconds, millis, 0)
     }
 
+    pub fn monotonic_clock(&self) -> u64 {
+        self.ticks.load(Ordering::Relaxed)
+    }
+
     pub fn real_time(&self) -> u64 {
         let start = self.start.load(Ordering::Relaxed);
         let elapsed = self.time_since_start();
         start + elapsed.seconds
+    }
+
+    pub fn tick(&self) {
+        self.ticks.fetch_add(1, Ordering::Relaxed);
+        
+        // Each tick is now 100ms (10Hz), so add 100 to millis
+        let new_millis = self.millis.fetch_add(100, Ordering::Relaxed) + 100;
+        if new_millis >= 1000 {
+            self.millis.store(new_millis - 1000, Ordering::Relaxed);
+            self.seconds.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn set_start_time(&self, unix_timestamp: u64) {
@@ -75,10 +92,23 @@ pub fn init() {
     });
 }
 
+pub fn timer_interrupt() {
+    if let Some(timer) = TIMER.get() {
+        timer.tick();
+        super::increment_ticks();
+    }
+}
+
 pub fn time_since_start() -> Time {
     TIMER.get()
         .map(|t| t.time_since_start())
         .unwrap_or_else(|| Time::new(0, 0, 0))
+}
+
+pub fn monotonic_clock() -> u64 {
+    TIMER.get()
+        .map(|t| t.monotonic_clock())
+        .unwrap_or(0)
 }
 
 pub fn real_time() -> u64 {

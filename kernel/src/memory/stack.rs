@@ -3,10 +3,20 @@ use x86_64::structures::paging::{
     OffsetPageTable, 
 };
 use x86_64::VirtAddr;
+use crate::task::thread::ThreadPrivilege;
 
 /// Base address for user stack allocation area
 /// Using a high userspace address area to avoid conflicts with heap
 pub const USER_STACK_ALLOC_START: u64 = 0x_5555_5555_0000;
+
+/// Maximum address for user stack allocation (must be below kernel space)
+pub const USER_STACK_ALLOC_END: u64 = 0x_6666_6666_0000;
+
+// Compile-time assert that user stacks are in userspace
+const _: () = {
+    assert!(USER_STACK_ALLOC_START < crate::memory::paging::KERNEL_BASE);
+    assert!(USER_STACK_ALLOC_END < crate::memory::paging::KERNEL_BASE);
+};
 
 /// Base address for kernel stack allocation area
 /// Must be in kernel space (high canonical addresses)
@@ -20,6 +30,8 @@ pub struct GuardedStack {
     stack_top: VirtAddr,
     /// Size of the usable stack area (excluding guard page)
     stack_size: usize,
+    /// Privilege level of the stack
+    privilege: ThreadPrivilege,
 }
 
 impl GuardedStack {
@@ -28,38 +40,42 @@ impl GuardedStack {
     /// # Arguments
     /// * `stack_size` - Size of the usable stack in bytes (must be page-aligned)
     /// * `mapper` - Page table mapper for allocating pages
+    /// * `privilege` - Privilege level for the stack (kernel or user)
     /// 
     /// # Returns
     /// A new GuardedStack with a guard page at the bottom
-    pub fn new(stack_size: usize, mapper: &mut OffsetPageTable) -> Result<Self, &'static str> {
+    pub fn new(stack_size: usize, mapper: &mut OffsetPageTable, privilege: ThreadPrivilege) -> Result<Self, &'static str> {
         // Ensure stack size is page-aligned
         if stack_size % 4096 != 0 {
             return Err("Stack size must be page-aligned");
         }
         
-        // Calculate total allocation size (guard page + stack + extra page for RSP)
-        let total_pages = (stack_size / 4096) + 2; // +1 for guard page, +1 for RSP page
+        // Calculate total allocation size (guard page + stack)
+        let total_pages = (stack_size / 4096) + 1; // +1 for guard page
         let total_size = total_pages * 4096;
         
-        // Find available virtual address space
-        let allocation_start = Self::find_free_virtual_space(total_size)?;
+        // Find available virtual address space based on privilege
+        let allocation_start = Self::find_free_virtual_space(total_size, privilege)?;
         
+        log::debug!("Allocating guarded stack at {:#x}, size {} KiB", 
+            allocation_start.as_u64(), total_size / 1024);
         
         // Map the stack pages (excluding guard page)
         let stack_start = allocation_start + 4096u64; // Skip guard page
         let stack_top = stack_start + stack_size as u64;
         
-        // CRITICAL: stack_top points to the first byte AFTER the stack (where RSP starts)
-        // We need to map the page containing stack_top so RSP has a valid page to point to
-        
-        Self::map_stack_pages(stack_start, stack_size, mapper)?;
+        Self::map_stack_pages(stack_start, stack_size, mapper, privilege)?;
         
         // Guard page is intentionally left unmapped at allocation_start
+        log::debug!("Guard page at {:#x} (unmapped)", allocation_start.as_u64());
+        log::debug!("Stack region: {:#x} - {:#x} ({} KiB)", 
+            stack_start.as_u64(), stack_top.as_u64(), stack_size / 1024);
         
         Ok(GuardedStack {
             allocation_start,
             stack_top,
             stack_size,
+            privilege,
         })
     }
     
@@ -102,22 +118,37 @@ impl GuardedStack {
     }
     
     /// Find free virtual address space for stack allocation
-    fn find_free_virtual_space(size: usize) -> Result<VirtAddr, &'static str> {
+    fn find_free_virtual_space(size: usize, privilege: ThreadPrivilege) -> Result<VirtAddr, &'static str> {
         // For now, use a simple incrementing allocator
         // TODO: Implement proper virtual memory management
         static mut NEXT_USER_STACK_ADDR: u64 = USER_STACK_ALLOC_START;
+        static mut NEXT_KERNEL_STACK_ADDR: u64 = KERNEL_STACK_ALLOC_START;
         
         unsafe {
-            // Allocate from user stack area for user processes
-            let addr = VirtAddr::new(NEXT_USER_STACK_ADDR);
-            NEXT_USER_STACK_ADDR += size as u64;
-            
-            // Simple bounds check for user stacks
-            if NEXT_USER_STACK_ADDR > 0x_7FFF_FFFF_0000 {
-                return Err("Out of virtual address space for user stacks");
+            match privilege {
+                ThreadPrivilege::User => {
+                    let addr = VirtAddr::new(NEXT_USER_STACK_ADDR);
+                    NEXT_USER_STACK_ADDR += size as u64;
+                    
+                    // Simple bounds check for user stacks
+                    if NEXT_USER_STACK_ADDR > USER_STACK_ALLOC_END {
+                        return Err("Out of virtual address space for user stacks");
+                    }
+                    
+                    Ok(addr)
+                }
+                ThreadPrivilege::Kernel => {
+                    let addr = VirtAddr::new(NEXT_KERNEL_STACK_ADDR);
+                    NEXT_KERNEL_STACK_ADDR += size as u64;
+                    
+                    // Simple bounds check for kernel stacks
+                    if NEXT_KERNEL_STACK_ADDR > 0xFFFF_CA00_0000_0000 {
+                        return Err("Out of virtual address space for kernel stacks");
+                    }
+                    
+                    Ok(addr)
+                }
             }
-            
-            Ok(addr)
         }
     }
     
@@ -125,25 +156,42 @@ impl GuardedStack {
     fn map_stack_pages(
         start: VirtAddr, 
         size: usize, 
-        mapper: &mut OffsetPageTable
+        mapper: &mut OffsetPageTable,
+        privilege: ThreadPrivilege
     ) -> Result<(), &'static str> {
         let start_page = Page::<Size4KiB>::containing_address(start);
-        // CRITICAL FIX: Map the page that contains stack_top (start + size)
-        // RSP is set to stack_top, so we need to map the page containing that address
-        let end_page = Page::<Size4KiB>::containing_address(start + size as u64);
+        let end_page = Page::<Size4KiB>::containing_address(start + size as u64 - 1u64);
         
-        // Use user flags for user stacks
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        log::trace!("map_stack_pages: start_page={:#x}, end_page={:#x}", 
+                   start_page.start_address(), end_page.start_address());
         
+        let flags = match privilege {
+            ThreadPrivilege::Kernel => PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            ThreadPrivilege::User => PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        };
+        
+        log::trace!("map_stack_pages: About to iterate over page range");
         for page in Page::range_inclusive(start_page, end_page) {
+            log::trace!("map_stack_pages: Got page from iterator, about to log address");
+            log::trace!("map_stack_pages: Mapping page {:#x}", page.start_address());
+            
+            log::trace!("map_stack_pages: About to call allocate_frame()");
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("out of memory")?;
+            log::trace!("map_stack_pages: allocate_frame() returned successfully");
+            
+            log::trace!("map_stack_pages: Allocated frame {:#x} for page {:#x}", 
+                       frame.start_address(), page.start_address());
             
             unsafe {
                 let mut frame_allocator = crate::memory::frame_allocator::GlobalFrameAllocator;
+                log::trace!("map_stack_pages: About to call mapper.map_to...");
+                
                 mapper.map_to(page, frame, flags, &mut frame_allocator)
                     .map_err(|_| "failed to map stack page")?
                     .flush();
+                    
+                log::trace!("map_stack_pages: Successfully mapped page {:#x}", page.start_address());
             }
         }
         
@@ -169,10 +217,15 @@ pub fn init() {
     log::info!("Stack allocation system initialized");
 }
 
-/// Allocate a new guarded stack
+/// Allocate a new guarded stack with default kernel privilege
 pub fn allocate_stack(size: usize) -> Result<GuardedStack, &'static str> {
+    allocate_stack_with_privilege(size, ThreadPrivilege::Kernel)
+}
+
+/// Allocate a new guarded stack with specified privilege
+pub fn allocate_stack_with_privilege(size: usize, privilege: ThreadPrivilege) -> Result<GuardedStack, &'static str> {
     let mut mapper = unsafe { crate::memory::paging::get_mapper() };
-    GuardedStack::new(size, &mut mapper)
+    GuardedStack::new(size, &mut mapper, privilege)
 }
 
 /// Check if a page fault is due to guard page access

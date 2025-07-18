@@ -1,7 +1,7 @@
 //! Kernel stack allocator with bitmap management
 //! 
 //! Reserves VA range 0xffffc900_0000_0000 – 0xffffc900_00ff_ffff for kernel stacks.
-//! Each stack gets 32 KiB RW pages + 4 KiB guard page (total 36 KiB per stack).
+//! Each stack gets 8 KiB RW page + 4 KiB guard page (total 12 KiB per stack).
 
 use x86_64::{
     structures::paging::PageTableFlags,
@@ -16,8 +16,8 @@ const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 /// End address for kernel stack allocation (16 MiB total space)
 const KERNEL_STACK_END: u64 = 0xffffc900_0100_0000;
 
-/// Size of each kernel stack (64 KiB - DOUBLED to test stack overflow hypothesis)
-const KERNEL_STACK_SIZE: u64 = 64 * 1024;
+/// Size of each kernel stack (8 KiB)
+const KERNEL_STACK_SIZE: u64 = 8 * 1024;
 
 /// Size of guard page (4 KiB)
 const GUARD_PAGE_SIZE: u64 = 4 * 1024;
@@ -39,6 +39,8 @@ static STACK_BITMAP: Mutex<[u64; BITMAP_SIZE]> =
 pub struct KernelStack {
     /// Index in the bitmap
     index: usize,
+    /// Bottom of the stack (lowest address, above guard page)
+    bottom: VirtAddr,
     /// Top of the stack (highest address)
     top: VirtAddr,
 }
@@ -47,6 +49,16 @@ impl KernelStack {
     /// Get the top of the stack (for RSP initialization)
     pub fn top(&self) -> VirtAddr {
         self.top
+    }
+    
+    /// Get the bottom of the stack
+    pub fn bottom(&self) -> VirtAddr {
+        self.bottom
+    }
+    
+    /// Get the guard page address
+    pub fn guard_page(&self) -> VirtAddr {
+        VirtAddr::new(self.bottom.as_u64() - GUARD_PAGE_SIZE)
     }
 }
 
@@ -99,7 +111,7 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
     
     // Calculate addresses
     let slot_base = KERNEL_STACK_BASE + (index as u64 * STACK_SLOT_SIZE);
-    let _guard_page = VirtAddr::new(slot_base);
+    let guard_page = VirtAddr::new(slot_base);
     let stack_bottom = VirtAddr::new(slot_base + GUARD_PAGE_SIZE);
     let stack_top = VirtAddr::new(slot_base + STACK_SLOT_SIZE);
     
@@ -107,22 +119,12 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
     
     let num_pages = (KERNEL_STACK_SIZE / 4096) as usize;
-    crate::serial_println!("KSTACK: about to map {} pages for slot {}", num_pages, index);
-    
     for i in 0..num_pages {
-        // Bounds check as suggested in triage guide
-        if i > 100 {
-            crate::serial_println!("KSTACK: ABORT - loop iteration {} exceeded limit", i);
-            return Err("Kernel stack allocation loop exceeded limit");
-        }
-        
         let virt_addr = stack_bottom + (i as u64 * 4096);
-        crate::serial_println!("KSTACK: mapping page {} at {:#x}", i, virt_addr);
         
         // Allocate a physical frame
         let frame = allocate_frame()
             .ok_or("Out of memory for kernel stack")?;
-        crate::serial_println!("KSTACK: got frame {:#x}", frame.start_address());
         
         // Map it in the global kernel page tables
         unsafe {
@@ -132,14 +134,14 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
                 flags,
             )?;
         }
-        crate::serial_println!("KSTACK: mapped page {} successfully", i);
     }
     
-    crate::serial_println!("KSTACK: all {} pages mapped successfully", num_pages);
-    
+    log::debug!("Allocated kernel stack {} at {:#x}-{:#x} (guard at {:#x})",
+               index, stack_bottom, stack_top, guard_page);
     
     Ok(KernelStack {
         index,
+        bottom: stack_bottom,
         top: stack_top,
     })
 }

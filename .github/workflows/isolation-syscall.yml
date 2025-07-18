@@ -1,0 +1,102 @@
+name: Test Syscalls 400/401
+
+on:
+  push:
+    branches: [ main, "*" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-syscalls:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        components: rust-src, llvm-tools-preview
+        override: true
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86 nasm
+    
+    - name: Build userspace tests
+      run: |
+        cd userspace/tests
+        ./build.sh
+        
+    - name: Build kernel with testing features
+      run: cargo build --release --features testing
+    
+    - name: Run kernel and capture logs
+      run: |
+        timeout 30s cargo run --release --features testing --bin qemu-uefi -- \
+          -serial stdio -display none | tee test_output.log || true
+    
+    - name: Verify syscall 400 executed
+      run: |
+        if ! grep -q "SYSCALL entry: rax=400" test_output.log; then
+          echo "ERROR: Syscall 400 not executed"
+          exit 1
+        fi
+        echo "✓ Syscall 400 executed"
+    
+    - name: Verify share_page handler called
+      run: |
+        if ! grep -q "TEST: share_page(0xdeadbeef)" test_output.log; then
+          echo "ERROR: share_page handler not called correctly"
+          exit 1
+        fi
+        echo "✓ share_page handler called with correct value"
+    
+    - name: Verify syscall 401 executed
+      run: |
+        if ! grep -q "SYSCALL entry: rax=401" test_output.log; then
+          echo "ERROR: Syscall 401 not executed"
+          exit 1
+        fi
+        echo "✓ Syscall 401 executed"
+    
+    - name: Verify get_page handler called
+      run: |
+        if ! grep -q "TEST: get_page -> 0xdeadbeef" test_output.log; then
+          echo "ERROR: get_page handler not called correctly"
+          exit 1
+        fi
+        echo "✓ get_page handler returned correct value"
+    
+    - name: Verify test process exited successfully
+      run: |
+        if ! grep -q "Process 3 (thread 3) exited with code 0" test_output.log; then
+          echo "WARNING: Exact exit message not found, checking alternatives..."
+          if grep -q "syscall_test exited 0" test_output.log; then
+            echo "✓ Found alternative success message"
+          else
+            echo "ERROR: Test process did not exit successfully"
+            exit 1
+          fi
+        else
+          echo "✓ Test process exited with code 0"
+        fi
+    
+    - name: Verify no unknown syscall errors for 400/401
+      run: |
+        if grep -E "Unknown syscall.*(400|401)" test_output.log; then
+          echo "ERROR: Found unknown syscall errors for 400/401"
+          exit 1
+        fi
+        echo "✓ No unknown syscall errors for 400/401"
+    
+    - name: Upload test logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-logs
+        path: |
+          test_output.log
+          logs/*.log

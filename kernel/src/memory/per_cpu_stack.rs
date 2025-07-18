@@ -19,7 +19,9 @@ const MAX_CPUS: usize = 256;
 /// Per-CPU emergency stack info
 #[derive(Debug)]
 pub struct PerCpuStack {
-    // Stack information stored for potential future use
+    pub cpu_id: usize,
+    pub stack_top: VirtAddr,
+    pub stack_bottom: VirtAddr,
 }
 
 /// Initialize per-CPU emergency stacks
@@ -66,7 +68,9 @@ pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<alloc::vec::Vec<PerCpuStac
                    cpu_id, stack_bottom, stack_top);
         
         stacks.push(PerCpuStack {
-            // Stack information stored for potential future use
+            cpu_id,
+            stack_top,
+            stack_bottom,
         });
     }
     

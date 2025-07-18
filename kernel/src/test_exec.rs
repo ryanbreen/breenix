@@ -1,7 +1,7 @@
 //! Test exec functionality directly
 
 use crate::process::creation::create_user_process;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 
 /// Test multiple concurrent processes to validate page table isolation
@@ -391,7 +391,190 @@ pub fn test_shell_fork_exec() {
     }
 }
 
+/// Test exec without scheduling - creates process without adding to scheduler
+pub fn test_exec_without_scheduling() {
+    log::info!("=== Testing exec() without immediate scheduling ===");
+    
+    // Create a process without scheduling it
+    #[cfg(feature = "testing")]
+    let initial_elf = crate::userspace_test::FORK_TEST_ELF;
+    #[cfg(not(feature = "testing"))]
+    let initial_elf = &create_minimal_elf_no_bss();
+    
+    // Use with_process_manager to prevent deadlock during ELF loading
+    let pid = crate::process::with_process_manager(|manager| {
+        log::info!("Creating process with interrupts disabled...");
+        match manager.create_process(String::from("exec_test"), initial_elf) {
+            Ok(pid) => {
+                log::info!("Created process {} without scheduling", pid.as_u64());
+                
+                // CRITICAL: Remove from ready queue to prevent scheduling before exec
+                if manager.remove_from_ready_queue(pid) {
+                    log::info!("Removed process {} from ready queue to prevent early scheduling", pid.as_u64());
+                }
+                
+                Some(pid)
+            }
+            Err(e) => {
+                log::error!("Failed to create process: {}", e);
+                None
+            }
+        }
+    }).flatten();
+    
+    if let Some(pid) = pid {
+        // Now exec the actual program we want to run
+        #[cfg(feature = "testing")]
+        let target_elf = crate::userspace_test::HELLO_TIME_ELF;
+        #[cfg(not(feature = "testing"))]
+        let target_elf = &create_exec_test_elf();
+        
+        log::info!("Calling exec to load target program...");
+        
+        match crate::process::with_process_manager(|manager| {
+            manager.exec_process(pid, target_elf)
+        }) {
+            Some(Ok(entry_point)) => {
+                log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);
+                
+                // Now add process back to ready queue after exec
+                x86_64::instructions::interrupts::without_interrupts(|| {
+                    let mut manager_guard = crate::process::manager();
+                    if let Some(ref mut manager) = *manager_guard {
+                        // Add back to ready queue
+                        manager.add_to_ready_queue(pid);
+                        log::info!("✓ Process {} added back to ready queue after exec", pid.as_u64());
+                        
+                        // Also need to spawn the thread
+                        if let Some(process) = manager.get_process(pid) {
+                            if let Some(ref main_thread) = process.main_thread {
+                                crate::task::scheduler::spawn(alloc::boxed::Box::new(main_thread.clone()));
+                                log::info!("✓ Process {} thread scheduled with exec'd program", pid.as_u64());
+                            }
+                        }
+                    }
+                });
+            }
+            Some(Err(e)) => {
+                log::error!("✗ exec failed: {}", e);
+            }
+            None => {
+                log::error!("Process manager not available");
+            }
+        }
+    }
+}
 
+/// Create a fork test ELF that tests syscalls
+fn create_fork_test_elf() -> alloc::vec::Vec<u8> {
+    use alloc::vec::Vec;
+    
+    let mut elf = Vec::new();
+    
+    // ELF header (64 bytes)
+    elf.extend_from_slice(&[
+        0x7f, 0x45, 0x4c, 0x46, // Magic
+        0x02, 0x01, 0x01, 0x00, // 64-bit, little-endian, current version
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding
+        0x02, 0x00, // ET_EXEC
+        0x3e, 0x00, // EM_X86_64
+        0x01, 0x00, 0x00, 0x00, // version
+        0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // entry = 0x10000000
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // phoff
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // shoff
+        0x00, 0x00, 0x00, 0x00, // flags
+        0x40, 0x00, // ehsize
+        0x38, 0x00, // phentsize
+        0x02, 0x00, // phnum (2 segments - code and data)
+        0x00, 0x00, // shentsize
+        0x00, 0x00, // shnum
+        0x00, 0x00, // shstrndx
+    ]);
+    
+    // Program header 1 - code segment
+    elf.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, // PT_LOAD
+        0x05, 0x00, 0x00, 0x00, // flags (R+X)
+        0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // offset = 176
+        0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // vaddr = 0x10000000
+        0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // paddr
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // filesz = 128 bytes
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // memsz = 128 bytes
+        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // align
+    ]);
+    
+    // Program header 2 - data segment
+    elf.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, // PT_LOAD
+        0x06, 0x00, 0x00, 0x00, // flags (R+W)
+        0x30, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // offset = 304 (176 + 128)
+        0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // vaddr = 0x10001000
+        0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // paddr
+        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // filesz = 32 bytes
+        0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // memsz = 32 bytes
+        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // align
+    ]);
+    
+    // Code section at offset 176
+    let code = vec![
+        // Print "Before fork\n"
+        0xb8, 0x01, 0x00, 0x00, 0x00,                // mov eax, 1 (sys_write)
+        0xbf, 0x01, 0x00, 0x00, 0x00,                // mov edi, 1 (stdout)
+        0x48, 0xbe, 0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,  // mov rsi, 0x10001000 (string address)
+        0xba, 0x0c, 0x00, 0x00, 0x00,                // mov edx, 12 (string length)
+        0xcd, 0x80,                                   // int 0x80 (syscall)
+        
+        // Call fork()
+        0xb8, 0x05, 0x00, 0x00, 0x00,                // mov eax, 5 (sys_fork)
+        0xcd, 0x80,                                   // int 0x80 (syscall)
+        
+        // Test if we're parent or child
+        0x48, 0x85, 0xc0,                             // test rax, rax
+        0x74, 0x18,                                   // jz child_code (jump if zero)
+        
+        // Parent: print "Parent\n" and exit
+        0xb8, 0x01, 0x00, 0x00, 0x00,                // mov eax, 1 (sys_write)
+        0xbf, 0x01, 0x00, 0x00, 0x00,                // mov edi, 1 (stdout)
+        0x48, 0xbe, 0x0c, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,  // mov rsi, 0x1000100c
+        0xba, 0x07, 0x00, 0x00, 0x00,                // mov edx, 7
+        0xcd, 0x80,                                   // int 0x80
+        0xeb, 0x16,                                   // jmp exit_parent
+        
+        // Child: print "Child\n" and exit
+        0xb8, 0x01, 0x00, 0x00, 0x00,                // mov eax, 1 (sys_write)
+        0xbf, 0x01, 0x00, 0x00, 0x00,                // mov edi, 1 (stdout)
+        0x48, 0xbe, 0x13, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,  // mov rsi, 0x10001013
+        0xba, 0x06, 0x00, 0x00, 0x00,                // mov edx, 6
+        0xcd, 0x80,                                   // int 0x80
+        
+        // Exit
+        0xb8, 0x00, 0x00, 0x00, 0x00,                // mov eax, 0 (sys_exit)
+        0x31, 0xff,                                   // xor edi, edi (exit code 0)
+        0xcd, 0x80,                                   // int 0x80 (syscall)
+        
+        // Should never reach here
+        0xeb, 0xfe,                                   // jmp $ (infinite loop)
+    ];
+    
+    // Pad code section to 128 bytes
+    elf.extend_from_slice(&code);
+    for _ in code.len()..128 {
+        elf.push(0x90); // NOP padding
+    }
+    
+    // Data section at offset 304
+    elf.extend_from_slice(b"Before fork\n");
+    elf.extend_from_slice(b"Parent\n");
+    elf.extend_from_slice(b"Child\n");
+    
+    // Pad data section to 32 bytes
+    let data_len = 12 + 7 + 6; // lengths of strings
+    for _ in data_len..32 {
+        elf.push(0x00);
+    }
+    
+    elf
+}
 
 /// Create a minimal ELF without BSS segment for testing
 fn create_minimal_elf_no_bss() -> alloc::vec::Vec<u8> {
@@ -482,4 +665,237 @@ fn create_hello_world_elf() -> alloc::vec::Vec<u8> {
     }
     
     elf
+}
+
+/// Create a minimal ELF binary for exec testing (different from fork test)
+fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
+    use alloc::vec::Vec;
+    
+    // Create a simple ELF that just loops with NOPs to test basic execution
+    let mut elf = Vec::new();
+    
+    // ELF header (64 bytes)
+    elf.extend_from_slice(&[
+        0x7f, 0x45, 0x4c, 0x46, // e_ident[EI_MAG0..EI_MAG3] = ELF
+        0x02,                   // e_ident[EI_CLASS] = ELFCLASS64
+        0x01,                   // e_ident[EI_DATA] = ELFDATA2LSB
+        0x01,                   // e_ident[EI_VERSION] = EV_CURRENT
+        0x00,                   // e_ident[EI_OSABI] = ELFOSABI_NONE
+        0x00,                   // e_ident[EI_ABIVERSION] = 0
+    ]);
+    
+    // Pad EI_PAD to 16 bytes total
+    for _ in 0..7 {
+        elf.push(0x00);
+    }
+    
+    elf.extend_from_slice(&[
+        0x02, 0x00,             // e_type = ET_EXEC (2)
+        0x3e, 0x00,             // e_machine = EM_X86_64 (62)
+        0x01, 0x00, 0x00, 0x00, // e_version = EV_CURRENT (1)
+    ]);
+    
+    // e_entry (8 bytes) = 0x10000000
+    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00]);
+    
+    // e_phoff (8 bytes) = 64 (program headers start after ELF header)
+    elf.extend_from_slice(&[0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    
+    // e_shoff (8 bytes) = 0 (no section headers)
+    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    
+    elf.extend_from_slice(&[
+        0x00, 0x00, 0x00, 0x00, // e_flags = 0
+        0x40, 0x00,             // e_ehsize = 64
+        0x38, 0x00,             // e_phentsize = 56
+        0x01, 0x00,             // e_phnum = 1 (one program header)
+        0x00, 0x00,             // e_shentsize = 0
+        0x00, 0x00,             // e_shnum = 0
+        0x00, 0x00,             // e_shstrndx = 0
+    ]);
+    
+    // Program header (56 bytes)
+    elf.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, // p_type = PT_LOAD (1)
+        0x05, 0x00, 0x00, 0x00, // p_flags = PF_R | PF_X (5)
+    ]);
+    
+    // p_offset (8 bytes) = 120 (after headers)
+    elf.extend_from_slice(&[0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    
+    // p_vaddr (8 bytes) = 0x10000000
+    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00]);
+    
+    // p_paddr (8 bytes) = 0x10000000
+    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00]);
+    
+    // p_filesz (8 bytes) = 20 (code section with int3)
+    elf.extend_from_slice(&[0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    
+    // p_memsz (8 bytes) = 20
+    elf.extend_from_slice(&[0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    
+    // p_align (8 bytes) = 4096
+    elf.extend_from_slice(&[0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    
+    // Code section (starting at offset 120) - NOPs then breakpoint for proof of execution
+    elf.extend_from_slice(&[
+        0x90, 0x90, 0x90, 0x90, 0x90,  // 5 NOPs (0x10000000-0x10000004)
+        0xcc,                           // int3 breakpoint (0x10000005) - PROOF OF EXECUTION
+        0xeb, 0xfe,                     // jmp $ (infinite loop after breakpoint)
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, // 12 bytes padding = 20 total
+    ]);
+    
+    elf
+}
+
+/// Test process isolation by running two processes and verifying they can't access each other's memory
+#[cfg(feature = "testing")]
+pub fn test_process_isolation() {
+    log::info!("=== PROCESS ISOLATION TEST ===");
+    log::info!("Creating victim process that will share a page address...");
+    
+    // First create the victim process
+    match create_user_process(String::from("isolation_victim"), crate::userspace_test::ISOLATION_ELF) {
+        Ok(victim_pid) => {
+            log::info!("✓ Created victim process with PID {}", victim_pid.as_u64());
+            log::info!("Victim will fill a page with 0xA5 and share the address");
+            
+            // Give the victim time to run and share its page
+            for _ in 0..100 {
+                crate::task::scheduler::yield_current();
+            }
+            
+            // Now create the attacker process
+            log::info!("Creating attacker process that will try to read victim's page...");
+            match create_user_process(String::from("isolation_attacker"), crate::userspace_test::ISOLATION_ATTACKER_ELF) {
+                Ok(attacker_pid) => {
+                    log::info!("✓ Created attacker process with PID {}", attacker_pid.as_u64());
+                    log::info!("Attacker will attempt to read from victim's page");
+                    log::info!("Expected result: PAGE-FAULT with attacker PID");
+                    
+                    // Give the attacker time to run and trigger the page fault
+                    for _ in 0..100 {
+                        crate::task::scheduler::yield_current();
+                    }
+                    
+                    // Check process states
+                    if let Some(ref manager) = *crate::process::manager() {
+                        if let Some(victim) = manager.get_process(victim_pid) {
+                            log::info!("Victim process state: {:?}", victim.state);
+                        }
+                        if let Some(attacker) = manager.get_process(attacker_pid) {
+                            log::info!("Attacker process state: {:?}", attacker.state);
+                            if matches!(attacker.state, crate::process::process::ProcessState::Terminated(_)) {
+                                log::info!("✓ ISOLATION TEST PASSED: Attacker process terminated (page fault)");
+                            } else {
+                                log::error!("✗ ISOLATION TEST FAILED: Attacker still running!");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("✗ Failed to create attacker process: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create victim process: {}", e);
+        }
+    }
+    
+    log::info!("Process isolation test completed - check logs for PAGE-FAULT entries");
+}
+
+/// Test that syscalls 400 and 401 work correctly
+#[cfg(feature = "testing")]
+pub fn test_syscall_400_401() {
+    log::info!("=== SYSCALL 400/401 TEST ===");
+    
+    // Create a process that calls the test syscalls
+    match crate::process::creation::create_user_process(
+        "syscall_test".to_string(),
+        crate::userspace_test::SYSCALL_TEST_ELF
+    ) {
+        Ok(pid) => {
+            log::info!("✓ Created syscall test process with PID {:?}", pid);
+            log::info!("✓ Process will call sys_share_test_page(0xdead_beef) and sys_get_shared_test_page()");
+            log::info!("✓ Look for 'SYSCALL entry: rax=400' and 'SYSCALL entry: rax=401' in logs");
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create syscall test process: {}", e);
+        }
+    }
+    
+    log::info!("Syscall 400/401 test completed.");
+}
+
+/// Run syscall test and wait for completion
+#[cfg(feature = "testing")]
+pub fn run_syscall_test() {
+    log::info!("=== RUN syscall_test ===");
+    match create_user_process("syscall_test".into(), crate::userspace_test::SYSCALL_TEST_ELF) {
+        Ok(pid) => {
+            log::info!("Created syscall_test process with PID {}", pid.as_u64());
+            
+            // Get the thread ID from the process
+            let thread_id = x86_64::instructions::interrupts::without_interrupts(|| {
+                let manager = crate::process::manager();
+                if let Some(ref manager) = *manager {
+                    if let Some(process) = manager.get_process(pid) {
+                        if let Some(ref thread) = process.main_thread {
+                            return Some(thread.id);
+                        }
+                    }
+                }
+                None
+            });
+            
+            if let Some(thread_id) = thread_id {
+                log::info!("Forcing cooperative switch to thread {} for immediate execution", thread_id);
+                
+                // Force the scheduler to run this thread immediately
+                x86_64::instructions::interrupts::without_interrupts(|| {
+                    // Set as current thread
+                    crate::task::scheduler::with_scheduler(|s| {
+                        s.set_current_thread(thread_id);
+                    });
+                    
+                    // Force a reschedule which will switch to our thread
+                    crate::task::scheduler::set_need_resched();
+                });
+                
+                // Yield multiple times to let the process complete
+                log::info!("Yielding to run syscall_test...");
+                
+                // Give the process multiple chances to run and complete
+                for i in 0..10 {
+                    crate::task::scheduler::yield_current();
+                    
+                    // After each yield, check if process completed
+                    if let Some(ref manager) = *crate::process::manager() {
+                        if let Some(process) = manager.get_process(pid) {
+                            if let crate::process::process::ProcessState::Terminated(code) = process.state {
+                                if code == 0 {
+                                    log::info!("✓ syscall_test exited 0");
+                                } else {
+                                    log::error!("✗ syscall_test exited {}", code);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                    
+                    log::trace!("Yield {}: Process still running, yielding again...", i + 1);
+                }
+                
+                log::error!("✗ syscall_test did not complete after 10 yields");
+            } else {
+                log::error!("✗ Could not get thread ID for syscall_test process");
+            }
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create syscall_test process: {}", e);
+        }
+    }
 }

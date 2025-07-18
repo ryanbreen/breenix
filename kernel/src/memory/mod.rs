@@ -7,7 +7,6 @@ pub mod tlb;
 pub mod kernel_page_table;
 pub mod kernel_stack;
 pub mod per_cpu_stack;
-pub mod fork_helpers;
 
 use bootloader_api::info::MemoryRegions;
 use x86_64::{PhysAddr, VirtAddr};
@@ -76,6 +75,10 @@ pub fn phys_to_virt(phys: PhysAddr, offset: VirtAddr) -> VirtAddr {
     VirtAddr::new(phys.as_u64() + offset.as_u64())
 }
 
+/// Allocate a kernel stack
+pub fn alloc_kernel_stack(size: usize) -> Option<stack::GuardedStack> {
+    stack::allocate_stack(size).ok()
+}
 
 /// Display comprehensive memory debug information
 pub fn debug_memory_info() {

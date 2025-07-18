@@ -1,11 +1,13 @@
 use super::{SyscallNumber, SyscallResult};
+use super::syscall_consts::*;
 
 #[repr(C)]
 #[derive(Debug)]
 pub struct SyscallFrame {
     // General purpose registers (in memory order after all pushes)
-    // Stack grows down, so last pushed is at lowest address (where RSP points)
-    // Assembly pushes in reverse order: r15 first, rax last
+    // Stack grows down, so LAST pushed is at LOWEST address (current RSP)
+    // Assembly pushes: r15 first, then r14, ..., then rax last
+    // So rax (pushed last) is at RSP+0, and r15 (pushed first) is at RSP+112
     pub rax: u64,  // Syscall number - pushed last, so at RSP+0
     pub rcx: u64,  // at RSP+8
     pub rdx: u64,  // at RSP+16
@@ -56,9 +58,6 @@ impl SyscallFrame {
 /// Main syscall handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
-    // Critical debug: Print immediately when syscall is received
-    crate::serial_println!("SYSCALL_ENTRY: Received syscall from userspace! RAX={:#x}", frame.rax);
-    
     // Debug: Log raw RAX value
     log::debug!("rust_syscall_handler: Raw frame.rax = {:#x} ({})", frame.rax, frame.rax as i64);
     
@@ -78,6 +77,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     let syscall_num = frame.syscall_number();
     let args = frame.args();
     
+    // Step A-3: Add syscall entry trace logging
+    log::info!("SYSCALL entry: rax={}", syscall_num);
+    
     // Only log non-write syscalls to reduce noise
     if syscall_num != 1 {  // 1 is sys_write
         log::trace!(
@@ -94,23 +96,24 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         );
     }
     
-    // Dispatch to the appropriate syscall handler
-    let result = match SyscallNumber::from_u64(syscall_num) {
-        Some(SyscallNumber::Exit) => super::handlers::sys_exit(args.0 as i32),
-        Some(SyscallNumber::Write) => super::handlers::sys_write(args.0, args.1, args.2),
-        Some(SyscallNumber::Read) => super::handlers::sys_read(args.0, args.1, args.2),
-        Some(SyscallNumber::Yield) => super::handlers::sys_yield(),
-        Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
-        Some(SyscallNumber::Fork) => super::handlers::sys_fork_with_frame(frame),
-        Some(SyscallNumber::Wait) => super::handlers::sys_wait(args.0),
-        Some(SyscallNumber::Exec) => super::handlers::sys_exec(args.0, args.1),
-        Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
-        Some(SyscallNumber::Spawn) => super::handlers::sys_spawn(args.0, args.1),
-        Some(SyscallNumber::Waitpid) => super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32),
-        Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
-        None => {
+    // Dispatch to the appropriate syscall handler using constants
+    let result = match syscall_num {
+        SYS_EXIT => super::handlers::sys_exit(args.0 as i32),
+        SYS_WRITE => super::handlers::sys_write(args.0, args.1, args.2),
+        SYS_READ => super::handlers::sys_read(args.0, args.1, args.2),
+        SYS_YIELD => super::handlers::sys_yield(),
+        SYS_GET_TIME => super::handlers::sys_get_time(),
+        SYS_FORK => super::handlers::sys_fork_with_frame(frame),
+        SYS_EXEC => super::handlers::sys_exec(args.0, args.1),
+        SYS_GETPID => super::handlers::sys_getpid(),
+        39 => super::handlers::sys_getpid(), // Legacy SYS_GETPID value
+        #[cfg(feature = "testing")]
+        SYS_SHARE_TEST_PAGE => super::handlers::sys_share_test_page(args.0),
+        #[cfg(feature = "testing")]
+        SYS_GET_SHARED_TEST_PAGE => super::handlers::sys_get_shared_test_page(),
+        _ => {
             log::warn!("Unknown syscall number: {}", syscall_num);
-            SyscallResult::Err(u64::MAX)
+            SyscallResult::Err(38) // ENOSYS
         }
     };
     
@@ -134,3 +137,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // Note: Context switches after sys_yield happen on the next timer interrupt
 }
 
+// Assembly functions defined in entry.s
+extern "C" {
+    pub fn syscall_entry();
+    pub fn syscall_return_to_userspace(user_rip: u64, user_rsp: u64, user_rflags: u64) -> !;
+}

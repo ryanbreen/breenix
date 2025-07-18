@@ -97,87 +97,91 @@ impl CombinedLogger {
 
 impl Log for CombinedLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        #[cfg(feature = "kernel_tests")]
-        {
-            metadata.level() <= Level::Warn
-        }
-        #[cfg(not(feature = "kernel_tests"))]
-        {
-            metadata.level() <= Level::Trace
-        }
+        metadata.level() <= Level::Trace
     }
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            // IRQ-safe logging with interrupt masking as recommended by expert
-            // This ensures we never deadlock when logging from interrupt context
-            x86_64::instructions::interrupts::without_interrupts(|| {
-                // Format the message manually to avoid allocation
-                let level = record.level();
-                let target = record.target();
-                let args = record.args();
+            // Format the message manually to avoid allocation
+            let level = record.level();
+            let target = record.target();
+            let args = record.args();
 
-                // Now safely acquire locks since interrupts are disabled
-                let state = self.state.lock();
-                
-                // Get current timestamp if available  
-                // TEMPORARILY DISABLE TIMESTAMPS TO DEBUG TIMER INTERRUPT HANG
-                let timestamp = 0;
-                
-                match *state {
-                    LoggerState::Buffering => {
-                        // Buffer the message without timestamp (we don't have time yet)
-                        drop(state); // Release lock before acquiring buffer lock
-                        let mut buffer = self.buffer.lock(); // Safe since interrupts disabled
-                        // Format directly into buffer
-                        let _ = write!(&mut *buffer, "[{:>5}] {}: {}\n", level, target, args);
-                    }
-                    LoggerState::SerialReady => {
-                        // Output to serial only with timestamp if available
-                        drop(state); // Release lock before serial I/O
-                        if timestamp > 0 {
-                            serial_println!("{} - [{:>5}] {}: {}", 
-                                timestamp,
-                                record.level(), 
-                                record.target(), 
-                                record.args()
-                            );
-                        } else {
-                            serial_println!("[{:>5}] {}: {}", 
-                                record.level(), 
-                                record.target(), 
-                                record.args()
-                            );
+            // Use try_lock to avoid deadlocks from interrupt context
+            let state = match self.state.try_lock() {
+                Some(state) => state,
+                None => {
+                    // If we can't acquire the lock, fall back to basic serial output
+                    // This prevents deadlocks when logging from interrupt handlers
+                    serial_println!("[INTR] {}: {}", target, args);
+                    return;
+                }
+            };
+            
+            // Get current timestamp if available  
+            // TEMPORARILY DISABLE TIMESTAMPS TO DEBUG TIMER INTERRUPT HANG
+            let timestamp = 0;
+            
+            match *state {
+                LoggerState::Buffering => {
+                    // Buffer the message without timestamp (we don't have time yet)
+                    drop(state); // Release lock before acquiring buffer lock
+                    match self.buffer.try_lock() {
+                        Some(mut buffer) => {
+                            // Format directly into buffer
+                            let _ = write!(&mut *buffer, "[{:>5}] {}: {}\n", level, target, args);
                         }
-                    }
-                    LoggerState::FullyInitialized => {
-                        // Output to both serial and framebuffer with timestamp
-                        drop(state); // Release lock before I/O
-                        
-                        if timestamp > 0 {
-                            serial_println!("{} - [{:>5}] {}: {}", 
-                                timestamp,
-                                record.level(), 
-                                record.target(), 
-                                record.args()
-                            );
-                        } else {
-                            serial_println!("[{:>5}] {}: {}", 
-                                record.level(), 
-                                record.target(), 
-                                record.args()
-                            );
-                        }
-                        
-                        // Write to framebuffer
-                        // TODO: Add proper synchronization to prevent rendering conflicts
-                        // For now, we'll accept occasional visual glitches rather than deadlock
-                        if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
-                            fb_logger.log(record);
+                        None => {
+                            // Fall back to serial if buffer is locked
+                            serial_println!("[BUFF] {}: {}", target, args);
                         }
                     }
                 }
-            });
+                LoggerState::SerialReady => {
+                    // Output to serial only with timestamp if available
+                    drop(state); // Release lock before serial I/O
+                    if timestamp > 0 {
+                        serial_println!("{} - [{:>5}] {}: {}", 
+                            timestamp,
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    } else {
+                        serial_println!("[{:>5}] {}: {}", 
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    }
+                }
+                LoggerState::FullyInitialized => {
+                    // Output to both serial and framebuffer with timestamp
+                    drop(state); // Release lock before I/O
+                    
+                    if timestamp > 0 {
+                        serial_println!("{} - [{:>5}] {}: {}", 
+                            timestamp,
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    } else {
+                        serial_println!("[{:>5}] {}: {}", 
+                            record.level(), 
+                            record.target(), 
+                            record.args()
+                        );
+                    }
+                    
+                    // Write to framebuffer
+                    // TODO: Add proper synchronization to prevent rendering conflicts
+                    // For now, we'll accept occasional visual glitches rather than deadlock
+                    if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
+                        fb_logger.log(record);
+                    }
+                }
+            }
         }
     }
 
@@ -195,12 +199,6 @@ pub fn init_early() {
     // Set up the logger immediately so all log calls work
     log::set_logger(&COMBINED_LOGGER)
         .expect("Logger already set");
-    
-    // Use DEBUG level for tests to help debug issues
-    #[cfg(feature = "kernel_tests")]
-    log::set_max_level(LevelFilter::Debug);
-    
-    #[cfg(not(feature = "kernel_tests"))]
     log::set_max_level(LevelFilter::Trace);
 }
 

@@ -3,6 +3,9 @@ name = "userspace_tests"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+testing = []
+
 [dependencies]
 
 [[bin]]
@@ -26,48 +29,16 @@ name = "fork_test"
 path = "fork_test.rs"
 
 [[bin]]
-name = "spawn_test"
-path = "spawn_test.rs"
+name = "isolation"
+path = "isolation.rs"
 
 [[bin]]
-name = "wait_many"
-path = "wait_many.rs"
+name = "isolation_attacker"
+path = "isolation_attacker.rs"
 
 [[bin]]
-name = "waitpid_specific"
-path = "waitpid_specific.rs"
-
-[[bin]]
-name = "wait_nohang_polling"
-path = "wait_nohang_polling.rs"
-
-[[bin]]
-name = "echld_error"
-path = "echld_error.rs"
-
-[[bin]]
-name = "simple_wait_test"
-path = "simple_wait_test.rs"
-
-[[bin]]
-name = "fork_basic"
-path = "fork_basic.rs"
-
-[[bin]]
-name = "fork_mem_independent"
-path = "fork_mem_independent.rs"
-
-[[bin]]
-name = "fork_deep_stack"
-path = "fork_deep_stack.rs"
-
-[[bin]]
-name = "fork_progress_test"
-path = "fork_progress_test.rs"
-
-[[bin]]
-name = "fork_spin_stress"
-path = "fork_spin_stress.rs"
+name = "syscall_test"
+path = "syscall_test.rs"
 
 [profile.release]
 panic = "abort"

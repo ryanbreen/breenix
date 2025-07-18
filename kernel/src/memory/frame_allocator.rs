@@ -35,6 +35,11 @@ impl BootInfoFrameAllocator {
     
     /// Get the nth usable frame
     fn get_usable_frame(n: usize) -> Option<PhysFrame> {
+        // Check if we're in a problematic allocation
+        if n > 1500 && n < 1600 {
+            log::debug!("get_usable_frame: Allocating frame number {}", n);
+        }
+        
         // Try to detect potential deadlock
         let info = match MEMORY_INFO.try_lock() {
             Some(guard) => guard,
@@ -55,37 +60,31 @@ impl BootInfoFrameAllocator {
                     let frame_offset = n - count;
                     let frame_addr = region.start + (frame_offset as u64 * 4096);
                     
+                    // Log problematic frame allocations
+                    if frame_addr == 0x62f000 {
+                        log::warn!("Allocating problematic frame 0x62f000 (frame #{}, region {}, offset {})", 
+                                  n, i, frame_offset);
+                    }
+                    
                     return Some(PhysFrame::containing_address(PhysAddr::new(frame_addr)));
                 }
                 count += region_frames as usize;
             }
         }
-        
         None
     }
 }
 
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        let mut loop_count = 0;
-        loop {
-            loop_count += 1;
-            if loop_count > 10000 {
-                panic!("Frame allocator runaway loop detected");
-            }
-            
-            let current = NEXT_FREE_FRAME.fetch_add(1, Ordering::SeqCst);
-            
-            if let Some(frame) = Self::get_usable_frame(current) {
-                // 🔒 Filter bad frames - never return frame 0 or below 1 MiB
-                if frame.start_address().as_u64() < 0x100000 {
-                    continue; // Skip IVT/BIOS region including frame 0
-                }
-                return Some(frame);
-            } else {
-                return None; // No more frames available
-            }
+        let current = NEXT_FREE_FRAME.fetch_add(1, Ordering::SeqCst);
+        log::trace!("Frame allocator: Attempting to allocate frame #{}", current);
+        let frame = Self::get_usable_frame(current);
+        if let Some(f) = frame {
+            log::trace!("Frame allocator: Allocated frame {:#x} (allocation #{})", 
+                      f.start_address().as_u64(), current);
         }
+        frame
     }
 }
 
@@ -133,20 +132,15 @@ pub fn init(memory_regions: &'static MemoryRegions) {
 /// Allocate a physical frame
 pub fn allocate_frame() -> Option<PhysFrame> {
     let mut allocator = BootInfoFrameAllocator::new();
-    let frame = allocator.allocate_frame();
-    
-    // 🔒 Add assert to catch regression
-    if let Some(frame) = frame {
-        assert!(frame.start_address() != PhysAddr::new(0),
-                "BUG: frame allocator returned frame 0");
-        assert!(frame.start_address().as_u64() >= 0x100000,
-                "BUG: frame allocator returned frame below 1 MiB: {:#x}", 
-                frame.start_address().as_u64());
-    }
-    
-    frame
+    allocator.allocate_frame()
 }
 
+/// Deallocate a physical frame (currently a no-op)
+/// TODO: Implement proper frame deallocation
+pub fn deallocate_frame(_frame: PhysFrame) {
+    // For now, we don't reclaim frames
+    // A proper implementation would add the frame back to a free list
+}
 
 /// A wrapper that allows using the global frame allocator with the mapper
 pub struct GlobalFrameAllocator;

@@ -4,40 +4,36 @@ name = "breenix"
 version = "0.1.0"
 edition = "2021"
 
-# Features handled by xtask when building kernel
 [features]
-default = []
+testing = ["kernel/testing"]
+test_divide_by_zero = ["kernel/test_divide_by_zero"]
+test_invalid_opcode = ["kernel/test_invalid_opcode"]
+test_page_fault = ["kernel/test_page_fault"]
+test_all_exceptions = ["kernel/test_all_exceptions"]
 
-# QEMU runner binaries handled by xtask
-# [[bin]]
-# name = "qemu-uefi"
-# test = false
+[[bin]]
+name = "qemu-uefi"
+test = false
 
-# [[bin]]
-# name = "qemu-bios"
-# test = false
+[[bin]]
+name = "qemu-bios"
+test = false
 
 [workspace]
-members = ["kernel", "xtask"]
-default-members = ["xtask"]
-resolver = "2"
+members = ["kernel", "mcp"]
 
-# Force all dependencies to use x86_64 v0.15.2 with workspace dependencies override
-[workspace.dependencies]
-x86_64 = { version = "0.15.2", features = ["instructions"] }
+[dependencies]
+ovmf-prebuilt = "0.2.3"
 
-# Patch to override pic8259 with our local version using x86_64 v0.15
-[patch.crates-io]
-pic8259 = { path = "vendor/pic8259" }
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+conquer-once = { version = "0.4.0", default-features = false }
+bootloader-x86_64-common = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
+log = { version = "0.4.17", default-features = false }
+x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }
 
-# All dependencies moved to xtask to avoid architecture conflicts during testing
-# [dependencies]
-# ovmf-prebuilt = "0.2.3"
-
-# x86_64-specific dependencies moved to kernel crate to avoid architecture conflicts
-
-# Build dependencies moved to xtask to avoid architecture conflicts during testing
+[build-dependencies]
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+bootloader = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
 
 [dev-dependencies]
 libc = "0.2"
-xtask = { path = "xtask" }

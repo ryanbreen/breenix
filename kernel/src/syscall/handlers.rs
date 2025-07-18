@@ -3,6 +3,7 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
+use super::syscall_consts::*;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -109,135 +110,23 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     Ok(buffer)
 }
 
-/// Copy data to userspace memory
-/// 
-/// Similar to copy_from_user but writes data to userspace
-fn copy_to_user(user_ptr: u64, data: &[u8]) -> Result<(), &'static str> {
-    if user_ptr == 0 {
-        return Err("null pointer");
-    }
-    
-    // Basic validation - check if address is in reasonable userspace range
-    let is_code_data_range = user_ptr >= 0x10000000 && user_ptr < 0x80000000;
-    let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5570_0000;
-    
-    if !is_code_data_range && !is_stack_range {
-        log::error!("copy_to_user: Invalid userspace address {:#x}", user_ptr);
-        return Err("invalid userspace address");
-    }
-    
-    // Get current thread to find process
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("copy_to_user: No current thread");
-            return Err("no current thread");
-        }
-    };
-    
-    // Find the process page table
-    let process_page_table = {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some((_, process)) = manager.find_process_by_thread(current_thread_id) {
-                if let Some(ref page_table) = process.page_table {
-                    page_table.level_4_frame()
-                } else {
-                    log::error!("copy_to_user: Process has no page table");
-                    return Err("process has no page table");
-                }
-            } else {
-                log::error!("copy_to_user: No process found for thread {}", current_thread_id);
-                return Err("no process for thread");
-            }
-        } else {
-            log::error!("copy_to_user: No process manager");
-            return Err("no process manager");
-        }
-    };
-    
-    // Check current page table
-    let current_cr3 = x86_64::registers::control::Cr3::read();
-    
-    unsafe {
-        // Switch to process page table
-        x86_64::registers::control::Cr3::write(
-            process_page_table,
-            x86_64::registers::control::Cr3Flags::empty()
-        );
-        
-        // Copy the data
-        let dst = user_ptr as *mut u8;
-        core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
-        
-        // Switch back to kernel page table
-        x86_64::registers::control::Cr3::write(current_cr3.0, current_cr3.1);
-    }
-    
-    log::debug!("copy_to_user: Successfully copied {} bytes", data.len());
-    Ok(())
-}
-
 /// sys_exit - Terminate the current process
 pub fn sys_exit(exit_code: i32) -> SyscallResult {
-    let current_tid = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    crate::serial_println!("EXIT: pid={} status={}", current_tid, exit_code);
-    
-    // 3.2 sys_exit() breadcrumb
-    #[cfg(feature = "sched_debug")]
-    crate::serial_println!("SYS_EXIT tid={} status={}", current_tid, exit_code);
-    
     log::info!("USERSPACE: sys_exit called with code: {}", exit_code);
     
     // Get current thread ID from scheduler
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         log::debug!("sys_exit: Current thread ID from scheduler: {}", thread_id);
         
-        // Find the process that owns this thread
-        let (process_id, parent_pid) = {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
-                    (Some(pid), process.parent)
-                } else {
-                    (None, None)
-                }
-            } else {
-                (None, None)
-            }
-        };
-        
-        if let Some(pid) = process_id {
-            // Set the exit status in the process
-            {
-                let mut manager_guard = crate::process::manager();
-                if let Some(ref mut manager) = *manager_guard {
-                    if let Some(process) = manager.get_process_mut(pid) {
-                        process.exit_status = Some((exit_code & 0xFF) as u8);
-                        process.terminate(exit_code);
-                        log::info!("sys_exit: Set exit status {} for process {}", exit_code & 0xFF, pid.as_u64());
-                    }
-                }
-            }
-            
-            // Wake any waiters for this process
-            crate::task::scheduler::with_scheduler(|scheduler| {
-                scheduler.wake_waiters(pid, parent_pid);
-            });
-        }
-        
         // Handle thread exit through ProcessScheduler
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
         
-        // Mark current thread as terminated and retire it for deferred dropping
+        // Mark current thread as terminated
         crate::task::scheduler::with_scheduler(|scheduler| {
-            if let Some(mut thread) = scheduler.current_thread_mut() {
+            if let Some(thread) = scheduler.current_thread_mut() {
                 thread.set_terminated();
             }
         });
-        
-        // Retire the thread to prevent Arc drops during interrupt context
-        crate::task::scheduler::retire_thread(thread_id);
         
         // Check if there are any other userspace threads to run
         let has_other_userspace_threads = crate::task::scheduler::with_scheduler(|sched| {
@@ -305,28 +194,6 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     // Log the output for userspace writes
     if let Ok(s) = core::str::from_utf8(&buffer) {
         log::info!("USERSPACE OUTPUT: {}", s.trim_end());
-        
-        // Emit test markers when we see specific userspace output
-        if s.contains("Hello from userspace!") || s.contains("Hello from second process!") {
-            log::info!("TEST_MARKER:HELLO_WORLD:PASS");
-        }
-        
-        // Track output during tests
-        #[cfg(feature = "kernel_tests")]
-        {
-            if crate::test_harness::is_test_mode() {
-                // Get current process ID
-                if let Some(current_thread) = crate::task::scheduler::current_thread_id() {
-                    if let Some(ref manager) = *crate::process::manager() {
-                        if let Some((pid, _)) = manager.find_process_by_thread(current_thread) {
-                            log::debug!("Recording output from process {}", pid.as_u64());
-                            crate::test_harness::TEST_OUTPUT_TRACKER.lock()
-                                .record_output(pid.as_u64());
-                        }
-                    }
-                }
-            }
-        }
     }
     
     SyscallResult::Ok(bytes_written)
@@ -373,116 +240,15 @@ pub fn sys_get_time() -> SyscallResult {
 /// sys_fork - Basic fork implementation
 /// sys_fork with syscall frame - provides access to actual userspace context
 pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
-    // Pass the entire syscall frame for proper context copying
-    log::info!("sys_fork_with_frame: RIP = {:#x}, RSP = {:#x}", frame.rip, frame.rsp);
+    // Store the userspace RSP for the child to inherit
+    let userspace_rsp = frame.rsp;
+    log::info!("sys_fork_with_frame: userspace RSP = {:#x}", userspace_rsp);
     
-    // Call fork with the full frame context
-    sys_fork_with_full_frame(frame)
+    // Call fork with the userspace context
+    sys_fork_with_rsp(userspace_rsp)
 }
 
-/// sys_fork with full syscall frame - provides complete register context
-fn sys_fork_with_full_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
-    // Disable interrupts for the entire fork operation to ensure atomicity
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        log::info!("sys_fork_with_full_frame called with RIP={:#x}, RSP={:#x}", frame.rip, frame.rsp);
-        
-        // Get current thread ID from scheduler
-        let scheduler_thread_id = crate::task::scheduler::current_thread_id();
-        let current_thread_id = match scheduler_thread_id {
-            Some(id) => id,
-            None => {
-                log::error!("sys_fork: No current thread in scheduler");
-                return SyscallResult::Err(22); // EINVAL
-            }
-        };
-        
-        if current_thread_id == 0 {
-            log::error!("sys_fork: Cannot fork from idle thread");
-            return SyscallResult::Err(22); // EINVAL
-        }
-        
-        // Find the current process by thread ID
-        let manager_guard = crate::process::manager();
-        let process_info = if let Some(ref manager) = *manager_guard {
-            manager.find_process_by_thread(current_thread_id)
-        } else {
-            log::error!("sys_fork: Process manager not available");
-            return SyscallResult::Err(12); // ENOMEM
-        };
-        
-        let (parent_pid, parent_process) = match process_info {
-            Some((pid, process)) => (pid, process),
-            None => {
-                log::error!("sys_fork: Current thread {} not found in any process", current_thread_id);
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-        
-        log::info!("sys_fork: Found parent process {} (PID {})", parent_process.name, parent_pid.as_u64());
-        
-        // Drop the lock before creating page table to avoid deadlock
-        drop(manager_guard);
-        
-        // Create the child page table BEFORE re-acquiring the lock
-        log::info!("sys_fork: Creating page table for child process");
-        let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
-            Ok(pt) => Box::new(pt),
-            Err(e) => {
-                log::error!("sys_fork: Failed to create child page table: {}", e);
-                return SyscallResult::Err(12); // ENOMEM
-            }
-        };
-        log::info!("sys_fork: Child page table created successfully");
-        
-        // Now re-acquire the lock and complete the fork
-        let mut manager_guard = crate::process::manager();
-        if let Some(ref mut manager) = *manager_guard {
-            match manager.fork_process_with_frame(parent_pid, frame, child_page_table) {
-                Ok(child_pid) => {
-                    // Get the child's thread ID to add to scheduler
-                    if let Some(child_process) = manager.get_process(child_pid) {
-                        if let Some(child_thread) = &child_process.main_thread {
-                            let child_thread_id = child_thread.id;
-                            let child_thread_clone = child_thread.clone();
-                            
-                            // Drop the lock before spawning
-                            drop(manager_guard);
-                            
-                            // Add the child thread to the scheduler
-                            log::info!("sys_fork: Spawning child thread {} to scheduler", child_thread_id);
-                            crate::task::scheduler::spawn(Box::new(child_thread_clone));
-                            log::info!("sys_fork: Child thread spawned successfully");
-                            
-                            log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
-                                parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
-                            
-                            // Emit test marker for successful fork
-                            log::info!("TEST_MARKER:FORK_BASIC:PASS");
-                            
-                            // Return the child PID to the parent
-                            SyscallResult::Ok(child_pid.as_u64())
-                        } else {
-                            log::error!("sys_fork: Child process has no main thread");
-                            SyscallResult::Err(12) // ENOMEM
-                        }
-                    } else {
-                        log::error!("sys_fork: Failed to find newly created child process");
-                        SyscallResult::Err(12) // ENOMEM
-                    }
-                }
-                Err(e) => {
-                    log::error!("sys_fork: Failed to fork process: {}", e);
-                    SyscallResult::Err(12) // ENOMEM
-                }
-            }
-        } else {
-            log::error!("sys_fork: Process manager not available");
-            SyscallResult::Err(12) // ENOMEM
-        }
-    })
-}
-
-/// sys_fork with explicit RSP - used by old interface (deprecated)
+/// sys_fork with explicit RSP - used by sys_fork_with_frame
 fn sys_fork_with_rsp(userspace_rsp: u64) -> SyscallResult {
     // Disable interrupts for the entire fork operation to ensure atomicity
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -560,9 +326,6 @@ fn sys_fork_with_rsp(userspace_rsp: u64) -> SyscallResult {
                             log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
                                 parent_pid.as_u64(), child_pid.as_u64(), child_thread_id);
                             
-                            // Emit test marker for successful fork
-                            log::info!("TEST_MARKER:FORK_BASIC:PASS");
-                            
                             // Return the child PID to the parent
                             SyscallResult::Ok(child_pid.as_u64())
                         } else {
@@ -609,7 +372,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                    program_name_ptr, elf_data_ptr);
         
         // Get current process and thread
-        let _current_thread_id = match crate::task::scheduler::current_thread_id() {
+        let current_thread_id = match crate::task::scheduler::current_thread_id() {
             Some(id) => id,
             None => {
                 log::error!("sys_exec: No current thread");
@@ -625,24 +388,24 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         
         // For testing purposes, we'll check the program name to select the right ELF
         // In a real implementation, this would come from the filesystem
-        
-        #[cfg(not(feature = "testing"))]
-        {
-            log::error!("sys_exec: Testing feature not enabled");
-            return SyscallResult::Err(22); // EINVAL
-        }
-        
-        #[cfg(feature = "testing")]
-        let _elf_data = if program_name_ptr != 0 {
+        let elf_data = if program_name_ptr != 0 {
             // Try to read the program name from userspace
             // For now, we'll just use a simple check
             log::info!("sys_exec: Program name requested, checking for known programs");
             
             // HACK: For now, we'll assume if program_name_ptr is provided,
             // it's asking for hello_time.elf
-            log::info!("sys_exec: Using hello_time.elf for exec test");
-            // Use the statically embedded hello_time.elf
-            crate::userspace_test::HELLO_TIME_ELF
+            #[cfg(feature = "testing")]
+            {
+                log::info!("sys_exec: Using hello_time.elf for exec test");
+                // Use the statically embedded hello_time.elf
+                crate::userspace_test::HELLO_TIME_ELF
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: Testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
         } else if elf_data_ptr != 0 {
             // In a real implementation, we'd safely copy from user memory
             log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
@@ -651,19 +414,26 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             return SyscallResult::Err(22); // EINVAL
         } else {
             // Use embedded test program for now
-            log::info!("sys_exec: Using embedded hello_world test program");
-            crate::userspace_test::HELLO_WORLD_ELF
+            #[cfg(feature = "testing")]
+            {
+                log::info!("sys_exec: Using embedded hello_world test program");
+                crate::userspace_test::HELLO_WORLD_ELF
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: No ELF data provided and testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
         };
         
         // Find current process
-        #[cfg(feature = "testing")]
         let current_pid = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
-                if let Some((pid, _)) = manager.find_process_by_thread(_current_thread_id) {
+                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
                     pid
                 } else {
-                    log::error!("sys_exec: Thread {} not found in any process", _current_thread_id);
+                    log::error!("sys_exec: Thread {} not found in any process", current_thread_id);
                     return SyscallResult::Err(3); // ESRCH
                 }
             } else {
@@ -672,39 +442,36 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             }
         };
         
-        #[cfg(feature = "testing")]
-        {
-            log::info!("sys_exec: Replacing process {} (thread {}) with new program", 
-                       current_pid.as_u64(), _current_thread_id);
-            
-            // Replace the process's address space
-            let mut manager_guard = crate::process::manager();
-            if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, _elf_data) {
-                    Ok(new_entry_point) => {
-                        log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
-                                   new_entry_point);
-                        
-                        // CRITICAL OS-STANDARD VIOLATION:
-                        // exec() should NEVER return on success - the process is completely replaced
-                        // In a proper implementation, exec_process would:
-                        // 1. Replace the address space
-                        // 2. Update the thread context
-                        // 3. Jump directly to the new program (never returning here)
-                        // 
-                        // For now, we return success, but this violates POSIX semantics
-                        // The interrupt return path will handle the actual switch
-                        SyscallResult::Ok(0)
-                    }
-                    Err(e) => {
-                        log::error!("sys_exec: Failed to exec process: {}", e);
-                        SyscallResult::Err(12) // ENOMEM
-                    }
+        log::info!("sys_exec: Replacing process {} (thread {}) with new program", 
+                   current_pid.as_u64(), current_thread_id);
+        
+        // Replace the process's address space
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            match manager.exec_process(current_pid, elf_data) {
+                Ok(new_entry_point) => {
+                    log::info!("sys_exec: Successfully replaced process address space, entry point: {:#x}", 
+                               new_entry_point);
+                    
+                    // CRITICAL OS-STANDARD VIOLATION:
+                    // exec() should NEVER return on success - the process is completely replaced
+                    // In a proper implementation, exec_process would:
+                    // 1. Replace the address space
+                    // 2. Update the thread context
+                    // 3. Jump directly to the new program (never returning here)
+                    // 
+                    // For now, we return success, but this violates POSIX semantics
+                    // The interrupt return path will handle the actual switch
+                    SyscallResult::Ok(0)
                 }
-            } else {
-                log::error!("sys_exec: Process manager not available");
-                SyscallResult::Err(12) // ENOMEM
+                Err(e) => {
+                    log::error!("sys_exec: Failed to exec process: {}", e);
+                    SyscallResult::Err(12) // ENOMEM
+                }
             }
+        } else {
+            log::error!("sys_exec: Process manager not available");
+            SyscallResult::Err(12) // ENOMEM
         }
     })
 }
@@ -757,217 +524,29 @@ pub fn sys_gettid() -> SyscallResult {
     SyscallResult::Ok(0) // Return 0 as fallback
 }
 
-/// sys_spawn - Create a new process from an ELF binary (combines fork+exec)
-/// 
-/// This is a more efficient alternative to fork+exec, creating a new process
-/// directly from an ELF binary without copying the parent's address space.
-/// 
-/// Parameters:
-/// - path_ptr: pointer to path string (currently unused, uses embedded ELF)
-/// - elf_data_ptr: pointer to ELF data in memory
-/// 
-/// Returns: PID of the new process on success, error code on failure
-pub fn sys_spawn(path_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
-    log::info!("sys_spawn called: path_ptr={:#x}, elf_data_ptr={:#x}", path_ptr, elf_data_ptr);
+// Test-only syscalls for isolation testing
+#[cfg(feature = "testing")]
+mod test_syscalls {
+    use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
     
-    // For now, we'll use embedded test programs
-    // In a real implementation, we'd load from filesystem
-    #[cfg(feature = "testing")]
-    let elf_data = if path_ptr != 0 {
-        // Try to determine which program to load based on path
-        // For now, default to hello_time.elf
-        log::info!("sys_spawn: Using hello_time.elf for spawn");
-        crate::userspace_test::HELLO_TIME_ELF
-    } else if elf_data_ptr != 0 {
-        // In a real implementation, we'd copy from user memory
-        log::error!("sys_spawn: Direct ELF data not yet supported");
-        return SyscallResult::Err(22); // EINVAL
-    } else {
-        // Default to hello_world for testing
-        log::info!("sys_spawn: Using hello_world.elf as default");
-        crate::userspace_test::HELLO_WORLD_ELF
-    };
+    // Global storage for the shared test page address
+    static SHARED_TEST_PAGE: AtomicU64 = AtomicU64::new(0);
     
-    #[cfg(not(feature = "testing"))]
-    {
-        log::error!("sys_spawn: Testing feature not enabled");
-        return SyscallResult::Err(22); // EINVAL
+    /// sys_share_test_page - Share a test page address (test only)
+    pub fn sys_share_test_page(addr: u64) -> SyscallResult {
+        log::info!("TEST: share_page({:#x})", addr);
+        SHARED_TEST_PAGE.store(addr, Ordering::SeqCst);
+        SyscallResult::Ok(0)
     }
     
-    #[cfg(feature = "testing")]
-    {
-        // Generate a process name
-        let process_name = alloc::string::String::from("spawned_process");
-        
-        // Create the new process directly
-        match crate::process::creation::create_user_process(process_name, elf_data) {
-            Ok(pid) => {
-                log::info!("✓ sys_spawn: Successfully created process with PID {}", pid.as_u64());
-                log::info!("✓ sys_spawn: New process will execute hello_time.elf");
-                SyscallResult::Ok(pid.as_u64())
-            }
-            Err(e) => {
-                log::error!("✗ sys_spawn: Failed to create process: {}", e);
-                SyscallResult::Err(12) // ENOMEM
-            }
-        }
+    /// sys_get_shared_test_page - Get the shared test page address (test only)
+    pub fn sys_get_shared_test_page() -> SyscallResult {
+        let addr = SHARED_TEST_PAGE.load(Ordering::SeqCst);
+        log::info!("TEST: get_page -> {:#x}", addr);
+        SyscallResult::Ok(addr)
     }
 }
 
-/// WNOHANG flag for waitpid
-const WNOHANG: u32 = 1;
-
-/// sys_wait - Wait for any child process to exit
-/// 
-/// This is equivalent to waitpid(-1, status, 0)
-pub fn sys_wait(status_ptr: u64) -> SyscallResult {
-    log::info!("sys_wait called: status_ptr={:#x}", status_ptr);
-    
-    // Call waitpid with pid=-1 (any child) and options=0 (blocking)
-    sys_waitpid(-1, status_ptr, 0)
-}
-
-/// sys_waitpid - Wait for a specific child process to exit
-/// 
-/// Parameters:
-/// - pid: <-1 (wait for any child in process group), -1 (any child), 0 (any child in same group), >0 (specific PID)
-/// - status_ptr: pointer to store exit status (can be 0)
-/// - options: WNOHANG (1) = don't block, 0 = block
-/// 
-/// Returns: PID of child that exited, 0 if WNOHANG and no child ready, -1 on error
-pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
-    log::info!("sys_waitpid called: pid={}, status_ptr={:#x}, options={}", pid, status_ptr, options);
-    
-    // Get current thread ID
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_waitpid: No current thread");
-            return SyscallResult::Err(super::SyscallError::InvalidArgument as u64);
-        }
-    };
-    
-    // Find current process
-    let (current_pid, current_process_children) = {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if let Some((pid, process)) = manager.find_process_by_thread(current_thread_id) {
-                (pid, process.children.clone())
-            } else {
-                log::error!("sys_waitpid: Thread {} not found in any process", current_thread_id);
-                return SyscallResult::Err(super::SyscallError::InvalidArgument as u64);
-            }
-        } else {
-            log::error!("sys_waitpid: Process manager not available");
-            return SyscallResult::Err(super::SyscallError::InvalidArgument as u64);
-        }
-    };
-    
-    // Check if process has any children
-    if current_process_children.is_empty() {
-        // 3.3 waitpid() decision path logging - ECHILD case
-        #[cfg(feature = "sched_debug")]
-        crate::serial_println!("WAITPID_ECHILD: pid={} tid={} no_children", pid, current_thread_id);
-        
-        log::info!("sys_waitpid: Process {} has no children", current_pid.as_u64());
-        return SyscallResult::Err(super::SyscallError::NoChild as u64);
-    }
-    
-    // Determine wait mode based on pid parameter
-    let wait_mode = if pid == -1 {
-        crate::task::scheduler::WaitMode::AnyChild
-    } else if pid > 0 {
-        crate::task::scheduler::WaitMode::SpecificChild(crate::process::ProcessId::new(pid as u64))
-    } else {
-        // TODO: Support process groups (pid <= 0 && pid != -1)
-        log::error!("sys_waitpid: Process groups not yet supported (pid={})", pid);
-        return SyscallResult::Err(super::SyscallError::InvalidArgument as u64);
-    };
-    
-    // Loop to handle blocking vs non-blocking
-    loop {
-        // Check if any matching child has already exited
-        let exited_child_info = {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                let mut found_child = None;
-                
-                for &child_pid in &current_process_children {
-                    if let Some(child) = manager.get_process(child_pid) {
-                        // Check if this child matches our wait criteria
-                        let matches = match wait_mode {
-                            crate::task::scheduler::WaitMode::AnyChild => true,
-                            crate::task::scheduler::WaitMode::SpecificChild(target_pid) => child_pid == target_pid,
-                        };
-                        
-                        if matches && child.exit_status.is_some() {
-                            found_child = Some((child_pid, child.exit_status.unwrap()));
-                            break;
-                        }
-                    }
-                }
-                
-                found_child
-            } else {
-                None
-            }
-        };
-        
-        if let Some((child_pid, exit_status)) = exited_child_info {
-            // 3.3 waitpid() decision path logging - successful reap
-            #[cfg(feature = "sched_debug")]
-            crate::serial_println!("WAITPID_REAP: pid={} exit_code={} tid={}", child_pid.as_u64(), exit_status, current_thread_id);
-            
-            log::info!("sys_waitpid: Found exited child {} with status {}", child_pid.as_u64(), exit_status);
-            
-            // Copy status to user if requested
-            if status_ptr != 0 {
-                let status_bytes = (exit_status as u32).to_le_bytes();
-                if let Err(e) = copy_to_user(status_ptr, &status_bytes) {
-                    log::error!("sys_waitpid: Failed to copy status to user: {}", e);
-                    return SyscallResult::Err(14); // EFAULT
-                }
-            }
-            
-            // TODO: Clean up child process resources (zombies)
-            // For now, we'll just log that we would clean up
-            log::info!("sys_waitpid: Would clean up child {} resources here", child_pid.as_u64());
-            
-            // Return the child PID
-            return SyscallResult::Ok(child_pid.as_u64());
-        }
-        
-        // No matching child has exited yet
-        if options & WNOHANG != 0 {
-            // 3.3 waitpid() decision path logging - WNOHANG
-            #[cfg(feature = "sched_debug")]
-            crate::serial_println!("WAITPID_WNOHANG: pid={} tid={} options={:#x}", pid, current_thread_id, options);
-            
-            // Non-blocking mode - return 0
-            log::info!("sys_waitpid: WNOHANG set and no child ready");
-            return SyscallResult::Ok(0);
-        }
-        
-        // Blocking mode - add ourselves as a waiter
-        log::info!("sys_waitpid: Blocking to wait for child");
-        
-        // Create waiter and add to scheduler
-        let waiter = crate::task::scheduler::Waiter {
-            thread_id: current_thread_id,
-            parent_pid: current_pid,
-            mode: wait_mode,
-        };
-        
-        // Add waiter to scheduler (this will also block the thread)
-        crate::task::scheduler::with_scheduler(|scheduler| {
-            scheduler.add_waiter(waiter);
-        });
-        
-        // Force a reschedule to switch away from this blocked thread
-        crate::task::scheduler::set_need_resched();
-        
-        // When we wake up, we'll loop back and check again
-        // TODO: Handle signals that could interrupt the wait
-        log::info!("sys_waitpid: Thread {} resumed after wait", current_thread_id);
-    }
-}
+#[cfg(feature = "testing")]
+pub use test_syscalls::{sys_share_test_page, sys_get_shared_test_page};

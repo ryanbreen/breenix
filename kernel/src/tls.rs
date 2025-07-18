@@ -203,35 +203,17 @@ pub fn allocate_thread_tls_with_stack(stack_pointer: VirtAddr) -> Result<u64, &'
 
 /// Register a thread with a specific TLS block
 pub fn register_thread_tls(thread_id: u64, tls_block: VirtAddr) -> Result<(), &'static str> {
-    crate::serial_println!("TLS_REG: begin tid={} block={:#x}", thread_id, tls_block);
-    
-    // Bounds check to prevent infinite loop
-    if thread_id > 1024 {
-        crate::serial_println!("TLS_REG: REJECT - thread_id {} too large", thread_id);
-        return Err("Thread ID too large for TLS registration");
-    }
-    
     let mut manager_lock = TLS_MANAGER.lock();
     let manager = manager_lock.as_mut().ok_or("TLS manager not initialized")?;
     
-    crate::serial_println!("TLS_REG: current vector len={}, need len={}", manager.tls_blocks.len(), thread_id as usize + 1);
-    
     // Ensure the tls_blocks vector is large enough
-    let mut loop_count = 0;
     while manager.tls_blocks.len() <= thread_id as usize {
-        loop_count += 1;
-        if loop_count > 100 {
-            crate::serial_println!("TLS_REG: ABORT - loop count {} exceeded", loop_count);
-            return Err("TLS vector growth loop exceeded limit");
-        }
         manager.tls_blocks.push(VirtAddr::new(0)); // Add placeholder entries
-        crate::serial_println!("TLS_REG: pushed entry, new len={}", manager.tls_blocks.len());
     }
     
     // Set the TLS block for this thread
     manager.tls_blocks[thread_id as usize] = tls_block;
     
-    crate::serial_println!("TLS_REG: end tid={} success", thread_id);
     log::debug!("Registered thread {} with TLS block {:#x}", thread_id, tls_block);
     Ok(())
 }
@@ -371,3 +353,36 @@ pub fn current_tls_base() -> u64 {
     GsBase::read().as_u64()
 }
 
+/// Test TLS functionality
+#[cfg(feature = "testing")]
+pub fn test_tls() {
+    log::info!("Testing TLS functionality...");
+    
+    // Test 1: Read current thread ID
+    let thread_id = current_thread_id();
+    log::info!("Current thread ID: {}", thread_id);
+    assert_eq!(thread_id, 0, "Kernel thread should have ID 0");
+    
+    // Test 2: Read TCB
+    if let Some(tcb) = current_tcb() {
+        log::info!("TCB self-pointer: {:p}", tcb.self_ptr);
+        log::info!("TCB thread ID: {}", tcb.thread_id);
+        assert_eq!(tcb.thread_id, 0, "TCB should have thread ID 0");
+    } else {
+        panic!("Failed to get current TCB");
+    }
+    
+    // Test 3: Direct TLS read/write
+    unsafe {
+        // Write a test value to TLS (after TCB)
+        let test_offset = core::mem::size_of::<ThreadControlBlock>();
+        write_tls_u32(test_offset, 0xDEADBEEF_u32);
+        
+        // Read it back
+        let value: u32 = read_tls_u32(test_offset);
+        assert_eq!(value, 0xDEADBEEF, "TLS read/write failed");
+        log::info!("TLS read/write test passed: {:#x}", value);
+    }
+    
+    log::info!("All TLS tests passed!");
+}

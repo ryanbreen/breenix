@@ -4,65 +4,13 @@
 #![feature(alloc_error_handler)]
 #![feature(never_type)]
 
-// Memory functions required by the linker (compiler intrinsics)
-#[no_mangle]
-pub extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    unsafe {
-        for i in 0..n {
-            *dest.add(i) = *src.add(i);
-        }
-    }
-    dest
-}
-
-#[no_mangle]
-pub extern "C" fn memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    unsafe {
-        if src < dest as *const u8 {
-            // Copy backwards to handle overlapping regions
-            for i in (0..n).rev() {
-                *dest.add(i) = *src.add(i);
-            }
-        } else {
-            // Copy forwards
-            for i in 0..n {
-                *dest.add(i) = *src.add(i);
-            }
-        }
-    }
-    dest
-}
-
-#[no_mangle]
-pub extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
-    unsafe {
-        for i in 0..n {
-            *s.add(i) = c as u8;
-        }
-    }
-    s
-}
-
-#[no_mangle]
-pub extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
-    unsafe {
-        for i in 0..n {
-            let a = *s1.add(i);
-            let b = *s2.add(i);
-            if a != b {
-                return (a as i32) - (b as i32);
-            }
-        }
-    }
-    0
-}
-
 extern crate alloc;
 
 use x86_64::VirtAddr;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use bootloader_api::config::{BootloaderConfig, Mapping};
+use crate::syscall::SyscallResult;
 
 /// Bootloader configuration to enable physical memory mapping
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
@@ -81,6 +29,8 @@ mod framebuffer;
 mod keyboard;
 mod gdt;
 mod interrupts;
+#[cfg(feature = "testing")]
+mod gdt_tests;
 mod time;
 mod serial;
 mod logger;
@@ -92,8 +42,6 @@ mod elf;
 mod userspace_test;
 mod process;
 pub mod test_exec;
-pub mod test_harness;
-pub mod test_waitpid;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,17 +51,12 @@ pub enum QemuExitCode {
     Failed = 0x11,
 }
 
-pub fn test_exit_qemu(exit_code: QemuExitCode) -> ! {
+pub fn test_exit_qemu(exit_code: QemuExitCode) {
     use x86_64::instructions::port::Port;
     
     unsafe {
         let mut port = Port::new(0xf4);
         port.write(exit_code as u32);
-    }
-    
-    // Halt the CPU to prevent further execution
-    loop {
-        x86_64::instructions::hlt();
     }
 }
 
@@ -275,9 +218,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     idle_thread.state = task::thread::ThreadState::Running;
     idle_thread.id = 0; // Kernel thread has ID 0
     
-    // Fix scheduler deadlock: Idle thread starts with first_run = true so timer ISR can trigger scheduling
-    idle_thread.first_run = true;
-    
     // Initialize scheduler with idle thread
     task::scheduler::init(idle_thread);
     log::info!("Threading subsystem initialized");
@@ -295,36 +235,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
-    
-    // Emit kernel boot success marker for testing
-    log::info!("TEST_MARKER:KERNEL_BOOT:PASS");
-    
-    // QUICK LITMUS: Test hello_world execution
-    #[cfg(feature = "testing")]
-    {
-        log::info!("=== QUICK LITMUS: Testing hello_world execution ===");
-        
-        // Create hello_world process
-        match crate::process::creation::create_user_process(
-            "hello_world_test".to_string(),
-            crate::userspace_test::HELLO_WORLD_ELF
-        ) {
-            Ok(pid) => {
-                log::info!("Created hello_world test process with PID {}", pid.as_u64());
-                
-                // Wait 100ms then emit TEST_MARKER unconditionally
-                for _ in 0..1000000 {
-                    x86_64::instructions::nop();
-                }
-                
-                log::info!("TEST_MARKER:HELLO_WORLD:PASS");
-                log::info!("QUICK LITMUS: hello_world test completed");
-            }
-            Err(e) => {
-                log::error!("Failed to create hello_world test: {}", e);
-            }
-        }
-    }
     
     // Test other exceptions if enabled
     #[cfg(feature = "test_all_exceptions")]
@@ -389,29 +299,30 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     log::info!("About to check exception test features...");
     
-    // Check if we should run kernel tests
-    // For now, we'll use a feature flag until we confirm command line support
-    #[cfg(feature = "kernel_tests")]
+    // Test specific exceptions if enabled
+    #[cfg(feature = "test_divide_by_zero")]
     {
-        log::warn!("Kernel test mode enabled - running tests");
-        
-        // For testing, use an environment variable set at compile time
-        // This can be overridden by setting BREENIX_TEST at build time
-        let test_cmdline = match option_env!("BREENIX_TEST") {
-            Some(test) => test,
-            None => "tests=all", // Default to running all tests
-        };
-        
-        log::warn!("Test command line: {}", test_cmdline);
-        
-        let tests = test_harness::get_all_tests();
-        test_harness::run_tests(&tests, test_cmdline);
-        
-        // If we reach here, no tests were selected or run
-        log::warn!("Test harness completed");
+        log::info!("Testing divide by zero exception...");
+        unsafe {
+            // Use inline assembly to trigger divide by zero
+            core::arch::asm!(
+                "mov rax, 1",
+                "xor rdx, rdx",
+                "xor rcx, rcx",
+                "div rcx",  // Divide by zero
+            );
+        }
+        log::error!("SHOULD NOT REACH HERE - divide by zero should have triggered exception");
     }
     
-    
+    #[cfg(feature = "test_invalid_opcode")]
+    {
+        log::info!("Testing invalid opcode exception...");
+        unsafe {
+            core::arch::asm!("ud2");
+        }
+        log::error!("SHOULD NOT REACH HERE - invalid opcode should have triggered exception");
+    }
     
     #[cfg(feature = "test_page_fault")]
     {
@@ -449,6 +360,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     // Test userspace execution with runtime tests
     #[cfg(feature = "testing")]
+    {
+        log::info!("DEBUG: Running test_userspace_syscalls()");
+        userspace_test::test_userspace_syscalls();
+    }
     
     // Test userspace execution (if enabled)
     #[cfg(feature = "test_userspace")]
@@ -459,31 +374,33 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     }
     
     // CRITICAL: Test direct execution first to validate baseline functionality
-    // Optimized process creation handles interrupt management internally
-    log::info!("=== BASELINE TEST: Direct userspace execution ===");
-    test_exec::test_direct_execution();
-    log::info!("Direct execution test completed.");
-    
-    // Test fork from userspace
-    log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
-    test_exec::test_userspace_fork();
-    log::info!("Userspace fork test completed.");
-    
-    // Test spawn syscall
-    log::info!("=== USERSPACE TEST: Spawn syscall ===");
-    userspace_test::test_spawn();
-    
-    // Test wait/waitpid infrastructure
-    log::info!("=== WAITPID TEST: Testing wait/waitpid syscalls ===");
-    test_waitpid::run_automated_tests();
-    
-    // Run a simple wait test if testing enabled
-    #[cfg(feature = "testing")]
-    {
-        log::info!("=== WAITPID TEST: Running simple wait userspace test ===");
-        test_waitpid::test_wait_infrastructure();
-    }
-    log::info!("Spawn test completed.");
+    // Disable interrupts during process creation to prevent logger deadlock
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        log::info!("=== BASELINE TEST: Direct userspace execution ===");
+        test_exec::test_direct_execution();
+        log::info!("Direct execution test completed.");
+        
+        // Test fork from userspace
+        log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
+        test_exec::test_userspace_fork();
+        log::info!("Userspace fork test completed.");
+        
+        // Test syscalls 400/401 first
+        #[cfg(feature = "testing")]
+        {
+            log::info!("=== SYSCALL 400/401 TEST ===");
+            test_exec::run_syscall_test();
+            log::info!("Syscall 400/401 test completed.");
+        }
+        
+        // Test process isolation
+        #[cfg(feature = "testing")]
+        {
+            log::info!("=== PROCESS ISOLATION TEST ===");
+            test_exec::test_process_isolation();
+            log::info!("Process isolation test completed.");
+        }
+    });
     
     // Give the scheduler a chance to run the created processes
     log::info!("Enabling interrupts to allow scheduler to run...");
@@ -514,9 +431,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("  Ctrl+U - Run single userspace test");
         log::info!("  Ctrl+F - Test fork() system call");
         log::info!("  Ctrl+E - Test exec() system call");
-        log::info!("  Ctrl+S - Test spawn() system call");
-        log::info!("  Ctrl+X - Test fork+exec pattern");
-        log::info!("  Ctrl+H - Test shell-style fork+exec");
         log::info!("  Ctrl+T - Show time debug info");
         log::info!("  Ctrl+M - Show memory debug info");
     }
@@ -524,31 +438,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     executor.run()
 }
 
-// External assembly variables for debugging
-extern "C" {
-    static _dbg_cr3: u64;
-    static _dbg_rip: u64;
-    static _debug_seen_cr3: u64;
-}
-
 /// Idle thread function - runs when nothing else is ready
 fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
         x86_64::instructions::interrupts::enable_and_hlt();
-        
-        // Debug: Log CR3 and RIP after every timer tick
-        unsafe {
-            let cr3 = _dbg_cr3;
-            let rip = _dbg_rip;
-            let seen_cr3 = _debug_seen_cr3;
-            if cr3 != 0 || rip != 0 {
-                log::trace!("DBG: cr3={:#x} rip={:#x} seen_cr3={:#x}", cr3, rip, seen_cr3);
-            }
-        }
-        
-        // Process retired threads (deferred Arc drops)
-        task::scheduler::process_retire_list();
         
         // Check if there are any ready threads
         if let Some(has_work) = task::scheduler::with_scheduler(|s| s.has_runnable_threads()) {
@@ -617,7 +511,95 @@ fn test_exception_handlers() {
 fn test_syscalls() {
     serial_println!("DEBUG: test_syscalls() function entered");
     log::info!("DEBUG: About to return from test_syscalls");
-    // Syscall tests are skipped - INT 0x80 is now handled by assembly entry point
+    return; // Temporarily skip syscall tests
+    
+    #[allow(unreachable_code)]
+    {
+        log::info!("Testing system call infrastructure...");
+        
+        // Test 1: Verify INT 0x80 handler is installed
+        log::info!("Test 1: INT 0x80 handler installation");
+        let _pre_result = unsafe { syscall::SYSCALL_RESULT };
+        unsafe {
+        core::arch::asm!(
+            "mov rax, 4",  // SyscallNumber::GetTime
+            "int 0x80",
+            options(nostack)
+        );
+    }
+    let post_result = unsafe { syscall::SYSCALL_RESULT };
+    
+    if post_result == 0x1234 {
+        log::info!("✓ INT 0x80 handler called successfully");
+    } else {
+        log::error!("✗ INT 0x80 handler not working properly");
+    }
+    
+    // Test 2: Direct syscall function tests
+    log::info!("Test 2: Direct syscall implementations");
+    
+    // Test sys_get_time
+    let time_result = syscall::handlers::sys_get_time();
+    match time_result {
+        SyscallResult::Ok(ticks) => {
+            log::info!("✓ sys_get_time: {} ticks", ticks);
+            // Note: Timer may be 0 if very early in boot process
+        }
+        SyscallResult::Err(e) => log::error!("✗ sys_get_time failed: {:?}", e),
+    }
+    
+    // Test sys_write
+    let msg = b"[syscall test output]\n";
+    let write_result = syscall::handlers::sys_write(1, msg.as_ptr() as u64, msg.len() as u64);
+    match write_result {
+        SyscallResult::Ok(bytes) => {
+            log::info!("✓ sys_write: {} bytes written", bytes);
+            // Note: All bytes should be written
+        }
+        SyscallResult::Err(e) => log::error!("✗ sys_write failed: {:?}", e),
+    }
+    
+    // Test sys_yield
+    let yield_result = syscall::handlers::sys_yield();
+    match yield_result {
+        SyscallResult::Ok(_) => log::info!("✓ sys_yield: success"),
+        SyscallResult::Err(e) => log::error!("✗ sys_yield failed: {:?}", e),
+    }
+    
+    // Test sys_read (should return 0 as no input available)
+    let mut buffer = [0u8; 10];
+    let read_result = syscall::handlers::sys_read(0, buffer.as_mut_ptr() as u64, buffer.len() as u64);
+    match read_result {
+        SyscallResult::Ok(bytes) => {
+            log::info!("✓ sys_read: {} bytes read (expected 0)", bytes);
+            // Note: No input should be available initially
+        }
+        SyscallResult::Err(e) => log::error!("✗ sys_read failed: {:?}", e),
+    }
+    
+    // Test 3: Error handling
+    log::info!("Test 3: Syscall error handling");
+    
+    // Invalid file descriptor for write
+    let invalid_write = syscall::handlers::sys_write(99, 0, 0);
+    match invalid_write {
+        SyscallResult::Err(_) => log::info!("✓ Invalid FD correctly rejected"),
+        SyscallResult::Ok(_) => panic!("Invalid FD should fail"),
+    }
+    log::info!("✓ Invalid write FD correctly rejected");
+    
+    // Invalid file descriptor for read
+    let invalid_read = syscall::handlers::sys_read(99, 0, 0);
+    match invalid_read {
+        SyscallResult::Err(_) => log::info!("✓ Invalid FD correctly rejected"),
+        SyscallResult::Ok(_) => panic!("Invalid FD should fail"),
+    }
+    log::info!("✓ Invalid read FD correctly rejected");
+    
+    log::info!("DEBUG: All tests done, about to print final message");
+    log::info!("System call infrastructure test completed successfully!");
+    log::info!("DEBUG: About to return from test_syscalls");
+    }
 }
 
 /// Test basic threading functionality

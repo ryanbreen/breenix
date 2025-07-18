@@ -12,65 +12,6 @@ use x86_64::{
 };
 use crate::memory::frame_allocator::{allocate_frame, GlobalFrameAllocator};
 
-/// Recursively copy the full paging hierarchy of a present PML4 entry
-fn duplicate_pml4_entry(
-    dst_pml4: &mut PageTable, 
-    src_pml4: &PageTable,
-    src_index: usize,
-    phys_offset: VirtAddr
-) -> Result<(), &'static str> {
-    let src_entry = &src_pml4[src_index];
-    if src_entry.is_unused() { 
-        return Ok(()); 
-    }
-
-    // Allocate fresh L3 table
-    let new_l3_frame = allocate_frame().ok_or("no frames for L3")?;
-    dst_pml4[src_index].set_addr(new_l3_frame.start_address(), src_entry.flags());
-
-    recursive_clone(src_entry.addr(), new_l3_frame.start_address(), phys_offset)
-}
-
-/// Depth-first clone of a 4-KiB page-table page
-fn recursive_clone(
-    src_phys: PhysAddr, 
-    dst_phys: PhysAddr,
-    phys_offset: VirtAddr
-) -> Result<(), &'static str> {
-    // Map source and destination page tables
-    let src = unsafe { 
-        let virt_addr = phys_offset + src_phys.as_u64();
-        &*(virt_addr.as_ptr::<PageTable>())
-    };
-    let dst = unsafe { 
-        let virt_addr = phys_offset + dst_phys.as_u64();
-        &mut *(virt_addr.as_mut_ptr::<PageTable>())
-    };
-
-    // Clear destination table first
-    dst.zero();
-
-    for (i, s) in src.iter().enumerate() {
-        if s.is_unused() { 
-            continue; 
-        }
-        
-        let d = &mut dst[i];
-        
-        // Check if this is a huge page (2MB or 1GB)
-        if s.flags().contains(PageTableFlags::HUGE_PAGE) {
-            // For huge pages, just copy the entry directly
-            *d = s.clone();
-        } else {
-            // For regular entries, we need to recurse deeper
-            let new_child_frame = allocate_frame().ok_or("no frames for child page table")?;
-            d.set_addr(new_child_frame.start_address(), s.flags());
-            recursive_clone(s.addr(), new_child_frame.start_address(), phys_offset)?;
-        }
-    }
-    Ok(())
-}
-
 /// A per-process page table
 pub struct ProcessPageTable {
     /// Physical frame containing the level 4 page table
@@ -82,30 +23,199 @@ pub struct ProcessPageTable {
 impl ProcessPageTable {
 
     
+    /// Deep copy a PML4 entry, creating independent L3/L2/L1 tables
+    /// 
+    /// This creates a complete copy of the page table hierarchy below this L4 entry,
+    /// ensuring that each process has its own isolated page tables.
+    fn deep_copy_pml4_entry(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        entry_index: usize,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        log::debug!("Deep copying PML4 entry {} with L3 addr {:#x}", 
+            entry_index, source_entry.addr().as_u64());
+        
+        // Allocate a new L3 table
+        let new_l3_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L3 table")?;
+        
+        // Map the new L3 table
+        let new_l3_virt = phys_offset + new_l3_frame.start_address().as_u64();
+        let new_l3_table = unsafe {
+            &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L3 table
+        new_l3_table.zero();
+        
+        // Map the source L3 table
+        let source_l3_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l3_table = unsafe {
+            &*(source_l3_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Copy each L3 entry, deep copying L2 tables as needed
+        for i in 0..512 {
+            if !source_l3_table[i].is_unused() {
+                // Check if this is a huge page (1GB page at L3 level)
+                if source_l3_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
+                    // Huge pages can be shared at the physical level
+                    new_l3_table[i] = source_l3_table[i].clone();
+                    log::trace!("Copied L3 huge page entry {}", i);
+                } else {
+                    // Regular L3 entry pointing to L2 table - deep copy the L2 table
+                    match Self::deep_copy_l3_entry(&source_l3_table[i], i, phys_offset) {
+                        Ok(new_l2_frame) => {
+                            let flags = source_l3_table[i].flags();
+                            new_l3_table[i].set_addr(new_l2_frame.start_address(), flags);
+                            log::trace!("Deep copied L3 entry {} -> new L2 frame {:#x}", 
+                                i, new_l2_frame.start_address().as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to deep copy L3 entry {}: {}", i, e);
+                            return Err("Failed to deep copy L3 entry");
+                        }
+                    }
+                }
+            }
+        }
+        
+        log::debug!("Successfully deep copied PML4 entry {} to new L3 frame {:#x}", 
+            entry_index, new_l3_frame.start_address().as_u64());
+        
+        Ok(new_l3_frame)
+    }
+    
+    /// Deep copy an L3 entry, creating independent L2/L1 tables
+    fn deep_copy_l3_entry(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        entry_index: usize,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        // Allocate a new L2 table
+        let new_l2_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L2 table")?;
+        
+        // Map the new L2 table
+        let new_l2_virt = phys_offset + new_l2_frame.start_address().as_u64();
+        let new_l2_table = unsafe {
+            &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L2 table
+        new_l2_table.zero();
+        
+        // Map the source L2 table
+        let source_l2_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l2_table = unsafe {
+            &*(source_l2_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Copy each L2 entry, deep copying L1 tables as needed
+        for i in 0..512 {
+            if !source_l2_table[i].is_unused() {
+                // Check if this is a huge page (2MB page at L2 level)
+                if source_l2_table[i].flags().contains(PageTableFlags::HUGE_PAGE) {
+                    // Huge pages can be shared at the physical level for kernel code
+                    // Calculate the virtual address this L2 entry covers
+                    let l2_virt_addr = (entry_index as u64) * 0x40000000 + (i as u64) * 0x200000; // 1GB per L3, 2MB per L2
+                    
+                    if l2_virt_addr >= 0x800000000000 {
+                        // Kernel space - safe to share huge pages
+                        new_l2_table[i] = source_l2_table[i].clone();
+                        log::trace!("Shared kernel L2 huge page entry {} (addr {:#x})", i, l2_virt_addr);
+                    } else {
+                        // User space - should not share, but for now we'll share kernel code pages
+                        // This needs refinement based on what's actually mapped
+                        new_l2_table[i] = source_l2_table[i].clone();
+                        // Don't spam logs with hundreds of huge page entries
+                        if i < 10 {
+                            log::trace!("Shared user L2 huge page entry {} (addr {:#x}) - FIXME", i, l2_virt_addr);
+                        }
+                    }
+                } else {
+                    // Regular L2 entry pointing to L1 table - deep copy the L1 table
+                    match Self::deep_copy_l2_entry(&source_l2_table[i], i, phys_offset) {
+                        Ok(new_l1_frame) => {
+                            let flags = source_l2_table[i].flags();
+                            new_l2_table[i].set_addr(new_l1_frame.start_address(), flags);
+                            log::trace!("Deep copied L2 entry {} -> new L1 frame {:#x}", 
+                                i, new_l1_frame.start_address().as_u64());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to deep copy L2 entry {}: {}", i, e);
+                            return Err("Failed to deep copy L2 entry");
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(new_l2_frame)
+    }
+    
+    /// Deep copy an L2 entry, creating independent L1 tables
+    fn deep_copy_l2_entry(
+        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        _entry_index: usize,
+        phys_offset: VirtAddr
+    ) -> Result<PhysFrame, &'static str> {
+        // Allocate a new L1 table
+        let new_l1_frame = allocate_frame()
+            .ok_or("Failed to allocate frame for L1 table")?;
+        
+        // Map the new L1 table
+        let new_l1_virt = phys_offset + new_l1_frame.start_address().as_u64();
+        let new_l1_table = unsafe {
+            &mut *(new_l1_virt.as_mut_ptr() as *mut PageTable)
+        };
+        
+        // Clear the new L1 table
+        new_l1_table.zero();
+        
+        // Map the source L1 table
+        let source_l1_virt = phys_offset + source_entry.addr().as_u64();
+        let source_l1_table = unsafe {
+            &*(source_l1_virt.as_ptr() as *const PageTable)
+        };
+        
+        // Copy L1 entries - these point to actual physical pages
+        // For now, we'll share all physical pages (kernel code should be read-only anyway)
+        // In a full copy-on-write implementation, we'd mark pages as read-only and copy on write
+        for i in 0..512 {
+            if !source_l1_table[i].is_unused() {
+                // Share the physical page but with independent page table entry
+                // This allows different processes to have different permissions/flags if needed
+                new_l1_table[i] = source_l1_table[i].clone();
+                // Don't spam logs with L1 entries
+                if i < 5 {
+                    log::trace!("Copied L1 entry {} -> phys frame {:#x}", 
+                        i, source_l1_table[i].addr().as_u64());
+                }
+            }
+        }
+        
+        Ok(new_l1_frame)
+    }
+    
     /// Create a new page table for a process
     /// 
     /// This creates a new level 4 page table with kernel mappings copied
     /// from the current page table.
     pub fn new() -> Result<Self, &'static str> {
         // Check stack pointer before allocating
-        let initial_rsp: u64;
+        let rsp: u64;
         unsafe {
-            core::arch::asm!("mov {}, rsp", out(reg) initial_rsp);
+            core::arch::asm!("mov {}, rsp", out(reg) rsp);
         }
+        log::debug!("ProcessPageTable::new() - Current RSP: {:#x}", rsp);
         
-        // Check if we're running low on stack space
-        // The bootloader provides an initial stack. Based on RSP value analysis:
-        // RSP=0x10000011180, Guard page top=0x10000012000
-        // Remaining = 0x10000012000 - 0x10000011180 = 0xE80 = 3712 bytes
-        let guard_page_top = 0x10000012000u64;
-        let remaining_stack = if initial_rsp < guard_page_top {
-            guard_page_top - initial_rsp
-        } else {
-            0
-        };
-        
-        if remaining_stack < 4096 { // Less than 4KB remaining
-            log::warn!("Low stack space: RSP={:#x}, remaining={}B", initial_rsp, remaining_stack);
+        // Check if we're running low on stack
+        // Kernel stacks typically start around 0x180000xxxxx and grow down
+        // If we're below 0x180000010000, we might be in trouble
+        if rsp < 0x180000010000 {
+            log::error!("WARNING: Low stack detected! RSP={:#x}", rsp);
+            log::error!("This might cause a stack overflow!");
         }
         
         // Allocate a frame for the new level 4 page table
@@ -147,7 +257,6 @@ impl ProcessPageTable {
             log::debug!("Physical memory offset: {:#x}", phys_offset.as_u64());
             let virt = phys_offset + level_4_frame.start_address().as_u64();
             log::debug!("New L4 table virtual address: {:#x}", virt.as_u64());
-            
             log::debug!("About to create mutable reference to page table at {:#x}", virt.as_u64());
             
             // Test if we can read the memory first
@@ -199,89 +308,35 @@ impl ProcessPageTable {
             
             log::debug!("Using global kernel PDPT frame: {:?}", kernel_pdpt_frame);
             
-            // -------------------------------------------------------------------
-            // Make the entire canonical-high-half (PML4 slots 256-511) visible
-            // in every user CR3. We clear USER_ACCESSIBLE so ring-3 cannot peek.
-            // -------------------------------------------------------------------
-            let mut high_half_copied = 0;
-            for idx in 256..512 {
-                if !current_l4_table[idx].is_unused() {
-                    // Copy *exactly* the entry the kernel is using
-                    let mut entry = current_l4_table[idx].clone();
-                    entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
-                    level_4_table[idx] = entry;
-                    high_half_copied += 1;
+            // Set up PML4 entries 256-511 to point to the shared kernel PDPT
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+            
+            for i in 256..512 {
+                level_4_table[i].set_frame(kernel_pdpt_frame, flags);
+            }
+            
+            log::debug!("Set up global kernel page table entries 256-511");
+            
+            // Copy essential low-memory kernel mappings (entries 0-255)
+            // These are needed for kernel code that lives in low memory
+            let copied_count = {
+                let mut count = 0;
+                for i in 0..256 {
+                    if !current_l4_table[i].is_unused() {
+                        let has_user_accessible = current_l4_table[i].flags().contains(PageTableFlags::USER_ACCESSIBLE);
+                        
+                        // Copy kernel-only entries in low memory (e.g., kernel code at 0x10000000)
+                        if (i >= 2 && i <= 7) || (!has_user_accessible && i != 0 && i != 1) {
+                            level_4_table[i] = current_l4_table[i].clone();
+                            count += 1;
+                            log::debug!("Copied low-memory kernel PML4 entry {}", i);
+                        }
+                    }
                 }
-            }
-            
-            log::debug!("Set up global kernel page table entries 256-511 (copied {} entries)", high_half_copied);
-            
-            // CRITICAL: Ensure ALL kernel code is accessible after CR3 switch
-            // The bootloader maps kernel .text/.rodata/.data at 0x200000-0x320000 region
-            // This falls in PML4 entry 0, but we need to ensure the ENTIRE mapping is present
-            log::debug!("Sharing ALL kernel PML4 entries (0-7) to ensure ISR code accessibility after CR3 switch");
-            let mut copied_count = 0;
-            
-            // Share ALL low-memory kernel entries to ensure complete kernel code access
-            // This includes the ISR assembly code that executes after CR3 switch
-            for idx in 0..8 {
-                if !current_l4_table[idx].is_unused() {
-                    level_4_table[idx] = current_l4_table[idx].clone();
-                    copied_count += 1;
-                    log::debug!("Shared kernel PML4 entry {} (flags: {:?}) for complete ISR access after CR3 switch", 
-                        idx, current_l4_table[idx].flags());
-                } else if idx == 1 {
-                    // CRITICAL: PML4 entry 1 might have kernel code that .is_unused() doesn't detect
-                    // Force copy entry 1 even if it appears unused - the bootloader might map code there
-                    level_4_table[idx] = current_l4_table[idx].clone();
-                    copied_count += 1;
-                    log::debug!("FORCED copy of PML4 entry {} (appears unused but may contain kernel code)", idx);
-                } else {
-                    log::debug!("PML4 entry {} is UNUSED in kernel page table - skipping", idx);
-                }
-            }
-            
-            // CRITICAL FIX: Copy PML4 entries that map the kernel heap (0x444444440000)
-            // The kernel heap starts at 0x444444440000, which maps to PML4 entry:
-            // (0x444444440000 >> 39) & 0x1FF = 0x88 & 0x1FF = 0x88 = 136
-            const KERNEL_HEAP_PML4_ENTRY: usize = 136;
-            log::debug!("Copying kernel heap PML4 entry {} (maps 0x444444440000)", KERNEL_HEAP_PML4_ENTRY);
-            
-            if !current_l4_table[KERNEL_HEAP_PML4_ENTRY].is_unused() {
-                level_4_table[KERNEL_HEAP_PML4_ENTRY] = current_l4_table[KERNEL_HEAP_PML4_ENTRY].clone();
-                copied_count += 1;
-                log::debug!("Copied kernel heap PML4 entry {} (flags: {:?}) for heap access after CR3 switch", 
-                    KERNEL_HEAP_PML4_ENTRY, current_l4_table[KERNEL_HEAP_PML4_ENTRY].flags());
-            } else {
-                log::warn!("Kernel heap PML4 entry {} is UNUSED - this will cause page faults!", KERNEL_HEAP_PML4_ENTRY);
-            }
+                count
+            };
             
             log::debug!("Process page table created with global kernel mappings ({} low entries + 256 high entries)", copied_count);
-            
-            // CRITICAL FIX: Map 8 pages around the RSP0 region for interrupt handling
-            // RSP0 addresses are in the 0xffffc90000000000 range (kernel stack allocator)
-            // Without these mappings, triple fault occurs when CPU tries to push interrupt frame
-            let rsp0_range_start = 0xffffc90000000000u64;
-            let rsp0_range_end = 0xffffc90000020000u64; // 128KB range (32 pages) to cover all possible RSP0 values
-            
-            // Map this range from the kernel's current page table to the new process page table
-            let phys_offset = crate::memory::physical_memory_offset();
-            let kernel_frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(KERNEL_CR3));
-            let kernel_l4_table = &*(phys_offset + kernel_frame.start_address().as_u64()).as_ptr::<PageTable>();
-            
-            // Calculate PML4 index for RSP0 region: (0xffffc90000000000 >> 39) & 0x1ff = 0x192 = 402
-            const RSP0_PML4_INDEX: usize = 402;
-            log::debug!("Mapping RSP0 region: PML4 entry {} for addresses {:#x}-{:#x}", 
-                RSP0_PML4_INDEX, rsp0_range_start, rsp0_range_end);
-            
-            if !kernel_l4_table[RSP0_PML4_INDEX].is_unused() {
-                let mut entry = kernel_l4_table[RSP0_PML4_INDEX].clone();
-                entry.set_flags(entry.flags() & !PageTableFlags::USER_ACCESSIBLE);
-                level_4_table[RSP0_PML4_INDEX] = entry;
-                log::info!("TRIPLE_FAULT_FIX: Mapped RSP0 PML4 entry {} for interrupt frame handling", RSP0_PML4_INDEX);
-            } else {
-                log::error!("RSP0 PML4 entry {} is UNUSED in kernel page table - this will cause triple faults!", RSP0_PML4_INDEX);
-            }
         }
         
         // Create mapper for the new page table
@@ -324,7 +379,9 @@ impl ProcessPageTable {
         frame: PhysFrame<Size4KiB>,
         flags: PageTableFlags,
     ) -> Result<(), &'static str> {
+        log::trace!("ProcessPageTable::map_page called for page {:#x}", page.start_address().as_u64());
         unsafe {
+            log::trace!("About to call mapper.map_to...");
             
             // CRITICAL WORKAROUND: The OffsetPageTable might be failing during child
             // page table operations. Let's add extra validation.
@@ -341,6 +398,8 @@ impl ProcessPageTable {
             if let Ok(existing_frame) = self.mapper.translate_page(page) {
                 if existing_frame == frame {
                     // Page is already mapped to the correct frame, skip
+                    log::trace!("Page {:#x} already mapped to frame {:#x}, skipping", 
+                              page.start_address().as_u64(), frame.start_address().as_u64());
                     return Ok(());
                 } else {
                     // Page is mapped to a different frame, this is an error
@@ -369,6 +428,7 @@ impl ProcessPageTable {
                     // In the future, we could collect these and batch flush if needed
                     let _ = flush; // Explicitly ignore the flush
                     
+                    log::trace!("mapper.map_to succeeded, TLB flush deferred");
                     Ok(())
                 }
                 Err(e) => {
@@ -379,6 +439,20 @@ impl ProcessPageTable {
         }
     }
     
+    /// Unmap a page in this process's address space
+    pub fn unmap_page(&mut self, page: Page<Size4KiB>) -> Result<PhysFrame<Size4KiB>, &'static str> {
+        let (frame, flush) = self.mapper.unmap(page)
+            .map_err(|_| "Failed to unmap page")?;
+        // Don't flush immediately - same reasoning as map_page
+        let _ = flush;
+        Ok(frame)
+    }
+    
+    /// Translate a virtual address to physical address
+    pub fn translate(&self, addr: VirtAddr) -> Option<PhysAddr> {
+        self.mapper.translate_addr(addr)
+    }
+    
     /// Translate a page to its corresponding physical frame
     pub fn translate_page(&self, addr: VirtAddr) -> Option<PhysAddr> {
         // DEBUG: Add detailed logging to understand translation failures
@@ -387,7 +461,8 @@ impl ProcessPageTable {
         // Only log for userspace addresses to reduce noise
         if addr.as_u64() < 0x800000000000 {
             match result {
-                Some(_phys) => {
+                Some(phys) => {
+                    log::trace!("translate_page({:#x}) -> {:#x}", addr.as_u64(), phys.as_u64());
                 }
                 None => {
                     // This is the problematic case - let's understand why
@@ -434,6 +509,46 @@ impl ProcessPageTable {
         result
     }
     
+    /// Get a reference to the mapper
+    pub fn mapper(&mut self) -> &mut OffsetPageTable<'static> {
+        &mut self.mapper
+    }
+    
+    /// Allocate a stack in this process's page table
+    pub fn allocate_stack(&mut self, size: usize, privilege: crate::task::thread::ThreadPrivilege) 
+        -> Result<crate::memory::stack::GuardedStack, &'static str> {
+        crate::memory::stack::GuardedStack::new(size, &mut self.mapper, privilege)
+    }
+    
+    /// Clear specific userspace mappings before loading a new program
+    /// 
+    /// WORKAROUND: Since we share L3 tables between processes, we need to
+    /// unmap pages that might conflict with the new program.
+    pub fn clear_userspace_for_exec(&mut self) -> Result<(), &'static str> {
+        log::debug!("clear_userspace_for_exec: Clearing common userspace regions");
+        
+        // Clear the standard userspace regions that programs typically use
+        // This prevents "page already mapped" errors when loading ELF files
+        
+        // 1. Clear code/data region (0x10000000 - 0x10010000)
+        let code_start = VirtAddr::new(0x10000000);
+        let code_end = VirtAddr::new(0x10010000);
+        match self.unmap_user_pages(code_start, code_end) {
+            Ok(()) => log::debug!("Cleared code region {:#x}-{:#x}", code_start, code_end),
+            Err(e) => log::warn!("Failed to clear code region: {}", e),
+        }
+        
+        // 2. Clear user stack region if it exists
+        let stack_bottom = VirtAddr::new(0x555555550000);
+        let stack_top = VirtAddr::new(0x555555572000);
+        match self.unmap_user_pages(stack_bottom, stack_top) {
+            Ok(()) => log::debug!("Cleared stack region {:#x}-{:#x}", stack_bottom, stack_top),
+            Err(e) => log::warn!("Failed to clear stack region: {}", e),
+        }
+        
+        Ok(())
+    }
+    
     /// Clear specific PML4 entries that might contain user mappings
     /// This is used during exec() to clear out old process mappings
     /// 
@@ -461,6 +576,7 @@ impl ProcessPageTable {
         
         // Entry 170: User stack location (0x550000000000)
         if !level_4_table[170].is_unused() {
+            log::debug!("Clearing PML4 entry 170 (user stack range)");
             level_4_table[170].set_unused();
         }
     }
@@ -492,6 +608,60 @@ impl ProcessPageTable {
     }
 }
 
+/// Switch to a process's page table
+/// 
+/// # Safety
+/// This changes the active page table. The caller must ensure that:
+/// - The new page table is valid
+/// - The kernel mappings are present in the new page table
+/// - This is called from a safe context (e.g., during interrupt return)
+pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
+    let (current_frame, flags) = Cr3::read();
+    let new_frame = page_table.level_4_frame();
+    
+    if current_frame != new_frame {
+        log::debug!("About to switch page table: {:?} -> {:?}", current_frame, new_frame);
+        log::debug!("Current stack pointer: {:#x}", {
+            let mut rsp: u64;
+            core::arch::asm!("mov {}, rsp", out(reg) rsp);
+            rsp
+        });
+        
+        // Verify that kernel mappings are present in the new page table
+        let phys_offset = crate::memory::physical_memory_offset();
+        let new_l4_table = &*(((phys_offset + new_frame.start_address().as_u64()).as_u64()) as *const PageTable);
+        
+        let mut kernel_entries = 0;
+        for i in 256..512 {
+            if !new_l4_table[i].is_unused() {
+                kernel_entries += 1;
+            }
+        }
+        log::debug!("Process page table has {} kernel PML4 entries", kernel_entries);
+        
+        if kernel_entries == 0 {
+            log::error!("CRITICAL: Process page table has no kernel mappings! This will cause immediate crash!");
+            return;
+        }
+        
+        log::trace!("Switching page table: {:?} -> {:?}", current_frame, new_frame);
+        Cr3::write(new_frame, flags);
+        // Ensure TLB consistency after page table switch
+        super::tlb::flush_after_page_table_switch();
+        log::debug!("Page table switch completed successfully with TLB flush");
+    }
+}
+
+/// Get the kernel's page table frame (the one created by bootloader)
+static mut KERNEL_PAGE_TABLE_FRAME: Option<PhysFrame> = None;
+
+/// Get the kernel page table frame
+pub fn kernel_page_table_frame() -> PhysFrame {
+    unsafe {
+        KERNEL_PAGE_TABLE_FRAME.expect("Kernel page table frame not initialized")
+    }
+}
+
 /// Initialize the kernel page table frame
 /// This should be called early in boot to save the kernel's page table
 pub fn init_kernel_page_table() {
@@ -502,11 +672,27 @@ pub fn init_kernel_page_table() {
     }
 }
 
+/// Switch back to the kernel page table
+/// 
+/// # Safety
+/// Caller must ensure this is called from a safe context
+pub unsafe fn switch_to_kernel_page_table() {
+    if let Some(kernel_frame) = KERNEL_PAGE_TABLE_FRAME {
+        let (current_frame, flags) = Cr3::read();
+        if current_frame != kernel_frame {
+            log::trace!("Switching back to kernel page table: {:?} -> {:?}", current_frame, kernel_frame);
+            Cr3::write(kernel_frame, flags);
+            // Ensure TLB consistency after page table switch
+            super::tlb::flush_after_page_table_switch();
+        }
+    } else {
+        log::error!("Kernel page table frame not initialized!");
+    }
+}
+
 // NOTE: This function is no longer needed with global kernel page tables
 // All kernel stacks are automatically visible to all processes through the shared kernel PDPT
 
-/// Get the kernel's page table frame (the one created by bootloader)
-static mut KERNEL_PAGE_TABLE_FRAME: Option<PhysFrame> = None;
 
 /// Map user stack pages from kernel page table to process page table
 /// This is critical for userspace execution - the stack must be accessible
@@ -515,55 +701,20 @@ pub fn map_user_stack_to_process(
     stack_bottom: VirtAddr,
     stack_top: VirtAddr,
 ) -> Result<(), &'static str> {
+    log::debug!("map_user_stack_to_process: mapping stack range {:#x} - {:#x}", 
+        stack_bottom.as_u64(), stack_top.as_u64());
     
     // Get access to the kernel page table
     let kernel_mapper = unsafe { crate::memory::paging::get_mapper() };
     
     // Calculate page range to copy
     let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
-    // CRITICAL FIX: Include the page containing stack_top
-    // stack_top points to the first byte AFTER the stack (where RSP will be)
-    // We need to map up to and including the page that contains (stack_top - 1)
-    // But since RSP starts AT stack_top and grows down, we need the page containing stack_top
-    let end_page = Page::<Size4KiB>::containing_address(stack_top);
+    let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
     
-    let mut _mapped_pages = 0;
-    const MAX_STACK_PAGES: usize = 256; // 1MB max stack size
-    
-    // Safety check - prevent infinite loops
-    let page_count = (end_page.start_address().as_u64() - start_page.start_address().as_u64()) / 4096;
-    if page_count > MAX_STACK_PAGES as u64 {
-        log::error!("Stack mapping too large: {} pages (max {}), range {:#x}-{:#x}", 
-                   page_count, MAX_STACK_PAGES, stack_bottom.as_u64(), stack_top.as_u64());
-        return Err("Stack mapping exceeds maximum size");
-    }
-    
-    // Calculate the actual page count - Page::range_inclusive includes both start and end
-    let page_count = ((end_page.start_address().as_u64() - start_page.start_address().as_u64()) / 4096) + 1;
-    
-    crate::serial_println!("STACK_MAP: mapping {} pages from {:#x} to {:#x}", 
-                          page_count, stack_bottom.as_u64(), stack_top.as_u64());
-    crate::serial_println!("STACK_MAP: start_page={:#x}, end_page={:#x} (inclusive)",
-                          start_page.start_address().as_u64(), 
-                          end_page.start_address().as_u64());
-    
-    // DEBUG: Log what RSP will be and what page it's in
-    crate::serial_println!("STACK_MAP: RSP will be {:#x}, which is in page {:#x}",
-                          stack_top.as_u64(),
-                          Page::<Size4KiB>::containing_address(stack_top).start_address().as_u64());
-    
-    // Guard pattern to detect source of 0xB1 pointer
-    let sentinel: u8 = 0xB1;
-    let ptr = &sentinel as *const _ as usize;
-    crate::serial_println!("STACK-MAP start, stack var @ {:#x}", ptr);
+    let mut mapped_pages = 0;
     
     // Copy each page mapping from kernel to process page table
     for page in Page::range_inclusive(start_page, end_page) {
-        _mapped_pages += 1;
-        if _mapped_pages > MAX_STACK_PAGES {
-            log::error!("Stack mapping exceeded MAX_STACK_PAGES during loop!");
-            return Err("Stack mapping infinite loop detected");
-        }
         // Look up the mapping in the kernel page table
         match kernel_mapper.translate(page.start_address()) {
             TranslateResult::Mapped { frame, offset, flags: _ } => {
@@ -580,7 +731,7 @@ pub fn map_user_stack_to_process(
                     if existing_frame == frame {
                         log::trace!("User stack page {:#x} already mapped correctly to frame {:#x}", 
                             page.start_address().as_u64(), frame.start_address().as_u64());
-                        _mapped_pages += 1;
+                        mapped_pages += 1;
                     } else {
                         log::error!("User stack page {:#x} already mapped to different frame: expected {:#x}, found {:#x}", 
                             page.start_address().as_u64(), frame.start_address().as_u64(), existing_frame.start_address().as_u64());
@@ -590,7 +741,7 @@ pub fn map_user_stack_to_process(
                     // Page not mapped, map it now
                     match process_page_table.map_page(page, frame, flags) {
                         Ok(()) => {
-                            _mapped_pages += 1;
+                            mapped_pages += 1;
                             log::trace!("Mapped user stack page {:#x} -> frame {:#x}", 
                                 page.start_address().as_u64(), frame.start_address().as_u64());
                         }
@@ -610,5 +761,6 @@ pub fn map_user_stack_to_process(
         }
     }
     
+    log::debug!("✓ Successfully mapped {} user stack pages to process page table", mapped_pages);
     Ok(())
 }

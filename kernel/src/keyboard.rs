@@ -95,7 +95,7 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// Special key combinations:
 /// - Ctrl+C: Interrupt signal
 /// - Ctrl+D: End of input
-/// - Ctrl+S: Test spawn system call
+/// - Ctrl+S: Suspend output
 /// - Ctrl+T: Time debug information
 /// - Ctrl+M: Memory debug information
 /// - Ctrl+U: Run userspace test program
@@ -104,9 +104,8 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+E: Test exec system call directly
 /// - Ctrl+X: Test fork+exec pattern
 /// - Ctrl+H: Test shell-style fork+exec
-/// - Ctrl+G: Test fork progress (child execution)
 pub async fn keyboard_task() {
-    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H/G for special actions)");
+    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H for special actions)");
     
     let mut scancodes = ScancodeStream::new();
     
@@ -119,9 +118,7 @@ pub async fn keyboard_task() {
                 } else if event.is_ctrl_d() {
                     log::info!("Ctrl+D pressed - end of input");
                 } else if event.is_ctrl_s() {
-                    log::info!("Ctrl+S pressed - testing spawn system call");
-                    crate::userspace_test::test_spawn();
-                    log::info!("Spawn test scheduled. Press keys to continue...");
+                    log::info!("Ctrl+S pressed - suspend output");
                 } else if event.is_ctrl_t() {
                     log::info!("Ctrl+T pressed - showing time debug info");
                     crate::time::debug_time_info();
@@ -152,30 +149,13 @@ pub async fn keyboard_task() {
                     log::info!("Ctrl+H pressed - testing shell-style fork+exec");
                     crate::test_exec::test_shell_fork_exec();
                     log::info!("Shell fork+exec test scheduled. Press keys to continue...");
-                } else if event.is_ctrl_key('w') {
-                    log::info!("Ctrl+W pressed - testing simple wait");
-                    crate::userspace_test::test_simple_wait();
-                    log::info!("Simple wait test scheduled. Press keys to continue...");
-                } else if event.is_ctrl_key('q') {
-                    log::info!("Ctrl+Q pressed - testing wait with multiple children");
-                    crate::userspace_test::test_wait_many();
-                    log::info!("Wait many test scheduled. Press keys to continue...");
-                } else if event.is_ctrl_key('s') {
-                    log::info!("Ctrl+S pressed - testing waitpid specific");
-                    crate::userspace_test::test_waitpid_specific();
-                    log::info!("Waitpid specific test scheduled. Press keys to continue...");
-                } else if event.is_ctrl_key('n') {
-                    log::info!("Ctrl+N pressed - testing ECHILD error");
-                    crate::userspace_test::test_echld_error();
-                    log::info!("ECHILD error test scheduled. Press keys to continue...");
-                } else if event.is_ctrl_key('g') {
-                    log::info!("Ctrl+G pressed - testing fork progress");
-                    crate::userspace_test::test_fork_progress();
-                    log::info!("Fork progress test scheduled. Press keys to continue...");
-                } else if event.is_ctrl_key('z') {
-                    log::info!("Ctrl+Z pressed - testing fork spin stress (50 children)");
-                    crate::userspace_test::test_fork_spin_stress();
-                    log::info!("Fork spin stress test scheduled. Press keys to continue...");
+                } else if event.is_ctrl_key('i') {
+                    log::info!("Ctrl+I pressed - testing process isolation");
+                    #[cfg(feature = "testing")]
+                    crate::test_exec::test_process_isolation();
+                    #[cfg(not(feature = "testing"))]
+                    log::warn!("Process isolation test requires testing feature");
+                    log::info!("Process isolation test scheduled. Press keys to continue...");
                 } else {
                     // Display the typed character
                     log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);
