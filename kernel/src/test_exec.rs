@@ -871,65 +871,27 @@ pub fn run_syscall_test() {
                 // Debug: Check scheduler state
                 // crate::task::scheduler::debug_state(); // Function removed
                 
-                // CRITICAL: Force an immediate context switch to the new process
-                // This ensures it gets a chance to run right away
-                log::info!("Forcing context switch to thread {}...", thread_id);
-                x86_64::instructions::interrupts::without_interrupts(|| {
-                    // Set need_resched flag to force a context switch
-                    crate::task::scheduler::set_need_resched();
-                    
-                    // Try to switch directly to the thread
-                    crate::task::scheduler::with_scheduler(|scheduler| {
-                        // Mark current thread as yielding
-                        scheduler.yield_current_thread();
-                        // Try to run the specific thread next
-                        scheduler.set_next_thread(thread_id);
-                    });
-                });
+                // COOPERATIVE SCHEDULING: Run the test process until it exits
+                // This eliminates timing dependencies on TCG vs KVM
+                log::info!("Running syscall_test cooperatively...");
                 
-                // Now yield to trigger the context switch
-                crate::task::scheduler::yield_current();
+                // Force context switch to the test process
+                crate::task::scheduler::context_switch_to_pid(pid);
                 
-                // Give the process multiple chances to run and complete
-                for i in 0..30 {
-                    crate::task::scheduler::yield_current();
-                    
-                    // Sleep briefly to allow timer interrupts to fire
-                    // This helps ensure context switches actually happen
-                    for _ in 0..100000 {
-                        core::hint::spin_loop();
+                // Wait for the process to exit (up to 500ms)
+                let status = crate::task::scheduler::wait_for_pid_exit(pid, 500);
+                
+                match status {
+                    crate::task::scheduler::ProcessExitStatus::Exited(0) => {
+                        log::info!("✓ syscall_test exited 0");
                     }
-                    
-                    // After each yield, check if process completed
-                    if let Some(ref manager) = *crate::process::manager() {
-                        if let Some(process) = manager.get_process(pid) {
-                            if let crate::process::process::ProcessState::Terminated(code) = process.state {
-                                if code == 0 {
-                                    log::info!("✓ syscall_test exited 0");
-                                } else {
-                                    log::error!("✗ syscall_test exited {}", code);
-                                }
-                                return;
-                            }
-                        }
+                    crate::task::scheduler::ProcessExitStatus::Exited(code) => {
+                        log::error!("✗ syscall_test exited {}", code);
                     }
-                    
-                    if i % 5 == 4 {
-                        log::info!("Yield {}: Process still running...", i + 1);
-                        // Check if thread is still in ready queue
-                        x86_64::instructions::interrupts::without_interrupts(|| {
-                            crate::task::scheduler::with_scheduler(|scheduler| {
-                                if let Some(thread) = scheduler.get_thread(thread_id) {
-                                    log::debug!("Thread {} state: {:?}", thread_id, thread.state);
-                                } else {
-                                    log::warn!("Thread {} not found in scheduler!", thread_id);
-                                }
-                            });
-                        });
+                    crate::task::scheduler::ProcessExitStatus::StillRunning => {
+                        log::error!("✗ syscall_test did not complete within 500ms");
                     }
                 }
-                
-                log::error!("✗ syscall_test did not complete after 30 yields");
             } else {
                 log::error!("✗ Could not get thread ID for syscall_test process");
             }

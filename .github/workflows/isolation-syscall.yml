@@ -9,6 +9,7 @@ on:
 jobs:
   test-syscalls:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     
     steps:
     - uses: actions/checkout@v4
@@ -40,17 +41,18 @@ jobs:
     
     - name: Run kernel and capture logs
       run: |
-        timeout 18s qemu-system-x86_64 \
+        timeout 25s qemu-system-x86_64 \
           -machine accel=tcg \
           -serial stdio \
           -display none \
           -no-reboot \
           -no-shutdown \
-          -m 512M \
+          -m 256M \
           -smp 1 \
           -cpu qemu64 \
           -drive format=raw,file=target/x86_64-unknown-none/release/breenix-uefi.img \
-          | tee test_output.log || true
+          > qemu.log 2>&1 || true
+        cp qemu.log test_output.log
     
     - name: Verify syscall 400 executed
       run: |

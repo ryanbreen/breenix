@@ -324,6 +324,57 @@ pub fn yield_current() {
     }
 }
 
+/// Process exit status for cooperative scheduling
+#[derive(Debug, Clone, Copy)]
+pub enum ProcessExitStatus {
+    Exited(i32),
+    StillRunning,
+}
+
+/// Force context switch to a specific PID (cooperative scheduling)
+pub fn context_switch_to_pid(pid: crate::process::ProcessId) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            let thread_id = pid.as_u64();
+            
+            // Put the thread at the front of the ready queue
+            scheduler.set_next_thread(thread_id);
+            
+            // Set need_resched to force a context switch
+            set_need_resched();
+            
+            log::info!("Forced context switch to PID {} (thread {})", pid.as_u64(), thread_id);
+        }
+    });
+}
+
+/// Wait for a process to exit (cooperative scheduling)
+pub fn wait_for_pid_exit(pid: crate::process::ProcessId, timeout_ms: u64) -> ProcessExitStatus {
+    // Simple timeout implementation - just check a reasonable number of times
+    let max_checks = timeout_ms / 10; // Check every ~10ms equivalent
+    
+    for _ in 0..max_checks {
+        // Check if process has exited
+        if let Some(manager_guard) = crate::process::try_manager() {
+            if let Some(ref manager) = *manager_guard {
+                if let Some(process) = manager.get_process(pid) {
+                    if let crate::process::process::ProcessState::Terminated(exit_code) = process.state {
+                        return ProcessExitStatus::Exited(exit_code);
+                    }
+                }
+            }
+        }
+        
+        // Small delay to prevent busy waiting
+        for _ in 0..100000 {
+            core::hint::spin_loop();
+        }
+    }
+    
+    ProcessExitStatus::StillRunning
+}
+
 /// Get pending context switch if any
 /// Returns Some((old_thread_id, new_thread_id)) if a switch is pending
 pub fn get_pending_switch() -> Option<(u64, u64)> {
