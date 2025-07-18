@@ -14,16 +14,18 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@nightly
       with:
-        toolchain: nightly
         components: rust-src, llvm-tools-preview
-        override: true
     
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y qemu-system-x86 nasm
+    
+    - name: Add LLVM tools to PATH
+      run: |
+        echo "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin" >> $GITHUB_PATH
     
     - name: Build userspace tests
       run: |
