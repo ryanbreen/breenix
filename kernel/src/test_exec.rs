@@ -868,9 +868,18 @@ pub fn run_syscall_test() {
                 // Yield multiple times to let the process complete
                 log::info!("Yielding to run syscall_test...");
                 
+                // Debug: Check scheduler state
+                crate::task::scheduler::debug_state();
+                
                 // Give the process multiple chances to run and complete
-                for i in 0..10 {
+                for i in 0..30 {
                     crate::task::scheduler::yield_current();
+                    
+                    // Sleep briefly to allow timer interrupts to fire
+                    // This helps ensure context switches actually happen
+                    for _ in 0..100000 {
+                        core::hint::spin_loop();
+                    }
                     
                     // After each yield, check if process completed
                     if let Some(ref manager) = *crate::process::manager() {
@@ -886,10 +895,22 @@ pub fn run_syscall_test() {
                         }
                     }
                     
-                    log::trace!("Yield {}: Process still running, yielding again...", i + 1);
+                    if i % 5 == 4 {
+                        log::info!("Yield {}: Process still running...", i + 1);
+                        // Check if thread is still in ready queue
+                        x86_64::instructions::interrupts::without_interrupts(|| {
+                            if let Some(scheduler) = crate::task::scheduler::SCHEDULER.get() {
+                                if let Some(thread) = scheduler.get_thread(thread_id) {
+                                    log::debug!("Thread {} state: {:?}", thread_id, thread.state);
+                                } else {
+                                    log::warn!("Thread {} not found in scheduler!", thread_id);
+                                }
+                            }
+                        });
+                    }
                 }
                 
-                log::error!("✗ syscall_test did not complete after 10 yields");
+                log::error!("✗ syscall_test did not complete after 30 yields");
             } else {
                 log::error!("✗ Could not get thread ID for syscall_test process");
             }

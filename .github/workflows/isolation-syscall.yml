@@ -37,7 +37,7 @@ jobs:
     
     - name: Run kernel and capture logs
       run: |
-        timeout 30s cargo run --release --features testing --bin qemu-uefi -- \
+        timeout 15s cargo run --release --features testing --bin qemu-uefi -- \
           -serial stdio -display none | tee test_output.log || true
     
     - name: Verify syscall 400 executed
