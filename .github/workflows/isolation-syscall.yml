@@ -49,14 +49,12 @@ jobs:
         ls -la target/x86_64-unknown-none/release/breenix-uefi.img || echo "Image not found"
         echo "=== Starting QEMU ==="
         timeout 45s qemu-system-x86_64 \
-          -machine accel=tcg \
           -serial stdio \
           -display none \
           -no-reboot \
           -no-shutdown \
           -m 256M \
           -smp 1 \
-          -cpu qemu64 \
           -drive format=raw,file=target/x86_64-unknown-none/release/breenix-uefi.img \
           > qemu.log 2>&1 || true
         echo "=== QEMU finished, exit code: $? ==="
