@@ -1,7 +1,7 @@
 //! Test exec functionality directly
 
 use crate::process::creation::create_user_process;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 
 /// Test multiple concurrent processes to validate page table isolation
