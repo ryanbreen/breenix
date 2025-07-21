@@ -42,6 +42,7 @@ mod elf;
 mod userspace_test;
 mod process;
 pub mod test_exec;
+mod time_test;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +231,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled!");
+    
+    // Test timer functionality immediately
+    time_test::test_timer_directly();
     
     // Test if interrupts are working by triggering a breakpoint
     log::info!("Testing breakpoint interrupt...");
