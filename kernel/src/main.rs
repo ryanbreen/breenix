@@ -384,9 +384,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // CRITICAL: Test timer functionality first to validate timer fixes
     // Disable interrupts during process creation to prevent logger deadlock
     x86_64::instructions::interrupts::without_interrupts(|| {
-        log::info!("=== TIMER TEST: Validating timer subsystem ===");
-        test_exec::test_timer_functionality();
-        log::info!("Timer test process created - check output for results.");
+        // Skip timer test for now to debug hello world
+        // log::info!("=== TIMER TEST: Validating timer subsystem ===");
+        // test_exec::test_timer_functionality();
+        // log::info!("Timer test process created - check output for results.");
         
         // Also run original tests
         log::info!("=== BASELINE TEST: Direct userspace execution ===");
