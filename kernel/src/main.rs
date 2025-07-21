@@ -373,9 +373,14 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         // This won't return if successful
     }
     
-    // CRITICAL: Test direct execution first to validate baseline functionality
+    // CRITICAL: Test timer functionality first to validate timer fixes
     // Disable interrupts during process creation to prevent logger deadlock
     x86_64::instructions::interrupts::without_interrupts(|| {
+        log::info!("=== TIMER TEST: Validating timer subsystem ===");
+        test_exec::test_timer_functionality();
+        log::info!("Timer test process created - check output for results.");
+        
+        // Also run original tests
         log::info!("=== BASELINE TEST: Direct userspace execution ===");
         test_exec::test_direct_execution();
         log::info!("Direct execution test completed.");
@@ -494,10 +499,8 @@ fn test_exception_handlers() {
 #[allow(dead_code)]
 fn test_syscalls() {
     serial_println!("DEBUG: test_syscalls() function entered");
-    log::info!("DEBUG: About to return from test_syscalls");
-    return; // Temporarily skip syscall tests
+    log::info!("DEBUG: Proceeding with syscall tests");
     
-    #[allow(unreachable_code)]
     {
         log::info!("Testing system call infrastructure...");
         

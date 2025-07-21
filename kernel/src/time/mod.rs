@@ -1,21 +1,16 @@
-pub mod time;
+//! Public façade for time-related facilities.
+
 pub mod timer;
+pub mod time;
 pub mod rtc;
 
 pub use time::Time;
-pub use timer::{init, time_since_start};
-
-use core::sync::atomic::{AtomicU64, Ordering};
-
-static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-
-pub fn get_ticks() -> u64 {
-    TIMER_TICKS.load(Ordering::Relaxed)
-}
-
-pub(crate) fn increment_ticks() {
-    TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
-}
+pub use timer::{
+    get_monotonic_time,
+    get_ticks,
+    init,
+    timer_interrupt,
+};
 
 /// Display comprehensive time debug information
 pub fn debug_time_info() {
@@ -24,16 +19,7 @@ pub fn debug_time_info() {
     // Current ticks
     let ticks = get_ticks();
     log::info!("Timer ticks: {}", ticks);
-    
-    // Time since start
-    let time_since_start = time_since_start();
-    log::info!("Time since boot: {}", time_since_start);
-    log::info!("  - Total milliseconds: {}", time_since_start.total_millis());
-    log::info!("  - Total nanoseconds: {}", time_since_start.total_nanos());
-    
-    // Real time from timer
-    let real_time = timer::real_time();
-    log::info!("Real time (timer): {} ms", real_time);
+    log::info!("Monotonic time: {} ms", get_monotonic_time());
     
     // RTC time
     match rtc::read_rtc_time() {
@@ -54,16 +40,6 @@ pub fn debug_time_info() {
         }
     }
     
-    // Timer frequency
-    log::info!("Timer frequency: {} Hz", timer::TIMER_INTERRUPT_HZ);
-    log::info!("Subticks per tick: {}", timer::SUBTICKS_PER_TICK);
-    
-    // Test time creation functions
-    let one_second = Time::from_seconds(1);
-    let one_thousand_ms = Time::from_millis(1000);
-    log::info!("Time::from_seconds(1) = {}", one_second);
-    log::info!("Time::from_millis(1000) = {}", one_thousand_ms);
-    log::info!("Are they equal? {}", one_second.total_millis() == one_thousand_ms.total_millis());
-    
+    log::info!("Timer frequency: 1000 Hz (1ms resolution)");
     log::info!("=============================");
 }

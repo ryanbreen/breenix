@@ -229,11 +229,11 @@ pub fn sys_yield() -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// sys_get_time - Get current system time in ticks
+/// sys_get_time - Get current system time in milliseconds since boot
 pub fn sys_get_time() -> SyscallResult {
-    let ticks = crate::time::get_ticks();
-    // log::info!("USERSPACE: sys_get_time called, returning {} ticks", ticks);
-    SyscallResult::Ok(ticks)
+    let millis = crate::time::get_monotonic_time();
+    // log::info!("USERSPACE: sys_get_time called, returning {} ms", millis);
+    SyscallResult::Ok(millis)
 }
 
 /// sys_fork - Basic fork implementation

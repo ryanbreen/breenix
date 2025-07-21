@@ -28,8 +28,8 @@ pub extern "C" fn timer_interrupt_handler() {
     //     log::debug!("Timer interrupt #{} - starting handler", count);
     // }
     
-    // Update global timer tick count
-    crate::time::increment_ticks();
+    // Core time bookkeeping
+    crate::time::timer_interrupt();
     
     // Decrement current thread's quantum
     unsafe {

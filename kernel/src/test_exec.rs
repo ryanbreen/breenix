@@ -391,6 +391,37 @@ pub fn test_shell_fork_exec() {
     }
 }
 
+/// Test timer functionality with comprehensive timer test program
+pub fn test_timer_functionality() {
+    log::info!("=== TIMER FUNCTIONALITY TEST ===");
+    log::info!("Running comprehensive timer test program");
+    
+    // Use timer_test.elf to verify timer functionality
+    #[cfg(feature = "testing")]
+    let timer_test_elf = crate::userspace_test::TIMER_TEST_ELF;
+    #[cfg(not(feature = "testing"))]
+    let timer_test_elf = &create_hello_world_elf();
+    
+    log::info!("Loading timer_test.elf, size: {} bytes", timer_test_elf.len());
+    
+    // Create timer test process
+    match create_user_process(String::from("timer_test"), timer_test_elf) {
+        Ok(pid) => {
+            log::info!("✓ Created timer test process with PID {}", pid.as_u64());
+            log::info!("Process will run comprehensive timer tests:");
+            log::info!("  - Test 1: Initial time reading");
+            log::info!("  - Test 2: Time after yielding");
+            log::info!("  - Test 3: Time after busy wait");
+            log::info!("  - Test 4: Rapid time calls");
+            log::info!("  - Test 5: Progress over 1 second");
+            log::info!("Expected: Non-zero time values that increment");
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create timer test process: {}", e);
+        }
+    }
+}
+
 /// Test exec without scheduling - creates process without adding to scheduler
 pub fn test_exec_without_scheduling() {
     log::info!("=== Testing exec() without immediate scheduling ===");
