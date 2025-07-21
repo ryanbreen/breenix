@@ -44,6 +44,7 @@ mod process;
 pub mod test_exec;
 mod time_test;
 mod rtc_test;
+mod clock_gettime_test;
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +237,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Test timer functionality immediately
     time_test::test_timer_directly();
     rtc_test::test_rtc_and_real_time();
+    clock_gettime_test::test_clock_gettime();
     
     // Test if interrupts are working by triggering a breakpoint
     log::info!("Testing breakpoint interrupt...");

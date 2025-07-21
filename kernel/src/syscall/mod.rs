@@ -8,6 +8,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 pub(crate) mod dispatcher;
 pub mod handlers;
 pub mod handler;
+pub mod time;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum SyscallNumber {
     Exec = 11,    // Linux syscall number for execve
     GetPid = 39,  // Linux syscall number for getpid
     GetTid = 186, // Linux syscall number for gettid
+    ClockGetTime = 228, // Linux syscall number for clock_gettime
 }
 
 #[allow(dead_code)]
@@ -39,27 +41,35 @@ impl SyscallNumber {
             11 => Some(Self::Exec),
             39 => Some(Self::GetPid),
             186 => Some(Self::GetTid),
+            228 => Some(Self::ClockGetTime),
             _ => None,
         }
     }
 }
 
-/// System call error codes
+/// System call error codes (Linux conventions)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i64)]
+#[repr(u64)]
 #[allow(dead_code)]
-pub enum SyscallError {
-    /// Invalid system call number
-    NoSys = -38,
-    /// Invalid argument
-    InvalidArgument = -22,
+pub enum ErrorCode {
     /// Operation not permitted
-    PermissionDenied = -1,
+    PermissionDenied = 1,  // EPERM
+    /// No such process
+    NoSuchProcess = 3,     // ESRCH
     /// I/O error
-    IoError = -5,
+    IoError = 5,           // EIO
+    /// Cannot allocate memory
+    OutOfMemory = 12,      // ENOMEM
+    /// Bad address
+    Fault = 14,            // EFAULT
+    /// Invalid argument
+    InvalidArgument = 22,  // EINVAL
+    /// Function not implemented
+    NoSys = 38,            // ENOSYS
 }
 
 /// System call result type
+#[derive(Debug)]
 pub enum SyscallResult {
     Ok(u64),
     Err(u64),
