@@ -27,6 +27,9 @@ pub fn init() {
     }
     
     log::info!("Timer initialized at 1000 Hz (1ms per tick)");
+    
+    // Initialize RTC for wall clock time
+    super::rtc::init();
 }
 
 /// Invoked from the CPU-side interrupt stub every 1 ms.

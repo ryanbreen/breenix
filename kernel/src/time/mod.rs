@@ -4,6 +4,9 @@ pub mod timer;
 pub mod time;
 pub mod rtc;
 
+#[cfg(test)]
+mod rtc_tests;
+
 pub use time::Time;
 pub use timer::{
     get_monotonic_time,
@@ -11,6 +14,16 @@ pub use timer::{
     init,
     timer_interrupt,
 };
+pub use rtc::DateTime;
+
+/// Get the current real (wall clock) time
+/// This is calculated as boot_wall_time + monotonic_time_since_boot
+pub fn get_real_time() -> DateTime {
+    let boot_time = rtc::get_boot_wall_time();
+    let monotonic_ms = get_monotonic_time();
+    let current_timestamp = boot_time + (monotonic_ms / 1000);
+    DateTime::from_unix_timestamp(current_timestamp)
+}
 
 /// Display comprehensive time debug information
 pub fn debug_time_info() {
@@ -20,6 +33,19 @@ pub fn debug_time_info() {
     let ticks = get_ticks();
     log::info!("Timer ticks: {}", ticks);
     log::info!("Monotonic time: {} ms", get_monotonic_time());
+    
+    // Real time (wall clock)
+    let real_time = get_real_time();
+    log::info!("Real time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+              real_time.year, real_time.month, real_time.day,
+              real_time.hour, real_time.minute, real_time.second);
+    
+    // Boot time
+    let boot_timestamp = rtc::get_boot_wall_time();
+    let boot_time = DateTime::from_unix_timestamp(boot_timestamp);
+    log::info!("Boot time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+              boot_time.year, boot_time.month, boot_time.day,
+              boot_time.hour, boot_time.minute, boot_time.second);
     
     // RTC time
     match rtc::read_rtc_time() {

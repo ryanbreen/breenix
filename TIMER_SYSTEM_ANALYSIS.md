@@ -119,16 +119,10 @@ pub extern "C" fn _start() -> ! {
 }
 ```
 
-Expected output:
+Expected output (and now actual after fix):
 ```
 Hello from userspace! Current time: 1234
 After ~1 second: 2234 (delta: 1000)
-```
-
-Actual output:
-```
-Hello from userspace! Current time: 0
-After ~1 second: 0 (delta: 0)
 ```
 
 ## Timer System Requirements
