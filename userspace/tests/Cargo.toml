@@ -25,6 +25,10 @@ path = "spinner.rs"
 name = "fork_test"
 path = "fork_test.rs"
 
+[[bin]]
+name = "timer_test"
+path = "timer_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
