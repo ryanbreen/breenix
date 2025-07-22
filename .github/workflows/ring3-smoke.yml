@@ -27,6 +27,7 @@ jobs:
         with:
           toolchain: nightly
           override: true
+          target: x86_64-unknown-none
           components: rust-src, llvm-tools-preview
 
       - name: Install build dependencies
@@ -44,6 +45,8 @@ jobs:
 
       - name: Build userspace tests
         run: |
+          # Add LLVM tools to PATH
+          export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
           cd userspace/tests
           ./build.sh
 
