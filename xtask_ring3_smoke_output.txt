@@ -10,24 +10,24 @@ TRACE: exiting boot services
 TRACE: switching to new level 4 table
 INFO : New page table at: PhysFrame[4KiB](0x101000)
 INFO : Elf file loaded at Pointer {
-    addr: 0x00000000062fe000,
-    metadata: 1186408,
+    addr: 0x0000000006302000,
+    metadata: 1168632,
 }
 INFO : virtual_address_offset: 0x10000000000
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 33c6c, mem_size: 33c6c, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 33c70, virtual_addr: 34c70, physical_addr: 34c70, file_size: 911a9, mem_size: 911a9, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: c4e20, virtual_addr: c6e20, physical_addr: c6e20, file_size: 12360, mem_size: 131e0, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 32e1c, mem_size: 32e1c, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 32e20, virtual_addr: 33e20, physical_addr: 33e20, file_size: 8e419, mem_size: 8e419, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: c1240, virtual_addr: c3240, physical_addr: c3240, file_size: 11c80, mem_size: 11dc0, align: 1000 })
 INFO : Mapping bss section
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: d7180, virtual_addr: da180, physical_addr: da180, file_size: 1328, mem_size: c560, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: d2f00, virtual_addr: d5f00, physical_addr: d5f00, file_size: 1328, mem_size: c558, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x1000009b5e0
-INFO : Creating GDT at PhysAddr(0x13f000)
+INFO : Entry point at: 0x10000076d80
+INFO : Creating GDT at PhysAddr(0x13d000)
 INFO : Map framebuffer
 INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
+INFO : Jumping to kernel entry point at VirtAddr(0x10000076d80)
 === Buffered Boot Messages ===
 [ INFO] kernel: Kernel entry point reached
 [DEBUG] kernel: Boot info address: 0x38000000000
@@ -44,12 +44,12 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 [DEBUG] kernel::gdt:   TSS: 0x18
 [DEBUG] kernel::gdt:   User data: 0x2b
 [DEBUG] kernel::gdt:   User code: 0x33
-[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x100000e6528
+[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x100000df230
 [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0
 [ INFO] kernel::interrupts: Syscall handler configured with assembly entry point
-[ INFO] kernel::interrupts: IDT address: 0x100000db4d0
+[ INFO] kernel::interrupts: IDT address: 0x100000df400
 [ INFO] kernel::interrupts: IDT is in PML4 entry 2
-[ INFO] kernel::interrupts: IDT loaded successfully at 0x100000db4d0
+[ INFO] kernel::interrupts: IDT loaded successfully at 0x100000df400
 [ INFO] kernel: GDT and IDT initialized
 [ INFO] kernel: Checking physical memory offset availability...
 [ INFO] kernel: Physical memory offset available: 0x28000000000
@@ -388,205 +388,205 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #159
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x9f000 (allocation #159)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #160
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54e000 (allocation #160)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54c000 (allocation #160)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #161
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54f000 (allocation #161)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54d000 (allocation #161)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #162
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x550000 (allocation #162)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54e000 (allocation #162)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #163
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x551000 (allocation #163)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54f000 (allocation #163)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #164
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x552000 (allocation #164)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x550000 (allocation #164)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #165
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x553000 (allocation #165)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x551000 (allocation #165)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #166
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x554000 (allocation #166)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x552000 (allocation #166)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #167
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x555000 (allocation #167)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x553000 (allocation #167)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #168
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x556000 (allocation #168)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x554000 (allocation #168)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #169
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x557000 (allocation #169)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x555000 (allocation #169)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #170
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x558000 (allocation #170)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x556000 (allocation #170)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #171
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x559000 (allocation #171)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x557000 (allocation #171)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #172
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55a000 (allocation #172)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x558000 (allocation #172)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #173
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55b000 (allocation #173)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x559000 (allocation #173)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #174
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55c000 (allocation #174)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55a000 (allocation #174)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #175
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55d000 (allocation #175)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55b000 (allocation #175)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #176
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55e000 (allocation #176)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55c000 (allocation #176)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #177
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55f000 (allocation #177)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55d000 (allocation #177)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #178
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x560000 (allocation #178)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55e000 (allocation #178)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #179
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x561000 (allocation #179)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55f000 (allocation #179)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #180
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x562000 (allocation #180)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x560000 (allocation #180)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #181
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x563000 (allocation #181)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x561000 (allocation #181)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #182
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x564000 (allocation #182)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x562000 (allocation #182)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #183
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x565000 (allocation #183)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x563000 (allocation #183)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #184
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x566000 (allocation #184)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x564000 (allocation #184)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #185
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x567000 (allocation #185)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x565000 (allocation #185)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #186
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x568000 (allocation #186)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x566000 (allocation #186)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #187
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x569000 (allocation #187)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x567000 (allocation #187)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #188
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56a000 (allocation #188)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x568000 (allocation #188)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #189
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56b000 (allocation #189)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x569000 (allocation #189)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #190
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56c000 (allocation #190)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56a000 (allocation #190)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #191
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56d000 (allocation #191)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56b000 (allocation #191)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #192
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56e000 (allocation #192)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56c000 (allocation #192)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #193
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56f000 (allocation #193)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56d000 (allocation #193)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #194
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x570000 (allocation #194)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56e000 (allocation #194)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #195
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x571000 (allocation #195)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56f000 (allocation #195)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #196
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x572000 (allocation #196)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x570000 (allocation #196)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #197
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x573000 (allocation #197)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x571000 (allocation #197)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #198
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x574000 (allocation #198)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x572000 (allocation #198)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #199
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x575000 (allocation #199)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x573000 (allocation #199)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #200
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x576000 (allocation #200)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x574000 (allocation #200)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #201
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x577000 (allocation #201)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x575000 (allocation #201)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #202
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x578000 (allocation #202)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x576000 (allocation #202)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #203
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x579000 (allocation #203)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x577000 (allocation #203)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #204
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57a000 (allocation #204)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x578000 (allocation #204)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #205
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57b000 (allocation #205)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x579000 (allocation #205)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #206
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57c000 (allocation #206)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57a000 (allocation #206)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #207
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57d000 (allocation #207)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57b000 (allocation #207)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #208
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57e000 (allocation #208)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57c000 (allocation #208)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #209
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57f000 (allocation #209)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57d000 (allocation #209)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #210
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x580000 (allocation #210)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57e000 (allocation #210)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #211
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x581000 (allocation #211)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57f000 (allocation #211)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #212
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x582000 (allocation #212)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x580000 (allocation #212)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #213
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x583000 (allocation #213)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x581000 (allocation #213)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #214
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x584000 (allocation #214)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x582000 (allocation #214)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #215
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x585000 (allocation #215)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x583000 (allocation #215)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #216
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x586000 (allocation #216)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x584000 (allocation #216)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #217
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x587000 (allocation #217)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x585000 (allocation #217)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #218
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x588000 (allocation #218)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x586000 (allocation #218)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #219
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x589000 (allocation #219)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x587000 (allocation #219)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #220
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58a000 (allocation #220)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x588000 (allocation #220)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #221
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58b000 (allocation #221)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x589000 (allocation #221)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #222
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58c000 (allocation #222)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58a000 (allocation #222)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #223
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58d000 (allocation #223)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58b000 (allocation #223)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #224
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58e000 (allocation #224)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58c000 (allocation #224)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #225
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58f000 (allocation #225)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58d000 (allocation #225)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #226
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x590000 (allocation #226)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58e000 (allocation #226)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #227
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x591000 (allocation #227)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58f000 (allocation #227)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #228
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x592000 (allocation #228)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x590000 (allocation #228)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #229
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x593000 (allocation #229)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x591000 (allocation #229)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #230
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x594000 (allocation #230)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x592000 (allocation #230)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #231
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x595000 (allocation #231)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x593000 (allocation #231)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #232
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x596000 (allocation #232)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x594000 (allocation #232)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #233
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x597000 (allocation #233)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x595000 (allocation #233)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #234
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x598000 (allocation #234)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x596000 (allocation #234)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #235
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x599000 (allocation #235)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x597000 (allocation #235)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #236
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59a000 (allocation #236)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x598000 (allocation #236)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #237
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59b000 (allocation #237)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x599000 (allocation #237)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #238
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59c000 (allocation #238)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59a000 (allocation #238)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #239
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59d000 (allocation #239)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59b000 (allocation #239)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #240
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59e000 (allocation #240)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59c000 (allocation #240)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #241
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59f000 (allocation #241)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59d000 (allocation #241)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #242
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a0000 (allocation #242)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59e000 (allocation #242)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #243
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a1000 (allocation #243)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59f000 (allocation #243)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #244
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a2000 (allocation #244)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a0000 (allocation #244)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #245
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a3000 (allocation #245)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a1000 (allocation #245)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #246
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a4000 (allocation #246)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a2000 (allocation #246)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #247
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a5000 (allocation #247)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a3000 (allocation #247)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #248
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a6000 (allocation #248)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a4000 (allocation #248)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #249
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a7000 (allocation #249)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a5000 (allocation #249)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #250
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a8000 (allocation #250)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a6000 (allocation #250)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #251
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a9000 (allocation #251)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a7000 (allocation #251)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #252
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5aa000 (allocation #252)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a8000 (allocation #252)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #253
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ab000 (allocation #253)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a9000 (allocation #253)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #254
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ac000 (allocation #254)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5aa000 (allocation #254)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #255
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ad000 (allocation #255)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ab000 (allocation #255)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #256
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ae000 (allocation #256)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ac000 (allocation #256)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #257
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5af000 (allocation #257)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ad000 (allocation #257)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #258
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b0000 (allocation #258)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ae000 (allocation #258)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #259
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b1000 (allocation #259)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5af000 (allocation #259)
 [ INFO] kernel::memory::heap: Heap initialized at 0x444444440000 with size 1024 KiB
 [ INFO] kernel::memory: Initializing stack allocation system...
 [ INFO] kernel::memory::stack: Stack allocation system initialized
@@ -597,15 +597,15 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 [ INFO] kernel::memory: Initializing per-CPU emergency stacks...
 [ INFO] kernel::memory::per_cpu_stack: Initializing per-CPU emergency stacks for 1 CPUs
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #260
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b2000 (allocation #260)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b0000 (allocation #260)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #261
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b3000 (allocation #261)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b1000 (allocation #261)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #262
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b4000 (allocation #262)
-[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000000000) -> PhysAddr(0x5b2000) with flags PageTableFlags(PRESENT | WRITABLE)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b2000 (allocation #262)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000000000) -> PhysAddr(0x5b0000) with flags PageTableFlags(PRESENT | WRITABLE)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #263
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b5000 (allocation #263)
-[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000001000) -> PhysAddr(0x5b5000) with flags PageTableFlags(PRESENT | WRITABLE)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b3000 (allocation #263)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000001000) -> PhysAddr(0x5b3000) with flags PageTableFlags(PRESENT | WRITABLE)
 [DEBUG] kernel::memory::per_cpu_stack: CPU 0 emergency stack: 0xffffc98000000000 - 0xffffc98000002000
 [ INFO] kernel::memory::per_cpu_stack: Initialized 1 per-CPU emergency stacks
 [ INFO] kernel::memory: Memory management initialized
@@ -617,13 +617,13 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 [ INFO] kernel: Heap allocation test passed!
 [ INFO] kernel::tls: Initializing Thread Local Storage (TLS) system...
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #264
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b6000 (allocation #264)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b4000 (allocation #264)
 [ERROR] kernel::tls: Failed to set up kernel TLS: "Failed to map TLS page"
 [ INFO] kernel: TLS initialized
 [ INFO] kernel::tls: SWAPGS support configured: KERNEL_GS_BASE = 0x0
 [ INFO] kernel: SWAPGS support enabled
 [ INFO] kernel::time::timer: Timer initialized at 1000 Hz (1ms per tick)
-[ INFO] kernel::time::rtc: RTC initialized: 2025-07-22 17:14:28 UTC
+[ INFO] kernel::time::rtc: RTC initialized: 2025-07-22 17:20:33 UTC
 [ INFO] kernel: Timer initialized
 [ INFO] kernel: Keyboard queue initialized
 [ INFO] kernel: Initializing PIC...
@@ -722,21 +722,21 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 180)
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 210)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 210)
-[ INFO] kernel::time_test: After busy wait: 2197 ms (delta: 2191 ms)
-[ INFO] kernel::time_test: Raw tick counter: 2201
-[ INFO] kernel::time_test:   Call 0: 2203 ms
-[ INFO] kernel::time_test:   Call 1: 2205 ms
-[ INFO] kernel::time_test:   Call 2: 2207 ms
-[ INFO] kernel::time_test:   Call 3: 2208 ms
-[ INFO] kernel::time_test:   Call 4: 2210 ms
+[ INFO] kernel::time_test: After busy wait: 2174 ms (delta: 2168 ms)
+[ INFO] kernel::time_test: Raw tick counter: 2177
+[ INFO] kernel::time_test:   Call 0: 2178 ms
+[ INFO] kernel::time_test:   Call 1: 2180 ms
+[ INFO] kernel::time_test:   Call 2: 2181 ms
+[ INFO] kernel::time_test:   Call 3: 2183 ms
+[ INFO] kernel::time_test:   Call 4: 2184 ms
 [ INFO] kernel::time_test: === TIMER TEST COMPLETE ===
 [ INFO] kernel::time_test: SUCCESS: Timer appears to be working
 [ INFO] kernel::rtc_test: === RTC AND REAL TIME TEST ===
-[ INFO] kernel::rtc_test: RTC Unix timestamp: 1753204470
-[ INFO] kernel::rtc_test: RTC DateTime: 2025-07-22 17:14:30
-[ INFO] kernel::rtc_test: Boot time: 2025-07-22 17:14:28
-[ INFO] kernel::rtc_test: Real time: 2025-07-22 17:14:30
-[ INFO] kernel::rtc_test: Monotonic time: 2232 ms (2 seconds since boot)
+[ INFO] kernel::rtc_test: RTC Unix timestamp: 1753204836
+[ INFO] kernel::rtc_test: RTC DateTime: 2025-07-22 17:20:36
+[ INFO] kernel::rtc_test: Boot time: 2025-07-22 17:20:33
+[ INFO] kernel::rtc_test: Real time: 2025-07-22 17:20:35
+[ INFO] kernel::rtc_test: Monotonic time: 2202 ms (2 seconds since boot)
 [ INFO] kernel::rtc_test: Waiting 2 seconds...
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 240)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 240)
@@ -750,14 +750,14 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 360)
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 390)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 390)
-[DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 420)
-[DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 420)
-[ INFO] kernel::rtc_test: Real time after wait: 2025-07-22 17:14:32
+[ INFO] kernel::rtc_test: Real time after wait: 2025-07-22 17:20:37
 [ INFO] kernel::rtc_test: === RTC TEST COMPLETE ===
 [ INFO] kernel::rtc_test: SUCCESS: RTC and real time appear to be working
+[DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 420)
+[DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 420)
 [ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST ===
-[ INFO] kernel::clock_gettime_test: CLOCK_MONOTONIC: 4 s, 244000000 ns
-[ INFO] kernel::clock_gettime_test: CLOCK_REALTIME: 2025-07-22 17:14:32
+[ INFO] kernel::clock_gettime_test: CLOCK_MONOTONIC: 4 s, 213000000 ns
+[ INFO] kernel::clock_gettime_test: CLOCK_REALTIME: 2025-07-22 17:20:37
 [ INFO] kernel::clock_gettime_test: ✓ Monotonicity confirmed
 [ INFO] kernel::clock_gettime_test: ✓ Invalid ID correctly returned EINVAL
 [ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST COMPLETE ===
@@ -765,7 +765,7 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 [ INFO] kernel::interrupts: EXCEPTION: BREAKPOINT
 InterruptStackFrame {
     instruction_pointer: VirtAddr(
-        0x1000006ead1,
+        0x100000a3271,
     ),
     code_segment: SegmentSelector {
         index: 1,
@@ -775,7 +775,7 @@ InterruptStackFrame {
         INTERRUPT_FLAG | 0x2,
     ),
     stack_pointer: VirtAddr(
-        0x180000133c8,
+        0x180000134a8,
     ),
     stack_segment: SegmentSelector {
         index: 2,
@@ -800,7 +800,1187 @@ After Simple log 2
 [ INFO] kernel: Interrupts are still enabled
 [ INFO] kernel: About to check exception test features...
 [ INFO] kernel: Skipping timer tests due to hangs
-[ INFO] kernel: DEBUG: About to call test_syscalls()
-DEBUG: test_syscalls() function entered
-[ INFO] kernel: DEBUG: Proceeding with syscall tests
+DEBUG: Skipping test_syscalls to avoid hang
+DEBUG: Skipping test_userspace_syscalls to avoid hang
+[ INFO] kernel: === BASELINE TEST: Direct userspace execution ===
+[ INFO] kernel::test_exec: === MULTIPLE CONCURRENT PROCESSES TEST ===
+[ INFO] kernel::test_exec: Testing page table isolation with concurrent hello_time.elf processes
+[ INFO] kernel::test_exec: CONCURRENCY TEST: Loading hello_time.elf, size: 9016 bytes
+[ INFO] kernel::process::creation: create_user_process: Creating user process 'hello_time_test' with new model
+[DEBUG] kernel::process: Acquiring PROCESS_MANAGER lock
+[DEBUG] kernel::process: PROCESS_MANAGER lock acquired
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0x18000010fd0
+[ERROR] kernel::memory::process_memory: WARNING: Low stack detected! RSP=0x18000010fd0
+[ERROR] kernel::memory::process_memory: This might cause a stack overflow!
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #265
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b5000 (allocation #265)
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x5b5000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x5b5000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x280005b5000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x280005b5000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x280005b5000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x280005b5000
+[DEBUG] kernel::memory::process_memory: About to zero the new page table
+[DEBUG] kernel::memory::process_memory: Successfully zeroed new page table
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current CR3: 0x101000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using kernel CR3: 0x101000 for copying
+[DEBUG] kernel::memory::process_memory: Kernel L4 table virtual address: 0x28000101000
+[DEBUG] kernel::memory::process_memory: Using global kernel PDPT frame: PhysFrame[4KiB](0x0)
+[DEBUG] kernel::memory::process_memory: Set up global kernel page table entries 256-511
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 2
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 3
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 4
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 5
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 6
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 7
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 136
+[DEBUG] kernel::memory::process_memory: Process page table created with global kernel mappings (7 low entries + 256 high entries)
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x5b5000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x10000000, 3 program headers
+[DEBUG] kernel::elf: Loading segment into page table: vaddr=0x10000000, filesz=0x2fe, memsz=0x2fe, flags=0x5
+[DEBUG] kernel::elf: Linux-style ELF loading: staying in kernel space, using physical memory access
+[DEBUG] kernel::elf: Processing page 0x10000000
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #266
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b6000 (allocation #266)
+[DEBUG] kernel::elf: Allocated frame 0x5b6000 for page 0x10000000
+[DEBUG] kernel::elf: Mapping page 0x10000000 to frame 0x5b6000 with flags PageTableFlags(PRESENT | USER_ACCESSIBLE)
+[DEBUG] kernel::elf: About to call page_table.map_page...
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x10000000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #267
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b7000 (allocation #267)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #268
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b8000 (allocation #268)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #269
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b9000 (allocation #269)
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[DEBUG] kernel::elf: Successfully mapped page 0x10000000
+[DEBUG] kernel::elf: After page_table.map_page
+[DEBUG] kernel::elf: Copied 766 bytes to frame 0x5b6000 (page 0x10000000) at offset 0 using physical access
+[DEBUG] kernel::elf: Successfully loaded segment with 1 pages using Linux-style physical memory access
+[DEBUG] kernel::elf: Loading segment into page table: vaddr=0x10001000, filesz=0x13c, memsz=0x13c, flags=0x4
+[DEBUG] kernel::elf: Linux-style ELF loading: staying in kernel space, using physical memory access
+[DEBUG] kernel::elf: Processing page 0x10001000
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #270
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ba000 (allocation #270)
+[DEBUG] kernel::elf: Allocated frame 0x5ba000 for page 0x10001000
+[DEBUG] kernel::elf: Mapping page 0x10001000 to frame 0x5ba000 with flags PageTableFlags(PRESENT | USER_ACCESSIBLE | NO_EXECUTE)
+[DEBUG] kernel::elf: About to call page_table.map_page...
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x10001000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[DEBUG] kernel::elf: Successfully mapped page 0x10001000
+[DEBUG] kernel::elf: After page_table.map_page
+[DEBUG] kernel::elf: Copied 316 bytes to frame 0x5ba000 (page 0x10001000) at offset 0 using physical access
+[DEBUG] kernel::elf: Successfully loaded segment with 1 pages using Linux-style physical memory access
+[DEBUG] kernel::memory::stack: Allocating guarded stack at 0x555555550000, size 68 KiB
+[TRACE] kernel::memory::stack: map_stack_pages: start_page=0x555555551000, end_page=0x555555560000
+[TRACE] kernel::memory::stack: map_stack_pages: About to iterate over page range
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555551000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #271
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5bb000 (allocation #271)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5bb000 for page 0x555555551000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #272
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5bc000 (allocation #272)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #273
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5bd000 (allocation #273)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #274
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5be000 (allocation #274)
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555551000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555552000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #275
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5bf000 (allocation #275)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5bf000 for page 0x555555552000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555552000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555553000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #276
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c0000 (allocation #276)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c0000 for page 0x555555553000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555553000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555554000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #277
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c1000 (allocation #277)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c1000 for page 0x555555554000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555554000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555555000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #278
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c2000 (allocation #278)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c2000 for page 0x555555555000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555555000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555556000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #279
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c3000 (allocation #279)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c3000 for page 0x555555556000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555556000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555557000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #280
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c4000 (allocation #280)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c4000 for page 0x555555557000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555557000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555558000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #281
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c5000 (allocation #281)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c5000 for page 0x555555558000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555558000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555559000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #282
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c6000 (allocation #282)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c6000 for page 0x555555559000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555559000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555555a000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #283
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c7000 (allocation #283)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c7000 for page 0x55555555a000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555555a000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555555b000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #284
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c8000 (allocation #284)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c8000 for page 0x55555555b000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555555b000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555555c000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #285
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5c9000 (allocation #285)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5c9000 for page 0x55555555c000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555555c000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555555d000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #286
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ca000 (allocation #286)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5ca000 for page 0x55555555d000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555555d000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555555e000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #287
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5cb000 (allocation #287)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5cb000 for page 0x55555555e000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555555e000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555555f000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #288
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5cc000 (allocation #288)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5cc000 for page 0x55555555f000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555555f000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555560000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #289
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5cd000 (allocation #289)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5cd000 for page 0x555555560000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555560000
+[DEBUG] kernel::memory::stack: Guard page at 0x555555550000 (unmapped)
+[DEBUG] kernel::memory::stack: Stack region: 0x555555551000 - 0x555555561000 (64 KiB)
+[DEBUG] kernel::process::manager: Mapping user stack pages into process page table...
+[DEBUG] kernel::memory::process_memory: map_user_stack_to_process: mapping stack range 0x555555551000 - 0x555555561000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555551000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 is UNUSED
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555551000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #290
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ce000 (allocation #290)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #291
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5cf000 (allocation #291)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #292
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d0000 (allocation #292)
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555551000 -> frame 0x5bb000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555552000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555552000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555552000 -> frame 0x5bf000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555553000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555553000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555553000 -> frame 0x5c0000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555554000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555554000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555554000 -> frame 0x5c1000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555555000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555555000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555555000 -> frame 0x5c2000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555556000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555556000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555556000 -> frame 0x5c3000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555557000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555557000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555557000 -> frame 0x5c4000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555558000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555558000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555558000 -> frame 0x5c5000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555559000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555559000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555559000 -> frame 0x5c6000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555555a000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555555a000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555555a000 -> frame 0x5c7000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555555b000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555555b000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555555b000 -> frame 0x5c8000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555555c000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555555c000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555555c000 -> frame 0x5c9000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555555d000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555555d000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555555d000 -> frame 0x5ca000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555555e000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555555e000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555555e000 -> frame 0x5cb000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555555f000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555555f000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555555f000 -> frame 0x5cc000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555560000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5ce000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5cf000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555560000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555560000 -> frame 0x5cd000
+[DEBUG] kernel::memory::process_memory: ✓ Successfully mapped 16 user stack pages to process page table
+[DEBUG] kernel::process::manager: ✓ User stack mapped in process page table
+[DEBUG] kernel::tls: Registered thread 1 with TLS block 0x11000
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #293
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d1000 (allocation #293)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc90000001000) -> PhysAddr(0x5d1000) with flags PageTableFlags(PRESENT | WRITABLE)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #294
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d2000 (allocation #294)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc90000002000) -> PhysAddr(0x5d2000) with flags PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 0 at 0xffffc90000001000-0xffffc90000003000 (guard at 0xffffc90000000000)
+[DEBUG] kernel::process::manager: ✓ Allocated kernel stack at 0xffffc90000003000 (globally visible)
+[ INFO] kernel::process::manager: Created process hello_time_test (PID 1)
+[DEBUG] kernel::process: PROCESS_MANAGER lock released
+[DEBUG] kernel::process: Acquiring PROCESS_MANAGER lock
+[DEBUG] kernel::process: PROCESS_MANAGER lock acquired
+[ INFO] kernel::task::scheduler: Added thread 1 'hello_time_test' to scheduler (user: true, ready_queue: [1])
+[ INFO] kernel::process::creation: create_user_process: Added user thread 1 directly to scheduler
+[DEBUG] kernel::process: PROCESS_MANAGER lock released
+[ INFO] kernel::process::creation: create_user_process: Successfully created user process 1 without spawn mechanism
+[ INFO] kernel::test_exec: ✓ CONCURRENT: Created hello_time process with PID 1
+[ INFO] kernel::test_exec: ✓ CONCURRENT: Process should execute hello_time.elf and print time
+[ INFO] kernel::test_exec: ✓ CONCURRENT: Created hello_time test process
+[ INFO] kernel::test_exec:     -> Process will execute hello_time.elf when scheduler runs
+[ INFO] kernel::test_exec:     -> Look for 'Hello from userspace! Current time: XXXXX' output
+[ INFO] kernel: Direct execution test completed.
+[ INFO] kernel: === USERSPACE TEST: Fork syscall from Ring 3 ===
+[ INFO] kernel::test_exec: === Testing multiple instances of same program ===
+[ INFO] kernel::test_exec: This test runs TWO hello_time processes to isolate the issue
+[ INFO] kernel::test_exec: Creating second hello_time process...
+[ INFO] kernel::process::creation: create_user_process: Creating user process 'hello_time_2' with new model
+[DEBUG] kernel::process: Acquiring PROCESS_MANAGER lock
+[DEBUG] kernel::process: PROCESS_MANAGER lock acquired
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0x18000011060
+[ERROR] kernel::memory::process_memory: WARNING: Low stack detected! RSP=0x18000011060
+[ERROR] kernel::memory::process_memory: This might cause a stack overflow!
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #295
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d3000 (allocation #295)
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x5d3000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x5d3000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x280005d3000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x280005d3000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x280005d3000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x280005d3000
+[DEBUG] kernel::memory::process_memory: About to zero the new page table
+[DEBUG] kernel::memory::process_memory: Successfully zeroed new page table
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current CR3: 0x101000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using kernel CR3: 0x101000 for copying
+[DEBUG] kernel::memory::process_memory: Kernel L4 table virtual address: 0x28000101000
+[DEBUG] kernel::memory::process_memory: Using global kernel PDPT frame: PhysFrame[4KiB](0x0)
+[DEBUG] kernel::memory::process_memory: Set up global kernel page table entries 256-511
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 2
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 3
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 4
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 5
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 6
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 7
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 136
+[DEBUG] kernel::memory::process_memory: Process page table created with global kernel mappings (7 low entries + 256 high entries)
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x5d3000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x10000000, 3 program headers
+[DEBUG] kernel::elf: Loading segment into page table: vaddr=0x10000000, filesz=0x2fe, memsz=0x2fe, flags=0x5
+[DEBUG] kernel::elf: Linux-style ELF loading: staying in kernel space, using physical memory access
+[DEBUG] kernel::elf: Processing page 0x10000000
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #296
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d4000 (allocation #296)
+[DEBUG] kernel::elf: Allocated frame 0x5d4000 for page 0x10000000
+[DEBUG] kernel::elf: Mapping page 0x10000000 to frame 0x5d4000 with flags PageTableFlags(PRESENT | USER_ACCESSIBLE)
+[DEBUG] kernel::elf: About to call page_table.map_page...
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x10000000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #297
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d5000 (allocation #297)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #298
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d6000 (allocation #298)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #299
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d7000 (allocation #299)
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[DEBUG] kernel::elf: Successfully mapped page 0x10000000
+[DEBUG] kernel::elf: After page_table.map_page
+[DEBUG] kernel::elf: Copied 766 bytes to frame 0x5d4000 (page 0x10000000) at offset 0 using physical access
+[DEBUG] kernel::elf: Successfully loaded segment with 1 pages using Linux-style physical memory access
+[DEBUG] kernel::elf: Loading segment into page table: vaddr=0x10001000, filesz=0x13c, memsz=0x13c, flags=0x4
+[DEBUG] kernel::elf: Linux-style ELF loading: staying in kernel space, using physical memory access
+[DEBUG] kernel::elf: Processing page 0x10001000
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #300
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d8000 (allocation #300)
+[DEBUG] kernel::elf: Allocated frame 0x5d8000 for page 0x10001000
+[DEBUG] kernel::elf: Mapping page 0x10001000 to frame 0x5d8000 with flags PageTableFlags(PRESENT | USER_ACCESSIBLE | NO_EXECUTE)
+[DEBUG] kernel::elf: About to call page_table.map_page...
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x10001000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[DEBUG] kernel::elf: Successfully mapped page 0x10001000
+[DEBUG] kernel::elf: After page_table.map_page
+[DEBUG] kernel::elf: Copied 316 bytes to frame 0x5d8000 (page 0x10001000) at offset 0 using physical access
+[DEBUG] kernel::elf: Successfully loaded segment with 1 pages using Linux-style physical memory access
+[DEBUG] kernel::memory::stack: Allocating guarded stack at 0x555555561000, size 68 KiB
+[TRACE] kernel::memory::stack: map_stack_pages: start_page=0x555555562000, end_page=0x555555571000
+[TRACE] kernel::memory::stack: map_stack_pages: About to iterate over page range
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555562000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #301
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5d9000 (allocation #301)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5d9000 for page 0x555555562000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555562000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555563000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #302
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5da000 (allocation #302)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5da000 for page 0x555555563000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555563000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555564000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #303
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5db000 (allocation #303)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5db000 for page 0x555555564000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555564000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555565000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #304
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5dc000 (allocation #304)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5dc000 for page 0x555555565000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555565000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555566000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #305
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5dd000 (allocation #305)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5dd000 for page 0x555555566000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555566000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555567000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #306
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5de000 (allocation #306)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5de000 for page 0x555555567000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555567000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555568000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #307
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5df000 (allocation #307)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5df000 for page 0x555555568000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555568000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555569000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #308
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e0000 (allocation #308)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e0000 for page 0x555555569000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555569000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555556a000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #309
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e1000 (allocation #309)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e1000 for page 0x55555556a000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555556a000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555556b000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #310
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e2000 (allocation #310)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e2000 for page 0x55555556b000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555556b000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555556c000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #311
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e3000 (allocation #311)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e3000 for page 0x55555556c000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555556c000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555556d000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #312
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e4000 (allocation #312)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e4000 for page 0x55555556d000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555556d000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555556e000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #313
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e5000 (allocation #313)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e5000 for page 0x55555556e000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555556e000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x55555556f000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #314
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e6000 (allocation #314)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e6000 for page 0x55555556f000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x55555556f000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555570000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #315
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e7000 (allocation #315)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e7000 for page 0x555555570000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555570000
+[TRACE] kernel::memory::stack: map_stack_pages: Got page from iterator, about to log address
+[TRACE] kernel::memory::stack: map_stack_pages: Mapping page 0x555555571000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call allocate_frame()
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #316
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e8000 (allocation #316)
+[TRACE] kernel::memory::stack: map_stack_pages: allocate_frame() returned successfully
+[TRACE] kernel::memory::stack: map_stack_pages: Allocated frame 0x5e8000 for page 0x555555571000
+[TRACE] kernel::memory::stack: map_stack_pages: About to call mapper.map_to...
+[TRACE] kernel::memory::stack: map_stack_pages: Successfully mapped page 0x555555571000
+[DEBUG] kernel::memory::stack: Guard page at 0x555555561000 (unmapped)
+[DEBUG] kernel::memory::stack: Stack region: 0x555555562000 - 0x555555572000 (64 KiB)
+[DEBUG] kernel::process::manager: Mapping user stack pages into process page table...
+[DEBUG] kernel::memory::process_memory: map_user_stack_to_process: mapping stack range 0x555555562000 - 0x555555572000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555562000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 is UNUSED
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555562000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #317
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5e9000 (allocation #317)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #318
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ea000 (allocation #318)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #319
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5eb000 (allocation #319)
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555562000 -> frame 0x5d9000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555563000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555563000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555563000 -> frame 0x5da000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555564000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555564000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555564000 -> frame 0x5db000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555565000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555565000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555565000 -> frame 0x5dc000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555566000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555566000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555566000 -> frame 0x5dd000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555567000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555567000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555567000 -> frame 0x5de000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555568000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555568000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555568000 -> frame 0x5df000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555569000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555569000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555569000 -> frame 0x5e0000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555556a000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555556a000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555556a000 -> frame 0x5e1000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555556b000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555556b000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555556b000 -> frame 0x5e2000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555556c000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555556c000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555556c000 -> frame 0x5e3000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555556d000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555556d000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555556d000 -> frame 0x5e4000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555556e000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555556e000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555556e000 -> frame 0x5e5000
+[DEBUG] kernel::memory::process_memory: translate_page(0x55555556f000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x55555556f000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x55555556f000 -> frame 0x5e6000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555570000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555570000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555570000 -> frame 0x5e7000
+[DEBUG] kernel::memory::process_memory: translate_page(0x555555571000) -> None (FAILED)
+[DEBUG] kernel::memory::process_memory:   -> L4 entry 170 exists: addr=0x5e9000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[DEBUG] kernel::memory::process_memory:     -> L3 entry 341 exists: addr=0x5ea000, flags=PageTableFlags(PRESENT | WRITABLE | USER_ACCESSIBLE)
+[TRACE] kernel::memory::process_memory: ProcessPageTable::map_page called for page 0x555555571000
+[TRACE] kernel::memory::process_memory: About to call mapper.map_to...
+[TRACE] kernel::memory::process_memory: mapper.map_to succeeded, TLB flush deferred
+[TRACE] kernel::memory::process_memory: Mapped user stack page 0x555555571000 -> frame 0x5e8000
+[DEBUG] kernel::memory::process_memory: ✓ Successfully mapped 16 user stack pages to process page table
+[DEBUG] kernel::process::manager: ✓ User stack mapped in process page table
+[DEBUG] kernel::tls: Registered thread 2 with TLS block 0x12000
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #320
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ec000 (allocation #320)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc90000004000) -> PhysAddr(0x5ec000) with flags PageTableFlags(PRESENT | WRITABLE)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #321
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ed000 (allocation #321)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc90000005000) -> PhysAddr(0x5ed000) with flags PageTableFlags(PRESENT | WRITABLE)
+[DEBUG] kernel::memory::kernel_stack: Allocated kernel stack 1 at 0xffffc90000004000-0xffffc90000006000 (guard at 0xffffc90000003000)
+[DEBUG] kernel::process::manager: ✓ Allocated kernel stack at 0xffffc90000006000 (globally visible)
+[ INFO] kernel::process::manager: Created process hello_time_2 (PID 2)
+[DEBUG] kernel::process: PROCESS_MANAGER lock released
+[DEBUG] kernel::process: Acquiring PROCESS_MANAGER lock
+[DEBUG] kernel::process: PROCESS_MANAGER lock acquired
+[ INFO] kernel::task::scheduler: Added thread 2 'hello_time_2' to scheduler (user: true, ready_queue: [1, 2])
+[ INFO] kernel::process::creation: create_user_process: Added user thread 2 directly to scheduler
+[DEBUG] kernel::process: PROCESS_MANAGER lock released
+[ INFO] kernel::process::creation: create_user_process: Successfully created user process 2 without spawn mechanism
+[ INFO] kernel::test_exec: ✓ Created second hello_time process with PID 2
+[ INFO] kernel::test_exec: ✓ Now we have TWO hello_time processes
+[ INFO] kernel::test_exec:    - If this works: issue is with different ELF layouts
+[ INFO] kernel::test_exec:    - If this fails: issue is with multiple processes in general
+[ INFO] kernel: Userspace fork test completed.
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((0, 1)) (count: 446)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 0 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=false, CS=0x8
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0x100000df230 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 447)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 448)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 449)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 450)
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 450)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 451)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 452)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 453)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 454)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 455)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 456)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 457)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 458)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 459)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 460)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 461)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 462)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 463)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 464)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 465)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 466)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 467)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 468)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 469)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 470)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 471)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 2 (thread 2)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 2 on return: frame=0x5d3000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 2 to 0xffffc90000006000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000003000 -> 0xffffc90000006000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5d3000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((2, 1)) (count: 472)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 2 -> 1
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 2: RIP=0x10000000, RSP=0x555555572000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 2 (thread 2)
+[DEBUG] kernel::tls: Set GS base to 0x11000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 1
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 1 for thread 1
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
+[ INFO] kernel::task::process_context: Restored userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, CS=0x33, SS=0x2b, RFLAGS=0x202
+[TRACE] kernel::interrupts::context_switch: Restored context for process 1 (thread 1)
+[ INFO] kernel::interrupts::context_switch: Scheduled page table switch for process 1 on return: frame=0x5b5000
+[ INFO] kernel::interrupts::context_switch: Setting kernel stack for thread 1 to 0xffffc90000003000
+[DEBUG] kernel::gdt: TSS RSP0 updated: 0xffffc90000006000 -> 0xffffc90000003000
+[ INFO] kernel::interrupts::context_switch: get_next_page_table: Returning page table frame 0x5b5000 for switch
+[ INFO] kernel::interrupts::context_switch: scheduler::schedule() returned: Some((1, 2)) (count: 473)
+[DEBUG] kernel::interrupts::context_switch: Context switch on interrupt return: 1 -> 2
+[DEBUG] kernel::interrupts::context_switch: Context switch: from_userspace=true, CS=0x33
+[TRACE] kernel::task::process_context: Saved userspace context for thread 1: RIP=0x10000000, RSP=0x555555561000, RAX=0x0
+[TRACE] kernel::interrupts::context_switch: Saved context for process 1 (thread 1)
+[DEBUG] kernel::tls: Set GS base to 0x12000
+[ INFO] kernel::interrupts::context_switch: restore_userspace_thread_context: Restoring thread 2
+[DEBUG] kernel::interrupts::context_switch: Got process manager lock
+[DEBUG] kernel::interrupts::context_switch: Found process 2 for thread 2
+[DEBUG] kernel::interrupts::context_switch: Thread privilege: User
