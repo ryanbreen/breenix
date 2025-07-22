@@ -43,7 +43,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Ring‑3 smoke test
-        run: cargo run -p xtask --features testing -- ring3-smoke
+        run: cargo run -p xtask -- ring3-smoke
 
       - name: Upload QEMU log if failure
         if: failure()
