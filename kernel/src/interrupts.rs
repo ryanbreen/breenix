@@ -148,7 +148,7 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
-) {
+) -> ! {
     // Log additional debug info before panicking
     log::error!("DOUBLE FAULT - Error Code: {:#x}", error_code);
     log::error!("Instruction Pointer: {:#x}", stack_frame.instruction_pointer.as_u64());
@@ -162,11 +162,6 @@ extern "x86-interrupt" fn double_fault_handler(
     log::error!("Current page table frame: {:?}", frame);
     
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
-    
-    // This should never be reached due to panic, but ensures the function diverges
-    loop {
-        x86_64::instructions::hlt();
-    }
 }
 
 
