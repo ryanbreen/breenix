@@ -29,10 +29,10 @@ jobs:
           override: true
           components: rust-src, llvm-tools-preview
 
-      - name: Install QEMU + OVMF
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 ovmf
+          sudo apt-get install -y qemu-system-x86 ovmf nasm
 
       - name: Cache cargo registry + build
         uses: actions/cache@v4
