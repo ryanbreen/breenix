@@ -11,23 +11,23 @@ TRACE: switching to new level 4 table
 INFO : New page table at: PhysFrame[4KiB](0x101000)
 INFO : Elf file loaded at Pointer {
     addr: 0x00000000062fe000,
-    metadata: 1187584,
+    metadata: 1186408,
 }
 INFO : virtual_address_offset: 0x10000000000
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 33d4c, mem_size: 33d4c, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 33d50, virtual_addr: 34d50, physical_addr: 34d50, file_size: 91479, mem_size: 91479, align: 1000 })
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: c51d0, virtual_addr: c71d0, physical_addr: c71d0, file_size: 123f8, mem_size: 12e30, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 33c6c, mem_size: 33c6c, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 33c70, virtual_addr: 34c70, physical_addr: 34c70, file_size: 911a9, mem_size: 911a9, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: c4e20, virtual_addr: c6e20, physical_addr: c6e20, file_size: 12360, mem_size: 131e0, align: 1000 })
 INFO : Mapping bss section
-INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: d7600, virtual_addr: da600, physical_addr: da600, file_size: 1340, mem_size: c578, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: d7180, virtual_addr: da180, physical_addr: da180, file_size: 1328, mem_size: c560, align: 1000 })
 INFO : Mapping bss section
-INFO : Entry point at: 0x1000005a960
-INFO : Creating GDT at PhysAddr(0x13e000)
+INFO : Entry point at: 0x1000009b5e0
+INFO : Creating GDT at PhysAddr(0x13f000)
 INFO : Map framebuffer
 INFO : Map physical memory
 INFO : Allocate bootinfo
 INFO : Create Memory Map
 INFO : Create bootinfo
-INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
+INFO : Jumping to kernel entry point at VirtAddr(0x1000009b5e0)
 === Buffered Boot Messages ===
 [ INFO] kernel: Kernel entry point reached
 [DEBUG] kernel: Boot info address: 0x38000000000
@@ -44,12 +44,12 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [DEBUG] kernel::gdt:   TSS: 0x18
 [DEBUG] kernel::gdt:   User data: 0x2b
 [DEBUG] kernel::gdt:   User code: 0x33
-[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x100000e3970
+[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x100000e6528
 [DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0
 [ INFO] kernel::interrupts: Syscall handler configured with assembly entry point
-[ INFO] kernel::interrupts: IDT address: 0x100000e39e0
+[ INFO] kernel::interrupts: IDT address: 0x100000db4d0
 [ INFO] kernel::interrupts: IDT is in PML4 entry 2
-[ INFO] kernel::interrupts: IDT loaded successfully at 0x100000e39e0
+[ INFO] kernel::interrupts: IDT loaded successfully at 0x100000db4d0
 [ INFO] kernel: GDT and IDT initialized
 [ INFO] kernel: Checking physical memory offset availability...
 [ INFO] kernel: Physical memory offset available: 0x28000000000
@@ -388,205 +388,205 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #159
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x9f000 (allocation #159)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #160
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54d000 (allocation #160)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54e000 (allocation #160)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #161
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54e000 (allocation #161)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54f000 (allocation #161)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #162
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x54f000 (allocation #162)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x550000 (allocation #162)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #163
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x550000 (allocation #163)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x551000 (allocation #163)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #164
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x551000 (allocation #164)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x552000 (allocation #164)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #165
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x552000 (allocation #165)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x553000 (allocation #165)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #166
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x553000 (allocation #166)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x554000 (allocation #166)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #167
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x554000 (allocation #167)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x555000 (allocation #167)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #168
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x555000 (allocation #168)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x556000 (allocation #168)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #169
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x556000 (allocation #169)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x557000 (allocation #169)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #170
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x557000 (allocation #170)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x558000 (allocation #170)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #171
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x558000 (allocation #171)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x559000 (allocation #171)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #172
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x559000 (allocation #172)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55a000 (allocation #172)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #173
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55a000 (allocation #173)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55b000 (allocation #173)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #174
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55b000 (allocation #174)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55c000 (allocation #174)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #175
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55c000 (allocation #175)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55d000 (allocation #175)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #176
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55d000 (allocation #176)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55e000 (allocation #176)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #177
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55e000 (allocation #177)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55f000 (allocation #177)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #178
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x55f000 (allocation #178)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x560000 (allocation #178)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #179
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x560000 (allocation #179)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x561000 (allocation #179)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #180
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x561000 (allocation #180)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x562000 (allocation #180)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #181
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x562000 (allocation #181)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x563000 (allocation #181)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #182
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x563000 (allocation #182)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x564000 (allocation #182)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #183
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x564000 (allocation #183)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x565000 (allocation #183)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #184
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x565000 (allocation #184)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x566000 (allocation #184)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #185
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x566000 (allocation #185)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x567000 (allocation #185)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #186
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x567000 (allocation #186)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x568000 (allocation #186)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #187
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x568000 (allocation #187)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x569000 (allocation #187)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #188
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x569000 (allocation #188)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56a000 (allocation #188)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #189
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56a000 (allocation #189)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56b000 (allocation #189)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #190
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56b000 (allocation #190)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56c000 (allocation #190)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #191
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56c000 (allocation #191)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56d000 (allocation #191)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #192
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56d000 (allocation #192)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56e000 (allocation #192)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #193
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56e000 (allocation #193)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56f000 (allocation #193)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #194
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x56f000 (allocation #194)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x570000 (allocation #194)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #195
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x570000 (allocation #195)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x571000 (allocation #195)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #196
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x571000 (allocation #196)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x572000 (allocation #196)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #197
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x572000 (allocation #197)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x573000 (allocation #197)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #198
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x573000 (allocation #198)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x574000 (allocation #198)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #199
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x574000 (allocation #199)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x575000 (allocation #199)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #200
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x575000 (allocation #200)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x576000 (allocation #200)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #201
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x576000 (allocation #201)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x577000 (allocation #201)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #202
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x577000 (allocation #202)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x578000 (allocation #202)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #203
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x578000 (allocation #203)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x579000 (allocation #203)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #204
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x579000 (allocation #204)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57a000 (allocation #204)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #205
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57a000 (allocation #205)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57b000 (allocation #205)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #206
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57b000 (allocation #206)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57c000 (allocation #206)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #207
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57c000 (allocation #207)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57d000 (allocation #207)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #208
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57d000 (allocation #208)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57e000 (allocation #208)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #209
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57e000 (allocation #209)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57f000 (allocation #209)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #210
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x57f000 (allocation #210)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x580000 (allocation #210)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #211
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x580000 (allocation #211)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x581000 (allocation #211)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #212
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x581000 (allocation #212)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x582000 (allocation #212)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #213
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x582000 (allocation #213)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x583000 (allocation #213)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #214
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x583000 (allocation #214)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x584000 (allocation #214)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #215
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x584000 (allocation #215)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x585000 (allocation #215)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #216
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x585000 (allocation #216)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x586000 (allocation #216)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #217
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x586000 (allocation #217)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x587000 (allocation #217)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #218
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x587000 (allocation #218)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x588000 (allocation #218)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #219
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x588000 (allocation #219)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x589000 (allocation #219)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #220
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x589000 (allocation #220)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58a000 (allocation #220)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #221
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58a000 (allocation #221)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58b000 (allocation #221)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #222
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58b000 (allocation #222)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58c000 (allocation #222)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #223
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58c000 (allocation #223)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58d000 (allocation #223)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #224
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58d000 (allocation #224)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58e000 (allocation #224)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #225
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58e000 (allocation #225)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58f000 (allocation #225)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #226
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x58f000 (allocation #226)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x590000 (allocation #226)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #227
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x590000 (allocation #227)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x591000 (allocation #227)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #228
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x591000 (allocation #228)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x592000 (allocation #228)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #229
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x592000 (allocation #229)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x593000 (allocation #229)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #230
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x593000 (allocation #230)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x594000 (allocation #230)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #231
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x594000 (allocation #231)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x595000 (allocation #231)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #232
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x595000 (allocation #232)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x596000 (allocation #232)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #233
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x596000 (allocation #233)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x597000 (allocation #233)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #234
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x597000 (allocation #234)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x598000 (allocation #234)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #235
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x598000 (allocation #235)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x599000 (allocation #235)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #236
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x599000 (allocation #236)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59a000 (allocation #236)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #237
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59a000 (allocation #237)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59b000 (allocation #237)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #238
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59b000 (allocation #238)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59c000 (allocation #238)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #239
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59c000 (allocation #239)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59d000 (allocation #239)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #240
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59d000 (allocation #240)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59e000 (allocation #240)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #241
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59e000 (allocation #241)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59f000 (allocation #241)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #242
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x59f000 (allocation #242)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a0000 (allocation #242)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #243
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a0000 (allocation #243)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a1000 (allocation #243)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #244
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a1000 (allocation #244)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a2000 (allocation #244)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #245
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a2000 (allocation #245)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a3000 (allocation #245)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #246
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a3000 (allocation #246)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a4000 (allocation #246)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #247
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a4000 (allocation #247)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a5000 (allocation #247)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #248
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a5000 (allocation #248)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a6000 (allocation #248)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #249
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a6000 (allocation #249)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a7000 (allocation #249)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #250
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a7000 (allocation #250)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a8000 (allocation #250)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #251
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a8000 (allocation #251)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a9000 (allocation #251)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #252
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5a9000 (allocation #252)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5aa000 (allocation #252)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #253
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5aa000 (allocation #253)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ab000 (allocation #253)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #254
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ab000 (allocation #254)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ac000 (allocation #254)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #255
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ac000 (allocation #255)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ad000 (allocation #255)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #256
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ad000 (allocation #256)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ae000 (allocation #256)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #257
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5ae000 (allocation #257)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5af000 (allocation #257)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #258
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5af000 (allocation #258)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b0000 (allocation #258)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #259
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b0000 (allocation #259)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b1000 (allocation #259)
 [ INFO] kernel::memory::heap: Heap initialized at 0x444444440000 with size 1024 KiB
 [ INFO] kernel::memory: Initializing stack allocation system...
 [ INFO] kernel::memory::stack: Stack allocation system initialized
@@ -597,15 +597,15 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [ INFO] kernel::memory: Initializing per-CPU emergency stacks...
 [ INFO] kernel::memory::per_cpu_stack: Initializing per-CPU emergency stacks for 1 CPUs
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #260
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b1000 (allocation #260)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b2000 (allocation #260)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #261
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b2000 (allocation #261)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b3000 (allocation #261)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #262
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b3000 (allocation #262)
-[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000000000) -> PhysAddr(0x5b1000) with flags PageTableFlags(PRESENT | WRITABLE)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b4000 (allocation #262)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000000000) -> PhysAddr(0x5b2000) with flags PageTableFlags(PRESENT | WRITABLE)
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #263
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b4000 (allocation #263)
-[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000001000) -> PhysAddr(0x5b4000) with flags PageTableFlags(PRESENT | WRITABLE)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b5000 (allocation #263)
+[TRACE] kernel::memory::kernel_page_table: Mapped kernel page VirtAddr(0xffffc98000001000) -> PhysAddr(0x5b5000) with flags PageTableFlags(PRESENT | WRITABLE)
 [DEBUG] kernel::memory::per_cpu_stack: CPU 0 emergency stack: 0xffffc98000000000 - 0xffffc98000002000
 [ INFO] kernel::memory::per_cpu_stack: Initialized 1 per-CPU emergency stacks
 [ INFO] kernel::memory: Memory management initialized
@@ -617,13 +617,13 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [ INFO] kernel: Heap allocation test passed!
 [ INFO] kernel::tls: Initializing Thread Local Storage (TLS) system...
 [TRACE] kernel::memory::frame_allocator: Frame allocator: Attempting to allocate frame #264
-[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b5000 (allocation #264)
+[TRACE] kernel::memory::frame_allocator: Frame allocator: Allocated frame 0x5b6000 (allocation #264)
 [ERROR] kernel::tls: Failed to set up kernel TLS: "Failed to map TLS page"
 [ INFO] kernel: TLS initialized
 [ INFO] kernel::tls: SWAPGS support configured: KERNEL_GS_BASE = 0x0
 [ INFO] kernel: SWAPGS support enabled
 [ INFO] kernel::time::timer: Timer initialized at 1000 Hz (1ms per tick)
-[ INFO] kernel::time::rtc: RTC initialized: 2025-07-22 16:25:18 UTC
+[ INFO] kernel::time::rtc: RTC initialized: 2025-07-22 17:14:28 UTC
 [ INFO] kernel: Timer initialized
 [ INFO] kernel: Keyboard queue initialized
 [ INFO] kernel: Initializing PIC...
@@ -642,7 +642,7 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [ INFO] kernel: Enabling interrupts...
 [ INFO] kernel: Interrupts enabled!
 [ INFO] kernel::time_test: === DIRECT TIMER TEST ===
-[ INFO] kernel::time_test: Initial monotonic time: 5 ms
+[ INFO] kernel::time_test: Initial monotonic time: 6 ms
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 0)
 [ INFO] kernel::task::scheduler: schedule() called #0: current=Some(0), ready_queue=[], idle_thread=0
 [ INFO] kernel::task::scheduler: Next thread from queue: 0, ready_queue after pop: []
@@ -722,21 +722,21 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 180)
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 210)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 210)
-[ INFO] kernel::time_test: After busy wait: 2227 ms (delta: 2222 ms)
-[ INFO] kernel::time_test: Raw tick counter: 2230
-[ INFO] kernel::time_test:   Call 0: 2232 ms
-[ INFO] kernel::time_test:   Call 1: 2233 ms
-[ INFO] kernel::time_test:   Call 2: 2235 ms
-[ INFO] kernel::time_test:   Call 3: 2236 ms
-[ INFO] kernel::time_test:   Call 4: 2238 ms
+[ INFO] kernel::time_test: After busy wait: 2197 ms (delta: 2191 ms)
+[ INFO] kernel::time_test: Raw tick counter: 2201
+[ INFO] kernel::time_test:   Call 0: 2203 ms
+[ INFO] kernel::time_test:   Call 1: 2205 ms
+[ INFO] kernel::time_test:   Call 2: 2207 ms
+[ INFO] kernel::time_test:   Call 3: 2208 ms
+[ INFO] kernel::time_test:   Call 4: 2210 ms
 [ INFO] kernel::time_test: === TIMER TEST COMPLETE ===
 [ INFO] kernel::time_test: SUCCESS: Timer appears to be working
 [ INFO] kernel::rtc_test: === RTC AND REAL TIME TEST ===
-[ INFO] kernel::rtc_test: RTC Unix timestamp: 1753201521
-[ INFO] kernel::rtc_test: RTC DateTime: 2025-07-22 16:25:21
-[ INFO] kernel::rtc_test: Boot time: 2025-07-22 16:25:18
-[ INFO] kernel::rtc_test: Real time: 2025-07-22 16:25:20
-[ INFO] kernel::rtc_test: Monotonic time: 2255 ms (2 seconds since boot)
+[ INFO] kernel::rtc_test: RTC Unix timestamp: 1753204470
+[ INFO] kernel::rtc_test: RTC DateTime: 2025-07-22 17:14:30
+[ INFO] kernel::rtc_test: Boot time: 2025-07-22 17:14:28
+[ INFO] kernel::rtc_test: Real time: 2025-07-22 17:14:30
+[ INFO] kernel::rtc_test: Monotonic time: 2232 ms (2 seconds since boot)
 [ INFO] kernel::rtc_test: Waiting 2 seconds...
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 240)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 240)
@@ -752,12 +752,12 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 390)
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 420)
 [DEBUG] kernel::interrupts::context_switch: scheduler::schedule() returned: None (count: 420)
-[ INFO] kernel::rtc_test: Real time after wait: 2025-07-22 16:25:22
+[ INFO] kernel::rtc_test: Real time after wait: 2025-07-22 17:14:32
 [ INFO] kernel::rtc_test: === RTC TEST COMPLETE ===
 [ INFO] kernel::rtc_test: SUCCESS: RTC and real time appear to be working
 [ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST ===
-[ INFO] kernel::clock_gettime_test: CLOCK_MONOTONIC: 4 s, 265000000 ns
-[ INFO] kernel::clock_gettime_test: CLOCK_REALTIME: 2025-07-22 16:25:22
+[ INFO] kernel::clock_gettime_test: CLOCK_MONOTONIC: 4 s, 244000000 ns
+[ INFO] kernel::clock_gettime_test: CLOCK_REALTIME: 2025-07-22 17:14:32
 [ INFO] kernel::clock_gettime_test: ✓ Monotonicity confirmed
 [ INFO] kernel::clock_gettime_test: ✓ Invalid ID correctly returned EINVAL
 [ INFO] kernel::clock_gettime_test: === CLOCK_GETTIME TEST COMPLETE ===
@@ -765,17 +765,17 @@ INFO : Jumping to kernel entry point at VirtAddr(0x1000005a960)
 [ INFO] kernel::interrupts: EXCEPTION: BREAKPOINT
 InterruptStackFrame {
     instruction_pointer: VirtAddr(
-        0x100000664f1,
+        0x1000006ead1,
     ),
     code_segment: SegmentSelector {
         index: 1,
         rpl: Ring0,
     },
     cpu_flags: RFlags(
-        INTERRUPT_FLAG | PARITY_FLAG | 0x2,
+        INTERRUPT_FLAG | 0x2,
     ),
     stack_pointer: VirtAddr(
-        0x180000132b8,
+        0x180000133c8,
     ),
     stack_segment: SegmentSelector {
         index: 2,
@@ -785,4 +785,22 @@ InterruptStackFrame {
 [ INFO] kernel: Breakpoint test completed!
 [ INFO] kernel: Running kernel tests...
 [ INFO] kernel: Skipping GDT tests temporarily
+DEBUG: About to print 'All kernel tests passed!'
+All kernel tests passed! (via serial_println)
+DEBUG: After printing 'All kernel tests passed!'
+DEBUG: After testing block (serial_println)
+[ INFO] kernel: After testing block, continuing...
+Before Simple log 1
+[ INFO] kernel: Simple log message 1
+After Simple log 1
+Before interrupt check
+After interrupt check
+[ INFO] kernel: Simple log message 2
+After Simple log 2
+[ INFO] kernel: Interrupts are still enabled
+[ INFO] kernel: About to check exception test features...
+[ INFO] kernel: Skipping timer tests due to hangs
+[ INFO] kernel: DEBUG: About to call test_syscalls()
+DEBUG: test_syscalls() function entered
+[ INFO] kernel: DEBUG: Proceeding with syscall tests
 [DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 450)
