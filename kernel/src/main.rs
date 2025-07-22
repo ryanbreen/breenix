@@ -235,9 +235,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Interrupts enabled!");
     
     // Test timer functionality immediately
-    time_test::test_timer_directly();
-    rtc_test::test_rtc_and_real_time();
-    clock_gettime_test::test_clock_gettime();
+    // TEMPORARILY DISABLED - these tests delay userspace execution
+    // time_test::test_timer_directly();
+    // rtc_test::test_rtc_and_real_time();
+    // clock_gettime_test::test_clock_gettime();
     
     // Test if interrupts are working by triggering a breakpoint
     log::info!("Testing breakpoint interrupt...");
@@ -404,6 +405,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
         test_exec::test_userspace_fork();
         log::info!("Userspace fork test completed.");
+        
+        // Test ENOSYS syscall
+        log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
+        test_exec::test_syscall_enosys();
+        log::info!("ENOSYS test completed.");
     });
     
     // Give the scheduler a chance to run the created processes

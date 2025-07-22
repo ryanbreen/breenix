@@ -199,7 +199,7 @@ pub fn init_early() {
     // Set up the logger immediately so all log calls work
     log::set_logger(&COMBINED_LOGGER)
         .expect("Logger already set");
-    log::set_max_level(LevelFilter::Trace);
+    log::set_max_level(LevelFilter::Debug);
 }
 
 /// Call after serial port is initialized

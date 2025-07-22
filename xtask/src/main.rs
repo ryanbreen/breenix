@@ -14,11 +14,14 @@ use structopt::StructOpt;
 enum Cmd {
     /// Build Breenix and run the Ring‑3 smoke test in QEMU.
     Ring3Smoke,
+    /// Test that undefined syscalls return ENOSYS.
+    Ring3Enosys,
 }
 
 fn main() -> Result<()> {
     match Cmd::from_args() {
         Cmd::Ring3Smoke => ring3_smoke(),
+        Cmd::Ring3Enosys => ring3_enosys(),
     }
 }
 
@@ -130,5 +133,55 @@ fn ring3_smoke() -> Result<()> {
         Ok(())
     } else {
         bail!("\n❌  Ring‑3 smoke test failed: no evidence of userspace execution");
+    }
+}
+
+fn ring3_enosys() -> anyhow::Result<()> {
+    use std::{fs, thread, time::{Duration, Instant}};
+    const SERIAL: &str = "target/xtask_ring3_enosys.txt";
+    
+    println!("Building and running ENOSYS test...");
+    
+    // Remove old output file
+    let _ = fs::remove_file(SERIAL);
+
+    // Run QEMU via cargo like the smoke test does
+    let mut child = Command::new("cargo")
+        .args(&[
+            "run",
+            "--release",
+            "-p",
+            "breenix",
+            "--bin",
+            "qemu-uefi",
+            "--",
+            "-serial",
+            &format!("file:{}", SERIAL),
+            "-display",
+            "none",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(60);
+    let mut ok = false;
+
+    while start.elapsed() < timeout {
+        if let Ok(buf) = fs::read_to_string(SERIAL) {
+            if buf.contains("ENOSYS OK") { ok = true; break; }
+            if buf.contains("ENOSYS FAIL") { break; }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    let _ = child.kill();
+    if ok {
+        println!("✅  ENOSYS negative test passed");
+        Ok(())
+    } else {
+        anyhow::bail!("❌  ENOSYS negative test failed or timed out");
     }
 }

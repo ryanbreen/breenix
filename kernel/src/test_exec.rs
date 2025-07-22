@@ -779,3 +779,21 @@ fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
     
     elf
 }
+
+/// Test that undefined syscalls return ENOSYS
+pub fn test_syscall_enosys() {
+    log::info!("Testing undefined syscall returns ENOSYS");
+    
+    // Include the syscall_enosys ELF binary
+    let syscall_enosys_elf = include_bytes!("../../userspace/tests/syscall_enosys.elf");
+    
+    match crate::process::creation::create_user_process(String::from("syscall_enosys"), syscall_enosys_elf) {
+        Ok(pid) => {
+            log::info!("Created syscall_enosys process with PID {:?}", pid);
+            log::info!("    -> Should print 'ENOSYS OK' if syscall 999 returns -38");
+        }
+        Err(e) => {
+            log::error!("Failed to create syscall_enosys process: {}", e);
+        }
+    }
+}

@@ -29,6 +29,10 @@ path = "fork_test.rs"
 name = "timer_test"
 path = "timer_test.rs"
 
+[[bin]]
+name = "syscall_enosys"
+path = "syscall_enosys.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
