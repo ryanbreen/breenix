@@ -162,6 +162,11 @@ extern "x86-interrupt" fn double_fault_handler(
     log::error!("Current page table frame: {:?}", frame);
     
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+    
+    // This should never be reached due to panic, but ensures the function diverges
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 
