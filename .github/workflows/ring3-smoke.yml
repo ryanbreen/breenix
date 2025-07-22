@@ -16,6 +16,7 @@ jobs:
 
     env:
       RUSTFLAGS: "-C target-cpu=native"
+      CARGO_UNSTABLE_BINDEPS: 1
 
     steps:
       - name: Checkout
@@ -24,9 +25,9 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: nightly
           override: true
-          components: rust-src
+          components: rust-src, llvm-tools-preview
 
       - name: Install QEMU + OVMF
         run: |
