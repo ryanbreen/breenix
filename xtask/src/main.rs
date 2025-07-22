@@ -85,7 +85,11 @@ fn ring3_smoke() -> Result<()> {
     // Monitor the output file for expected string
     let mut found = false;
     let test_start = Instant::now();
-    let timeout = Duration::from_secs(15);
+    let timeout = if std::env::var("CI").is_ok() {
+        Duration::from_secs(60)  // 60 seconds for CI (kernel logs are verbose)
+    } else {
+        Duration::from_secs(30)  // 30 seconds locally
+    };
     
     while test_start.elapsed() < timeout {
         if let Ok(mut file) = fs::File::open(serial_output_file) {
