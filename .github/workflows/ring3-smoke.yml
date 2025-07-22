@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 20
 
     env:
-      RUSTFLAGS: "-C target-cpu=native"
       CARGO_UNSTABLE_BINDEPS: true
 
     steps:
