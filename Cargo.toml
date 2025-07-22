@@ -20,7 +20,10 @@ name = "qemu-bios"
 test = false
 
 [workspace]
-members = ["kernel", "mcp"]
+members = [
+    "kernel",
+    "xtask"
+]
 
 [dependencies]
 ovmf-prebuilt = "0.2.3"
