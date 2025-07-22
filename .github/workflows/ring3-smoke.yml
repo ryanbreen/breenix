@@ -42,6 +42,11 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Build userspace tests
+        run: |
+          cd userspace/tests
+          ./build.sh
+
       - name: Run Ring‑3 smoke test
         run: cargo run -p xtask -- ring3-smoke
 
