@@ -66,14 +66,20 @@ fn ring3_smoke() -> Result<()> {
     
     println!("QEMU started, monitoring output...");
     
-    // Wait for output file to be created
+    // Wait for output file to be created (longer timeout for CI where build may be slower)
     let start = Instant::now();
+    let file_creation_timeout = if std::env::var("CI").is_ok() {
+        Duration::from_secs(300) // 5 minutes for CI
+    } else {
+        Duration::from_secs(30)  // 30 seconds locally
+    };
+    
     while !std::path::Path::new(serial_output_file).exists() {
-        if start.elapsed() > Duration::from_secs(5) {
+        if start.elapsed() > file_creation_timeout {
             let _ = child.kill();
-            bail!("Serial output file not created after 5 seconds");
+            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(500));
     }
     
     // Monitor the output file for expected string
