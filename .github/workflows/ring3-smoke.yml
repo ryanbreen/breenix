@@ -16,7 +16,7 @@ jobs:
 
     env:
       RUSTFLAGS: "-C target-cpu=native"
-      CARGO_UNSTABLE_BINDEPS: 1
+      CARGO_UNSTABLE_BINDEPS: true
 
     steps:
       - name: Checkout
