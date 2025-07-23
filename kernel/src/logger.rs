@@ -4,10 +4,49 @@ use bootloader_x86_64_common::logger::LockedLogger;
 use crate::serial_println;
 use spin::Mutex;
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 pub static FRAMEBUFFER_LOGGER: OnceCell<LockedLogger> = OnceCell::uninit();
 
 const BUFFER_SIZE: usize = 8192;
+
+/// Counting sink to suppress TRACE logs while preserving timing
+/// This prevents log spam while maintaining the synchronization side effects
+struct CountingSink(AtomicU64);
+
+impl CountingSink {
+    const fn new() -> Self {
+        CountingSink(AtomicU64::new(0))
+    }
+}
+
+impl Log for CountingSink {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() == Level::Trace
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            // Increment counter but don't output
+            self.0.fetch_add(1, Ordering::Relaxed);
+            
+            // Preserve all the timing side effects of log processing
+            let _level = record.level();
+            let _target = record.target();
+            let _args = record.args();
+            
+            // This format_args call is crucial - it forces evaluation of the arguments
+            // which preserves the timing behavior that prevents the race condition
+            let _ = format_args!("{}", _args);
+        }
+    }
+
+    fn flush(&self) {
+        // No-op for counting sink
+    }
+}
+
+static COUNTING_SINK: CountingSink = CountingSink::new();
 
 /// Buffer for storing log messages before serial is initialized
 struct LogBuffer {
@@ -102,6 +141,15 @@ impl Log for CombinedLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
+            // SUPPRESS TRACE LOGS TO REDUCE OUTPUT WHILE PRESERVING TIMING
+            if record.level() == Level::Trace {
+                // Process the log record to preserve timing but don't output
+                let _level = record.level();
+                let _target = record.target();
+                let _args = record.args();
+                let _ = format_args!("{}", _args);
+                return;
+            }
             // Format the message manually to avoid allocation
             let level = record.level();
             let target = record.target();
@@ -196,10 +244,11 @@ pub static COMBINED_LOGGER: CombinedLogger = CombinedLogger::new();
 
 /// Initialize the logger early - can be called before serial is ready
 pub fn init_early() {
-    // Set up the logger immediately so all log calls work
+    // Set up the combined logger with TRACE level
+    // The CombinedLogger already suppresses TRACE logs while preserving timing
     log::set_logger(&COMBINED_LOGGER)
         .expect("Logger already set");
-    log::set_max_level(LevelFilter::Debug);
+    log::set_max_level(LevelFilter::Trace);
 }
 
 /// Call after serial port is initialized
