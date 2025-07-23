@@ -308,11 +308,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("Re-enabled interrupts");
     }
     
-    #[cfg(feature = "exception-tests")]
     log::info!("About to check exception test features...");
     
     // Test specific exceptions if enabled
-    #[cfg(all(feature = "exception-tests", feature = "test_divide_by_zero"))]
+    #[cfg(feature = "test_divide_by_zero")]
     {
         log::info!("Testing divide by zero exception...");
         unsafe {
@@ -327,7 +326,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::error!("SHOULD NOT REACH HERE - divide by zero should have triggered exception");
     }
     
-    #[cfg(all(feature = "exception-tests", feature = "test_invalid_opcode"))]
+    #[cfg(feature = "test_invalid_opcode")]
     {
         log::info!("Testing invalid opcode exception...");
         unsafe {
@@ -336,7 +335,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::error!("SHOULD NOT REACH HERE - invalid opcode should have triggered exception");
     }
     
-    #[cfg(all(feature = "exception-tests", feature = "test_page_fault"))]
+    #[cfg(feature = "test_page_fault")]
     {
         log::info!("Testing page fault exception...");
         unsafe {
