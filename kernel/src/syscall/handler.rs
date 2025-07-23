@@ -109,7 +109,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         }
         None => {
             log::warn!("Unknown syscall number: {}", syscall_num);
-            SyscallResult::Err(u64::MAX)
+            SyscallResult::Err(38) // ENOSYS
         }
     };
     

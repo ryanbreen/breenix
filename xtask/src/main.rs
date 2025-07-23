@@ -171,8 +171,14 @@ fn ring3_enosys() -> anyhow::Result<()> {
 
     while start.elapsed() < timeout {
         if let Ok(buf) = fs::read_to_string(SERIAL) {
-            if buf.contains("ENOSYS OK") { ok = true; break; }
-            if buf.contains("ENOSYS FAIL") { break; }
+            // Look for actual userspace output
+            if buf.contains("USERSPACE OUTPUT: ENOSYS OK") { 
+                ok = true; 
+                break; 
+            }
+            if buf.contains("USERSPACE OUTPUT: ENOSYS FAIL") { 
+                break; 
+            }
         }
         thread::sleep(Duration::from_millis(200));
     }
