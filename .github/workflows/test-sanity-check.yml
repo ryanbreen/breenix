@@ -62,7 +62,11 @@ jobs:
     - name: Check for Userspace Success
       run: |
         echo "=== Checking for userspace execution success ==="
-        if grep -q "USERSPACE OUTPUT: Hello from userspace" test_output.log; then
+        # Find the most recent log file
+        LATEST_LOG=$(ls -t logs/breenix_*.log | head -1)
+        echo "Checking log file: $LATEST_LOG"
+        
+        if [ -f "$LATEST_LOG" ] && grep -q "USERSPACE OUTPUT: Hello from userspace" "$LATEST_LOG"; then
           echo "✅ USERSPACE EXECUTION SUCCESSFUL!"
           echo "Found userspace output in logs"
           exit 0
@@ -70,8 +74,13 @@ jobs:
           echo "❌ USERSPACE EXECUTION FAILED!"
           echo "Did not find expected userspace output"
           echo ""
-          echo "=== Last 50 lines of output ==="
-          tail -50 test_output.log
+          echo "=== Last 50 lines of kernel output ==="
+          if [ -f "$LATEST_LOG" ]; then
+            tail -50 "$LATEST_LOG"
+          else
+            echo "No log file found!"
+            ls -la logs/
+          fi
           exit 1
         fi
         
