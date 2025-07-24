@@ -38,8 +38,9 @@ jobs:
         nasm --version
         
     - name: Setup Rust
-      uses: dtolnay/rust-toolchain@nightly
+      uses: dtolnay/rust-toolchain@master
       with:
+        toolchain: nightly-2025-06-23
         components: rust-src, llvm-tools-preview
         
     - name: Build Breenix

@@ -25,8 +25,9 @@ jobs:
         sudo apt-get install -y qemu-system-x86 nasm
         
     - name: Setup Rust
-      uses: dtolnay/rust-toolchain@nightly
+      uses: dtolnay/rust-toolchain@master
       with:
+        toolchain: nightly-2025-06-23
         components: rust-src, llvm-tools-preview
         
     - name: Cache cargo registry
