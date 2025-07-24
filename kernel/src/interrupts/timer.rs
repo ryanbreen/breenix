@@ -27,19 +27,20 @@ pub extern "C" fn timer_interrupt_handler() {
     //     log::debug!("Timer interrupt #{}", count);
     //     log::debug!("Timer interrupt #{} - starting handler", count);
     // }
-    
+
     // Update global timer tick count
     crate::time::increment_ticks();
-    
+
     // Decrement current thread's quantum
     unsafe {
         if CURRENT_QUANTUM > 0 {
             CURRENT_QUANTUM -= 1;
         }
-        
+
         // Check if there are user threads ready to run
-        let has_user_threads = scheduler::with_scheduler(|s| s.has_userspace_threads()).unwrap_or(false);
-        
+        let has_user_threads =
+            scheduler::with_scheduler(|s| s.has_userspace_threads()).unwrap_or(false);
+
         // If quantum expired OR there are user threads ready (for idle thread), set need_resched flag
         if CURRENT_QUANTUM == 0 || has_user_threads {
             // TEMPORARILY DISABLE LOGGING
@@ -54,20 +55,21 @@ pub extern "C" fn timer_interrupt_handler() {
             CURRENT_QUANTUM = TIME_QUANTUM; // Reset for next thread
         }
     }
-    
+
     // Send End Of Interrupt
     // TEMPORARILY DISABLE LOGGING
     // if count < 5 {
     //     log::debug!("Timer interrupt #{} - sending EOI", count);
     // }
     unsafe {
-        super::PICS.lock()
+        super::PICS
+            .lock()
             .notify_end_of_interrupt(super::InterruptIndex::Timer.as_u8());
     }
     // if count < 5 {
     //     log::debug!("Timer interrupt #{} - EOI sent", count);
     // }
-    
+
     // if count < 5 {
     //     log::debug!("Timer interrupt #{} complete", count);
     // }

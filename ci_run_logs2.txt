@@ -1,0 +1,1343 @@
+Test Userspace Execution	Set up job	﻿2025-07-24T13:04:47.6286134Z Current runner version: '2.326.0'
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6322674Z ##[group]Runner Image Provisioner
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6324053Z Hosted Compute Agent
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6324964Z Version: 20250711.363
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6326062Z Commit: 6785254374ce925a23743850c1cb91912ce5c14c
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6327069Z Build Date: 2025-07-11T20:04:25Z
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6328191Z ##[endgroup]
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6329142Z ##[group]Operating System
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6329970Z Ubuntu
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6330680Z 24.04.2
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6331403Z LTS
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6332120Z ##[endgroup]
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6332821Z ##[group]Runner Image
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6333739Z Image: ubuntu-24.04
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6334492Z Version: 20250720.1.0
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6336113Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20250720.1/images/ubuntu/Ubuntu2404-Readme.md
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6338636Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20250720.1
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6340383Z ##[endgroup]
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6344753Z ##[group]GITHUB_TOKEN Permissions
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6347868Z Actions: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6348997Z Attestations: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6349974Z Checks: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6350688Z Contents: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6351429Z Deployments: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6352337Z Discussions: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6353261Z Issues: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6354091Z Metadata: read
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6355094Z Models: read
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6355986Z Packages: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6356790Z Pages: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6357713Z PullRequests: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6358970Z RepositoryProjects: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6359917Z SecurityEvents: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6361128Z Statuses: write
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6361996Z ##[endgroup]
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6365308Z Secret source: Actions
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6367083Z Prepare workflow directory
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6838559Z Prepare all required actions
+Test Userspace Execution	Set up job	2025-07-24T13:04:47.6892888Z Getting action download info
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.0861207Z ##[group]Download immutable action package 'actions/checkout@v4'
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.0862334Z Version: 4.2.2
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.0863373Z Digest: sha256:ccb2698953eaebd21c7bf6268a94f9c26518a7e38e27e0b83c1fe1ad049819b1
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.0865089Z Source commit SHA: 11bd71901bbe5b1630ceea73d27597364c9af683
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.0865885Z ##[endgroup]
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.1740186Z Download action repository 'dtolnay/rust-toolchain@master' (SHA:b3b07ba8b418998c39fb20f53e8b695cdcc8de1b)
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.4605162Z ##[group]Download immutable action package 'actions/cache@v4'
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.4606108Z Version: 4.2.3
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.4606851Z Digest: sha256:c8a3bb963e1f1826d8fcc8d1354f0dd29d8ac1db1d4f6f20247055ae11b81ed9
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.4607863Z Source commit SHA: 5a3ec84eff668545956fd18022155c47e93e2684
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.4608908Z ##[endgroup]
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.6434324Z ##[group]Download immutable action package 'actions/upload-artifact@v4'
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.6435689Z Version: 4.6.2
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.6436836Z Digest: sha256:290722aa3281d5caf23d0acdc3dbeb3424786a1a01a9cc97e72f147225e37c38
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.6438585Z Source commit SHA: ea165f8d65b6e75b540449e92b4886f43607fa02
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.6439807Z ##[endgroup]
+Test Userspace Execution	Set up job	2025-07-24T13:04:48.9586099Z Complete job name: Test Userspace Execution
+Test Userspace Execution	Checkout code	﻿2025-07-24T13:04:49.0366904Z ##[group]Run actions/checkout@v4
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0368334Z with:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0369046Z   repository: ryanbreen/breenix
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0370217Z   token: ***
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0370915Z   ssh-strict: true
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0371628Z   ssh-user: git
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0372355Z   persist-credentials: true
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0373167Z   clean: true
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0373892Z   sparse-checkout-cone-mode: true
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0374770Z   fetch-depth: 1
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0375472Z   fetch-tags: false
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0376198Z   show-progress: true
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0376930Z   lfs: false
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0377634Z   submodules: false
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0378842Z   set-safe-directory: true
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0379974Z env:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0380617Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.0381322Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1488639Z Syncing repository: ryanbreen/breenix
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1491445Z ##[group]Getting Git version info
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1492672Z Working directory is '/home/runner/work/breenix/breenix'
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1494435Z [command]/usr/bin/git version
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1519270Z git version 2.50.1
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1546427Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1569380Z Temporarily overriding HOME='/home/runner/work/_temp/ec5e4f1b-4a40-4cd5-86bb-d3ae6a0d2e0d' before making global git config changes
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1572000Z Adding repository directory to the temporary git global config as a safe directory
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1574388Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/breenix/breenix
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1618618Z Deleting the contents of '/home/runner/work/breenix/breenix'
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1622471Z ##[group]Initializing the repository
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1626439Z [command]/usr/bin/git init /home/runner/work/breenix/breenix
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1683947Z hint: Using 'master' as the name for the initial branch. This default branch name
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1686457Z hint: is subject to change. To configure the initial branch name to use in all
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1689618Z hint: of your new repositories, which will suppress this warning, call:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1691920Z hint:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1693458Z hint: 	git config --global init.defaultBranch <name>
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1695251Z hint:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1696908Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1700171Z hint: 'development'. The just-created branch can be renamed via this command:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1702457Z hint:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1703607Z hint: 	git branch -m <name>
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1704889Z hint:
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1706662Z hint: Disable this message with "git config set advice.defaultBranchName false"
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1708823Z Initialized empty Git repository in /home/runner/work/breenix/breenix/.git/
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1711679Z [command]/usr/bin/git remote add origin https://github.com/ryanbreen/breenix
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1735609Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1737850Z ##[group]Disabling automatic garbage collection
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1739918Z [command]/usr/bin/git config --local gc.auto 0
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1769713Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1770940Z ##[group]Setting up auth
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1776463Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.1807604Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.2073952Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.2106901Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.2329440Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.2365019Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.2366309Z ##[group]Fetching the repository
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.2374045Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +99225788d552f6d80f6800a1e8c18f6ba2c3ffce:refs/remotes/origin/sanity-check-happy-ring-3
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6299128Z From https://github.com/ryanbreen/breenix
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6300861Z  * [new ref]         99225788d552f6d80f6800a1e8c18f6ba2c3ffce -> origin/sanity-check-happy-ring-3
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6324495Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6326522Z ##[group]Determining the checkout info
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6328763Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6330467Z [command]/usr/bin/git sparse-checkout disable
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6372393Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6400643Z ##[group]Checking out the ref
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6404317Z [command]/usr/bin/git checkout --progress --force -B sanity-check-happy-ring-3 refs/remotes/origin/sanity-check-happy-ring-3
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6617922Z Switched to a new branch 'sanity-check-happy-ring-3'
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6621499Z branch 'sanity-check-happy-ring-3' set up to track 'origin/sanity-check-happy-ring-3'.
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6630005Z ##[endgroup]
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6667126Z [command]/usr/bin/git log -1 --format=%H
+Test Userspace Execution	Checkout code	2025-07-24T13:04:49.6690041Z 99225788d552f6d80f6800a1e8c18f6ba2c3ffce
+Test Userspace Execution	Install QEMU and build dependencies	﻿2025-07-24T13:04:49.6937036Z ##[group]Run sudo apt-get update
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.6938399Z [36;1msudo apt-get update[0m
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.6939432Z [36;1msudo apt-get install -y qemu-system-x86 nasm[0m
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.6974053Z shell: /usr/bin/bash -e {0}
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.6974951Z env:
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.6975584Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.6976294Z ##[endgroup]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.8045334Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.8404809Z Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.8442580Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.8491574Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.8543103Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.8993826Z Hit:6 https://packages.microsoft.com/repos/azure-cli noble InRelease
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:49.9190692Z Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.0845909Z Get:8 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1281 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.0992936Z Get:9 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [260 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1018985Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Components [163 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1038159Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1112 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1099819Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [284 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1124973Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Components [377 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1159555Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1572 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1241035Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [341 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1269658Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Components [212 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1279130Z Get:17 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Components [940 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1819068Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble-backports/main amd64 Components [7060 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1838736Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Components [28.3 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1854672Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble-backports/restricted amd64 Components [216 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1866618Z Get:21 http://azure.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Components [212 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.1935633Z Get:22 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [1023 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2011996Z Get:23 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [179 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2038964Z Get:24 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Components [21.6 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2070469Z Get:25 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [876 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2111165Z Get:26 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [193 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2139095Z Get:27 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Components [52.2 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2173459Z Get:28 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1484 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2273108Z Get:29 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted Translation-en [323 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2337662Z Get:30 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Components [212 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.2348432Z Get:31 http://azure.archive.ubuntu.com/ubuntu noble-security/multiverse amd64 Components [212 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.3300871Z Get:32 https://packages.microsoft.com/ubuntu/24.04/prod noble/main all Packages [643 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.3447214Z Get:33 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [43.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.3593749Z Get:34 https://packages.microsoft.com/ubuntu/24.04/prod noble/main armhf Packages [9488 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:50.3671872Z Get:35 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [29.1 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:58.9587649Z Fetched 10.0 MB in 1s (7569 kB/s)
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:59.6976640Z Reading package lists...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:59.7299796Z Reading package lists...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:59.9228485Z Building dependency tree...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:04:59.9236517Z Reading state information...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1010814Z The following additional packages will be installed:
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1012088Z   cpu-checker glib-networking glib-networking-common glib-networking-services
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1012873Z   gsettings-desktop-schemas gstreamer1.0-plugins-base
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1013465Z   gstreamer1.0-plugins-good gstreamer1.0-x ipxe-qemu
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1014208Z   ipxe-qemu-256k-compat-efi-roms libaa1 libasyncns0 libavc1394-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1017165Z   libboost-iostreams1.83.0 libboost-thread1.83.0 libbrlapi0.8 libcaca0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1020230Z   libcacard0 libcdparanoia0 libdaxctl1 libdecor-0-0 libdecor-0-plugin-1-gtk
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1023157Z   libdv4t64 libfdt1 libflac12t64 libgstreamer-plugins-base1.0-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1024391Z   libgstreamer-plugins-good1.0-0 libiec61883-0 libiscsi7 libjack-jackd2-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1025808Z   libmp3lame0 libmpg123-0t64 libndctl6 libnfs14 libopus0 liborc-0.4-0t64
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1027134Z   libpcsclite1 libpipewire-0.3-0t64 libpipewire-0.3-common libpmem1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1028577Z   libpmemobj1 libproxy1v5 libpulse0 librados2 libraw1394-11 librbd1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1029821Z   librdmacm1t64 libsamplerate0 libsdl2-2.0-0 libshout3 libsndfile1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1030950Z   libsoup-3.0-0 libsoup-3.0-common libspa-0.2-modules libspeex1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1031820Z   libspice-server1 libtag1v5 libtag1v5-vanilla libtheora0 libtwolame0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1032646Z   liburing2 libusbredirparser1t64 libv4l-0t64 libv4lconvert0t64
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1033510Z   libvirglrenderer1 libvisual-0.4-0 libvorbisenc2 libvpx9 libvte-2.91-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1034429Z   libvte-2.91-common libwavpack1 libwebrtc-audio-processing1 libxv1 msr-tools
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1035353Z   ovmf qemu-block-extra qemu-system-common qemu-system-data qemu-system-gui
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1036266Z   qemu-system-modules-opengl qemu-system-modules-spice qemu-utils seabios
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1036963Z   session-migration
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1037356Z Suggested packages:
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1037931Z   gvfs libdv-bin oss-compat libvisual-0.4-plugins jackd2 opus-tools pcscd
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1038929Z   pipewire pulseaudio libraw1394-doc speex gstreamer1.0-libav
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1039717Z   gstreamer1.0-plugins-ugly samba vde2
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1713839Z The following NEW packages will be installed:
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1714848Z   cpu-checker glib-networking glib-networking-common glib-networking-services
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1715603Z   gsettings-desktop-schemas gstreamer1.0-plugins-base
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1716651Z   gstreamer1.0-plugins-good gstreamer1.0-x ipxe-qemu
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1717262Z   ipxe-qemu-256k-compat-efi-roms libaa1 libasyncns0 libavc1394-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1718172Z   libboost-iostreams1.83.0 libboost-thread1.83.0 libbrlapi0.8 libcaca0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1719086Z   libcacard0 libcdparanoia0 libdaxctl1 libdecor-0-0 libdecor-0-plugin-1-gtk
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1719862Z   libdv4t64 libfdt1 libflac12t64 libgstreamer-plugins-base1.0-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1720935Z   libgstreamer-plugins-good1.0-0 libiec61883-0 libiscsi7 libjack-jackd2-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1721860Z   libmp3lame0 libmpg123-0t64 libndctl6 libnfs14 libopus0 liborc-0.4-0t64
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1722692Z   libpcsclite1 libpipewire-0.3-0t64 libpipewire-0.3-common libpmem1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1723470Z   libpmemobj1 libproxy1v5 libpulse0 librados2 libraw1394-11 librbd1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1724651Z   librdmacm1t64 libsamplerate0 libsdl2-2.0-0 libshout3 libsndfile1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1725514Z   libsoup-3.0-0 libsoup-3.0-common libspa-0.2-modules libspeex1
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1726475Z   libspice-server1 libtag1v5 libtag1v5-vanilla libtheora0 libtwolame0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1727391Z   liburing2 libusbredirparser1t64 libv4l-0t64 libv4lconvert0t64
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1728533Z   libvirglrenderer1 libvisual-0.4-0 libvorbisenc2 libvpx9 libvte-2.91-0
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1729653Z   libvte-2.91-common libwavpack1 libwebrtc-audio-processing1 libxv1 msr-tools
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1730722Z   nasm ovmf qemu-block-extra qemu-system-common qemu-system-data
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1731675Z   qemu-system-gui qemu-system-modules-opengl qemu-system-modules-spice
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1732550Z   qemu-system-x86 qemu-utils seabios session-migration
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1941365Z 0 upgraded, 86 newly installed, 0 to remove and 18 not upgraded.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1941997Z Need to get 46.2 MB of archives.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1942323Z After this operation, 192 MB of additional disk space will be used.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.1942702Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.2580377Z Get:2 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 msr-tools amd64 1.3-5build1 [9610 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.3061381Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 cpu-checker amd64 0.7-1.3build2 [6148 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.3544811Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libproxy1v5 amd64 0.5.4-4build1 [26.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.4052572Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 glib-networking-common all 2.80.0-1build1 [6702 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.4543990Z Get:6 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 glib-networking-services amd64 2.80.0-1build1 [12.8 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.5022265Z Get:7 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 session-migration amd64 0.3.9build1 [9034 B]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.5496512Z Get:8 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 gsettings-desktop-schemas all 46.1-0ubuntu1 [35.6 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.5997491Z Get:9 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 glib-networking amd64 2.80.0-1build1 [64.1 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.6491977Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libcdparanoia0 amd64 3.10.2+debian-14build3 [48.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.6987756Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 liborc-0.4-0t64 amd64 1:0.4.38-1ubuntu0.1 [207 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.7580671Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgstreamer-plugins-base1.0-0 amd64 1.24.2-1ubuntu0.2 [862 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.9062198Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libopus0 amd64 1.4-1build1 [208 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:00.9967566Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libtheora0 amd64 1.1.1+dfsg.1-16.1build3 [211 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.0566525Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libvisual-0.4-0 amd64 0.4.2-2build1 [115 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.1073469Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libvorbisenc2 amd64 1.3.7-1build3 [80.8 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.1987403Z Get:17 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 gstreamer1.0-plugins-base amd64 1.24.2-1ubuntu0.2 [721 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.3187764Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libaa1 amd64 1.4p5-51.1 [49.9 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.3679586Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libraw1394-11 amd64 2.1.2-2build3 [26.2 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.4196419Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libavc1394-0 amd64 0.5.4-5build3 [15.4 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.4658648Z Get:21 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libcaca0 amd64 0.99.beta20-4build2 [208 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.5308745Z Get:22 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libdv4t64 amd64 1.0.0-17.1build1 [63.2 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.5843906Z Get:23 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libflac12t64 amd64 1.4.3+ds-2.1ubuntu2 [197 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.6458689Z Get:24 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libgstreamer-plugins-good1.0-0 amd64 1.24.2-1ubuntu1.1 [32.9 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.6911803Z Get:25 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libiec61883-0 amd64 1.2.0-6build1 [24.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.7396288Z Get:26 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libmp3lame0 amd64 3.100-6build1 [142 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.8010272Z Get:27 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libmpg123-0t64 amd64 1.32.5-1ubuntu1.1 [169 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.8643165Z Get:28 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libasyncns0 amd64 0.8-6build4 [11.3 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.9122138Z Get:29 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libsndfile1 amd64 1.2.2-1ubuntu5.24.04.1 [209 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:01.9857589Z Get:30 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpulse0 amd64 1:16.1+dfsg1-2ubuntu10.1 [292 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.0734326Z Get:31 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libspeex1 amd64 1.2.1-2ubuntu2.24.04.1 [59.6 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.1290075Z Get:32 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libshout3 amd64 2.4.6-1build2 [50.3 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.1839070Z Get:33 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libtag1v5-vanilla amd64 1.13.1-1build1 [326 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.2657559Z Get:34 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libtag1v5 amd64 1.13.1-1build1 [11.7 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.3201253Z Get:35 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libtwolame0 amd64 0.4.0-2build3 [52.3 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.3666372Z Get:36 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libv4lconvert0t64 amd64 1.26.1-4build3 [87.6 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.4220918Z Get:37 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libv4l-0t64 amd64 1.26.1-4build3 [46.9 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.4761043Z Get:38 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libvpx9 amd64 1.14.0-1ubuntu2.2 [1143 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.6361996Z Get:39 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libwavpack1 amd64 5.6.0-1build1 [84.6 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.6902219Z Get:40 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libsoup-3.0-common all 3.4.4-5ubuntu0.5 [11.3 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.7375101Z Get:41 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libsoup-3.0-0 amd64 3.4.4-5ubuntu0.5 [291 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:02.8098184Z Get:42 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 gstreamer1.0-plugins-good amd64 1.24.2-1ubuntu1.1 [2238 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.0769067Z Get:43 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libxv1 amd64 2:1.0.11-1.1build1 [10.7 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.1262220Z Get:44 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 gstreamer1.0-x amd64 1.24.2-1ubuntu0.2 [85.0 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.1775309Z Get:45 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 ipxe-qemu all 1.21.1+git-20220113.fbbdc3926-0ubuntu2 [1565 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.3379033Z Get:46 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 ipxe-qemu-256k-compat-efi-roms all 1.0.0+git-20150424.a25a16d-0ubuntu5 [548 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.4456967Z Get:47 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libboost-iostreams1.83.0 amd64 1.83.0-2.1ubuntu3.1 [259 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.5150878Z Get:48 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libboost-thread1.83.0 amd64 1.83.0-2.1ubuntu3.1 [276 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.5868587Z Get:49 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libbrlapi0.8 amd64 6.6-4ubuntu5 [31.4 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.6339883Z Get:50 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libpcsclite1 amd64 2.0.3-1build1 [21.4 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.6800034Z Get:51 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libcacard0 amd64 1:2.8.0-3build4 [36.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.7273403Z Get:52 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libdaxctl1 amd64 77-2ubuntu2 [21.4 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.7723110Z Get:53 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libdecor-0-0 amd64 0.2.2-1build2 [16.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.8226211Z Get:54 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libdecor-0-plugin-1-gtk amd64 0.2.2-1build2 [22.2 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.8688840Z Get:55 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 librdmacm1t64 amd64 50.0-2ubuntu0.2 [70.7 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.9267116Z Get:56 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libiscsi7 amd64 1.19.0-3build4 [68.7 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:03.9955010Z Get:57 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libsamplerate0 amd64 0.2.2-4build1 [1344 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.1819522Z Get:58 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libjack-jackd2-0 amd64 1.9.21~dfsg-3ubuntu3 [289 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.2767339Z Get:59 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libndctl6 amd64 77-2ubuntu2 [62.8 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.3274040Z Get:60 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libnfs14 amd64 5.0.2-1build1 [109 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.3830290Z Get:61 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libwebrtc-audio-processing1 amd64 0.3.1-0ubuntu6 [290 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.4476850Z Get:62 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libspa-0.2-modules amd64 1.0.5-1ubuntu3.1 [626 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.5647225Z Get:63 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpipewire-0.3-0t64 amd64 1.0.5-1ubuntu3.1 [252 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.6241026Z Get:64 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libpipewire-0.3-common all 1.0.5-1ubuntu3.1 [18.9 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.6697785Z Get:65 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libpmem1 amd64 1.13.1-1.1ubuntu2 [84.8 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.7207028Z Get:66 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libpmemobj1 amd64 1.13.1-1.1ubuntu2 [116 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:04.7737436Z Get:67 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 librados2 amd64 19.2.1-0ubuntu0.24.04.2 [4042 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.0010127Z Get:68 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 librbd1 amd64 19.2.1-0ubuntu0.24.04.2 [3511 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.2412887Z Get:69 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libsdl2-2.0-0 amd64 2.30.0+dfsg-1ubuntu3.1 [686 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.3393911Z Get:70 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libspice-server1 amd64 0.15.1-1build2 [349 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.4030743Z Get:71 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 liburing2 amd64 2.5-1build1 [21.1 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.4522202Z Get:72 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libusbredirparser1t64 amd64 0.13.0-2.1build1 [16.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.4993337Z Get:73 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libvirglrenderer1 amd64 1.0.0-1ubuntu2 [226 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.5519326Z Get:74 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libvte-2.91-common amd64 0.76.0-1ubuntu0.1 [13.5 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.6047357Z Get:75 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libvte-2.91-0 amd64 0.76.0-1ubuntu0.1 [230 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.6633502Z Get:76 http://azure.archive.ubuntu.com/ubuntu noble/universe amd64 nasm amd64 2.16.01-1build1 [459 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.7524988Z Get:77 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 libfdt1 amd64 1.7.0-2build1 [20.1 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.8007269Z Get:78 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-system-common amd64 1:8.2.2+ds-0ubuntu1.7 [1253 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:05.9849683Z Get:79 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-system-data all 1:8.2.2+ds-0ubuntu1.7 [1793 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:06.2007608Z Get:80 http://azure.archive.ubuntu.com/ubuntu noble/main amd64 seabios all 1.16.3-2 [175 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:06.2617715Z Get:81 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-system-x86 amd64 1:8.2.2+ds-0ubuntu1.7 [11.2 MB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.0921107Z Get:82 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-utils amd64 1:8.2.2+ds-0ubuntu1.7 [2220 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.2596045Z Get:83 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-block-extra amd64 1:8.2.2+ds-0ubuntu1.7 [111 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.3077578Z Get:84 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-system-modules-opengl amd64 1:8.2.2+ds-0ubuntu1.7 [184 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.3541783Z Get:85 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-system-gui amd64 1:8.2.2+ds-0ubuntu1.7 [314 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.4030090Z Get:86 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 qemu-system-modules-spice amd64 1:8.2.2+ds-0ubuntu1.7 [70.2 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.4479908Z Get:87 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 ovmf all 2024.02-2ubuntu0.4 [4571 kB]
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.9600222Z Fetched 46.2 MB in 7s (6204 kB/s)
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:07.9992437Z Selecting previously unselected package msr-tools.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0810043Z (Reading database ... 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0810655Z (Reading database ... 5%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0811152Z (Reading database ... 10%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0811617Z (Reading database ... 15%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0812047Z (Reading database ... 20%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0812358Z (Reading database ... 25%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0812666Z (Reading database ... 30%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0812957Z (Reading database ... 35%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0813273Z (Reading database ... 40%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0813567Z (Reading database ... 45%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.0813872Z (Reading database ... 50%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.2009189Z (Reading database ... 55%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.5235142Z (Reading database ... 60%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:08.8591528Z (Reading database ... 65%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:09.1777270Z (Reading database ... 70%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:09.5174868Z (Reading database ... 75%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:10.0233784Z (Reading database ... 80%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:10.5372599Z (Reading database ... 85%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.1154350Z (Reading database ... 90%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5365530Z (Reading database ... 95%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5366072Z (Reading database ... 100%
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5366693Z (Reading database ... 219605 files and directories currently installed.)
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5416494Z Preparing to unpack .../00-msr-tools_1.3-5build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5446893Z Unpacking msr-tools (1.3-5build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5836820Z Selecting previously unselected package cpu-checker.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5979390Z Preparing to unpack .../01-cpu-checker_0.7-1.3build2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.5989642Z Unpacking cpu-checker (0.7-1.3build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.6358808Z Selecting previously unselected package libproxy1v5:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.6501819Z Preparing to unpack .../02-libproxy1v5_0.5.4-4build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.6567765Z Unpacking libproxy1v5:amd64 (0.5.4-4build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.6856477Z Selecting previously unselected package glib-networking-common.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.6998828Z Preparing to unpack .../03-glib-networking-common_2.80.0-1build1_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.7011201Z Unpacking glib-networking-common (2.80.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.7230281Z Selecting previously unselected package glib-networking-services.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.7369741Z Preparing to unpack .../04-glib-networking-services_2.80.0-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.7380560Z Unpacking glib-networking-services (2.80.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.7612480Z Selecting previously unselected package session-migration.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.7753585Z Preparing to unpack .../05-session-migration_0.3.9build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.7765821Z Unpacking session-migration (0.3.9build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.8133431Z Selecting previously unselected package gsettings-desktop-schemas.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.8272082Z Preparing to unpack .../06-gsettings-desktop-schemas_46.1-0ubuntu1_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.8284712Z Unpacking gsettings-desktop-schemas (46.1-0ubuntu1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.8586400Z Selecting previously unselected package glib-networking:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.8725313Z Preparing to unpack .../07-glib-networking_2.80.0-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.8735217Z Unpacking glib-networking:amd64 (2.80.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.8988948Z Selecting previously unselected package libcdparanoia0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9139812Z Preparing to unpack .../08-libcdparanoia0_3.10.2+debian-14build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9150353Z Unpacking libcdparanoia0:amd64 (3.10.2+debian-14build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9396847Z Selecting previously unselected package liborc-0.4-0t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9537122Z Preparing to unpack .../09-liborc-0.4-0t64_1%3a0.4.38-1ubuntu0.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9548826Z Unpacking liborc-0.4-0t64:amd64 (1:0.4.38-1ubuntu0.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9829984Z Selecting previously unselected package libgstreamer-plugins-base1.0-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9969647Z Preparing to unpack .../10-libgstreamer-plugins-base1.0-0_1.24.2-1ubuntu0.2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:11.9980798Z Unpacking libgstreamer-plugins-base1.0-0:amd64 (1.24.2-1ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.0346509Z Selecting previously unselected package libopus0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.0484579Z Preparing to unpack .../11-libopus0_1.4-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.0495261Z Unpacking libopus0:amd64 (1.4-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.0750459Z Selecting previously unselected package libtheora0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.0888720Z Preparing to unpack .../12-libtheora0_1.1.1+dfsg.1-16.1build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.0901537Z Unpacking libtheora0:amd64 (1.1.1+dfsg.1-16.1build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.1178983Z Selecting previously unselected package libvisual-0.4-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.1317505Z Preparing to unpack .../13-libvisual-0.4-0_0.4.2-2build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.1328697Z Unpacking libvisual-0.4-0:amd64 (0.4.2-2build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.1586879Z Selecting previously unselected package libvorbisenc2:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.1731566Z Preparing to unpack .../14-libvorbisenc2_1.3.7-1build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.1743900Z Unpacking libvorbisenc2:amd64 (1.3.7-1build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.1991432Z Selecting previously unselected package gstreamer1.0-plugins-base:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.2136611Z Preparing to unpack .../15-gstreamer1.0-plugins-base_1.24.2-1ubuntu0.2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.2153608Z Unpacking gstreamer1.0-plugins-base:amd64 (1.24.2-1ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.2530325Z Selecting previously unselected package libaa1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.2669859Z Preparing to unpack .../16-libaa1_1.4p5-51.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.2681290Z Unpacking libaa1:amd64 (1.4p5-51.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.2922724Z Selecting previously unselected package libraw1394-11:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3062505Z Preparing to unpack .../17-libraw1394-11_2.1.2-2build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3073683Z Unpacking libraw1394-11:amd64 (2.1.2-2build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3302980Z Selecting previously unselected package libavc1394-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3440640Z Preparing to unpack .../18-libavc1394-0_0.5.4-5build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3451163Z Unpacking libavc1394-0:amd64 (0.5.4-5build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3673388Z Selecting previously unselected package libcaca0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3810526Z Preparing to unpack .../19-libcaca0_0.99.beta20-4build2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.3821897Z Unpacking libcaca0:amd64 (0.99.beta20-4build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.4096835Z Selecting previously unselected package libdv4t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.4237847Z Preparing to unpack .../20-libdv4t64_1.0.0-17.1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.4250060Z Unpacking libdv4t64:amd64 (1.0.0-17.1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.4503494Z Selecting previously unselected package libflac12t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.4640368Z Preparing to unpack .../21-libflac12t64_1.4.3+ds-2.1ubuntu2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.4650218Z Unpacking libflac12t64:amd64 (1.4.3+ds-2.1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.4899035Z Selecting previously unselected package libgstreamer-plugins-good1.0-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5035623Z Preparing to unpack .../22-libgstreamer-plugins-good1.0-0_1.24.2-1ubuntu1.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5044557Z Unpacking libgstreamer-plugins-good1.0-0:amd64 (1.24.2-1ubuntu1.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5275275Z Selecting previously unselected package libiec61883-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5413106Z Preparing to unpack .../23-libiec61883-0_1.2.0-6build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5424432Z Unpacking libiec61883-0:amd64 (1.2.0-6build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5666250Z Selecting previously unselected package libmp3lame0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5807649Z Preparing to unpack .../24-libmp3lame0_3.100-6build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.5819586Z Unpacking libmp3lame0:amd64 (3.100-6build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.6069770Z Selecting previously unselected package libmpg123-0t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.6209034Z Preparing to unpack .../25-libmpg123-0t64_1.32.5-1ubuntu1.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.6219246Z Unpacking libmpg123-0t64:amd64 (1.32.5-1ubuntu1.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.6480507Z Selecting previously unselected package libasyncns0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.6623710Z Preparing to unpack .../26-libasyncns0_0.8-6build4_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.6672562Z Unpacking libasyncns0:amd64 (0.8-6build4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.6906988Z Selecting previously unselected package libsndfile1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.7047269Z Preparing to unpack .../27-libsndfile1_1.2.2-1ubuntu5.24.04.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.7057709Z Unpacking libsndfile1:amd64 (1.2.2-1ubuntu5.24.04.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.7346619Z Selecting previously unselected package libpulse0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.7486156Z Preparing to unpack .../28-libpulse0_1%3a16.1+dfsg1-2ubuntu10.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.7591818Z Unpacking libpulse0:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.7880998Z Selecting previously unselected package libspeex1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8022086Z Preparing to unpack .../29-libspeex1_1.2.1-2ubuntu2.24.04.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8033026Z Unpacking libspeex1:amd64 (1.2.1-2ubuntu2.24.04.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8265507Z Selecting previously unselected package libshout3:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8404625Z Preparing to unpack .../30-libshout3_2.4.6-1build2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8415204Z Unpacking libshout3:amd64 (2.4.6-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8653164Z Selecting previously unselected package libtag1v5-vanilla:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8791045Z Preparing to unpack .../31-libtag1v5-vanilla_1.13.1-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.8800102Z Unpacking libtag1v5-vanilla:amd64 (1.13.1-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9055386Z Selecting previously unselected package libtag1v5:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9194920Z Preparing to unpack .../32-libtag1v5_1.13.1-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9205154Z Unpacking libtag1v5:amd64 (1.13.1-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9433223Z Selecting previously unselected package libtwolame0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9570915Z Preparing to unpack .../33-libtwolame0_0.4.0-2build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9582628Z Unpacking libtwolame0:amd64 (0.4.0-2build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9818842Z Selecting previously unselected package libv4lconvert0t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9956821Z Preparing to unpack .../34-libv4lconvert0t64_1.26.1-4build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:12.9967933Z Unpacking libv4lconvert0t64:amd64 (1.26.1-4build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.0258957Z Selecting previously unselected package libv4l-0t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.0400492Z Preparing to unpack .../35-libv4l-0t64_1.26.1-4build3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.0411991Z Unpacking libv4l-0t64:amd64 (1.26.1-4build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.0682599Z Selecting previously unselected package libvpx9:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.0821281Z Preparing to unpack .../36-libvpx9_1.14.0-1ubuntu2.2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.0833916Z Unpacking libvpx9:amd64 (1.14.0-1ubuntu2.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.1215950Z Selecting previously unselected package libwavpack1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.1355048Z Preparing to unpack .../37-libwavpack1_5.6.0-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.1366071Z Unpacking libwavpack1:amd64 (5.6.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.1594319Z Selecting previously unselected package libsoup-3.0-common.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.1735097Z Preparing to unpack .../38-libsoup-3.0-common_3.4.4-5ubuntu0.5_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.1747123Z Unpacking libsoup-3.0-common (3.4.4-5ubuntu0.5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.1966479Z Selecting previously unselected package libsoup-3.0-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.2104751Z Preparing to unpack .../39-libsoup-3.0-0_3.4.4-5ubuntu0.5_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.2114363Z Unpacking libsoup-3.0-0:amd64 (3.4.4-5ubuntu0.5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.2370410Z Selecting previously unselected package gstreamer1.0-plugins-good:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.2507658Z Preparing to unpack .../40-gstreamer1.0-plugins-good_1.24.2-1ubuntu1.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.2517833Z Unpacking gstreamer1.0-plugins-good:amd64 (1.24.2-1ubuntu1.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.3142635Z Selecting previously unselected package libxv1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.3280856Z Preparing to unpack .../41-libxv1_2%3a1.0.11-1.1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.3291345Z Unpacking libxv1:amd64 (2:1.0.11-1.1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.3521716Z Selecting previously unselected package gstreamer1.0-x:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.3661721Z Preparing to unpack .../42-gstreamer1.0-x_1.24.2-1ubuntu0.2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.3673264Z Unpacking gstreamer1.0-x:amd64 (1.24.2-1ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.3912019Z Selecting previously unselected package ipxe-qemu.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.4052298Z Preparing to unpack .../43-ipxe-qemu_1.21.1+git-20220113.fbbdc3926-0ubuntu2_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.4062362Z Unpacking ipxe-qemu (1.21.1+git-20220113.fbbdc3926-0ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.4521399Z Selecting previously unselected package ipxe-qemu-256k-compat-efi-roms.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.4659928Z Preparing to unpack .../44-ipxe-qemu-256k-compat-efi-roms_1.0.0+git-20150424.a25a16d-0ubuntu5_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.4671002Z Unpacking ipxe-qemu-256k-compat-efi-roms (1.0.0+git-20150424.a25a16d-0ubuntu5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.4954476Z Selecting previously unselected package libboost-iostreams1.83.0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.5092055Z Preparing to unpack .../45-libboost-iostreams1.83.0_1.83.0-2.1ubuntu3.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.5104292Z Unpacking libboost-iostreams1.83.0:amd64 (1.83.0-2.1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.5410541Z Selecting previously unselected package libboost-thread1.83.0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.5549467Z Preparing to unpack .../46-libboost-thread1.83.0_1.83.0-2.1ubuntu3.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.5561105Z Unpacking libboost-thread1.83.0:amd64 (1.83.0-2.1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.5872513Z Selecting previously unselected package libbrlapi0.8:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6012898Z Preparing to unpack .../47-libbrlapi0.8_6.6-4ubuntu5_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6023945Z Unpacking libbrlapi0.8:amd64 (6.6-4ubuntu5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6265444Z Selecting previously unselected package libpcsclite1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6405614Z Preparing to unpack .../48-libpcsclite1_2.0.3-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6417050Z Unpacking libpcsclite1:amd64 (2.0.3-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6653560Z Selecting previously unselected package libcacard0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6791900Z Preparing to unpack .../49-libcacard0_1%3a2.8.0-3build4_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.6804033Z Unpacking libcacard0:amd64 (1:2.8.0-3build4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7045691Z Selecting previously unselected package libdaxctl1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7182794Z Preparing to unpack .../50-libdaxctl1_77-2ubuntu2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7193905Z Unpacking libdaxctl1:amd64 (77-2ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7420396Z Selecting previously unselected package libdecor-0-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7557199Z Preparing to unpack .../51-libdecor-0-0_0.2.2-1build2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7568261Z Unpacking libdecor-0-0:amd64 (0.2.2-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7784262Z Selecting previously unselected package libdecor-0-plugin-1-gtk:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7922354Z Preparing to unpack .../52-libdecor-0-plugin-1-gtk_0.2.2-1build2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.7934143Z Unpacking libdecor-0-plugin-1-gtk:amd64 (0.2.2-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.8166284Z Selecting previously unselected package librdmacm1t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.8303733Z Preparing to unpack .../53-librdmacm1t64_50.0-2ubuntu0.2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.8314302Z Unpacking librdmacm1t64:amd64 (50.0-2ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.8560658Z Selecting previously unselected package libiscsi7:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.8699178Z Preparing to unpack .../54-libiscsi7_1.19.0-3build4_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.8709897Z Unpacking libiscsi7:amd64 (1.19.0-3build4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.8967724Z Selecting previously unselected package libsamplerate0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.9105587Z Preparing to unpack .../55-libsamplerate0_0.2.2-4build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.9115191Z Unpacking libsamplerate0:amd64 (0.2.2-4build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.9413506Z Selecting previously unselected package libjack-jackd2-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.9553849Z Preparing to unpack .../56-libjack-jackd2-0_1.9.21~dfsg-3ubuntu3_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.9564321Z Unpacking libjack-jackd2-0:amd64 (1.9.21~dfsg-3ubuntu3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.9856709Z Selecting previously unselected package libndctl6:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:13.9998438Z Preparing to unpack .../57-libndctl6_77-2ubuntu2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.0009589Z Unpacking libndctl6:amd64 (77-2ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.0258617Z Selecting previously unselected package libnfs14:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.0397687Z Preparing to unpack .../58-libnfs14_5.0.2-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.0410015Z Unpacking libnfs14:amd64 (5.0.2-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.0661519Z Selecting previously unselected package libwebrtc-audio-processing1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.0800982Z Preparing to unpack .../59-libwebrtc-audio-processing1_0.3.1-0ubuntu6_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.0812013Z Unpacking libwebrtc-audio-processing1:amd64 (0.3.1-0ubuntu6) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.1067405Z Selecting previously unselected package libspa-0.2-modules:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.1208894Z Preparing to unpack .../60-libspa-0.2-modules_1.0.5-1ubuntu3.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.1220462Z Unpacking libspa-0.2-modules:amd64 (1.0.5-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.1590043Z Selecting previously unselected package libpipewire-0.3-0t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.1727850Z Preparing to unpack .../61-libpipewire-0.3-0t64_1.0.5-1ubuntu3.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.1739881Z Unpacking libpipewire-0.3-0t64:amd64 (1.0.5-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.1997887Z Selecting previously unselected package libpipewire-0.3-common.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.2137886Z Preparing to unpack .../62-libpipewire-0.3-common_1.0.5-1ubuntu3.1_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.2150165Z Unpacking libpipewire-0.3-common (1.0.5-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.2382319Z Selecting previously unselected package libpmem1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.2520165Z Preparing to unpack .../63-libpmem1_1.13.1-1.1ubuntu2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.2531828Z Unpacking libpmem1:amd64 (1.13.1-1.1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.2865580Z Selecting previously unselected package libpmemobj1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.3003771Z Preparing to unpack .../64-libpmemobj1_1.13.1-1.1ubuntu2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.3015319Z Unpacking libpmemobj1:amd64 (1.13.1-1.1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.3305869Z Selecting previously unselected package librados2.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.3447473Z Preparing to unpack .../65-librados2_19.2.1-0ubuntu0.24.04.2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.3457846Z Unpacking librados2 (19.2.1-0ubuntu0.24.04.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.4257824Z Selecting previously unselected package librbd1.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.4399269Z Preparing to unpack .../66-librbd1_19.2.1-0ubuntu0.24.04.2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.4409683Z Unpacking librbd1 (19.2.1-0ubuntu0.24.04.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.5194894Z Selecting previously unselected package libsdl2-2.0-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.5333635Z Preparing to unpack .../67-libsdl2-2.0-0_2.30.0+dfsg-1ubuntu3.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.5344164Z Unpacking libsdl2-2.0-0:amd64 (2.30.0+dfsg-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.5657044Z Selecting previously unselected package libspice-server1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.5795287Z Preparing to unpack .../68-libspice-server1_0.15.1-1build2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.5806580Z Unpacking libspice-server1:amd64 (0.15.1-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6089552Z Selecting previously unselected package liburing2:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6227228Z Preparing to unpack .../69-liburing2_2.5-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6238705Z Unpacking liburing2:amd64 (2.5-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6482757Z Selecting previously unselected package libusbredirparser1t64:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6621855Z Preparing to unpack .../70-libusbredirparser1t64_0.13.0-2.1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6631105Z Unpacking libusbredirparser1t64:amd64 (0.13.0-2.1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6859366Z Selecting previously unselected package libvirglrenderer1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.6999372Z Preparing to unpack .../71-libvirglrenderer1_1.0.0-1ubuntu2_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.7011732Z Unpacking libvirglrenderer1:amd64 (1.0.0-1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.7309344Z Selecting previously unselected package libvte-2.91-common.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.7450462Z Preparing to unpack .../72-libvte-2.91-common_0.76.0-1ubuntu0.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.7460858Z Unpacking libvte-2.91-common (0.76.0-1ubuntu0.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.7713746Z Selecting previously unselected package libvte-2.91-0:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.7852904Z Preparing to unpack .../73-libvte-2.91-0_0.76.0-1ubuntu0.1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.7866236Z Unpacking libvte-2.91-0:amd64 (0.76.0-1ubuntu0.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.8132592Z Selecting previously unselected package nasm.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.8272287Z Preparing to unpack .../74-nasm_2.16.01-1build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.8282427Z Unpacking nasm (2.16.01-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.8753501Z Selecting previously unselected package libfdt1:amd64.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.8891998Z Preparing to unpack .../75-libfdt1_1.7.0-2build1_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.8902622Z Unpacking libfdt1:amd64 (1.7.0-2build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.9141486Z Selecting previously unselected package qemu-system-common.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.9280562Z Preparing to unpack .../76-qemu-system-common_1%3a8.2.2+ds-0ubuntu1.7_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:14.9291258Z Unpacking qemu-system-common (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.0277038Z Selecting previously unselected package qemu-system-data.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.0418288Z Preparing to unpack .../77-qemu-system-data_1%3a8.2.2+ds-0ubuntu1.7_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.0429075Z Unpacking qemu-system-data (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.1162114Z Selecting previously unselected package seabios.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.1303451Z Preparing to unpack .../78-seabios_1.16.3-2_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.1313851Z Unpacking seabios (1.16.3-2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.1615160Z Selecting previously unselected package qemu-system-x86.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.1757051Z Preparing to unpack .../79-qemu-system-x86_1%3a8.2.2+ds-0ubuntu1.7_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.1829775Z Unpacking qemu-system-x86 (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.4614052Z Selecting previously unselected package qemu-utils.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.4755687Z Preparing to unpack .../80-qemu-utils_1%3a8.2.2+ds-0ubuntu1.7_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.4769215Z Unpacking qemu-utils (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.5443220Z Selecting previously unselected package qemu-block-extra.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.5584031Z Preparing to unpack .../81-qemu-block-extra_1%3a8.2.2+ds-0ubuntu1.7_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.5594552Z Unpacking qemu-block-extra (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.5957919Z Selecting previously unselected package qemu-system-modules-opengl.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6098522Z Preparing to unpack .../82-qemu-system-modules-opengl_1%3a8.2.2+ds-0ubuntu1.7_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6105960Z Unpacking qemu-system-modules-opengl (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6357915Z Selecting previously unselected package qemu-system-gui.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6498710Z Preparing to unpack .../83-qemu-system-gui_1%3a8.2.2+ds-0ubuntu1.7_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6506431Z Unpacking qemu-system-gui (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6774521Z Selecting previously unselected package qemu-system-modules-spice.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6914446Z Preparing to unpack .../84-qemu-system-modules-spice_1%3a8.2.2+ds-0ubuntu1.7_amd64.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.6922200Z Unpacking qemu-system-modules-spice (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.7157921Z Selecting previously unselected package ovmf.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.7298192Z Preparing to unpack .../85-ovmf_2024.02-2ubuntu0.4_all.deb ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.7308297Z Unpacking ovmf (2024.02-2ubuntu0.4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.8107015Z Setting up libpipewire-0.3-common (1.0.5-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.8129893Z Setting up libcdparanoia0:amd64 (3.10.2+debian-14build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.8153308Z Setting up session-migration (0.3.9build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9232630Z Created symlink /etc/systemd/user/graphical-session-pre.target.wants/session-migration.service → /usr/lib/systemd/user/session-migration.service.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9233331Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9263160Z Setting up libraw1394-11:amd64 (2.1.2-2build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9287511Z Setting up libproxy1v5:amd64 (0.5.4-4build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9316860Z Setting up libtag1v5-vanilla:amd64 (1.13.1-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9340612Z Setting up libspeex1:amd64 (1.2.1-2ubuntu2.24.04.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9361207Z Setting up libcaca0:amd64 (0.99.beta20-4build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9385862Z Setting up libv4lconvert0t64:amd64 (1.26.1-4build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9412384Z Setting up libtwolame0:amd64 (0.4.0-2build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9434472Z Setting up libvte-2.91-common (0.76.0-1ubuntu0.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9476602Z Setting up libvisual-0.4-0:amd64 (0.4.2-2build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9497592Z Setting up msr-tools (1.3-5build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9518891Z Setting up libwebrtc-audio-processing1:amd64 (0.3.1-0ubuntu6) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9542737Z Setting up libboost-thread1.83.0:amd64 (1.83.0-2.1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9566112Z Setting up libsoup-3.0-common (3.4.4-5ubuntu0.5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9586241Z Setting up libmpg123-0t64:amd64 (1.32.5-1ubuntu1.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9608208Z Setting up libfdt1:amd64 (1.7.0-2build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9634641Z Setting up libvte-2.91-0:amd64 (0.76.0-1ubuntu0.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9653958Z Setting up libnfs14:amd64 (5.0.2-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9675137Z Setting up liborc-0.4-0t64:amd64 (1:0.4.38-1ubuntu0.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9698314Z Setting up ovmf (2024.02-2ubuntu0.4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9721595Z Setting up libvirglrenderer1:amd64 (1.0.0-1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9745501Z Setting up libspa-0.2-modules:amd64 (1.0.5-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9768385Z Setting up libboost-iostreams1.83.0:amd64 (1.83.0-2.1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9794403Z Setting up libopus0:amd64 (1.4-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9817160Z Setting up libxv1:amd64 (2:1.0.11-1.1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9840727Z Setting up libdv4t64:amd64 (1.0.0-17.1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9864256Z Setting up libpcsclite1:amd64 (2.0.3-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9888278Z Setting up libdaxctl1:amd64 (77-2ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9913041Z Setting up nasm (2.16.01-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9955344Z Setting up qemu-system-data (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:15.9979195Z Setting up seabios (1.16.3-2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0001513Z Setting up libv4l-0t64:amd64 (1.26.1-4build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0023604Z Setting up libvpx9:amd64 (1.14.0-1ubuntu2.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0049809Z Setting up libtag1v5:amd64 (1.13.1-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0070215Z Setting up cpu-checker (0.7-1.3build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0093051Z Setting up libasyncns0:amd64 (0.8-6build4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0116252Z Setting up libwavpack1:amd64 (5.6.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0137753Z Setting up libusbredirparser1t64:amd64 (0.13.0-2.1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0161258Z Setting up ipxe-qemu (1.21.1+git-20220113.fbbdc3926-0ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0183967Z Setting up libtheora0:amd64 (1.1.1+dfsg.1-16.1build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0206071Z Setting up libdecor-0-0:amd64 (0.2.2-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0230172Z Setting up libndctl6:amd64 (77-2ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0254919Z Setting up librdmacm1t64:amd64 (50.0-2ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0277105Z Setting up ipxe-qemu-256k-compat-efi-roms (1.0.0+git-20150424.a25a16d-0ubuntu5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0300906Z Setting up libflac12t64:amd64 (1.4.3+ds-2.1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0324940Z Setting up libbrlapi0.8:amd64 (6.6-4ubuntu5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0346903Z Setting up glib-networking-common (2.80.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0371917Z Setting up liburing2:amd64 (2.5-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0393062Z Setting up libiscsi7:amd64 (1.19.0-3build4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0415393Z Setting up libsamplerate0:amd64 (0.2.2-4build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0438485Z Setting up libpmem1:amd64 (1.13.1-1.1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0458844Z Setting up libpipewire-0.3-0t64:amd64 (1.0.5-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0480435Z Setting up libdecor-0-plugin-1-gtk:amd64 (0.2.2-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0504225Z Setting up libmp3lame0:amd64 (3.100-6build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0527278Z Setting up libvorbisenc2:amd64 (1.3.7-1build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0550095Z Setting up libaa1:amd64 (1.4p5-51.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0575513Z Setting up libiec61883-0:amd64 (1.2.0-6build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0599676Z Setting up libavc1394-0:amd64 (0.5.4-5build3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0623681Z Setting up gsettings-desktop-schemas (46.1-0ubuntu1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0649921Z Setting up glib-networking-services (2.80.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0672298Z Setting up librados2 (19.2.1-0ubuntu0.24.04.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0693470Z Setting up libgstreamer-plugins-base1.0-0:amd64 (1.24.2-1ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0716149Z Setting up libcacard0:amd64 (1:2.8.0-3build4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0740858Z Setting up libgstreamer-plugins-good1.0-0:amd64 (1.24.2-1ubuntu1.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0763399Z Setting up gstreamer1.0-plugins-base:amd64 (1.24.2-1ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0788256Z Setting up libshout3:amd64 (2.4.6-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0811996Z Setting up libpmemobj1:amd64 (1.13.1-1.1ubuntu2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0834849Z Setting up librbd1 (19.2.1-0ubuntu0.24.04.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0861692Z Setting up libjack-jackd2-0:amd64 (1.9.21~dfsg-3ubuntu3) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0884557Z Setting up libsndfile1:amd64 (1.2.2-1ubuntu5.24.04.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0912943Z Setting up qemu-utils (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.0937380Z Setting up qemu-block-extra (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.2032774Z Created symlink /etc/systemd/system/multi-user.target.wants/run-qemu.mount → /usr/lib/systemd/system/run-qemu.mount.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:16.2033371Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.1049880Z Setting up gstreamer1.0-x:amd64 (1.24.2-1ubuntu0.2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.1084097Z Setting up qemu-system-common (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.2359155Z Created symlink /etc/systemd/system/multi-user.target.wants/qemu-kvm.service → /usr/lib/systemd/system/qemu-kvm.service.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.2359747Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5520206Z Setting up libpulse0:amd64 (1:16.1+dfsg1-2ubuntu10.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5597631Z Setting up libspice-server1:amd64 (0.15.1-1build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5623972Z Setting up qemu-system-x86 (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5691502Z Setting up libsdl2-2.0-0:amd64 (2.30.0+dfsg-1ubuntu3.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5712894Z Setting up qemu-system-modules-opengl (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5735737Z Setting up qemu-system-gui (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5876786Z Setting up qemu-system-modules-spice (1:8.2.2+ds-0ubuntu1.7) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:17.5946595Z Processing triggers for hicolor-icon-theme (0.17-2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:18.7596423Z Processing triggers for libc-bin (2.39-0ubuntu8.5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:20.2024570Z Processing triggers for man-db (2.12.0-4build2) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:59.4702167Z Processing triggers for libglib2.0-0t64:amd64 (2.80.0-6ubuntu3.4) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:59.5136855Z Setting up glib-networking:amd64 (2.80.0-1build1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:59.5178447Z Setting up libsoup-3.0-0:amd64 (3.4.4-5ubuntu0.5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:59.5219853Z Setting up gstreamer1.0-plugins-good:amd64 (1.24.2-1ubuntu1.1) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:05:59.5247846Z Processing triggers for libc-bin (2.39-0ubuntu8.5) ...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6644054Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6644536Z Running kernel seems to be up-to-date.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6644929Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6645036Z Restarting services...
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6716578Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6717016Z Service restarts being deferred:
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6718265Z  systemctl restart hosted-compute-agent.service
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6718625Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6719003Z No containers need to be restarted.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6719279Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6719473Z No user sessions are running outdated binaries.
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6719838Z 
+Test Userspace Execution	Install QEMU and build dependencies	2025-07-24T13:06:00.6720150Z No VM guests are running outdated hypervisor (qemu) binaries on this host.
+Test Userspace Execution	Setup Rust	﻿2025-07-24T13:06:01.6812676Z ##[group]Run dtolnay/rust-toolchain@master
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6812981Z with:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6813162Z   toolchain: nightly-2025-06-24
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6813417Z   components: rust-src, llvm-tools-preview
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6813667Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6813821Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6814001Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6935501Z ##[group]Run : parse toolchain version
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6935825Z [36;1m: parse toolchain version[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6936181Z [36;1mif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6936532Z [36;1m  if [[ Linux == macOS ]]; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6936975Z [36;1m    echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6937392Z [36;1m  else[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6937731Z [36;1m    echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6938643Z [36;1m  fi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6938915Z [36;1melif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6939378Z [36;1m  echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6939782Z [36;1melif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6940227Z [36;1m  echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6940634Z [36;1melse[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6940854Z [36;1m  echo "toolchain=$toolchain" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6941106Z [36;1mfi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6971409Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6971799Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6972112Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6972378Z   toolchain: nightly-2025-06-24
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.6972593Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7085508Z ##[group]Run : construct rustup command line
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7085827Z [36;1m: construct rustup command line[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7086233Z [36;1mecho "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7086786Z [36;1mecho "components=$(for c in ${components//,/ }; do echo -n ' --component' $c; done)" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7087213Z [36;1mecho "downgrade=" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7114519Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7114856Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7115023Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7115211Z   targets: 
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7115419Z   components: rust-src, llvm-tools-preview
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7115671Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7192496Z ##[group]Run : set $CARGO_HOME
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7192746Z [36;1m: set $CARGO_HOME[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7193043Z [36;1mecho CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7219234Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7219547Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7219717Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7219898Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7292077Z ##[group]Run : install rustup if needed
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7292373Z [36;1m: install rustup if needed[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7292639Z [36;1mif ! command -v rustup &>/dev/null; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7293317Z [36;1m  curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7293968Z [36;1m  echo "$CARGO_HOME/bin" >> $GITHUB_PATH[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7294221Z [36;1mfi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7320543Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7320859Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7321031Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7321228Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7321656Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7394946Z ##[group]Run rustup toolchain install nightly-2025-06-24 --component rust-src --component llvm-tools-preview --profile minimal --no-self-update
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7395851Z [36;1mrustup toolchain install nightly-2025-06-24 --component rust-src --component llvm-tools-preview --profile minimal --no-self-update[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7424297Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7424620Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7424793Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7425000Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.7425232Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:01.8319418Z info: syncing channel updates for 'nightly-2025-06-24-x86_64-unknown-linux-gnu'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:02.1043216Z info: latest update on 2025-06-24, rust version 1.90.0-nightly (706f244db 2025-06-23)
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:02.1043949Z info: downloading component 'cargo'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:02.3063107Z info: downloading component 'llvm-tools'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:04.7378932Z info: downloading component 'rust-src'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:05.3331466Z info: downloading component 'rust-std'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:05.9228725Z info: downloading component 'rustc'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:07.1756264Z info: installing component 'cargo'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:07.8479239Z info: installing component 'llvm-tools'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:10.2445864Z info: installing component 'rust-src'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:10.6668798Z info: installing component 'rust-std'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:12.6678333Z info: installing component 'rustc'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5480180Z 
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5583957Z   nightly-2025-06-24-x86_64-unknown-linux-gnu installed - rustc 1.90.0-nightly (706f244db 2025-06-23)
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5584463Z 
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5629500Z ##[group]Run rustup default nightly-2025-06-24
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5629850Z [36;1mrustup default nightly-2025-06-24[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5657414Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5657735Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5657910Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5658418Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5658655Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.5765835Z info: using existing install for 'nightly-2025-06-24-x86_64-unknown-linux-gnu'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6111815Z info: default toolchain set to 'nightly-2025-06-24-x86_64-unknown-linux-gnu'
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6112352Z 
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6203871Z   nightly-2025-06-24-x86_64-unknown-linux-gnu unchanged - rustc 1.90.0-nightly (706f244db 2025-06-23)
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6204376Z 
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6204842Z info: note that the toolchain 'nightly-x86_64-unknown-linux-gnu' is currently in use (overridden by '/home/runner/work/breenix/breenix/rust-toolchain.toml')
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6247357Z ##[group]Run : create cachekey
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6247668Z [36;1m: create cachekey[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6248519Z [36;1mDATE=$(rustc +nightly-2025-06-24 --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6249355Z [36;1mHASH=$(rustc +nightly-2025-06-24 --version --verbose | sed -ne 's/^commit-hash: //p')[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6249965Z [36;1mecho "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6278145Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6278485Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6278651Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6278864Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6279085Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6681589Z ##[group]Run : disable incremental compilation
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6681955Z [36;1m: disable incremental compilation[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6682269Z [36;1mif [ -z "${CARGO_INCREMENTAL+set}" ]; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6682597Z [36;1m  echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6682882Z [36;1mfi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6710360Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6710680Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6710839Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6711269Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6711492Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6776487Z ##[group]Run : enable colors in Cargo output
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6776793Z [36;1m: enable colors in Cargo output[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6777094Z [36;1mif [ -z "${CARGO_TERM_COLOR+set}" ]; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6777408Z [36;1m  echo CARGO_TERM_COLOR=always >> $GITHUB_ENV[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6777672Z [36;1mfi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6802987Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6803296Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6803456Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6803662Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6803894Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6804078Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6869141Z ##[group]Run : enable Cargo sparse registry
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6869460Z [36;1m: enable Cargo sparse registry[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6869788Z [36;1m# implemented in 1.66, stabilized in 1.68, made default in 1.70[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6870598Z [36;1mif [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6871287Z [36;1m  if rustc +nightly-2025-06-24 --version --verbose | grep -q '^release: 1\.6[89]\.'; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6871833Z [36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6872309Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6872780Z [36;1m  elif rustc +nightly-2025-06-24 --version --verbose | grep -q '^release: 1\.6[67]\.'; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6873309Z [36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6873768Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6874064Z [36;1m  fi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6874234Z [36;1mfi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6899548Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6899875Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6900050Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6900252Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6900485Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6900679Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.6900876Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7274472Z ##[group]Run : work around spurious network errors in curl 8.0
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7274906Z [36;1m: work around spurious network errors in curl 8.0[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7275425Z [36;1m# https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7276048Z [36;1mif rustc +nightly-2025-06-24 --version --verbose | grep -q '^release: 1\.7[01]\.'; then[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7276522Z [36;1m  echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7276813Z [36;1mfi[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7303829Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7304175Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7304347Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7304549Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7304779Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7304982Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7305176Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7525193Z ##[group]Run rustc +nightly-2025-06-24 --version --verbose
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7525628Z [36;1mrustc +nightly-2025-06-24 --version --verbose[0m
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7552988Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7553295Z env:
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7553466Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7553660Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7553890Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7554082Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7554285Z ##[endgroup]
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7785425Z rustc 1.90.0-nightly (706f244db 2025-06-23)
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7785976Z binary: rustc
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7786370Z commit-hash: 706f244db581212cabf2e619e0113d70999b2bbe
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7787174Z commit-date: 2025-06-23
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7787466Z host: x86_64-unknown-linux-gnu
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7787862Z release: 1.90.0-nightly
+Test Userspace Execution	Setup Rust	2025-07-24T13:06:17.7788362Z LLVM version: 20.1.7
+Test Userspace Execution	Cache cargo registry	﻿2025-07-24T13:06:17.8655379Z ##[group]Run actions/cache@v4
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8655648Z with:
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8655831Z   path: ~/.cargo/registry
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8656049Z   key: Linux-cargo-registry-
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8656269Z   enableCrossOsArchive: false
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8656492Z   fail-on-cache-miss: false
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8656695Z   lookup-only: false
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8656883Z   save-always: false
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8657050Z env:
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8657208Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8657399Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8657629Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8657818Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:17.8658407Z ##[endgroup]
+Test Userspace Execution	Cache cargo registry	2025-07-24T13:06:18.2997261Z Cache not found for input keys: Linux-cargo-registry-
+Test Userspace Execution	Cache cargo index	﻿2025-07-24T13:06:18.3814831Z ##[group]Run actions/cache@v4
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3815107Z with:
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3815277Z   path: ~/.cargo/git
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3815494Z   key: Linux-cargo-index-
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3815713Z   enableCrossOsArchive: false
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3815931Z   fail-on-cache-miss: false
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3816141Z   lookup-only: false
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3816324Z   save-always: false
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3816503Z env:
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3816656Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3816854Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3817078Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3817275Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.3817466Z ##[endgroup]
+Test Userspace Execution	Cache cargo index	2025-07-24T13:06:18.6563169Z Cache not found for input keys: Linux-cargo-index-
+Test Userspace Execution	Cache cargo build	﻿2025-07-24T13:06:18.7382820Z ##[group]Run actions/cache@v4
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7383091Z with:
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7383267Z   path: target
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7383463Z   key: Linux-cargo-build-target-
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7383724Z   enableCrossOsArchive: false
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7383951Z   fail-on-cache-miss: false
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7384155Z   lookup-only: false
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7384343Z   save-always: false
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7384513Z env:
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7384673Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7384865Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7385098Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7385291Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:18.7385489Z ##[endgroup]
+Test Userspace Execution	Cache cargo build	2025-07-24T13:06:19.0247109Z Cache not found for input keys: Linux-cargo-build-target-
+Test Userspace Execution	Build Breenix	﻿2025-07-24T13:06:19.0315150Z ##[group]Run cargo build --release
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0315473Z [36;1mcargo build --release[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0342892Z shell: /usr/bin/bash -e {0}
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0343118Z env:
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0343292Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0343497Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0343727Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0343937Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0344153Z ##[endgroup]
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.0445706Z info: syncing channel updates for 'nightly-x86_64-unknown-linux-gnu'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.2440462Z info: latest update on 2025-07-24, rust version 1.90.0-nightly (ace633090 2025-07-23)
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.2441170Z info: downloading component 'cargo'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.4438467Z info: downloading component 'clippy'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:19.5909700Z info: downloading component 'llvm-tools'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:20.0851313Z info: downloading component 'rust-docs'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:20.3966065Z info: downloading component 'rust-src'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:20.5289825Z info: downloading component 'rust-std'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:20.9971486Z info: downloading component 'rust-std' for 'x86_64-unknown-none'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:21.2355945Z info: downloading component 'rustc'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:22.1623823Z info: downloading component 'rustfmt'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:22.2825648Z info: installing component 'cargo'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:22.9660430Z info: installing component 'clippy'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:23.3372978Z info: installing component 'llvm-tools'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:25.7733457Z info: installing component 'rust-docs'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:29.9608882Z info: installing component 'rust-src'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:30.4089309Z info: installing component 'rust-std'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:32.4330995Z info: installing component 'rust-std' for 'x86_64-unknown-none'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:33.3852357Z info: installing component 'rustc'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:38.2536439Z info: installing component 'rustfmt'
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:38.6150801Z [1m[32m    Updating[0m git repository `https://github.com/rust-osdev/bootloader.git`
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:39.2705393Z [1m[32m    Updating[0m crates.io index
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.2502501Z [1m[32m     Locking[0m 269 packages to latest compatible versions
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.2634065Z [1m[36m      Adding[0m pic8259 v0.10.4 [1m[33m(available: v0.11.0)[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.2730486Z [1m[36m      Adding[0m spin v0.9.8 [1m[33m(available: v0.10.0)[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.2751682Z [1m[36m      Adding[0m sysinfo v0.30.13 [1m[33m(available: v0.36.1)[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.2889158Z [1m[32m Downloading[0m crates ...
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.4860227Z [1m[32m  Downloaded[0m conquer-util v0.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.4879881Z [1m[32m  Downloaded[0m bincode v1.3.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.4906761Z [1m[32m  Downloaded[0m version_check v0.9.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.4924399Z [1m[32m  Downloaded[0m xattr v1.5.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.4949376Z [1m[32m  Downloaded[0m utf-8 v0.7.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.4966199Z [1m[32m  Downloaded[0m bitflags v1.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5010648Z [1m[32m  Downloaded[0m crc-catalog v2.4.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5025535Z [1m[32m  Downloaded[0m crc v3.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5052899Z [1m[32m  Downloaded[0m crc32fast v1.5.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5082875Z [1m[32m  Downloaded[0m serde-big-array v0.5.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5106669Z [1m[32m  Downloaded[0m llvm-tools v0.1.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5116956Z [1m[32m  Downloaded[0m cpufeatures v0.2.17
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5132691Z [1m[32m  Downloaded[0m conquer-once v0.4.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5155238Z [1m[32m  Downloaded[0m conquer-once v0.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5174775Z [1m[32m  Downloaded[0m uart_16550 v0.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5195783Z [1m[32m  Downloaded[0m usize_conversions v0.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5204008Z [1m[32m  Downloaded[0m ureq-proto v0.4.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5269328Z [1m[32m  Downloaded[0m zero v0.1.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5286056Z [1m[32m  Downloaded[0m volatile v0.4.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5301045Z [1m[32m  Downloaded[0m quote v1.0.40
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5347327Z [1m[32m  Downloaded[0m zeroize v1.8.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5375356Z [1m[32m  Downloaded[0m webpki-roots v0.26.11
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5396215Z [1m[32m  Downloaded[0m uuid v1.17.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5439604Z [1m[32m  Downloaded[0m typenum v1.18.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5484182Z [1m[32m  Downloaded[0m x86_64 v0.15.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5553555Z [1m[32m  Downloaded[0m raw-cpuid v10.7.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5594760Z [1m[32m  Downloaded[0m ureq v3.0.12
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5662364Z [1m[32m  Downloaded[0m serde_json v1.0.141
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5752026Z [1m[32m  Downloaded[0m futures-util v0.3.31
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.5887772Z [1m[32m  Downloaded[0m bitvec v1.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6060793Z [1m[32m  Downloaded[0m http v1.3.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6098469Z [1m[32m  Downloaded[0m micromath v2.1.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6149379Z [1m[32m  Downloaded[0m x86_64 v0.14.13
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6195637Z [1m[32m  Downloaded[0m webpki-roots v1.0.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6233531Z [1m[32m  Downloaded[0m rand v0.8.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6270728Z [1m[32m  Downloaded[0m syn v2.0.104
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6381707Z [1m[32m  Downloaded[0m memchr v2.7.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6437755Z [1m[32m  Downloaded[0m serde v1.0.219
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6472358Z [1m[32m  Downloaded[0m rustls-webpki v0.103.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6506292Z [1m[32m  Downloaded[0m rustls v0.23.29
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6629788Z [1m[32m  Downloaded[0m rustix v1.0.8
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6901999Z [1m[32m  Downloaded[0m miniz_oxide v0.8.9
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6931573Z [1m[32m  Downloaded[0m flate2 v1.1.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.6979864Z [1m[32m  Downloaded[0m cc v1.2.30
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7015898Z [1m[32m  Downloaded[0m unicode-ident v1.0.18
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7045463Z [1m[32m  Downloaded[0m tar v0.4.44
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7072387Z [1m[32m  Downloaded[0m serde_derive v1.0.219
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7098376Z [1m[32m  Downloaded[0m rustls-pki-types v1.12.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7151702Z [1m[32m  Downloaded[0m proc-macro2 v1.0.95
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7181384Z [1m[32m  Downloaded[0m httparse v1.10.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7206929Z [1m[32m  Downloaded[0m gpt v3.1.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7333059Z [1m[32m  Downloaded[0m tempfile v3.20.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.7362505Z [1m[32m  Downloaded[0m noto-sans-mono-bitmap v0.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9715120Z [1m[32m  Downloaded[0m spinning_top v0.2.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9729715Z [1m[32m  Downloaded[0m spin v0.9.8
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9754407Z [1m[32m  Downloaded[0m ryu v1.0.20
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9787171Z [1m[32m  Downloaded[0m num-traits v0.2.19
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9814600Z [1m[32m  Downloaded[0m lzma-rs v0.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9844775Z [1m[32m  Downloaded[0m log v0.4.27
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9868670Z [1m[32m  Downloaded[0m getrandom v0.3.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9902127Z [1m[32m  Downloaded[0m fatfs v0.3.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9930854Z [1m[32m  Downloaded[0m embedded-graphics-core v0.4.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9956271Z [1m[32m  Downloaded[0m bytes v1.10.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:40.9998263Z [1m[32m  Downloaded[0m xmas-elf v0.8.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0012535Z [1m[32m  Downloaded[0m libc v0.2.174
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0300693Z [1m[32m  Downloaded[0m sha2 v0.10.9
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0326796Z [1m[32m  Downloaded[0m rustversion v1.0.21
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0355314Z [1m[32m  Downloaded[0m rustls-pemfile v2.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0380410Z [1m[32m  Downloaded[0m pin-project-lite v0.2.16
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0443482Z [1m[32m  Downloaded[0m once_cell v1.21.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0470296Z [1m[32m  Downloaded[0m lock_api v0.4.13
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0485341Z [1m[32m  Downloaded[0m getrandom v0.2.16
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0515991Z [1m[32m  Downloaded[0m untrusted v0.9.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0534018Z [1m[32m  Downloaded[0m thiserror-impl v1.0.69
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0548688Z [1m[32m  Downloaded[0m tap v1.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0564129Z [1m[32m  Downloaded[0m subtle v2.6.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0576975Z [1m[32m  Downloaded[0m shlex v1.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0590993Z [1m[32m  Downloaded[0m scopeguard v1.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0610698Z [1m[32m  Downloaded[0m rand_hc v0.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0621863Z [1m[32m  Downloaded[0m ovmf-prebuilt v0.2.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0633347Z [1m[32m  Downloaded[0m mbrman v0.5.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0646837Z [1m[32m  Downloaded[0m generic-array v0.14.7
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0662161Z [1m[32m  Downloaded[0m crossbeam-utils v0.8.21
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0690222Z [1m[32m  Downloaded[0m anyhow v1.0.98
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0738136Z [1m[32m  Downloaded[0m wyz v0.5.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0754201Z [1m[32m  Downloaded[0m thiserror v1.0.69
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0822310Z [1m[32m  Downloaded[0m rand_core v0.6.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0839789Z [1m[32m  Downloaded[0m radium v0.7.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0853199Z [1m[32m  Downloaded[0m pin-utils v0.1.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0869142Z [1m[32m  Downloaded[0m percent-encoding v2.3.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0879734Z [1m[32m  Downloaded[0m itoa v1.0.15
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0897659Z [1m[32m  Downloaded[0m funty v2.0.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0908429Z [1m[32m  Downloaded[0m digest v0.10.7
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0927629Z [1m[32m  Downloaded[0m crypto-common v0.1.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0937512Z [1m[32m  Downloaded[0m futures-task v0.3.31
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0950197Z [1m[32m  Downloaded[0m futures-core v0.3.31
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0964369Z [1m[32m  Downloaded[0m fnv v1.0.7
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0974560Z [1m[32m  Downloaded[0m float-cmp v0.9.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.0988424Z [1m[32m  Downloaded[0m filetime v0.2.25
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1009382Z [1m[32m  Downloaded[0m ring v0.17.14
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1458875Z [1m[32m  Downloaded[0m fastrand v2.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1472990Z [1m[32m  Downloaded[0m errno v0.3.13
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1489628Z [1m[32m  Downloaded[0m pic8259 v0.10.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1498811Z [1m[32m  Downloaded[0m bitflags v2.9.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1541254Z [1m[32m  Downloaded[0m az v1.2.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1559943Z [1m[32m  Downloaded[0m cfg-if v1.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1573573Z [1m[32m  Downloaded[0m byteorder v1.5.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1590486Z [1m[32m  Downloaded[0m block-buffer v0.10.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1601826Z [1m[32m  Downloaded[0m crossbeam-queue v0.3.12
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1614838Z [1m[32m  Downloaded[0m adler2 v2.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1628287Z [1m[32m  Downloaded[0m bit_field v0.10.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1639986Z [1m[32m  Downloaded[0m base64 v0.22.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1678365Z [1m[32m  Downloaded[0m autocfg v1.5.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.1714012Z [1m[32m  Downloaded[0m x86 v0.52.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.2178523Z [1m[32m  Downloaded[0m linux-raw-sys v0.9.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.2679279Z [1m[32m  Downloaded[0m embedded-graphics v0.8.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.3980952Z [1m[32m   Compiling[0m unicode-ident v1.0.18
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.3981883Z [1m[32m   Compiling[0m proc-macro2 v1.0.95
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.3982656Z [1m[32m   Compiling[0m autocfg v1.5.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.3983259Z [1m[32m   Compiling[0m rustversion v1.0.21
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.4602131Z [1m[32m   Compiling[0m x86 v0.52.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.6508359Z [1m[32m   Compiling[0m lock_api v0.4.13
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.6847416Z [1m[32m   Compiling[0m serde v1.0.219
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.7272426Z [1m[32m   Compiling[0m cfg-if v1.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:41.8241822Z [1m[32m   Compiling[0m libc v0.2.174
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:42.1138417Z [1m[32m   Compiling[0m quote v1.0.40
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:42.1436643Z [1m[32m   Compiling[0m bootloader_api v0.11.10 (https://github.com/rust-osdev/bootloader.git?branch=main#0d4e5025)
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:42.2900288Z [1m[32m   Compiling[0m syn v2.0.104
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:42.3187122Z [1m[32m   Compiling[0m bit_field v0.10.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:42.3507106Z [1m[32m   Compiling[0m shlex v1.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:42.4725236Z [1m[32m   Compiling[0m cc v1.2.30
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:42.8517747Z [1m[32m   Compiling[0m typenum v1.18.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:43.0476521Z [1m[32m   Compiling[0m zeroize v1.8.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:43.1791154Z [1m[32m   Compiling[0m bitflags v2.9.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:43.3199076Z [1m[32m   Compiling[0m version_check v0.9.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:43.4329463Z [1m[32m   Compiling[0m getrandom v0.3.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:43.6010342Z [1m[32m   Compiling[0m generic-array v0.14.7
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:43.6361897Z [1m[32m   Compiling[0m rustls-pki-types v1.12.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:43.8925699Z [1m[32m   Compiling[0m ring v0.17.14
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:44.5515549Z [1m[32m   Compiling[0m num-traits v0.2.19
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:44.6360245Z [1m[32m   Compiling[0m radium v0.7.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:44.7657416Z [1m[32m   Compiling[0m scopeguard v1.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:44.8507536Z [1m[32m   Compiling[0m serde_derive v1.0.219
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:44.9517463Z [1m[32m   Compiling[0m bitflags v1.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:44.9869570Z [1m[32m   Compiling[0m volatile v0.4.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:45.0765248Z [1m[32m   Compiling[0m az v1.2.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:45.2612043Z [1m[32m   Compiling[0m raw-cpuid v10.7.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:47.0308559Z [1m[32m   Compiling[0m thiserror v1.0.69
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:47.1856527Z [1m[32m   Compiling[0m crossbeam-utils v0.8.21
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:47.3353693Z [1m[32m   Compiling[0m conquer-util v0.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:47.4007331Z [1m[32m   Compiling[0m rustix v1.0.8
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:47.5948970Z [1m[32m   Compiling[0m tap v1.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:47.6566955Z [1m[32m   Compiling[0m rand_core v0.6.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:47.9052256Z [1m[32m   Compiling[0m wyz v0.5.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:50.8660009Z [1m[32m   Compiling[0m thiserror-impl v1.0.69
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:51.0334488Z [1m[32m   Compiling[0m getrandom v0.2.16
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:51.5907803Z [1m[32m   Compiling[0m log v0.4.27
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:51.7900873Z [1m[32m   Compiling[0m serde_json v1.0.141
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:51.8824603Z [1m[32m   Compiling[0m zero v0.1.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:51.8827626Z [1m[32m   Compiling[0m anyhow v1.0.98
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:51.9585377Z [1m[32m   Compiling[0m llvm-tools v0.1.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.0641209Z [1m[32m   Compiling[0m linux-raw-sys v0.9.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.0703470Z [1m[32m   Compiling[0m untrusted v0.9.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.0986255Z [1m[32m   Compiling[0m crc32fast v1.5.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.1456320Z [1m[32m   Compiling[0m httparse v1.10.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.2453328Z [1m[32m   Compiling[0m funty v2.0.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.3348714Z [1m[32m   Compiling[0m crc-catalog v2.4.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.4941744Z [1m[32m   Compiling[0m byteorder v1.5.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.6291425Z [1m[32m   Compiling[0m embedded-graphics-core v0.4.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:52.8307716Z [1m[32m   Compiling[0m bitvec v1.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:53.2564567Z [1m[32m   Compiling[0m crc v3.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:53.4952030Z [1m[32m   Compiling[0m bootloader v0.11.10 (https://github.com/rust-osdev/bootloader.git?branch=main#0d4e5025)
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:53.7717095Z [1m[32m   Compiling[0m xmas-elf v0.8.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.3270549Z [1m[32m   Compiling[0m float-cmp v0.9.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.3848305Z [1m[32m   Compiling[0m bootloader-boot-config v0.11.10 (https://github.com/rust-osdev/bootloader.git?branch=main#0d4e5025)
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.3949888Z [1m[32m   Compiling[0m serde-big-array v0.5.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.4709046Z [1m[32m   Compiling[0m bincode v1.3.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.4999777Z [1m[32m   Compiling[0m uart_16550 v0.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.8269226Z [1m[32m   Compiling[0m rand_hc v0.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.9360557Z [1m[32m   Compiling[0m rand v0.8.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.9422524Z [1m[32m   Compiling[0m conquer-once v0.3.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:54.9655109Z [1m[32m   Compiling[0m spinning_top v0.2.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:55.0211297Z [1m[32m   Compiling[0m uuid v1.17.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:55.0417265Z [1m[32m   Compiling[0m x86_64 v0.15.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:55.2999251Z [1m[32m   Compiling[0m x86_64 v0.14.13
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:55.4923179Z [1m[32m   Compiling[0m noto-sans-mono-bitmap v0.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:55.8539849Z [1m[32m   Compiling[0m micromath v2.1.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:55.9913857Z [1m[32m   Compiling[0m fnv v1.0.7
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.0352178Z [1m[32m   Compiling[0m itoa v1.0.15
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.1156025Z [1m[32m   Compiling[0m futures-core v0.3.31
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.1836029Z [1m[32m   Compiling[0m pin-project-lite v0.2.16
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.3360256Z [1m[32m   Compiling[0m futures-task v0.3.31
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.4250464Z [1m[32m   Compiling[0m memchr v2.7.5
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.4317365Z [1m[32m   Compiling[0m usize_conversions v0.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.5089226Z [1m[32m   Compiling[0m pin-utils v0.1.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.5320356Z [1m[32m   Compiling[0m kernel v0.1.0 (/home/runner/work/breenix/breenix/kernel)
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.5374039Z [1m[32m   Compiling[0m once_cell v1.21.3
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.6607646Z [1m[32m   Compiling[0m ryu v1.0.20
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.7305173Z [1m[32m   Compiling[0m fastrand v2.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.7365313Z [1m[32m   Compiling[0m adler2 v2.0.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.8211651Z [1m[32m   Compiling[0m bytes v1.10.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.8737007Z [1m[32m   Compiling[0m rustls v0.23.29
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:56.9461251Z [1m[32m   Compiling[0m tempfile v3.20.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:57.6216711Z [1m[32m   Compiling[0m http v1.3.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:58.1164190Z [1m[32m   Compiling[0m miniz_oxide v0.8.9
+Test Userspace Execution	Build Breenix	2025-07-24T13:06:59.5004231Z [1m[32m   Compiling[0m futures-util v0.3.31
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:00.1661295Z [1m[32m   Compiling[0m fatfs v0.3.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:00.6930025Z [1m[32m   Compiling[0m bootloader-x86_64-common v0.11.10 (https://github.com/rust-osdev/bootloader.git?branch=main#0d4e5025)
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:00.9139475Z [1m[32m   Compiling[0m pic8259 v0.10.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:00.9666432Z [1m[32m   Compiling[0m embedded-graphics v0.8.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:00.9834491Z [1m[32m   Compiling[0m gpt v3.1.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:01.1240049Z [1m[32m   Compiling[0m crossbeam-queue v0.3.12
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:01.1871542Z [1m[32m   Compiling[0m mbrman v0.5.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:02.2576529Z [1m[32m   Compiling[0m block-buffer v0.10.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:02.3000615Z [1m[32m   Compiling[0m crypto-common v0.1.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:02.3604361Z [1m[32m   Compiling[0m conquer-once v0.4.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:02.4292079Z [1m[32m   Compiling[0m spin v0.9.8
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:02.4534920Z [1m[32m   Compiling[0m webpki-roots v1.0.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:02.6030150Z [1m[32m   Compiling[0m base64 v0.22.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:02.8835966Z [1m[32m   Compiling[0m subtle v2.6.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:03.0416557Z [1m[32m   Compiling[0m ureq-proto v0.4.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.1200315Z [1m[32m   Compiling[0m rustls-webpki v0.103.4
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3151509Z [0m[1m[33mwarning[0m[0m[1m: associated function `new` is never used[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3152837Z [0m  [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/serial/command.rs:25:14[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3227581Z [0m   [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3228867Z [0m[1m[38;5;12m24[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0mimpl CommandRegistry {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3230914Z [0m   [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[38;5;12m--------------------[0m[0m [0m[0m[1m[38;5;12massociated function in this implementation[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3232190Z [0m[1m[38;5;12m25[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m    const fn new() -> Self {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3233157Z [0m   [0m[0m[1m[38;5;12m|[0m[0m              [0m[0m[1m[33m^^^[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3234820Z [0m   [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3235517Z [0m   [0m[0m[1m[38;5;12m= [0m[0m[1mnote[0m[0m: `#[warn(dead_code)]` on by default[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.3235968Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:05.4454886Z [1m[33mwarning[0m[1m:[0m `kernel` (lib) generated 1 warning
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:10.2635368Z [1m[32m   Compiling[0m webpki-roots v0.26.11
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:10.3509573Z [1m[32m   Compiling[0m digest v0.10.7
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:10.7169658Z [1m[32m   Compiling[0m flate2 v1.1.2
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:11.7766270Z [1m[32m   Compiling[0m xattr v1.5.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:11.8545557Z [1m[32m   Compiling[0m rustls-pemfile v2.2.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:12.3469589Z [1m[32m   Compiling[0m filetime v0.2.25
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:12.9545172Z [1m[32m   Compiling[0m cpufeatures v0.2.17
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:13.0350718Z [1m[32m   Compiling[0m utf-8 v0.7.6
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:13.3638332Z [1m[32m   Compiling[0m percent-encoding v2.3.1
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:13.7940973Z [1m[32m   Compiling[0m lzma-rs v0.3.0
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:15.4647165Z [1m[32m   Compiling[0m sha2 v0.10.9
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:18.5981546Z [1m[32m   Compiling[0m ureq v3.0.12
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:21.8105125Z [1m[32m   Compiling[0m tar v0.4.44
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.6994214Z [0m[1m[38;5;9merror[0m[0m[1m: invalid signature for `extern "x86-interrupt"` function[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.6995445Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/interrupts.rs:151:6[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.6996151Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.6996850Z [0m[1m[38;5;12m151[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m) -> ! {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.6997607Z [0m    [0m[0m[1m[38;5;12m|[0m[0m      [0m[0m[1m[38;5;9m^[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.6998518Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.6999397Z [0m    [0m[0m[1m[38;5;12m= [0m[0m[1mnote[0m[0m: functions with the "custom" ABI cannot have a return type[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.7000317Z [0m[1m[38;5;14mhelp[0m[0m: remove the return type[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.7001064Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/interrupts.rs:151:6[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.7001723Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.7002437Z [0m[1m[38;5;12m151[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m) -> ! {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.7003189Z [0m    [0m[0m[1m[38;5;12m|[0m[0m      [0m[0m[1m[38;5;14m^[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:29.7003656Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4862523Z [0m[1m[33mwarning[0m[0m[1m: unreachable statement[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4863443Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/syscall/handlers.rs:429:9[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4864107Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4916980Z [0m[1m[38;5;12m406[0m[0m [0m[0m[1m[38;5;12m|[0m[0m   [0m[0m                return SyscallResult::Err(22); // EINVAL[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4918579Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                   [0m[0m[1m[38;5;12m-----------------------------[0m[0m [0m[0m[1m[38;5;12many code following this expression is unreachable[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4919475Z [0m[1m[38;5;12m...[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4920639Z [0m[1m[38;5;12m429[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[33m/[0m[0m [0m[0m        let current_pid = {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4922022Z [0m[1m[38;5;12m430[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[33m|[0m[0m [0m[0m            let manager_guard = crate::process::manager();[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4923207Z [0m[1m[38;5;12m431[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[33m|[0m[0m [0m[0m            if let Some(ref manager) = *manager_guard {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4924532Z [0m[1m[38;5;12m432[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[33m|[0m[0m [0m[0m                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4925511Z [0m[1m[38;5;12m...[0m[0m   [0m[0m[1m[33m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4926298Z [0m[1m[38;5;12m442[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[33m|[0m[0m [0m[0m        };[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4927288Z [0m    [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[33m|__________^[0m[0m [0m[0m[1m[33munreachable statement[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4928189Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4928931Z [0m    [0m[0m[1m[38;5;12m= [0m[0m[1mnote[0m[0m: `#[warn(unreachable_code)]` on by default[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.4929389Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6029459Z [0m[1m[33mwarning[0m[0m[1m: unreachable statement[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6030555Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:377:9[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6031384Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6032885Z [0m[1m[38;5;12m374[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m            return Err("Cannot implement fork without testing feature");[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6034410Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[38;5;12m-----------------------------------------------------------[0m[0m [0m[0m[1m[38;5;12many code following this expression is unreachable[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6035464Z [0m[1m[38;5;12m...[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6036381Z [0m[1m[38;5;12m377[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m        child_process.page_table = Some(child_page_table);[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6037629Z [0m    [0m[0m[1m[38;5;12m|[0m[0m         [0m[0m[1m[33m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33munreachable statement[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6038474Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6250861Z [0m[1m[33mwarning[0m[0m[1m: unreachable statement[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6252258Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:612:9[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6257358Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6259839Z [0m[1m[38;5;12m609[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m            return Err("Cannot implement fork without testing feature");[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6261321Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[38;5;12m-----------------------------------------------------------[0m[0m [0m[0m[1m[38;5;12many code following this expression is unreachable[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6262267Z [0m[1m[38;5;12m...[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6263072Z [0m[1m[38;5;12m612[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m        child_process.page_table = Some(child_page_table);[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6264169Z [0m    [0m[0m[1m[38;5;12m|[0m[0m         [0m[0m[1m[33m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33munreachable statement[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:30.6264664Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.3924025Z [0m[1m[33mwarning[0m[0m[1m: unused variable: `current_thread_id`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.3925469Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/syscall/handlers.rs:374:13[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.3926403Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.3933419Z [0m[1m[38;5;12m374[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m        let current_thread_id = match crate::task::scheduler::current_thread_id() {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.3935963Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[33m^^^^^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_current_thread_id`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.3937296Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4010019Z [0m    [0m[0m[1m[38;5;12m= [0m[0m[1mnote[0m[0m: `#[warn(unused_variables)]` on by default[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4048821Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4089336Z [0m[1m[33mwarning[0m[0m[1m: unused variable: `elf_data`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4090218Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/syscall/handlers.rs:390:13[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4090882Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4091682Z [0m[1m[38;5;12m390[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m        let elf_data = if program_name_ptr != 0 {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4092932Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[33m^^^^^^^^[0m[0m [0m[0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_elf_data`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.4093608Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5466721Z [0m[1m[33mwarning[0m[0m[1m: unused variable: `parent_thread_info`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5468252Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:335:47[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5469207Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5470458Z [0m[1m[38;5;12m335[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m        let (parent_name, parent_entry_point, parent_thread_info) = {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5472139Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                                               [0m[0m[1m[33m^^^^^^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_parent_thread_info`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5473440Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5489126Z [0m[1m[33mwarning[0m[0m[1m: unused variable: `userspace_rsp`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5489963Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:332:75[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5490581Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5491642Z [0m[1m[38;5;12m332[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m    pub fn fork_process_with_page_table(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>, [0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5493246Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                                                                           [0m[0m[1m[33m^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_userspace_rsp`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5494050Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5494459Z [0m[1m[33mwarning[0m[0m[1m: unused variable: `child_page_table`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5495219Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:333:44[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5495790Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5496872Z [0m[1m[38;5;12m333[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[38;5;12m...[0m[0m                   mut child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5498555Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                           [0m[0m[1m[33m^^^^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_child_page_table`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5499229Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5559307Z [0m[1m[33mwarning[0m[0m[1m: variable does not need to be mutable[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5560183Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:333:40[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5560777Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5561878Z [0m[1m[38;5;12m333[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m[1m[38;5;12m...[0m[0m                   mut child_page_table: Box<ProcessPageTable>) -> Result<ProcessId, &'static str> {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5563012Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                       [0m[0m[1m[38;5;12m----[0m[0m[1m[33m^^^^^^^^^^^^^^^^[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5564126Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                       [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5564893Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                       [0m[0m[1m[38;5;12mhelp: remove this `mut`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5565504Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5566179Z [0m    [0m[0m[1m[38;5;12m= [0m[0m[1mnote[0m[0m: `#[warn(unused_mut)]` on by default[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5566615Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5809596Z [0m[1m[33mwarning[0m[0m[1m: unused variable: `parent_thread`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5810473Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:531:13[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5811085Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5811855Z [0m[1m[38;5;12m531[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m        let parent_thread = parent.main_thread.as_ref()[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5813054Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[33m^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_parent_thread`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5813708Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5814070Z [0m[1m[33mwarning[0m[0m[1m: unused variable: `userspace_rsp`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5814844Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:525:72[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5815407Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5816705Z [0m[1m[38;5;12m525[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m    pub fn fork_process_with_context(&mut self, parent_pid: ProcessId, userspace_rsp: Option<u64>) -> Result<ProcessId, &'static str> {[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5819097Z [0m    [0m[0m[1m[38;5;12m|[0m[0m                                                                        [0m[0m[1m[33m^^^^^^^^^^^^^[0m[0m [0m[0m[1m[33mhelp: if this is intentional, prefix it with an underscore: `_userspace_rsp`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5819850Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5961185Z [0m[1m[33mwarning[0m[0m[1m: variable does not need to be mutable[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5962540Z [0m   [0m[0m[1m[38;5;12m--> [0m[0mkernel/src/process/manager.rs:563:13[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5963351Z [0m    [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5964620Z [0m[1m[38;5;12m563[0m[0m [0m[0m[1m[38;5;12m|[0m[0m [0m[0m        let mut child_page_table = Box::new([0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5965494Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[38;5;12m----[0m[0m[1m[33m^^^^^^^^^^^^^^^^[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5966183Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[38;5;12m|[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5966904Z [0m    [0m[0m[1m[38;5;12m|[0m[0m             [0m[0m[1m[38;5;12mhelp: remove this `mut`[0m
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.5967286Z 
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.8463723Z [1m[33mwarning[0m[1m:[0m `kernel` (bin "kernel") generated 12 warnings
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.8469276Z [1m[31merror[0m[1m:[0m could not compile `kernel` (bin "kernel") due to 1 previous error; 12 warnings emitted
+Test Userspace Execution	Build Breenix	2025-07-24T13:07:31.8470858Z [1m[33mwarning[0m[1m:[0m build failed, waiting for other jobs to finish...
+Test Userspace Execution	Build Breenix	2025-07-24T13:08:20.5100628Z ##[error]Process completed with exit code 101.
+Test Userspace Execution	Upload logs on failure	﻿2025-07-24T13:08:20.5160216Z ##[group]Run actions/upload-artifact@v4
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5160500Z with:
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5160674Z   name: test-logs
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5160872Z   path: test_output.log
+Test Userspace Execution	Upload logs on failure	logs/*.log
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5161114Z   if-no-files-found: warn
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5161327Z   compression-level: 6
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5161514Z   overwrite: false
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5161708Z   include-hidden-files: false
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5161908Z env:
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5162066Z   RUST_BACKTRACE: 1
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5162253Z   CARGO_HOME: /home/runner/.cargo
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5162471Z   CARGO_INCREMENTAL: 0
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5162661Z   CARGO_TERM_COLOR: always
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.5162858Z ##[endgroup]
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.7289938Z Multiple search paths detected. Calculating the least common ancestor of all paths
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.7293719Z The least common ancestor is /home/runner/work/breenix/breenix. This will be the root directory of the artifact
+Test Userspace Execution	Upload logs on failure	2025-07-24T13:08:20.7313622Z ##[warning]No files were found with the provided path: test_output.log
+Test Userspace Execution	Upload logs on failure	logs/*.log. No artifacts will be uploaded.
+Test Userspace Execution	Post Checkout code	﻿2025-07-24T13:08:20.7429155Z Post job cleanup.
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8386677Z [command]/usr/bin/git version
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8423973Z git version 2.50.1
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8468365Z Temporarily overriding HOME='/home/runner/work/_temp/42bad08a-671e-4847-a78c-4a0d92ecee18' before making global git config changes
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8469479Z Adding repository directory to the temporary git global config as a safe directory
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8474031Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/breenix/breenix
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8512736Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8547801Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8782163Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8804131Z http.https://github.com/.extraheader
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8816797Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+Test Userspace Execution	Post Checkout code	2025-07-24T13:08:20.8848332Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Test Userspace Execution	Complete job	﻿2025-07-24T13:08:20.9173301Z Cleaning up orphan processes

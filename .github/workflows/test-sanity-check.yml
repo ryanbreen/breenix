@@ -50,7 +50,8 @@ jobs:
         
     - name: Build Breenix
       run: |
-        cargo build --release
+        rustup default nightly-2025-06-24
+        cargo +nightly-2025-06-24 build --release
         
     - name: Run Breenix Test
       run: |

@@ -46,7 +46,8 @@ jobs:
     - name: Build Breenix
       run: |
         echo "=== Building Breenix ==="
-        cargo build --release
+        rustup default nightly-2025-06-24
+        cargo +nightly-2025-06-24 build --release
         
     - name: Run Test 1
       run: |
