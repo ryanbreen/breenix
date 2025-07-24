@@ -1,0 +1,82 @@
+name: Test Sanity Check Branch
+
+on:
+  push:
+    branches: [ sanity-check-happy-ring-3 ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  test-userspace:
+    name: Test Userspace Execution
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install QEMU
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86
+        
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src, llvm-tools-preview
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Build Breenix
+      run: |
+        cargo build --release
+        
+    - name: Run Breenix Test
+      run: |
+        # Run exactly as we do locally
+        timeout 30 ./scripts/run_breenix.sh uefi -display none > test_output.log 2>&1 || true
+        
+    - name: Check for Userspace Success
+      run: |
+        echo "=== Checking for userspace execution success ==="
+        if grep -q "USERSPACE OUTPUT: Hello from userspace" test_output.log; then
+          echo "✅ USERSPACE EXECUTION SUCCESSFUL!"
+          echo "Found userspace output in logs"
+          exit 0
+        else
+          echo "❌ USERSPACE EXECUTION FAILED!"
+          echo "Did not find expected userspace output"
+          echo ""
+          echo "=== Last 50 lines of output ==="
+          tail -50 test_output.log
+          exit 1
+        fi
+        
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs
+        path: |
+          test_output.log
+          logs/*.log
