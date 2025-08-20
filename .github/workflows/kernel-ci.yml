@@ -46,7 +46,8 @@ jobs:
             mtools \
             dosfstools \
             xorriso \
-            nasm
+            nasm \
+            lld
           qemu-system-x86_64 --version || true
           qemu-img --version || true
           mcopy -V 2>/dev/null || true
