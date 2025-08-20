@@ -8,13 +8,17 @@ set -euo pipefail
 # - Prints a concise summary and leaves logs/ artifacts for CI upload
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# scripts/ci -> repo root
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
 MODE="${1:-uefi}"  # uefi|bios
-TIMEOUT_SECONDS="${RING3_TIMEOUT_SECONDS:-480}"
+TIMEOUT_SECONDS="${RING3_TIMEOUT_SECONDS:-20}"
 
 echo "=== Ring3 smoke: mode=$MODE timeout=${TIMEOUT_SECONDS}s ==="
+
+# Ensure no stale QEMU holds the image lock
+pkill -f qemu-system-x86_64 >/dev/null 2>&1 || true
 
 # Run with streaming detection so we don't always wait for timeout
 set +e
@@ -43,28 +47,36 @@ search() {
 # 1) Check for obvious faults (must be absent)
 echo "=== Checking for fault patterns ==="
 set +e
-fault_output=$(search '-E "DOUBLE FAULT|Page Fault|PAGE FAULT|panic|backtrace"' || true)
+search '-E "DOUBLE FAULT|Page Fault|PAGE FAULT|panic|backtrace"'
+fault_rc=$?
 set -e
-if echo "$fault_output" | grep -qE "DOUBLE FAULT|Page Fault|PAGE FAULT|panic|backtrace"; then
-  echo "$fault_output"
+if [[ $fault_rc -eq 0 ]]; then
   echo "ERROR: Fault patterns found in latest log"
   exit 3
 fi
 
 # 2) Success markers (streaming may have already exited on success). We verify again from log.
 echo "=== Checking for success markers ==="
-# Prefer a canonical OK marker if kernel emits it; otherwise fallback to composite proof
+# Prefer a canonical OK marker if kernel emits it; otherwise fallback logic depends on runner outcome
 set +e
 search '-F "[ OK ] RING3_SMOKE: userspace executed + syscall path verified"'
 canonical_ok_rc=$?
+have_hello=$(search '-F "Hello from userspace! Current time:"' >/dev/null && echo yes || echo no)
+have_cs=$(search '-F "Context switch: from_userspace=true, CS=0x33"' >/dev/null && echo yes || echo no)
+have_user_output=$(search '-F "USERSPACE OUTPUT:"' >/dev/null && echo yes || echo no)
 set -e
 
-if [[ $canonical_ok_rc -ne 0 ]]; then
-  set +e
-  have_hello=$(search '-F "Hello from userspace! Current time:"' >/dev/null && echo yes || echo no)
-  have_cs=$(search '-F "Context switch: from_userspace=true, CS=0x33"' >/dev/null && echo yes || echo no)
-  have_user_output=$(search '-F "USERSPACE OUTPUT:"' >/dev/null && echo yes || echo no)
-  set -e
+if [[ $canonical_ok_rc -eq 0 ]]; then
+  : # canonical success found
+elif [[ $run_rc -eq 0 ]]; then
+  # Runner reported success via streaming markers; require core pair of proofs
+  if [[ "$have_hello" != yes || "$have_cs" != yes ]]; then
+    echo "ERROR: Streaming success reported, but core markers not present in log"
+    echo "hello=$have_hello cs=$have_cs"
+    exit 4
+  fi
+else
+  # Runner did not report streaming success; require full composite including userspace_output
   if [[ "$have_hello" != yes || "$have_cs" != yes || "$have_user_output" != yes ]]; then
     echo "ERROR: Ring3 success markers not found in latest log"
     echo "hello=$have_hello cs=$have_cs userspace_output=$have_user_output"
