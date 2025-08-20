@@ -8,6 +8,8 @@ on:
 jobs:
   ring3-smoke:
     runs-on: ubuntu-22.04
+    env:
+      RUST_BACKTRACE: full
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -16,6 +18,13 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src, llvm-tools-preview
+
+      - name: Verify Rust components
+        run: |
+          rustc -Vv
+          cargo -Vv
+          rustup component list --installed
+          echo "sysroot: $(rustc --print sysroot)"
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -41,11 +50,14 @@ jobs:
           qemu-img --version || true
           mcopy -V 2>/dev/null || true
           mkfs.fat -v 2>/dev/null || true
+          ld --version | head -1 || true
+          ld.lld --version | head -1 || true
+          objcopy --version | head -1 || true
+          $(rustc --print sysroot)/lib/rustlib/*/bin/llvm-objcopy --version || true
 
       - name: Build (warnings as errors)
         env:
           RUSTFLAGS: "-D warnings"
-          RUST_BACKTRACE: "1"
         run: cargo build --workspace --verbose
 
       - name: Run tests
