@@ -33,7 +33,8 @@ x86_64 = { version = "0.15.2", features = ["instructions", "nightly"] }
 
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
-bootloader = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
+# Limit bootloader to UEFI-only to avoid BIOS build/install on CI
+bootloader = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main", default-features = false, features = ["uefi"] }
 
 [dev-dependencies]
 libc = "0.2"
