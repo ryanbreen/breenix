@@ -31,17 +31,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             qemu-system-x86 \
+            qemu-utils \
             ovmf \
             mtools \
             dosfstools \
-            xorriso
+            xorriso \
+            nasm
           qemu-system-x86_64 --version || true
+          qemu-img --version || true
           mcopy -V 2>/dev/null || true
           mkfs.fat -v 2>/dev/null || true
 
       - name: Build (warnings as errors)
         env:
           RUSTFLAGS: "-D warnings"
+          RUST_BACKTRACE: "1"
         run: cargo build --workspace --verbose
 
       - name: Run tests
