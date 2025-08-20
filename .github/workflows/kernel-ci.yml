@@ -57,7 +57,7 @@ jobs:
           $(rustc --print sysroot)/lib/rustlib/*/bin/llvm-objcopy --version || true
 
       - name: Prefetch dependencies
-        run: cargo fetch --locked
+        run: cargo fetch
 
       - name: Build (UEFI only, warnings as errors)
         env:
