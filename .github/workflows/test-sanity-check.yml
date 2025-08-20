@@ -13,7 +13,7 @@ env:
 jobs:
   test-userspace:
     name: Test Userspace Execution
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout code
@@ -22,12 +22,18 @@ jobs:
     - name: Install QEMU and build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y qemu-system-x86 nasm
+        sudo apt-get install -y \
+          qemu-system-x86 \
+          qemu-utils \
+          ovmf \
+          mtools \
+          dosfstools \
+          xorriso \
+          nasm
         
     - name: Setup Rust
-      uses: dtolnay/rust-toolchain@master
+      uses: dtolnay/rust-toolchain@nightly
       with:
-        toolchain: nightly-2025-06-24
         components: rust-src, llvm-tools-preview
         targets: x86_64-unknown-none
         
@@ -49,40 +55,21 @@ jobs:
         path: target
         key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
         
-    - name: Build Breenix
+    - name: Prefetch dependencies
+      run: cargo fetch
+
+    - name: Build Breenix (UEFI only)
+      env:
+        RUSTFLAGS: "-D warnings"
       run: |
-        rustup default nightly-2025-06-24
-        cargo +nightly-2025-06-24 build --release
+        cargo build --release --features testing --bin qemu-uefi --verbose
         
-    - name: Run Breenix Test
+    - name: Ring3 smoke test (streaming)
+      env:
+        RING3_TIMEOUT_SECONDS: "480"
       run: |
-        # Run exactly as we do locally
-        timeout 30 ./scripts/run_breenix.sh uefi -display none > test_output.log 2>&1 || true
-        
-    - name: Check for Userspace Success
-      run: |
-        echo "=== Checking for userspace execution success ==="
-        # Find the most recent log file
-        LATEST_LOG=$(ls -t logs/breenix_*.log | head -1)
-        echo "Checking log file: $LATEST_LOG"
-        
-        if [ -f "$LATEST_LOG" ] && grep -q "USERSPACE OUTPUT: Hello from userspace" "$LATEST_LOG"; then
-          echo "✅ USERSPACE EXECUTION SUCCESSFUL!"
-          echo "Found userspace output in logs"
-          exit 0
-        else
-          echo "❌ USERSPACE EXECUTION FAILED!"
-          echo "Did not find expected userspace output"
-          echo ""
-          echo "=== Last 50 lines of kernel output ==="
-          if [ -f "$LATEST_LOG" ]; then
-            tail -50 "$LATEST_LOG"
-          else
-            echo "No log file found!"
-            ls -la logs/
-          fi
-          exit 1
-        fi
+        bash scripts/ci/ring3_check.sh uefi
+    
         
     - name: Upload logs on failure
       if: failure()
