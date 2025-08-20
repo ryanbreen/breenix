@@ -13,9 +13,24 @@ fn main() {
     let uefi_path = out_dir.join("breenix-uefi.img");
     let bios_path = out_dir.join("breenix-bios.img");
 
-    // create the disk images
-    disk_builder.create_uefi_image(&uefi_path).unwrap();
-    disk_builder.create_bios_image(&bios_path).unwrap();
+    // Only create the UEFI image by default. BIOS image can be enabled via env var.
+    println!("cargo:warning=Creating UEFI disk image at {}", uefi_path.display());
+    disk_builder
+        .create_uefi_image(&uefi_path)
+        .expect("failed to create UEFI disk image");
+
+    let build_bios = env::var("BREENIX_BUILD_BIOS").is_ok();
+    if build_bios {
+        println!(
+            "cargo:warning=BREENIX_BUILD_BIOS set; creating BIOS disk image at {}",
+            bios_path.display()
+        );
+        disk_builder
+            .create_bios_image(&bios_path)
+            .expect("failed to create BIOS disk image");
+    } else {
+        println!("cargo:warning=Skipping BIOS image creation (BREENIX_BUILD_BIOS not set)");
+    }
 
     // pass the disk image paths via environment variables
     println!("cargo:rustc-env=UEFI_IMAGE={}", uefi_path.display());
