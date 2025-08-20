@@ -1,0 +1,50 @@
+name: kernel-ci
+
+on:
+  pull_request:
+  push:
+    branches: [ "**" ]
+
+jobs:
+  ring3-smoke:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      - name: Build (warnings as errors)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: cargo build --workspace
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Ring3 smoke test (UEFI)
+        run: bash scripts/ci/ring3_check.sh uefi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: breenix-logs
+          path: logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
