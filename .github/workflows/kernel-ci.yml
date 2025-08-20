@@ -78,6 +78,8 @@ jobs:
           cargo build --release --features testing --bin qemu-uefi --verbose
 
       - name: Ring3 smoke test (UEFI)
+        env:
+          RING3_TIMEOUT_SECONDS: "480"
         run: bash scripts/ci/ring3_check.sh uefi
 
       - name: Upload logs
