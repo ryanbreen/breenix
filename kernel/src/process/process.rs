@@ -55,6 +55,7 @@ pub struct Process {
     pub main_thread: Option<Thread>,
     
     /// Additional threads (for future multi-threading support)
+    #[allow(dead_code)]
     pub threads: Vec<u64>, // Thread IDs
     
     /// Parent process ID (if any)
@@ -82,6 +83,7 @@ pub struct MemoryUsage {
     /// Size of loaded program segments in bytes
     pub code_size: usize,
     /// Size of allocated heap in bytes
+    #[allow(dead_code)]
     pub heap_size: usize,
     /// Size of allocated stack in bytes
     pub stack_size: usize,
