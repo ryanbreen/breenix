@@ -68,7 +68,13 @@ jobs:
       - name: Ring3 smoke test (UEFI)
         env:
           RING3_TIMEOUT_SECONDS: "480"
-        run: bash scripts/ci/ring3_check.sh uefi
+        run: |
+          set -euxo pipefail
+          bash scripts/ci/ring3_check.sh uefi || {
+            echo "ring3_check.sh failed; dumping qemu stderr if any";
+            ls -l logs || true;
+            exit 1;
+          }
 
       - name: Upload logs
         if: always()

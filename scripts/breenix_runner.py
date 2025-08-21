@@ -128,10 +128,9 @@ class BreenixRunner:
                 if line:
                     sys.stdout.write(line)
                     sys.stdout.flush()
-                    # Avoid duplicating output when serial is already going to the log file
-                    if not (self.enable_ci_ring3_mode and self._serial_to_file):
-                        self.log_file.write(line)
-                        self.log_file.flush()
+                    # Always write QEMU stdout to the log file (captures QEMU errors)
+                    self.log_file.write(line)
+                    self.log_file.flush()
                     if self.enable_ci_ring3_mode:
                         self._ingest_line_for_markers(line)
                     
