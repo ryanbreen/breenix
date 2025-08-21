@@ -34,6 +34,7 @@ class BreenixRunner:
         self.timeout_seconds = timeout_seconds
         # When in CI mode, prefer routing guest serial to a file to guarantee capture
         self._serial_to_file = enable_ci_ring3_mode
+        self._serial_log_path = None
 
         # Default patterns for success/failure detection
         default_success_any = [
@@ -92,7 +93,11 @@ class BreenixRunner:
         # Add QEMU arguments
         # Route serial appropriately
         if self._serial_to_file:
-            cmd.extend(["-serial", f"file:{self.log_path}"])
+            # Use a dedicated serial log to avoid colliding with our main log file handle
+            self._serial_log_path = self.log_path.replace(
+                ".log", "_serial.log"
+            )
+            cmd.extend(["-serial", f"file:{self._serial_log_path}"])
         else:
             cmd.extend(["-serial", "stdio"])
         if not self.display:
@@ -110,6 +115,8 @@ class BreenixRunner:
         
         # Start threads to handle output
         self._start_output_threads()
+        if self.enable_ci_ring3_mode and self._serial_to_file and self._serial_log_path:
+            self._start_serial_tail_thread()
         
         # Wait for kernel to initialize
         print("Waiting for kernel to initialize...")
@@ -136,6 +143,31 @@ class BreenixRunner:
                     
         threading.Thread(target=read_serial, daemon=True).start()
         threading.Thread(target=read_stdout, daemon=True).start()
+
+    def _start_serial_tail_thread(self):
+        """Tail the serial log file and mirror content into the main log and marker engine."""
+        path = self._serial_log_path
+        def tail_file():
+            pos = 0
+            while self.process and self.process.poll() is None:
+                try:
+                    with open(path, 'r') as f:
+                        f.seek(pos)
+                        data = f.read()
+                        if data:
+                            pos = f.tell()
+                            for line in data.splitlines(True):
+                                # Mirror to stdout and main log
+                                sys.stdout.write(line)
+                                sys.stdout.flush()
+                                self.log_file.write(line)
+                                self.log_file.flush()
+                                # Feed marker detector
+                                self._ingest_line_for_markers(line)
+                except FileNotFoundError:
+                    pass
+                time.sleep(0.1)
+        threading.Thread(target=tail_file, daemon=True).start()
         
     def send_command(self, command):
         """Send a command to the serial console"""
