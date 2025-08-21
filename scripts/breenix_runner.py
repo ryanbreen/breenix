@@ -32,6 +32,8 @@ class BreenixRunner:
         # CI ring3 streaming detection configuration
         self.enable_ci_ring3_mode = enable_ci_ring3_mode
         self.timeout_seconds = timeout_seconds
+        # When in CI mode, prefer routing guest serial to a file to guarantee capture
+        self._serial_to_file = enable_ci_ring3_mode
 
         # Default patterns for success/failure detection
         default_success_any = [
@@ -88,8 +90,11 @@ class BreenixRunner:
             cmd = ["cargo", "run", "--release", "--features", "testing", "--bin", bin_name, "--"]
         
         # Add QEMU arguments
-        # Use stdio for serial communication to capture logs properly
-        cmd.extend(["-serial", "stdio"])
+        # Route serial appropriately
+        if self._serial_to_file:
+            cmd.extend(["-serial", f"file:{self.log_path}"])
+        else:
+            cmd.extend(["-serial", "stdio"])
         if not self.display:
             cmd.extend(["-display", "none"])
             
@@ -123,8 +128,10 @@ class BreenixRunner:
                 if line:
                     sys.stdout.write(line)
                     sys.stdout.flush()
-                    self.log_file.write(line)
-                    self.log_file.flush()
+                    # Avoid duplicating output when serial is already going to the log file
+                    if not (self.enable_ci_ring3_mode and self._serial_to_file):
+                        self.log_file.write(line)
+                        self.log_file.flush()
                     if self.enable_ci_ring3_mode:
                         self._ingest_line_for_markers(line)
                     
