@@ -201,8 +201,10 @@ pub fn test_exec_real_userspace() {
     
     #[cfg(feature = "testing")]
     {
-        let fork_test_elf = crate::userspace_test::FORK_TEST_ELF;
-        let hello_time_elf = crate::userspace_test::HELLO_TIME_ELF;
+        let fork_test_buf = crate::userspace_test::get_test_binary("fork_test");
+        let fork_test_elf: &[u8] = &fork_test_buf;
+        let hello_time_buf = crate::userspace_test::get_test_binary("hello_time");
+        let hello_time_elf: &[u8] = &hello_time_buf;
         
         log::info!("fork_test.elf size: {} bytes", fork_test_elf.len());
         log::info!("hello_time.elf size: {} bytes", hello_time_elf.len());
@@ -289,7 +291,9 @@ pub fn test_exec_minimal() {
             
             // Try to exec hello_time into it
             #[cfg(feature = "testing")]
-            let hello_time_elf = crate::userspace_test::HELLO_TIME_ELF;
+            let hello_time_buf = crate::userspace_test::get_test_binary("hello_time");
+            #[cfg(feature = "testing")]
+            let hello_time_elf: &[u8] = &hello_time_buf;
             #[cfg(not(feature = "testing"))]
             let hello_time_elf = &create_minimal_elf_no_bss();
             
