@@ -24,6 +24,45 @@ pub fn get_test_binary(_name: &str) -> alloc::vec::Vec<u8> {
     create_minimal_valid_elf()
 }
 
+/// Return a &'static [u8] for a generated test ELF, by leaking a boxed slice once.
+#[cfg(feature = "testing")]
+pub fn get_test_binary_static(name: &str) -> &'static [u8] {
+    use alloc::boxed::Box;
+    use spin::Once;
+    match name {
+        "hello_time" => {
+            static HELLO_TIME_SLICE: Once<&'static [u8]> = Once::new();
+            *HELLO_TIME_SLICE.call_once(|| {
+                let v = get_test_binary("hello_time");
+                Box::leak(v.into_boxed_slice())
+            })
+        }
+        "hello_world" => {
+            static HELLO_WORLD_SLICE: Once<&'static [u8]> = Once::new();
+            *HELLO_WORLD_SLICE.call_once(|| {
+                let v = get_test_binary("hello_world");
+                Box::leak(v.into_boxed_slice())
+            })
+        }
+        "fork_test" => {
+            static FORK_TEST_SLICE: Once<&'static [u8]> = Once::new();
+            *FORK_TEST_SLICE.call_once(|| {
+                let v = get_test_binary("fork_test");
+                Box::leak(v.into_boxed_slice())
+            })
+        }
+        other => {
+            // Default: generate minimal ELF per name
+            static FALLBACK_SLICE: Once<&'static [u8]> = Once::new();
+            let _ = other; // unused
+            *FALLBACK_SLICE.call_once(|| {
+                let v = get_test_binary("default");
+                Box::leak(v.into_boxed_slice())
+            })
+        }
+    }
+}
+
 // Add test to ensure binaries are included
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
 fn _test_binaries_included() {

@@ -397,14 +397,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using hello_time.elf for exec test");
-                // Use generated hello_time test ELF. Store in a static to satisfy lifetimes.
-                static mut HELLO_TIME_BUF: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-                unsafe {
-                    if HELLO_TIME_BUF.is_empty() {
-                        HELLO_TIME_BUF = crate::userspace_test::get_test_binary("hello_time");
-                    }
-                    &HELLO_TIME_BUF
-                }
+                crate::userspace_test::get_test_binary_static("hello_time")
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -422,13 +415,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using generated hello_world test program");
-                static mut HELLO_WORLD_BUF: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-                unsafe {
-                    if HELLO_WORLD_BUF.is_empty() {
-                        HELLO_WORLD_BUF = crate::userspace_test::get_test_binary("hello_world");
-                    }
-                    &HELLO_WORLD_BUF
-                }
+                crate::userspace_test::get_test_binary_static("hello_world")
             }
             #[cfg(not(feature = "testing"))]
             {
