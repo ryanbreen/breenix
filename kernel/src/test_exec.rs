@@ -606,6 +606,7 @@ fn create_minimal_elf_no_bss() -> alloc::vec::Vec<u8> {
 }
 
 /// Create a hello world ELF that tests syscalls
+#[allow(dead_code)]
 fn create_hello_world_elf() -> alloc::vec::Vec<u8> {
     use alloc::vec::Vec;
     
@@ -692,6 +693,7 @@ fn create_hello_world_elf() -> alloc::vec::Vec<u8> {
 }
 
 /// Create a minimal ELF binary for exec testing (different from fork test)
+#[allow(dead_code)]
 fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
     use alloc::vec::Vec;
     

@@ -334,6 +334,7 @@ fn idle_loop() -> ! {
 #[no_mangle]
 pub extern "C" fn get_next_page_table() -> u64 {
     unsafe {
+        #[allow(static_mut_refs)]
         if let Some(frame) = NEXT_PAGE_TABLE.take() {
             let addr = frame.start_address().as_u64();
             // Log this for debugging
