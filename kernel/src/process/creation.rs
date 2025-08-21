@@ -73,6 +73,7 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
 /// Initialize the first user process (init)
 /// 
 /// This creates PID 1 as a proper user process without spawn mechanisms.
+#[allow(dead_code)]
 pub fn init_user_process(elf_data: &[u8]) -> Result<ProcessId, &'static str> {
     log::info!("init_user_process: Creating init process (PID 1)");
     

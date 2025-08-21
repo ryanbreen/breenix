@@ -490,6 +490,7 @@ pub fn test_exec_without_scheduling() {
 }
 
 /// Create a fork test ELF that tests syscalls
+#[allow(dead_code)]
 fn create_fork_test_elf() -> alloc::vec::Vec<u8> {
     use alloc::vec::Vec;
     

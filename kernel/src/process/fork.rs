@@ -122,6 +122,7 @@ pub fn copy_process_state(
 /// 
 /// This implements a simplified copy of all mapped pages from parent to child.
 /// In a real implementation, this would use copy-on-write for efficiency.
+#[allow(dead_code)]
 pub fn copy_page_table_contents(
     parent_page_table: &ProcessPageTable,
     child_page_table: &mut ProcessPageTable,
@@ -167,6 +168,7 @@ pub fn copy_page_table_contents(
 /// 
 /// TEMPORARY WORKAROUND: Since ProcessPageTable.translate_page() is broken,
 /// use the copy_from_user approach to copy memory pages.
+#[allow(dead_code)]
 fn copy_memory_region(
     start_addr: VirtAddr,
     end_addr: VirtAddr,
