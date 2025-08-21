@@ -191,11 +191,13 @@ impl ProcessManager {
     }
     
     /// Get the current process ID
+    #[allow(dead_code)]
     pub fn current_pid(&self) -> Option<ProcessId> {
         self.current_pid
     }
     
     /// Set the current process ID (for direct execution)
+    #[allow(dead_code)]
     pub fn set_current_pid(&mut self, pid: ProcessId) {
         self.current_pid = Some(pid);
         
@@ -206,16 +208,19 @@ impl ProcessManager {
     }
     
     /// Get a reference to a process
+    #[allow(dead_code)]
     pub fn get_process(&self, pid: ProcessId) -> Option<&Process> {
         self.processes.get(&pid)
     }
     
     /// Get a mutable reference to a process
+    #[allow(dead_code)]
     pub fn get_process_mut(&mut self, pid: ProcessId) -> Option<&mut Process> {
         self.processes.get_mut(&pid)
     }
     
     /// Exit a process with the given exit code
+    #[allow(dead_code)]
     pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
         if let Some(process) = self.processes.get_mut(&pid) {
             log::info!("Process {} (PID {}) exiting with code {}", 
@@ -240,6 +245,7 @@ impl ProcessManager {
     }
     
     /// Get the next ready process to run
+    #[allow(dead_code)]
     pub fn schedule_next(&mut self) -> Option<ProcessId> {
         // Simple round-robin for now
         if let Some(pid) = self.ready_queue.first().cloned() {
@@ -268,11 +274,13 @@ impl ProcessManager {
     }
     
     /// Get all process IDs
+    #[allow(dead_code)]
     pub fn all_pids(&self) -> Vec<ProcessId> {
         self.processes.keys().cloned().collect()
     }
     
     /// Get process count
+    #[allow(dead_code)]
     pub fn process_count(&self) -> usize {
         self.processes.len()
     }
