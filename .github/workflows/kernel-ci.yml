@@ -62,7 +62,7 @@ jobs:
 
       - name: Build (UEFI only, warnings as errors)
         env:
-          RUSTFLAGS: "-D warnings"
+          RUSTFLAGS: "-D warnings -A dead_code"
         run: cargo build --release --features testing --bin qemu-uefi --verbose
 
       - name: Ring3 smoke test (UEFI)

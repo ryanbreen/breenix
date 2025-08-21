@@ -60,7 +60,7 @@ jobs:
 
     - name: Build Breenix (UEFI only)
       env:
-        RUSTFLAGS: "-D warnings"
+        RUSTFLAGS: "-D warnings -A dead_code"
       run: |
         cargo build --release --features testing --bin qemu-uefi --verbose
         

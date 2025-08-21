@@ -25,9 +25,12 @@ fn main() {
             "cargo:warning=BREENIX_BUILD_BIOS set; creating BIOS disk image at {}",
             bios_path.display()
         );
+        // New bootloader API removed BIOS builder; use UEFI image as placeholder to keep API surface stable.
+        // If BIOS support is needed, switch to a branch that still exposes create_bios_image or vendor our own.
+        println!("cargo:warning=bootloader no longer provides create_bios_image; duplicating UEFI image for BIOS placeholder");
         disk_builder
-            .create_bios_image(&bios_path)
-            .expect("failed to create BIOS disk image");
+            .create_uefi_image(&bios_path)
+            .expect("failed to create BIOS placeholder image");
     } else {
         println!("cargo:warning=Skipping BIOS image creation (BREENIX_BUILD_BIOS not set)");
     }
