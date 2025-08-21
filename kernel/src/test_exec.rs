@@ -26,7 +26,9 @@ pub fn test_direct_execution() {
     
     // Create and run hello_time.elf directly
     #[cfg(feature = "testing")]
-    let hello_time_elf = crate::userspace_test::HELLO_TIME_ELF;
+    let hello_time_buf = crate::userspace_test::get_test_binary("hello_time");
+    #[cfg(feature = "testing")]
+    let hello_time_elf: &[u8] = &hello_time_buf;
     #[cfg(not(feature = "testing"))]
     let hello_time_elf = &create_hello_world_elf();
     
@@ -55,7 +57,9 @@ pub fn test_userspace_fork() {
     
     // TEMPORARILY: Use hello_time instead of fork_test to see if issue is with different ELF binaries
     #[cfg(feature = "testing")]
-    let test_elf = crate::userspace_test::HELLO_TIME_ELF;
+    let test_elf_buf = crate::userspace_test::get_test_binary("hello_time");
+    #[cfg(feature = "testing")]
+    let test_elf: &[u8] = &test_elf_buf;
     #[cfg(not(feature = "testing"))]
     let test_elf = &create_hello_world_elf();
     
@@ -80,7 +84,9 @@ pub fn test_fork_exec() {
     
     // First create a parent process that will fork
     #[cfg(feature = "testing")]
-    let fork_test_elf = crate::userspace_test::FORK_TEST_ELF;
+    let fork_test_buf = crate::userspace_test::get_test_binary("fork_test");
+    #[cfg(feature = "testing")]
+    let fork_test_elf: &[u8] = &fork_test_buf;
     #[cfg(not(feature = "testing"))]
     let fork_test_elf = &create_minimal_elf_no_bss();
     
@@ -100,7 +106,9 @@ pub fn test_fork_exec() {
                     log::info!("Attempting to exec hello_time.elf into child process {}", child_pid.as_u64());
                     
                     #[cfg(feature = "testing")]
-                    let hello_time_elf = crate::userspace_test::HELLO_TIME_ELF;
+                    let hello_time_buf = crate::userspace_test::get_test_binary("hello_time");
+                    #[cfg(feature = "testing")]
+                    let hello_time_elf: &[u8] = &hello_time_buf;
                     #[cfg(not(feature = "testing"))]
                     let hello_time_elf = &create_minimal_elf_no_bss();
                     
@@ -140,7 +148,9 @@ pub fn test_exec_directly() {
     
     // First create a process with fork_test.elf
     #[cfg(feature = "testing")]
-    let fork_test_elf = crate::userspace_test::FORK_TEST_ELF;
+    let fork_test_buf = crate::userspace_test::get_test_binary("fork_test");
+    #[cfg(feature = "testing")]
+    let fork_test_elf: &[u8] = &fork_test_buf;
     #[cfg(not(feature = "testing"))]
     let fork_test_elf = &create_minimal_elf_no_bss();
     
@@ -157,7 +167,9 @@ pub fn test_exec_directly() {
             log::info!("Attempting to exec hello_time.elf into process {}", pid.as_u64());
             
             #[cfg(feature = "testing")]
-            let hello_time_elf = crate::userspace_test::HELLO_TIME_ELF;
+            let hello_time_buf = crate::userspace_test::get_test_binary("hello_time");
+            #[cfg(feature = "testing")]
+            let hello_time_elf: &[u8] = &hello_time_buf;
             #[cfg(not(feature = "testing"))]
             let hello_time_elf = &create_minimal_elf_no_bss();
             
@@ -309,7 +321,9 @@ pub fn test_shell_fork_exec() {
     
     // Simulate a shell process that wants to run a command
     #[cfg(feature = "testing")]
-    let shell_elf = crate::userspace_test::FORK_TEST_ELF; // Using fork_test as our "shell"
+    let shell_buf = crate::userspace_test::get_test_binary("fork_test"); // Using fork_test as our "shell"
+    #[cfg(feature = "testing")]
+    let shell_elf: &[u8] = &shell_buf;
     #[cfg(not(feature = "testing"))]  
     let shell_elf = &create_minimal_elf_no_bss();
     
@@ -330,7 +344,9 @@ pub fn test_shell_fork_exec() {
                     
                     // Step 2: Child process execs the command
                     #[cfg(feature = "testing")]
-                    let command_elf = crate::userspace_test::HELLO_TIME_ELF;
+                    let command_buf = crate::userspace_test::get_test_binary("hello_time");
+                    #[cfg(feature = "testing")]
+                    let command_elf: &[u8] = &command_buf;
                     #[cfg(not(feature = "testing"))]
                     let command_elf = &create_hello_world_elf();
                     
@@ -397,7 +413,9 @@ pub fn test_exec_without_scheduling() {
     
     // Create a process without scheduling it
     #[cfg(feature = "testing")]
-    let initial_elf = crate::userspace_test::FORK_TEST_ELF;
+    let initial_buf = crate::userspace_test::get_test_binary("fork_test");
+    #[cfg(feature = "testing")]
+    let initial_elf: &[u8] = &initial_buf;
     #[cfg(not(feature = "testing"))]
     let initial_elf = &create_minimal_elf_no_bss();
     
@@ -425,7 +443,9 @@ pub fn test_exec_without_scheduling() {
     if let Some(pid) = pid {
         // Now exec the actual program we want to run
         #[cfg(feature = "testing")]
-        let target_elf = crate::userspace_test::HELLO_TIME_ELF;
+        let target_buf = crate::userspace_test::get_test_binary("hello_time");
+        #[cfg(feature = "testing")]
+        let target_elf: &[u8] = &target_buf;
         #[cfg(not(feature = "testing"))]
         let target_elf = &create_exec_test_elf();
         

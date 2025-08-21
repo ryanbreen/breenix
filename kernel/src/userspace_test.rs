@@ -19,7 +19,7 @@ pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.el
 pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
 
 #[cfg(feature = "testing")]
-fn get_test_binary(_name: &str) -> alloc::vec::Vec<u8> {
+pub fn get_test_binary(_name: &str) -> alloc::vec::Vec<u8> {
     // For now, generate a minimal valid ELF. We can extend per-name later.
     create_minimal_valid_elf()
 }
