@@ -118,6 +118,7 @@ impl Process {
     }
     
     /// Mark process as blocked
+    #[allow(dead_code)]
     pub fn set_blocked(&mut self) {
         self.state = ProcessState::Blocked;
     }
@@ -144,6 +145,7 @@ impl Process {
     }
     
     /// Remove a child process
+    #[allow(dead_code)]
     pub fn remove_child(&mut self, child_id: ProcessId) {
         self.children.retain(|&id| id != child_id);
     }

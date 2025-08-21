@@ -28,6 +28,7 @@ pub struct ProcessManager {
     ready_queue: Vec<ProcessId>,
     
     /// Next available process base address (for virtual address allocation)
+    #[allow(dead_code)]
     next_process_base: VirtAddr,
 }
 
