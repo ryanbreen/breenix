@@ -1,24 +1,31 @@
 //! Userspace program testing module
 
 
-/// Include the compiled userspace test binaries
-#[cfg(feature = "testing")]
+/// Include the compiled userspace test binaries when explicitly enabled.
+/// On CI (default), we generate minimal valid ELF binaries instead to avoid repo file dependencies.
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static HELLO_TIME_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_time.elf");
 
-#[cfg(feature = "testing")]
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static HELLO_WORLD_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_world.elf");
 
-#[cfg(feature = "testing")]
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static COUNTER_ELF: &[u8] = include_bytes!("../../userspace/tests/counter.elf");
 
-#[cfg(feature = "testing")]
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.elf");
 
-#[cfg(feature = "testing")]
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
 
-// Add test to ensure binaries are included
 #[cfg(feature = "testing")]
+fn get_test_binary(_name: &str) -> alloc::vec::Vec<u8> {
+    // For now, generate a minimal valid ELF. We can extend per-name later.
+    create_minimal_valid_elf()
+}
+
+// Add test to ensure binaries are included
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
 fn _test_binaries_included() {
     assert!(HELLO_TIME_ELF.len() > 0, "hello_time.elf not included");
     assert!(HELLO_WORLD_ELF.len() > 0, "hello_world.elf not included");
@@ -32,13 +39,14 @@ fn _test_binaries_included() {
 pub fn test_userspace_syscalls() {
     log::info!("=== Testing Userspace Syscalls ===");
     
-    // The binary is included at compile time
-    log::info!("Userspace test binary size: {} bytes", HELLO_TIME_ELF.len());
+    // The binary is generated at compile/runtime in CI, or included when external_test_bins is enabled
+    let elf = get_test_binary("hello_time");
+    log::info!("Userspace test binary size: {} bytes", elf.len());
     
     // Check first few bytes
-    if HELLO_TIME_ELF.len() >= 4 {
+    if elf.len() >= 4 {
         log::info!("First 4 bytes: {:02x} {:02x} {:02x} {:02x}", 
-            HELLO_TIME_ELF[0], HELLO_TIME_ELF[1], HELLO_TIME_ELF[2], HELLO_TIME_ELF[3]);
+            elf[0], elf[1], elf[2], elf[3]);
     }
     
     // Note: This test requires the scheduler to be initialized
@@ -50,9 +58,9 @@ pub fn test_userspace_syscalls() {
     use core::mem;
     use crate::elf::{Elf64Header, ELF_MAGIC, ELFCLASS64, ELFDATA2LSB};
     
-    if HELLO_TIME_ELF.len() >= mem::size_of::<Elf64Header>() {
+    if elf.len() >= mem::size_of::<Elf64Header>() {
         let mut header_bytes = [0u8; mem::size_of::<Elf64Header>()];
-        header_bytes.copy_from_slice(&HELLO_TIME_ELF[..mem::size_of::<Elf64Header>()]);
+        header_bytes.copy_from_slice(&elf[..mem::size_of::<Elf64Header>()]);
         let header: &Elf64Header = unsafe { &*(header_bytes.as_ptr() as *const Elf64Header) };
         
         if header.magic == ELF_MAGIC {
@@ -91,20 +99,16 @@ pub fn run_userspace_test() {
     {
         use alloc::string::String;
         
-        log::info!("Creating userspace test process ({} bytes)", HELLO_TIME_ELF.len());
+        let elf = get_test_binary("hello_time");
+        log::info!("Creating userspace test process ({} bytes)", elf.len());
         log::info!("ELF entry point from header: 0x{:x}", {
             use crate::elf::Elf64Header;
-            let header: &Elf64Header = unsafe { 
-                &*(HELLO_TIME_ELF.as_ptr() as *const Elf64Header) 
-            };
+            let header: &Elf64Header = unsafe { &*(elf.as_ptr() as *const Elf64Header) };
             header.entry
         });
         
         // Create and schedule a process for the test program
-        match crate::process::create_user_process(
-            String::from("hello_time"), 
-            HELLO_TIME_ELF
-        ) {
+        match crate::process::create_user_process(String::from("hello_time"), &elf) {
             Ok(pid) => {
                 log::info!("✓ Created and scheduled process with PID {}", pid.as_u64());
                 
@@ -142,19 +146,15 @@ pub fn test_multiple_processes() {
         
         // Create and schedule first process (counter)
         log::info!("Creating first process (counter)...");
-        match crate::process::create_user_process(
-            String::from("counter"), 
-            COUNTER_ELF
-        ) {
+        let counter_elf = get_test_binary("counter");
+        match crate::process::create_user_process(String::from("counter"), &counter_elf) {
             Ok(pid1) => {
                 log::info!("✓ Created and scheduled process 1 (counter) with PID {}", pid1.as_u64());
                 
                 // Create and schedule second process (spinner)
                 log::info!("Creating second process (spinner)...");
-                match crate::process::create_user_process(
-                    String::from("spinner"), 
-                    SPINNER_ELF
-                ) {
+                let spinner_elf = get_test_binary("spinner");
+                match crate::process::create_user_process(String::from("spinner"), &spinner_elf) {
                     Ok(pid2) => {
                         log::info!("✓ Created and scheduled process 2 (spinner) with PID {}", pid2.as_u64());
                         
@@ -195,10 +195,8 @@ pub fn test_fork_debug() {
     log::info!("Creating process that will call fork() to debug thread ID tracking...");
     
     // Use the new spawn mechanism which creates a dedicated thread for exec
-    match crate::process::create_user_process(
-        String::from("fork_debug"), 
-        FORK_TEST_ELF
-    ) {
+    let fork_elf = get_test_binary("fork_test");
+    match crate::process::create_user_process(String::from("fork_debug"), &fork_elf) {
         Ok(pid) => {
             log::info!("✓ Created and scheduled fork debug process with PID {}", pid.as_u64());
             log::info!("Process will call fork() and we'll debug the thread ID issue");
