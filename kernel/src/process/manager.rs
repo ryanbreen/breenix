@@ -361,8 +361,8 @@ impl ProcessManager {
         // Load the same program into the child page table
         #[cfg(feature = "testing")]
         {
-            let elf_data = crate::userspace_test::FORK_TEST_ELF;
-            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, child_page_table.as_mut())?;
+            let elf_buf = crate::userspace_test::get_test_binary("fork_test");
+            let loaded_elf = crate::elf::load_elf_into_page_table(&elf_buf, child_page_table.as_mut())?;
             
             // Update the child process entry point to match the loaded ELF
             child_process.entry_point = loaded_elf.entry_point;
@@ -596,8 +596,8 @@ impl ProcessManager {
         // Load the fork_test ELF into the child (same program the parent is running)
         #[cfg(feature = "testing")]
         {
-            let elf_data = crate::userspace_test::FORK_TEST_ELF;
-            let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, child_page_table.as_mut())?;
+            let elf_buf = crate::userspace_test::get_test_binary("fork_test");
+            let loaded_elf = crate::elf::load_elf_into_page_table(&elf_buf, child_page_table.as_mut())?;
             
             // Update the child process entry point to match the loaded ELF
             child_process.entry_point = loaded_elf.entry_point;

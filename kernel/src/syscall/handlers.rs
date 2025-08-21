@@ -397,8 +397,9 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using hello_time.elf for exec test");
-                // Use the statically embedded hello_time.elf
-                crate::userspace_test::HELLO_TIME_ELF
+                // Use generated hello_time test ELF
+                let buf = crate::userspace_test::get_test_binary("hello_time");
+                &buf
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -415,8 +416,9 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             // Use embedded test program for now
             #[cfg(feature = "testing")]
             {
-                log::info!("sys_exec: Using embedded hello_world test program");
-                crate::userspace_test::HELLO_WORLD_ELF
+                log::info!("sys_exec: Using generated hello_world test program");
+                let buf = crate::userspace_test::get_test_binary("hello_world");
+                &buf
             }
             #[cfg(not(feature = "testing"))]
             {
