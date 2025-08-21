@@ -78,9 +78,14 @@ class BreenixRunner:
         self.master_fd = None
         slave_fd = None
         
-        # Build the cargo command
+        # Prefer running the built binary directly to avoid grandchild stdio issues in CI
         bin_name = f"qemu-{self.mode}"
-        cmd = ["cargo", "run", "--release", "--features", "testing", "--bin", bin_name, "--"]
+        built_bin = os.path.join(os.getcwd(), "target", "release", bin_name)
+        if os.path.exists(built_bin):
+            cmd = [built_bin]
+        else:
+            # Fallback to cargo run locally
+            cmd = ["cargo", "run", "--release", "--features", "testing", "--bin", bin_name, "--"]
         
         # Add QEMU arguments
         # Use stdio for serial communication to capture logs properly

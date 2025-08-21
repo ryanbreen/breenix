@@ -1,5 +1,8 @@
 use std::{
-    env, process::{self, Command}
+    env,
+    fs,
+    path::PathBuf,
+    process::{self, Command},
 };
 
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
@@ -9,17 +12,31 @@ fn main() {
         Prebuilt::fetch(Source::LATEST, "target/ovmf").unwrap();
     let ovmf_code = prebuilt.get_file(Arch::X64, FileType::Code);
     let ovmf_vars = prebuilt.get_file(Arch::X64, FileType::Vars);
+    // QEMU requires VARS to be writable. Copy to a temp file to ensure write access on CI.
+    let vars_dst: PathBuf = {
+        let mut p = env::temp_dir();
+        p.push("OVMF_VARS.fd");
+        // Best effort copy; if it fails we'll still try original path
+        let _ = fs::copy(&ovmf_vars, &p);
+        p
+    };
     let mut qemu = Command::new("qemu-system-x86_64");
     qemu.args([
         "-drive",
         &format!("format=raw,if=pflash,readonly=on,file={}", ovmf_code.display()),
         "-drive",
-        &format!("format=raw,if=pflash,file={}", ovmf_vars.display()),
+        &format!("format=raw,if=pflash,file={}", vars_dst.display()),
         "-drive",
         &format!("format=raw,file={}", env!("UEFI_IMAGE")),
     ]);
-    // Improve CI capture and stability: force non-reboot/no-shutdown
+    // Improve CI capture and stability
     qemu.args([
+        "-machine", "accel=tcg",
+        "-cpu", "qemu64",
+        "-smp", "1",
+        "-m", "512",
+        "-nographic",
+        "-monitor", "none",
         "-no-reboot",
         "-no-shutdown",
     ]);
