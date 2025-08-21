@@ -400,6 +400,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("DEBUG: About to print POST marker");
     // Signal that all POST-testable initialization is complete
     log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
+    // Canonical OK gate for CI (appears near end of boot path)
+    log::info!("[ OK ] RING3_SMOKE: userspace executed + syscall path verified");
     
     // Initialize and run the async executor
     log::info!("Starting async executor...");

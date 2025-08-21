@@ -18,6 +18,13 @@ fn main() {
         "-drive",
         &format!("format=raw,file={}", env!("UEFI_IMAGE")),
     ]);
+    // Improve CI capture and stability: force non-reboot and route firmware debug to stdio
+    qemu.args([
+        "-no-reboot",
+        "-no-shutdown",
+        "-chardev", "stdio,id=debugcon",
+        "-device", "isa-debugcon,iobase=0x402,chardev=debugcon",
+    ]);
     // Forward any additional command-line arguments to QEMU
     qemu.args(env::args().skip(1));
     let exit_status = qemu.status().unwrap();
