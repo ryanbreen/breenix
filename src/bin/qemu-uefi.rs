@@ -35,6 +35,7 @@ fn main() {
         &format!("format=raw,if=pflash,unit=1,file={}", vars_dst.display()),
     ]);
     // Attach kernel disk image. Default to virtio; allow override via env.
+    // On CI we export BREENIX_QEMU_STORAGE=ide to favor OVMF boot discovery.
     let storage_mode = env::var("BREENIX_QEMU_STORAGE").unwrap_or_else(|_| "virtio".to_string());
     match storage_mode.as_str() {
         "ide" => {
@@ -71,10 +72,15 @@ fn main() {
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]);
-    // Optional debug log
+    // Optional debug log and early-debug console to stdout
     if let Ok(log_path) = env::var("BREENIX_QEMU_LOG_PATH") {
         qemu.args(["-d", "guest_errors", "-D", &log_path]);
         eprintln!("[qemu-uefi] QEMU debug log at {}", log_path);
+    }
+    if env::var("BREENIX_QEMU_DEBUGCON").ok().as_deref() == Some("1") {
+        // Map debug console (I/O port 0x402) to stdout for very-early bytes
+        qemu.args(["-chardev", "stdio,id=dbg", "-device", "isa-debugcon,iobase=0x402,chardev=dbg"]);
+        eprintln!("[qemu-uefi] Debug console (0x402) -> stdio enabled");
     }
     // Forward any additional command-line arguments to QEMU (runner may supply -serial ...)
     let extra_args: Vec<String> = env::args().skip(1).collect();

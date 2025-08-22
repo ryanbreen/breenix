@@ -20,6 +20,10 @@ echo "=== Ring3 smoke: mode=$MODE timeout=${TIMEOUT_SECONDS}s ==="
 # Ensure no stale QEMU holds the image lock
 pkill -f qemu-system-x86_64 >/dev/null 2>&1 || true
 
+# Prefer IDE (AHCI) storage on CI so OVMF reliably discovers the disk
+export BREENIX_QEMU_STORAGE="ide"
+export BREENIX_QEMU_DEBUGCON="1"
+
 # Run with streaming detection so we don't always wait for timeout
 set +e
 export BREENIX_QEMU_LOG_PATH="${REPO_ROOT}/logs/qemu_debug.log"
@@ -30,8 +34,8 @@ export BREENIX_QEMU_LOG_PATH="${REPO_ROOT}/logs/qemu_debug.log"
 run_rc=$?
 set -e
 
-# Locate latest log
-LATEST_LOG=$(ls -t logs/*.log 2>/dev/null | head -1 || true)
+# Locate latest kernel run log (exclude qemu_debug.log)
+LATEST_LOG=$(ls -t logs/breenix_*.log 2>/dev/null | head -1 || true)
 SERIAL_LOG=$(ls -t logs/*_serial.log 2>/dev/null | head -1 || true)
 if [[ -z "${LATEST_LOG}" ]]; then
   echo "ERROR: No log files found in logs/ directory"

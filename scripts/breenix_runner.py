@@ -32,9 +32,10 @@ class BreenixRunner:
         # CI ring3 streaming detection configuration
         self.enable_ci_ring3_mode = enable_ci_ring3_mode
         self.timeout_seconds = timeout_seconds
-        # Prefer routing guest serial to stdio so CI captures it reliably
-        # We avoid -serial file: unless explicitly changed in the future
-        self._serial_to_file = False
+        # Prefer routing guest serial to stdio so CI captures it reliably.
+        # If debug console is mapped to stdio (BREENIX_QEMU_DEBUGCON=1),
+        # avoid stdio conflict by routing serial to a dedicated file.
+        self._serial_to_file = os.environ.get("BREENIX_QEMU_DEBUGCON") == "1"
         self._serial_log_path = None
 
         # Default patterns for success/failure detection
