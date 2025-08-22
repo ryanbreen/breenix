@@ -32,12 +32,16 @@ set -e
 
 # Locate latest log
 LATEST_LOG=$(ls -t logs/*.log 2>/dev/null | head -1 || true)
+SERIAL_LOG=$(ls -t logs/*_serial.log 2>/dev/null | head -1 || true)
 if [[ -z "${LATEST_LOG}" ]]; then
   echo "ERROR: No log files found in logs/ directory"
   exit 2
 fi
 
 echo "Latest log: ${LATEST_LOG}"
+if [[ -n "${SERIAL_LOG}" ]]; then
+  echo "Latest serial log: ${SERIAL_LOG}"
+fi
 if [[ -s "${REPO_ROOT}/logs/qemu_debug.log" ]]; then
   echo "QEMU debug log present (guest_errors). Tail:";
   tail -n 50 "${REPO_ROOT}/logs/qemu_debug.log" || true

@@ -26,8 +26,10 @@ fn main() {
         &format!("format=raw,if=pflash,unit=0,readonly=on,file={}", ovmf_code.display()),
         "-drive",
         &format!("format=raw,if=pflash,unit=1,file={}", vars_dst.display()),
+        // Attach kernel disk image as virtio-blk device for OVMF to discover
         "-drive",
-        &format!("format=raw,file={}", env!("UEFI_IMAGE")),
+        &format!("if=none,id=hd,format=raw,file={}", env!("UEFI_IMAGE")),
+        "-device", "virtio-blk-pci,drive=hd",
     ]);
     // Improve CI capture and stability
     qemu.args([
