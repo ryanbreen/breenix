@@ -39,13 +39,12 @@ fn main() {
     let storage_mode = env::var("BREENIX_QEMU_STORAGE").unwrap_or_else(|_| "virtio".to_string());
     match storage_mode.as_str() {
         "ide" => {
+            // Minimal, known-good IDE attach; no explicit AHCI controller
             qemu.args([
                 "-drive",
-                &format!("if=none,id=hd,format=raw,media=disk,file={}", uefi_img.display()),
-                "-device", "ich9-ahci,id=sata",
-                "-device", "ide-hd,drive=hd,bus=sata.0,bootindex=0",
+                &format!("if=ide,format=raw,media=disk,file={},index=0", uefi_img.display()),
             ]);
-            eprintln!("[qemu-uefi] Storage: IDE (AHCI)");
+            eprintln!("[qemu-uefi] Storage: IDE (index=0)");
         }
         _ => {
             qemu.args([
@@ -79,9 +78,11 @@ fn main() {
     }
     if env::var("BREENIX_QEMU_DEBUGCON").ok().as_deref() == Some("1") {
         // Map debug console (I/O port 0x402) to stdout for very-early bytes
-        qemu.args(["-chardev", "stdio,id=dbg", "-device", "isa-debugcon,iobase=0x402,chardev=dbg"]);
+        qemu.args(["-chardev", "stdio,id=ovmf", "-device", "isa-debugcon,iobase=0x402,chardev=ovmf"]);
         eprintln!("[qemu-uefi] Debug console (0x402) -> stdio enabled");
     }
+    // Hint firmware to route stdout to serial (fw_cfg toggle; ignored if unsupported)
+    qemu.args(["-fw_cfg", "name=opt/org.tianocore/StdoutToSerial,string=1"]);
     // Forward any additional command-line arguments to QEMU (runner may supply -serial ...)
     let extra_args: Vec<String> = env::args().skip(1).collect();
     if !extra_args.is_empty() {
