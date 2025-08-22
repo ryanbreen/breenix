@@ -22,6 +22,7 @@ pkill -f qemu-system-x86_64 >/dev/null 2>&1 || true
 
 # Run with streaming detection so we don't always wait for timeout
 set +e
+export BREENIX_QEMU_LOG_PATH="${REPO_ROOT}/logs/qemu_debug.log"
 python3 "${REPO_ROOT}/scripts/breenix_runner.py" \
   --mode "$MODE" \
   --ci-ring3 \
@@ -37,6 +38,10 @@ if [[ -z "${LATEST_LOG}" ]]; then
 fi
 
 echo "Latest log: ${LATEST_LOG}"
+if [[ -s "${REPO_ROOT}/logs/qemu_debug.log" ]]; then
+  echo "QEMU debug log present (guest_errors). Tail:";
+  tail -n 50 "${REPO_ROOT}/logs/qemu_debug.log" || true
+fi
 
 # Helper to use the canonical log searcher
 search() {

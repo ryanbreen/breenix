@@ -23,9 +23,9 @@ fn main() {
     let mut qemu = Command::new("qemu-system-x86_64");
     qemu.args([
         "-drive",
-        &format!("format=raw,if=pflash,readonly=on,file={}", ovmf_code.display()),
+        &format!("format=raw,if=pflash,unit=0,readonly=on,file={}", ovmf_code.display()),
         "-drive",
-        &format!("format=raw,if=pflash,file={}", vars_dst.display()),
+        &format!("format=raw,if=pflash,unit=1,file={}", vars_dst.display()),
         "-drive",
         &format!("format=raw,file={}", env!("UEFI_IMAGE")),
     ]);
@@ -40,8 +40,18 @@ fn main() {
         "-no-reboot",
         "-no-shutdown",
     ]);
-    // Forward any additional command-line arguments to QEMU
-    qemu.args(env::args().skip(1));
+    // Optional debug log
+    if let Ok(log_path) = env::var("BREENIX_QEMU_LOG_PATH") {
+        qemu.args(["-d", "guest_errors", "-D", &log_path]);
+        eprintln!("[qemu-uefi] QEMU debug log at {}", log_path);
+    }
+    // Forward any additional command-line arguments to QEMU (runner may supply -serial ...)
+    let extra_args: Vec<String> = env::args().skip(1).collect();
+    if !extra_args.is_empty() {
+        eprintln!("[qemu-uefi] Extra args: {:?}", extra_args);
+        qemu.args(&extra_args);
+    }
+    eprintln!("[qemu-uefi] Launching QEMU...");
     let exit_status = qemu.status().unwrap();
     process::exit(exit_status.code().unwrap_or(-1));
 }
