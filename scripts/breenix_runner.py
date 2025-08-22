@@ -276,6 +276,12 @@ class BreenixRunner:
             if self.process and self.process.poll() is not None:
                 code = self.process.returncode
                 print(f"\n[CI] QEMU process exited with code {code}.")
+                # QEMU isa-debug-exit encodes exit as (value << 1) | 1
+                # We treat codes 0x21 (0x10<<1|1) as success, 0x23 (0x11<<1|1) as failure
+                if code == 0x21:
+                    return 0
+                if code == 0x23:
+                    return 1
                 return 0 if code == 0 else 1
 
             # Timeout

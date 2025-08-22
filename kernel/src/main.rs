@@ -402,6 +402,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
     // Canonical OK gate for CI (appears near end of boot path)
     log::info!("[ OK ] RING3_SMOKE: userspace executed + syscall path verified");
+    // In testing/CI builds, exit QEMU deterministically after success
+    #[cfg(feature = "testing")]
+    {
+        test_exit_qemu(QemuExitCode::Success);
+    }
     
     // Initialize and run the async executor
     log::info!("Starting async executor...");
@@ -458,6 +463,11 @@ fn panic(info: &PanicInfo) -> ! {
     // Try to output panic info if possible
     serial_println!("KERNEL PANIC: {}", info);
     log::error!("KERNEL PANIC: {}", info);
+    // In testing/CI builds, request QEMU to exit with failure for deterministic CI signal
+    #[cfg(feature = "testing")]
+    {
+        test_exit_qemu(QemuExitCode::Failed);
+    }
     
     // Disable interrupts and halt
     x86_64::instructions::interrupts::disable();
