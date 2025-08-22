@@ -21,16 +21,40 @@ fn main() {
         p
     };
     let mut qemu = Command::new("qemu-system-x86_64");
+    // Verify UEFI image exists
+    let uefi_img = PathBuf::from(env!("UEFI_IMAGE"));
+    if !uefi_img.exists() {
+        eprintln!("[qemu-uefi] UEFI image missing: {}", uefi_img.display());
+    } else {
+        eprintln!("[qemu-uefi] Using UEFI image: {} ({} bytes)", uefi_img.display(), fs::metadata(&uefi_img).map(|m| m.len()).unwrap_or(0));
+    }
     qemu.args([
         "-drive",
         &format!("format=raw,if=pflash,unit=0,readonly=on,file={}", ovmf_code.display()),
         "-drive",
         &format!("format=raw,if=pflash,unit=1,file={}", vars_dst.display()),
-        // Attach kernel disk image as virtio-blk device for OVMF to discover
-        "-drive",
-        &format!("if=none,id=hd,format=raw,file={}", env!("UEFI_IMAGE")),
-        "-device", "virtio-blk-pci,drive=hd",
     ]);
+    // Attach kernel disk image. Default to virtio; allow override via env.
+    let storage_mode = env::var("BREENIX_QEMU_STORAGE").unwrap_or_else(|_| "virtio".to_string());
+    match storage_mode.as_str() {
+        "ide" => {
+            qemu.args([
+                "-drive",
+                &format!("if=none,id=hd,format=raw,media=disk,file={}", uefi_img.display()),
+                "-device", "ich9-ahci,id=sata",
+                "-device", "ide-hd,drive=hd,bus=sata.0,bootindex=0",
+            ]);
+            eprintln!("[qemu-uefi] Storage: IDE (AHCI)");
+        }
+        _ => {
+            qemu.args([
+                "-drive",
+                &format!("if=none,id=hd,format=raw,media=disk,file={}", uefi_img.display()),
+                "-device", "virtio-blk-pci,drive=hd,bootindex=0",
+            ]);
+            eprintln!("[qemu-uefi] Storage: virtio-blk");
+        }
+    }
     // Improve CI capture and stability
     qemu.args([
         "-machine", "accel=tcg",
