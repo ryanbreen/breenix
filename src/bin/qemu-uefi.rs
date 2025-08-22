@@ -66,6 +66,11 @@ fn main() {
         "-no-reboot",
         "-no-shutdown",
     ]);
+    // Deterministic guest-driven exit for CI via isa-debug-exit on port 0xF4
+    qemu.args([
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    ]);
     // Optional debug log
     if let Ok(log_path) = env::var("BREENIX_QEMU_LOG_PATH") {
         qemu.args(["-d", "guest_errors", "-D", &log_path]);

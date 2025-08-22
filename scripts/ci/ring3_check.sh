@@ -23,7 +23,7 @@ pkill -f qemu-system-x86_64 >/dev/null 2>&1 || true
 # Run with streaming detection so we don't always wait for timeout
 set +e
 export BREENIX_QEMU_LOG_PATH="${REPO_ROOT}/logs/qemu_debug.log"
-python3 "${REPO_ROOT}/scripts/breenix_runner.py" \
+  python3 "${REPO_ROOT}/scripts/breenix_runner.py" \
   --mode "$MODE" \
   --ci-ring3 \
   --timeout-seconds "$TIMEOUT_SECONDS"

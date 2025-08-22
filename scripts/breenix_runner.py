@@ -32,8 +32,9 @@ class BreenixRunner:
         # CI ring3 streaming detection configuration
         self.enable_ci_ring3_mode = enable_ci_ring3_mode
         self.timeout_seconds = timeout_seconds
-        # When in CI mode, prefer routing guest serial to a file to guarantee capture
-        self._serial_to_file = enable_ci_ring3_mode
+        # Prefer routing guest serial to stdio so CI captures it reliably
+        # We avoid -serial file: unless explicitly changed in the future
+        self._serial_to_file = False
         self._serial_log_path = None
 
         # Default patterns for success/failure detection
