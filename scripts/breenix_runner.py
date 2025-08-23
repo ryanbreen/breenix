@@ -91,6 +91,13 @@ class BreenixRunner:
         else:
             # Fallback to cargo run locally
             cmd = ["cargo", "run", "--release", "--features", "testing", "--bin", bin_name, "--"]
+
+        # Optional: wrap with stdbuf to enforce line-buffered stdout/stderr
+        if os.environ.get("BREENIX_USE_STDBUF") == "1":
+            if cmd[0] == built_bin:
+                cmd = ["stdbuf", "-oL", "-eL", built_bin]
+            else:
+                cmd = ["stdbuf", "-oL", "-eL"] + cmd
         
         # Add QEMU arguments
         # Route serial appropriately

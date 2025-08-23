@@ -93,9 +93,12 @@ jobs:
             fi
           fi
           stat -Lc '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd || stat -c '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd
+          echo "OVMF sha256:"; sha256sum third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd || true
           echo "DEBUG OVMF strings (sanity):"; (strings third_party/ovmf/OVMF_CODE.fd | grep -m1 -E 'DEBUG|RELEASE' || true)
           export BREENIX_OVMF_CODE_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_CODE.fd"
           export BREENIX_OVMF_VARS_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_VARS.fd"
+          # Ensure line-buffering from launcher
+          export BREENIX_USE_STDBUF=1
           bash scripts/ci/ring3_check.sh uefi || {
             echo "ring3_check.sh failed; dumping qemu stderr if any";
             ls -l logs || true;

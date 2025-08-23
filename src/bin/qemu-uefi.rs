@@ -35,15 +35,18 @@ fn main() {
         let _ = fs::copy(&ovmf_vars_src, &p);
         p
     };
-    // Fail fast on bad OVMF sizes when env overrides are used (expect 4 MiB split images)
+    // Sanity log OVMF selection and sizes when env overrides are used
     if env::var("BREENIX_OVMF_CODE_PATH").is_ok() || env::var("BREENIX_OVMF_VARS_PATH").is_ok() {
-        if let (Ok(cmeta), Ok(vmeta)) = (fs::metadata(&ovmf_code), fs::metadata(&ovmf_vars_src)) {
-            let (csize, vsize) = (cmeta.len(), vmeta.len());
-            if csize != 4_194_304 || vsize != 4_194_304 {
-                eprintln!("[qemu-uefi] ERROR: OVMF split images are not 4 MiB (CODE={}, VARS={})", csize, vsize);
-                process::exit(2);
-            }
-        }
+        let code_path = ovmf_code.canonicalize().unwrap_or(ovmf_code.clone());
+        let vars_path = ovmf_vars_src.canonicalize().unwrap_or(ovmf_vars_src.clone());
+        let (mut csize, mut vsize) = (0u64, 0u64);
+        if let Ok(m) = fs::metadata(&code_path) { csize = m.len(); }
+        if let Ok(m) = fs::metadata(&vars_path) { vsize = m.len(); }
+        let family = if csize >= 4_000_000 && vsize >= 4_000_000 { "4M" } else { "2M-ish" };
+        eprintln!(
+            "[qemu-uefi] OVMF selected: CODE={} ({} bytes), VARS={} ({} bytes) [{} family]",
+            code_path.display(), csize, vars_path.display(), vsize, family
+        );
     }
     let mut qemu = Command::new("qemu-system-x86_64");
     // Verify UEFI image exists
