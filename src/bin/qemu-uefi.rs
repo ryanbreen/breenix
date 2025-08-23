@@ -10,7 +10,13 @@ use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 fn main() {
     // Allow overriding OVMF firmware paths via environment for CI/DEBUG builds
     let ovmf_code = if let Ok(path) = env::var("BREENIX_OVMF_CODE_PATH") {
-        PathBuf::from(path)
+        let p = PathBuf::from(path);
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if name.contains("secboot") || name.contains(".ms") {
+            eprintln!("[qemu-uefi] Refusing Secure Boot firmware in CI: {}", p.display());
+            process::exit(2);
+        }
+        p
     } else {
         let prebuilt = Prebuilt::fetch(Source::LATEST, "target/ovmf").unwrap();
         prebuilt.get_file(Arch::X64, FileType::Code)
@@ -29,6 +35,16 @@ fn main() {
         let _ = fs::copy(&ovmf_vars_src, &p);
         p
     };
+    // Fail fast on bad OVMF sizes when env overrides are used (expect 4 MiB split images)
+    if env::var("BREENIX_OVMF_CODE_PATH").is_ok() || env::var("BREENIX_OVMF_VARS_PATH").is_ok() {
+        if let (Ok(cmeta), Ok(vmeta)) = (fs::metadata(&ovmf_code), fs::metadata(&ovmf_vars_src)) {
+            let (csize, vsize) = (cmeta.len(), vmeta.len());
+            if csize != 4_194_304 || vsize != 4_194_304 {
+                eprintln!("[qemu-uefi] ERROR: OVMF split images are not 4 MiB (CODE={}, VARS={})", csize, vsize);
+                process::exit(2);
+            }
+        }
+    }
     let mut qemu = Command::new("qemu-system-x86_64");
     // Verify UEFI image exists
     let uefi_img = PathBuf::from(env!("UEFI_IMAGE"));
@@ -63,7 +79,7 @@ fn main() {
     }
     // Improve CI capture and stability
     qemu.args([
-        "-machine", "accel=tcg",
+        "-machine", "pc,accel=tcg",
         "-cpu", "qemu64",
         "-smp", "1",
         "-m", "512",

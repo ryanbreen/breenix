@@ -73,6 +73,14 @@ jobs:
           # BREENIX_OVMF_VARS_PATH: ${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_VARS.fd
         run: |
           set -euxo pipefail
+          # Fetch DEBUG OVMF pair (4 MiB) for decisive firmware logging
+          mkdir -p third_party/ovmf
+          curl -fsSLo third_party/ovmf/DEBUGX64_OVMF_CODE.fd https://retrage.github.io/edk2-nightly/DEBUGX64_OVMF_CODE.fd
+          curl -fsSLo third_party/ovmf/DEBUGX64_OVMF_VARS.fd https://retrage.github.io/edk2-nightly/DEBUGX64_OVMF_VARS.fd
+          stat -c '%n %s' third_party/ovmf/DEBUGX64_OVMF_CODE.fd third_party/ovmf/DEBUGX64_OVMF_VARS.fd
+          echo "DEBUG OVMF strings (sanity):"; (strings third_party/ovmf/DEBUGX64_OVMF_CODE.fd | grep -m1 -E 'DEBUG|RELEASE' || true)
+          export BREENIX_OVMF_CODE_PATH="${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_CODE.fd"
+          export BREENIX_OVMF_VARS_PATH="${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_VARS.fd"
           bash scripts/ci/ring3_check.sh uefi || {
             echo "ring3_check.sh failed; dumping qemu stderr if any";
             ls -l logs || true;
