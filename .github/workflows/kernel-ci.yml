@@ -80,15 +80,19 @@ jobs:
           curl -fsSLo third_party/ovmf/OVMF_VARS.fd https://retrage.github.io/edk2-nightly/bin/DEBUGX64/OVMF_VARS.fd
           set -e
           if [[ ! -s third_party/ovmf/OVMF_CODE.fd || ! -s third_party/ovmf/OVMF_VARS.fd ]]; then
-            echo "DEBUG OVMF download failed; falling back to distro 4M OVMF if available"
-            if [[ -s /usr/share/OVMF/OVMF_CODE_4M.fd && -s /usr/share/OVMF/OVMF_VARS_4M.fd ]]; then
-              ln -sf /usr/share/OVMF/OVMF_CODE_4M.fd third_party/ovmf/OVMF_CODE.fd
-              ln -sf /usr/share/OVMF/OVMF_VARS_4M.fd third_party/ovmf/OVMF_VARS.fd
+            echo "DEBUG OVMF download failed; falling back to distro OVMF if available"
+            # Try 4M first, then 2M (resolve symlinks and copy real files)
+            if [[ -e /usr/share/OVMF/OVMF_CODE_4M.fd && -e /usr/share/OVMF/OVMF_VARS_4M.fd ]]; then
+              cp -f "$(readlink -f /usr/share/OVMF/OVMF_CODE_4M.fd)" third_party/ovmf/OVMF_CODE.fd
+              cp -f "$(readlink -f /usr/share/OVMF/OVMF_VARS_4M.fd)" third_party/ovmf/OVMF_VARS.fd
+            elif [[ -e /usr/share/OVMF/OVMF_CODE.fd && -e /usr/share/OVMF/OVMF_VARS.fd ]]; then
+              cp -f "$(readlink -f /usr/share/OVMF/OVMF_CODE.fd)" third_party/ovmf/OVMF_CODE.fd
+              cp -f "$(readlink -f /usr/share/OVMF/OVMF_VARS.fd)" third_party/ovmf/OVMF_VARS.fd
             else
-              echo "ERROR: No DEBUG OVMF available and no distro 4M firmware found"; exit 1
+              echo "ERROR: No DEBUG OVMF available and no distro firmware found"; exit 1
             fi
           fi
-          stat -c '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd
+          stat -Lc '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd || stat -c '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd
           echo "DEBUG OVMF strings (sanity):"; (strings third_party/ovmf/OVMF_CODE.fd | grep -m1 -E 'DEBUG|RELEASE' || true)
           export BREENIX_OVMF_CODE_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_CODE.fd"
           export BREENIX_OVMF_VARS_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_VARS.fd"
