@@ -33,9 +33,9 @@ class BreenixRunner:
         self.enable_ci_ring3_mode = enable_ci_ring3_mode
         self.timeout_seconds = timeout_seconds
         # Prefer routing guest serial to stdio so CI captures it reliably.
-        # If debug console is mapped to stdio (BREENIX_QEMU_DEBUGCON=1),
-        # avoid stdio conflict by routing serial to a dedicated file.
-        self._serial_to_file = os.environ.get("BREENIX_QEMU_DEBUGCON") == "1"
+        # If firmware debug is captured to file (BREENIX_QEMU_DEBUGCON_FILE),
+        # we can safely keep serial on stdio. Only route to file if explicitly requested.
+        self._serial_to_file = os.environ.get("BREENIX_QEMU_SERIAL_TO_FILE") == "1"
         self._serial_log_path = None
 
         # Default patterns for success/failure detection

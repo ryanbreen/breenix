@@ -37,12 +37,9 @@ fn main() {
     } else {
         eprintln!("[qemu-uefi] Using UEFI image: {} ({} bytes)", uefi_img.display(), fs::metadata(&uefi_img).map(|m| m.len()).unwrap_or(0));
     }
-    qemu.args([
-        "-drive",
-        &format!("format=raw,if=pflash,unit=0,readonly=on,file={}", ovmf_code.display()),
-        "-drive",
-        &format!("format=raw,if=pflash,unit=1,file={}", vars_dst.display()),
-    ]);
+    // Canonical pflash wiring for OVMF: CODE and writable VARS copy
+    qemu.args(["-pflash", &ovmf_code.display().to_string()]);
+    qemu.args(["-pflash", &vars_dst.display().to_string()]);
     // Attach kernel disk image. Default to virtio; allow override via env.
     // On CI we export BREENIX_QEMU_STORAGE=ide to favor OVMF boot discovery.
     let storage_mode = env::var("BREENIX_QEMU_STORAGE").unwrap_or_else(|_| "virtio".to_string());
@@ -72,6 +69,7 @@ fn main() {
         "-m", "512",
         "-nographic",
         "-monitor", "none",
+        "-boot", "strict=on",
         "-no-reboot",
         "-no-shutdown",
     ]);

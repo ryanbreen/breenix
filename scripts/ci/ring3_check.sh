@@ -25,6 +25,7 @@ export BREENIX_QEMU_STORAGE="ide"
 export BREENIX_QEMU_DEBUGCON="0"
 # Use separate files for firmware and kernel logs to avoid stdio contention
 export BREENIX_QEMU_DEBUGCON_FILE="${REPO_ROOT}/logs/ovmf_debug.log"
+export BREENIX_QEMU_SERIAL_TO_FILE="0"
 
 # Run with streaming detection so we don't always wait for timeout
 set +e

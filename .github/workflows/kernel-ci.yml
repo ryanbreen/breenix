@@ -68,6 +68,9 @@ jobs:
       - name: Ring3 smoke test (UEFI)
         env:
           RING3_TIMEOUT_SECONDS: "480"
+          # Optionally point to DEBUG OVMF pair cached in the repo or runner
+          # BREENIX_OVMF_CODE_PATH: ${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_CODE.fd
+          # BREENIX_OVMF_VARS_PATH: ${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_VARS.fd
         run: |
           set -euxo pipefail
           bash scripts/ci/ring3_check.sh uefi || {
