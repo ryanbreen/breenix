@@ -22,7 +22,9 @@ pkill -f qemu-system-x86_64 >/dev/null 2>&1 || true
 
 # Prefer IDE (AHCI) storage on CI so OVMF reliably discovers the disk
 export BREENIX_QEMU_STORAGE="ide"
-export BREENIX_QEMU_DEBUGCON="1"
+export BREENIX_QEMU_DEBUGCON="0"
+# Use separate files for firmware and kernel logs to avoid stdio contention
+export BREENIX_QEMU_DEBUGCON_FILE="${REPO_ROOT}/logs/ovmf_debug.log"
 
 # Run with streaming detection so we don't always wait for timeout
 set +e

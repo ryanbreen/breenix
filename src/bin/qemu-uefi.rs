@@ -8,16 +8,25 @@ use std::{
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 
 fn main() {
-    let prebuilt =
-        Prebuilt::fetch(Source::LATEST, "target/ovmf").unwrap();
-    let ovmf_code = prebuilt.get_file(Arch::X64, FileType::Code);
-    let ovmf_vars = prebuilt.get_file(Arch::X64, FileType::Vars);
+    // Allow overriding OVMF firmware paths via environment for CI/DEBUG builds
+    let ovmf_code = if let Ok(path) = env::var("BREENIX_OVMF_CODE_PATH") {
+        PathBuf::from(path)
+    } else {
+        let prebuilt = Prebuilt::fetch(Source::LATEST, "target/ovmf").unwrap();
+        prebuilt.get_file(Arch::X64, FileType::Code)
+    };
+    let ovmf_vars_src = if let Ok(path) = env::var("BREENIX_OVMF_VARS_PATH") {
+        PathBuf::from(path)
+    } else {
+        let prebuilt = Prebuilt::fetch(Source::LATEST, "target/ovmf").unwrap();
+        prebuilt.get_file(Arch::X64, FileType::Vars)
+    };
     // QEMU requires VARS to be writable. Copy to a temp file to ensure write access on CI.
     let vars_dst: PathBuf = {
         let mut p = env::temp_dir();
         p.push("OVMF_VARS.fd");
         // Best effort copy; if it fails we'll still try original path
-        let _ = fs::copy(&ovmf_vars, &p);
+        let _ = fs::copy(&ovmf_vars_src, &p);
         p
     };
     let mut qemu = Command::new("qemu-system-x86_64");
@@ -71,13 +80,18 @@ fn main() {
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ]);
-    // Optional debug log and early-debug console to stdout
+    // Optional debug log and firmware debug console capture
     if let Ok(log_path) = env::var("BREENIX_QEMU_LOG_PATH") {
         qemu.args(["-d", "guest_errors", "-D", &log_path]);
         eprintln!("[qemu-uefi] QEMU debug log at {}", log_path);
     }
-    if env::var("BREENIX_QEMU_DEBUGCON").ok().as_deref() == Some("1") {
-        // Map debug console (I/O port 0x402) to stdout for very-early bytes
+    // If a file path is provided, route firmware debug console (0x402) to file.
+    if let Ok(path) = env::var("BREENIX_QEMU_DEBUGCON_FILE") {
+        qemu.args(["-debugcon", &format!("file:{}", path)]);
+        qemu.args(["-global", "isa-debugcon.iobase=0x402"]);
+        eprintln!("[qemu-uefi] Debug console (0x402) -> file: {}", path);
+    } else if env::var("BREENIX_QEMU_DEBUGCON").ok().as_deref() == Some("1") {
+        // Fallback: map debug console to stdio if explicitly requested
         qemu.args(["-chardev", "stdio,id=ovmf", "-device", "isa-debugcon,iobase=0x402,chardev=ovmf"]);
         eprintln!("[qemu-uefi] Debug console (0x402) -> stdio enabled");
     }
