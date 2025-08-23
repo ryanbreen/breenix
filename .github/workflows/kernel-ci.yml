@@ -73,14 +73,25 @@ jobs:
           # BREENIX_OVMF_VARS_PATH: ${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_VARS.fd
         run: |
           set -euxo pipefail
-          # Fetch DEBUG OVMF pair (4 MiB) for decisive firmware logging
+          # Fetch DEBUG OVMF pair (4 MiB) for decisive firmware logging (with fallback)
           mkdir -p third_party/ovmf
-          curl -fsSLo third_party/ovmf/DEBUGX64_OVMF_CODE.fd https://retrage.github.io/edk2-nightly/DEBUGX64_OVMF_CODE.fd
-          curl -fsSLo third_party/ovmf/DEBUGX64_OVMF_VARS.fd https://retrage.github.io/edk2-nightly/DEBUGX64_OVMF_VARS.fd
-          stat -c '%n %s' third_party/ovmf/DEBUGX64_OVMF_CODE.fd third_party/ovmf/DEBUGX64_OVMF_VARS.fd
-          echo "DEBUG OVMF strings (sanity):"; (strings third_party/ovmf/DEBUGX64_OVMF_CODE.fd | grep -m1 -E 'DEBUG|RELEASE' || true)
-          export BREENIX_OVMF_CODE_PATH="${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_CODE.fd"
-          export BREENIX_OVMF_VARS_PATH="${{ github.workspace }}/third_party/ovmf/DEBUGX64_OVMF_VARS.fd"
+          set +e
+          curl -fsSLo third_party/ovmf/OVMF_CODE.fd https://retrage.github.io/edk2-nightly/bin/DEBUGX64/OVMF_CODE.fd
+          curl -fsSLo third_party/ovmf/OVMF_VARS.fd https://retrage.github.io/edk2-nightly/bin/DEBUGX64/OVMF_VARS.fd
+          set -e
+          if [[ ! -s third_party/ovmf/OVMF_CODE.fd || ! -s third_party/ovmf/OVMF_VARS.fd ]]; then
+            echo "DEBUG OVMF download failed; falling back to distro 4M OVMF if available"
+            if [[ -s /usr/share/OVMF/OVMF_CODE_4M.fd && -s /usr/share/OVMF/OVMF_VARS_4M.fd ]]; then
+              ln -sf /usr/share/OVMF/OVMF_CODE_4M.fd third_party/ovmf/OVMF_CODE.fd
+              ln -sf /usr/share/OVMF/OVMF_VARS_4M.fd third_party/ovmf/OVMF_VARS.fd
+            else
+              echo "ERROR: No DEBUG OVMF available and no distro 4M firmware found"; exit 1
+            fi
+          fi
+          stat -c '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd
+          echo "DEBUG OVMF strings (sanity):"; (strings third_party/ovmf/OVMF_CODE.fd | grep -m1 -E 'DEBUG|RELEASE' || true)
+          export BREENIX_OVMF_CODE_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_CODE.fd"
+          export BREENIX_OVMF_VARS_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_VARS.fd"
           bash scripts/ci/ring3_check.sh uefi || {
             echo "ring3_check.sh failed; dumping qemu stderr if any";
             ls -l logs || true;
