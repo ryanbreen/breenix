@@ -97,7 +97,21 @@ jobs:
           echo "DEBUG OVMF strings (sanity):"; (strings third_party/ovmf/OVMF_CODE.fd | grep -m1 -E 'DEBUG|RELEASE' || true)
           export BREENIX_OVMF_CODE_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_CODE.fd"
           export BREENIX_OVMF_VARS_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_VARS.fd"
-          # Ensure line-buffering from launcher
+          # ESP precheck: print UEFI image path from launcher then validate BOOTX64.EFI
+          UEFI_IMAGE_PATH=$(BREENIX_PRINT_UEFI_IMAGE=1 target/release/qemu-uefi | sed -n 's/^UEFI_IMAGE=//p')
+          echo "Resolved UEFI image: $UEFI_IMAGE_PATH"
+          if [[ -z "$UEFI_IMAGE_PATH" || ! -f "$UEFI_IMAGE_PATH" ]]; then echo "ERROR: UEFI image not found"; exit 1; fi
+          start=$(parted -sm "$UEFI_IMAGE_PATH" unit B print | awk -F: '/:.*(efi|esp)/{print $2; exit}' | sed 's/B$//')
+          if [[ -z "${start:-}" ]]; then echo "ERROR: No ESP found in $UEFI_IMAGE_PATH"; exit 1; fi
+          loopdev=$(sudo losetup --find --show --offset "$start" "$UEFI_IMAGE_PATH")
+          trap 'sudo losetup -d "$loopdev" || true' EXIT
+          mnt=$(mktemp -d)
+          sudo mount -o ro "$loopdev" "$mnt"
+          if [[ ! -f "$mnt/EFI/BOOT/BOOTX64.EFI" ]]; then echo "ERROR: Missing EFI/BOOT/BOOTX64.EFI in ESP"; sudo umount "$mnt"; exit 1; fi
+          sudo umount "$mnt"; rmdir "$mnt"
+          echo "ESP + BOOTX64.EFI present ✅"
+
+          # Ensure line-buffering from launcher and run smoke test
           export BREENIX_USE_STDBUF=1
           bash scripts/ci/ring3_check.sh uefi || {
             echo "ring3_check.sh failed; dumping qemu stderr if any";

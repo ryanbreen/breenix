@@ -56,6 +56,12 @@ fn main() {
     } else {
         eprintln!("[qemu-uefi] Using UEFI image: {} ({} bytes)", uefi_img.display(), fs::metadata(&uefi_img).map(|m| m.len()).unwrap_or(0));
     }
+    // Optional: print UEFI image path and exit (for CI ESP precheck)
+    if env::var("BREENIX_PRINT_UEFI_IMAGE").ok().as_deref() == Some("1") {
+        let canon = uefi_img.canonicalize().unwrap_or(uefi_img.clone());
+        println!("UEFI_IMAGE={}", canon.display());
+        process::exit(0);
+    }
     // Canonical pflash wiring for OVMF: CODE and writable VARS copy
     qemu.args(["-pflash", &ovmf_code.display().to_string()]);
     qemu.args(["-pflash", &vars_dst.display().to_string()]);

@@ -84,9 +84,15 @@ pub extern "C" fn check_need_resched_and_switch(
             new_thread_id
         );
 
-        // Check if we're coming from userspace
+        // Check if we're coming from userspace and surface prominently for CI
         let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
-        log::debug!(
+        log::info!(
+            "Context switch: from_userspace={}, CS={:#x}",
+            from_userspace,
+            interrupt_frame.code_segment.0
+        );
+        // Also mirror to serial to ensure capture regardless of log level
+        crate::serial_println!(
             "Context switch: from_userspace={}, CS={:#x}",
             from_userspace,
             interrupt_frame.code_segment.0
