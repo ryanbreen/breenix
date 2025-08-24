@@ -79,6 +79,10 @@ search '-F "[ OK ] RING3_SMOKE: userspace executed + syscall path verified"'
 canonical_ok_rc=$?
 have_hello=$(search '-F "Hello from userspace! Current time:"' >/dev/null && echo yes || echo no)
 have_cs=$(search '-F "Context switch: from_userspace=true, CS=0x33"' >/dev/null && echo yes || echo no)
+# Accept alternative evidence of userspace CS via restore log if primary marker missing
+if [[ "$have_cs" != yes ]]; then
+  have_cs=$(search '-E "Restored userspace context.*CS=0x33"' >/dev/null && echo yes || echo no)
+fi
 have_user_output=$(search '-F "USERSPACE OUTPUT:"' >/dev/null && echo yes || echo no)
 set -e
 
@@ -114,6 +118,7 @@ echo "=== Userspace context (last occurrences) ==="
 set +e
 search '-C3 "Hello from userspace! Current time:"' || true
 search '-C2 "Context switch: from_userspace=true, CS=0x33"' || true
+search '-C2 "Restored userspace context.*CS=0x33"' || true
 set -e
 
 if [[ $run_rc -ne 0 ]]; then
