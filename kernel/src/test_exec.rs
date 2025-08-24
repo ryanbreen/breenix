@@ -816,8 +816,15 @@ fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
 pub fn test_syscall_enosys() {
     log::info!("Testing undefined syscall returns ENOSYS");
     
-    // Include the syscall_enosys ELF binary
-    let syscall_enosys_elf = include_bytes!("../../userspace/tests/syscall_enosys.elf");
+    // Include the syscall_enosys ELF only when external_test_bins are enabled; otherwise use generated ELF
+    #[cfg(all(feature = "testing", feature = "external_test_bins"))]
+    let syscall_enosys_elf: &[u8] = include_bytes!("../../userspace/tests/syscall_enosys.elf");
+    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
+    let syscall_enosys_elf_buf = crate::userspace_test::get_test_binary("hello_world");
+    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
+    let syscall_enosys_elf: &[u8] = &syscall_enosys_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let syscall_enosys_elf = &create_hello_world_elf();
     
     match crate::process::creation::create_user_process(String::from("syscall_enosys"), syscall_enosys_elf) {
         Ok(pid) => {
