@@ -245,10 +245,14 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
                 log::info!("RING3_SMOKE: created userspace PID {}", pid.as_u64());
                 // Force immediate reschedule so the new userspace thread runs
                 crate::task::scheduler::set_need_resched();
-                // Nudge the scheduler a few times to ensure pickup before heavy init resumes
+                // Drive the interrupt return path a few times to ensure the switch happens
                 for _ in 0..3 {
-                    crate::task::scheduler::yield_current();
+                    x86_64::instructions::interrupts::int3();
                 }
+                // Briefly spin to allow timer IRQs to run
+                for _ in 0..5_000_000 { core::hint::spin_loop(); }
+                // One more nudge
+                x86_64::instructions::interrupts::int3();
             }
             Err(e) => {
                 log::error!("RING3_SMOKE: failed to create userspace process: {}", e);

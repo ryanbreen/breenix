@@ -113,8 +113,7 @@ impl Scheduler {
         }
         
         // Get next thread from ready queue
-        let mut next_thread_id = self.ready_queue.pop_front()
-            .or(Some(self.idle_thread))?; // Use idle thread if nothing ready
+        let mut next_thread_id = if let Some(n) = self.ready_queue.pop_front() { n } else { self.idle_thread };
         
         if count < 10 {
             log::info!("Next thread from queue: {}, ready_queue after pop: {:?}", 
@@ -137,7 +136,8 @@ impl Scheduler {
             return None;
         }
         
-        let old_thread_id = self.current_thread?;
+        // If current is idle and we have a real next thread, allow switch even if idle
+        let old_thread_id = self.current_thread.unwrap_or(self.idle_thread);
         self.current_thread = Some(next_thread_id);
         
         if count < 10 {
@@ -258,6 +258,17 @@ pub fn schedule() -> Option<(u64, u64)> {
             None
         }
     })
+}
+
+/// Non-blocking scheduling attempt (for interrupt context). Returns None if lock is busy.
+pub fn try_schedule() -> Option<(u64, u64)> {
+    // Do not disable interrupts; we only attempt a non-blocking lock here
+    if let Some(mut scheduler_lock) = SCHEDULER.try_lock() {
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            return scheduler.schedule().map(|(old, new)| (old.id(), new.id()));
+        }
+    }
+    None
 }
 
 /// Get access to the scheduler

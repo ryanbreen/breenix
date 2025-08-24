@@ -44,11 +44,18 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                 if let Some(ref main_thread) = process.main_thread {
                     // Verify it's a user thread
                     if main_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+                        log::info!(
+                            "create_user_process: Scheduling user thread {} ('{}')",
+                            main_thread.id,
+                            main_thread.name
+                        );
                         // Add directly to scheduler - no spawn thread needed!
                         // Note: spawn() internally uses without_interrupts
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
-                        log::info!("create_user_process: Added user thread {} directly to scheduler", 
-                                   main_thread.id);
+                        log::info!(
+                            "create_user_process: User thread {} enqueued for scheduling",
+                            main_thread.id
+                        );
                     } else {
                         log::error!("create_user_process: Thread {} is not a user thread!", main_thread.id);
                         return Err("Created thread is not a user thread");
