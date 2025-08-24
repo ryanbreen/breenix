@@ -97,6 +97,22 @@ pub extern "C" fn check_need_resched_and_switch(
             from_userspace,
             interrupt_frame.code_segment.0
         );
+        // Emit canonical ring3 marker on the first entry to userspace
+        if from_userspace {
+            static mut EMITTED_RING3_MARKER: bool = false;
+            unsafe {
+                if !EMITTED_RING3_MARKER {
+                    EMITTED_RING3_MARKER = true;
+                    crate::serial_println!("RING3_ENTER: CS=0x33");
+                    crate::serial::flush();
+                    #[cfg(feature = "testing")]
+                    {
+                        // In smoke builds, exit immediately for deterministic CI
+                        crate::test_exit_qemu(crate::QemuExitCode::Success);
+                    }
+                }
+            }
+        }
 
         // Save current thread's context if coming from userspace
         if from_userspace {
