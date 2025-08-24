@@ -233,6 +233,24 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled!");
+
+    // Minimal ring3 smoke: create a simple userspace process and let the scheduler run it
+    #[cfg(feature = "testing")]
+    {
+        use alloc::string::String;
+        serial_println!("RING3_SMOKE: creating hello_time userspace process");
+        let elf = userspace_test::get_test_binary("hello_time");
+        match process::create_user_process(String::from("smoke_hello_time"), &elf) {
+            Ok(pid) => {
+                log::info!("RING3_SMOKE: created userspace PID {}", pid.as_u64());
+                // Hint scheduler to pick it up ASAP
+                crate::task::scheduler::yield_current();
+            }
+            Err(e) => {
+                log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
+            }
+        }
+    }
     
     // Test timer functionality immediately
     // TEMPORARILY DISABLED - these tests delay userspace execution
