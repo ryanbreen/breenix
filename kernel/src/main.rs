@@ -243,8 +243,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         match process::create_user_process(String::from("smoke_hello_time"), &elf) {
             Ok(pid) => {
                 log::info!("RING3_SMOKE: created userspace PID {}", pid.as_u64());
-                // Hint scheduler to pick it up ASAP
-                crate::task::scheduler::yield_current();
+                // Force immediate reschedule so the new userspace thread runs
+                crate::task::scheduler::set_need_resched();
+                // Nudge the scheduler a few times to ensure pickup before heavy init resumes
+                for _ in 0..3 {
+                    crate::task::scheduler::yield_current();
+                }
             }
             Err(e) => {
                 log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
