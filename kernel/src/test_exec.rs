@@ -417,8 +417,13 @@ pub fn test_timer_functionality() {
     log::info!("Running comprehensive timer test program");
     
     // Use timer_test.elf to verify timer functionality
-    #[cfg(feature = "testing")]
+    // Use TIMER_TEST_ELF only when external_test_bins is enabled; otherwise fall back to generated ELF
+    #[cfg(all(feature = "testing", feature = "external_test_bins"))]
     let timer_test_elf = crate::userspace_test::TIMER_TEST_ELF;
+    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
+    let timer_test_elf_buf = crate::userspace_test::get_test_binary("hello_time");
+    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
+    let timer_test_elf: &[u8] = &timer_test_elf_buf;
     #[cfg(not(feature = "testing"))]
     let timer_test_elf = &create_hello_world_elf();
     

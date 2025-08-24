@@ -7,6 +7,7 @@ pub mod rtc;
 #[cfg(test)]
 mod rtc_tests;
 
+#[allow(unused_imports)]
 pub use time::Time;
 pub use timer::{
     get_monotonic_time,
