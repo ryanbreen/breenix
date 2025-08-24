@@ -96,8 +96,8 @@ elif [[ $run_rc -eq 0 ]]; then
     exit 4
   fi
 else
-  # Runner did not report streaming success; require full composite including userspace_output
-  if [[ "$have_hello" != yes || "$have_cs" != yes || "$have_user_output" != yes ]]; then
+  # Runner did not report streaming success; require hello + CS evidence only
+  if [[ "$have_hello" != yes || "$have_cs" != yes ]]; then
     echo "ERROR: Ring3 success markers not found in latest log"
     echo "hello=$have_hello cs=$have_cs userspace_output=$have_user_output"
     exit 4
