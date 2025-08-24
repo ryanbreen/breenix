@@ -36,5 +36,10 @@ pub fn dispatch_syscall(
         SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
         SyscallNumber::GetPid => handlers::sys_getpid(),
         SyscallNumber::GetTid => handlers::sys_gettid(),
+        SyscallNumber::ClockGetTime => {
+            let clock_id = arg1 as u32;
+            let user_timespec_ptr = arg2 as *mut super::time::Timespec;
+            super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
+        }
     }
 }

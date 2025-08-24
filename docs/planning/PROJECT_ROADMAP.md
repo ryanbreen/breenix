@@ -21,15 +21,34 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
 
 ## Current Development Status
 
-### Currently Working On (July 9 2025)
+### Currently Working On (July 21 2025)
 
-- 🚧 **Next Phase**: Implementing advanced userspace features
-  - Shell-style fork+exec patterns
-  - Process wait/waitpid support
-  - More complex userspace programs
-  - Performance optimizations
+- 🚧 **Timer System Enhancement**: Implementing remaining timer features from TIMER_NEXT_STEPS.md
+  - Task 2: POSIX clock_gettime syscall
+  - Task 3: Timer wheel & sleep implementation
+  - Task 4: TSC-deadline fast path (optional)
+  - Task 5: Virtualization optimizations
 
 ### Recently Completed (Last Sprint) - July 2025
+
+- ✅ **Implemented RTC Driver and Wall-Clock API** (Jul 21 2025)
+  - **Achievement**: Real Time Clock (RTC) support for wall clock time
+  - **Features**:
+    - CMOS RTC driver reads hardware clock at boot
+    - DateTime struct for human-readable time representation  
+    - Boot time caching to avoid repeated RTC reads
+    - get_real_time() API calculates current time as boot_time + monotonic_ms
+    - BCD-to-binary conversion for RTC register values
+  - **Evidence**: 
+    - RTC initializes: "RTC initialized: 2025-07-21 13:32:27 UTC"
+    - Real time progresses correctly (13:32:28 → 13:32:30 after 2 seconds)
+    - Enables timestamped logs and future POSIX time APIs
+
+- ✅ **Fixed sys_get_time System Call** (Jul 21 2025)
+  - **Root Cause**: Timer interrupt handler called increment_ticks() directly, bypassing timer subsystem
+  - **Solution**: Changed handler to call timer_interrupt() instead
+  - **Result**: sys_get_time now returns correct milliseconds since boot
+  - **Evidence**: Timer test shows proper values (started at 3ms, incremented to 1057ms)
 
 - ✅ **🎉 SOLVED KERNEL STACK ISOLATION ISSUE!** (Jul 9 2025)
   - **Root Cause**: Kernel stacks were mapped per-process, causing double faults during page table switches

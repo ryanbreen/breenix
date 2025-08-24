@@ -1,0 +1,86 @@
+name: Code Quality Checks
+
+on:
+  push:
+    paths:
+      - 'kernel/**'
+      - '.github/workflows/code-quality.yml'
+  pull_request:
+
+jobs:
+  clippy-checks:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2025-06-24
+          override: true
+          target: x86_64-unknown-none
+          components: clippy, rust-src
+          
+      - name: Clippy - deny side-effects in logs
+        run: |
+          cd kernel
+          RUSTFLAGS="-Aclippy::redundant_closure_for_method_calls" \
+          cargo clippy --target x86_64-unknown-none \
+            -- -Dclippy::debug_assert_with_mut_call \
+               -Dclippy::print_stdout \
+               -Wclippy::suspicious_operation_groupings
+               
+      - name: Check for log statements with side effects
+        run: |
+          echo "Checking for trace log statements with function calls..."
+          
+          # Look for log::trace! with function calls (excluding simple getters)
+          if grep -R "log::trace!.*\(" kernel/src/ | grep -vE '\".*\"' | grep -vE '\.(as_|to_|into_|len|is_|get)' > /tmp/trace_violations.txt; then
+            if [ -s /tmp/trace_violations.txt ]; then
+              echo "ERROR: Found trace log statements with potential side effects:"
+              cat /tmp/trace_violations.txt
+              echo ""
+              echo "Move any logic with side effects out of log statements!"
+              exit 1
+            fi
+          fi
+          
+          echo "✓ No suspicious trace log statements found"
+          
+      - name: Check for all log statements with complex expressions
+        run: |
+          echo "Checking all log statements for complex expressions..."
+          
+          # More comprehensive check for any log macro with complex expressions
+          if grep -R "log::\(trace\|debug\|info\|warn\|error\)!.*{.*}.*{" kernel/src/ > /tmp/complex_logs.txt; then
+            if [ -s /tmp/complex_logs.txt ]; then
+              echo "WARNING: Found log statements with multiple format arguments that might hide side effects:"
+              cat /tmp/complex_logs.txt
+              echo ""
+              echo "Please review these for potential side effects"
+            fi
+          fi
+          
+          echo "✓ Log statement check complete"
+
+  log-level-regression-guard:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Verify logger initialization
+        run: |
+          echo "Checking logger initialization..."
+          
+          # Ensure we're not hardcoding Debug level
+          if grep -n "set_max_level(LevelFilter::Debug)" kernel/src/logger.rs | grep -v "cfg(feature"; then
+            echo "ERROR: Found hardcoded Debug log level!"
+            echo "Logger must use feature flags to control log level"
+            exit 1
+          fi
+          
+          echo "✓ Logger initialization looks correct"

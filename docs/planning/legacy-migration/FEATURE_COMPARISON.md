@@ -60,9 +60,12 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
 | PIT (Timer Interrupts) | ✅ | ✅ | Both configure PIT for 1000Hz |
-| RTC (Real Time Clock) | ✅ | ✅ | Both read Unix timestamp from RTC |
+| RTC (Real Time Clock) | ✅ | ✅ | New has full RTC driver with DateTime support |
 | Monotonic Clock | ✅ | ✅ | Both track ticks since boot |
-| Time Tracking | ✅ Boot time, ticks | ✅ | Both track seconds/millis since boot |
+| Wall Clock Time | ✅ | ✅ | New: boot_time + monotonic for real time |
+| Time Tracking | ✅ Boot time, ticks | ✅ Full | New tracks milliseconds, has get_real_time() |
+| sys_get_time | ✅ | ✅ | Returns milliseconds since boot |
+| DateTime Support | ❌ | ✅ | New has DateTime struct with formatting |
 | Delay Macro | ✅ | ✅ | Both have delay! macro for busy waits |
 
 ### Network
@@ -95,9 +98,15 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 ### System Calls
 | Feature | Legacy | New | Notes |
 |---------|--------|-----|-------|
-| Syscall Infrastructure | 🚧 Mostly commented | ❌ | |
-| Time Syscalls | 🚧 | ❌ | |
-| Test Syscalls | 🚧 | ❌ | |
+| Syscall Infrastructure | 🚧 Mostly commented | ✅ | INT 0x80 handler, proper dispatch |
+| sys_get_time | 🚧 | ✅ | Returns milliseconds since boot |
+| sys_write | 🚧 | ✅ | Writes to stdout/stderr |
+| sys_read | 🚧 | ✅ | Reads from stdin (keyboard) |
+| sys_yield | 🚧 | ✅ | Yields to scheduler |
+| sys_exit | 🚧 | ✅ | Process termination |
+| sys_fork | ❌ | ✅ | Process forking |
+| sys_exec | ❌ | ✅ | Program execution |
+| Test Syscalls | 🚧 | ✅ | Full test coverage |
 
 ## Utilities and Debug Support
 
@@ -125,7 +134,11 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 3. Basic interrupt handling (keyboard, timer)
 4. Dual logging to both framebuffer and serial port
 5. Early boot message buffering (captures pre-serial messages)
-6. Comprehensive timer system with RTC integration
+6. **Comprehensive timer system with full RTC integration**
+   - PIT timer at 1kHz (1ms resolution)
+   - RTC driver with DateTime support
+   - Wall clock time tracking (boot_time + monotonic)
+   - Working sys_get_time syscall
 7. **Complete integration testing framework (25+ tests with shared QEMU)**
 8. GDT with TSS for interrupt handling (8KB double fault stack)
 9. **Complete memory management system (frame allocator, paging, heap)**
@@ -133,6 +146,8 @@ This document compares features between the legacy Breenix kernel (src.legacy/) 
 11. **1024 KiB heap with bump allocator and #[global_allocator]**
 12. **Async executor with cooperative multitasking and Future support**
 13. **Guard page stack protection with enhanced page fault detection**
+14. **Full userspace execution with fork/exec support**
+15. **Complete syscall infrastructure (INT 0x80)**
 
 ### Legacy Kernel Has (Not in New)
 1. ~~Comprehensive memory management (paging, heap)~~ **Now implemented in new kernel**

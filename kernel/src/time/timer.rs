@@ -1,118 +1,55 @@
+//! Core PIT-backed timer facilities (1 kHz, 1 ms resolution).
+
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Once;
 use x86_64::instructions::port::Port;
-use super::Time;
 
-const PIT_FREQUENCY: u32 = 1193182;
-pub const TIMER_INTERRUPT_HZ: u32 = 10;   // Further reduced to 10Hz (100ms intervals) for userspace testing
-const TIMER_DIVIDER: u16 = (PIT_FREQUENCY / TIMER_INTERRUPT_HZ) as u16;
-pub const SUBTICKS_PER_TICK: u64 = 1000;  // Adjusted to match 10Hz frequency
+const PIT_INPUT_FREQ_HZ: u32 = 1_193_182;
+const PIT_HZ: u32 = 1000;                // 1 kHz ⇒ 1 ms per tick
+const PIT_COMMAND_PORT: u16 = 0x43;
+const PIT_CHANNEL0_PORT: u16 = 0x40;
 
-const PIT_CHANNEL0_DATA: u16 = 0x40;
-const PIT_COMMAND: u16 = 0x43;
+/// Global monotonic tick counter (1 tick == 1 ms).
+static TICKS: AtomicU64 = AtomicU64::new(0);
 
-const PIT_CMD_CHANNEL0: u8 = 0x00;
-const PIT_CMD_ACCESS_LOHI: u8 = 0x30;
-const PIT_CMD_MODE2: u8 = 0x04;
-
-pub struct Timer {
-    start: AtomicU64,
-    ticks: AtomicU64,
-    seconds: AtomicU64,
-    millis: AtomicU64,
-}
-
-impl Timer {
-    const fn new() -> Self {
-        Self {
-            start: AtomicU64::new(0),
-            ticks: AtomicU64::new(0),
-            seconds: AtomicU64::new(0),
-            millis: AtomicU64::new(0),
-        }
-    }
-
-    pub fn time_since_start(&self) -> Time {
-        let seconds = self.seconds.load(Ordering::Relaxed);
-        let millis = self.millis.load(Ordering::Relaxed);
-        Time::new(seconds, millis, 0)
-    }
-
-    pub fn monotonic_clock(&self) -> u64 {
-        self.ticks.load(Ordering::Relaxed)
-    }
-
-    pub fn real_time(&self) -> u64 {
-        let start = self.start.load(Ordering::Relaxed);
-        let elapsed = self.time_since_start();
-        start + elapsed.seconds
-    }
-
-    pub fn tick(&self) {
-        self.ticks.fetch_add(1, Ordering::Relaxed);
-        
-        // Each tick is now 100ms (10Hz), so add 100 to millis
-        let new_millis = self.millis.fetch_add(100, Ordering::Relaxed) + 100;
-        if new_millis >= 1000 {
-            self.millis.store(new_millis - 1000, Ordering::Relaxed);
-            self.seconds.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    pub fn set_start_time(&self, unix_timestamp: u64) {
-        self.start.store(unix_timestamp, Ordering::Relaxed);
-    }
-}
-
-static TIMER: Once<Timer> = Once::new();
-
+/// Program the PIT to generate periodic interrupts at `PIT_HZ`.
 pub fn init() {
-    TIMER.call_once(|| {
-        let timer = Timer::new();
-        
-        unsafe {
-            let mut cmd_port = Port::new(PIT_COMMAND);
-            let mut data_port = Port::new(PIT_CHANNEL0_DATA);
-            
-            let command = PIT_CMD_CHANNEL0 | PIT_CMD_ACCESS_LOHI | PIT_CMD_MODE2;
-            cmd_port.write(command);
-            
-            data_port.write((TIMER_DIVIDER & 0xFF) as u8);
-            data_port.write((TIMER_DIVIDER >> 8) as u8);
-        }
-        
-        if let Ok(rtc_time) = super::rtc::read_rtc_time() {
-            timer.set_start_time(rtc_time);
-            log::info!("Timer initialized with RTC time: {}", rtc_time);
-        } else {
-            log::warn!("Failed to read RTC time, timer starting from epoch");
-        }
-        
-        timer
-    });
-}
+    let divisor: u16 = (PIT_INPUT_FREQ_HZ / PIT_HZ) as u16;
+    unsafe {
+        let mut cmd: Port<u8> = Port::new(PIT_COMMAND_PORT);
+        let mut ch0: Port<u8> = Port::new(PIT_CHANNEL0_PORT);
 
-pub fn timer_interrupt() {
-    if let Some(timer) = TIMER.get() {
-        timer.tick();
-        super::increment_ticks();
+        // Counter 0, lobyte/hibyte, mode 3 (square wave), binary
+        cmd.write(0x36);
+
+        // Divisor LSB then MSB
+        ch0.write((divisor & 0xFF) as u8);
+        ch0.write((divisor >> 8) as u8);
     }
+    
+    log::info!("Timer initialized at 1000 Hz (1ms per tick)");
+    
+    // Initialize RTC for wall clock time
+    super::rtc::init();
 }
 
-pub fn time_since_start() -> Time {
-    TIMER.get()
-        .map(|t| t.time_since_start())
-        .unwrap_or_else(|| Time::new(0, 0, 0))
+/// Invoked from the CPU-side interrupt stub every 1 ms.
+#[inline]
+pub fn timer_interrupt() {
+    TICKS.fetch_add(1, Ordering::Relaxed);
+    // If the scheduler needs a tick hook, call it here.
+    // crate::sched::timer_tick();
 }
 
-pub fn monotonic_clock() -> u64 {
-    TIMER.get()
-        .map(|t| t.monotonic_clock())
-        .unwrap_or(0)
+/// Raw tick counter.
+#[inline]
+pub fn get_ticks() -> u64 {
+    TICKS.load(Ordering::Relaxed)
 }
 
-pub fn real_time() -> u64 {
-    TIMER.get()
-        .map(|t| t.real_time())
-        .unwrap_or(0)
+/// Milliseconds since the kernel was initialized.
+///
+/// Guaranteed monotonic and never wraps earlier than ~584 million years.
+#[inline]
+pub fn get_monotonic_time() -> u64 {
+    get_ticks()
 }

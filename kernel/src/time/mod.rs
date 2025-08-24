@@ -1,20 +1,28 @@
-pub mod time;
+//! Public façade for time-related facilities.
+
 pub mod timer;
+pub mod time;
 pub mod rtc;
 
+#[cfg(test)]
+mod rtc_tests;
+
 pub use time::Time;
-pub use timer::{init, time_since_start};
+pub use timer::{
+    get_monotonic_time,
+    get_ticks,
+    init,
+    timer_interrupt,
+};
+pub use rtc::DateTime;
 
-use core::sync::atomic::{AtomicU64, Ordering};
-
-static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-
-pub fn get_ticks() -> u64 {
-    TIMER_TICKS.load(Ordering::Relaxed)
-}
-
-pub(crate) fn increment_ticks() {
-    TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+/// Get the current real (wall clock) time
+/// This is calculated as boot_wall_time + monotonic_time_since_boot
+pub fn get_real_time() -> DateTime {
+    let boot_time = rtc::get_boot_wall_time();
+    let monotonic_ms = get_monotonic_time();
+    let current_timestamp = boot_time + (monotonic_ms / 1000);
+    DateTime::from_unix_timestamp(current_timestamp)
 }
 
 /// Display comprehensive time debug information
@@ -24,16 +32,20 @@ pub fn debug_time_info() {
     // Current ticks
     let ticks = get_ticks();
     log::info!("Timer ticks: {}", ticks);
+    log::info!("Monotonic time: {} ms", get_monotonic_time());
     
-    // Time since start
-    let time_since_start = time_since_start();
-    log::info!("Time since boot: {}", time_since_start);
-    log::info!("  - Total milliseconds: {}", time_since_start.total_millis());
-    log::info!("  - Total nanoseconds: {}", time_since_start.total_nanos());
+    // Real time (wall clock)
+    let real_time = get_real_time();
+    log::info!("Real time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+              real_time.year, real_time.month, real_time.day,
+              real_time.hour, real_time.minute, real_time.second);
     
-    // Real time from timer
-    let real_time = timer::real_time();
-    log::info!("Real time (timer): {} ms", real_time);
+    // Boot time
+    let boot_timestamp = rtc::get_boot_wall_time();
+    let boot_time = DateTime::from_unix_timestamp(boot_timestamp);
+    log::info!("Boot time: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+              boot_time.year, boot_time.month, boot_time.day,
+              boot_time.hour, boot_time.minute, boot_time.second);
     
     // RTC time
     match rtc::read_rtc_time() {
@@ -54,16 +66,6 @@ pub fn debug_time_info() {
         }
     }
     
-    // Timer frequency
-    log::info!("Timer frequency: {} Hz", timer::TIMER_INTERRUPT_HZ);
-    log::info!("Subticks per tick: {}", timer::SUBTICKS_PER_TICK);
-    
-    // Test time creation functions
-    let one_second = Time::from_seconds(1);
-    let one_thousand_ms = Time::from_millis(1000);
-    log::info!("Time::from_seconds(1) = {}", one_second);
-    log::info!("Time::from_millis(1000) = {}", one_thousand_ms);
-    log::info!("Are they equal? {}", one_second.total_millis() == one_thousand_ms.total_millis());
-    
+    log::info!("Timer frequency: 1000 Hz (1ms resolution)");
     log::info!("=============================");
 }

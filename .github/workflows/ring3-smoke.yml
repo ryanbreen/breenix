@@ -1,0 +1,60 @@
+name: Ring‑3 Smoke Test
+
+on:
+  push:
+    paths:
+      - 'kernel/**'
+      - 'userspace/**'
+      - 'xtask/**'
+      - '.github/workflows/ring3-smoke.yml'
+  pull_request:
+
+jobs:
+  ring3-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      CARGO_UNSTABLE_BINDEPS: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2025-06-24
+          override: true
+          target: x86_64-unknown-none
+          components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf nasm
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build userspace tests
+        run: |
+          # Add LLVM tools to PATH
+          export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
+          cd userspace/tests
+          ./build.sh
+
+      - name: Run Ring‑3 smoke test
+        run: cargo run -p xtask -- ring3-smoke
+
+      - name: Upload QEMU log if failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-serial-log
+          path: target/xtask_ring3_smoke_output.txt

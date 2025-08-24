@@ -18,6 +18,9 @@ pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.el
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
 
+// When external_test_bins is not enabled, TIMER_TEST_ELF is unavailable. Keep references gated.
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+pub static TIMER_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/timer_test.elf");
 #[cfg(feature = "testing")]
 pub fn get_test_binary(_name: &str) -> alloc::vec::Vec<u8> {
     // For now, generate a minimal valid ELF. We can extend per-name later.
@@ -71,6 +74,7 @@ fn _test_binaries_included() {
     assert!(COUNTER_ELF.len() > 0, "counter.elf not included");
     assert!(SPINNER_ELF.len() > 0, "spinner.elf not included");
     assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
+    assert!(TIMER_TEST_ELF.len() > 0, "timer_test.elf not included");
 }
 
 /// Test running a userspace program
@@ -172,6 +176,29 @@ pub fn run_userspace_test() {
     #[cfg(not(feature = "testing"))]
     {
         log::warn!("Userspace test binary not available - compile with --features testing");
+    }
+}
+
+/// Run the timer test program
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+pub fn run_timer_test() {
+    log::info!("=== Running Timer Test Program ===");
+    
+    use alloc::string::String;
+    
+    log::info!("Creating timer test process ({} bytes)", TIMER_TEST_ELF.len());
+    
+    match crate::process::create_user_process(
+        String::from("timer_test"), 
+        TIMER_TEST_ELF
+    ) {
+        Ok(pid) => {
+            log::info!("✓ Created timer test process with PID {}", pid.as_u64());
+            log::info!("Process will test timer functionality and report results");
+        }
+        Err(e) => {
+            log::error!("✗ Failed to create timer test process: {}", e);
+        }
     }
 }
 
