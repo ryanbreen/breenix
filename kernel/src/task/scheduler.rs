@@ -238,6 +238,8 @@ pub fn spawn(thread: Box<Thread>) {
         let mut scheduler_lock = SCHEDULER.lock();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.add_thread(thread);
+            // Ensure a switch happens ASAP (especially in CI smoke runs)
+            NEED_RESCHED.store(true, Ordering::Relaxed);
         } else {
             panic!("Scheduler not initialized");
         }

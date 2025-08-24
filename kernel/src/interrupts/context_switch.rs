@@ -122,6 +122,16 @@ pub extern "C" fn check_need_resched_and_switch(
         // Switch to the new thread
         switch_to_thread(new_thread_id, saved_regs, interrupt_frame);
 
+        // If switching to userspace, emit a clear log right before return
+        if scheduler::with_thread_mut(new_thread_id, |t| t.privilege == ThreadPrivilege::User)
+            .unwrap_or(false)
+        {
+            log::info!(
+                "Restored userspace context for thread {} and prepared return to Ring 3 (CS=0x33)",
+                new_thread_id
+            );
+        }
+
         // Reset the timer quantum for the new thread
         super::timer::reset_quantum();
     }
