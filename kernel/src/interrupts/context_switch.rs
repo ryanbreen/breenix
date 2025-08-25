@@ -44,16 +44,8 @@ pub extern "C" fn check_need_resched_and_switch(
         );
     }
 
-    // Perform scheduling decision (try non-blocking first). If busy, defer.
-    let schedule_result = match scheduler::try_schedule() {
-        Some(sw) => Some(sw),
-        None => {
-            log::debug!("scheduler try_lock busy; deferring switch to next interrupt");
-            // Re-arm need_resched so we try again soon
-            scheduler::set_need_resched();
-            return;
-        }
-    };
+    // Perform scheduling decision
+    let schedule_result = scheduler::schedule();
     // Always log the first few results
     if count < 10 || schedule_result.is_some() {
         log::info!(

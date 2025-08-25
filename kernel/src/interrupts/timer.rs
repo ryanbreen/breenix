@@ -21,12 +21,12 @@ static mut CURRENT_QUANTUM: u32 = TIME_QUANTUM;
 pub extern "C" fn timer_interrupt_handler() {
     // Log the first few timer interrupts for debugging
     static TIMER_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    let _count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    // TEMPORARILY DISABLE ALL TIMER INTERRUPT LOGGING TO DEBUG DEADLOCK
-    // if count < 5 {
-    //     log::debug!("Timer interrupt #{}", count);
-    //     log::debug!("Timer interrupt #{} - starting handler", count);
-    // }
+    let count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    // ENABLE FIRST FEW TIMER INTERRUPT LOGS FOR CI DEBUGGING
+    if count < 5 {
+        log::info!("Timer interrupt #{}", count);
+        log::info!("Timer interrupt #{} - starting handler", count);
+    }
 
     // Core time bookkeeping
     crate::time::timer_interrupt();
@@ -42,15 +42,15 @@ pub extern "C" fn timer_interrupt_handler() {
 
         // If quantum expired OR there are user threads ready (for idle thread), set need_resched flag
         if CURRENT_QUANTUM == 0 || has_user_threads {
-            // TEMPORARILY DISABLE LOGGING
-            // if count < 5 {
-            //     log::debug!("Timer quantum expired or user threads ready, setting need_resched");
-            //     log::debug!("About to call scheduler::set_need_resched()");
-            // }
+            // ENABLE LOGGING FOR CI DEBUGGING
+            if count < 5 {
+                log::info!("Timer quantum expired or user threads ready, setting need_resched");
+                log::info!("About to call scheduler::set_need_resched()");
+            }
             scheduler::set_need_resched();
-            // if count < 5 {
-            //     log::debug!("scheduler::set_need_resched() completed");
-            // }
+            if count < 5 {
+                log::info!("scheduler::set_need_resched() completed");
+            }
             CURRENT_QUANTUM = TIME_QUANTUM; // Reset for next thread
         }
     }

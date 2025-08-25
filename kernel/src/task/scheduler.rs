@@ -3,9 +3,9 @@
 //! This module implements a round-robin scheduler for kernel threads.
 
 use super::thread::{Thread, ThreadState};
-use alloc::{collections::VecDeque, boxed::Box};
-use spin::Mutex;
+use alloc::{boxed::Box, collections::VecDeque};
 use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -17,13 +17,13 @@ static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 pub struct Scheduler {
     /// All threads in the system
     threads: alloc::vec::Vec<Box<Thread>>,
-    
+
     /// Ready queue (thread IDs)
     ready_queue: VecDeque<u64>,
-    
+
     /// Currently running thread ID
     current_thread: Option<u64>,
-    
+
     /// Idle thread ID (runs when no other threads are ready)
     idle_thread: u64,
 }
@@ -38,13 +38,13 @@ impl Scheduler {
             current_thread: Some(idle_id),
             idle_thread: idle_id,
         };
-        
+
         // Don't put idle thread in ready queue
         // It runs only when nothing else is ready
-        
+
         scheduler
     }
-    
+
     /// Add a new thread to the scheduler
     pub fn add_thread(&mut self, thread: Box<Thread>) {
         let thread_id = thread.id();
@@ -52,124 +52,163 @@ impl Scheduler {
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         self.threads.push(thread);
         self.ready_queue.push_back(thread_id);
-        log::info!("Added thread {} '{}' to scheduler (user: {}, ready_queue: {:?})", 
-                  thread_id, thread_name, is_user, self.ready_queue);
+        log::info!(
+            "Added thread {} '{}' to scheduler (user: {}, ready_queue: {:?})",
+            thread_id,
+            thread_name,
+            is_user,
+            self.ready_queue
+        );
     }
-    
-    
+
     /// Get a mutable thread by ID
     pub fn get_thread_mut(&mut self, id: u64) -> Option<&mut Thread> {
-        self.threads.iter_mut().find(|t| t.id() == id).map(|t| t.as_mut())
+        self.threads
+            .iter_mut()
+            .find(|t| t.id() == id)
+            .map(|t| t.as_mut())
     }
-    
+
     /// Get the current running thread
     pub fn current_thread(&self) -> Option<&Thread> {
         self.current_thread.and_then(|id| self.get_thread(id))
     }
-    
+
     /// Get the current running thread mutably
     pub fn current_thread_mut(&mut self) -> Option<&mut Thread> {
-        self.current_thread.and_then(move |id| self.get_thread_mut(id))
+        self.current_thread
+            .and_then(move |id| self.get_thread_mut(id))
     }
-    
+
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
         // Always log the first few scheduling decisions
-        static SCHEDULE_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        static SCHEDULE_COUNT: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0);
         let count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        
+
         // Log the first few scheduling decisions
         if count < 10 {
-            log::info!("schedule() called #{}: current={:?}, ready_queue={:?}, idle_thread={}", 
-                      count, self.current_thread, self.ready_queue, self.idle_thread);
+            log::info!(
+                "schedule() called #{}: current={:?}, ready_queue={:?}, idle_thread={}",
+                count,
+                self.current_thread,
+                self.ready_queue,
+                self.idle_thread
+            );
         }
-        
+
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
                 // First check the state and update it
-                let (is_terminated, prev_state) = if let Some(current) = self.get_thread_mut(current_id) {
-                    let was_terminated = current.state == ThreadState::Terminated;
-                    let prev = current.state;
-                    if !was_terminated {
-                        current.set_ready();
-                    }
-                    (was_terminated, prev)
-                } else {
-                    (true, ThreadState::Terminated)
-                };
-                
+                let (is_terminated, prev_state) =
+                    if let Some(current) = self.get_thread_mut(current_id) {
+                        let was_terminated = current.state == ThreadState::Terminated;
+                        let prev = current.state;
+                        if !was_terminated {
+                            current.set_ready();
+                        }
+                        (was_terminated, prev)
+                    } else {
+                        (true, ThreadState::Terminated)
+                    };
+
                 // Then modify the ready queue
                 if !is_terminated {
                     self.ready_queue.push_back(current_id);
                     if count < 10 {
-                        log::info!("Put thread {} back in ready queue, state was {:?}", current_id, prev_state);
+                        log::info!(
+                            "Put thread {} back in ready queue, state was {:?}",
+                            current_id,
+                            prev_state
+                        );
                     }
                 } else {
-                    log::info!("Thread {} is terminated, not putting back in ready queue", current_id);
+                    log::info!(
+                        "Thread {} is terminated, not putting back in ready queue",
+                        current_id
+                    );
                 }
             }
         }
-        
+
         // Get next thread from ready queue
-        let mut next_thread_id = if let Some(n) = self.ready_queue.pop_front() { n } else { self.idle_thread };
-        
+        let mut next_thread_id = if let Some(n) = self.ready_queue.pop_front() {
+            n
+        } else {
+            self.idle_thread
+        };
+
         if count < 10 {
-            log::info!("Next thread from queue: {}, ready_queue after pop: {:?}", 
-                      next_thread_id, self.ready_queue);
+            log::info!(
+                "Next thread from queue: {}, ready_queue after pop: {:?}",
+                next_thread_id,
+                self.ready_queue
+            );
         }
-        
+
         // Important: Don't skip if it's the same thread when there are other threads waiting
         // This was causing the issue where yielding wouldn't switch to other ready threads
         if Some(next_thread_id) == self.current_thread && !self.ready_queue.is_empty() {
             // Put current thread back and get the next one
             self.ready_queue.push_back(next_thread_id);
             next_thread_id = self.ready_queue.pop_front()?;
-            log::info!("Forced switch from {} to {} (other threads waiting)", 
-                       self.current_thread.unwrap_or(0), next_thread_id);
+            log::info!(
+                "Forced switch from {} to {} (other threads waiting)",
+                self.current_thread.unwrap_or(0),
+                next_thread_id
+            );
         } else if Some(next_thread_id) == self.current_thread {
             // No other threads ready, stay with current
             if count < 10 {
-                log::info!("Staying with current thread {} (no other threads ready)", next_thread_id);
+                log::info!(
+                    "Staying with current thread {} (no other threads ready)",
+                    next_thread_id
+                );
             }
             return None;
         }
-        
+
         // If current is idle and we have a real next thread, allow switch even if idle
         let old_thread_id = self.current_thread.unwrap_or(self.idle_thread);
         self.current_thread = Some(next_thread_id);
-        
+
         if count < 10 {
-            log::info!("Switching from thread {} to thread {}", old_thread_id, next_thread_id);
+            log::info!(
+                "Switching from thread {} to thread {}",
+                old_thread_id,
+                next_thread_id
+            );
         }
-        
+
         // Mark new thread as running
         if let Some(next) = self.get_thread_mut(next_thread_id) {
             next.set_running();
         }
-        
+
         // Get mutable reference to old thread and immutable to new
         // This is safe because we know they're different threads
         unsafe {
             let threads_ptr = self.threads.as_mut_ptr();
             let old_idx = self.threads.iter().position(|t| t.id() == old_thread_id)?;
             let new_idx = self.threads.iter().position(|t| t.id() == next_thread_id)?;
-            
+
             let old_thread = &mut *(*threads_ptr.add(old_idx)).as_mut();
             let new_thread = &*(*threads_ptr.add(new_idx)).as_ref();
-            
+
             Some((old_thread, new_thread))
         }
     }
-    
+
     /// Block the current thread
     pub fn block_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
             current.set_blocked();
         }
     }
-    
+
     /// Unblock a thread by ID
     pub fn unblock(&mut self, thread_id: u64) {
         if let Some(thread) = self.get_thread_mut(thread_id) {
@@ -181,7 +220,7 @@ impl Scheduler {
             }
         }
     }
-    
+
     /// Terminate the current thread
     pub fn terminate_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
@@ -190,34 +229,37 @@ impl Scheduler {
         }
         self.current_thread = None;
     }
-    
+
     /// Check if scheduler has any runnable threads
     pub fn has_runnable_threads(&self) -> bool {
-        !self.ready_queue.is_empty() || 
-        self.current_thread.map_or(false, |id| {
-            self.get_thread(id).map_or(false, |t| t.is_runnable())
-        })
+        !self.ready_queue.is_empty()
+            || self.current_thread.map_or(false, |id| {
+                self.get_thread(id).map_or(false, |t| t.is_runnable())
+            })
     }
-    
+
     /// Check if scheduler has any userspace threads (ready, running, or blocked)
     pub fn has_userspace_threads(&self) -> bool {
         self.threads.iter().any(|t| {
-            t.id() != self.idle_thread && 
-            t.privilege == super::thread::ThreadPrivilege::User &&
-            t.state != super::thread::ThreadState::Terminated
+            t.id() != self.idle_thread
+                && t.privilege == super::thread::ThreadPrivilege::User
+                && t.state != super::thread::ThreadState::Terminated
         })
     }
-    
+
     /// Get a thread by ID (public for timer.rs)
     pub fn get_thread(&self, id: u64) -> Option<&Thread> {
-        self.threads.iter().find(|t| t.id() == id).map(|t| t.as_ref())
+        self.threads
+            .iter()
+            .find(|t| t.id() == id)
+            .map(|t| t.as_ref())
     }
-    
+
     /// Get the idle thread ID
     pub fn idle_thread(&self) -> u64 {
         self.idle_thread
     }
-    
+
     /// Set the current thread (used by spawn mechanism)
     pub fn set_current_thread(&mut self, thread_id: u64) {
         self.current_thread = Some(thread_id);
@@ -248,16 +290,30 @@ pub fn spawn(thread: Box<Thread>) {
 
 /// Perform scheduling and return threads to switch between
 pub fn schedule() -> Option<(u64, u64)> {
-    // Note: This is called from timer interrupt, so interrupts are already disabled
-    // But we'll be explicit about it to prevent nested timer deadlocks
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    // Check if interrupts are already disabled (i.e., we're in interrupt context)
+    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
+
+    let result = if interrupts_enabled {
+        // Normal case: disable interrupts to prevent deadlock
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            let mut scheduler_lock = SCHEDULER.lock();
+            if let Some(scheduler) = scheduler_lock.as_mut() {
+                scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
+            } else {
+                None
+            }
+        })
+    } else {
+        // Already in interrupt context - don't try to disable interrupts again
         let mut scheduler_lock = SCHEDULER.lock();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
         } else {
             None
         }
-    })
+    };
+
+    result
 }
 
 /// Non-blocking scheduling attempt (for interrupt context). Returns None if lock is busy.
@@ -291,9 +347,9 @@ where
 {
     x86_64::instructions::interrupts::without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
-        scheduler_lock.as_mut().and_then(|sched| {
-            sched.get_thread_mut(thread_id).map(f)
-        })
+        scheduler_lock
+            .as_mut()
+            .and_then(|sched| sched.get_thread_mut(thread_id).map(f))
     })
 }
 
