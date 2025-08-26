@@ -1,9 +1,9 @@
-use spin::Mutex;
 use futures_util::stream::StreamExt;
+use spin::Mutex;
 
-mod scancodes;
-mod modifiers;
 mod event;
+mod modifiers;
+mod scancodes;
 pub mod stream;
 
 pub use event::KeyEvent;
@@ -35,7 +35,7 @@ pub fn init() {
     state.modifiers = Modifiers::new();
     state.e0_sequence = false;
     drop(state); // Release lock before initializing stream
-    
+
     // Initialize the scancode queue early to ensure it's ready for interrupts
     stream::init_queue();
 }
@@ -48,24 +48,25 @@ pub(crate) fn add_scancode(scancode: u8) {
 /// Process a scancode and return a keyboard event if applicable
 pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
     let mut state = KEYBOARD_STATE.lock();
-    
+
     // Handle E0 extended sequences
     if scancode == 0xE0 {
         state.e0_sequence = true;
         return None;
     }
-    
+
     // Handle extended scancodes (we'll add more later)
     if state.e0_sequence {
         state.e0_sequence = false;
         // For now, ignore extended scancodes
         return None;
     }
-    
+
     // Update modifiers - returns true if this was a modifier
     if state.modifiers.update(scancode) {
         // Log modifier changes for debugging
-        log::debug!("Modifier state: shift={}, ctrl={}, alt={}, caps_lock={}", 
+        log::debug!(
+            "Modifier state: shift={}, ctrl={}, alt={}, caps_lock={}",
             state.modifiers.shift(),
             state.modifiers.ctrl(),
             state.modifiers.alt(),
@@ -73,25 +74,25 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
         );
         return None;
     }
-    
+
     // Ignore key releases (high bit set)
     if scancode > 127 {
         return None;
     }
-    
+
     // Look up the key
     if let Some(key) = KEYS[scancode as usize] {
         let character = state.modifiers.apply_to(key);
         let event = KeyEvent::new(scancode, Some(character), &state.modifiers);
         return Some(event);
     }
-    
+
     // Unknown key - create event without character
     Some(KeyEvent::new(scancode, None, &state.modifiers))
 }
 
 /// Async keyboard task that processes scancodes and displays typed characters
-/// 
+///
 /// Special key combinations:
 /// - Ctrl+C: Interrupt signal
 /// - Ctrl+D: End of input
@@ -105,10 +106,12 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+X: Test fork+exec pattern
 /// - Ctrl+H: Test shell-style fork+exec
 pub async fn keyboard_task() {
-    log::info!("Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H for special actions)");
-    
+    log::info!(
+        "Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H for special actions)"
+    );
+
     let mut scancodes = ScancodeStream::new();
-    
+
     while let Some(scancode) = scancodes.next().await {
         if let Some(event) = process_scancode(scancode) {
             if let Some(character) = event.character {
@@ -157,4 +160,3 @@ pub async fn keyboard_task() {
         }
     }
 }
-

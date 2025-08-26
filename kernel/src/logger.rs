@@ -1,10 +1,10 @@
-use log::{Level, LevelFilter, Log, Metadata, Record};
-use conquer_once::spin::OnceCell;
-use bootloader_x86_64_common::logger::LockedLogger;
 use crate::serial_println;
-use spin::Mutex;
+use bootloader_x86_64_common::logger::LockedLogger;
+use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};
+use log::{Level, LevelFilter, Log, Metadata, Record};
+use spin::Mutex;
 
 pub static FRAMEBUFFER_LOGGER: OnceCell<LockedLogger> = OnceCell::uninit();
 
@@ -29,12 +29,12 @@ impl Log for CountingSink {
         if self.enabled(record.metadata()) {
             // Increment counter but don't output
             self.0.fetch_add(1, Ordering::Relaxed);
-            
+
             // Preserve all the timing side effects of log processing
             let _level = record.level();
             let _target = record.target();
             let _args = record.args();
-            
+
             // This format_args call is crucial - it forces evaluation of the arguments
             // which preserves the timing behavior that prevents the race condition
             let _ = format_args!("{}", _args);
@@ -65,16 +65,16 @@ impl LogBuffer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let bytes = s.as_bytes();
         let remaining = BUFFER_SIZE - self.position;
-        
+
         if bytes.len() > remaining {
             // Buffer is full, drop oldest messages to make room
             // Simple strategy: just keep the newer messages
             return Ok(());
         }
-        
+
         self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
         self.position += bytes.len();
-        
+
         Ok(())
     }
 
@@ -116,14 +116,14 @@ impl CombinedLogger {
     pub fn serial_ready(&self) {
         let mut state = self.state.lock();
         let buffer = self.buffer.lock();
-        
+
         // Flush buffered messages to serial
         if buffer.position > 0 {
             serial_println!("=== Buffered Boot Messages ===");
             serial_println!("{}", buffer.contents());
             serial_println!("=== End Buffered Messages ===");
         }
-        
+
         *state = LoggerState::SerialReady;
     }
 
@@ -165,11 +165,11 @@ impl Log for CombinedLogger {
                     return;
                 }
             };
-            
-            // Get current timestamp if available  
+
+            // Get current timestamp if available
             // TEMPORARILY DISABLE TIMESTAMPS TO DEBUG TIMER INTERRUPT HANG
             let timestamp = 0;
-            
+
             match *state {
                 LoggerState::Buffering => {
                     // Buffer the message without timestamp (we don't have time yet)
@@ -189,16 +189,18 @@ impl Log for CombinedLogger {
                     // Output to serial only with timestamp if available
                     drop(state); // Release lock before serial I/O
                     if timestamp > 0 {
-                        serial_println!("{} - [{:>5}] {}: {}", 
+                        serial_println!(
+                            "{} - [{:>5}] {}: {}",
                             timestamp,
-                            record.level(), 
-                            record.target(), 
+                            record.level(),
+                            record.target(),
                             record.args()
                         );
                     } else {
-                        serial_println!("[{:>5}] {}: {}", 
-                            record.level(), 
-                            record.target(), 
+                        serial_println!(
+                            "[{:>5}] {}: {}",
+                            record.level(),
+                            record.target(),
                             record.args()
                         );
                     }
@@ -206,22 +208,24 @@ impl Log for CombinedLogger {
                 LoggerState::FullyInitialized => {
                     // Output to both serial and framebuffer with timestamp
                     drop(state); // Release lock before I/O
-                    
+
                     if timestamp > 0 {
-                        serial_println!("{} - [{:>5}] {}: {}", 
+                        serial_println!(
+                            "{} - [{:>5}] {}: {}",
                             timestamp,
-                            record.level(), 
-                            record.target(), 
+                            record.level(),
+                            record.target(),
                             record.args()
                         );
                     } else {
-                        serial_println!("[{:>5}] {}: {}", 
-                            record.level(), 
-                            record.target(), 
+                        serial_println!(
+                            "[{:>5}] {}: {}",
+                            record.level(),
+                            record.target(),
                             record.args()
                         );
                     }
-                    
+
                     // Write to framebuffer
                     // TODO: Add proper synchronization to prevent rendering conflicts
                     // For now, we'll accept occasional visual glitches rather than deadlock
@@ -246,8 +250,7 @@ pub static COMBINED_LOGGER: CombinedLogger = CombinedLogger::new();
 pub fn init_early() {
     // Set up the combined logger with TRACE level
     // The CombinedLogger already suppresses TRACE logs while preserving timing
-    log::set_logger(&COMBINED_LOGGER)
-        .expect("Logger already set");
+    log::set_logger(&COMBINED_LOGGER).expect("Logger already set");
     log::set_max_level(LevelFilter::Trace);
 }
 
@@ -259,10 +262,11 @@ pub fn serial_ready() {
 /// Complete initialization with framebuffer
 pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::FrameBufferInfo) {
     // Initialize framebuffer logger
-    let _fb_logger = FRAMEBUFFER_LOGGER.get_or_init(move || LockedLogger::new(buffer, info, true, false));
-    
+    let _fb_logger =
+        FRAMEBUFFER_LOGGER.get_or_init(move || LockedLogger::new(buffer, info, true, false));
+
     // Mark logger as fully ready
     COMBINED_LOGGER.fully_ready();
-    
+
     log::info!("Logger fully initialized - output to both framebuffer and serial");
 }

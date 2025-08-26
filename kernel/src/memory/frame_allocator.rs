@@ -1,8 +1,8 @@
-use bootloader_api::info::{MemoryRegions, MemoryRegionKind};
-use x86_64::structures::paging::{PhysFrame, Size4KiB, FrameAllocator};
-use x86_64::PhysAddr;
-use spin::Mutex;
+use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::Mutex;
+use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
+use x86_64::PhysAddr;
 
 /// Maximum number of usable memory regions we support
 /// Increased from 32 to 128 to handle UEFI's fragmented memory map
@@ -32,14 +32,14 @@ impl BootInfoFrameAllocator {
     pub fn new() -> Self {
         Self
     }
-    
+
     /// Get the nth usable frame
     fn get_usable_frame(n: usize) -> Option<PhysFrame> {
         // Check if we're in a problematic allocation
         if n > 1500 && n < 1600 {
             log::debug!("get_usable_frame: Allocating frame number {}", n);
         }
-        
+
         // Try to detect potential deadlock
         let info = match MEMORY_INFO.try_lock() {
             Some(guard) => guard,
@@ -50,22 +50,22 @@ impl BootInfoFrameAllocator {
             }
         };
         let info = info.as_ref()?;
-        
+
         let mut count = 0;
         for i in 0..info.region_count {
             if let Some(region) = info.regions[i] {
                 let region_frames = (region.end - region.start) / 4096;
-                
+
                 if count + region_frames as usize > n {
                     let frame_offset = n - count;
                     let frame_addr = region.start + (frame_offset as u64 * 4096);
-                    
+
                     // Log problematic frame allocations
                     if frame_addr == 0x62f000 {
                         log::warn!("Allocating problematic frame 0x62f000 (frame #{}, region {}, offset {})", 
                                   n, i, frame_offset);
                     }
-                    
+
                     return Some(PhysFrame::containing_address(PhysAddr::new(frame_addr)));
                 }
                 count += region_frames as usize;
@@ -81,8 +81,11 @@ unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
         log::trace!("Frame allocator: Attempting to allocate frame #{}", current);
         let frame = Self::get_usable_frame(current);
         if let Some(f) = frame {
-            log::trace!("Frame allocator: Allocated frame {:#x} (allocation #{})", 
-                      f.start_address().as_u64(), current);
+            log::trace!(
+                "Frame allocator: Allocated frame {:#x} (allocation #{})",
+                f.start_address().as_u64(),
+                current
+            );
         }
         frame
     }
@@ -95,7 +98,7 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     let mut total_memory = 0u64;
     let mut ignored_regions = 0;
     let mut ignored_memory = 0u64;
-    
+
     // Extract usable regions
     for region in memory_regions.iter() {
         if region.kind == MemoryRegionKind::Usable {
@@ -113,19 +116,25 @@ pub fn init(memory_regions: &'static MemoryRegions) {
             }
         }
     }
-    
+
     // Store the extracted information
     *MEMORY_INFO.lock() = Some(MemoryInfo {
         regions,
         region_count,
     });
-    
-    log::info!("Frame allocator initialized with {} MiB of usable memory in {} regions", 
-               total_memory / (1024 * 1024), region_count);
-    
+
+    log::info!(
+        "Frame allocator initialized with {} MiB of usable memory in {} regions",
+        total_memory / (1024 * 1024),
+        region_count
+    );
+
     if ignored_regions > 0 {
-        log::warn!("Ignored {} memory regions ({} MiB) due to MAX_REGIONS limit", 
-                   ignored_regions, ignored_memory / (1024 * 1024));
+        log::warn!(
+            "Ignored {} memory regions ({} MiB) due to MAX_REGIONS limit",
+            ignored_regions,
+            ignored_memory / (1024 * 1024)
+        );
     }
 }
 

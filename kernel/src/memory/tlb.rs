@@ -5,11 +5,11 @@
 //! flushed when page table entries are modified to ensure the CPU sees
 //! the updated mappings.
 
-use x86_64::VirtAddr;
 use x86_64::instructions::tlb;
+use x86_64::VirtAddr;
 
 /// Flush a single page from the TLB
-/// 
+///
 /// This is more efficient than flushing the entire TLB when only
 /// a single page mapping has changed.
 #[inline]
@@ -18,7 +18,7 @@ pub fn flush_page(addr: VirtAddr) {
 }
 
 /// Flush the entire TLB
-/// 
+///
 /// This forces the CPU to reload all address translations from the page tables.
 /// Note: Writing to CR3 also flushes the entire TLB, but this function
 /// provides an explicit way to do it.
@@ -28,7 +28,7 @@ pub fn flush_all() {
 }
 
 /// Ensure TLB consistency after page table switch
-/// 
+///
 /// This function should be called after switching page tables (writing to CR3)
 /// to ensure all TLB entries are properly invalidated. While writing to CR3
 /// flushes the TLB on x86_64, this provides an explicit guarantee and

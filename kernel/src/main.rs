@@ -243,26 +243,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled!");
 
-    // Minimal ring3 smoke: create a simple userspace process and let the scheduler run it
-    #[cfg(feature = "testing")]
-    {
-        use alloc::string::String;
-        serial_println!("RING3_SMOKE: creating hello_time userspace process");
-        let elf = userspace_test::get_test_binary("hello_time");
-        match process::create_user_process(String::from("smoke_hello_time"), &elf) {
-            Ok(pid) => {
-                log::info!("RING3_SMOKE: created userspace PID {}", pid.as_u64());
-                // Force immediate reschedule so the new userspace thread runs
-                crate::task::scheduler::set_need_resched();
-                // Don't use int3() here - it causes issues in CI
-                // Just let the timer interrupts handle scheduling
-            }
-            Err(e) => {
-                log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
-            }
-        }
-    }
-
     // Test timer functionality immediately
     // TEMPORARILY DISABLED - these tests delay userspace execution
     // time_test::test_timer_directly();
@@ -420,6 +400,22 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // CRITICAL: Test timer functionality first to validate timer fixes
     // Disable interrupts during process creation to prevent logger deadlock
     x86_64::instructions::interrupts::without_interrupts(|| {
+        // RING3_SMOKE: Create a simple hello_time process for CI validation
+        #[cfg(feature = "testing")]
+        {
+            use alloc::string::String;
+            serial_println!("RING3_SMOKE: creating hello_time userspace process");
+            let elf = userspace_test::get_test_binary("hello_time");
+            match process::create_user_process(String::from("smoke_hello_time"), &elf) {
+                Ok(pid) => {
+                    log::info!("RING3_SMOKE: created userspace PID {}", pid.as_u64());
+                }
+                Err(e) => {
+                    log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
+                }
+            }
+        }
+
         // Skip timer test for now to debug hello world
         // log::info!("=== TIMER TEST: Validating timer subsystem ===");
         // test_exec::test_timer_functionality();

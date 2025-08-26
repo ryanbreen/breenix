@@ -1,5 +1,5 @@
-use x86_64::instructions::port::Port;
 use core::sync::atomic::{AtomicU64, Ordering};
+use x86_64::instructions::port::Port;
 
 const RTC_ADDR_PORT: u16 = 0x70;
 const RTC_DATA_PORT: u16 = 0x71;
@@ -45,7 +45,7 @@ fn read_rtc_register(reg: u8) -> u8 {
     unsafe {
         let mut addr_port = Port::new(RTC_ADDR_PORT);
         let mut data_port = Port::new(RTC_DATA_PORT);
-        
+
         addr_port.write(reg);
         data_port.read()
     }
@@ -69,11 +69,11 @@ fn read_rtc_raw() -> RTCTime {
     while rtc_update_in_progress() {
         core::hint::spin_loop();
     }
-    
+
     let status_b = read_rtc_register(RTC_REG_STATUS_B);
     let is_binary = status_b & RTC_BINARY_FORMAT != 0;
     let is_24hour = status_b & RTC_24HOUR_FORMAT != 0;
-    
+
     let mut time = RTCTime {
         second: read_rtc_register(RTC_REG_SECONDS),
         minute: read_rtc_register(RTC_REG_MINUTES),
@@ -82,7 +82,7 @@ fn read_rtc_raw() -> RTCTime {
         month: read_rtc_register(RTC_REG_MONTH),
         year: read_rtc_register(RTC_REG_YEAR) as u16,
     };
-    
+
     if !is_binary {
         time.second = bcd_to_binary(time.second);
         time.minute = bcd_to_binary(time.minute);
@@ -91,13 +91,13 @@ fn read_rtc_raw() -> RTCTime {
         time.month = bcd_to_binary(time.month);
         time.year = bcd_to_binary(time.year as u8) as u16;
     }
-    
+
     if !is_24hour && (time.hour & 0x80) != 0 {
         time.hour = ((time.hour & 0x7F) + 12) % 24;
     }
-    
+
     time.year += 2000;
-    
+
     time
 }
 
@@ -116,7 +116,13 @@ pub(super) fn days_in_month(month: u8, year: u16) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 => if is_leap_year(year) { 29 } else { 28 },
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
         _ => 0,
     }
 }
@@ -126,28 +132,34 @@ fn days_in_month(month: u8, year: u16) -> u8 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 => if is_leap_year(year) { 29 } else { 28 },
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
         _ => 0,
     }
 }
 
 fn rtc_to_unix_timestamp(rtc: &RTCTime) -> u64 {
     let mut days: u64 = 0;
-    
+
     for year in 1970..rtc.year {
         days += if is_leap_year(year) { 366 } else { 365 };
     }
-    
+
     for month in 1..rtc.month {
         days += days_in_month(month, rtc.year) as u64;
     }
-    
+
     days += (rtc.day - 1) as u64;
-    
+
     let hours = days * 24 + rtc.hour as u64;
     let minutes = hours * 60 + rtc.minute as u64;
     let seconds = minutes * 60 + rtc.second as u64;
-    
+
     seconds
 }
 
@@ -164,7 +176,7 @@ impl DateTime {
         };
         rtc_to_unix_timestamp(&rtc)
     }
-    
+
     /// Create DateTime from Unix timestamp
     pub fn from_unix_timestamp(timestamp: u64) -> Self {
         let seconds = timestamp % 60;
@@ -173,11 +185,11 @@ impl DateTime {
         let total_hours = total_minutes / 60;
         let hours = total_hours % 24;
         let total_days = total_hours / 24;
-        
+
         // Start from Unix epoch (1970-01-01)
         let mut year = 1970;
         let mut days_remaining = total_days;
-        
+
         // Calculate year
         loop {
             let days_in_year = if is_leap_year(year) { 366 } else { 365 };
@@ -187,11 +199,11 @@ impl DateTime {
             days_remaining -= days_in_year;
             year += 1;
         }
-        
+
         // Calculate month and day
         let mut month = 1;
         let mut day = days_remaining as u8 + 1;
-        
+
         while month <= 12 {
             let days_in_this_month = days_in_month(month, year);
             if day <= days_in_this_month {
@@ -200,7 +212,7 @@ impl DateTime {
             day -= days_in_this_month;
             month += 1;
         }
-        
+
         DateTime {
             year,
             month,
@@ -226,16 +238,17 @@ fn rtc_time_to_datetime(rtc: &RTCTime) -> DateTime {
 pub fn read_rtc_time() -> Result<u64, &'static str> {
     let time1 = read_rtc_raw();
     let time2 = read_rtc_raw();
-    
-    if time1.second != time2.second || 
-       time1.minute != time2.minute ||
-       time1.hour != time2.hour ||
-       time1.day != time2.day ||
-       time1.month != time2.month ||
-       time1.year != time2.year {
+
+    if time1.second != time2.second
+        || time1.minute != time2.minute
+        || time1.hour != time2.hour
+        || time1.day != time2.day
+        || time1.month != time2.month
+        || time1.year != time2.year
+    {
         return Err("RTC time changed during read");
     }
-    
+
     Ok(rtc_to_unix_timestamp(&time1))
 }
 
@@ -251,8 +264,15 @@ pub fn init() {
         Ok(timestamp) => {
             BOOT_WALL_TIME.store(timestamp, Ordering::Relaxed);
             let dt = DateTime::from_unix_timestamp(timestamp);
-            log::info!("RTC initialized: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", 
-                      dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+            log::info!(
+                "RTC initialized: {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                dt.year,
+                dt.month,
+                dt.day,
+                dt.hour,
+                dt.minute,
+                dt.second
+            );
         }
         Err(e) => {
             log::error!("Failed to initialize RTC: {}", e);
