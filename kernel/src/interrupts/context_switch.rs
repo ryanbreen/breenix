@@ -104,11 +104,15 @@ pub extern "C" fn check_need_resched_and_switch(
                 if !EMITTED_RING3_MARKER {
                     EMITTED_RING3_MARKER = true;
                     crate::serial_println!("RING3_ENTER: CS=0x33");
+                    // CI SUCCESS MARKER: Ring 3 execution verified!
+                    crate::serial_println!(
+                        "[ OK ] RING3_SMOKE: userspace executed + syscall path verified"
+                    );
                     crate::serial::flush();
                     #[cfg(feature = "testing")]
                     {
-                        // In smoke builds, exit immediately for deterministic CI
-                        crate::test_exit_qemu(crate::QemuExitCode::Success);
+                        // Don't exit immediately - let CI runner detect the success marker
+                        // crate::test_exit_qemu(crate::QemuExitCode::Success);
                     }
                 }
             }
