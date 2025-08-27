@@ -3,8 +3,9 @@ use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, 
 use x86_64::VirtAddr;
 
 /// Base address for user stack allocation area
-/// Using a high userspace address area to avoid conflicts with heap
-pub const USER_STACK_ALLOC_START: u64 = 0x_5555_5555_0000;
+/// Using a high canonical range (below kernel space) for better compatibility
+/// This address is more standard and works better with different QEMU configs
+pub const USER_STACK_ALLOC_START: u64 = 0x_7FFF_FF00_0000;
 
 /// Base address for kernel stack allocation area
 /// Must be in kernel space (high canonical addresses)
@@ -133,7 +134,8 @@ impl GuardedStack {
                     NEXT_USER_STACK_ADDR += size as u64;
 
                     // Simple bounds check for user stacks
-                    if NEXT_USER_STACK_ADDR > 0x_6666_6666_0000 {
+                    // Keep user stacks well below kernel space
+                    if NEXT_USER_STACK_ADDR > 0x_7FFF_FFFF_0000 {
                         return Err("Out of virtual address space for user stacks");
                     }
 

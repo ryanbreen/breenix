@@ -610,8 +610,9 @@ impl ProcessPageTable {
         }
 
         // 2. Clear user stack region if it exists
-        let stack_bottom = VirtAddr::new(0x555555550000);
-        let stack_top = VirtAddr::new(0x555555572000);
+        // Updated to match new stack allocation range in high canonical space
+        let stack_bottom = VirtAddr::new(0x7FFFFF000000);
+        let stack_top = VirtAddr::new(0x7FFFFFFF0000);
         match self.unmap_user_pages(stack_bottom, stack_top) {
             Ok(()) => log::debug!("Cleared stack region {:#x}-{:#x}", stack_bottom, stack_top),
             Err(e) => log::warn!("Failed to clear stack region: {}", e),

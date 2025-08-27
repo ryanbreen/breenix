@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "cursor-cli": {
+      "type": "stdio",
+      "command": "../cursor-cli-mcp/index.js",
+      "args": [],
+      "env": {}
+    }
+  }
+}
