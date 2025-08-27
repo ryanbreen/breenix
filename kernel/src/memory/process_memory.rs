@@ -482,8 +482,26 @@ impl ProcessPageTable {
                     Ok(())
                 }
                 Err(e) => {
-                    log::error!("ProcessPageTable::map_page failed: {:?}", e);
-                    Err("Failed to map page")
+                    // Enhanced error logging to understand map_to failures
+                    use x86_64::structures::paging::mapper::MapToError;
+                    let error_msg = match e {
+                        MapToError::FrameAllocationFailed => {
+                            log::error!("map_to failed: Frame allocation failed - OUT OF MEMORY!");
+                            "Frame allocator out of memory"
+                        }
+                        MapToError::ParentEntryHugePage => {
+                            log::error!("map_to failed: Parent entry is a huge page");
+                            "Cannot map: parent is huge page"
+                        }
+                        MapToError::PageAlreadyMapped(existing_frame) => {
+                            log::error!(
+                                "map_to failed: Page already mapped to frame {:#x}",
+                                existing_frame.start_address().as_u64()
+                            );
+                            "Page already mapped"
+                        }
+                    };
+                    Err(error_msg)
                 }
             }
         }
@@ -567,6 +585,52 @@ impl ProcessPageTable {
                                     l3_entry.addr().as_u64(),
                                     l3_entry.flags()
                                 );
+
+                                // Check L2 (Page Directory) table
+                                let l2_phys = l3_entry.addr();
+                                let l2_virt = phys_offset + l2_phys.as_u64();
+                                let l2_table = &*(l2_virt.as_ptr()
+                                    as *const x86_64::structures::paging::PageTable);
+
+                                let l2_index = (addr.as_u64() >> 21) & 0x1ff;
+                                let l2_entry = &l2_table[l2_index as usize];
+
+                                if l2_entry.is_unused() {
+                                    log::debug!(
+                                        "      -> L2 entry {} is UNUSED (THIS IS THE PROBLEM!)",
+                                        l2_index
+                                    );
+                                } else {
+                                    log::debug!(
+                                        "      -> L2 entry {} exists: addr={:#x}, flags={:?}",
+                                        l2_index,
+                                        l2_entry.addr().as_u64(),
+                                        l2_entry.flags()
+                                    );
+
+                                    // Check L1 (Page Table) if L2 exists
+                                    let l1_phys = l2_entry.addr();
+                                    let l1_virt = phys_offset + l1_phys.as_u64();
+                                    let l1_table = &*(l1_virt.as_ptr()
+                                        as *const x86_64::structures::paging::PageTable);
+
+                                    let l1_index = (addr.as_u64() >> 12) & 0x1ff;
+                                    let l1_entry = &l1_table[l1_index as usize];
+
+                                    if l1_entry.is_unused() {
+                                        log::debug!(
+                                            "        -> L1 entry {} is UNUSED (PAGE NOT MAPPED!)",
+                                            l1_index
+                                        );
+                                    } else {
+                                        log::debug!(
+                                            "        -> L1 entry {} exists: addr={:#x}, flags={:?}",
+                                            l1_index,
+                                            l1_entry.addr().as_u64(),
+                                            l1_entry.flags()
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
