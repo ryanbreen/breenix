@@ -312,10 +312,21 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     };
 
     // Log the actual data being written (for verification)
-    if buffer.len() <= 10 {
+    if buffer.len() <= 30 {
         // For small writes, show the actual content
         let s = core::str::from_utf8(&buffer).unwrap_or("<invalid UTF-8>");
+        
+        // Also log the raw bytes in hex for verification
+        let mut hex_str = alloc::string::String::new();
+        for (i, &byte) in buffer.iter().enumerate() {
+            if i > 0 {
+                hex_str.push(' ');
+            }
+            hex_str.push_str(&alloc::format!("{:02x}", byte));
+        }
+        
         log::info!("sys_write: Writing '{}' ({} bytes) to fd {}", s, buffer.len(), fd);
+        log::info!("  Raw bytes: [{}]", hex_str);
     } else {
         log::info!("sys_write: Writing {} bytes to fd {}", buffer.len(), fd);
     }

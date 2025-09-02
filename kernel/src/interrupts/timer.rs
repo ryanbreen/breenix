@@ -27,14 +27,17 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
     
     // Check if we're coming from userspace (for Ring 3 verification)
     // The assembly entry point now passes this as a parameter
-    use core::sync::atomic::{AtomicBool, Ordering};
-    static TIMER_FROM_USERSPACE_LOGGED: AtomicBool = AtomicBool::new(false);
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static TIMER_FROM_USERSPACE_COUNT: AtomicU32 = AtomicU32::new(0);
     
-    if from_userspace != 0 && !TIMER_FROM_USERSPACE_LOGGED.load(Ordering::Relaxed) {
-        TIMER_FROM_USERSPACE_LOGGED.store(true, Ordering::Relaxed);
-        log::info!("✓ Timer interrupt from USERSPACE detected!");
-        log::info!("  Timer tick #{}, interrupted Ring 3 code", count);
-        log::info!("  This confirms async preemption from CPL=3 works");
+    if from_userspace != 0 {
+        let userspace_count = TIMER_FROM_USERSPACE_COUNT.fetch_add(1, Ordering::Relaxed);
+        if userspace_count < 5 {  // Log first 5 occurrences for verification
+            log::info!("✓ Timer interrupt #{} from USERSPACE detected!", userspace_count + 1);
+            log::info!("  Timer tick #{}, interrupted Ring 3 code", count);
+            log::info!("  This confirms async preemption from CPL=3 works");
+            // Note: Full frame details will be logged from assembly
+        }
     }
     
     // ENABLE FIRST FEW TIMER INTERRUPT LOGS FOR CI DEBUGGING
@@ -93,6 +96,54 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
 pub fn reset_quantum() {
     unsafe {
         CURRENT_QUANTUM = TIME_QUANTUM;
+    }
+}
+
+/// Log full interrupt frame details when timer fires from userspace
+/// Called from assembly with pointer to interrupt frame
+#[no_mangle]
+pub extern "C" fn log_timer_frame_from_userspace(frame_ptr: *const u64) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+    
+    let count = LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count >= 5 {
+        return; // Only log first 5 for analysis
+    }
+    
+    unsafe {
+        // Frame layout: [RIP][CS][RFLAGS][RSP][SS]
+        let rip = *frame_ptr;
+        let cs = *frame_ptr.offset(1);
+        let rflags = *frame_ptr.offset(2);
+        let rsp = *frame_ptr.offset(3);
+        let ss = *frame_ptr.offset(4);
+        
+        log::info!("Timer interrupt frame from userspace #{}", count + 1);
+        log::info!("  RIP: {:#x}", rip);
+        log::info!("  CS: {:#x} (RPL={})", cs, cs & 3);
+        log::info!("  RFLAGS: {:#x} (IF={})", rflags, if rflags & 0x200 != 0 { "1" } else { "0" });
+        log::info!("  RSP: {:#x} (user stack)", rsp);
+        log::info!("  SS: {:#x} (RPL={})", ss, ss & 3);
+        
+        // Validate invariants
+        if (cs & 3) != 3 {
+            log::error!("  ERROR: CS RPL is not 3!");
+        }
+        if (ss & 3) != 3 {
+            log::error!("  ERROR: SS RPL is not 3!");
+        }
+        if rflags & 0x200 == 0 {
+            log::error!("  ERROR: IF is not set in RFLAGS!");
+        }
+        if rsp < 0x10000000 || rsp > 0x20000000 {
+            log::warn!("  WARNING: RSP {:#x} may be outside expected user range", rsp);
+        }
+        
+        // Get current CR3
+        let cr3: u64;
+        core::arch::asm!("mov {}, cr3", out(reg) cr3);
+        log::info!("  CR3: {:#x} (current page table)", cr3);
     }
 }
 

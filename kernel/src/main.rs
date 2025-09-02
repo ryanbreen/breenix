@@ -45,6 +45,29 @@ mod time;
 mod time_test;
 mod tls;
 mod userspace_test;
+mod userspace_fault_tests;
+
+// Fault test thread function
+#[cfg(feature = "testing")]
+extern "C" fn fault_test_thread(_arg: u64) -> ! {
+    // Wait for initial Ring 3 process to run and validate
+    log::info!("Fault test thread: Waiting for initial Ring 3 validation...");
+    
+    // Simple delay loop - wait approximately 2 seconds
+    for _ in 0..200 {
+        for _ in 0..10_000_000 {
+            core::hint::spin_loop();
+        }
+    }
+    
+    log::info!("Fault test thread: Running user-only fault tests...");
+    userspace_fault_tests::run_fault_tests();
+    
+    // Thread complete, just halt
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
 
 // Test infrastructure
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,6 +298,28 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
+    
+    // Run user-only fault tests after initial Ring 3 validation
+    #[cfg(feature = "testing")]
+    {
+        // Create a kernel thread to run fault tests after a delay
+        use alloc::boxed::Box;
+        use alloc::string::String;
+        
+        match task::thread::Thread::new_kernel(
+            String::from("fault_tester"),
+            fault_test_thread,
+            0,
+        ) {
+            Ok(thread) => {
+                task::scheduler::spawn(Box::new(thread));
+                log::info!("Spawned fault test thread - will run after initial Ring 3 validation");
+            }
+            Err(e) => {
+                log::error!("Failed to create fault test thread: {}", e);
+            }
+        }
+    }
 
     // Test other exceptions if enabled
     #[cfg(feature = "test_all_exceptions")]

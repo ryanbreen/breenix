@@ -105,25 +105,51 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         );
     }
     
-    // On first syscall from userspace, dump bytes at RIP to verify int 0x80
-    static mut FIRST_SYSCALL_LOGGED: bool = false;
-    unsafe {
-        if !FIRST_SYSCALL_LOGGED && (frame.cs & 3) == 3 {
-            FIRST_SYSCALL_LOGGED = true;
-            log::info!("First syscall from userspace - verifying instruction at RIP");
+    // Log first few syscalls from userspace with full frame validation
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static SYSCALL_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+    
+    if (frame.cs & 3) == 3 {
+        let count = SYSCALL_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count < 5 {  // Log first 5 syscalls for verification
+            log::info!("Syscall #{} from userspace - full frame validation:", count + 1);
             log::info!("  RIP: {:#x}", frame.rip);
+            log::info!("  CS: {:#x} (RPL={})", frame.cs, frame.cs & 3);
+            log::info!("  SS: {:#x} (RPL={})", frame.ss, frame.ss & 3);
+            log::info!("  RSP: {:#x} (user stack)", frame.rsp);
+            log::info!("  RFLAGS: {:#x} (IF={})", frame.rflags, if frame.rflags & 0x200 != 0 { "1" } else { "0" });
+            
+            // Validate invariants
+            if (frame.cs & 3) != 3 {
+                log::error!("  ERROR: CS RPL is not 3!");
+            }
+            if (frame.ss & 3) != 3 {
+                log::error!("  ERROR: SS RPL is not 3!");
+            }
+            if frame.rsp < 0x10000000 || frame.rsp > 0x20000000 {
+                log::warn!("  WARNING: RSP {:#x} may be outside expected user range", frame.rsp);
+            }
+            
+            // Get current CR3
+            let cr3: u64;
+            unsafe {
+                core::arch::asm!("mov {}, cr3", out(reg) cr3);
+            }
+            log::info!("  CR3: {:#x} (current page table)", cr3);
             
             // Try to read the previous 2 bytes (should be 0xcd 0x80 for int 0x80)
             if frame.rip >= 2 {
-                let int_addr = (frame.rip - 2) as *const u8;
-                // Use volatile read to prevent optimization
-                let byte1 = core::ptr::read_volatile(int_addr);
-                let byte2 = core::ptr::read_volatile(int_addr.offset(1));
-                log::info!("  Previous 2 bytes at RIP-2: {:#02x} {:#02x}", byte1, byte2);
-                if byte1 == 0xcd && byte2 == 0x80 {
-                    log::info!("  ✓ Confirmed: int 0x80 instruction detected");
-                } else {
-                    log::warn!("  ⚠ Expected int 0x80 (0xcd 0x80) but found {:#02x} {:#02x}", byte1, byte2);
+                unsafe {
+                    let int_addr = (frame.rip - 2) as *const u8;
+                    // Use volatile read to prevent optimization
+                    let byte1 = core::ptr::read_volatile(int_addr);
+                    let byte2 = core::ptr::read_volatile(int_addr.offset(1));
+                    log::info!("  Previous 2 bytes at RIP-2: {:#02x} {:#02x}", byte1, byte2);
+                    if byte1 == 0xcd && byte2 == 0x80 {
+                        log::info!("  ✓ Confirmed: int 0x80 instruction detected");
+                    } else {
+                        log::warn!("  ⚠ Expected int 0x80 (0xcd 0x80) but found {:#02x} {:#02x}", byte1, byte2);
+                    }
                 }
             }
         }
