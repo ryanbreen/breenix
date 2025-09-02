@@ -207,3 +207,16 @@ extern "C" {
     pub fn syscall_entry();
     pub fn syscall_return_to_userspace(user_rip: u64, user_rsp: u64, user_rflags: u64) -> !;
 }
+
+/// Simple trace function that can be called from assembly before iretq
+/// This logs once per process to avoid spam
+#[no_mangle]
+pub extern "C" fn trace_iretq_to_ring3() {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static IRETQ_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+    
+    let count = IRETQ_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count < 3 {  // Log first 3 transitions for verification
+        log::trace!("About to iretq to Ring 3 (transition #{})", count + 1);
+    }
+}

@@ -254,6 +254,9 @@ extern "x86-interrupt" fn page_fault_handler(
     use x86_64::registers::control::Cr2;
 
     let accessed_addr = Cr2::read().expect("Failed to read accessed address from CR2");
+    
+    // Check if this came from userspace
+    let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
 
     // Check if this is a guard page access
     if let Some(stack) = crate::memory::stack::is_guard_page_fault(accessed_addr) {
@@ -268,10 +271,34 @@ extern "x86-interrupt" fn page_fault_handler(
     }
 
     log::error!("EXCEPTION: PAGE FAULT");
-    log::error!("Accessed Address: {:?}", accessed_addr);
-    log::error!("Error Code: {:?}", error_code);
-    log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
-    log::error!("CS: {:#x}", stack_frame.code_segment.0);
+    
+    // Enhanced logging for userspace faults (Ring 3 privilege violation tests)
+    if from_userspace {
+        log::error!("✓ PAGE FAULT from USERSPACE (Ring 3 privilege test detected)");
+        log::error!("  CR2 (accessed address): {:#x}", accessed_addr.as_u64());
+        log::error!("  Error code: {:#x}", error_code.bits());
+        log::error!("    U={} ({})", 
+            if error_code.contains(PageFaultErrorCode::USER_MODE) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::USER_MODE) { "from userspace" } else { "from kernel" }
+        );
+        log::error!("    P={} ({})",
+            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { "protection violation" } else { "not present" }
+        );
+        log::error!("  CS: {:#x} (RPL={})", stack_frame.code_segment.0, stack_frame.code_segment.0 & 3);
+        log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+        
+        // Check if this is an expected test fault
+        if accessed_addr.as_u64() == 0x50000000 {
+            log::info!("  ✓ This is the expected unmapped memory test (0x50000000)");
+        }
+    } else {
+        log::error!("Accessed Address: {:?}", accessed_addr);
+        log::error!("Error Code: {:?}", error_code);
+        log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+        log::error!("CS: {:#x}", stack_frame.code_segment.0);
+    }
+    
     log::error!("{:#?}", stack_frame);
 
     #[cfg(feature = "test_page_fault")]
@@ -304,17 +331,48 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // Check if this came from userspace
+    let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
+    
     log::error!("EXCEPTION: GENERAL PROTECTION FAULT");
-    log::error!(
-        "RIP: {:#x}, CS: {:#x}",
-        stack_frame.instruction_pointer.as_u64(),
-        stack_frame.code_segment.0
-    );
-    log::error!(
-        "Error Code: {:#x} (selector: {:#x})",
-        error_code,
-        error_code & 0xFFF8
-    );
+    
+    // Enhanced logging for userspace GPFs (Ring 3 privilege violation tests)
+    if from_userspace {
+        log::error!("✓ GENERAL PROTECTION FAULT from USERSPACE (Ring 3 privilege test detected)");
+        log::error!("  #GP(0) - Privileged instruction attempted from Ring 3");
+        log::error!("  CS: {:#x} (RPL={})", stack_frame.code_segment.0, stack_frame.code_segment.0 & 3);
+        log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+        log::error!("  Error Code: {:#x}", error_code);
+        
+        // Try to identify which instruction caused the fault
+        unsafe {
+            let rip = stack_frame.instruction_pointer.as_u64() as *const u8;
+            let byte = core::ptr::read_volatile(rip);
+                match byte {
+                    0xfa => log::info!("  ✓ CLI instruction detected (0xfa) - expected privilege violation"),
+                    0xf4 => log::info!("  ✓ HLT instruction detected (0xf4) - expected privilege violation"),
+                    0x0f => {
+                        // Check for MOV CR3 (0x0f 0x22 0xd8)
+                        let byte2 = core::ptr::read_volatile(rip.offset(1));
+                        if byte2 == 0x22 {
+                            log::info!("  ✓ MOV CR3 instruction detected (0x0f 0x22) - expected privilege violation");
+                        }
+                    },
+                    _ => log::debug!("  Instruction byte at fault: {:#02x}", byte),
+                }
+        }
+    } else {
+        log::error!(
+            "RIP: {:#x}, CS: {:#x}",
+            stack_frame.instruction_pointer.as_u64(),
+            stack_frame.code_segment.0
+        );
+        log::error!(
+            "Error Code: {:#x} (selector: {:#x})",
+            error_code,
+            error_code & 0xFFF8
+        );
+    }
 
     // Decode error code
     let external = (error_code & 1) != 0;

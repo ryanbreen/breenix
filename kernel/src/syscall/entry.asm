@@ -10,6 +10,7 @@ global syscall_return_to_userspace
 extern rust_syscall_handler
 extern check_need_resched_and_switch
 extern get_next_page_table
+extern trace_iretq_to_ring3
 
 ; Syscall entry point from INT 0x80
 ; This is called when userspace executes INT 0x80
@@ -108,6 +109,27 @@ syscall_entry:
     pop rcx                    ; Restore rcx
     pop rax                    ; Restore syscall return value
 
+    ; Trace that we're about to return to Ring 3
+    push rax                   ; Save return value
+    push rcx
+    push rdx
+    push rdi
+    push rsi
+    push r8
+    push r9
+    push r10
+    push r11
+    call trace_iretq_to_ring3
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rsi
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rax                    ; Restore return value
+
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
     iretq
@@ -144,6 +166,9 @@ syscall_return_to_userspace:
 
     ; User instruction pointer
     push rdi
+
+    ; Trace that we're about to jump to Ring 3
+    call trace_iretq_to_ring3
 
     ; Clear all registers to prevent information leaks
     xor rax, rax
