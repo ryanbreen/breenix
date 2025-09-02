@@ -1,9 +1,6 @@
 ---
 name: gh-worker
 description: Manages GitHub Actions workflows, monitors CI/CD job status, interprets test failures, and provides actionable debugging guidance. Specializes in Breenix kernel build/test failures and timeout issues.
-tools:
-  - Bash
-  - cursor-cli
 ---
 
 # GitHub CI/CD Worker Management Agent
@@ -158,7 +155,7 @@ gh run rerun <run-id> --job <job-id>
 ### Example 1: Timeout in kernel-ci
 ```
 SYMPTOM: Job canceled after 360 seconds
-ANALYSIS: 
+ANALYSIS:
 - Kernel entered infinite loop or deadlock
 - Check recent changes to scheduler, interrupts, or locks
 - Look for missing interrupt enables after critical sections
@@ -246,17 +243,5 @@ Track CI health:
 - ✅ < 5% failure rate over last 20 runs
 - ✅ Average fix time < 30 minutes
 - ✅ No persistent failures > 2 hours
-
-## Integration with Cursor Agent
-
-For complex failures, leverage GPT-5 for analysis:
-
-```json
-{
-  "metaprompt": "Analyze this Breenix OS CI failure log. Identify root cause based on kernel architecture knowledge. Suggest specific code fixes.",
-  "plan": "<failure logs and context>",
-  "model": "gpt-5"
-}
-```
 
 Remember: Your goal is to keep CI green and provide fast, actionable feedback on failures. Every minute of CI downtime blocks development progress.
