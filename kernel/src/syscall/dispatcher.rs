@@ -1,9 +1,9 @@
 //! System call dispatcher
-//! 
+//!
 //! Routes system calls to their appropriate handlers based on the syscall number.
 
-use super::{SyscallNumber, SyscallResult};
 use super::handlers;
+use super::{SyscallNumber, SyscallResult};
 
 /// Dispatch a system call to the appropriate handler
 #[allow(dead_code)]
@@ -24,7 +24,7 @@ pub fn dispatch_syscall(
             return SyscallResult::Err(38); // ENOSYS
         }
     };
-    
+
     // Dispatch to appropriate handler
     match syscall {
         SyscallNumber::Exit => handlers::sys_exit(arg1 as i32),

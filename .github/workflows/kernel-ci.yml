@@ -1,0 +1,73 @@
+name: kernel-ci
+
+on:
+  workflow_dispatch:  # Only run manually, not on push/PR
+
+jobs:
+  ring3-smoke:
+    runs-on: ubuntu-22.04
+    env:
+      RUST_BACKTRACE: full
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+
+      - name: Verify Rust components
+        run: |
+          rustc -Vv
+          cargo -Vv
+          rustup component list --installed
+          echo "sysroot: $(rustc --print sysroot)"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            ovmf \
+            mtools \
+            dosfstools \
+            xorriso \
+            nasm \
+            lld
+          qemu-system-x86_64 --version || true
+          qemu-img --version || true
+          mcopy -V 2>/dev/null || true
+          mkfs.fat -v 2>/dev/null || true
+          ld --version | head -1 || true
+          ld.lld --version | head -1 || true
+          objcopy --version | head -1 || true
+          $(rustc --print sysroot)/lib/rustlib/*/bin/llvm-objcopy --version || true
+
+      - name: Prefetch dependencies
+        run: cargo fetch
+
+      - name: Run Ring‑3 smoke test
+        run: cargo run -p xtask -- ring3-smoke
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: breenix-logs
+          path: |
+            logs/*.log
+            target/xtask_ring3_smoke_output.txt
+          if-no-files-found: ignore
+          retention-days: 7

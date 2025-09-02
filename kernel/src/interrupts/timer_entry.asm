@@ -9,9 +9,14 @@ global timer_interrupt_entry
 extern timer_interrupt_handler
 extern check_need_resched_and_switch
 extern get_next_page_table
+extern log_timer_frame_from_userspace
 
 section .text
 bits 64
+
+; Define constant for saved register count to avoid magic numbers
+%define SAVED_REGS_COUNT 15
+%define SAVED_REGS_SIZE (SAVED_REGS_COUNT * 8)
 
 timer_interrupt_entry:
     ; Save all general purpose registers
@@ -33,16 +38,36 @@ timer_interrupt_entry:
     
     ; CRITICAL: Check if we came from userspace and need to swap GS
     ; Get CS from interrupt frame to check privilege level
-    mov rax, [rsp + 15*8 + 8]   ; Skip saved regs + RIP to get CS
-    and rax, 3                   ; Check privilege level
-    cmp rax, 3                   ; Ring 3?
-    jne .skip_swapgs_entry       ; If not from userspace, skip swapgs
+    ; Frame layout after pushes: [r15...rax][RIP][CS][RFLAGS][RSP][SS]
+    lea rbx, [rsp + SAVED_REGS_SIZE]  ; Point to interrupt frame
+    mov rax, [rbx + 8]                 ; Get CS
+    and rax, 3                         ; Check privilege level (RPL bits)
+    cmp rax, 3                         ; Ring 3?
+    jne .skip_swapgs_entry             ; If not from userspace, skip swapgs
     
     ; We came from userspace, swap to kernel GS
     swapgs
     
+    ; Log full frame details for first few userspace interrupts
+    ; Pass frame pointer to logging function
+    push rdi
+    push rsi
+    mov rdi, rbx                       ; Pass frame pointer
+    call log_timer_frame_from_userspace
+    pop rsi
+    pop rdi
+    
 .skip_swapgs_entry:
-    ; Call the timer handler
+    ; Prepare parameter for timer handler: from_userspace flag
+    ; rdi = 1 if from userspace, 0 if from kernel
+    xor rdi, rdi                       ; Clear rdi
+    lea rbx, [rsp + SAVED_REGS_SIZE]  ; Point to interrupt frame
+    mov rax, [rbx + 8]                 ; Get CS
+    and rax, 3                         ; Check privilege level
+    cmp rax, 3                         ; Ring 3?
+    sete dil                           ; Set dil (low byte of rdi) to 1 if equal (from userspace)
+    
+    ; Call the timer handler with from_userspace parameter
     ; This ONLY updates ticks, quantum, and sets need_resched flag
     call timer_interrupt_handler
     

@@ -1,0 +1,182 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+BdsDxe: starting Boot0001 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x4,0x0)
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 4096000, width: 1280, height: 800, pixel_format: Bgr, bytes_per_pixel: 4, stride: 1280 }
+INFO : UEFI bootloader started
+INFO : Using framebuffer at 0x80000000
+INFO : Reading configuration from disk was successful
+INFO : Trying to load ramdisk via Disk
+INFO : Ramdisk not found.
+TRACE: exiting boot services
+TRACE: switching to new level 4 table
+INFO : New page table at: PhysFrame[4KiB](0x101000)
+INFO : Elf file loaded at Pointer {
+    addr: 0x000000001e34b000,
+    metadata: 1127136,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 27004, mem_size: 27004, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 27010, virtual_addr: 28010, physical_addr: 28010, file_size: 8ee59, mem_size: 8ee59, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: b5e70, virtual_addr: b7e70, physical_addr: b7e70, file_size: 11af0, mem_size: 12190, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: c7980, virtual_addr: ca980, physical_addr: ca980, file_size: 1338, mem_size: c5d8, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x1000004ffc0
+INFO : Creating GDT at PhysAddr(0x13e000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x1000004ffc0)
+=== Buffered Boot Messages ===
+[ INFO] kernel: Kernel entry point reached
+[DEBUG] kernel: Boot info address: 0x38000000000
+[ INFO] kernel: Initializing serial port...
+
+=== End Buffered Messages ===
+[ INFO] kernel: Serial port initialized and buffer flushed
+[ INFO] kernel: Setting up framebuffer...
+[ INFO] kernel::logger: Logger fully initialized - output to both framebuffer and serial
+[ INFO] kernel: Initializing kernel systems...
+[ INFO] kernel::gdt: GDT initialized with kernel and user segments
+[DEBUG] kernel::gdt:   Kernel code: 0x8
+[DEBUG] kernel::gdt:   Kernel data: 0x10
+[DEBUG] kernel::gdt:   TSS: 0x18
+[DEBUG] kernel::gdt:   User data: 0x2b
+[DEBUG] kernel::gdt:   User code: 0x33
+[DEBUG] kernel::gdt:   TSS RSP0 (kernel stack): 0x100000d4e98
+[DEBUG] kernel::gdt:   TSS IST[0] (double fault stack): 0x0
+[ INFO] kernel::interrupts: Syscall handler configured with assembly entry point
+[ INFO] kernel::interrupts: IDT address: 0x100000cbdc0
+[ INFO] kernel::interrupts: IDT is in PML4 entry 2
+[ INFO] kernel::interrupts: IDT loaded successfully at 0x100000cbdc0
+[ INFO] kernel: GDT and IDT initialized
+[ INFO] kernel: Checking physical memory offset availability...
+[ INFO] kernel: Physical memory offset available: 0x28000000000
+[ INFO] kernel::memory: Initializing memory management...
+[ INFO] kernel::memory: Physical memory offset: VirtAddr(0x28000000000)
+[ INFO] kernel::memory: Initializing frame allocator...
+[ INFO] kernel::memory::frame_allocator: Frame allocator initialized with 500 MiB of usable memory in 98 regions
+[ INFO] kernel::memory: Initializing paging...
+[ INFO] kernel::memory::paging: Page table initialized
+[ INFO] kernel::memory::process_memory: Saved kernel page table frame: PhysFrame[4KiB](0x101000)
+[ INFO] kernel::memory: Initializing global kernel page tables...
+[ INFO] kernel::memory::kernel_page_table: Initializing global kernel page table system
+[ INFO] kernel::memory::kernel_page_table: Allocated kernel PDPT at frame PhysFrame[4KiB](0x0)
+[ INFO] kernel::memory::kernel_page_table: Global kernel page table initialized successfully
+[ INFO] kernel::memory::kernel_page_table: Process migration will occur as new processes are created
+[ INFO] kernel::memory: Initializing heap allocator...
+[ INFO] kernel::memory::heap: Mapping heap pages from Page[4KiB](0x444444440000) to Page[4KiB](0x44444453f000)
+[ INFO] kernel::memory::heap: Heap initialized at 0x444444440000 with size 1024 KiB
+[ INFO] kernel::memory: Initializing stack allocation system...
+[ INFO] kernel::memory::stack: Stack allocation system initialized
+[ INFO] kernel::memory: Initializing kernel stack allocator...
+[ INFO] kernel::memory::kernel_stack: Kernel stack allocator initialized: 1365 slots available
+[ INFO] kernel::memory::kernel_stack:   Stack range: 0xffffc90000000000 - 0xffffc90001000000
+[ INFO] kernel::memory::kernel_stack:   Stack size: 8 KiB + 4 KiB guard
+[ INFO] kernel::memory: Initializing per-CPU emergency stacks...
+[ INFO] kernel::memory::per_cpu_stack: Initializing per-CPU emergency stacks for 1 CPUs
+[DEBUG] kernel::memory::per_cpu_stack: CPU 0 emergency stack: 0xffffc98000000000 - 0xffffc98000002000
+[ INFO] kernel::memory::per_cpu_stack: Initialized 1 per-CPU emergency stacks
+[ INFO] kernel::memory: Memory management initialized
+[ INFO] kernel::gdt: Updated IST[0] (double fault stack) to 0xffffc98000002000
+[ INFO] kernel: Updated IST[0] with per-CPU emergency stack
+[ INFO] kernel: Testing heap allocation...
+[ INFO] kernel: Heap test: created vector with 10 elements
+[ INFO] kernel: Heap test: sum of elements = 45
+[ INFO] kernel: Heap allocation test passed!
+[ INFO] kernel::tls: Initializing Thread Local Storage (TLS) system...
+[ERROR] kernel::tls: Failed to set up kernel TLS: "Failed to map TLS page"
+[ INFO] kernel: TLS initialized
+[ INFO] kernel::tls: SWAPGS support configured: KERNEL_GS_BASE = 0x0
+[ INFO] kernel: SWAPGS support enabled
+[ INFO] kernel: Keyboard queue initialized
+[ INFO] kernel: Initializing PIC...
+[ INFO] kernel: PIC initialized
+[ INFO] kernel::time::timer: Timer initialized at 1000 Hz (1ms per tick)
+[ INFO] kernel::time::rtc: RTC initialized: 2025-08-27 18:39:17 UTC
+[ INFO] kernel: Timer initialized
+[ INFO] kernel: Timer interrupt unmasked
+[ INFO] kernel::serial: Serial input interrupts enabled
+[ INFO] kernel: Initializing system call infrastructure...
+[ INFO] kernel::syscall: Initializing system call infrastructure
+[ INFO] kernel::syscall: System call infrastructure initialized
+[ INFO] kernel: System call infrastructure initialized
+[ INFO] kernel: Initializing threading subsystem...
+[ INFO] kernel::task::scheduler: Scheduler initialized
+[ INFO] kernel: Threading subsystem initialized
+[ INFO] kernel: Initializing process management...
+[ INFO] kernel::process: Process management initialized
+[ INFO] kernel: Process management initialized
+[ INFO] kernel: Enabling interrupts...
+[ INFO] kernel::interrupts::timer: Timer interrupt #0
+[ INFO] kernel::interrupts::timer: Timer interrupt #0 - starting handler
+[ INFO] kernel::interrupts::timer: Timer interrupt #1
+[ INFO] kernel::interrupts::timer: Timer interrupt #1 - starting handler
+[ INFO] kernel::interrupts::timer: Timer interrupt #2
+[ INFO] kernel::interrupts::timer: Timer interrupt #2 - starting handler
+[ INFO] kernel::interrupts::timer: Timer interrupt #3
+[ INFO] kernel::interrupts::timer: Timer interrupt #3 - starting handler
+[ INFO] kernel::interrupts::timer: Timer interrupt #4
+[ INFO] kernel::interrupts::timer: Timer interrupt #4 - starting handler
+[ INFO] kernel: Interrupts enabled!
+RING3_SMOKE: creating hello_time userspace process (early)
+[ INFO] kernel::userspace_test: Using generated ELF for 'hello_time' (external_test_bins not enabled)
+[ INFO] kernel::process::creation: create_user_process: Creating user process 'smoke_hello_time' with new model
+[DEBUG] kernel::process: Acquiring PROCESS_MANAGER lock
+[DEBUG] kernel::process: PROCESS_MANAGER lock acquired
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current RSP: 0x18000011290
+[ERROR] kernel::memory::process_memory: WARNING: Low stack detected! RSP=0x18000011290
+[ERROR] kernel::memory::process_memory: This might cause a stack overflow!
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - About to allocate L4 frame
+[DEBUG] kernel::memory::process_memory: Successfully allocated frame: 0x5b6000
+[DEBUG] kernel::memory::process_memory: Allocated L4 frame: 0x5b6000
+[DEBUG] kernel::memory::process_memory: Physical memory offset: 0x28000000000
+[DEBUG] kernel::memory::process_memory: New L4 table virtual address: 0x280005b6000
+[DEBUG] kernel::memory::process_memory: About to create mutable reference to page table at 0x280005b6000
+[DEBUG] kernel::memory::process_memory: Testing read access at 0x280005b6000
+[DEBUG] kernel::memory::process_memory: Read test successful
+[DEBUG] kernel::memory::process_memory: Page table pointer: 0x280005b6000
+[DEBUG] kernel::memory::process_memory: About to zero the new page table
+[DEBUG] kernel::memory::process_memory: Successfully zeroed new page table
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Current CR3: 0x101000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable::new() - Using kernel CR3: 0x101000 for copying
+[DEBUG] kernel::memory::process_memory: Kernel L4 table virtual address: 0x28000101000
+[DEBUG] kernel::memory::process_memory: Using global kernel PDPT frame: PhysFrame[4KiB](0x0)
+[DEBUG] kernel::memory::process_memory: Set up global kernel page table entries 256-511
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 2
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 3
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 4
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 5
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 6
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 7
+[DEBUG] kernel::memory::process_memory: Copied low-memory kernel PML4 entry 136
+[DEBUG] kernel::memory::process_memory: Process page table created with global kernel mappings (7 low entries + 256 high entries)
+[DEBUG] kernel::memory::process_memory: Creating OffsetPageTable with L4 frame 0x5b6000 and phys_offset 0x28000000000
+[DEBUG] kernel::memory::process_memory: ProcessPageTable created with global kernel page tables
+[ INFO] kernel::elf: Loading ELF into process page table: entry=0x10000000, 1 program headers
+[DEBUG] kernel::process: PROCESS_MANAGER lock released
+[ERROR] kernel: RING3_SMOKE: failed to create userspace process: Segment data out of bounds
+[ INFO] kernel: Testing breakpoint interrupt...
+[ INFO] kernel::interrupts: EXCEPTION: BREAKPOINT
+InterruptStackFrame {
+    instruction_pointer: VirtAddr(
+        0x10000041841,
+    ),
+    code_segment: SegmentSelector {
+        index: 1,
+        rpl: Ring0,
+    },
+    cpu_flags: RFlags(
+        INTERRUPT_FLAG | 0x2,
+    ),
+    stack_pointer: VirtAddr(
+        0x180000133c8,
+    ),
+    stack_segment: SegmentSelector {
+        index: 2,
+        rpl: Ring0,
+    },
+}
+[ INFO] kernel: Breakpoint test completed!
+[DEBUG] kernel::interrupts::context_switch: check_need_resched_and_switch: Reschedule needed (count: 0)

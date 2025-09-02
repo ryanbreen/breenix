@@ -3,9 +3,9 @@
 //! This module extends the basic context switching to properly handle
 //! userspace process contexts, including privilege level transitions.
 
-use super::thread::{Thread, ThreadPrivilege, CpuContext};
-use x86_64::VirtAddr;
+use super::thread::{CpuContext, Thread, ThreadPrivilege};
 use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::VirtAddr;
 
 /// Extended context for userspace processes
 /// This includes additional state needed for Ring 3 processes
@@ -14,10 +14,10 @@ use x86_64::structures::idt::InterruptStackFrame;
 pub struct ProcessContext {
     /// Base CPU context
     pub cpu_context: CpuContext,
-    
+
     /// Kernel stack pointer (RSP0) for syscalls
     pub kernel_rsp: u64,
-    
+
     /// Whether this context is from userspace
     pub from_userspace: bool,
 }
@@ -31,7 +31,7 @@ impl ProcessContext {
             from_userspace: thread.privilege == ThreadPrivilege::User,
         }
     }
-    
+
     /// Create from an interrupt stack frame (for saving userspace state)
     pub fn from_interrupt_frame(frame: &InterruptStackFrame, saved_regs: &SavedRegisters) -> Self {
         let context = CpuContext {
@@ -56,10 +56,10 @@ impl ProcessContext {
             cs: frame.code_segment.0 as u64,
             ss: frame.stack_segment.0 as u64,
         };
-        
+
         ProcessContext {
             cpu_context: context,
-            kernel_rsp: 0, // Will be set by caller
+            kernel_rsp: 0,                                   // Will be set by caller
             from_userspace: (frame.code_segment.0 & 3) == 3, // Check RPL
         }
     }
@@ -75,7 +75,7 @@ pub struct SavedRegisters {
     // Memory layout after all pushes (RSP points here)
     // Timer interrupt pushes in this order: rax, rcx, rdx, rbx, rbp, rsi, rdi, r8-r15
     // So in memory (from lowest to highest address):
-    pub r15: u64,  // pushed last, so at RSP+0
+    pub r15: u64, // pushed last, so at RSP+0
     pub r14: u64,
     pub r13: u64,
     pub r12: u64,
@@ -89,7 +89,7 @@ pub struct SavedRegisters {
     pub rbx: u64,
     pub rdx: u64,
     pub rcx: u64,
-    pub rax: u64,  // pushed first, so at RSP+14*8
+    pub rax: u64, // pushed first, so at RSP+14*8
 }
 
 // Note: switch_with_privilege function removed as part of spawn mechanism cleanup
@@ -118,16 +118,21 @@ pub fn save_userspace_context(
     thread.context.r13 = saved_regs.r13;
     thread.context.r14 = saved_regs.r14;
     thread.context.r15 = saved_regs.r15;
-    
+
     // From interrupt frame
     thread.context.rip = interrupt_frame.instruction_pointer.as_u64();
     thread.context.rsp = interrupt_frame.stack_pointer.as_u64();
     thread.context.rflags = interrupt_frame.cpu_flags.bits();
     thread.context.cs = interrupt_frame.code_segment.0 as u64;
     thread.context.ss = interrupt_frame.stack_segment.0 as u64;
-    
-    log::trace!("Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}, RAX={:#x}", 
-               thread.id, thread.context.rip, thread.context.rsp, thread.context.rax);
+
+    log::trace!(
+        "Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}, RAX={:#x}",
+        thread.id,
+        thread.context.rip,
+        thread.context.rsp,
+        thread.context.rax
+    );
 }
 
 /// Restore userspace context to interrupt frame
@@ -153,14 +158,15 @@ pub fn restore_userspace_context(
     saved_regs.r13 = thread.context.r13;
     saved_regs.r14 = thread.context.r14;
     saved_regs.r15 = thread.context.r15;
-    
+
     // Restore interrupt frame for IRETQ
     unsafe {
         interrupt_frame.as_mut().update(|frame| {
             frame.instruction_pointer = VirtAddr::new(thread.context.rip);
             frame.stack_pointer = VirtAddr::new(thread.context.rsp);
-            frame.cpu_flags = x86_64::registers::rflags::RFlags::from_bits_truncate(thread.context.rflags);
-            
+            frame.cpu_flags =
+                x86_64::registers::rflags::RFlags::from_bits_truncate(thread.context.rflags);
+
             // CRITICAL: Set CS and SS for userspace
             if thread.privilege == ThreadPrivilege::User {
                 // Use the actual selectors from the GDT module
@@ -172,7 +178,7 @@ pub fn restore_userspace_context(
             }
         });
     }
-    
+
     log::info!("Restored userspace context for thread {}: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}, RFLAGS={:#x}", 
                thread.id, thread.context.rip, thread.context.rsp, 
                thread.context.cs, thread.context.ss, thread.context.rflags);

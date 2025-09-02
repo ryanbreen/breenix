@@ -1,10 +1,10 @@
 use bootloader_api::info::{FrameBuffer, PixelFormat};
 
 use embedded_graphics::{
-    Pixel,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
     pixelcolor::{Rgb888, RgbColor},
+    Pixel,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +55,6 @@ pub fn set_pixel_in(framebuffer: &mut FrameBuffer, position: Position, color: Co
     }
 }
 
-
 pub struct Display<'f> {
     framebuffer: &'f mut FrameBuffer,
 }
@@ -80,7 +79,11 @@ impl<'f> Display<'f> {
         };
 
         if (0..width).contains(&x) && (0..height).contains(&y) {
-            let color = Color { red: color.r(), green: color.g(), blue: color.b() };
+            let color = Color {
+                red: color.r(),
+                green: color.g(),
+                blue: color.b(),
+            };
 
             set_pixel_in(self.framebuffer, Position { x, y }, color);
         }

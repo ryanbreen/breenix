@@ -1,8 +1,10 @@
-use x86_64::structures::paging::{OffsetPageTable, PageTable, PageTableFlags, Page, Size4KiB, Mapper, PhysFrame};
-use x86_64::VirtAddr;
+use crate::task::thread::ThreadPrivilege;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
-use crate::task::thread::ThreadPrivilege;
+use x86_64::structures::paging::{
+    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
+};
+use x86_64::VirtAddr;
 
 /// The global page table mapper
 static PAGE_TABLE_MAPPER: OnceCell<Mutex<OffsetPageTable<'static>>> = OnceCell::uninit();
@@ -98,7 +100,13 @@ pub unsafe fn map_page(
 ) -> Result<(), &'static str> {
     let flags = get_page_flags(privilege, writable);
 
-    mapper.map_to(page, frame, flags, &mut crate::memory::frame_allocator::GlobalFrameAllocator)
+    mapper
+        .map_to(
+            page,
+            frame,
+            flags,
+            &mut crate::memory::frame_allocator::GlobalFrameAllocator,
+        )
         .map_err(|_| "Failed to map page")?
         .flush();
 

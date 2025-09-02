@@ -1,18 +1,18 @@
 //! Process management for Breenix
-//! 
+//!
 //! This module handles process creation, scheduling, and lifecycle management.
 //! A process is a running instance of a program with its own address space.
 
 use alloc::string::String;
 use spin::Mutex;
 
-pub mod process;
-pub mod manager;
-pub mod fork;
 pub mod creation;
+pub mod fork;
+pub mod manager;
+pub mod process;
 
-pub use process::{Process, ProcessId};
 pub use manager::ProcessManager;
+pub use process::{Process, ProcessId};
 
 /// Wrapper to log when process manager lock is dropped
 pub struct ProcessManagerGuard {
@@ -27,7 +27,7 @@ impl Drop for ProcessManagerGuard {
 
 impl core::ops::Deref for ProcessManagerGuard {
     type Target = Option<ProcessManager>;
-    
+
     fn deref(&self) -> &Self::Target {
         &*self._guard
     }
@@ -50,7 +50,7 @@ pub fn init() {
 }
 
 /// Get a reference to the global process manager
-/// NOTE: This acquires a lock without disabling interrupts. 
+/// NOTE: This acquires a lock without disabling interrupts.
 /// For operations that could be called while holding scheduler locks,
 /// use with_process_manager() instead.
 pub fn manager() -> ProcessManagerGuard {
@@ -102,7 +102,7 @@ pub fn current_pid() -> Option<ProcessId> {
 /// Exit the current process
 pub fn exit_current(exit_code: i32) {
     log::debug!("exit_current called with code {}", exit_code);
-    
+
     if let Some(pid) = current_pid() {
         log::debug!("Current PID is {}", pid.as_u64());
         if let Some(ref mut manager) = *PROCESS_MANAGER.lock() {

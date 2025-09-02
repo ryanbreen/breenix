@@ -1,0 +1,112 @@
+name: Manual Test Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test'
+        required: true
+        default: 'sanity-check-happy-ring-3'
+
+jobs:
+  test:
+    name: Test Userspace
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.branch }}
+        
+    - name: System info
+      run: |
+        echo "=== System Information ==="
+        uname -a
+        echo ""
+        echo "=== CPU Info ==="
+        lscpu | grep -E "Model name|CPU\(s\)|Thread|Core|Socket"
+        echo ""
+        echo "=== Memory Info ==="
+        free -h
+        
+    - name: Install QEMU and build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86 nasm
+        qemu-system-x86_64 --version
+        nasm --version
+        
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2025-06-24
+        components: rust-src, llvm-tools-preview
+        targets: x86_64-unknown-none
+        
+    - name: Build Breenix
+      run: |
+        echo "=== Building Breenix ==="
+        rustup default nightly-2025-06-24
+        cargo +nightly-2025-06-24 build --release
+        
+    - name: Run Test 1
+      run: |
+        echo "=== Test Run 1 ==="
+        timeout 30 ./scripts/run_breenix.sh uefi -display none > test1.log 2>&1 || true
+        if grep -q "USERSPACE OUTPUT: Hello from userspace" test1.log; then
+          echo "✅ Test 1: PASSED"
+        else
+          echo "❌ Test 1: FAILED"
+          tail -20 test1.log
+        fi
+        
+    - name: Run Test 2
+      run: |
+        echo "=== Test Run 2 ==="
+        timeout 30 ./scripts/run_breenix.sh uefi -display none > test2.log 2>&1 || true
+        if grep -q "USERSPACE OUTPUT: Hello from userspace" test2.log; then
+          echo "✅ Test 2: PASSED"
+        else
+          echo "❌ Test 2: FAILED"
+          tail -20 test2.log
+        fi
+        
+    - name: Run Test 3
+      run: |
+        echo "=== Test Run 3 ==="
+        timeout 30 ./scripts/run_breenix.sh uefi -display none > test3.log 2>&1 || true
+        if grep -q "USERSPACE OUTPUT: Hello from userspace" test3.log; then
+          echo "✅ Test 3: PASSED"
+        else
+          echo "❌ Test 3: FAILED"
+          tail -20 test3.log
+        fi
+        
+    - name: Summary
+      if: always()
+      run: |
+        echo "=== Test Summary ==="
+        PASSED=0
+        for i in 1 2 3; do
+          if grep -q "USERSPACE OUTPUT: Hello from userspace" test${i}.log 2>/dev/null; then
+            ((PASSED++))
+          fi
+        done
+        echo "Passed: $PASSED/3"
+        if [ $PASSED -eq 3 ]; then
+          echo "✅ ALL TESTS PASSED!"
+          exit 0
+        else
+          echo "❌ SOME TESTS FAILED!"
+          exit 1
+        fi
+        
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs-${{ github.run_number }}
+        path: |
+          test*.log
+          logs/*.log

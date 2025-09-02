@@ -17,7 +17,7 @@ pub(crate) fn init_queue() {
 }
 
 /// Called by the keyboard interrupt handler
-/// 
+///
 /// Must not block or allocate.
 pub(crate) fn add_scancode(scancode: u8) {
     if let Ok(queue) = SCANCODE_QUEUE.try_get() {
@@ -39,24 +39,24 @@ impl ScancodeStream {
     pub fn new() -> Self {
         // Try to initialize, but it's ok if it's already initialized
         let _ = SCANCODE_QUEUE.try_init_once(|| ArrayQueue::new(100));
-        
+
         ScancodeStream { _private: () }
     }
 }
 
 impl Stream for ScancodeStream {
     type Item = u8;
-    
+
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
         let queue = SCANCODE_QUEUE
             .try_get()
             .expect("scancode queue not initialized");
-        
+
         // fast path
         if let Some(scancode) = queue.pop() {
             return Poll::Ready(Some(scancode));
         }
-        
+
         WAKER.register(&cx.waker());
         match queue.pop() {
             Some(scancode) => {

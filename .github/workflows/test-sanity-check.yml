@@ -1,0 +1,103 @@
+name: Test Sanity Check Branch
+
+on:
+  push:
+    branches: [ sanity-check-happy-ring-3 ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  test-userspace:
+    name: Test Userspace Execution
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install QEMU and build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          qemu-system-x86 \
+          qemu-utils \
+          ovmf \
+          mtools \
+          dosfstools \
+          xorriso \
+          nasm
+        
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src, llvm-tools-preview
+        targets: x86_64-unknown-none
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Prefetch dependencies
+      run: cargo fetch
+
+    - name: Build Breenix (UEFI only)
+      env:
+        RUSTFLAGS: "-D warnings -A dead_code"
+      run: |
+        cargo build --release --features testing --bin qemu-uefi --verbose
+        
+    - name: Ring3 smoke test (streaming)
+      env:
+        RING3_TIMEOUT_SECONDS: "480"
+      run: |
+        set -euxo pipefail
+        # Fetch DEBUG OVMF pair (with fallback to distro firmware)
+        mkdir -p third_party/ovmf
+        set +e
+        curl -fsSLo third_party/ovmf/OVMF_CODE.fd https://retrage.github.io/edk2-nightly/bin/DEBUGX64/OVMF_CODE.fd
+        curl -fsSLo third_party/ovmf/OVMF_VARS.fd https://retrage.github.io/edk2-nightly/bin/DEBUGX64/OVMF_VARS.fd
+        set -e
+        if [[ ! -s third_party/ovmf/OVMF_CODE.fd || ! -s third_party/ovmf/OVMF_VARS.fd ]]; then
+          if [[ -e /usr/share/OVMF/OVMF_CODE_4M.fd && -e /usr/share/OVMF/OVMF_VARS_4M.fd ]]; then
+            cp -f "$(readlink -f /usr/share/OVMF/OVMF_CODE_4M.fd)" third_party/ovmf/OVMF_CODE.fd
+            cp -f "$(readlink -f /usr/share/OVMF/OVMF_VARS_4M.fd)" third_party/ovmf/OVMF_VARS.fd
+          elif [[ -e /usr/share/OVMF/OVMF_CODE.fd && -e /usr/share/OVMF/OVMF_VARS.fd ]]; then
+            cp -f "$(readlink -f /usr/share/OVMF/OVMF_CODE.fd)" third_party/ovmf/OVMF_CODE.fd
+            cp -f "$(readlink -f /usr/share/OVMF/OVMF_VARS.fd)" third_party/ovmf/OVMF_VARS.fd
+          fi
+        fi
+        stat -Lc '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd || stat -c '%n %s' third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd || true
+        echo "OVMF sha256:"; (sha256sum third_party/ovmf/OVMF_CODE.fd third_party/ovmf/OVMF_VARS.fd || true)
+        export BREENIX_OVMF_CODE_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_CODE.fd"
+        export BREENIX_OVMF_VARS_PATH="${{ github.workspace }}/third_party/ovmf/OVMF_VARS.fd"
+        # Line-buffer QEMU launcher for streaming markers
+        export BREENIX_USE_STDBUF=1
+        bash scripts/ci/ring3_check.sh uefi
+    
+        
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs
+        path: |
+          test_output.log
+          logs/*.log

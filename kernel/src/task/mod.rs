@@ -2,17 +2,17 @@ use alloc::boxed::Box;
 use core::{
     future::Future,
     pin::Pin,
-    task::{Context, Poll},
     sync::atomic::{AtomicU64, Ordering},
+    task::{Context, Poll},
 };
 
-pub mod executor;
-pub mod thread;
 pub mod context;
+pub mod executor;
+pub mod process_context;
+pub mod process_task;
 pub mod scheduler;
 pub mod spawn;
-pub mod process_task;
-pub mod process_context;
+pub mod thread;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
@@ -36,7 +36,7 @@ impl Task {
             future: Box::pin(future),
         }
     }
-    
+
     fn poll(&mut self, context: &mut Context) -> Poll<()> {
         self.future.as_mut().poll(context)
     }

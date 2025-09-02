@@ -15,8 +15,13 @@ fi
 # Read the search parameters
 SEARCH_PARAMS=$(cat /tmp/log-query.txt)
 
-# Find the latest log file
-LATEST_LOG=$(ls -t logs/*.log 2>/dev/null | head -1)
+# Find the latest kernel run log, prefer breenix_*.log and exclude *_serial.log and qemu_debug.log
+if LATEST_LOG=$(ls -t logs/breenix_*.log 2>/dev/null | grep -v '_serial' | head -1); then
+  :
+else
+  # Fallback: any .log excluding qemu_debug.log
+  LATEST_LOG=$(ls -t logs/*.log 2>/dev/null | grep -v 'qemu_debug\.log' | head -1)
+fi
 
 if [ -z "$LATEST_LOG" ]; then
     echo "Error: No log files found in logs/ directory"

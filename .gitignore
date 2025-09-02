@@ -41,6 +41,10 @@ Thumbs.db
 .vscode/
 *.iml
 
+# MCP and other tool logs
+.mcp-logs/
+.serena/
+
 # Test output
 test-results/
 coverage/

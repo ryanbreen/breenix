@@ -17,7 +17,7 @@ impl Executor {
             waker_cache: BTreeMap::new(),
         }
     }
-    
+
     pub fn spawn(&mut self, task: Task) {
         let task_id = task.id;
         if self.tasks.insert(task.id, task).is_some() {
@@ -25,7 +25,7 @@ impl Executor {
         }
         self.task_queue.push(task_id).expect("queue full");
     }
-    
+
     fn run_ready_tasks(&mut self) {
         // destructure `self` to avoid borrow checker errors
         let Self {
@@ -33,7 +33,7 @@ impl Executor {
             task_queue,
             waker_cache,
         } = self;
-        
+
         while let Some(task_id) = task_queue.pop() {
             let task = match tasks.get_mut(&task_id) {
                 Some(task) => task,
@@ -53,10 +53,10 @@ impl Executor {
             }
         }
     }
-    
+
     fn sleep_if_idle(&self) {
         use x86_64::instructions::interrupts;
-        
+
         interrupts::disable();
         if self.task_queue.is_empty() {
             interrupts::enable();
@@ -65,7 +65,7 @@ impl Executor {
             interrupts::enable();
         }
     }
-    
+
     pub fn run(&mut self) -> ! {
         loop {
             self.run_ready_tasks();
@@ -86,7 +86,7 @@ impl TaskWaker {
             task_queue,
         }))
     }
-    
+
     fn wake_task(&self) {
         self.task_queue.push(self.task_id).expect("task_queue full");
     }
@@ -96,7 +96,7 @@ impl Wake for TaskWaker {
     fn wake(self: Arc<Self>) {
         self.wake_task();
     }
-    
+
     fn wake_by_ref(self: &Arc<Self>) {
         self.wake_task();
     }

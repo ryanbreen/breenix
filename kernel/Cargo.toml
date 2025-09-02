@@ -20,6 +20,7 @@ test_invalid_opcode = []
 test_page_fault = []
 test_userspace = []
 test_all_exceptions = []
+external_test_bins = []
 
 [dependencies]
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }

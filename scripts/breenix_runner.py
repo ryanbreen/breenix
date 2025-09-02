@@ -14,15 +14,54 @@ from datetime import datetime
 import pty
 import termios
 import tty
+import re
 
 class BreenixRunner:
-    def __init__(self, mode="uefi", display=False):
+    def __init__(self, mode="uefi", display=False,
+                 enable_ci_ring3_mode=False,
+                 timeout_seconds: int = 480,
+                 success_any_patterns=None,
+                 success_all_patterns=None,
+                 failure_patterns=None):
         self.mode = mode
         self.display = display
         self.process = None
         self.master_fd = None
         self.log_file = None
         self.log_path = self._create_log_file()
+        # CI ring3 streaming detection configuration
+        self.enable_ci_ring3_mode = enable_ci_ring3_mode
+        self.timeout_seconds = timeout_seconds
+        # Prefer routing guest serial to stdio so CI captures it reliably.
+        # If firmware debug is captured to file (BREENIX_QEMU_DEBUGCON_FILE),
+        # we can safely keep serial on stdio. Only route to file if explicitly requested.
+        self._serial_to_file = os.environ.get("BREENIX_QEMU_SERIAL_TO_FILE") == "1"
+        self._serial_log_path = None
+
+        # Default patterns for success/failure detection
+        default_success_any = [
+            r"\[ OK \] RING3_SMOKE: userspace executed \+ syscall path verified",
+            r"🎯 KERNEL_POST_TESTS_COMPLETE 🎯",
+        ]
+        default_success_all = [
+            r"USERSPACE OUTPUT: Hello from userspace",
+            r"Context switch: from_userspace=true, CS=0x33",
+        ]
+        default_failure = [
+            r"DOUBLE FAULT",
+            r"Page Fault|PAGE FAULT",
+            r"\bpanic\b",
+            r"backtrace",
+        ]
+
+        self.success_any_patterns = [re.compile(p) for p in (success_any_patterns or default_success_any)]
+        self.success_all_patterns = [re.compile(p) for p in (success_all_patterns or default_success_all)]
+        self.failure_patterns = [re.compile(p) for p in (failure_patterns or default_failure)]
+
+        # Streaming detection state
+        self._success_all_hits = [False] * len(self.success_all_patterns)
+        self._success_event = threading.Event()
+        self._failure_event = threading.Event()
         
     def _create_log_file(self):
         """Create timestamped log file"""
@@ -40,17 +79,41 @@ class BreenixRunner:
         
     def start(self):
         """Start Breenix with stdio for serial output"""
+        # Proactively kill any stale QEMU to avoid image write-locks in local runs
+        try:
+            subprocess.run(["pkill", "-f", "qemu-system-x86_64"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
         # No need for PTY when using stdio
         self.master_fd = None
         slave_fd = None
         
-        # Build the cargo command
+        # Prefer running the built binary directly to avoid grandchild stdio issues in CI
         bin_name = f"qemu-{self.mode}"
-        cmd = ["cargo", "run", "--release", "--features", "testing", "--bin", bin_name, "--"]
+        built_bin = os.path.join(os.getcwd(), "target", "release", bin_name)
+        if os.path.exists(built_bin):
+            cmd = [built_bin]
+        else:
+            # Fallback to cargo run locally
+            cmd = ["cargo", "run", "--release", "--features", "testing", "--bin", bin_name, "--"]
+
+        # Optional: wrap with stdbuf to enforce line-buffered stdout/stderr
+        if os.environ.get("BREENIX_USE_STDBUF") == "1":
+            if cmd[0] == built_bin:
+                cmd = ["stdbuf", "-oL", "-eL", built_bin]
+            else:
+                cmd = ["stdbuf", "-oL", "-eL"] + cmd
         
         # Add QEMU arguments
-        # Use stdio for serial communication to capture logs properly
-        cmd.extend(["-serial", "stdio"])
+        # Route serial appropriately
+        if self._serial_to_file:
+            # Use a dedicated serial log to avoid colliding with our main log file handle
+            self._serial_log_path = self.log_path.replace(
+                ".log", "_serial.log"
+            )
+            cmd.extend(["-serial", f"file:{self._serial_log_path}"])
+        else:
+            cmd.extend(["-serial", "stdio"])
         if not self.display:
             cmd.extend(["-display", "none"])
             
@@ -66,6 +129,8 @@ class BreenixRunner:
         
         # Start threads to handle output
         self._start_output_threads()
+        if self.enable_ci_ring3_mode and self._serial_to_file and self._serial_log_path:
+            self._start_serial_tail_thread()
         
         # Wait for kernel to initialize
         print("Waiting for kernel to initialize...")
@@ -84,11 +149,39 @@ class BreenixRunner:
                 if line:
                     sys.stdout.write(line)
                     sys.stdout.flush()
+                    # Always write QEMU stdout to the log file (captures QEMU errors)
                     self.log_file.write(line)
                     self.log_file.flush()
+                    if self.enable_ci_ring3_mode:
+                        self._ingest_line_for_markers(line)
                     
         threading.Thread(target=read_serial, daemon=True).start()
         threading.Thread(target=read_stdout, daemon=True).start()
+
+    def _start_serial_tail_thread(self):
+        """Tail the serial log file and mirror content into the main log and marker engine."""
+        path = self._serial_log_path
+        def tail_file():
+            pos = 0
+            while self.process and self.process.poll() is None:
+                try:
+                    with open(path, 'r') as f:
+                        f.seek(pos)
+                        data = f.read()
+                        if data:
+                            pos = f.tell()
+                            for line in data.splitlines(True):
+                                # Mirror to stdout and main log
+                                sys.stdout.write(line)
+                                sys.stdout.flush()
+                                self.log_file.write(line)
+                                self.log_file.flush()
+                                # Feed marker detector
+                                self._ingest_line_for_markers(line)
+                except FileNotFoundError:
+                    pass
+                time.sleep(0.1)
+        threading.Thread(target=tail_file, daemon=True).start()
         
     def send_command(self, command):
         """Send a command to the serial console"""
@@ -150,6 +243,67 @@ class BreenixRunner:
         if self.log_file:
             self.log_file.close()
             print(f"\nLog saved to: {self.log_path}")
+
+    # CI/Ring3 streaming detection helpers
+    def _ingest_line_for_markers(self, line: str) -> None:
+        """Analyze a single output line for success/failure markers."""
+        # Failure first: fail fast
+        for pattern in self.failure_patterns:
+            if pattern.search(line):
+                self._failure_event.set()
+                return
+
+        # Any single success marker
+        for pattern in self.success_any_patterns:
+            if pattern.search(line):
+                self._success_event.set()
+                return
+
+        # All-of success markers: update hits and check
+        updated = False
+        for index, pattern in enumerate(self.success_all_patterns):
+            if not self._success_all_hits[index] and pattern.search(line):
+                self._success_all_hits[index] = True
+                updated = True
+        if updated and all(self._success_all_hits):
+            self._success_event.set()
+
+    def wait_for_markers_or_exit(self) -> int:
+        """Wait until success or failure markers are observed, process exits, or timeout.
+
+        Returns process exit code (0 for success if markers observed, 1 on failure/timeout).
+        """
+        start = time.monotonic()
+        while True:
+            # Marker-based exit
+            if self._failure_event.is_set():
+                print("\n[CI] Detected failure marker in QEMU output. Terminating...")
+                self.stop()
+                return 1
+            if self._success_event.is_set():
+                print("\n[CI] Detected ring3 success markers in QEMU output. Terminating...")
+                self.stop()
+                return 0
+
+            # Process exit
+            if self.process and self.process.poll() is not None:
+                code = self.process.returncode
+                print(f"\n[CI] QEMU process exited with code {code}.")
+                # QEMU isa-debug-exit encodes exit as (value << 1) | 1
+                # We treat codes 0x21 (0x10<<1|1) as success, 0x23 (0x11<<1|1) as failure
+                if code == 0x21:
+                    return 0
+                if code == 0x23:
+                    return 1
+                return 0 if code == 0 else 1
+
+            # Timeout
+            if (time.monotonic() - start) > self.timeout_seconds:
+                print("\n[CI] Timeout waiting for ring3 markers. Terminating...")
+                self.stop()
+                return 1
+
+            time.sleep(0.1)
             
 def main():
     """Run Breenix with optional commands"""
@@ -164,10 +318,29 @@ def main():
                         help='Commands to send after boot')
     parser.add_argument('--interactive', action='store_true',
                         help='Stay in interactive mode after commands')
+    # CI/Ring3 streaming detection
+    parser.add_argument('--ci-ring3', action='store_true',
+                        help='Enable CI ring3 mode: stream QEMU output and exit early on success/failure markers')
+    parser.add_argument('--timeout-seconds', type=int, default=480,
+                        help='Timeout for CI ring3 mode (default: 480 seconds)')
+    parser.add_argument('--success-any', action='append', default=None,
+                        help='Regex for success-any pattern (can be repeated)')
+    parser.add_argument('--success-all', action='append', default=None,
+                        help='Regex for success-all pattern (all must be seen; can be repeated)')
+    parser.add_argument('--failure', action='append', default=None,
+                        help='Regex for failure pattern (can be repeated)')
     
     args = parser.parse_args()
     
-    runner = BreenixRunner(mode=args.mode, display=args.display)
+    runner = BreenixRunner(
+        mode=args.mode,
+        display=args.display,
+        enable_ci_ring3_mode=args.ci_ring3,
+        timeout_seconds=args.timeout_seconds,
+        success_any_patterns=args.success_any,
+        success_all_patterns=args.success_all,
+        failure_patterns=args.failure,
+    )
     
     try:
         runner.start()
@@ -195,8 +368,14 @@ def main():
                 except KeyboardInterrupt:
                     break
         else:
-            # Just wait for process to complete
-            runner.wait()
+            # CI ring3 mode: watch output and exit early; otherwise wait for process
+            if args.ci_ring3:
+                exit_code = runner.wait_for_markers_or_exit()
+                # Ensure log file is closed and QEMU stopped
+                runner.stop()
+                sys.exit(exit_code)
+            else:
+                runner.wait()
             
     except KeyboardInterrupt:
         print("\nInterrupted by user")
