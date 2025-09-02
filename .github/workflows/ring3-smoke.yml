@@ -2,11 +2,7 @@ name: Ring‑3 Smoke Test
 
 on:
   push:
-    paths:
-      - 'kernel/**'
-      - 'userspace/**'
-      - 'xtask/**'
-      - '.github/workflows/ring3-smoke.yml'
+    branches: [ "**" ]
   pull_request:
 
 jobs:
