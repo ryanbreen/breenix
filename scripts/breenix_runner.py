@@ -42,11 +42,10 @@ class BreenixRunner:
         default_success_any = [
             r"\[ OK \] RING3_SMOKE: userspace executed \+ syscall path verified",
             r"🎯 KERNEL_POST_TESTS_COMPLETE 🎯",
-            r"Context switch: from_userspace=true, CS=0x33",
-            r"Restored userspace context.*CS=0x33",
         ]
         default_success_all = [
-            r"Hello from userspace! Current time:",
+            r"USERSPACE OUTPUT: Hello from userspace",
+            r"Context switch: from_userspace=true, CS=0x33",
         ]
         default_failure = [
             r"DOUBLE FAULT",
