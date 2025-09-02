@@ -311,6 +311,15 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
     };
 
+    // Log the actual data being written (for verification)
+    if buffer.len() <= 10 {
+        // For small writes, show the actual content
+        let s = core::str::from_utf8(&buffer).unwrap_or("<invalid UTF-8>");
+        log::info!("sys_write: Writing '{}' ({} bytes) to fd {}", s, buffer.len(), fd);
+    } else {
+        log::info!("sys_write: Writing {} bytes to fd {}", buffer.len(), fd);
+    }
+    
     // Write to serial port
     let mut bytes_written = 0;
     for &byte in &buffer {

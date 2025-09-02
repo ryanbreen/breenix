@@ -92,6 +92,12 @@ pub fn init_idt() {
             idt[SYSCALL_INTERRUPT_ID]
                 .set_handler_addr(x86_64::VirtAddr::new(syscall_entry as u64))
                 .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+            
+            // Log IDT gate attributes for verification
+            log::info!("IDT[0x80] gate attributes:");
+            log::info!("  Handler address: {:#x}", syscall_entry as u64);
+            log::info!("  DPL (privilege level): Ring3 (allowing userspace access)");
+            log::info!("  Gate type: Interrupt gate (interrupts disabled on entry)");
         }
         log::info!("Syscall handler configured with assembly entry point");
 

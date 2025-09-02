@@ -104,6 +104,30 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             frame.rax
         );
     }
+    
+    // On first syscall from userspace, dump bytes at RIP to verify int 0x80
+    static mut FIRST_SYSCALL_LOGGED: bool = false;
+    unsafe {
+        if !FIRST_SYSCALL_LOGGED && (frame.cs & 3) == 3 {
+            FIRST_SYSCALL_LOGGED = true;
+            log::info!("First syscall from userspace - verifying instruction at RIP");
+            log::info!("  RIP: {:#x}", frame.rip);
+            
+            // Try to read the previous 2 bytes (should be 0xcd 0x80 for int 0x80)
+            if frame.rip >= 2 {
+                let int_addr = (frame.rip - 2) as *const u8;
+                // Use volatile read to prevent optimization
+                let byte1 = core::ptr::read_volatile(int_addr);
+                let byte2 = core::ptr::read_volatile(int_addr.offset(1));
+                log::info!("  Previous 2 bytes at RIP-2: {:#02x} {:#02x}", byte1, byte2);
+                if byte1 == 0xcd && byte2 == 0x80 {
+                    log::info!("  ✓ Confirmed: int 0x80 instruction detected");
+                } else {
+                    log::warn!("  ⚠ Expected int 0x80 (0xcd 0x80) but found {:#02x} {:#02x}", byte1, byte2);
+                }
+            }
+        }
+    }
 
     // Dispatch to the appropriate syscall handler
     let result = match SyscallNumber::from_u64(syscall_num) {
