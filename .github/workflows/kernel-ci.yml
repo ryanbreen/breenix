@@ -1,9 +1,7 @@
 name: kernel-ci
 
 on:
-  pull_request:
-  push:
-    branches: [ "**" ]
+  workflow_dispatch:  # Only run manually, not on push/PR
 
 jobs:
   ring3-smoke:
