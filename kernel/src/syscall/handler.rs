@@ -56,18 +56,35 @@ impl SyscallFrame {
 /// Main syscall handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
-    // Debug: Log raw RAX value
-    log::debug!(
-        "rust_syscall_handler: Raw frame.rax = {:#x} ({})",
-        frame.rax,
-        frame.rax as i64
-    );
-
-    // Log syscall entry
+    // Enhanced syscall entry logging per Cursor requirements
     let from_userspace = frame.is_from_userspace();
-    // Commented out to reduce noise - uncomment for debugging
-    // log::debug!("Syscall entry: from_userspace={}, CS={:#x}, SS={:#x}",
-    //     from_userspace, frame.cs, frame.ss);
+    
+    // Get current CR3 for logging
+    let cr3: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) cr3);
+    }
+    
+    // Log syscall entry with full frame info for first few syscalls
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static SYSCALL_ENTRY_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+    
+    let entry_count = SYSCALL_ENTRY_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if entry_count < 5 {
+        log::info!("R3-SYSCALL ENTRY #{}: CS={:#x} (RPL={}), RIP={:#x}, RSP={:#x}, SS={:#x}, CR3={:#x}",
+            entry_count + 1, frame.cs, frame.cs & 3, frame.rip, frame.rsp, frame.ss, cr3);
+        
+        if from_userspace {
+            log::info!("  ✓ Syscall from Ring 3 confirmed (CPL=3)");
+        } else {
+            log::error!("  ⚠ WARNING: Syscall from Ring {}!", frame.cs & 3);
+        }
+        
+        // Log syscall number and arguments
+        log::info!("  Syscall: num={}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
+            frame.syscall_number(), frame.args().0, frame.args().1, frame.args().2,
+            frame.args().3, frame.args().4, frame.args().5);
+    }
 
     // Verify this came from userspace (security check)
     if !from_userspace {
@@ -106,7 +123,6 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     }
     
     // Log first few syscalls from userspace with full frame validation
-    use core::sync::atomic::{AtomicU32, Ordering};
     static SYSCALL_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
     
     if (frame.cs & 3) == 3 {
@@ -208,15 +224,36 @@ extern "C" {
     pub fn syscall_return_to_userspace(user_rip: u64, user_rsp: u64, user_rflags: u64) -> !;
 }
 
-/// Simple trace function that can be called from assembly before iretq
-/// This logs once per process to avoid spam
+/// Enhanced trace function that logs full IRETQ frame before returning to Ring 3
+/// Called from assembly with pointer to IRETQ frame on stack
 #[no_mangle]
-pub extern "C" fn trace_iretq_to_ring3() {
+pub extern "C" fn trace_iretq_to_ring3(frame_ptr: *const u64) {
     use core::sync::atomic::{AtomicU32, Ordering};
     static IRETQ_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
     
     let count = IRETQ_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
     if count < 3 {  // Log first 3 transitions for verification
-        log::trace!("About to iretq to Ring 3 (transition #{})", count + 1);
+        unsafe {
+            // IRETQ frame layout: RIP, CS, RFLAGS, RSP, SS
+            let rip = *frame_ptr;
+            let cs = *frame_ptr.offset(1);
+            let rflags = *frame_ptr.offset(2);
+            let rsp = *frame_ptr.offset(3);
+            let ss = *frame_ptr.offset(4);
+            
+            // Get current CR3
+            let cr3: u64;
+            core::arch::asm!("mov {}, cr3", out(reg) cr3);
+            
+            log::info!("R3-IRET #{}: rip={:#x}, cs={:#x} (RPL={}), ss={:#x} (RPL={}), rflags={:#x}, rsp={:#x}, cr3={:#x}",
+                count + 1, rip, cs, cs & 3, ss, ss & 3, rflags, rsp, cr3);
+            
+            // Verify we're returning to Ring 3
+            if (cs & 3) == 3 && (ss & 3) == 3 {
+                log::info!("  ✓ Confirmed: Returning to Ring 3 (CPL=3)");
+            } else {
+                log::error!("  ⚠ WARNING: Not returning to Ring 3! CS RPL={}, SS RPL={}", cs & 3, ss & 3);
+            }
+        }
     }
 }

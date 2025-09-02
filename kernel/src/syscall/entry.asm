@@ -109,8 +109,9 @@ syscall_entry:
     pop rcx                    ; Restore rcx
     pop rax                    ; Restore syscall return value
 
-    ; Trace that we're about to return to Ring 3
-    push rax                   ; Save return value
+    ; Trace that we're about to return to Ring 3 with full frame info
+    ; Save all registers that might be clobbered by the call
+    push rax                   ; Save syscall return value (CRITICAL!)
     push rcx
     push rdx
     push rdi
@@ -119,7 +120,13 @@ syscall_entry:
     push r9
     push r10
     push r11
+    
+    ; Pass pointer to IRETQ frame (RIP, CS, RFLAGS, RSP, SS)
+    mov rdi, rsp
+    add rdi, 72                ; Skip 9 pushed registers (9 * 8 = 72) to point to RIP
     call trace_iretq_to_ring3
+    
+    ; Restore all registers in reverse order
     pop r11
     pop r10
     pop r9
@@ -128,7 +135,7 @@ syscall_entry:
     pop rdi
     pop rdx
     pop rcx
-    pop rax                    ; Restore return value
+    pop rax                    ; Restore syscall return value (CRITICAL!)
 
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
@@ -167,8 +174,31 @@ syscall_return_to_userspace:
     ; User instruction pointer
     push rdi
 
-    ; Trace that we're about to jump to Ring 3
+    ; Trace that we're about to jump to Ring 3 with full frame info
+    ; Save registers that might be clobbered
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push r8
+    push r9
+    push r10
+    push r11
+    
+    ; Pass pointer to IRETQ frame
+    mov rdi, rsp
+    add rdi, 64                ; Skip 8 pushed registers to point to RIP
     call trace_iretq_to_ring3
+    
+    ; Restore registers
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
 
     ; Clear all registers to prevent information leaks
     xor rax, rax

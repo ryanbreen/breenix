@@ -145,8 +145,15 @@ fn create_elf_header() -> Vec<u8> {
 }
 
 /// Run all user-only fault tests
-#[cfg(feature = "testing")]
 pub fn run_fault_tests() {
+    #[cfg(not(feature = "testing"))]
+    {
+        log::info!("Fault tests require testing feature to be enabled");
+        return;
+    }
+    
+    #[cfg(feature = "testing")]
+    {
     use alloc::string::String;
     
     log::info!("=== Running User-Only Fault Tests ===");
@@ -213,4 +220,5 @@ pub fn run_fault_tests() {
     
     log::info!("\n=== User-Only Fault Tests Scheduled ===");
     log::info!("Check logs for #GP and #PF exceptions with proper error codes");
+    }
 }

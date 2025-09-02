@@ -113,37 +113,46 @@ pub extern "C" fn log_timer_frame_from_userspace(frame_ptr: *const u64) {
     
     unsafe {
         // Frame layout: [RIP][CS][RFLAGS][RSP][SS]
-        let rip = *frame_ptr;
-        let cs = *frame_ptr.offset(1);
+        let saved_rip = *frame_ptr;
+        let saved_cs = *frame_ptr.offset(1);
         let rflags = *frame_ptr.offset(2);
-        let rsp = *frame_ptr.offset(3);
-        let ss = *frame_ptr.offset(4);
-        
-        log::info!("Timer interrupt frame from userspace #{}", count + 1);
-        log::info!("  RIP: {:#x}", rip);
-        log::info!("  CS: {:#x} (RPL={})", cs, cs & 3);
-        log::info!("  RFLAGS: {:#x} (IF={})", rflags, if rflags & 0x200 != 0 { "1" } else { "0" });
-        log::info!("  RSP: {:#x} (user stack)", rsp);
-        log::info!("  SS: {:#x} (RPL={})", ss, ss & 3);
-        
-        // Validate invariants
-        if (cs & 3) != 3 {
-            log::error!("  ERROR: CS RPL is not 3!");
-        }
-        if (ss & 3) != 3 {
-            log::error!("  ERROR: SS RPL is not 3!");
-        }
-        if rflags & 0x200 == 0 {
-            log::error!("  ERROR: IF is not set in RFLAGS!");
-        }
-        if rsp < 0x10000000 || rsp > 0x20000000 {
-            log::warn!("  WARNING: RSP {:#x} may be outside expected user range", rsp);
-        }
+        let saved_rsp = *frame_ptr.offset(3);
+        let saved_ss = *frame_ptr.offset(4);
+        let cpl = saved_cs & 3;
         
         // Get current CR3
         let cr3: u64;
         core::arch::asm!("mov {}, cr3", out(reg) cr3);
-        log::info!("  CR3: {:#x} (current page table)", cr3);
+        
+        // Enhanced logging per Cursor requirements
+        log::info!("R3-TIMER #{}: saved_cs={:#x}, cpl={}, saved_rip={:#x}, saved_rsp={:#x}, saved_ss={:#x}, cr3={:#x}",
+            count + 1, saved_cs, cpl, saved_rip, saved_rsp, saved_ss, cr3);
+        
+        // Verify we interrupted Ring 3
+        if cpl == 3 {
+            log::info!("  ✓ Timer interrupted Ring 3 (CPL=3)");
+            
+            // Verify RIP is in user VA range (typically below 0x7fff_ffff_ffff)
+            if saved_rip < 0x0000_8000_0000_0000 {
+                log::info!("  ✓ Saved RIP {:#x} is in user VA range", saved_rip);
+            } else {
+                log::warn!("  ⚠ Saved RIP {:#x} seems to be in kernel range?", saved_rip);
+            }
+            
+            // Verify SS is also Ring 3
+            if (saved_ss & 3) == 3 {
+                log::info!("  ✓ Saved SS {:#x} is Ring 3", saved_ss);
+            } else {
+                log::error!("  ⚠ ERROR: Saved SS {:#x} is not Ring 3!", saved_ss);
+            }
+        } else {
+            log::error!("  ⚠ Timer interrupted Ring {} (not Ring 3!)", cpl);
+        }
+        
+        // Additional validation
+        if rflags & 0x200 == 0 {
+            log::error!("  ⚠ ERROR: IF is not set in RFLAGS!");
+        }
     }
 }
 

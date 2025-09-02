@@ -486,6 +486,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
         test_exec::test_syscall_enosys();
         log::info!("ENOSYS test completed.");
+        
+        // Run fault tests to validate privilege isolation
+        log::info!("=== FAULT TEST: Running privilege violation tests ===");
+        userspace_fault_tests::run_fault_tests();
+        log::info!("Fault tests scheduled.");
     });
 
     // Give the scheduler a chance to run the created processes
