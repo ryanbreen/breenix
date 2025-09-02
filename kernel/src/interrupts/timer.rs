@@ -17,31 +17,24 @@ const TIME_QUANTUM: u32 = 10;
 static mut CURRENT_QUANTUM: u32 = TIME_QUANTUM;
 
 /// Timer interrupt handler - absolutely minimal work
+/// 
+/// @param from_userspace: 1 if interrupted userspace, 0 if interrupted kernel
 #[no_mangle]
-pub extern "C" fn timer_interrupt_handler() {
+pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
     // Log the first few timer interrupts for debugging
     static TIMER_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     
     // Check if we're coming from userspace (for Ring 3 verification)
-    // Note: We need to check the saved CS on the stack, not the current CS
-    // The interrupt frame is at RSP+24 (after error code push and saved registers)
-    static mut TIMER_FROM_USERSPACE_LOGGED: bool = false;
-    unsafe {
-        // Get the saved CS from the interrupt frame
-        // The frame is pushed by the CPU: SS, RSP, RFLAGS, CS, RIP
-        // We need to look at the saved CS value
-        let saved_cs_ptr: *const u64;
-        core::arch::asm!("lea {}, [rsp + 0x88]", out(reg) saved_cs_ptr); // Offset to saved CS
-        let saved_cs = *(saved_cs_ptr as *const u16);
-        
-        // If saved CS indicates we interrupted userspace and haven't logged it yet
-        if !TIMER_FROM_USERSPACE_LOGGED && (saved_cs & 3) == 3 {
-            TIMER_FROM_USERSPACE_LOGGED = true;
-            log::info!("✓ Timer interrupt from USERSPACE detected!");
-            log::info!("  Timer tick #{}, saved CS={:#x} (Ring 3)", count, saved_cs);
-            log::info!("  This confirms async preemption from CPL=3 works");
-        }
+    // The assembly entry point now passes this as a parameter
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static TIMER_FROM_USERSPACE_LOGGED: AtomicBool = AtomicBool::new(false);
+    
+    if from_userspace != 0 && !TIMER_FROM_USERSPACE_LOGGED.load(Ordering::Relaxed) {
+        TIMER_FROM_USERSPACE_LOGGED.store(true, Ordering::Relaxed);
+        log::info!("✓ Timer interrupt from USERSPACE detected!");
+        log::info!("  Timer tick #{}, interrupted Ring 3 code", count);
+        log::info!("  This confirms async preemption from CPL=3 works");
     }
     
     // ENABLE FIRST FEW TIMER INTERRUPT LOGS FOR CI DEBUGGING
@@ -103,8 +96,10 @@ pub fn reset_quantum() {
     }
 }
 
-/// Timer interrupt handler for assembly entry point
+/// Timer interrupt handler for assembly entry point (legacy, unused)
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler_asm() {
-    timer_interrupt_handler();
+    // This wrapper is no longer used since the assembly calls timer_interrupt_handler directly
+    // Kept for backward compatibility but should be removed
+    timer_interrupt_handler(0);
 }

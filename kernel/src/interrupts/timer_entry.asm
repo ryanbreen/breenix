@@ -42,7 +42,15 @@ timer_interrupt_entry:
     swapgs
     
 .skip_swapgs_entry:
-    ; Call the timer handler
+    ; Prepare parameter for timer handler: from_userspace flag
+    ; rdi = 1 if from userspace, 0 if from kernel
+    xor rdi, rdi                 ; Clear rdi
+    mov rax, [rsp + 15*8 + 8]   ; Get CS again
+    and rax, 3                   ; Check privilege level
+    cmp rax, 3                   ; Ring 3?
+    sete dil                     ; Set dil (low byte of rdi) to 1 if equal (from userspace)
+    
+    ; Call the timer handler with from_userspace parameter
     ; This ONLY updates ticks, quantum, and sets need_resched flag
     call timer_interrupt_handler
     
