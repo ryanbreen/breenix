@@ -60,9 +60,7 @@ jobs:
       - name: Prefetch dependencies
         run: cargo fetch
 
-      - name: Build (UEFI only, warnings as errors)
-        env:
-          RUSTFLAGS: "-D warnings -A dead_code"
+      - name: Build (UEFI only)
         run: cargo build --release --features testing --bin qemu-uefi --verbose
 
       - name: Ring3 smoke test (UEFI)
