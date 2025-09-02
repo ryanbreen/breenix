@@ -60,8 +60,10 @@ jobs:
       - name: Prefetch dependencies
         run: cargo fetch
 
-      - name: Build (UEFI only)
-        run: cargo build --release --features testing --bin qemu-uefi --verbose
+      - name: Build kernel and xtask
+        run: |
+          cargo build --release --features testing --bin qemu-uefi
+          cargo build --release -p xtask
 
       - name: Ring3 smoke test (UEFI)
         env:
@@ -109,13 +111,8 @@ jobs:
           sudo umount "$mnt"; rmdir "$mnt"
           echo "ESP + BOOTX64.EFI present ✅"
 
-          # Ensure line-buffering from launcher and run smoke test
-          export BREENIX_USE_STDBUF=1
-          bash scripts/ci/ring3_check.sh uefi || {
-            echo "ring3_check.sh failed; dumping qemu stderr if any";
-            ls -l logs || true;
-            exit 1;
-          }
+          # Run smoke test using xtask (same as ring3-smoke workflow)
+          cargo run -p xtask -- ring3-smoke
 
       - name: Upload logs
         if: always()
