@@ -35,9 +35,11 @@ mod interrupts;
 mod keyboard;
 mod logger;
 mod memory;
+mod per_cpu;
 mod process;
 mod rtc_test;
 mod serial;
+mod spinlock;
 mod syscall;
 mod task;
 pub mod test_exec;
@@ -46,8 +48,9 @@ mod time_test;
 mod tls;
 mod userspace_test;
 mod userspace_fault_tests;
+mod preempt_count_test;
 
-// Fault test thread function
+// Fault test thread function  
 #[cfg(feature = "testing")]
 extern "C" fn fault_test_thread(_arg: u64) -> ! {
     // Wait for initial Ring 3 process to run and validate
@@ -117,6 +120,18 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize GDT and IDT
     interrupts::init();
     log::info!("GDT and IDT initialized");
+
+    // Initialize per-CPU data (must be after GDT/TSS setup)
+    per_cpu::init();
+    // Set the TSS pointer in per-CPU data
+    per_cpu::set_tss(gdt::get_tss_ptr());
+    log::info!("Per-CPU data initialized");
+    
+    // Run comprehensive preempt_count tests (before interrupts are enabled)
+    log::info!("Running preempt_count comprehensive tests...");
+    preempt_count_test::test_preempt_count_comprehensive();
+    preempt_count_test::test_preempt_count_scheduling();
+    log::info!("✅ preempt_count tests completed successfully");
 
     // Initialize memory management
     log::info!("Checking physical memory offset availability...");
@@ -235,13 +250,14 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     syscall::init();
     log::info!("System call infrastructure initialized");
 
-    // Initialize threading subsystem
+    // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");
 
-    // Create idle thread for scheduler
+    // Create init_task (PID 0) - represents the currently running boot thread
+    // This is the Linux swapper/idle task pattern
     let tls_base = tls::current_tls_base();
-    let mut idle_thread = Box::new(task::thread::Thread::new(
-        "idle".to_string(),
+    let mut init_task = Box::new(task::thread::Thread::new(
+        "swapper/0".to_string(),  // Linux convention: swapper/0 is the idle task
         idle_thread_fn,
         VirtAddr::new(0), // Will be set to current RSP
         VirtAddr::new(0), // Will be set appropriately
@@ -249,63 +265,84 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         task::thread::ThreadPrivilege::Kernel,
     ));
 
-    // Mark idle thread as already running with ID 0
-    idle_thread.state = task::thread::ThreadState::Running;
-    idle_thread.id = 0; // Kernel thread has ID 0
+    // Mark init_task as already running with ID 0 (boot CPU idle task)
+    init_task.state = task::thread::ThreadState::Running;
+    init_task.id = 0; // PID 0 is the idle/swapper task
 
-    // Initialize scheduler with idle thread
-    task::scheduler::init(idle_thread);
-    log::info!("Threading subsystem initialized");
+    // Set up per-CPU current thread and idle thread
+    let init_task_ptr = &*init_task as *const _ as *mut task::thread::Thread;
+    per_cpu::set_current_thread(init_task_ptr);
+    per_cpu::set_idle_thread(init_task_ptr);
+    
+    // Set kernel stack in per-CPU for TSS.RSP0
+    // For boot thread, use current stack
+    let current_rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
+    }
+    per_cpu::set_kernel_stack_top(VirtAddr::new(current_rsp));
+    per_cpu::update_tss_rsp0(VirtAddr::new(current_rsp));
+
+    // Initialize scheduler with init_task as the current thread
+    // This follows Linux where the boot thread becomes the idle task
+    task::scheduler::init_with_current(init_task);
+    log::info!("Threading subsystem initialized with init_task (swapper/0)");
+    log::info!("percpu: cpu0 base={:#x}, current=swapper/0, rsp0={:#x}", 
+        x86_64::registers::model_specific::GsBase::read().as_u64(),
+        current_rsp
+    );
 
     // Initialize process management
     log::info!("Initializing process management...");
     process::init();
     log::info!("Process management initialized");
 
+    // Enable interrupts before doing post-boot work
     log::info!("Enabling interrupts...");
     x86_64::instructions::interrupts::enable();
     log::info!("Interrupts enabled!");
-
-    // RING3_SMOKE: Create userspace process early for CI validation
-    // Must be done before int3() which might hang in CI
-    #[cfg(feature = "testing")]
-    {
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            use alloc::string::String;
-            serial_println!("RING3_SMOKE: creating hello_time userspace process (early)");
-            let elf = userspace_test::get_test_binary("hello_time");
-            match process::create_user_process(String::from("smoke_hello_time"), &elf) {
-                Ok(pid) => {
-                    log::info!(
-                        "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
-                        pid.as_u64()
-                    );
-                }
-                Err(e) => {
-                    log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
-                }
-            }
-        });
-    }
-
-    // Test timer functionality immediately
-    // TEMPORARILY DISABLED - these tests delay userspace execution
-    // time_test::test_timer_directly();
-    // rtc_test::test_rtc_and_real_time();
-    // clock_gettime_test::test_clock_gettime();
-
+    
+    // Do all post-boot initialization directly in kernel_main
+    // This follows Linux where the boot thread does initialization then becomes idle
+    log::info!("Starting post-boot initialization...");
+    
     // Test if interrupts are working by triggering a breakpoint
     log::info!("Testing breakpoint interrupt...");
     x86_64::instructions::interrupts::int3();
     log::info!("Breakpoint test completed!");
     
-    // Run user-only fault tests after initial Ring 3 validation
+    // Create early userspace test processes
     #[cfg(feature = "testing")]
     {
-        // Create a kernel thread to run fault tests after a delay
-        use alloc::boxed::Box;
         use alloc::string::String;
         
+        // Create hello_world process
+        log::info!("Creating hello_world userspace test process...");
+        let elf = userspace_test::get_test_binary("hello_world");
+        match process::create_user_process(String::from("hello_world"), &elf) {
+            Ok(pid) => {
+                log::info!("Created hello_world process with PID {}", pid.as_u64());
+            }
+            Err(e) => {
+                log::error!("Failed to create hello_world process: {}", e);
+            }
+        }
+        
+        // Wait a bit for hello_world to run
+        log::info!("Waiting for hello_world to complete...");
+        for _ in 0..200 {  // ~2 seconds
+            for _ in 0..10_000_000 {
+                core::hint::spin_loop();
+            }
+        }
+        
+        // Now create ENOSYS test process
+        log::info!("Creating ENOSYS test process...");
+        test_exec::test_syscall_enosys();
+        
+        // Also spawn fault test thread
+        log::info!("Spawning fault test thread...");
+        use alloc::boxed::Box;
         match task::thread::Thread::new_kernel(
             String::from("fault_tester"),
             fault_test_thread,
@@ -313,19 +350,27 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         ) {
             Ok(thread) => {
                 task::scheduler::spawn(Box::new(thread));
-                log::info!("Spawned fault test thread - will run after initial Ring 3 validation");
+                log::info!("Spawned fault test thread");
             }
             Err(e) => {
                 log::error!("Failed to create fault test thread: {}", e);
             }
         }
     }
-
+    
     // Test other exceptions if enabled
     #[cfg(feature = "test_all_exceptions")]
     {
-        test_exception_handlers();
+        log::info!("Running exception tests...");
+        test_exceptions();
     }
+    
+    log::info!("Kernel initialization complete");
+    log::info!("System ready - entering idle loop");
+    
+    // kernel_main now becomes the idle task (swapper/0)
+    // This is the Linux pattern - the boot thread becomes idle
+    log::info!("Boot thread becoming idle task (swapper/0)...");
 
     // Run tests if testing feature is enabled
     #[cfg(feature = "testing")]
@@ -466,6 +511,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // CRITICAL: Test timer functionality first to validate timer fixes
     // Disable interrupts during process creation to prevent logger deadlock
+    log::info!("ENTERING TEST BLOCK: About to run test_exec tests");
     x86_64::instructions::interrupts::without_interrupts(|| {
         // Skip timer test for now to debug hello world
         // log::info!("=== TIMER TEST: Validating timer subsystem ===");
@@ -482,10 +528,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         test_exec::test_userspace_fork();
         log::info!("Userspace fork test completed.");
 
-        // Test ENOSYS syscall
-        log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
-        test_exec::test_syscall_enosys();
-        log::info!("ENOSYS test completed.");
+        // ENOSYS test moved earlier to ensure it runs
+        // See line 290-292 where it's called in the testing block
         
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");

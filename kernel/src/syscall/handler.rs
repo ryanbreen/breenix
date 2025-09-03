@@ -56,6 +56,9 @@ impl SyscallFrame {
 /// Main syscall handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
+    // Increment preempt count on syscall entry (prevents scheduling during syscall)
+    crate::per_cpu::preempt_disable();
+    
     // Enhanced syscall entry logging per Cursor requirements
     let from_userspace = frame.is_from_userspace();
     
@@ -216,6 +219,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     }
 
     // Note: Context switches after sys_yield happen on the next timer interrupt
+    
+    // Decrement preempt count on syscall exit
+    crate::per_cpu::preempt_enable();
 }
 
 // Assembly functions defined in entry.s

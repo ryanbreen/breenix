@@ -143,6 +143,9 @@ pub fn init_pic() {
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+    // Enter exception context - use preempt_disable for exceptions (not IRQs)
+    crate::per_cpu::preempt_disable();
+    
     // Check if we came from userspace
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
 
@@ -160,6 +163,9 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     } else {
         log::info!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
     }
+    
+    // Decrement preempt count on exception exit
+    crate::per_cpu::preempt_enable();
 }
 
 extern "x86-interrupt" fn double_fault_handler(
@@ -187,6 +193,9 @@ extern "x86-interrupt" fn double_fault_handler(
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
 
+    // Enter hardware IRQ context
+    crate::per_cpu::irq_enter();
+
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
@@ -197,10 +206,16 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }
+    
+    // Exit hardware IRQ context
+    crate::per_cpu::irq_exit();
 }
 
 extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
+
+    // Enter hardware IRQ context
+    crate::per_cpu::irq_enter();
 
     // Read from COM1 data port while data is available
     let mut lsr_port = Port::<u8>::new(0x3F8 + 5); // Line Status Register
@@ -216,9 +231,15 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Serial.as_u8());
     }
+    
+    // Exit hardware IRQ context
+    crate::per_cpu::irq_exit();
 }
 
 extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFrame) {
+    // Increment preempt count on exception entry
+    crate::per_cpu::preempt_disable();
+    
     log::error!("EXCEPTION: DIVIDE BY ZERO\n{:#?}", stack_frame);
     #[cfg(feature = "test_divide_by_zero")]
     {
@@ -227,10 +248,17 @@ extern "x86-interrupt" fn divide_by_zero_handler(stack_frame: InterruptStackFram
         crate::test_exit_qemu(crate::QemuExitCode::Success);
     }
     #[cfg(not(feature = "test_divide_by_zero"))]
-    panic!("Kernel halted due to divide by zero exception");
+    {
+        // Decrement preempt count before panic
+            crate::per_cpu::preempt_enable();
+        panic!("Kernel halted due to divide by zero exception");
+    }
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    // Increment preempt count on exception entry
+    crate::per_cpu::preempt_disable();
+    
     log::error!(
         "EXCEPTION: INVALID OPCODE at {:#x}\n{:#?}",
         stack_frame.instruction_pointer.as_u64(),
@@ -245,6 +273,8 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
     loop {
         x86_64::instructions::hlt();
     }
+    
+    // Note: preempt_enable() not called here since we enter infinite loop or exit
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -252,6 +282,9 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
+
+    // Increment preempt count on exception entry
+    crate::per_cpu::preempt_disable();
 
     let accessed_addr = Cr2::read().expect("Failed to read accessed address from CR2");
     
@@ -310,9 +343,14 @@ extern "x86-interrupt" fn page_fault_handler(
     loop {
         x86_64::instructions::hlt();
     }
+    
+    // Note: preempt_enable() not called here since we enter infinite loop or exit
 }
 
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
+    // Enter hardware IRQ context for unknown interrupts
+    crate::per_cpu::irq_enter();
+    
     // Get the interrupt number from the stack
     // Note: This is a bit hacky but helps with debugging
     let _interrupt_num = {
@@ -325,12 +363,18 @@ extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
         stack_frame.instruction_pointer.as_u64()
     );
     log::warn!("{:#?}", stack_frame);
+    
+    // Exit hardware IRQ context
+    crate::per_cpu::irq_exit();
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // Increment preempt count on exception entry
+    crate::per_cpu::preempt_disable();
+    
     // Check if this came from userspace
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
     
@@ -386,5 +430,8 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     log::error!("  Selector Index: {}", selector_index);
 
     log::error!("{:#?}", stack_frame);
+    
+    // Decrement preempt count before panic
+    crate::per_cpu::preempt_enable();
     panic!("General Protection Fault");
 }

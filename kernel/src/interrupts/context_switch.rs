@@ -25,6 +25,11 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
+    if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
+        return;
+    }
+    
     // Check if reschedule is needed
     if !scheduler::check_and_clear_need_resched() {
         // No reschedule needed, just return
@@ -176,6 +181,20 @@ fn switch_to_thread(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    // Update per-CPU current thread and TSS.RSP0
+    scheduler::with_thread_mut(thread_id, |thread| {
+        // Update per-CPU current thread pointer
+        let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
+        crate::per_cpu::set_current_thread(thread_ptr);
+        
+        // Update TSS.RSP0 with new thread's kernel stack top
+        // This is critical for interrupt/exception handling
+        if let Some(kernel_stack_top) = thread.kernel_stack_top {
+            crate::per_cpu::update_tss_rsp0(kernel_stack_top);
+            log::trace!("sched: switch to thread {} rsp0={:#x}", thread_id, kernel_stack_top);
+        }
+    });
+    
     // Switch TLS if needed (kernel threads don't have TLS)
     let is_kernel_thread = scheduler::with_thread_mut(thread_id, |thread| {
         thread.privilege == ThreadPrivilege::Kernel

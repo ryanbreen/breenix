@@ -273,6 +273,20 @@ pub fn init(idle_thread: Box<Thread>) {
     log::info!("Scheduler initialized");
 }
 
+/// Initialize scheduler with the current thread as the idle task (Linux-style)
+/// This is used during boot where the boot thread becomes the idle task
+pub fn init_with_current(current_thread: Box<Thread>) {
+    let mut scheduler_lock = SCHEDULER.lock();
+    let thread_id = current_thread.id();
+    
+    // Create scheduler with current thread as both idle and current
+    let mut scheduler = Scheduler::new(current_thread);
+    scheduler.current_thread = Some(thread_id);
+    
+    *scheduler_lock = Some(scheduler);
+    log::info!("Scheduler initialized with current thread {} as idle task", thread_id);
+}
+
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
     // Disable interrupts to prevent timer interrupt deadlock
@@ -314,6 +328,36 @@ pub fn schedule() -> Option<(u64, u64)> {
     };
 
     result
+}
+
+/// Special scheduling point called from IRQ exit path
+/// This is safe to call from IRQ context when returning to user or idle
+pub fn preempt_schedule_irq() {
+    // This is the Linux-style preempt_schedule_irq equivalent
+    // It's called from irq_exit when:
+    // 1. HARDIRQ count is going to 0
+    // 2. need_resched is set
+    // 3. We're about to return to a preemptible context
+    
+    // Linux-style loop: keep scheduling while need_resched is set
+    // This prevents lost wakeups
+    loop {
+        // Check need_resched at the start of each iteration
+        if !crate::per_cpu::need_resched() {
+            break;
+        }
+        
+        // Clear need_resched only AFTER checking it
+        crate::per_cpu::set_need_resched(false);
+        
+        // Try non-blocking schedule since we're in IRQ exit path
+        if let Some((old_tid, new_tid)) = try_schedule() {
+            log::info!("preempt_schedule_irq: Scheduled {} -> {}", old_tid, new_tid);
+            // Context switch will happen on return from interrupt
+        }
+        
+        // Loop will check need_resched again in case it was set during scheduling
+    }
 }
 
 /// Non-blocking scheduling attempt (for interrupt context). Returns None if lock is busy.

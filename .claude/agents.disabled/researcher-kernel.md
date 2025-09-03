@@ -28,7 +28,7 @@ When you need to research:
 
 ## Tool Invocation Pattern
 
-Always call the MCP tool `cursor-cli:cursor_agent.review` with these parameters:
+Always call the MCP tool `cursor-cli:cursor_agent_execute` with these parameters:
 
 ```json
 {

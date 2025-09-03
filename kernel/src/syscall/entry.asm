@@ -20,27 +20,29 @@ extern trace_iretq_to_ring3
 ;   - Interrupts are disabled
 ;   - We're in Ring 0
 syscall_entry:
-    ; Save all general purpose registers
-    push r15
-    push r14
-    push r13
-    push r12
-    push r11
-    push r10
-    push r9
-    push r8
-    push rdi
-    push rsi
-    push rbp
-    push rbx
-    push rdx
+    ; Save all general purpose registers in SavedRegisters order
+    ; Must match timer interrupt order: rax first, r15 last
+    push rax    ; syscall number (pushed first, at RSP+14*8)
     push rcx
-    push rax    ; syscall number
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15    ; pushed last, at RSP+0
 
     ; Clear direction flag for string operations
     cld
 
-    ; Switch to kernel GS (for TLS)
+    ; Always switch to kernel GS for INT 0x80 entry
+    ; INT 0x80 is only used from userspace, so we always need swapgs
     swapgs
 
     ; Call the Rust syscall handler
@@ -50,7 +52,8 @@ syscall_entry:
 
     ; Return value is in RAX, which will be restored to userspace
 
-    ; Switch back to user GS
+    ; Always switch back to user GS when returning from INT 0x80
+    ; Since INT 0x80 is only from userspace, we always return to userspace
     swapgs
 
     ; Check if we need to reschedule before returning to userspace
@@ -62,22 +65,22 @@ syscall_entry:
     call check_need_resched_and_switch
     pop rax                   ; Restore syscall return value
 
-    ; Restore all general purpose registers
-    pop rax     ; This gets the syscall return value set by handler
-    pop rcx
-    pop rdx
-    pop rbx
-    pop rbp
-    pop rsi
-    pop rdi
-    pop r8
-    pop r9
-    pop r10
-    pop r11
-    pop r12
-    pop r13
+    ; Restore all general purpose registers in reverse push order
+    pop r15    ; Last pushed, first popped
     pop r14
-    pop r15
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax     ; This gets the syscall return value set by handler
 
     ; Check if we need to switch page tables before returning to userspace
     ; We know we're returning to userspace since this is a syscall

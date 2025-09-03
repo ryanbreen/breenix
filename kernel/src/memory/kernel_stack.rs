@@ -13,8 +13,8 @@ const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 /// End address for kernel stack allocation (16 MiB total space)
 const KERNEL_STACK_END: u64 = 0xffffc900_0100_0000;
 
-/// Size of each kernel stack (8 KiB)
-const KERNEL_STACK_SIZE: u64 = 8 * 1024;
+/// Size of each kernel stack (16 KiB) - matches Linux/FreeBSD standard
+const KERNEL_STACK_SIZE: u64 = 16 * 1024;
 
 /// Size of guard page (4 KiB)
 const GUARD_PAGE_SIZE: u64 = 4 * 1024;

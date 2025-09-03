@@ -200,6 +200,7 @@ impl ProcessManager {
             stack_top,
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
+            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
             tls_block: actual_tls_block,
             priority: 128,
             time_slice: 10,
@@ -792,6 +793,7 @@ impl ProcessManager {
             stack_top: child_stack_top,
             stack_bottom: child_stack_top - (64 * 1024),
             kernel_stack_top: child_kernel_stack_top,
+            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
             tls_block: child_tls_block,
             priority: parent_thread.priority,
             time_slice: parent_thread.time_slice,

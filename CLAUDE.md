@@ -16,6 +16,22 @@ Claude Code MUST use reusable utilities and scripts instead of creating new comm
 
 This policy ensures smooth workflow without constant approval interruptions.
 
+## 🚨 CRITICAL MINDSET: NO TIME CONSTRAINTS 🚨
+
+**THERE ARE NO TIME CONSTRAINTS - ONLY QUALITY MATTERS**
+
+- **Never rush or cite "time constraints"** - Ryan doesn't care how long it takes
+- **Iterate until perfect** - Keep working with Cursor CLI until we get ACCEPT
+- **Production-grade or nothing** - Continue refining until the implementation is flawless
+- **Continuous improvement** - Each iteration should address ALL feedback, not just some
+- **No shortcuts due to "complexity"** - If something is complex, that's MORE reason to do it right
+
+When working with validation agents like Cursor:
+- Continue iterating until you receive ACCEPT
+- Address EVERY piece of feedback thoroughly
+- Never stop due to "time" or "complexity" 
+- The goal is excellence, not speed
+
 ## 🚨 CRITICAL DESIGN PRINCIPLE 🚨
 
 **ALWAYS FOLLOW OS-STANDARD PRACTICES - NO SHORTCUTS**
@@ -506,3 +522,41 @@ As we complete feature migrations from `src.legacy/` to the new kernel:
    - Keeps the project focused on the new implementation
 
 Example: When timestamp logging reaches parity, remove the legacy print macros and timer code that are no longer needed as reference.
+
+## 🚨 CRITICAL VALIDATION REQUIREMENT 🚨
+
+**ALWAYS validate implementations with Cursor CLI before declaring success**
+
+When implementing or fixing features, you MUST:
+1. **Present all evidence to Cursor CLI** for critical validation
+2. **Include all implementation details**, file changes, and test results
+3. **Ask Cursor CLI to verify** correctness, completeness, and identify issues
+4. **Address any concerns** raised by the validation
+5. **Only declare victory** after passing validation
+
+This validation step is MANDATORY for:
+- New feature implementations
+- Bug fixes that claim to work
+- Test infrastructure changes
+- CI/CD workflow additions
+- Any claim of "this is now working"
+
+**Example**: When adding ENOSYS test, present all files, test results, and implementation details to Cursor CLI for thorough review before claiming success.
+
+## 🚨 CONTEXT COMPRESSION REMINDER 🚨
+
+**RE-READ THIS FILE AFTER EVERY CONTEXT COMPRESSION**
+
+When you receive a message about context being compressed or conversation being summarized:
+1. **IMMEDIATELY re-read this entire CLAUDE.md file** to refresh critical instructions
+2. **Pay special attention** to the NO TIME CONSTRAINTS mindset
+3. **Remember** that you should continue iterating with Cursor until ACCEPT
+4. **Check your todo list** and continue where you left off
+
+Setting up a hook (for Ryan to configure):
+To automatically remind Claude to re-read this file after context compression, add a hook that triggers when context is compressed. The hook should output:
+```
+IMPORTANT: Context was just compressed. Re-read /Users/wrb/fun/code/breenix/CLAUDE.md NOW to refresh critical project instructions, especially the NO TIME CONSTRAINTS mindset.
+```
+
+This ensures continuity and prevents loss of critical project context across conversation boundaries.

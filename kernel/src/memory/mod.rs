@@ -74,9 +74,10 @@ pub fn phys_to_virt(phys: PhysAddr, offset: VirtAddr) -> VirtAddr {
     VirtAddr::new(phys.as_u64() + offset.as_u64())
 }
 
-/// Allocate a kernel stack
-pub fn alloc_kernel_stack(size: usize) -> Option<stack::GuardedStack> {
-    stack::allocate_stack(size).ok()
+/// Allocate a kernel stack using the bitmap-based allocator
+/// Note: size parameter is ignored - all kernel stacks are 8KB + 4KB guard
+pub fn alloc_kernel_stack(_size: usize) -> Option<kernel_stack::KernelStack> {
+    kernel_stack::allocate_kernel_stack().ok()
 }
 
 /// Display comprehensive memory debug information

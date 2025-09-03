@@ -39,8 +39,8 @@ timer_interrupt_entry:
     ; CRITICAL: Check if we came from userspace and need to swap GS
     ; Get CS from interrupt frame to check privilege level
     ; Frame layout after pushes: [r15...rax][RIP][CS][RFLAGS][RSP][SS]
-    lea rbx, [rsp + SAVED_REGS_SIZE]  ; Point to interrupt frame
-    mov rax, [rbx + 8]                 ; Get CS
+    ; CS is at RSP + 15*8 + 8 (15 saved regs + RIP)
+    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS directly via RSP
     and rax, 3                         ; Check privilege level (RPL bits)
     cmp rax, 3                         ; Ring 3?
     jne .skip_swapgs_entry             ; If not from userspace, skip swapgs
@@ -52,7 +52,7 @@ timer_interrupt_entry:
     ; Pass frame pointer to logging function
     push rdi
     push rsi
-    mov rdi, rbx                       ; Pass frame pointer
+    lea rdi, [rsp + 16 + SAVED_REGS_SIZE]  ; Pass frame pointer (adjust for pushes)
     call log_timer_frame_from_userspace
     pop rsi
     pop rdi
@@ -61,8 +61,7 @@ timer_interrupt_entry:
     ; Prepare parameter for timer handler: from_userspace flag
     ; rdi = 1 if from userspace, 0 if from kernel
     xor rdi, rdi                       ; Clear rdi
-    lea rbx, [rsp + SAVED_REGS_SIZE]  ; Point to interrupt frame
-    mov rax, [rbx + 8]                 ; Get CS
+    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS directly via RSP
     and rax, 3                         ; Check privilege level
     cmp rax, 3                         ; Ring 3?
     sete dil                           ; Set dil (low byte of rdi) to 1 if equal (from userspace)
@@ -72,10 +71,18 @@ timer_interrupt_entry:
     call timer_interrupt_handler
     
     ; Now check if we need to reschedule
-    ; This is the CORRECT place for context switching logic
+    ; Only reschedule when returning to userspace (avoid kernel preemption hang)
+    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS directly via RSP
+    and rax, 3                ; Check privilege level (RPL)
+    cmp rax, 3                ; Ring 3 (userspace)?
+    jne .skip_resched         ; If not userspace, skip reschedule
+    
+    ; This is the CORRECT place for context switching logic (userspace only)
     mov rdi, rsp              ; Pass pointer to saved registers
     lea rsi, [rsp + 15*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
+    
+.skip_resched:
     
     ; Restore all general purpose registers
     ; Note: If we switched contexts, these will be different registers!

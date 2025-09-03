@@ -21,6 +21,8 @@ static mut CURRENT_QUANTUM: u32 = TIME_QUANTUM;
 /// @param from_userspace: 1 if interrupted userspace, 0 if interrupted kernel
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
+    // Enter hardware IRQ context (increments HARDIRQ count)
+    crate::per_cpu::irq_enter();
     // Log the first few timer interrupts for debugging
     static TIMER_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -87,6 +89,9 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
     //     log::debug!("Timer interrupt #{} - EOI sent", count);
     // }
 
+    // Exit hardware IRQ context (decrements HARDIRQ count and may schedule)
+    crate::per_cpu::irq_exit();
+    
     // if count < 5 {
     //     log::debug!("Timer interrupt #{} complete", count);
     // }

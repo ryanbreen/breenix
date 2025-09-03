@@ -870,7 +870,7 @@ pub fn test_syscall_enosys() {
     #[cfg(all(feature = "testing", feature = "external_test_bins"))]
     let syscall_enosys_elf: &[u8] = include_bytes!("../../userspace/tests/syscall_enosys.elf");
     #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
-    let syscall_enosys_elf_buf = crate::userspace_test::get_test_binary("hello_world");
+    let syscall_enosys_elf_buf = crate::userspace_test::get_test_binary("syscall_enosys");
     #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
     let syscall_enosys_elf: &[u8] = &syscall_enosys_elf_buf;
     #[cfg(not(feature = "testing"))]
