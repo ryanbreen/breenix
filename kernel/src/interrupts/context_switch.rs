@@ -515,10 +515,13 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                 // Using raw value since from_bits_truncate might be clearing bit 1
                 unsafe {
                     let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
-                    *flags_ptr = 0x2;  // Bit 1 must be set, IF (bit 9) cleared
+                    // CRITICAL: Set TF (bit 8) and IF (bit 9) per Cursor guidance
+                    // TF will trigger #DB on first user instruction, proving IRETQ succeeded
+                    // IF enables interrupts for visibility
+                    *flags_ptr = 0x302;  // Bit 1=1 (required), TF=1 (bit 8), IF=1 (bit 9)
                 }
                 let actual_flags = unsafe { *((&frame.cpu_flags) as *const _ as *const u64) };
-                crate::serial_println!("Set RFLAGS to {:#x} (interrupts DISABLED for test)", actual_flags);
+                crate::serial_println!("Set RFLAGS to {:#x} (TF=1, IF=1 for debug visibility)", actual_flags);
                 
                 crate::serial_println!(
                     "First entry frame: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}, RFLAGS={:#x}",

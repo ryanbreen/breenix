@@ -1,7 +1,9 @@
 ; Syscall entry and exit routines for x86_64
 ; Uses NASM syntax
 
-section .text
+; CRITICAL: Place syscall entry code in dedicated section that stays mapped
+; This ensures the code is accessible after CR3 switches to process page tables
+section .text.entry
 
 global syscall_entry
 global syscall_return_to_userspace

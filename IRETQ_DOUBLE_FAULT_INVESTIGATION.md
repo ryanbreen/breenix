@@ -1,8 +1,11 @@
 # IRETQ Double Fault Investigation - Comprehensive Analysis
 
-## Executive Summary
+## Executive Summary (Updated 2025-01-07)
 
-The Breenix kernel successfully reaches Ring 3 userspace initially, but when returning from a timer interrupt back to userspace via `iretq`, it triggers a double fault. Despite extensive investigation and multiple attempted fixes, the issue persists.
+The Breenix kernel's issue has evolved through multiple phases:
+1. **Original**: Double fault when attempting IRETQ to userspace
+2. **Partially Fixed**: Kernel stack mapping issue resolved via pre-building page table hierarchy
+3. **Current**: Kernel hangs when Rust function returns to assembly code after CR3 switch
 
 ## Current State
 
@@ -203,14 +206,36 @@ if page.start_address().as_u64() == 0x10000000 {
 - **Context switching**: `/kernel/src/interrupts/context_switch.rs`
 - **Kernel stack allocation**: `/kernel/src/memory/kernel_stack.rs`
 
+## Latest Discovery (2025-01-07)
+
+### Kernel Stack Mapping Fixed
+The original issue with kernel stacks not being mapped was resolved by modifying `build_master_kernel_pml4()` to pre-build the page table hierarchy for the kernel stack region (PML4[402]). This ensures kernel stacks remain accessible after CR3 switches.
+
+### New Problem: Assembly Code Accessibility
+After fixing the kernel stack mapping, a new issue emerged:
+1. **Symbol Address Corruption**: Assembly symbols like `timer_interrupt_entry` show corrupted addresses (0x100000b5d26 instead of ~0x10xxxx)
+2. **Return Address Problem**: When `check_need_resched_and_switch` returns after CR3 switch, the return address points to unmapped assembly code
+3. **Workaround Applied**: Using low-half addresses in IDT entries, but return addresses on stack still problematic
+
+### Root Cause
+The fundamental issue is that interrupt entry assembly code needs to be accessible in both kernel and process page tables. Currently:
+- The kernel is linked at 0x100000 (low-half)
+- PML4[0] is preserved in master kernel page table
+- But assembly symbols show corrupted addresses
+- Return addresses pushed on stack become invalid after CR3 switch
+
 ## Summary
 
-After extensive investigation, the root cause is clear: the kernel stack containing the IRET frame becomes inaccessible when switching to process page tables, causing IRETQ to fail when trying to pop the return context. The stack at 0x18000012718 is outside the standard kernel stack range and isn't properly mapped in process page tables. 
+The investigation has evolved from a double fault issue to a more fundamental problem with address space transitions. The kernel stack mapping has been fixed, but the kernel cannot execute assembly code after switching to process page tables because:
 
-The solution requires either:
-1. Properly mapping ALL kernel memory (including bootstrap stacks) in process page tables
-2. Using a different stack for IRETQ operations
-3. Changing when/how CR3 switches occur
-4. Fixing the kernel to not use non-standard stacks
+1. Assembly symbols have corrupted addresses (possible bootloader relocation?)
+2. Return addresses on the stack point to unmapped memory after CR3 switch
+3. The kernel needs to complete its "Phase 3" migration to higher-half addresses
 
-The investigation has definitively ruled out GDT misconfiguration, IRET frame corruption, and IST issues. The problem is purely about memory accessibility during the critical IRETQ operation.
+The solution requires:
+1. **Investigate symbol corruption**: Determine why assembly symbols have unexpected addresses
+2. **Complete higher-half migration**: Move kernel to 0xffffffff80000000 as planned
+3. **Ensure all kernel code is mapped**: Both Rust and assembly code must be accessible in all page tables
+4. **Fix linker script**: Properly handle `.text.entry` sections
+
+The investigation has definitively ruled out GDT misconfiguration, IRET frame corruption, and IST issues. The current problem is about code accessibility during address space transitions.

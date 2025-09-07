@@ -57,6 +57,10 @@ pub fn init_idt() {
 
         // CPU exception handlers
         idt.divide_error.set_handler_fn(divide_by_zero_handler);
+        
+        // Debug exception handler (#DB) - IDT[1]
+        // Triggered by TF (Trap Flag) for single-stepping
+        idt.debug.set_handler_fn(debug_handler);
 
         // Breakpoint handler - must be callable from userspace
         // Set DPL=3 to allow INT3 from Ring 3
@@ -67,6 +71,8 @@ pub fn init_idt() {
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.general_protection_fault
             .set_handler_fn(general_protection_fault_handler);
+        idt.stack_segment_fault
+            .set_handler_fn(stack_segment_fault_handler);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
@@ -80,32 +86,67 @@ pub fn init_idt() {
 
         // Hardware interrupt handlers
         // Timer interrupt with proper interrupt return path handling
-        // NOTE: Keep using low-half addresses until Phase 3 kernel relocation
+        // CRITICAL: Use high-half alias for timer entry so it remains accessible after CR3 switch
         extern "C" {
             fn timer_interrupt_entry();
         }
         unsafe {
-            idt[InterruptIndex::Timer.as_u8()]
-                .set_handler_addr(VirtAddr::new(timer_interrupt_entry as u64));
+            // Convert low-half address to high-half alias
+            let timer_entry_low = timer_interrupt_entry as u64;
+            
+            // CRITICAL: Validate the address is in expected range before conversion
+            if timer_entry_low < 0x100000 || timer_entry_low > 0x400000 {
+                log::error!("INVALID timer_interrupt_entry address: {:#x}", timer_entry_low);
+                // For now, use the low address directly - it should work since we preserve PML4[0]
+                log::warn!("Using low-half address for timer entry (temporary workaround)");
+                idt[InterruptIndex::Timer.as_u8()]
+                    .set_handler_addr(VirtAddr::new(timer_entry_low));
+            } else {
+                let timer_entry_high = crate::memory::layout::high_alias_from_low(timer_entry_low);
+                log::info!("Timer entry: low={:#x} -> high={:#x}", timer_entry_low, timer_entry_high);
+                idt[InterruptIndex::Timer.as_u8()]
+                    .set_handler_addr(VirtAddr::new(timer_entry_high));
+            }
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
 
         // System call handler (INT 0x80)
         // Use assembly handler for proper syscall dispatching
+        // CRITICAL: Use high-half alias for syscall entry so it remains accessible from userspace
         extern "C" {
             fn syscall_entry();
         }
-        // NOTE: Keep using low-half addresses until Phase 3 kernel relocation
         unsafe {
-            idt[SYSCALL_INTERRUPT_ID]
-                .set_handler_addr(x86_64::VirtAddr::new(syscall_entry as u64))
-                .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+            // Convert low-half address to high-half alias
+            let syscall_entry_low = syscall_entry as u64;
+            
+            // CRITICAL: Validate the address is in expected range before conversion
+            if syscall_entry_low < 0x100000 || syscall_entry_low > 0x400000 {
+                log::error!("INVALID syscall_entry address: {:#x}", syscall_entry_low);
+                // For now, use the low address directly - it should work since we preserve PML4[0]
+                log::warn!("Using low-half address for syscall entry (temporary workaround)");
+                idt[SYSCALL_INTERRUPT_ID]
+                    .set_handler_addr(x86_64::VirtAddr::new(syscall_entry_low))
+                    .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+            } else {
+                let syscall_entry_high = crate::memory::layout::high_alias_from_low(syscall_entry_low);
+                log::info!("Syscall entry: low={:#x} -> high={:#x}", syscall_entry_low, syscall_entry_high);
+                idt[SYSCALL_INTERRUPT_ID]
+                    .set_handler_addr(x86_64::VirtAddr::new(syscall_entry_high))
+                    .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+            }
         }
         
         // Log IDT gate attributes for verification
         log::info!("IDT[0x80] gate attributes:");
-        log::info!("  Handler address: {:#x} (low-half, to be relocated in Phase 3)", syscall_entry as u64);
+        let actual_syscall_addr = syscall_entry as u64;
+        if actual_syscall_addr < 0x100000 || actual_syscall_addr > 0x400000 {
+            log::info!("  Handler address: {:#x} (low-half, validation failed)", actual_syscall_addr);
+        } else {
+            let syscall_entry_high = crate::memory::layout::high_alias_from_low(actual_syscall_addr);
+            log::info!("  Handler address: {:#x} (high-half alias)", syscall_entry_high);
+        }
         log::info!("  DPL (privilege level): Ring3 (allowing userspace access)");
         log::info!("  Gate type: Interrupt gate (interrupts disabled on entry)");
         log::info!("Syscall handler configured with assembly entry point");
@@ -149,6 +190,36 @@ pub fn init_pic() {
         let mask = port.read() & !0b00010011; // Clear bit 0 (timer), bit 1 (keyboard), and bit 4 (serial)
         port.write(mask);
     }
+}
+
+extern "x86-interrupt" fn debug_handler(stack_frame: InterruptStackFrame) {
+    // Enter exception context - use preempt_disable for exceptions (not IRQs)
+    crate::per_cpu::preempt_disable();
+    
+    // Check if we came from userspace
+    let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
+
+    if from_userspace {
+        log::info!("🎯 #DB (DEBUG EXCEPTION) from USERSPACE - IRETQ SUCCEEDED!");
+        log::info!(
+            "  RIP: {:#x} (first user instruction after IRETQ)",
+            stack_frame.instruction_pointer.as_u64()
+        );
+        log::info!(
+            "  RSP: {:#x}, CS: {:#x} (RPL={}), SS: {:#x}",
+            stack_frame.stack_pointer.as_u64(),
+            stack_frame.code_segment.0,
+            stack_frame.code_segment.0 & 3,
+            stack_frame.stack_segment.0
+        );
+        // TODO: Clear TF flag to stop single-stepping after proving IRETQ works
+    } else {
+        log::info!("#DB (Debug Exception) from kernel at {:#x}", 
+                  stack_frame.instruction_pointer.as_u64());
+    }
+    
+    // Decrement preempt count on exception exit
+    crate::per_cpu::preempt_enable();
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
@@ -447,6 +518,34 @@ extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     crate::per_cpu::irq_exit();
 }
 
+extern "x86-interrupt" fn stack_segment_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    // Increment preempt count on exception entry
+    crate::per_cpu::preempt_disable();
+    
+    // Check if this came from userspace
+    let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
+    
+    log::error!("EXCEPTION: STACK SEGMENT FAULT (#SS)");
+    log::error!("  Error Code: {:#x}", error_code);
+    
+    // #SS during IRETQ is usually due to invalid SS selector or stack issues
+    if !from_userspace {
+        log::error!("  💥 LIKELY IRETQ FAILURE - invalid SS selector or stack!");
+        log::error!("  Check: SS selector validity, DPL=3, stack mapping");
+    }
+    
+    log::error!("  CS: {:#x} (RPL={})", stack_frame.code_segment.0, stack_frame.code_segment.0 & 3);
+    log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::error!("  RSP: {:#x}", stack_frame.stack_pointer.as_u64());
+    log::error!("  SS: {:#x}", stack_frame.stack_segment.0);
+    
+    log::error!("\n{:#?}", stack_frame);
+    panic!("Stack segment fault - likely IRETQ issue!");
+}
+
 extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
@@ -457,7 +556,7 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     // Check if this came from userspace
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
     
-    log::error!("EXCEPTION: GENERAL PROTECTION FAULT");
+    log::error!("EXCEPTION: GENERAL PROTECTION FAULT (#GP)");
     
     // Decode the error code to identify the problematic selector
     let external = (error_code & 1) != 0;
@@ -477,6 +576,18 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     log::error!("  Error Code: {:#x}", error_code);
     log::error!("  Decoded: external={}, table={} ({}), index={}, selector={:#x}",
                external, table, table_name, index, selector);
+    
+    // Check if this might be an IRETQ failure
+    if !from_userspace && stack_frame.instruction_pointer.as_u64() < 0x1000_0000 {
+        log::error!("  💥 LIKELY IRETQ FAILURE - fault during return to userspace!");
+        log::error!("  Problematic selector: {:#x} from {}", selector, table_name);
+        if selector == 0x33 {
+            log::error!("  Issue with user CS (0x33) - check GDT entry, L bit, DPL");
+        } else if selector == 0x2b {
+            log::error!("  Issue with user SS (0x2b) - check GDT entry, DPL");
+        }
+    }
+    
     log::error!("  CS: {:#x} (RPL={})", stack_frame.code_segment.0, stack_frame.code_segment.0 & 3);
     log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
     

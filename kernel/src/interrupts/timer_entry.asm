@@ -10,7 +10,9 @@ extern timer_interrupt_handler
 extern check_need_resched_and_switch
 extern log_timer_frame_from_userspace
 
-section .text
+; CRITICAL: Place interrupt entry code in dedicated section that stays mapped
+; This ensures the code is accessible after CR3 switches to process page tables
+section .text.entry
 bits 64
 
 ; Define constant for saved register count to avoid magic numbers
@@ -240,6 +242,10 @@ timer_interrupt_entry:
 .stack_looks_ok:
     ; No error code to remove
     ; NO EXTRA POPS - registers already restored above!
+    
+    ; CRITICAL DEBUG: INT3 to prove we reach IRETQ
+    ; If we see a BREAKPOINT exception, we made it here
+    int3
     
     ; Return from interrupt to userspace
     iretq
