@@ -509,8 +509,10 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             }
         };
 
-        // Find current process
-        let current_pid = {
+        #[cfg(feature = "testing")]
+        {
+            // Find current process
+            let current_pid = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
                 if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
@@ -564,6 +566,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             log::error!("sys_exec: Process manager not available");
             SyscallResult::Err(12) // ENOMEM
         }
+        } // End of #[cfg(feature = "testing")] block
     })
 }
 

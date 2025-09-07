@@ -44,7 +44,10 @@ impl ProcessPageTable {
         let new_l3_table = unsafe { &mut *(new_l3_virt.as_mut_ptr() as *mut PageTable) };
 
         // Clear the new L3 table
-        new_l3_table.zero();
+        // Clear all entries properly (not using zero() which sets PRESENT | WRITABLE)
+        for i in 0..512 {
+            new_l3_table[i].set_unused();
+        }
 
         // Map the source L3 table
         let source_l3_virt = phys_offset + source_entry.addr().as_u64();
@@ -105,7 +108,10 @@ impl ProcessPageTable {
         let new_l2_table = unsafe { &mut *(new_l2_virt.as_mut_ptr() as *mut PageTable) };
 
         // Clear the new L2 table
-        new_l2_table.zero();
+        // Clear all entries properly (not using zero() which sets PRESENT | WRITABLE)
+        for i in 0..512 {
+            new_l2_table[i].set_unused();
+        }
 
         // Map the source L2 table
         let source_l2_virt = phys_offset + source_entry.addr().as_u64();
@@ -182,7 +188,10 @@ impl ProcessPageTable {
         let new_l1_table = unsafe { &mut *(new_l1_virt.as_mut_ptr() as *mut PageTable) };
 
         // Clear the new L1 table
-        new_l1_table.zero();
+        // Clear all entries properly (not using zero() which sets PRESENT | WRITABLE)
+        for i in 0..512 {
+            new_l1_table[i].set_unused();
+        }
 
         // Map the source L1 table
         let source_l1_virt = phys_offset + source_entry.addr().as_u64();
@@ -215,6 +224,8 @@ impl ProcessPageTable {
     /// This creates a new level 4 page table with kernel mappings copied
     /// from the current page table.
     pub fn new() -> Result<Self, &'static str> {
+        // NOTE: Removed serial_println here to avoid potential stack issues
+        
         // Check stack pointer before allocating
         let rsp: u64;
         unsafe {
@@ -294,34 +305,28 @@ impl ProcessPageTable {
             &mut *table_ptr
         };
 
-        log::debug!("About to zero the new page table");
-        // Clear the new page table
-        level_4_table.zero();
-        log::debug!("Successfully zeroed new page table");
+        log::debug!("About to clear the new page table");
+        // CRITICAL: Properly clear the new page table
+        // Do NOT use zero() as it sets entries to PRESENT | WRITABLE with addr=0x0!
+        // We need to set all entries to actually be empty (0x0)
+        for i in 0..512 {
+            level_4_table[i].set_unused();
+        }
+        log::debug!("Successfully cleared new page table (all entries set to unused)");
 
-        // Copy kernel mappings from the KERNEL's original page table
-        // CRITICAL: We must use the kernel's page table (0x101000), not the current process's table
-        // This prevents corrupted mappings from being propagated during fork()
+        // Copy kernel mappings from the CURRENT page table
+        // The current CR3 has working mappings (kernel is running), so use those
         unsafe {
-            const KERNEL_CR3: u64 = 0x101000; // The kernel's original page table
-
             let current_l4_table = {
-                // Log what CR3 we're currently using vs what we should use
+                // Use the CURRENT CR3 which has working mappings
                 let (current_frame, _) = Cr3::read();
                 log::debug!(
-                    "ProcessPageTable::new() - Current CR3: {:#x}",
+                    "ProcessPageTable::new() - Using current CR3: {:#x} for copying",
                     current_frame.start_address().as_u64()
                 );
-                log::debug!(
-                    "ProcessPageTable::new() - Using kernel CR3: {:#x} for copying",
-                    KERNEL_CR3
-                );
 
-                // Always use the kernel's page table for copying kernel mappings
-                let kernel_frame =
-                    PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(KERNEL_CR3));
-                let virt = phys_offset + kernel_frame.start_address().as_u64();
-                log::debug!("Kernel L4 table virtual address: {:#x}", virt.as_u64());
+                let virt = phys_offset + current_frame.start_address().as_u64();
+                log::debug!("Current L4 table virtual address: {:#x}", virt.as_u64());
                 &*(virt.as_ptr() as *const PageTable)
             };
 
@@ -333,43 +338,388 @@ impl ProcessPageTable {
             // This ensures all kernel mappings (including dynamically allocated kernel stacks)
             // are visible to all processes
 
-            // Get the global kernel PDPT frame
-            let kernel_pdpt_frame = crate::memory::kernel_page_table::kernel_pdpt_frame()
-                .ok_or("Global kernel page tables not initialized")?;
-
-            log::debug!("Using global kernel PDPT frame: {:?}", kernel_pdpt_frame);
-
-            // Set up PML4 entries 256-511 to point to the shared kernel PDPT
-            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-
+            // CRITICAL: Copy ALL kernel PML4 entries to ensure kernel code remains accessible
+            // after CR3 switch. This follows standard OS practice of sharing kernel mappings
+            // across all process page tables.
+            
+            let mut kernel_entries_count = 0;
+            
+            // Copy upper half (256-511) - traditional kernel space
+            // First, let's debug what's actually in the kernel page table
+            log::debug!("Examining kernel page table upper half entries:");
+            let mut valid_upper_entries = 0;
             for i in 256..512 {
-                level_4_table[i].set_frame(kernel_pdpt_frame, flags);
+                if !current_l4_table[i].is_unused() {
+                    let addr = current_l4_table[i].addr();
+                    let flags = current_l4_table[i].flags();
+                    
+                    // Log ALL upper half entries for debugging
+                    if i <= 260 || i >= 509 {  // First few and last few
+                        log::debug!("  Kernel PML4[{}]: phys={:#x}, flags={:?}", i, addr.as_u64(), flags);
+                    }
+                    
+                    // CRITICAL: Validate that the entry has a valid physical address
+                    // An entry with PRESENT but addr=0x0 is invalid and would cause crashes
+                    if flags.contains(PageTableFlags::PRESENT) && addr.as_u64() == 0 {
+                        log::warn!("PML4[{}] has PRESENT flag but invalid address 0x0, skipping", i);
+                        continue;
+                    }
+                    
+                    if addr.as_u64() != 0 {
+                        valid_upper_entries += 1;
+                        level_4_table[i] = current_l4_table[i].clone();
+                        kernel_entries_count += 1;
+                    }
+                }
             }
-
-            log::debug!("Set up global kernel page table entries 256-511");
-
-            // Copy essential low-memory kernel mappings (entries 0-255)
-            // These are needed for kernel code that lives in low memory
-            let copied_count = {
-                let mut count = 0;
-                for i in 0..256 {
-                    if !current_l4_table[i].is_unused() {
-                        let has_user_accessible = current_l4_table[i]
-                            .flags()
-                            .contains(PageTableFlags::USER_ACCESSIBLE);
-
-                        // Copy kernel-only entries in low memory (e.g., kernel code at 0x10000000)
-                        if (i >= 2 && i <= 7) || (!has_user_accessible && i != 0 && i != 1) {
-                            level_4_table[i] = current_l4_table[i].clone();
-                            count += 1;
-                            log::debug!("Copied low-memory kernel PML4 entry {}", i);
+            log::debug!("Found {} valid upper-half kernel PML4 entries (256-511)", valid_upper_entries);
+            log::debug!("Copied {} upper-half kernel PML4 entries (256-511)", kernel_entries_count);
+            
+            // PHASE 2: Use master kernel PML4 if available
+            if let Some(master_pml4_frame) = crate::memory::kernel_page_table::master_kernel_pml4() {
+                log::info!("PHASE2: Using master kernel PML4 for process creation");
+                
+                // Copy upper-half entries from master instead of current
+                let master_pml4_virt = phys_offset + master_pml4_frame.start_address().as_u64();
+                let master_pml4 = &*(master_pml4_virt.as_ptr() as *const PageTable);
+                
+                // Copy PML4[256-511] from master (shared kernel upper half)
+                // This includes IDT, TSS, GDT, per-CPU, kernel stacks, IST stacks, and all kernel structures
+                let mut upper_half_copied = 0;
+                for i in 256..512 {
+                    if !master_pml4[i].is_unused() {
+                        level_4_table[i] = master_pml4[i].clone();
+                        upper_half_copied += 1;
+                        // Log critical entries for debugging
+                        match i {
+                            402 => {
+                                let master_frame = master_pml4[i].frame().unwrap();
+                                let copied_frame = level_4_table[i].frame().unwrap();
+                                log::info!("PHASE2: PML4[402] (kernel stacks): master={:?}, copied={:?}", 
+                                         master_frame, copied_frame);
+                                if master_frame != copied_frame {
+                                    log::error!("ERROR: Frame mismatch for PML4[402]!");
+                                }
+                            },
+                            403 => {
+                                let master_frame = master_pml4[i].frame().unwrap();
+                                let copied_frame = level_4_table[i].frame().unwrap();
+                                log::info!("PHASE2: PML4[403] (IST stacks): master={:?}, copied={:?}", 
+                                         master_frame, copied_frame);
+                                if master_frame != copied_frame {
+                                    log::error!("ERROR: Frame mismatch for PML4[403]!");
+                                }
+                            },
+                            510 => {
+                                if !master_pml4[i].is_unused() {
+                                    let master_frame = master_pml4[i].frame().unwrap();
+                                    let copied_frame = level_4_table[i].frame().unwrap();
+                                    log::info!("PHASE2: PML4[510]: master={:?}, copied={:?}", 
+                                             master_frame, copied_frame);
+                                }
+                            },
+                            511 => {
+                                let master_frame = master_pml4[i].frame().unwrap();
+                                let copied_frame = level_4_table[i].frame().unwrap();
+                                log::info!("PHASE2: PML4[511] (kernel high-half): master={:?}, copied={:?}", 
+                                         master_frame, copied_frame);
+                            },
+                            _ => {}
                         }
                     }
                 }
-                count
-            };
-
-            log::debug!("Process page table created with global kernel mappings ({} low entries + 256 high entries)", copied_count);
+                log::info!("PHASE2: Inherited {} upper-half kernel mappings (256-511) from master PML4", upper_half_copied);
+                
+                // TEMPORARY FIX: Copy lower-half kernel mappings from master
+                // The kernel executes from multiple lower-half regions:
+                // - PML4[0]: Identity mapping at 0x100000
+                // - PML4[2]: Direct physical memory mapping where kernel actually runs (0x100_xxxx_xxxx)
+                // Once we move to high-half execution, we can remove this
+                
+                // Copy PML4[0] for identity mapping
+                if !master_pml4[0].is_unused() {
+                    level_4_table[0] = master_pml4[0].clone();
+                    log::info!("PHASE2-TEMP: Copied PML4[0] from master to preserve kernel identity mapping");
+                } else {
+                    log::warn!("PHASE2-TEMP: Master PML4[0] is empty - kernel identity map may not be accessible!");
+                }
+                
+                // CRITICAL: Also copy PML4[2] for direct physical memory mapping
+                // The kernel actually executes from here (RIP=0x100_xxxx_xxxx)
+                if !master_pml4[2].is_unused() {
+                    // Log the flags before copying
+                    let pml4_2_flags = master_pml4[2].flags();
+                    log::info!("PHASE2-TEMP: PML4[2] flags from master: {:?}", pml4_2_flags);
+                    
+                    // Check for problematic flags
+                    if pml4_2_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                        log::warn!("WARNING: PML4[2] has USER_ACCESSIBLE flag - kernel code might be accessible from userspace!");
+                    }
+                    if pml4_2_flags.contains(PageTableFlags::NO_EXECUTE) {
+                        log::error!("ERROR: PML4[2] has NO_EXECUTE flag - kernel code cannot be executed!");
+                    }
+                    
+                    level_4_table[2] = master_pml4[2].clone();
+                    log::info!("PHASE2-TEMP: Copied PML4[2] from master - this is where kernel ACTUALLY runs!");
+                } else {
+                    log::warn!("PHASE2-TEMP: Master PML4[2] is empty - kernel execution will fail!");
+                }
+                
+                // CRITICAL: Also copy PML4[3] for kernel stack region
+                // The kernel stack is at 0x180_xxxx_xxxx range  
+                if !master_pml4[3].is_unused() {
+                    level_4_table[3] = master_pml4[3].clone();
+                    log::info!("PHASE2-TEMP: Copied PML4[3] from master - kernel stack region!");
+                }
+                
+                // Note: PML4[403] (IST stacks) is already copied in the upper-half loop above
+                
+                // PHASE 3: Identity mapping no longer needed since we're copying PML4[0] from master
+                // which already contains the kernel low-half mappings
+                // Once we complete the high-half transition, we'll remove the PML4[0] copy entirely
+                log::info!("PHASE3: Skipping manual identity mapping - PML4[0] already copied from master");
+                
+                // Commented out - no longer needed since we copy PML4[0] from master
+                /*
+                unsafe {
+                    // Map two regions:
+                    // 1. Kernel code/data: 0x100000-0x300000 (2MB)
+                    // 2. GDT/IDT/TSS/per-CPU: 0x100000e0000-0x100001000000 (2MB)
+                    
+                    // Region 1: Kernel code/data
+                    let kernel_start = 0x100000u64;
+                    let kernel_end = 0x300000u64;
+                    let mut addr = kernel_start;
+                    
+                    while addr < kernel_end {
+                        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+                        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(addr));
+                        
+                        // Map with PRESENT | GLOBAL (no USER_ACCESSIBLE)
+                        // Code pages should not have WRITABLE, data pages should
+                        let flags = if addr < 0x200000 {
+                            // Text section - read-only, executable
+                            PageTableFlags::PRESENT | PageTableFlags::GLOBAL
+                        } else {
+                            // Data/BSS sections - read-write
+                            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL
+                        };
+                        
+                        // Manually walk the page tables to install the mapping
+                        // We'll use the existing page table hierarchy
+                        let pml4_idx = (addr >> 39) & 0x1FF;
+                        let pdpt_idx = (addr >> 30) & 0x1FF;
+                        let pd_idx = (addr >> 21) & 0x1FF;
+                        let pt_idx = (addr >> 12) & 0x1FF;
+                        
+                        // Get or create PDPT
+                        let pdpt_frame = if level_4_table[pml4_idx as usize].is_unused() {
+                            let frame = crate::memory::frame_allocator::allocate_frame()
+                                .ok_or("Failed to allocate PDPT")?;
+                            let pdpt_virt = phys_offset + frame.start_address().as_u64();
+                            let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
+                            for i in 0..512 {
+                                pdpt[i].set_unused();
+                            }
+                            level_4_table[pml4_idx as usize].set_frame(frame, 
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                            frame
+                        } else {
+                            level_4_table[pml4_idx as usize].frame().unwrap()
+                        };
+                        
+                        let pdpt_virt = phys_offset + pdpt_frame.start_address().as_u64();
+                        let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
+                        
+                        // Get or create PD
+                        let pd_frame = if pdpt[pdpt_idx as usize].is_unused() {
+                            let frame = crate::memory::frame_allocator::allocate_frame()
+                                .ok_or("Failed to allocate PD")?;
+                            let pd_virt = phys_offset + frame.start_address().as_u64();
+                            let pd = &mut *(pd_virt.as_mut_ptr() as *mut PageTable);
+                            for i in 0..512 {
+                                pd[i].set_unused();
+                            }
+                            pdpt[pdpt_idx as usize].set_frame(frame,
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                            frame
+                        } else {
+                            pdpt[pdpt_idx as usize].frame().unwrap()
+                        };
+                        
+                        let pd_virt = phys_offset + pd_frame.start_address().as_u64();
+                        let pd = &mut *(pd_virt.as_mut_ptr() as *mut PageTable);
+                        
+                        // Get or create PT
+                        let pt_frame = if pd[pd_idx as usize].is_unused() {
+                            let frame = crate::memory::frame_allocator::allocate_frame()
+                                .ok_or("Failed to allocate PT")?;
+                            let pt_virt = phys_offset + frame.start_address().as_u64();
+                            let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
+                            for i in 0..512 {
+                                pt[i].set_unused();
+                            }
+                            pd[pd_idx as usize].set_frame(frame,
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                            frame
+                        } else {
+                            pd[pd_idx as usize].frame().unwrap()
+                        };
+                        
+                        let pt_virt = phys_offset + pt_frame.start_address().as_u64();
+                        let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
+                        
+                        // Map the page
+                        pt[pt_idx as usize].set_frame(frame, flags);
+                        
+                        addr += 0x1000; // Next page
+                    }
+                    
+                    // Region 2: GDT/IDT/TSS/per-CPU structures
+                    // Based on KLAYOUT log output, these are at specific addresses:
+                    // GDT: 0x100000f1bf8, IDT: 0x100000f1dc0, TSS: 0x100000f1b88, per-CPU: 0x100000f2e40
+                    // Map the correct range: 0x100000f0000 - 0x100000f4000 (16 pages)
+                    let control_start = 0x100000f0000u64;
+                    let control_end = 0x100000f4000u64;
+                    addr = control_start;
+                    
+                    while addr < control_end {
+                        let _page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+                        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(addr));
+                        
+                        // All control structures need read-write access
+                        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+                        
+                        // Manually walk the page tables to install the mapping
+                        let pml4_idx = (addr >> 39) & 0x1FF;
+                        let pdpt_idx = (addr >> 30) & 0x1FF;
+                        let pd_idx = (addr >> 21) & 0x1FF;
+                        let pt_idx = (addr >> 12) & 0x1FF;
+                        
+                        // Get or create PDPT
+                        let pdpt_frame = if level_4_table[pml4_idx as usize].is_unused() {
+                            let frame = crate::memory::frame_allocator::allocate_frame()
+                                .ok_or("Failed to allocate PDPT")?;
+                            let pdpt_virt = phys_offset + frame.start_address().as_u64();
+                            let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
+                            for i in 0..512 {
+                                pdpt[i].set_unused();
+                            }
+                            level_4_table[pml4_idx as usize].set_frame(frame, 
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                            frame
+                        } else {
+                            level_4_table[pml4_idx as usize].frame().unwrap()
+                        };
+                        
+                        let pdpt_virt = phys_offset + pdpt_frame.start_address().as_u64();
+                        let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
+                        
+                        // Get or create PD
+                        let pd_frame = if pdpt[pdpt_idx as usize].is_unused() {
+                            let frame = crate::memory::frame_allocator::allocate_frame()
+                                .ok_or("Failed to allocate PD")?;
+                            let pd_virt = phys_offset + frame.start_address().as_u64();
+                            let pd = &mut *(pd_virt.as_mut_ptr() as *mut PageTable);
+                            for i in 0..512 {
+                                pd[i].set_unused();
+                            }
+                            pdpt[pdpt_idx as usize].set_frame(frame,
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                            frame
+                        } else {
+                            pdpt[pdpt_idx as usize].frame().unwrap()
+                        };
+                        
+                        let pd_virt = phys_offset + pd_frame.start_address().as_u64();
+                        let pd = &mut *(pd_virt.as_mut_ptr() as *mut PageTable);
+                        
+                        // Get or create PT
+                        let pt_frame = if pd[pd_idx as usize].is_unused() {
+                            let frame = crate::memory::frame_allocator::allocate_frame()
+                                .ok_or("Failed to allocate PT")?;
+                            let pt_virt = phys_offset + frame.start_address().as_u64();
+                            let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
+                            for i in 0..512 {
+                                pt[i].set_unused();
+                            }
+                            pd[pd_idx as usize].set_frame(frame,
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                            frame
+                        } else {
+                            pd[pd_idx as usize].frame().unwrap()
+                        };
+                        
+                        let pt_virt = phys_offset + pt_frame.start_address().as_u64();
+                        let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
+                        
+                        // Map the page
+                        pt[pt_idx as usize].set_frame(frame, flags);
+                        
+                        addr += 0x1000; // Next page
+                    }
+                    
+                    log::info!("PHASE3-TEMP: Mapped kernel regions: 0x100000-0x300000 and 0x100000f0000-0x100000f4000");
+                }
+                */
+            } else {
+            
+            // Fallback to old behavior if no master PML4 (shouldn't happen after Phase 2)
+            let mut low_kernel_entries = 0;
+            for i in 0..256 {  // Include entry 0 for kernel code at 0x100000
+                if !current_l4_table[i].is_unused() {
+                    let addr = current_l4_table[i].addr();
+                    let flags = current_l4_table[i].flags();
+                    
+                    // CRITICAL: Validate that the entry has a valid physical address
+                    // An entry with PRESENT but addr=0x0 is invalid and would cause crashes
+                    if flags.contains(PageTableFlags::PRESENT) && addr.as_u64() == 0 {
+                        log::warn!("PML4[{}] has PRESENT flag but invalid address 0x0, skipping", i);
+                        continue;
+                    }
+                    
+                    // Copy ALL valid entries to ensure kernel can access everything it needs
+                    if addr.as_u64() != 0 {
+                        // CRITICAL: For PML4[0], we need special handling since it contains both
+                        // kernel (0x100000-0x300000) and userspace (0x10000000) mappings
+                        if i == 0 {
+                            // PML4[0] needs to be shared but we'll handle userspace mapping separately
+                            level_4_table[i] = current_l4_table[i].clone();
+                            log::info!("PHASE1: Copied PML4[0] for kernel code at 0x100000 (will add userspace later)");
+                        } else {
+                            level_4_table[i] = current_l4_table[i].clone();
+                        }
+                        low_kernel_entries += 1;
+                        log::debug!("Copied low-memory kernel PML4 entry {} (phys={:#x}, flags={:?})", i, addr.as_u64(), flags);
+                    }
+                }
+            }
+            
+            log::debug!("Process page table created with {} kernel entries ({} low + {} high)", 
+                kernel_entries_count + low_kernel_entries, low_kernel_entries, kernel_entries_count);
+                
+            // CRITICAL: Ensure kernel stacks are mapped (Phase 1)
+            // The kernel stacks are at 0xffffc90000000000 range
+            // This is PML4 entry 402 (0xffffc90000000000 >> 39 = 402)
+            let kernel_stack_pml4_idx = 402;
+            if !current_l4_table[kernel_stack_pml4_idx].is_unused() {
+                level_4_table[kernel_stack_pml4_idx] = current_l4_table[kernel_stack_pml4_idx].clone();
+                log::info!("PHASE1: Mapped kernel stack PML4[{}] (0xffffc90000000000)", kernel_stack_pml4_idx);
+            } else {
+                log::warn!("PHASE1: Kernel stack PML4[{}] not present in current table!", kernel_stack_pml4_idx);
+            }
+            
+            // CRITICAL: Ensure IST double-fault stack is mapped (Phase 1)  
+            // The IST stacks are at 0xffffc98000000000
+            // This is PML4 entry 403 (0xffffc98000000000 >> 39 = 403)
+            let ist_stack_pml4_idx = 403;
+            if !current_l4_table[ist_stack_pml4_idx].is_unused() {
+                level_4_table[ist_stack_pml4_idx] = current_l4_table[ist_stack_pml4_idx].clone();
+                log::info!("PHASE1: Mapped IST stack PML4[{}] (0xffffc98000000000)", ist_stack_pml4_idx);
+            } else {
+                log::warn!("PHASE1: IST stack PML4[{}] not present in current table!", ist_stack_pml4_idx);
+            }
+            } // End of else block for fallback behavior
         }
 
         // Create mapper for the new page table

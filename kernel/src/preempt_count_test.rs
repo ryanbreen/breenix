@@ -190,5 +190,9 @@ pub fn test_preempt_count_scheduling() {
     per_cpu::preempt_enable();  // This SHOULD schedule if not in interrupt
     log::info!("Preemption enabled and may have scheduled");
     
+    // CRITICAL: Clear need_resched flag after test to avoid interfering with system
+    per_cpu::set_need_resched(false);
+    log::info!("Cleared need_resched flag after test");
+    
     log::info!("=== PREEMPT_COUNT SCHEDULING TEST PASSED ===");
 }

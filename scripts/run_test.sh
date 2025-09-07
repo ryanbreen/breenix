@@ -17,9 +17,9 @@ echo "Starting Breenix test run..."
 echo "Logging to: $LOG_FILE"
 echo ""
 
-# Start Breenix in background
-echo "Starting Breenix..."
-cargo run --release --bin qemu-uefi -- -serial stdio -display none 2>&1 | tee "$LOG_FILE" &
+# Start Breenix in background with testing feature enabled
+echo "Starting Breenix with testing features..."
+cargo run --release --features testing --bin qemu-uefi -- -serial stdio -display none 2>&1 | tee "$LOG_FILE" &
 QEMU_PID=$!
 
 # Wait for kernel to be ready

@@ -33,7 +33,7 @@ Always call the MCP tool `cursor-cli:cursor_agent_execute` with these parameters
 ```json
 {
   "metaprompt": "You are an OS kernel research specialist. Research the following topic with focus on production-quality operating system implementation. Prioritize information from: 1) Linux kernel documentation and source, 2) FreeBSD documentation, 3) Intel/AMD manuals, 4) Academic OS textbooks (Tanenbaum, Silberschatz), 5) OSDev wiki. Current date: {CURRENT_DATE}",
-  "plan": "<the specific research query with context>",
+  "content": "<the specific research query with context>",
   "model": "gpt-5",
   "workingDir": "/Users/wrb/fun/code/breenix"
 }

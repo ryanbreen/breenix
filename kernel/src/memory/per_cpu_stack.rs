@@ -84,7 +84,7 @@ pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<alloc::vec::Vec<PerCpuStac
     Ok(stacks)
 }
 
-/// Get the emergency stack for the current CPU
+/// Get the emergency stack for the current CPU (used for double fault)
 ///
 /// Note: This assumes CPU ID can be obtained from APIC or similar
 pub fn current_cpu_emergency_stack() -> VirtAddr {
@@ -92,5 +92,16 @@ pub fn current_cpu_emergency_stack() -> VirtAddr {
     let cpu_id = 0; // For now, assume CPU 0
 
     let stack_base = PER_CPU_STACK_BASE + (cpu_id as u64 * 0x10000);
+    VirtAddr::new(stack_base + EMERGENCY_STACK_SIZE)
+}
+
+/// Get the page fault IST stack for the current CPU
+///
+/// This is a separate stack from the emergency stack to avoid conflicts
+pub fn current_cpu_page_fault_stack() -> VirtAddr {
+    // TODO: Get actual CPU ID from APIC
+    let cpu_id = 0; // For now, assume CPU 0
+
+    let stack_base = PER_CPU_STACK_BASE + (cpu_id as u64 * 0x10000) + EMERGENCY_STACK_SIZE;
     VirtAddr::new(stack_base + EMERGENCY_STACK_SIZE)
 }

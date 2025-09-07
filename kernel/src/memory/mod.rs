@@ -2,6 +2,7 @@ pub mod frame_allocator;
 pub mod heap;
 pub mod kernel_page_table;
 pub mod kernel_stack;
+pub mod layout;
 pub mod paging;
 pub mod per_cpu_stack;
 pub mod process_memory;
@@ -22,6 +23,10 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
 
     // Store the physical memory offset globally
     PHYSICAL_MEMORY_OFFSET.init_once(|| physical_memory_offset);
+    
+    // === STEP 1: Log canonical kernel layout ===
+    log::info!("STEP 1: Establishing canonical kernel layout...");
+    layout::log_layout();
 
     // Initialize frame allocator
     log::info!("Initializing frame allocator...");
@@ -37,9 +42,18 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     // Initialize global kernel page table system
     log::info!("Initializing global kernel page tables...");
     kernel_page_table::init(physical_memory_offset);
+    
+    // PHASE 2: Build master kernel PML4 with upper-half mappings
+    kernel_page_table::build_master_kernel_pml4();
 
     // Migrate any existing processes (though there shouldn't be any yet)
     kernel_page_table::migrate_existing_processes();
+    
+    // PHASE 2: Enable global pages support (CR4.PGE)
+    // This must be done after kernel page tables are set up but before userspace
+    unsafe {
+        paging::enable_global_pages();
+    }
 
     // Initialize heap
     log::info!("Initializing heap allocator...");

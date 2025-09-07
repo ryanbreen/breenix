@@ -312,9 +312,9 @@ pub fn irq_enter() {
         if enter_count < 10 {
             log::info!("irq_enter #{}: preempt_count {:#x} -> {:#x} (HARDIRQ incremented)", 
                       enter_count, old_count, new_count);
-        } else {
-            log::trace!("irq_enter: {:#x} -> {:#x}", old_count, new_count);
         }
+        // CRITICAL: Do NOT log after the first few interrupts to avoid deadlock
+        // Logging from interrupt context can deadlock if main thread holds serial lock
     }
 }
 
@@ -349,28 +349,35 @@ pub fn irq_exit() {
             if exit_count < 10 {
                 log::info!("irq_exit #{}: preempt_count {:#x} -> {:#x} (HARDIRQ decremented)", 
                           exit_count, old_count, new_count);
-            } else {
-                log::trace!("irq_exit: {:#x} -> {:#x}", old_count, new_count);
             }
+            // CRITICAL: Do NOT log after the first few interrupts to avoid deadlock
             
         // Check if we should process softirqs
         // Linux processes softirqs when returning to non-interrupt context
         if new_count == 0 {
             // Check if any softirqs are pending
-            if softirq_pending() != 0 {
-                log::info!("irq_exit: Processing pending softirqs (bitmap={:#x})", softirq_pending());
+            let pending = softirq_pending();
+            if pending != 0 {
+                // Only log first few times to avoid deadlock
+                static SOFTIRQ_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                if SOFTIRQ_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 5 {
+                    log::info!("irq_exit: Processing pending softirqs (bitmap={:#x})", pending);
+                }
                 // Process softirqs
                 do_softirq();
             }
             
             // After softirq processing, re-check if we should schedule
             // Only if we're still at preempt_count == 0 with need_resched set
-            // (softirq handlers might have set need_resched)
+            // Defer the actual scheduling to the interrupt return path
             if need_resched() {
-                log::info!("irq_exit: Triggering preempt_schedule_irq");
-                // This is where preempt_schedule_irq() would be called
-                // It's a special scheduling point that's safe from IRQ context
-                crate::task::scheduler::preempt_schedule_irq();
+                // Only log first few times to avoid deadlock
+                static SCHED_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+                if SCHED_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 5 {
+                    log::info!("irq_exit: Scheduling deferred to return path (need_resched set)");
+                }
+                // Do not clear need_resched here;
+                // check_need_resched_and_switch() will handle it and perform the switch.
             }
         }
     }
@@ -403,7 +410,7 @@ pub fn nmi_enter() {
                 old_count
             );
             
-            log::trace!("nmi_enter: {:#x} -> {:#x}", old_count, new_count);
+            // log::trace!("nmi_enter: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
             
             compiler_fence(Ordering::Release);
     }
@@ -436,7 +443,7 @@ pub fn nmi_exit() {
                 old_count
             );
             
-            log::trace!("nmi_exit: {:#x} -> {:#x}", old_count, new_count);
+            // log::trace!("nmi_exit: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
             
             compiler_fence(Ordering::Release);
             // NMIs never schedule
@@ -471,7 +478,7 @@ pub fn softirq_enter() {
                 new_count & SOFTIRQ_MASK
             );
             
-            log::trace!("softirq_enter: {:#x} -> {:#x}", old_count, new_count);
+            // log::trace!("softirq_enter: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
             
             compiler_fence(Ordering::Release);
     }
@@ -504,7 +511,7 @@ pub fn softirq_exit() {
                 old_count & SOFTIRQ_MASK
             );
             
-            log::trace!("softirq_exit: {:#x} -> {:#x}", old_count, new_count);
+            // log::trace!("softirq_exit: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
             
             compiler_fence(Ordering::Release);
             
@@ -567,7 +574,7 @@ pub fn update_tss_rsp0(kernel_stack_top: VirtAddr) {
             (*cpu_data).kernel_stack_top = kernel_stack_top;
             (*(*cpu_data).tss).privilege_stack_table[0] = kernel_stack_top;
             
-            log::trace!("Updated TSS.RSP0 to {:#x}", kernel_stack_top);
+            // log::trace!("Updated TSS.RSP0 to {:#x}", kernel_stack_top);  // Disabled to avoid deadlock
         }
     }
 }
@@ -793,7 +800,7 @@ pub fn raise_softirq(nr: u32) {
             offset = const SOFTIRQ_PENDING_OFFSET,
             options(nostack, preserves_flags)
         );
-        log::trace!("Raised softirq {}, pending bitmap now: {:#x}", nr, softirq_pending());
+        // log::trace!("Raised softirq {}, pending bitmap now: {:#x}", nr, softirq_pending());  // Disabled to avoid deadlock
     }
 }
 
@@ -838,7 +845,7 @@ pub fn do_softirq() {
         for nr in 0..32 {
             if (pending & (1 << nr)) != 0 {
                 clear_softirq(nr);
-                log::trace!("  Processing softirq {}", nr);
+                // log::trace!("  Processing softirq {}", nr);  // Disabled to avoid deadlock
                 // softirq_handlers[nr]() would be called here
             }
         }
@@ -850,25 +857,47 @@ pub fn do_softirq() {
 
 /// Check if we can schedule (preempt_count == 0 and returning to userspace)
 pub fn can_schedule(saved_cs: u64) -> bool {
-    let preempt_count = preempt_count();
-    let is_userspace = (saved_cs & 3) == 3;
-    let can_sched = preempt_count == 0 && is_userspace;
-    
+    let current_preempt = preempt_count();
+    let returning_to_userspace = (saved_cs & 3) == 3;
+
+    let mut returning_to_idle_kernel = false;
+    if !returning_to_userspace {
+        let current_tid = crate::task::scheduler::current_thread_id();
+        let idle_tid = crate::task::scheduler::with_scheduler(|s| s.idle_thread());
+        if let (Some(cur), Some(idle)) = (current_tid, idle_tid) {
+            returning_to_idle_kernel = cur == idle;
+        }
+    }
+
+    let can_sched = current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel);
+
     log::debug!(
-        "can_schedule: preempt_count={}, cs_rpl={}, userspace={}, result={}", 
-        preempt_count, 
-        saved_cs & 3, 
-        is_userspace,
+        "can_schedule: preempt_count={}, cs_rpl={}, userspace={}, idle_kernel={}, result={}",
+        current_preempt,
+        saved_cs & 3,
+        returning_to_userspace,
+        returning_to_idle_kernel,
         can_sched
     );
-    
-    if preempt_count > 0 {
-        log::debug!("can_schedule: BLOCKED by preempt_count={}", preempt_count);
+
+    if current_preempt > 0 {
+        log::debug!("can_schedule: BLOCKED by preempt_count={}", current_preempt);
     }
-    
-    if !is_userspace {
-        log::debug!("can_schedule: BLOCKED - not returning to userspace (CS RPL={})", saved_cs & 3);
+    if !returning_to_userspace && !returning_to_idle_kernel {
+        log::debug!(
+            "can_schedule: BLOCKED - returning to kernel (non-idle) context, CS RPL={}",
+            saved_cs & 3
+        );
     }
-    
     can_sched
+}
+
+/// Get per-CPU base address and size for logging
+pub fn get_percpu_info() -> (u64, usize) {
+    unsafe {
+        let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
+        let base = cpu_data_ptr as u64;
+        let size = core::mem::size_of::<PerCpuData>();
+        (base, size)
+    }
 }

@@ -112,3 +112,29 @@ pub unsafe fn map_page(
 
     Ok(())
 }
+
+/// Enable global pages support (CR4.PGE)
+/// 
+/// This allows the CPU to keep kernel pages in the TLB across CR3 changes,
+/// significantly improving performance during context switches.
+/// 
+/// # Safety
+/// Should be called after kernel page tables are set up but before userspace processes start.
+pub unsafe fn enable_global_pages() {
+    use x86_64::registers::control::{Cr4, Cr4Flags};
+    
+    // Read current CR4 value
+    let mut cr4 = Cr4::read();
+    
+    // Check if PGE is already enabled
+    if cr4.contains(Cr4Flags::PAGE_GLOBAL) {
+        log::info!("CR4.PGE already enabled");
+        return;
+    }
+    
+    // Enable the PGE bit
+    cr4 |= Cr4Flags::PAGE_GLOBAL;
+    Cr4::write(cr4);
+    
+    log::info!("PHASE2: Enabled global pages support (CR4.PGE)");
+}

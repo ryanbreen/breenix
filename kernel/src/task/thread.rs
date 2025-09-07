@@ -156,6 +156,9 @@ pub struct Thread {
 
     /// Privilege level
     pub privilege: ThreadPrivilege,
+    
+    /// Has this thread ever run? (false for brand new threads)
+    pub has_started: bool,
 }
 
 impl Clone for Thread {
@@ -174,6 +177,7 @@ impl Clone for Thread {
             time_slice: self.time_slice,
             entry_point: self.entry_point, // fn pointers can be copied
             privilege: self.privilege,
+            has_started: self.has_started,
         }
     }
 }
@@ -222,6 +226,7 @@ impl Thread {
             time_slice: 20,    // Longer time slice
             entry_point: None, // Kernel threads use direct entry
             privilege: ThreadPrivilege::Kernel,
+            has_started: false, // New thread hasn't run yet
         })
     }
 
@@ -258,6 +263,7 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
+            has_started: false, // New thread hasn't run yet
         }
     }
 
@@ -305,6 +311,7 @@ impl Thread {
             time_slice: 10,    // Default time slice
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: ThreadPrivilege::User,
+            has_started: false, // New thread hasn't run yet
         }
     }
 
@@ -371,6 +378,7 @@ impl Thread {
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
+            has_started: false, // New thread hasn't run yet
         }
     }
 }

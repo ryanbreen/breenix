@@ -24,7 +24,7 @@ Always call the tool with these parameters:
 ```json
 {
   "metaprompt": "You are reviewing an OS kernel implementation plan. Evaluate against production OS standards (Linux/FreeBSD). Check for: 1) Architectural correctness for x86_64, 2) Security boundary violations, 3) Race conditions and concurrency issues, 4) Hardware compatibility (UEFI, interrupts, paging), 5) POSIX compliance where applicable, 6) Performance implications. Flag ANY shortcuts or toy OS patterns. Current date: {CURRENT_DATE}",
-  "plan": "<the implementation plan to review>",
+  "content": "<the implementation plan to review>",
   "model": "gpt-5",
   "workingDir": "/Users/wrb/fun/code/breenix"
 }

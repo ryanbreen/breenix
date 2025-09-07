@@ -72,10 +72,18 @@ pub fn init_idt() {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        idt.page_fault.set_handler_fn(page_fault_handler);
+        unsafe {
+            idt.page_fault
+                .set_handler_fn(page_fault_handler)
+                .set_stack_index(gdt::PAGE_FAULT_IST_INDEX);
+        }
 
         // Hardware interrupt handlers
         // Timer interrupt with proper interrupt return path handling
+        // NOTE: Keep using low-half addresses until Phase 3 kernel relocation
+        extern "C" {
+            fn timer_interrupt_entry();
+        }
         unsafe {
             idt[InterruptIndex::Timer.as_u8()]
                 .set_handler_addr(VirtAddr::new(timer_interrupt_entry as u64));
@@ -88,17 +96,18 @@ pub fn init_idt() {
         extern "C" {
             fn syscall_entry();
         }
+        // NOTE: Keep using low-half addresses until Phase 3 kernel relocation
         unsafe {
             idt[SYSCALL_INTERRUPT_ID]
                 .set_handler_addr(x86_64::VirtAddr::new(syscall_entry as u64))
                 .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
-            
-            // Log IDT gate attributes for verification
-            log::info!("IDT[0x80] gate attributes:");
-            log::info!("  Handler address: {:#x}", syscall_entry as u64);
-            log::info!("  DPL (privilege level): Ring3 (allowing userspace access)");
-            log::info!("  Gate type: Interrupt gate (interrupts disabled on entry)");
         }
+        
+        // Log IDT gate attributes for verification
+        log::info!("IDT[0x80] gate attributes:");
+        log::info!("  Handler address: {:#x} (low-half, to be relocated in Phase 3)", syscall_entry as u64);
+        log::info!("  DPL (privilege level): Ring3 (allowing userspace access)");
+        log::info!("  Gate type: Interrupt gate (interrupts disabled on entry)");
         log::info!("Syscall handler configured with assembly entry point");
 
         // Set up a generic handler for all unhandled interrupts
@@ -172,20 +181,45 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
-    // Log additional debug info before panicking
-    log::error!("DOUBLE FAULT - Error Code: {:#x}", error_code);
-    log::error!(
-        "Instruction Pointer: {:#x}",
-        stack_frame.instruction_pointer.as_u64()
-    );
-    log::error!("Stack Pointer: {:#x}", stack_frame.stack_pointer.as_u64());
-    log::error!("Code Segment: {:?}", stack_frame.code_segment);
-    log::error!("Stack Segment: {:?}", stack_frame.stack_segment);
-
+    // CRITICAL: Get actual RSP to verify IST is being used
+    let actual_rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) actual_rsp);
+    }
+    
+    // Get CR2 - contains the faulting address from the original page fault
+    let cr2: u64;
+    unsafe {
+        use x86_64::registers::control::Cr2;
+        cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
+    }
+    
+    // Log comprehensive debug info before panicking
+    log::error!("==================== DOUBLE FAULT ====================");
+    log::error!("CR2 (faulting address): {:#x}", cr2);
+    log::error!("Error Code: {:#x}", error_code);
+    log::error!("RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    log::error!("CS: {:?}", stack_frame.code_segment);
+    log::error!("RFLAGS: {:?}", stack_frame.cpu_flags);
+    log::error!("RSP (from frame): {:#x}", stack_frame.stack_pointer.as_u64());
+    log::error!("SS: {:?}", stack_frame.stack_segment);
+    log::error!("Actual RSP (current): {:#x}", actual_rsp);
+    
     // Check current page table
     use x86_64::registers::control::Cr3;
     let (frame, _) = Cr3::read();
-    log::error!("Current page table frame: {:?}", frame);
+    log::error!("Current CR3: {:#x}", frame.start_address().as_u64());
+    
+    // Analyze the fault
+    if cr2 != 0 {
+        log::error!("Likely caused by page fault at {:#x}", cr2);
+        
+        // Check if it's a stack access
+        if cr2 >= actual_rsp.saturating_sub(0x1000) && cr2 <= actual_rsp.saturating_add(0x1000) {
+            log::error!(">>> Fault appears to be a STACK ACCESS near RSP");
+        }
+    }
+    log::error!("======================================================");
 
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
@@ -303,7 +337,52 @@ extern "x86-interrupt" fn page_fault_handler(
         panic!("Stack overflow - guard page accessed");
     }
 
-    log::error!("EXCEPTION: PAGE FAULT");
+    crate::serial_println!("EXCEPTION: PAGE FAULT - Now using IST stack for reliable diagnostics");
+    
+    // CRITICAL: Enhanced diagnostics for CR3 switch debugging
+    unsafe {
+        use x86_64::registers::control::Cr3;
+        let (current_cr3, _flags) = Cr3::read();
+        let rsp: u64;
+        let rbp: u64;
+        let rflags: u64;
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        core::arch::asm!("mov {}, rbp", out(reg) rbp);
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags);
+        
+        crate::serial_println!("CR3 SWITCH DEBUG:");
+        crate::serial_println!("  Current CR3: {:#x}", current_cr3.start_address().as_u64());
+        crate::serial_println!("  CR2 (fault addr): {:#x}", accessed_addr.as_u64());
+        crate::serial_println!("  Error code: {:#x} (P={} W={} U={} I={} PK={})",
+            error_code.bits(),
+            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::USER_MODE) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::PROTECTION_KEY) { 1 } else { 0 }
+        );
+        crate::serial_println!("  CS:RIP: {:#x}:{:#x}", stack_frame.code_segment.0, stack_frame.instruction_pointer.as_u64());
+        crate::serial_println!("  SS:RSP: {:#x}:{:#x}", stack_frame.stack_segment.0, stack_frame.stack_pointer.as_u64());
+        crate::serial_println!("  RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
+        crate::serial_println!("  Current RSP: {:#x}, RBP: {:#x}", rsp, rbp);
+        
+        // Determine what PML4 entry the fault address belongs to
+        let pml4_index = (accessed_addr.as_u64() >> 39) & 0x1FF;
+        crate::serial_println!("  Fault address PML4 index: {} (PML4[{}])", pml4_index, pml4_index);
+        
+        // Also log which PML4 entry the faulting instruction belongs to
+        let rip_pml4_index = (stack_frame.instruction_pointer.as_u64() >> 39) & 0x1FF;
+        crate::serial_println!("  RIP address PML4 index: {} (PML4[{}])", rip_pml4_index, rip_pml4_index);
+        
+        // Check if this is instruction fetch vs data access
+        if error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
+            crate::serial_println!("  INSTRUCTION FETCH fault - code page not executable or not present!");
+        } else if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+            crate::serial_println!("  WRITE fault - page not writable or not present!");
+        } else {
+            crate::serial_println!("  READ fault - page not readable or not present!");
+        }
+    }
     
     // Enhanced logging for userspace faults (Ring 3 privilege violation tests)
     if from_userspace {
@@ -380,13 +459,30 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     
     log::error!("EXCEPTION: GENERAL PROTECTION FAULT");
     
+    // Decode the error code to identify the problematic selector
+    let external = (error_code & 1) != 0;
+    let table = (error_code >> 1) & 0b11;
+    let index = (error_code >> 3) & 0x1FFF;
+    
+    let table_name = match table {
+        0b00 => "GDT",
+        0b01 => "IDT", 
+        0b10 => "LDT",
+        0b11 => "IDT",
+        _ => "???",
+    };
+    
+    let selector = (index << 3) | ((table & 1) << 2) | (if from_userspace { 3 } else { 0 });
+    
+    log::error!("  Error Code: {:#x}", error_code);
+    log::error!("  Decoded: external={}, table={} ({}), index={}, selector={:#x}",
+               external, table, table_name, index, selector);
+    log::error!("  CS: {:#x} (RPL={})", stack_frame.code_segment.0, stack_frame.code_segment.0 & 3);
+    log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    
     // Enhanced logging for userspace GPFs (Ring 3 privilege violation tests)
     if from_userspace {
-        log::error!("✓ GENERAL PROTECTION FAULT from USERSPACE (Ring 3 privilege test detected)");
-        log::error!("  #GP(0) - Privileged instruction attempted from Ring 3");
-        log::error!("  CS: {:#x} (RPL={})", stack_frame.code_segment.0, stack_frame.code_segment.0 & 3);
-        log::error!("  RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
-        log::error!("  Error Code: {:#x}", error_code);
+        log::error!("  GPF from USERSPACE (Ring 3)");
         
         // Try to identify which instruction caused the fault
         unsafe {
@@ -434,4 +530,12 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     // Decrement preempt count before panic
     crate::per_cpu::preempt_enable();
     panic!("General Protection Fault");
+}
+
+/// Get IDT base and limit for logging
+pub fn get_idt_info() -> (u64, u16) {
+    unsafe {
+        let idtr = x86_64::instructions::tables::sidt();
+        (idtr.base.as_u64(), idtr.limit)
+    }
 }

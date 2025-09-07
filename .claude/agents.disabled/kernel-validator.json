@@ -1,0 +1,12 @@
+{
+    "permissions": {
+        "allow": [
+            "mcp.*",
+            "Read(**/*)",
+            "Write(**/*)",
+            "Shell(**)",
+            "WebFetch"
+        ],
+        "deny": []
+    }
+}

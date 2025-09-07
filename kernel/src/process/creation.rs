@@ -23,25 +23,37 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         "create_user_process: Creating user process '{}' with new model",
         name
     );
+    crate::serial_println!("create_user_process: ENTRY - Creating '{}'", name);
 
     // Create the process using existing infrastructure
     // CRITICAL: Disable interrupts during process creation to prevent
     // context switches that could leave the process in an inconsistent state
+    crate::serial_println!("create_user_process: About to disable interrupts and call manager.create_process");
     let pid = x86_64::instructions::interrupts::without_interrupts(|| {
+        crate::serial_println!("create_user_process: Interrupts disabled, acquiring process manager lock");
         let mut manager_guard = crate::process::manager();
+        crate::serial_println!("create_user_process: Got process manager lock");
         if let Some(ref mut manager) = *manager_guard {
-            manager.create_process(name.clone(), elf_data)
+            crate::serial_println!("create_user_process: Calling manager.create_process");
+            let result = manager.create_process(name.clone(), elf_data);
+            crate::serial_println!("create_user_process: manager.create_process returned: {:?}", result.is_ok());
+            result
         } else {
+            crate::serial_println!("create_user_process: Process manager not available!");
             Err("Process manager not available")
         }
     })?;
+    crate::serial_println!("create_user_process: Process created with PID {}", pid.as_u64());
 
     // The key difference: Add the thread directly to scheduler as a user thread
     // without going through the spawn mechanism
     // Note: spawn() already has its own interrupt protection, so we don't need
     // to wrap this part
+    crate::serial_println!("create_user_process: About to add thread to scheduler");
     {
+        crate::serial_println!("create_user_process: Acquiring process manager for thread scheduling");
         let manager_guard = crate::process::manager();
+        crate::serial_println!("create_user_process: Got process manager lock for scheduling");
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
                 if let Some(ref main_thread) = process.main_thread {
@@ -52,9 +64,11 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                             main_thread.id,
                             main_thread.name
                         );
+                        crate::serial_println!("create_user_process: Calling scheduler::spawn for thread {}", main_thread.id);
                         // Add directly to scheduler - no spawn thread needed!
                         // Note: spawn() internally uses without_interrupts
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
+                        crate::serial_println!("create_user_process: scheduler::spawn completed");
                         log::info!(
                             "create_user_process: User thread {} enqueued for scheduling",
                             main_thread.id
@@ -81,6 +95,7 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
         "create_user_process: Successfully created user process {} without spawn mechanism",
         pid.as_u64()
     );
+    crate::serial_println!("create_user_process: COMPLETE - returning PID {}", pid.as_u64());
 
     Ok(pid)
 }

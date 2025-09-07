@@ -8,7 +8,6 @@
 global timer_interrupt_entry
 extern timer_interrupt_handler
 extern check_need_resched_and_switch
-extern get_next_page_table
 extern log_timer_frame_from_userspace
 
 section .text
@@ -19,6 +18,9 @@ bits 64
 %define SAVED_REGS_SIZE (SAVED_REGS_COUNT * 8)
 
 timer_interrupt_entry:
+    ; TEMPORARILY REMOVED: Push dummy error code for uniform stack frame (IRQs don't push error codes)
+    ; push qword 0
+    
     ; Save all general purpose registers
     push rax
     push rcx
@@ -40,7 +42,7 @@ timer_interrupt_entry:
     ; Get CS from interrupt frame to check privilege level
     ; Frame layout after pushes: [r15...rax][RIP][CS][RFLAGS][RSP][SS]
     ; CS is at RSP + 15*8 + 8 (15 saved regs + RIP)
-    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS directly via RSP
+    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS
     and rax, 3                         ; Check privilege level (RPL bits)
     cmp rax, 3                         ; Ring 3?
     jne .skip_swapgs_entry             ; If not from userspace, skip swapgs
@@ -50,6 +52,7 @@ timer_interrupt_entry:
     
     ; Log full frame details for first few userspace interrupts
     ; Pass frame pointer to logging function
+    ; Align stack to 16 bytes before function call (we have 16 pushes = even)
     push rdi
     push rsi
     lea rdi, [rsp + 16 + SAVED_REGS_SIZE]  ; Pass frame pointer (adjust for pushes)
@@ -61,28 +64,39 @@ timer_interrupt_entry:
     ; Prepare parameter for timer handler: from_userspace flag
     ; rdi = 1 if from userspace, 0 if from kernel
     xor rdi, rdi                       ; Clear rdi
-    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS directly via RSP
+    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS
     and rax, 3                         ; Check privilege level
     cmp rax, 3                         ; Ring 3?
     sete dil                           ; Set dil (low byte of rdi) to 1 if equal (from userspace)
     
+    ; Stack is aligned (16 pushes = 128 bytes = 16-byte aligned)
     ; Call the timer handler with from_userspace parameter
     ; This ONLY updates ticks, quantum, and sets need_resched flag
     call timer_interrupt_handler
     
     ; Now check if we need to reschedule
-    ; Only reschedule when returning to userspace (avoid kernel preemption hang)
-    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS directly via RSP
+    ; Defer scheduling decision to Rust can_schedule() (userspace or idle kernel)
+    mov rax, [rsp + SAVED_REGS_SIZE + 8]  ; Get CS
     and rax, 3                ; Check privilege level (RPL)
     cmp rax, 3                ; Ring 3 (userspace)?
-    jne .skip_resched         ; If not userspace, skip reschedule
+    ; jne .skip_resched         ; removed: always invoke checker
     
     ; This is the CORRECT place for context switching logic (userspace only)
     mov rdi, rsp              ; Pass pointer to saved registers
     lea rsi, [rsp + 15*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
     
-.skip_resched:
+    ; SENTINEL: Output marker to see if we return from check_need_resched_and_switch
+    ; If context switch does a non-local return, we'll never see this
+    push rax
+    push rdx
+    mov dx, 0x3F8       ; COM1 port
+    mov al, '@'         ; Sentinel marker after call
+    out dx, al
+    mov al, '@'         ; Double for visibility
+    out dx, al
+    pop rdx
+    pop rax
     
     ; Restore all general purpose registers
     ; Note: If we switched contexts, these will be different registers!
@@ -102,52 +116,137 @@ timer_interrupt_entry:
     pop rcx
     pop rax
     
-    ; Check if we need to switch page tables before returning to userspace
-    ; This is critical - we must do this right before iretq
-    push rax                    ; Save rax
-    push rcx                    ; Save rcx
-    push rdx                    ; Save rdx
-    
     ; Check if we're returning to ring 3 (userspace)
-    mov rax, [rsp + 24 + 8]    ; Get CS from interrupt frame (3 pushes + RIP)
-    and rax, 3                 ; Check privilege level
-    cmp rax, 3                 ; Ring 3?
+    ; Frame is now: [RIP][CS][RFLAGS][RSP][SS] at RSP
+    mov rcx, [rsp + 8]         ; Get CS from interrupt frame (use RCX instead of RAX)
+    and rcx, 3                 ; Check privilege level
+    cmp rcx, 3                 ; Ring 3?
     jne .no_userspace_return
     
-    ; We're returning to userspace, check if we need to switch page tables
-    call get_next_page_table
-    test rax, rax              ; Is there a page table to switch to?
-    jz .skip_page_table_switch
-    
-    ; Switch to the process page table
-    mov cr3, rax
-    ; CRITICAL: Ensure TLB is fully flushed after page table switch
-    ; On some systems, mov cr3 might not flush all TLB entries completely
-    ; Add explicit full TLB flush for absolute certainty
-    push rax                     ; Save rax (contains page table frame)
-    mov rax, cr4
-    mov rcx, rax
-    and rcx, 0xFFFFFFFFFFFFFF7F  ; Clear PGE bit (bit 7)
-    mov cr4, rcx                  ; Disable global pages (flushes TLB)
-    mov cr4, rax                  ; Re-enable global pages
-    pop rax                      ; Restore rax
-    mfence
+    ; FIXED: CR3 switching now happens in the scheduler during context switch
+    ; This follows Linux/FreeBSD pattern where page tables are switched when
+    ; the scheduler selects a new process, not on interrupt return.
+    ; The kernel runs on the process's CR3 after context switch.
     
 .skip_page_table_switch:
-    ; CRITICAL: Swap back to userspace GS before returning to ring 3
+    ; DISABLED: Log iretq - might touch per-CPU data with process page table
+    ; push rdi
+    ; mov rdi, rsp
+    ; add rdi, 8  ; Adjust for the push
+    ; extern log_iretq_frame
+    ; call log_iretq_frame
+    ; pop rdi
+    
+    ; DEBUG: Dump IRET frame before swapgs (while GS still points to kernel)
+    ; The stack should have [RIP][CS][RFLAGS][RSP][SS]
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rdi
+    
+    ; Call diagnostic function to print frame
+    mov rdi, rsp
+    add rdi, 40         ; Adjust for the 5 pushes (5*8=40) to point at IRET frame
+    extern dump_iret_frame_to_serial
+    call dump_iret_frame_to_serial
+    
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    
+    ; CRITICAL: Swap to userspace GS when returning to Ring 3
+    ; We already know we're returning to userspace (checked above)
+    ; so we need to ensure GS is set for userspace
     swapgs
     
-    pop rdx                    ; Restore rdx
-    pop rcx                    ; Restore rcx
-    pop rax                    ; Restore rax
+    ; DEBUG: Output after swapgs to confirm we survived
+    mov dx, 0x3F8       ; COM1 port
+    mov al, 'Z'         ; After swapgs marker
+    out dx, al
+    
+    ; CRITICAL DIAGNOSTIC: Verify GDT descriptors before IRETQ
+    ; Test if CS and SS selectors are valid for Ring 3
+    push rax
+    push rdx
+    push rcx
+    
+    ; Test CS selector (0x33) with VERR
+    mov ax, 0x33
+    verr ax
+    jz .cs_verr_ok
+    ; CS not readable from Ring 3 - print error
+    mov dx, 0x3F8
+    mov al, '!'
+    out dx, al
+    mov al, 'C'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+.cs_verr_ok:
+    
+    ; Test SS selector (0x2b) with VERW
+    mov ax, 0x2b
+    verw ax
+    jz .ss_verw_ok
+    ; SS not writable from Ring 3 - print error
+    mov dx, 0x3F8
+    mov al, '!'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+.ss_verw_ok:
+    
+    ; Get access rights with LAR for CS
+    mov ax, 0x33
+    lar rdx, ax
+    jnz .cs_lar_failed
+    ; Success - RDX has access rights
+    jmp .cs_lar_ok
+.cs_lar_failed:
+    mov dx, 0x3F8
+    mov al, '?'
+    out dx, al
+    mov al, 'C'
+    out dx, al
+.cs_lar_ok:
+    
+    ; Get access rights with LAR for SS
+    mov ax, 0x2b
+    lar rcx, ax
+    jnz .ss_lar_failed
+    ; Success - RCX has access rights
+    jmp .ss_lar_ok
+.ss_lar_failed:
+    mov dx, 0x3F8
+    mov al, '?'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+.ss_lar_ok:
+    
+    ; REMOVED: Logging CR3/GDTR here - already done before CR3 switch
+    ; After swapgs, we can't safely call kernel functions that might
+    ; access per-CPU data or other kernel structures
+    
+    pop rcx
+    pop rdx
+    pop rax
+    
+.stack_looks_ok:
+    ; No error code to remove
+    ; NO EXTRA POPS - registers already restored above!
     
     ; Return from interrupt to userspace
     iretq
     
 .no_userspace_return:
-    pop rdx                    ; Restore rdx
-    pop rcx                    ; Restore rcx
-    pop rax                    ; Restore rax
+    ; No error code to remove
+    ; NO EXTRA POPS - registers already restored above!
     
     ; Return from interrupt to kernel
     iretq

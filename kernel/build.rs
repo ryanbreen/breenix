@@ -38,9 +38,14 @@ fn main() {
     println!("cargo:rustc-link-arg={}/syscall_entry.o", out_dir);
     println!("cargo:rustc-link-arg={}/timer_entry.o", out_dir);
     
+    // Use our custom linker script
+    // Temporarily disabled to test with bootloader's default
+    // println!("cargo:rustc-link-arg=-Tkernel/linker.ld");
+    
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
+    println!("cargo:rerun-if-changed=linker.ld");
     
     // Build userspace test program if it exists
     let userspace_test_dir = Path::new("../../userspace/tests");

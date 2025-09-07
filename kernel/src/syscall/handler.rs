@@ -220,6 +220,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
 
     // Note: Context switches after sys_yield happen on the next timer interrupt
     
+    // Flush any pending IRQ logs before returning to userspace
+    crate::irq_log::flush_local_try();
+    
     // Decrement preempt count on syscall exit
     crate::per_cpu::preempt_enable();
 }

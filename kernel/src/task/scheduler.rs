@@ -296,6 +296,8 @@ pub fn spawn(thread: Box<Thread>) {
             scheduler.add_thread(thread);
             // Ensure a switch happens ASAP (especially in CI smoke runs)
             NEED_RESCHED.store(true, Ordering::Relaxed);
+            // Mirror to per-CPU flag so IRQ-exit path sees it
+            crate::per_cpu::set_need_resched(true);
         } else {
             panic!("Scheduler not initialized");
         }
@@ -432,9 +434,13 @@ pub fn allocate_thread_id() -> Option<u64> {
 /// Set the need_resched flag (called from timer interrupt)
 pub fn set_need_resched() {
     NEED_RESCHED.store(true, Ordering::Relaxed);
+    crate::per_cpu::set_need_resched(true);
 }
 
 /// Check and clear the need_resched flag (called from interrupt return path)
 pub fn check_and_clear_need_resched() -> bool {
-    NEED_RESCHED.swap(false, Ordering::Relaxed)
+    let need = crate::per_cpu::need_resched();
+    if need { crate::per_cpu::set_need_resched(false); }
+    let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
+    need
 }
