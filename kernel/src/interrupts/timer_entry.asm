@@ -9,6 +9,7 @@ global timer_interrupt_entry
 extern timer_interrupt_handler
 extern check_need_resched_and_switch
 extern log_timer_frame_from_userspace
+extern trace_iretq_to_ring3
 
 ; CRITICAL: Place interrupt entry code in dedicated section that stays mapped
 ; This ensures the code is accessible after CR3 switches to process page tables
@@ -243,9 +244,41 @@ timer_interrupt_entry:
     ; No error code to remove
     ; NO EXTRA POPS - registers already restored above!
     
-    ; CRITICAL DEBUG: INT3 to prove we reach IRETQ
-    ; If we see a BREAKPOINT exception, we made it here
-    int3
+    ; Call trace function to log IRETQ frame with IF bit check
+    ; Save registers we need
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push r8
+    push r9
+    push r10
+    push r11
+    
+    ; Pass pointer to IRETQ frame (RIP is at RSP+64 after our pushes)
+    mov rdi, rsp
+    add rdi, 64         ; Skip 8 pushed registers to point to RIP
+    call trace_iretq_to_ring3
+    
+    ; Restore registers
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    
+    ; CRITICAL DEBUG: Output marker to prove we reach IRETQ
+    ; If we see this marker, we made it to iretq
+    push rax
+    push rdx
+    mov dx, 0x3F8       ; COM1 port
+    mov al, 'Q'         ; 'Q' for iretQ
+    out dx, al
+    pop rdx
+    pop rax
     
     ; Return from interrupt to userspace
     iretq

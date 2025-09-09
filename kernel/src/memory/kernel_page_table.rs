@@ -338,12 +338,63 @@ pub fn build_master_kernel_pml4() {
         // Copy IST stack mappings (PML4[403] for 0xffffc98000000000)
         let ist_stack_idx = 403;
         if !current_pml4[ist_stack_idx].is_unused() {
-            master_pml4[ist_stack_idx] = current_pml4[ist_stack_idx].clone();
-            // Set GLOBAL flag
-            let flags = master_pml4[ist_stack_idx].flags() | PageTableFlags::GLOBAL;
-            let frame = master_pml4[ist_stack_idx].frame().unwrap();
-            master_pml4[ist_stack_idx].set_frame(frame, flags);
-            log::info!("PHASE2: Master PML4[{}] IST stacks -> frame {:?}", ist_stack_idx, frame);
+            // CRITICAL FIX: Check if PML4[402] and PML4[403] incorrectly alias
+            let kernel_stack_frame = if !current_pml4[kernel_stack_idx].is_unused() {
+                current_pml4[kernel_stack_idx].frame().ok()
+            } else {
+                None
+            };
+            
+            let ist_frame = current_pml4[ist_stack_idx].frame().unwrap();
+            
+            if let Some(ks_frame) = kernel_stack_frame {
+                if ks_frame == ist_frame {
+                    // CRITICAL BUG: PML4[402] and PML4[403] point to the same PML3!
+                    // This will cause kernel stack faults. Fix it by allocating a new PML3 for IST.
+                    log::error!("🔴 CRITICAL: PML4[402] and PML4[403] both point to frame {:?}", ist_frame);
+                    log::info!("🔧 FIX: Allocating separate PML3 for PML4[403] (IST stacks)");
+                    
+                    // Allocate a new PML3 table for IST stacks
+                    use crate::memory::frame_allocator::allocate_frame;
+                    let new_ist_pml3_frame = allocate_frame()
+                        .expect("Failed to allocate PML3 for IST stacks");
+                    
+                    // Zero the new PML3 table
+                    let new_pml3_virt = phys_mem_offset + new_ist_pml3_frame.start_address().as_u64();
+                    unsafe {
+                        let new_pml3 = &mut *(new_pml3_virt.as_mut_ptr() as *mut PageTable);
+                        for i in 0..512 {
+                            new_pml3[i].set_unused();
+                        }
+                    }
+                    
+                    // Set PML4[403] to point to the new PML3
+                    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+                    master_pml4[ist_stack_idx].set_frame(new_ist_pml3_frame, flags);
+                    log::info!("PHASE2: Master PML4[{}] IST stacks -> NEW frame {:?}", ist_stack_idx, new_ist_pml3_frame);
+                    
+                    // Verify the fix was applied
+                    let verify_frame = master_pml4[ist_stack_idx].frame().unwrap();
+                    log::info!("PHASE2: VERIFIED PML4[403] now points to {:?}", verify_frame);
+                    assert_ne!(verify_frame, ks_frame, "PML4[403] still aliases PML4[402]!");
+                    
+                    // Log the actual memory address we're modifying
+                    log::info!("PHASE2: Modified PML4[403] at virtual address {:p}", &master_pml4[ist_stack_idx]);
+                    log::info!("PHASE2: Master PML4 base address is {:p}", master_pml4);
+                } else {
+                    // No aliasing, just copy normally
+                    master_pml4[ist_stack_idx] = current_pml4[ist_stack_idx].clone();
+                    let flags = master_pml4[ist_stack_idx].flags() | PageTableFlags::GLOBAL;
+                    master_pml4[ist_stack_idx].set_frame(ist_frame, flags);
+                    log::info!("PHASE2: Master PML4[{}] IST stacks -> frame {:?}", ist_stack_idx, ist_frame);
+                }
+            } else {
+                // PML4[402] is empty, just copy PML4[403] normally
+                master_pml4[ist_stack_idx] = current_pml4[ist_stack_idx].clone();
+                let flags = master_pml4[ist_stack_idx].flags() | PageTableFlags::GLOBAL;
+                master_pml4[ist_stack_idx].set_frame(ist_frame, flags);
+                log::info!("PHASE2: Master PML4[{}] IST stacks -> frame {:?}", ist_stack_idx, ist_frame);
+            }
         }
         
         // Log what's in PML4[510] if present
@@ -449,6 +500,46 @@ pub fn build_master_kernel_pml4() {
         log::info!("  PTEs: Left unmapped (will be populated by allocate_kernel_stack)");
         
         log::info!("STEP 2: Successfully pre-built page table hierarchy for kernel stacks");
+    }
+    
+    // CRITICAL FIX: Ensure PML4[402] and PML4[403] point to different PML3 tables
+    // This is a final check and fix right before storing
+    unsafe {
+        let master_pml4_virt = phys_mem_offset + master_pml4_frame.start_address().as_u64();
+        let master_pml4 = &mut *(master_pml4_virt.as_mut_ptr() as *mut PageTable);
+        
+        // Check if they're aliased
+        if !master_pml4[402].is_unused() && !master_pml4[403].is_unused() {
+            let frame_402 = master_pml4[402].frame().unwrap();
+            let frame_403 = master_pml4[403].frame().unwrap();
+            
+            if frame_402 == frame_403 {
+                log::error!("🔴 FINAL FIX NEEDED: PML4[402] and [403] still alias to {:?}", frame_402);
+                
+                // Allocate a new PML3 for IST stacks
+                use crate::memory::frame_allocator::allocate_frame;
+                let new_ist_pml3 = allocate_frame().expect("Failed to allocate PML3 for IST final fix");
+                
+                // Zero it
+                let new_pml3_virt = phys_mem_offset + new_ist_pml3.start_address().as_u64();
+                let new_pml3_table = &mut *(new_pml3_virt.as_mut_ptr() as *mut PageTable);
+                for i in 0..512 {
+                    new_pml3_table[i].set_unused();
+                }
+                
+                // Set PML4[403] to the new PML3
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+                master_pml4[403].set_frame(new_ist_pml3, flags);
+                
+                log::info!("🔧 FINAL FIX: Set PML4[403] to new frame {:?}", new_ist_pml3);
+                
+                // Verify the fix
+                let final_402 = master_pml4[402].frame().unwrap();
+                let final_403 = master_pml4[403].frame().unwrap();
+                log::info!("✓ FINAL VERIFICATION: PML4[402]={:?}, PML4[403]={:?}", final_402, final_403);
+                assert_ne!(final_402, final_403, "Final fix failed!");
+            }
+        }
     }
     
     // Store the master PML4 for process creation

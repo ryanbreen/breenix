@@ -48,17 +48,17 @@ fn write_str(s: &str) {
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // Print greeting
-    write_str("Hello from second process!\n");
-    write_str("This process will exit with code 42\n");
-    
-    // Exit with code 42
+    // CRITICAL: int3 as the absolute first instruction to prove CPL3 execution
     unsafe {
-        syscall1(SYS_EXIT, 42);
+        core::arch::asm!(
+            "int3",          // This MUST be the first instruction
+            "mov rax, 0",    // Exit syscall number  
+            "mov rdi, 42",   // Exit code
+            "int 0x80",      // System call
+            "2: jmp 2b",     // Infinite loop (should never reach here)
+            options(noreturn)
+        );
     }
-    
-    // Should never reach here
-    loop {}
 }
 
 #[panic_handler]

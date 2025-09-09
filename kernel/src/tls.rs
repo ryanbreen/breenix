@@ -85,8 +85,9 @@ fn setup_kernel_tls() -> Result<(), &'static str> {
         (*tcb_ptr).self_ptr = tcb_ptr;
     }
 
-    // Set GS base to point to the TLS block
-    set_gs_base(tls_block)?;
+    // CRITICAL: For kernel TLS we still use GS, but this will be replaced by per-CPU setup
+    // This is temporary - per-CPU init will overwrite this with per-CPU data
+    set_fs_base(tls_block)?;
 
     log::info!("Kernel TLS block allocated at {:#x}", tls_block);
 
@@ -134,37 +135,35 @@ fn allocate_tls_block() -> Result<VirtAddr, &'static str> {
     Ok(virt_addr)
 }
 
-/// Set the GS base register to point to a TLS block
-fn set_gs_base(base: VirtAddr) -> Result<(), &'static str> {
-    use x86_64::registers::model_specific::GsBase;
+/// Set the FS base register to point to a TLS block
+/// CRITICAL: We use FS for user TLS to avoid conflicts with GS-based per-CPU data
+fn set_fs_base(base: VirtAddr) -> Result<(), &'static str> {
+    use x86_64::registers::model_specific::FsBase;
 
-    // On x86_64, we set the GS base using MSRs
-    GsBase::write(base);
+    // On x86_64, we set the FS base using MSRs for user TLS
+    // GS remains dedicated to per-CPU kernel data
+    FsBase::write(base);
 
-    log::debug!("Set GS base to {:#x}", base);
+    log::debug!("Set FS base to {:#x}", base);
 
     Ok(())
 }
 
 /// Setup SWAPGS support by configuring KERNEL_GS_BASE MSR
-/// This allows the kernel to use SWAPGS instruction to switch between
-/// kernel and user GS bases
+/// CRITICAL: Now that user TLS uses FS, GS always points to per-CPU data
+/// SWAPGS is no longer needed for TLS switching but may be needed for other purposes
 pub fn setup_swapgs_support() -> Result<(), &'static str> {
     use x86_64::registers::model_specific::{GsBase, KernelGsBase};
 
-    // Read current GS base (should be kernel TLS)
+    // Read current GS base (should be per-CPU data)
     let kernel_gs = GsBase::read();
 
     // Set KERNEL_GS_BASE to the same value
-    // SWAPGS will swap GS_BASE and KERNEL_GS_BASE
+    // This maintains the contract that GS always points to per-CPU data
     KernelGsBase::write(kernel_gs);
 
-    // Set user GS to 0 initially (userspace can change it later)
-    // This happens after SWAPGS, so we're setting what will become the user GS
-    // For now, we just ensure it's not pointing to kernel memory
-
     log::info!(
-        "SWAPGS support configured: KERNEL_GS_BASE = {:#x}",
+        "SWAPGS support configured: GS always per-CPU = {:#x}, user TLS uses FS",
         kernel_gs
     );
 
@@ -226,12 +225,14 @@ pub fn register_thread_tls(thread_id: u64, tls_block: VirtAddr) -> Result<(), &'
 }
 
 /// Switch to a different thread's TLS
+/// CRITICAL: Now uses FS base for user TLS, leaving GS for per-CPU data
 #[allow(dead_code)]
 pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
-    // Thread 0 is the kernel/idle thread - it uses the kernel TLS
+    // Thread 0 is the kernel/idle thread - it uses per-CPU GS, no user TLS needed
     if thread_id == 0 {
-        // Switch back to kernel TLS
-        set_gs_base(VirtAddr::new(0xffff800000000000))?;
+        // For kernel threads, clear FS base (no user TLS needed)
+        // GS remains pointing to per-CPU data
+        set_fs_base(VirtAddr::new(0))?;
         return Ok(());
     }
     let manager_lock = TLS_MANAGER.lock();
@@ -247,23 +248,25 @@ pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
         return Err("Thread has no TLS block allocated");
     }
 
-    set_gs_base(tls_block)?;
+    // CRITICAL: Use FS for user TLS, preserving GS for per-CPU kernel data
+    set_fs_base(tls_block)?;
 
     Ok(())
 }
 
 /// Get the current thread's TCB
+/// CRITICAL: Now reads from FS base since user TLS moved to FS
 #[allow(dead_code)]
 pub fn current_tcb() -> Option<&'static ThreadControlBlock> {
-    use x86_64::registers::model_specific::GsBase;
+    use x86_64::registers::model_specific::FsBase;
 
     unsafe {
-        let gs_base = GsBase::read();
-        if gs_base.as_u64() == 0 {
+        let fs_base = FsBase::read();
+        if fs_base.as_u64() == 0 {
             return None;
         }
 
-        let tcb_ptr = gs_base.as_ptr::<ThreadControlBlock>();
+        let tcb_ptr = fs_base.as_ptr::<ThreadControlBlock>();
         Some(&*tcb_ptr)
     }
 }
@@ -275,6 +278,7 @@ pub fn current_thread_id() -> u64 {
 }
 
 /// Read a u64 value from TLS at the given offset
+/// CRITICAL: Now uses FS segment since user TLS moved to FS
 /// Safety: The offset must be valid within the TLS block
 #[allow(dead_code)]
 pub unsafe fn read_tls_u64(offset: usize) -> u64 {
@@ -283,7 +287,7 @@ pub unsafe fn read_tls_u64(offset: usize) -> u64 {
     let value: u64;
 
     asm!(
-        "mov {}, gs:[{}]",
+        "mov {}, fs:[{}]",
         out(reg) value,
         in(reg) offset,
         options(nostack, preserves_flags)
@@ -293,6 +297,7 @@ pub unsafe fn read_tls_u64(offset: usize) -> u64 {
 }
 
 /// Read a u32 value from TLS at the given offset
+/// CRITICAL: Now uses FS segment since user TLS moved to FS
 /// Safety: The offset must be valid within the TLS block
 #[allow(dead_code)]
 pub unsafe fn read_tls_u32(offset: usize) -> u32 {
@@ -301,7 +306,7 @@ pub unsafe fn read_tls_u32(offset: usize) -> u32 {
     let value: u32;
 
     asm!(
-        "mov {:e}, gs:[{}]",
+        "mov {:e}, fs:[{}]",
         out(reg) value,
         in(reg) offset,
         options(nostack, preserves_flags)
@@ -311,13 +316,14 @@ pub unsafe fn read_tls_u32(offset: usize) -> u32 {
 }
 
 /// Write a u64 value to TLS at the given offset
+/// CRITICAL: Now uses FS segment since user TLS moved to FS
 /// Safety: The offset must be valid within the TLS block
 #[allow(dead_code)]
 pub unsafe fn write_tls_u64(offset: usize, value: u64) {
     use core::arch::asm;
 
     asm!(
-        "mov gs:[{}], {}",
+        "mov fs:[{}], {}",
         in(reg) offset,
         in(reg) value,
         options(nostack, preserves_flags)
@@ -325,13 +331,14 @@ pub unsafe fn write_tls_u64(offset: usize, value: u64) {
 }
 
 /// Write a u32 value to TLS at the given offset
+/// CRITICAL: Now uses FS segment since user TLS moved to FS
 /// Safety: The offset must be valid within the TLS block
 #[allow(dead_code)]
 pub unsafe fn write_tls_u32(offset: usize, value: u32) {
     use core::arch::asm;
 
     asm!(
-        "mov gs:[{}], {:e}",
+        "mov fs:[{}], {:e}",
         in(reg) offset,
         in(reg) value,
         options(nostack, preserves_flags)
@@ -353,11 +360,12 @@ pub fn get_thread_tls_block(thread_id: u64) -> Option<VirtAddr> {
 }
 
 /// Get the current thread's TLS base address
+/// CRITICAL: Now reads from FS base since user TLS moved to FS
 #[allow(dead_code)]
 pub fn current_tls_base() -> u64 {
-    use x86_64::registers::model_specific::GsBase;
+    use x86_64::registers::model_specific::FsBase;
 
-    GsBase::read().as_u64()
+    FsBase::read().as_u64()
 }
 
 /// Test TLS functionality

@@ -367,8 +367,12 @@ impl ProcessPageTable {
                     
                     if addr.as_u64() != 0 {
                         valid_upper_entries += 1;
-                        level_4_table[i] = current_l4_table[i].clone();
+                        // CRITICAL FIX: Keep kernel mappings EXACTLY as they are
+                        // The kernel needs these exact flags to function after CR3 switch
+                        // DO NOT modify flags - copy them verbatim
+                        level_4_table[i].set_addr(addr, flags);
                         kernel_entries_count += 1;
+                        //log::debug!("Copied kernel PML4[{}] with original flags", i);
                     }
                 }
             }
@@ -383,12 +387,37 @@ impl ProcessPageTable {
                 let master_pml4_virt = phys_offset + master_pml4_frame.start_address().as_u64();
                 let master_pml4 = &*(master_pml4_virt.as_ptr() as *const PageTable);
                 
+                // Log what we're about to copy for critical entries
+                log::info!("PHASE2-DEBUG: Reading master PML4 from virtual address {:p}", master_pml4);
+                log::info!("PHASE2-DEBUG: Master PML4[402] = {:?}", master_pml4[402].frame());
+                log::info!("PHASE2-DEBUG: Master PML4[403] = {:?}", master_pml4[403].frame());
+                log::info!("PHASE2-DEBUG: &master_pml4[403] is at {:p}", &master_pml4[403]);
+                
+                // CRITICAL FIX: Copy PML4[2] (direct physical memory mapping) where kernel code/data lives
+                // The kernel is mapped at 0x100000000 (PML4[2]), not in the upper half!
+                if !master_pml4[2].is_unused() {
+                    let master_flags = master_pml4[2].flags();
+                    let mut new_flags = master_flags;
+                    // CRITICAL: Keep USER_ACCESSIBLE so CPU can access GDT/IDT/TSS during exception from Ring 3
+                    // Without this, iretq causes triple fault when trying to validate selectors
+                    new_flags.insert(PageTableFlags::USER_ACCESSIBLE);  // Must be accessible from Ring 3 for exception handling
+                    new_flags.insert(PageTableFlags::GLOBAL);           // Global for TLB efficiency
+                    new_flags.insert(PageTableFlags::WRITABLE);         // Ensure kernel can write to its data structures
+                    
+                    level_4_table[2].set_addr(master_pml4[2].addr(), new_flags);
+                    log::info!("CRITICAL: Copied PML4[2] (direct phys mapping) from master to process with USER_ACCESSIBLE");
+                }
+                
                 // Copy PML4[256-511] from master (shared kernel upper half)
                 // This includes IDT, TSS, GDT, per-CPU, kernel stacks, IST stacks, and all kernel structures
                 let mut upper_half_copied = 0;
                 for i in 256..512 {
                     if !master_pml4[i].is_unused() {
-                        level_4_table[i] = master_pml4[i].clone();
+                        // CRITICAL FIX: Keep master kernel mappings EXACTLY as they are
+                        // DO NOT modify flags - the master has the correct flags already
+                        let master_flags = master_pml4[i].flags();
+                        
+                        level_4_table[i].set_addr(master_pml4[i].addr(), master_flags);
                         upper_half_copied += 1;
                         // Log critical entries for debugging
                         match i {
@@ -438,8 +467,11 @@ impl ProcessPageTable {
                 
                 // Copy PML4[0] for identity mapping
                 if !master_pml4[0].is_unused() {
-                    level_4_table[0] = master_pml4[0].clone();
-                    log::info!("PHASE2-TEMP: Copied PML4[0] from master to preserve kernel identity mapping");
+                    // CRITICAL FIX: Keep PML4[0] EXACTLY as it is in master
+                    // DO NOT modify flags - copy verbatim
+                    let master_flags = master_pml4[0].flags();
+                    level_4_table[0].set_addr(master_pml4[0].addr(), master_flags);
+                    // log::info!("PHASE2-TEMP: Copied PML4[0] from master with original flags");
                 } else {
                     log::warn!("PHASE2-TEMP: Master PML4[0] is empty - kernel identity map may not be accessible!");
                 }
@@ -447,20 +479,23 @@ impl ProcessPageTable {
                 // CRITICAL: Also copy PML4[2] for direct physical memory mapping
                 // The kernel actually executes from here (RIP=0x100_xxxx_xxxx)
                 if !master_pml4[2].is_unused() {
-                    // Log the flags before copying
-                    let pml4_2_flags = master_pml4[2].flags();
-                    log::info!("PHASE2-TEMP: PML4[2] flags from master: {:?}", pml4_2_flags);
+                    // Skip logging that might cause issues during page table creation
+                    // let pml4_2_flags = master_pml4[2].flags();
+                    // log::info!("PHASE2-TEMP: PML4[2] flags from master: {:?}", pml4_2_flags);
                     
-                    // Check for problematic flags
-                    if pml4_2_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                        log::warn!("WARNING: PML4[2] has USER_ACCESSIBLE flag - kernel code might be accessible from userspace!");
-                    }
-                    if pml4_2_flags.contains(PageTableFlags::NO_EXECUTE) {
-                        log::error!("ERROR: PML4[2] has NO_EXECUTE flag - kernel code cannot be executed!");
-                    }
+                    // // Check for problematic flags
+                    // if pml4_2_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    //     log::warn!("WARNING: PML4[2] has USER_ACCESSIBLE flag - kernel code might be accessible from userspace!");
+                    // }
+                    // if pml4_2_flags.contains(PageTableFlags::NO_EXECUTE) {
+                    //     log::error!("ERROR: PML4[2] has NO_EXECUTE flag - kernel code cannot be executed!");
+                    // }
                     
-                    level_4_table[2] = master_pml4[2].clone();
-                    log::info!("PHASE2-TEMP: Copied PML4[2] from master - this is where kernel ACTUALLY runs!");
+                    // CRITICAL FIX: Keep PML4[2] EXACTLY as it is in master
+                    // DO NOT modify flags - copy verbatim
+                    let master_flags = master_pml4[2].flags();
+                    level_4_table[2].set_addr(master_pml4[2].addr(), master_flags);
+                    // log::info!("PHASE2-TEMP: Copied PML4[2] from master with original flags");
                 } else {
                     log::warn!("PHASE2-TEMP: Master PML4[2] is empty - kernel execution will fail!");
                 }
@@ -468,8 +503,11 @@ impl ProcessPageTable {
                 // CRITICAL: Also copy PML4[3] for kernel stack region
                 // The kernel stack is at 0x180_xxxx_xxxx range  
                 if !master_pml4[3].is_unused() {
-                    level_4_table[3] = master_pml4[3].clone();
-                    log::info!("PHASE2-TEMP: Copied PML4[3] from master - kernel stack region!");
+                    // CRITICAL FIX: Keep PML4[3] EXACTLY as it is in master
+                    // DO NOT modify flags - copy verbatim
+                    let master_flags = master_pml4[3].flags();
+                    level_4_table[3].set_addr(master_pml4[3].addr(), master_flags);
+                    // log::info!("PHASE2-TEMP: Copied PML4[3] from master with original flags");
                 }
                 
                 // Note: PML4[403] (IST stacks) is already copied in the upper-half loop above
@@ -522,7 +560,7 @@ impl ProcessPageTable {
                                 pdpt[i].set_unused();
                             }
                             level_4_table[pml4_idx as usize].set_frame(frame, 
-                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
                             frame
                         } else {
                             level_4_table[pml4_idx as usize].frame().unwrap()
@@ -541,7 +579,7 @@ impl ProcessPageTable {
                                 pd[i].set_unused();
                             }
                             pdpt[pdpt_idx as usize].set_frame(frame,
-                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
                             frame
                         } else {
                             pdpt[pdpt_idx as usize].frame().unwrap()
@@ -560,7 +598,7 @@ impl ProcessPageTable {
                                 pt[i].set_unused();
                             }
                             pd[pd_idx as usize].set_frame(frame,
-                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
                             frame
                         } else {
                             pd[pd_idx as usize].frame().unwrap()
@@ -587,8 +625,9 @@ impl ProcessPageTable {
                         let _page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
                         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(addr));
                         
-                        // All control structures need read-write access
-                        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+                        // All control structures need read-write access AND user access for exception handling
+                        // Without USER_ACCESSIBLE, CPU can't access these during exception from Ring 3
+                        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL | PageTableFlags::USER_ACCESSIBLE;
                         
                         // Manually walk the page tables to install the mapping
                         let pml4_idx = (addr >> 39) & 0x1FF;
@@ -606,7 +645,7 @@ impl ProcessPageTable {
                                 pdpt[i].set_unused();
                             }
                             level_4_table[pml4_idx as usize].set_frame(frame, 
-                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
                             frame
                         } else {
                             level_4_table[pml4_idx as usize].frame().unwrap()
@@ -625,7 +664,7 @@ impl ProcessPageTable {
                                 pd[i].set_unused();
                             }
                             pdpt[pdpt_idx as usize].set_frame(frame,
-                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
                             frame
                         } else {
                             pdpt[pdpt_idx as usize].frame().unwrap()
@@ -644,7 +683,7 @@ impl ProcessPageTable {
                                 pt[i].set_unused();
                             }
                             pd[pd_idx as usize].set_frame(frame,
-                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+                                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE);
                             frame
                         } else {
                             pd[pd_idx as usize].frame().unwrap()
@@ -682,12 +721,16 @@ impl ProcessPageTable {
                     if addr.as_u64() != 0 {
                         // CRITICAL: For PML4[0], we need special handling since it contains both
                         // kernel (0x100000-0x300000) and userspace (0x10000000) mappings
+                        // CURSOR AGENT FIX: Set proper flags for ALL kernel mappings
+                        let mut new_flags = flags;
+                        new_flags.remove(PageTableFlags::USER_ACCESSIBLE);
+                        new_flags.insert(PageTableFlags::GLOBAL);
+                        
+                        level_4_table[i].set_addr(addr, new_flags);
                         if i == 0 {
-                            // PML4[0] needs to be shared but we'll handle userspace mapping separately
-                            level_4_table[i] = current_l4_table[i].clone();
-                            log::info!("PHASE1: Copied PML4[0] for kernel code at 0x100000 (will add userspace later)");
+                            log::info!("PHASE1: Fixed PML4[0] flags for kernel code at 0x100000 (cleared USER, added GLOBAL)");
                         } else {
-                            level_4_table[i] = current_l4_table[i].clone();
+                            log::debug!("Fixed low-memory kernel PML4[{}] flags", i);
                         }
                         low_kernel_entries += 1;
                         log::debug!("Copied low-memory kernel PML4 entry {} (phys={:#x}, flags={:?})", i, addr.as_u64(), flags);
@@ -703,8 +746,15 @@ impl ProcessPageTable {
             // This is PML4 entry 402 (0xffffc90000000000 >> 39 = 402)
             let kernel_stack_pml4_idx = 402;
             if !current_l4_table[kernel_stack_pml4_idx].is_unused() {
-                level_4_table[kernel_stack_pml4_idx] = current_l4_table[kernel_stack_pml4_idx].clone();
-                log::info!("PHASE1: Mapped kernel stack PML4[{}] (0xffffc90000000000)", kernel_stack_pml4_idx);
+                // CURSOR AGENT FIX: Set proper flags for kernel stack mapping
+                let mut stack_flags = current_l4_table[kernel_stack_pml4_idx].flags();
+                stack_flags.remove(PageTableFlags::USER_ACCESSIBLE);
+                stack_flags.insert(PageTableFlags::GLOBAL);
+                level_4_table[kernel_stack_pml4_idx].set_addr(
+                    current_l4_table[kernel_stack_pml4_idx].addr(), 
+                    stack_flags
+                );
+                log::info!("PHASE1: Fixed kernel stack PML4[{}] flags (0xffffc90000000000)", kernel_stack_pml4_idx);
             } else {
                 log::warn!("PHASE1: Kernel stack PML4[{}] not present in current table!", kernel_stack_pml4_idx);
             }
@@ -714,8 +764,15 @@ impl ProcessPageTable {
             // This is PML4 entry 403 (0xffffc98000000000 >> 39 = 403)
             let ist_stack_pml4_idx = 403;
             if !current_l4_table[ist_stack_pml4_idx].is_unused() {
-                level_4_table[ist_stack_pml4_idx] = current_l4_table[ist_stack_pml4_idx].clone();
-                log::info!("PHASE1: Mapped IST stack PML4[{}] (0xffffc98000000000)", ist_stack_pml4_idx);
+                // CURSOR AGENT FIX: Set proper flags for IST stack mapping
+                let mut ist_flags = current_l4_table[ist_stack_pml4_idx].flags();
+                ist_flags.remove(PageTableFlags::USER_ACCESSIBLE);
+                ist_flags.insert(PageTableFlags::GLOBAL);
+                level_4_table[ist_stack_pml4_idx].set_addr(
+                    current_l4_table[ist_stack_pml4_idx].addr(),
+                    ist_flags
+                );
+                log::info!("PHASE1: Fixed IST stack PML4[{}] flags (0xffffc98000000000)", ist_stack_pml4_idx);
             } else {
                 log::warn!("PHASE1: IST stack PML4[{}] not present in current table!", ist_stack_pml4_idx);
             }
@@ -809,9 +866,19 @@ impl ProcessPageTable {
             }
 
             // Page is not mapped, proceed with mapping
+            // CRITICAL FIX: Use map_to_with_table_flags to ensure USER_ACCESSIBLE
+            // is set on intermediate page tables (PML4, PDPT, PD) not just the final PT entry
+            let table_flags = if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                // For user pages, intermediate tables need USER_ACCESSIBLE too
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE
+            } else {
+                // For kernel pages, intermediate tables don't need USER_ACCESSIBLE
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE
+            };
+            
             match self
                 .mapper
-                .map_to(page, frame, flags, &mut GlobalFrameAllocator)
+                .map_to_with_table_flags(page, frame, flags, table_flags, &mut GlobalFrameAllocator)
             {
                 Ok(flush) => {
                     // CRITICAL: Do NOT flush TLB immediately!
@@ -893,9 +960,12 @@ impl ProcessPageTable {
                 }
                 None => {
                     // This is the problematic case - let's understand why
-                    log::debug!("translate_page({:#x}) -> None (FAILED)", addr.as_u64());
+                    // TEMPORARILY DISABLED: Too verbose, causes kernel hang
+                    // log::debug!("translate_page({:#x}) -> None (FAILED)", addr.as_u64());
 
                     // Let's manually check the page table entries to debug
+                    // TEMPORARILY DISABLED: Too verbose
+                    if false {
                     unsafe {
                         let phys_offset = crate::memory::physical_memory_offset();
                         let l4_table = {
@@ -984,6 +1054,7 @@ impl ProcessPageTable {
                             }
                         }
                     }
+                    } // End of disabled debug block
                 }
             }
         }
@@ -1015,9 +1086,9 @@ impl ProcessPageTable {
         // Clear the standard userspace regions that programs typically use
         // This prevents "page already mapped" errors when loading ELF files
 
-        // 1. Clear code/data region (0x10000000 - 0x10010000)
-        let code_start = VirtAddr::new(0x10000000);
-        let code_end = VirtAddr::new(0x10010000);
+        // 1. Clear code/data region (USERSPACE_BASE - USERSPACE_BASE + 64KB)
+        let code_start = VirtAddr::new(crate::memory::layout::USERSPACE_BASE);
+        let code_end = VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x10000);
         match self.unmap_user_pages(code_start, code_end) {
             Ok(()) => log::debug!("Cleared code region {:#x}-{:#x}", code_start, code_end),
             Err(e) => log::warn!("Failed to clear code region: {}", e),

@@ -181,9 +181,9 @@ fn load_segment(
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
 
-    // Our userspace binaries use absolute addressing starting at 0x10000000
-    // Don't add base_offset for absolute addresses in the userspace range
-    let vaddr = if ph.p_vaddr >= 0x10000000 {
+    // Our userspace binaries use absolute addressing starting at USERSPACE_BASE
+    // Don't add base_offset for absolute addresses in the userspace range  
+    let vaddr = if ph.p_vaddr >= crate::memory::layout::USERSPACE_BASE {
         // Absolute userspace address - use directly
         VirtAddr::new(ph.p_vaddr)
     } else {

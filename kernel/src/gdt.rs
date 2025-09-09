@@ -44,6 +44,14 @@ pub fn init() {
         
         // Note: RSP0 will be updated by update_tss_rsp0() after kernel stack allocation
 
+        // CRITICAL FIX: Disable I/O permission bitmap to prevent GP faults during CR3 switches
+        // Setting iomap_base beyond the TSS limit effectively disables per-port I/O checks
+        // This prevents GP faults when executing OUT instructions after CR3 switch to user page table
+        // where the TSS I/O bitmap might not be mapped
+        tss.iomap_base = core::mem::size_of::<TaskStateSegment>() as u16;
+        
+        log::info!("TSS I/O permission bitmap disabled (iomap_base={})", tss.iomap_base);
+
         tss
     });
 
@@ -237,12 +245,20 @@ pub fn get_tss_rsp0() -> u64 {
     }
 }
 
+/// Set TSS.RSP0 directly (for testing/debugging)
+pub fn set_tss_rsp0(kernel_stack_top: VirtAddr) {
+    let tss_ptr = TSS_PTR.load(Ordering::Acquire);
+    if !tss_ptr.is_null() {
+        unsafe {
+            (*tss_ptr).privilege_stack_table[0] = kernel_stack_top;
+        }
+    }
+}
+
 /// Get GDT base and limit for logging
 pub fn get_gdt_info() -> (u64, u16) {
-    unsafe {
-        let gdtr = x86_64::instructions::tables::sgdt();
-        (gdtr.base.as_u64(), gdtr.limit)
-    }
+    let gdtr = unsafe { x86_64::instructions::tables::sgdt() };
+    (gdtr.base.as_u64(), gdtr.limit)
 }
 
 /// Get TSS base address and RSP0 for logging

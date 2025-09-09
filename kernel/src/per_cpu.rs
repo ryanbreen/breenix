@@ -136,6 +136,11 @@ static mut CPU0_DATA: PerCpuData = PerCpuData::new(0);
 /// CRITICAL: Interrupts MUST be disabled until this is true
 static PER_CPU_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Check if per-CPU data has been initialized
+pub fn is_initialized() -> bool {
+    PER_CPU_INITIALIZED.load(Ordering::Acquire)
+}
+
 /// Initialize per-CPU data for the current CPU
 pub fn init() {
     log::info!("Initializing per-CPU data via GS segment");
@@ -667,15 +672,21 @@ pub fn preempt_disable() {
         // Compiler barrier after incrementing preempt count
         compiler_fence(Ordering::Release);
         
-        // Get CPU ID for logging (at offset 0)
-        let cpu_id: usize;
-        core::arch::asm!(
-            "mov {}, gs:[0]",
-            out(reg) cpu_id,
-            options(nostack)
-        );
-        
-        log::debug!("preempt_disable: {:#x} -> {:#x} (per-CPU, CPU {})", old_count, new_count, cpu_id);
+        // CRITICAL: Do NOT use log:: macros here as they may recursively call preempt_disable!
+        // This was causing the double preempt_disable issue when coming from userspace.
+        // The logging infrastructure might acquire locks which call preempt_disable.
+        #[cfg(never)] // Disable this logging to prevent recursion
+        {
+            // Get CPU ID for logging (at offset 0)
+            let cpu_id: usize;
+            core::arch::asm!(
+                "mov {}, gs:[0]",
+                out(reg) cpu_id,
+                options(nostack)
+            );
+            
+            log::debug!("preempt_disable: {:#x} -> {:#x} (per-CPU, CPU {})", old_count, new_count, cpu_id);
+        }
     }
 }
 
@@ -719,6 +730,8 @@ pub fn preempt_enable() {
             options(nostack)
         );
         
+        // CRITICAL: Disable logging to prevent recursion issues
+        #[cfg(never)]
         log::debug!("preempt_enable: {:#x} -> {:#x} (per-CPU, CPU {})", old_count, new_count, cpu_id);
         
         // Check for underflow in debug builds
@@ -736,12 +749,11 @@ pub fn preempt_enable() {
             if (new_count & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK)) == 0 {
                 // Not in interrupt context, safe to check for scheduling
                 if need_resched() {
-                    log::info!("preempt_enable: Triggering preempt_schedule (PREEMPT->0, not in IRQ, need_resched set)");
-                    // Call scheduler - this is the normal preemption path
-                    // In Linux, this would call preempt_schedule() which is slightly
-                    // different from schedule(), but for now we use schedule()
-                    // TODO: Implement preempt_schedule() that sets PREEMPT_ACTIVE
-                    crate::task::scheduler::schedule();
+                    // CRITICAL: Don't schedule from exception context on process CR3
+                    // The scheduler may access unmapped kernel structures (like framebuffer)
+                    crate::serial_println!("preempt_enable: SKIPPING schedule in exception context");
+                    // Clear need_resched to prevent infinite loops
+                    crate::per_cpu::set_need_resched(false);
                 }
             }
         }

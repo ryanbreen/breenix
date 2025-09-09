@@ -52,7 +52,7 @@ impl Scheduler {
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         self.threads.push(thread);
         self.ready_queue.push_back(thread_id);
-        log::info!(
+        crate::serial_println!(
             "Added thread {} '{}' to scheduler (user: {}, ready_queue: {:?})",
             thread_id,
             thread_name,
@@ -88,14 +88,13 @@ impl Scheduler {
             core::sync::atomic::AtomicU64::new(0);
         let count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-        // Log the first few scheduling decisions
+        // Log the first few scheduling decisions (use serial to avoid framebuffer on process CR3)
         if count < 10 {
-            log::info!(
-                "schedule() called #{}: current={:?}, ready_queue={:?}, idle_thread={}",
+            crate::serial_println!(
+                "schedule() #{}: current={:?}, ready_queue={:?}",
                 count,
                 self.current_thread,
-                self.ready_queue,
-                self.idle_thread
+                self.ready_queue
             );
         }
 
@@ -119,14 +118,14 @@ impl Scheduler {
                 if !is_terminated {
                     self.ready_queue.push_back(current_id);
                     if count < 10 {
-                        log::info!(
+                        crate::serial_println!(
                             "Put thread {} back in ready queue, state was {:?}",
                             current_id,
                             prev_state
                         );
                     }
                 } else {
-                    log::info!(
+                    crate::serial_println!(
                         "Thread {} is terminated, not putting back in ready queue",
                         current_id
                     );
@@ -142,7 +141,7 @@ impl Scheduler {
         };
 
         if count < 10 {
-            log::info!(
+            crate::serial_println!(
                 "Next thread from queue: {}, ready_queue after pop: {:?}",
                 next_thread_id,
                 self.ready_queue
@@ -155,7 +154,7 @@ impl Scheduler {
             // Put current thread back and get the next one
             self.ready_queue.push_back(next_thread_id);
             next_thread_id = self.ready_queue.pop_front()?;
-            log::info!(
+            crate::serial_println!(
                 "Forced switch from {} to {} (other threads waiting)",
                 self.current_thread.unwrap_or(0),
                 next_thread_id
@@ -163,7 +162,7 @@ impl Scheduler {
         } else if Some(next_thread_id) == self.current_thread {
             // No other threads ready, stay with current
             if count < 10 {
-                log::info!(
+                crate::serial_println!(
                     "Staying with current thread {} (no other threads ready)",
                     next_thread_id
                 );
@@ -176,7 +175,7 @@ impl Scheduler {
         self.current_thread = Some(next_thread_id);
 
         if count < 10 {
-            log::info!(
+            crate::serial_println!(
                 "Switching from thread {} to thread {}",
                 old_thread_id,
                 next_thread_id
@@ -270,7 +269,7 @@ impl Scheduler {
 pub fn init(idle_thread: Box<Thread>) {
     let mut scheduler_lock = SCHEDULER.lock();
     *scheduler_lock = Some(Scheduler::new(idle_thread));
-    log::info!("Scheduler initialized");
+    crate::serial_println!("Scheduler initialized");
 }
 
 /// Initialize scheduler with the current thread as the idle task (Linux-style)
@@ -284,7 +283,7 @@ pub fn init_with_current(current_thread: Box<Thread>) {
     scheduler.current_thread = Some(thread_id);
     
     *scheduler_lock = Some(scheduler);
-    log::info!("Scheduler initialized with current thread {} as idle task", thread_id);
+    crate::serial_println!("Scheduler initialized with current thread {} as idle task", thread_id);
 }
 
 /// Add a thread to the scheduler
@@ -354,7 +353,7 @@ pub fn preempt_schedule_irq() {
         
         // Try non-blocking schedule since we're in IRQ exit path
         if let Some((old_tid, new_tid)) = try_schedule() {
-            log::info!("preempt_schedule_irq: Scheduled {} -> {}", old_tid, new_tid);
+            crate::serial_println!("preempt_schedule_irq: Scheduled {} -> {}", old_tid, new_tid);
             // Context switch will happen on return from interrupt
         }
         
@@ -413,7 +412,7 @@ pub fn yield_current() {
     // This will be called from timer interrupt or sys_yield
     // The actual context switch happens in the interrupt handler
     if let Some((old_id, new_id)) = schedule() {
-        log::debug!("Scheduling: {} -> {}", old_id, new_id);
+        crate::serial_println!("Scheduling: {} -> {}", old_id, new_id);
         // Context switch will be performed by caller
     }
 }

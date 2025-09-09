@@ -30,7 +30,7 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     }
 
     // Basic validation - check if address is in reasonable userspace range
-    let is_code_data_range = user_ptr >= 0x10000000 && user_ptr < 0x80000000;
+    let is_code_data_range = user_ptr >= crate::memory::layout::USERSPACE_BASE && user_ptr < 0x80000000;
     let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5570_0000;
 
     if !is_code_data_range && !is_stack_range {
@@ -62,7 +62,7 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
     }
 
     // Basic validation - check if address is in reasonable userspace range
-    let is_code_data_range = user_ptr >= 0x10000000 && user_ptr < 0x80000000;
+    let is_code_data_range = user_ptr >= crate::memory::layout::USERSPACE_BASE && user_ptr < 0x80000000;
     let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5570_0000;
 
     if !is_code_data_range && !is_stack_range {

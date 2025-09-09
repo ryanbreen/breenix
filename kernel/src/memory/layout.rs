@@ -15,6 +15,10 @@ pub const PERCPU_BASE: u64 = 0xfffffe0000000000;     // Per-CPU area
 pub const FIXMAP_BASE: u64 = 0xfffffd0000000000;     // Fixed mappings (GDT/IDT/TSS)
 pub const MMIO_BASE: u64 = 0xffffe00000000000;       // MMIO regions
 
+// TEMPORARY FIX: Userspace base moved to 1GB to avoid PML4[0] conflict with kernel
+// This places userspace in PDPT[1] while kernel stays in PDPT[0]
+pub const USERSPACE_BASE: u64 = 0x40000000;          // 1GB - avoids kernel conflict
+
 // PML4 indices for different regions
 pub const KERNEL_PML4_INDEX: u64 = 402;              // Kernel stacks at 0xffffc90000000000
 pub const BOOTSTRAP_PML4_INDEX: u64 = 3;             // Bootstrap stack at 0x180000000000

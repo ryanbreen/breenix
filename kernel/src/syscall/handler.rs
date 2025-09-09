@@ -56,6 +56,18 @@ impl SyscallFrame {
 /// Main syscall handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
+    // Raw serial output to detect if syscall handler is called
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0x3F8",
+            "mov al, 0x53",      // 'S' for Syscall
+            "out dx, al",
+            "mov al, 0x43",      // 'C'
+            "out dx, al",
+            options(nostack, nomem, preserves_flags)
+        );
+    }
+    
     // Increment preempt count on syscall entry (prevents scheduling during syscall)
     crate::per_cpu::preempt_disable();
     
@@ -191,8 +203,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
         None => {
-            log::warn!("Unknown syscall number: {}", syscall_num);
-            SyscallResult::Err(u64::MAX)
+            log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
+            SyscallResult::Err(super::ErrorCode::NoSys as u64)
         }
     };
 
@@ -219,6 +231,17 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     }
 
     // Note: Context switches after sys_yield happen on the next timer interrupt
+    
+    // CRITICAL FIX: Update TSS.RSP0 before returning to userspace
+    // When userspace triggers an interrupt (like int3), the CPU switches to kernel
+    // mode and uses TSS.RSP0 as the kernel stack. This must be set correctly!
+    let kernel_stack_top = crate::per_cpu::kernel_stack_top();
+    if kernel_stack_top.as_u64() != 0 {
+        crate::gdt::set_tss_rsp0(kernel_stack_top);
+        log::trace!("Updated TSS.RSP0 to {:#x} for userspace return", kernel_stack_top.as_u64());
+    } else {
+        log::error!("CRITICAL: Cannot set TSS.RSP0 - kernel_stack_top is 0!");
+    }
     
     // Flush any pending IRQ logs before returning to userspace
     crate::irq_log::flush_local_try();
@@ -254,12 +277,29 @@ pub extern "C" fn trace_iretq_to_ring3(frame_ptr: *const u64) {
             let cr3: u64;
             core::arch::asm!("mov {}, cr3", out(reg) cr3);
             
-            log::info!("R3-IRET #{}: rip={:#x}, cs={:#x} (RPL={}), ss={:#x} (RPL={}), rflags={:#x}, rsp={:#x}, cr3={:#x}",
-                count + 1, rip, cs, cs & 3, ss, ss & 3, rflags, rsp, cr3);
+            // Get current TSS RSP0 value for debugging
+            let tss_rsp0 = crate::gdt::get_tss_rsp0();
+            
+            // Check IF bit (bit 9) in RFLAGS
+            let if_enabled = (rflags & (1 << 9)) != 0;
+            
+            log::info!("R3-IRET #{}: rip={:#x}, cs={:#x} (RPL={}), ss={:#x} (RPL={}), rflags={:#x} (IF={}), rsp={:#x}, cr3={:#x}",
+                count + 1, rip, cs, cs & 3, ss, ss & 3, rflags, if_enabled as u8, rsp, cr3);
+            log::info!("  TSS.RSP0: {:#x}", tss_rsp0);
+            
+            // Critical check: IF must be 1 for userspace to receive interrupts
+            if !if_enabled {
+                log::error!("  🚨 CRITICAL: IF=0 in RFLAGS! Userspace will hang without interrupts!");
+                log::error!("  RFLAGS bits: IF(9)={}, TF(8)={}, IOPL(12-13)={}, NT(14)={}", 
+                    if_enabled as u8,
+                    ((rflags >> 8) & 1),
+                    ((rflags >> 12) & 3),
+                    ((rflags >> 14) & 1));
+            }
             
             // Verify we're returning to Ring 3
             if (cs & 3) == 3 && (ss & 3) == 3 {
-                log::info!("  ✓ Confirmed: Returning to Ring 3 (CPL=3)");
+                log::info!("  ✓ Confirmed: Returning to Ring 3 (CPL=3) with IF={}", if_enabled as u8);
             } else {
                 log::error!("  ⚠ WARNING: Not returning to Ring 3! CS RPL={}, SS RPL={}", cs & 3, ss & 3);
             }

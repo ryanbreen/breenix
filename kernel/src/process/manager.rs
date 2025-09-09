@@ -1052,9 +1052,11 @@ impl ProcessManager {
 
         // Unmap the old program's pages in common userspace ranges
         // This is necessary because entry 0 contains both kernel and user mappings
-        // Typical userspace code location: 0x10000000 - 0x10100000 (1MB range)
-        if let Err(e) =
-            new_page_table.unmap_user_pages(VirtAddr::new(0x10000000), VirtAddr::new(0x10100000))
+        // Typical userspace code location: USERSPACE_BASE + 1MB range  
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000)
+        )
         {
             log::warn!("Failed to unmap old user code pages: {}", e);
         }
