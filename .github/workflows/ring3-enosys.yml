@@ -1,93 +1,56 @@
 name: Ring-3 ENOSYS Test
 
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'userspace/**'
-      - 'tests/**'
-      - 'xtask/**'
-      - '.github/workflows/ring3-enosys.yml'
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ "**" ]
+  pull_request:
 
 jobs:
   ring3-enosys:
-    name: Test ENOSYS syscall handling
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    
+    timeout-minutes: 20
+
+    env:
+      CARGO_UNSTABLE_BINDEPS: true
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust nightly toolchain
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
         with:
+          toolchain: nightly-2025-06-24
+          override: true
+          target: x86_64-unknown-none
           components: rust-src, llvm-tools-preview
 
-      - name: Install NASM
-        uses: ilammy/setup-nasm@v1
-      
-      - name: Install rust-objcopy
-        run: |
-          # Install llvm-tools-preview which includes rust-objcopy
-          rustup component add llvm-tools-preview
-          # Add cargo binutils for easier access to rust-objcopy
-          cargo install cargo-binutils || true
-          # Ensure rust-objcopy is in PATH
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's|host: ||p')/bin" >> $GITHUB_PATH
-
-      - name: Install QEMU
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils
+          sudo apt-get install -y qemu-system-x86 ovmf nasm
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build userspace tests
         run: |
+          # Add LLVM tools to PATH
+          export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
           cd userspace/tests
-          # Build all userspace test binaries required by the kernel
-          ./build.sh || echo "Warning: Some userspace tests failed to build"
+          ./build.sh
 
-      - name: Build kernel with test features
-        run: |
-          rustup target add x86_64-unknown-none
-          cargo build --package kernel --target x86_64-unknown-none --release --features "testing,external_test_bins"
+      - name: Run Ring-3 ENOSYS test
+        run: cargo run -p xtask -- ring3-enosys
 
-      - name: Run ENOSYS integration test
-        run: |
-          cargo test --test ring3_enosys_test --release
-          echo "Integration test completed"
-
-      - name: Build and run xtask ENOSYS test
-        run: |
-          cd xtask
-          cargo build --release
-          timeout 60 cargo run --release -- ring3-enosys || true
-          # Allow failure but capture output
-
-      - name: Check for test evidence in logs
-        if: always()
-        run: |
-          echo "=== Checking for ENOSYS test evidence ==="
-          if [ -f target/xtask_ring3_enosys_output.txt ]; then
-            echo "Found xtask output file"
-            grep -E "ENOSYS|Invalid syscall|999" target/xtask_ring3_enosys_output.txt || echo "No ENOSYS markers found"
-          fi
-          if [ -d logs ]; then
-            echo "Found logs directory"
-            grep -E "ENOSYS|Invalid syscall|999" logs/*.log 2>/dev/null | head -20 || echo "No ENOSYS markers in logs"
-          fi
-
-      - name: Upload test artifacts
-        if: always()
+      - name: Upload QEMU log if failure
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: enosys-test-output-${{ github.run_number }}
-          path: |
-            target/xtask_ring3_enosys_output.txt
-            target/shared_kernel_test_output.txt
-            logs/*.log
-          if-no-files-found: warn
+          name: qemu-serial-log
+          path: target/xtask_ring3_enosys_output.txt
