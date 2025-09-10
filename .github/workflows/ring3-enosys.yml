@@ -52,7 +52,9 @@ jobs:
           ./build.sh || echo "Warning: Some userspace tests failed to build"
 
       - name: Build kernel with test features
-        run: cargo build --package kernel --release --features "testing,external_test_bins"
+        run: |
+          rustup target add x86_64-unknown-none
+          cargo build --package kernel --target x86_64-unknown-none --release --features "testing,external_test_bins"
 
       - name: Run ENOSYS integration test
         run: |
