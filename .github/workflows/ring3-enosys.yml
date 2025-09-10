@@ -38,8 +38,8 @@ jobs:
       - name: Build userspace tests
         run: |
           cd userspace/tests
-          cargo build --release --target=x86_64-unknown-none --bin syscall_enosys || true
-          # Allow failure since userspace/ may not exist yet
+          # Build all userspace test binaries required by the kernel
+          ./build_all.sh || echo "Warning: Some userspace tests failed to build"
 
       - name: Build kernel with test features
         run: cargo build --all --release --features "testing,external_test_bins"
