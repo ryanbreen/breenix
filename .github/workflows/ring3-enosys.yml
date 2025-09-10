@@ -39,10 +39,10 @@ jobs:
         run: |
           cd userspace/tests
           # Build all userspace test binaries required by the kernel
-          ./build_all.sh || echo "Warning: Some userspace tests failed to build"
+          ./build.sh || echo "Warning: Some userspace tests failed to build"
 
       - name: Build kernel with test features
-        run: cargo build --all --release --features "testing,external_test_bins"
+        run: cargo build --package kernel --release --features "testing,external_test_bins"
 
       - name: Run ENOSYS integration test
         run: |
