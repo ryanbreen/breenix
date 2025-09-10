@@ -13,8 +13,10 @@ const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 /// End address for kernel stack allocation (16 MiB total space)
 const KERNEL_STACK_END: u64 = 0xffffc900_0100_0000;
 
-/// Size of each kernel stack (8 KiB)
-const KERNEL_STACK_SIZE: u64 = 8 * 1024;
+/// Size of each kernel stack (64 KiB) - increased from 16KB to handle deep call stacks
+/// Process creation involves deeply nested function calls and page table manipulation
+/// TODO: Investigate stack usage and potentially reduce back to 16KB after optimization
+const KERNEL_STACK_SIZE: u64 = 64 * 1024;
 
 /// Size of guard page (4 KiB)
 const GUARD_PAGE_SIZE: u64 = 4 * 1024;
@@ -113,14 +115,25 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
     let stack_top = VirtAddr::new(slot_base + STACK_SLOT_SIZE);
 
     // Map the stack pages (but not the guard page)
-    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+    // CRITICAL: Do NOT use GLOBAL flag for stack pages (per Cursor guidance)
+    // Stack pages are per-thread and GLOBAL would keep stale TLB entries
+    // Also set NO_EXECUTE since stacks should not contain executable code
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
 
     let num_pages = (KERNEL_STACK_SIZE / 4096) as usize;
+    log::debug!("Mapping {} pages for kernel stack {}", num_pages, index);
     for i in 0..num_pages {
         let virt_addr = stack_bottom + (i as u64 * 4096);
 
         // Allocate a physical frame
         let frame = allocate_frame().ok_or("Out of memory for kernel stack")?;
+
+        log::trace!(
+            "  Mapping stack page {}: {:#x} -> {:#x}",
+            i,
+            virt_addr,
+            frame.start_address()
+        );
 
         // Map it in the global kernel page tables
         unsafe {

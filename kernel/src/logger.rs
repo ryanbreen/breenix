@@ -227,10 +227,23 @@ impl Log for CombinedLogger {
                     }
 
                     // Write to framebuffer
-                    // TODO: Add proper synchronization to prevent rendering conflicts
-                    // For now, we'll accept occasional visual glitches rather than deadlock
-                    if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
-                        fb_logger.log(record);
+                    // CRITICAL: Don't write to framebuffer if we're in interrupt/exception context
+                    // or using a process page table, as the framebuffer might not be mapped
+                    // Check if we're in interrupt context (IRQ) or exception context (preempt disabled)
+                    // But only if per-CPU is initialized (otherwise assume we're safe)
+                    let skip_framebuffer = if crate::per_cpu::is_initialized() {
+                        // Skip if in IRQ context OR if preemption is disabled (exception context)
+                        crate::per_cpu::in_interrupt() || crate::per_cpu::preempt_count() > 0
+                    } else {
+                        false // Early boot, safe to use framebuffer
+                    };
+                    
+                    if !skip_framebuffer {
+                        // TODO: Add proper synchronization to prevent rendering conflicts
+                        // For now, we'll accept occasional visual glitches rather than deadlock
+                        if let Some(fb_logger) = FRAMEBUFFER_LOGGER.get() {
+                            fb_logger.log(record);
+                        }
                     }
                 }
             }

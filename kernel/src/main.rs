@@ -32,12 +32,15 @@ mod gdt;
 #[cfg(feature = "testing")]
 mod gdt_tests;
 mod interrupts;
+mod irq_log;
 mod keyboard;
 mod logger;
 mod memory;
+mod per_cpu;
 mod process;
 mod rtc_test;
 mod serial;
+mod spinlock;
 mod syscall;
 mod task;
 pub mod test_exec;
@@ -46,8 +49,11 @@ mod time_test;
 mod tls;
 mod userspace_test;
 mod userspace_fault_tests;
+mod preempt_count_test;
+mod stack_switch;
+mod test_userspace;
 
-// Fault test thread function
+// Fault test thread function  
 #[cfg(feature = "testing")]
 extern "C" fn fault_test_thread(_arg: u64) -> ! {
     // Wait for initial Ring 3 process to run and validate
@@ -118,6 +124,18 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init();
     log::info!("GDT and IDT initialized");
 
+    // Initialize per-CPU data (must be after GDT/TSS setup)
+    per_cpu::init();
+    // Set the TSS pointer in per-CPU data
+    per_cpu::set_tss(gdt::get_tss_ptr());
+    log::info!("Per-CPU data initialized");
+    
+    // Run comprehensive preempt_count tests (before interrupts are enabled)
+    log::info!("Running preempt_count comprehensive tests...");
+    preempt_count_test::test_preempt_count_comprehensive();
+    preempt_count_test::test_preempt_count_scheduling();
+    log::info!("✅ preempt_count tests completed successfully");
+
     // Initialize memory management
     log::info!("Checking physical memory offset availability...");
     let physical_memory_offset = match boot_info.physical_memory_offset.into_option() {
@@ -132,11 +150,13 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     };
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
+    
+    // Phase 0: Log kernel layout inventory
+    memory::layout::log_kernel_layout();
 
-    // Update IST stack with per-CPU emergency stack
-    let emergency_stack_top = memory::per_cpu_stack::current_cpu_emergency_stack();
-    gdt::update_ist_stack(emergency_stack_top);
-    log::info!("Updated IST[0] with per-CPU emergency stack");
+    // Update IST stacks with per-CPU emergency stacks
+    gdt::update_ist_stacks();
+    log::info!("Updated IST stacks with per-CPU emergency and page fault stacks");
 
     // Test heap allocation
     log::info!("Testing heap allocation...");
@@ -235,37 +255,125 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     syscall::init();
     log::info!("System call infrastructure initialized");
 
-    // Initialize threading subsystem
+    // Initialize threading subsystem (Linux-style init/idle separation)
     log::info!("Initializing threading subsystem...");
 
-    // Create idle thread for scheduler
+    // CRITICAL FIX: Allocate a proper kernel stack for the idle thread
+    // This ensures TSS.rsp0 points to the upper half, not the bootstrap stack
+    log::info!("Allocating kernel stack for idle thread from upper half...");
+    let idle_kernel_stack = memory::kernel_stack::allocate_kernel_stack()
+        .expect("Failed to allocate kernel stack for idle thread");
+    let idle_kernel_stack_top = idle_kernel_stack.top();
+    log::info!("Idle thread kernel stack allocated at {:#x} (PML4[{}])", 
+        idle_kernel_stack_top, (idle_kernel_stack_top.as_u64() >> 39) & 0x1FF);
+    
+    // CRITICAL: Update TSS and switch stacks atomically
+    // This ensures no interrupts can occur between TSS update and stack switch
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        // Set TSS.RSP0 to the kernel stack BEFORE switching
+        // This ensures interrupts from userspace will use the correct stack
+        per_cpu::set_kernel_stack_top(idle_kernel_stack_top);
+        per_cpu::update_tss_rsp0(idle_kernel_stack_top);
+        log::info!("TSS.RSP0 set to kernel stack at {:#x}", idle_kernel_stack_top);
+        
+        // Keep the kernel stack alive (it will be used forever)
+        // Using mem::forget is acceptable here with clear comment
+        core::mem::forget(idle_kernel_stack); // Intentionally leaked - idle stack lives forever
+        
+        // Log the current bootstrap stack before switching
+        let current_rsp: u64;
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
+        }
+        log::info!("About to switch from bootstrap stack at {:#x} (PML4[{}]) to kernel stack", 
+            current_rsp, (current_rsp >> 39) & 0x1FF);
+        
+        // CRITICAL: Actually switch to the kernel stack!
+        // After this point, we're running on the upper-half kernel stack
+        unsafe {
+            // Switch stacks and continue initialization
+            stack_switch::switch_stack_and_call_with_arg(
+                idle_kernel_stack_top.as_u64(),
+                kernel_main_on_kernel_stack,
+                core::ptr::null_mut(),  // No longer need boot_info
+            );
+        }
+    });
+    // Never reached - switch_stack_and_call_with_arg never returns
+    unreachable!("Stack switch function should never return")
+}
+
+/// Continuation of kernel_main after switching to the upper-half kernel stack
+/// This function runs on the properly allocated kernel stack, not the bootstrap stack
+extern "C" fn kernel_main_on_kernel_stack(_arg: *mut core::ffi::c_void) -> ! {
+    // Verify stack alignment per SysV ABI (RSP % 16 == 8 at function entry after call)
+    let current_rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
+    }
+    debug_assert_eq!(current_rsp & 0xF, 8, "SysV stack misaligned at callee entry");
+    
+    // Log that we're now on the kernel stack
+    log::info!("Successfully switched to kernel stack! RSP={:#x} (PML4[{}])", 
+        current_rsp, (current_rsp >> 39) & 0x1FF);
+    
+    // Get the kernel stack top that was allocated (we need to reconstruct this)
+    // It should be close to our current RSP (within the same stack region)
+    let idle_kernel_stack_top = VirtAddr::new((current_rsp & !0xFFF) + 0x4000); // Approximate
+    
+    // Create init_task (PID 0) - represents the currently running boot thread
+    // This is the Linux swapper/idle task pattern
     let tls_base = tls::current_tls_base();
-    let mut idle_thread = Box::new(task::thread::Thread::new(
-        "idle".to_string(),
+    let mut init_task = Box::new(task::thread::Thread::new(
+        "swapper/0".to_string(),  // Linux convention: swapper/0 is the idle task
         idle_thread_fn,
         VirtAddr::new(0), // Will be set to current RSP
-        VirtAddr::new(0), // Will be set appropriately
+        idle_kernel_stack_top, // Use the properly allocated kernel stack
         VirtAddr::new(tls_base),
         task::thread::ThreadPrivilege::Kernel,
     ));
 
-    // Mark idle thread as already running with ID 0
-    idle_thread.state = task::thread::ThreadState::Running;
-    idle_thread.id = 0; // Kernel thread has ID 0
+    // Mark init_task as already running with ID 0 (boot CPU idle task)
+    init_task.state = task::thread::ThreadState::Running;
+    init_task.id = 0; // PID 0 is the idle/swapper task
+    
+    // Store the kernel stack in the thread (important for context switching)
+    init_task.kernel_stack_top = Some(idle_kernel_stack_top);
+    
+    // Set up per-CPU current thread and idle thread
+    let init_task_ptr = &*init_task as *const _ as *mut task::thread::Thread;
+    per_cpu::set_current_thread(init_task_ptr);
+    per_cpu::set_idle_thread(init_task_ptr);
+    
+    // CRITICAL: Ensure TSS.RSP0 is set to the kernel stack
+    // This was already done before the stack switch, but verify it
+    per_cpu::set_kernel_stack_top(idle_kernel_stack_top);
+    per_cpu::update_tss_rsp0(idle_kernel_stack_top);
+    
+    log::info!("TSS.RSP0 verified at {:#x}", idle_kernel_stack_top);
 
-    // Initialize scheduler with idle thread
-    task::scheduler::init(idle_thread);
-    log::info!("Threading subsystem initialized");
+    // Initialize scheduler with init_task as the current thread
+    // This follows Linux where the boot thread becomes the idle task
+    task::scheduler::init_with_current(init_task);
+    log::info!("Threading subsystem initialized with init_task (swapper/0)");
+    
+    log::info!("percpu: cpu0 base={:#x}, current=swapper/0, rsp0={:#x}", 
+        x86_64::registers::model_specific::GsBase::read().as_u64(),
+        idle_kernel_stack_top
+    );
 
     // Initialize process management
     log::info!("Initializing process management...");
     process::init();
     log::info!("Process management initialized");
 
-    log::info!("Enabling interrupts...");
-    x86_64::instructions::interrupts::enable();
-    log::info!("Interrupts enabled!");
+    // Continue with the rest of kernel initialization...
+    // (This will include creating user processes, enabling interrupts, etc.)
+    kernel_main_continue();
+}
 
+/// Continue kernel initialization after setting up threading
+fn kernel_main_continue() -> ! {
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
     #[cfg(feature = "testing")]
@@ -274,7 +382,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             use alloc::string::String;
             serial_println!("RING3_SMOKE: creating hello_time userspace process (early)");
             let elf = userspace_test::get_test_binary("hello_time");
-            match process::create_user_process(String::from("smoke_hello_time"), &elf) {
+            match process::creation::create_user_process(String::from("smoke_hello_time"), &elf) {
                 Ok(pid) => {
                     log::info!(
                         "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
@@ -313,7 +421,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         ) {
             Ok(thread) => {
                 task::scheduler::spawn(Box::new(thread));
-                log::info!("Spawned fault test thread - will run after initial Ring 3 validation");
+                log::info!("Spawned fault test thread (delayed execution)");
             }
             Err(e) => {
                 log::error!("Failed to create fault test thread: {}", e);
@@ -321,150 +429,53 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         }
     }
 
-    // Test other exceptions if enabled
-    #[cfg(feature = "test_all_exceptions")]
-    {
-        test_exception_handlers();
-    }
-
-    // Run tests if testing feature is enabled
-    #[cfg(feature = "testing")]
-    {
-        log::info!("Running kernel tests...");
-
-        // Test GDT functionality (temporarily disabled due to hang)
-        log::info!("Skipping GDT tests temporarily");
-        // gdt_tests::run_all_tests();
-
-        // Test TLS - temporarily disabled due to hang
-        // tls::test_tls();
-        // SKIP PROBLEMATIC LOG STATEMENTS TO AVOID DEADLOCK
-        // log::info!("Skipping TLS test temporarily");
-
-        // Test threading (with debug output)
-        // TEMPORARILY DISABLED - hanging on stack allocation
-        // test_threading();
-        // log::info!("Skipping threading test due to stack allocation hang");
-
-        serial_println!("DEBUG: About to print 'All kernel tests passed!'");
-        // log::info!("All kernel tests passed!");
-        serial_println!("All kernel tests passed! (via serial_println)");
-        serial_println!("DEBUG: After printing 'All kernel tests passed!'");
-    }
-
-    // Try serial_println to bypass the logger
-    serial_println!("DEBUG: After testing block (serial_println)");
-
-    // Temporarily disable interrupts to avoid timer interference
-    x86_64::instructions::interrupts::disable();
-
-    log::info!("After testing block, continuing...");
-
-    // Add a simple log to see if we can execute anything
-    serial_println!("Before Simple log 1");
-    log::info!("Simple log message 1");
-    serial_println!("After Simple log 1");
-
-    // Make sure interrupts are still enabled
-    serial_println!("Before interrupt check");
-    // Temporarily skip the interrupt check
-    let interrupts_enabled = true; // x86_64::instructions::interrupts::are_enabled();
-    serial_println!("After interrupt check");
-    log::info!("Simple log message 2");
-    serial_println!("After Simple log 2");
-
-    // Re-enable interrupts
+    // Enable interrupts for preemptive multitasking
+    log::info!("Enabling interrupts (after creating user processes)...");
     x86_64::instructions::interrupts::enable();
+    log::info!("Interrupts enabled - scheduler is now active!");
 
-    if interrupts_enabled {
-        log::info!("Interrupts are still enabled");
-    } else {
-        log::warn!("WARNING: Interrupts are disabled!");
-        x86_64::instructions::interrupts::enable();
-        log::info!("Re-enabled interrupts");
-    }
-
-    log::info!("About to check exception test features...");
-
-    // Test specific exceptions if enabled
-    #[cfg(feature = "test_divide_by_zero")]
-    {
-        log::info!("Testing divide by zero exception...");
-        unsafe {
-            // Use inline assembly to trigger divide by zero
-            core::arch::asm!(
-                "mov rax, 1",
-                "xor rdx, rdx",
-                "xor rcx, rcx",
-                "div rcx", // Divide by zero
-            );
-        }
-        log::error!("SHOULD NOT REACH HERE - divide by zero should have triggered exception");
-    }
-
-    #[cfg(feature = "test_invalid_opcode")]
-    {
-        log::info!("Testing invalid opcode exception...");
-        unsafe {
-            core::arch::asm!("ud2");
-        }
-        log::error!("SHOULD NOT REACH HERE - invalid opcode should have triggered exception");
-    }
-
-    #[cfg(feature = "test_page_fault")]
-    {
-        log::info!("Testing page fault exception...");
-        unsafe {
-            let invalid_ptr = 0xdeadbeef as *mut u8;
-            *invalid_ptr = 42;
-        }
-        log::error!("SHOULD NOT REACH HERE - page fault should have triggered exception");
-    }
-
-    // Test timer functionality
-    // TEMPORARILY DISABLED - hanging on time display
-    // log::info!("Testing timer functionality...");
-    // let start_time = time::time_since_start();
-    // log::info!("Current time since boot: {}", start_time);
-
-    // TEMPORARILY DISABLED - delay macro hanging
-    // log::info!("Testing delay macro (1 second delay)...");
-    // delay!(1000); // 1000ms = 1 second
-    // log::info!("Skipping delay macro test due to hang");
-
-    // let end_time = time::time_since_start();
-    // log::info!("Time after delay: {}", end_time);
-
-    // if let Ok(rtc_time) = time::rtc::read_rtc_time() {
-    //     log::info!("Current Unix timestamp: {}", rtc_time);
-    // }
-    log::info!("Skipping timer tests due to hangs");
-
-    // Test system calls
-    // SKIP SYSCALL TESTS TO AVOID HANG
-    // log::info!("DEBUG: About to call test_syscalls()");
-    // test_syscalls();
-    // log::info!("DEBUG: test_syscalls() completed");
-    serial_println!("DEBUG: Skipping test_syscalls to avoid hang");
-
-    // Test userspace execution with runtime tests
+    // RING3_SMOKE: Create userspace process early for CI validation
+    // Must be done after interrupts are enabled but before other tests
     #[cfg(feature = "testing")]
     {
-        // SKIP TO AVOID HANG
-        // log::info!("DEBUG: Running test_userspace_syscalls()");
-        // userspace_test::test_userspace_syscalls();
-        serial_println!("DEBUG: Skipping test_userspace_syscalls to avoid hang");
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            use alloc::string::String;
+            serial_println!("RING3_SMOKE: creating hello_time userspace process (early)");
+            let elf = userspace_test::get_test_binary("hello_time");
+            match process::create_user_process(String::from("smoke_hello_time"), &elf) {
+                Ok(pid) => {
+                    log::info!(
+                        "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
+                        pid.as_u64()
+                    );
+                }
+                Err(e) => {
+                    log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
+                }
+            }
+        });
     }
 
-    // Test userspace execution (if enabled)
-    #[cfg(feature = "test_userspace")]
+    // Initialize timer
+    // First test our clock_gettime implementation
+    log::info!("Testing clock_gettime syscall implementation...");
+    clock_gettime_test::test_clock_gettime();
+    log::info!("✅ clock_gettime tests passed");
+
+    log::info!("Initializing hardware timer...");
+    time::timer::init();
+    log::info!("Timer initialized - periodic interrupts active");
+
+    // Initialize keyboard
+    #[cfg(not(feature = "testing"))]
     {
-        log::info!("Testing userspace execution...");
-        userspace_test::test_userspace();
-        // This won't return if successful
+        log::info!("Initializing keyboard...");
+        keyboard::init();
+        log::info!("Keyboard initialized");
     }
 
-    // CRITICAL: Test timer functionality first to validate timer fixes
+    log::info!("✅ Kernel initialization complete!");
+    
     // Disable interrupts during process creation to prevent logger deadlock
     x86_64::instructions::interrupts::without_interrupts(|| {
         // Skip timer test for now to debug hello world
@@ -536,7 +547,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     executor.run()
 }
 
-/// Idle thread function - runs when nothing else is ready
 fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt

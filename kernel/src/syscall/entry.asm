@@ -1,7 +1,9 @@
 ; Syscall entry and exit routines for x86_64
 ; Uses NASM syntax
 
-section .text
+; CRITICAL: Place syscall entry code in dedicated section that stays mapped
+; This ensures the code is accessible after CR3 switches to process page tables
+section .text.entry
 
 global syscall_entry
 global syscall_return_to_userspace
@@ -9,7 +11,6 @@ global syscall_return_to_userspace
 ; External Rust functions
 extern rust_syscall_handler
 extern check_need_resched_and_switch
-extern get_next_page_table
 extern trace_iretq_to_ring3
 
 ; Syscall entry point from INT 0x80
@@ -20,27 +21,29 @@ extern trace_iretq_to_ring3
 ;   - Interrupts are disabled
 ;   - We're in Ring 0
 syscall_entry:
-    ; Save all general purpose registers
-    push r15
-    push r14
-    push r13
-    push r12
-    push r11
-    push r10
-    push r9
-    push r8
-    push rdi
-    push rsi
-    push rbp
-    push rbx
-    push rdx
+    ; Save all general purpose registers in SavedRegisters order
+    ; Must match timer interrupt order: rax first, r15 last
+    push rax    ; syscall number (pushed first, at RSP+14*8)
     push rcx
-    push rax    ; syscall number
+    push rdx
+    push rbx
+    push rbp
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15    ; pushed last, at RSP+0
 
     ; Clear direction flag for string operations
     cld
 
-    ; Switch to kernel GS (for TLS)
+    ; Always switch to kernel GS for INT 0x80 entry
+    ; INT 0x80 is only used from userspace, so we always need swapgs
     swapgs
 
     ; Call the Rust syscall handler
@@ -49,9 +52,8 @@ syscall_entry:
     call rust_syscall_handler
 
     ; Return value is in RAX, which will be restored to userspace
-
-    ; Switch back to user GS
-    swapgs
+    ; NOTE: We stay in kernel GS mode until just before iretq
+    ; All kernel functions (scheduling, page table, tracing) need kernel GS
 
     ; Check if we need to reschedule before returning to userspace
     ; This is critical for sys_exit to work correctly
@@ -62,52 +64,29 @@ syscall_entry:
     call check_need_resched_and_switch
     pop rax                   ; Restore syscall return value
 
-    ; Restore all general purpose registers
-    pop rax     ; This gets the syscall return value set by handler
-    pop rcx
-    pop rdx
-    pop rbx
-    pop rbp
-    pop rsi
-    pop rdi
-    pop r8
-    pop r9
-    pop r10
-    pop r11
-    pop r12
-    pop r13
+    ; Restore all general purpose registers in reverse push order
+    pop r15    ; Last pushed, first popped
     pop r14
-    pop r15
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rbp
+    pop rbx
+    pop rdx
+    pop rcx
+    pop rax     ; This gets the syscall return value set by handler
 
     ; Check if we need to switch page tables before returning to userspace
+    ; FIXED: CR3 switching now happens in the scheduler during context switch
+    ; No need to switch page tables here - we're already running on the
+    ; process's page table since the last context switch
+    
     ; We know we're returning to userspace since this is a syscall
-    push rax                    ; Save syscall return value
-    push rcx                    ; Save rcx
-    push rdx                    ; Save rdx
-    
-    ; Get the page table to switch to
-    call get_next_page_table
-    test rax, rax              ; Is there a page table to switch to?
-    jz .no_page_table_switch
-    
-    ; Switch to the process page table
-    mov cr3, rax
-    ; CRITICAL: Ensure TLB is fully flushed after page table switch
-    ; On some systems, mov cr3 might not flush all TLB entries completely
-    ; Add explicit full TLB flush for absolute certainty  
-    push rax                     ; Save rax
-    mov rax, cr4
-    mov rcx, rax
-    and rcx, 0xFFFFFFFFFFFFFF7F  ; Clear PGE bit (bit 7)
-    mov cr4, rcx                  ; Disable global pages (flushes TLB)
-    mov cr4, rax                  ; Re-enable global pages
-    pop rax                      ; Restore rax
-    mfence
-    
-.no_page_table_switch:
-    pop rdx                    ; Restore rdx
-    pop rcx                    ; Restore rcx
-    pop rax                    ; Restore syscall return value
 
     ; Trace that we're about to return to Ring 3 with full frame info
     ; Save all registers that might be clobbered by the call
@@ -137,9 +116,29 @@ syscall_entry:
     pop rcx
     pop rax                    ; Restore syscall return value (CRITICAL!)
 
+    ; Switch back to user GS right before returning to userspace
+    ; All kernel work is now done, safe to switch GS
+    swapgs
+
+    ; Direct serial output marker - about to execute IRETQ
+    ; Write 0xEE to serial port to indicate we reached IRETQ
+    push rax
+    push rdx
+    mov dx, 0x3F8  ; COM1 port
+    mov al, 0xEE   ; Marker byte
+    out dx, al
+    pop rdx
+    pop rax
+
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
     iretq
+    
+    ; Should never reach here - add marker for triple fault debugging
+    mov dx, 0x3F8
+    mov al, 0xDD   ; Dead marker
+    out dx, al
+    hlt
 
 ; This function switches from kernel to userspace
 ; Used when starting a new userspace thread
@@ -217,5 +216,21 @@ syscall_return_to_userspace:
     xor r14, r14
     xor r15, r15
 
+    ; Direct serial output marker - about to execute IRETQ for first userspace entry
+    ; Write 0xFF to serial port to indicate we reached IRETQ
+    push rax
+    push rdx
+    mov dx, 0x3F8  ; COM1 port
+    mov al, 0xFF   ; First entry marker
+    out dx, al
+    pop rdx
+    pop rax
+
     ; Jump to userspace
     iretq
+    
+    ; Should never reach here - add marker for triple fault debugging
+    mov dx, 0x3F8
+    mov al, 0xCC   ; Crash marker
+    out dx, al
+    hlt

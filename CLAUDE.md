@@ -16,6 +16,22 @@ Claude Code MUST use reusable utilities and scripts instead of creating new comm
 
 This policy ensures smooth workflow without constant approval interruptions.
 
+## 🚨 CRITICAL MINDSET: NO TIME CONSTRAINTS 🚨
+
+**THERE ARE NO TIME CONSTRAINTS - ONLY QUALITY MATTERS**
+
+- **Never rush or cite "time constraints"** - Ryan doesn't care how long it takes
+- **Iterate until perfect** - Keep working with Cursor CLI until we get ACCEPT
+- **Production-grade or nothing** - Continue refining until the implementation is flawless
+- **Continuous improvement** - Each iteration should address ALL feedback, not just some
+- **No shortcuts due to "complexity"** - If something is complex, that's MORE reason to do it right
+
+When working with validation agents like Cursor:
+- Continue iterating until you receive ACCEPT
+- Address EVERY piece of feedback thoroughly
+- Never stop due to "time" or "complexity"
+- The goal is excellence, not speed
+
 ## 🚨 CRITICAL DESIGN PRINCIPLE 🚨
 
 **ALWAYS FOLLOW OS-STANDARD PRACTICES - NO SHORTCUTS**
@@ -23,7 +39,7 @@ This policy ensures smooth workflow without constant approval interruptions.
 Under **NO CIRCUMSTANCES** should you choose "easy" workarounds that deviate from standard OS development practices. When implementing any feature:
 
 - **Follow Linux/FreeBSD patterns**: If real operating systems do it a certain way, that's our standard
-- **No quick hacks**: Don't implement temporary solutions that avoid complexity  
+- **No quick hacks**: Don't implement temporary solutions that avoid complexity
 - **Build for production**: Every design decision must scale to a real OS
 - **Quality over speed**: Take the time to implement features correctly the first time
 
@@ -81,7 +97,7 @@ breenix/
      - PCI support
 
 4. **MCP Integration** (`mcp/`): Model Context Protocol server for programmatic kernel interaction
-   - HTTP server providing tools for Claude Code integration  
+   - HTTP server providing tools for Claude Code integration
    - Real-time kernel log streaming and command injection
    - Process lifecycle management for QEMU/Breenix sessions
    - RESTful API and JSON-RPC endpoints for automation
@@ -113,7 +129,7 @@ You can also run directly with cargo, but logs will only go to console:
 # Run UEFI mode
 cargo run --release --bin qemu-uefi -- -serial stdio -display none
 
-# Run BIOS mode  
+# Run BIOS mode
 cargo run --release --bin qemu-bios -- -serial stdio -display none
 
 # Run with testing features
@@ -416,7 +432,7 @@ cargo test --test simple_kernel_test
 
 When implementing or debugging features:
 1. **Require explicit log evidence**: Must show exact log lines proving functionality works
-2. **No assumptions**: "Should work" or "likely works" is NOT acceptable  
+2. **No assumptions**: "Should work" or "likely works" is NOT acceptable
 3. **Trace execution**: For userspace execution, need logs showing:
    - Instructions actually executing in userspace (not just preparing to)
    - Successful transitions between kernel/user mode
@@ -427,7 +443,7 @@ When implementing or debugging features:
 **Example of what constitutes proof:**
 ```
 [INFO] Userspace instruction executed at 0x10000000
-[INFO] Syscall 0x80 received from userspace  
+[INFO] Syscall 0x80 received from userspace
 [INFO] Returning to userspace at 0x10000005
 ```
 
@@ -506,3 +522,66 @@ As we complete feature migrations from `src.legacy/` to the new kernel:
    - Keeps the project focused on the new implementation
 
 Example: When timestamp logging reaches parity, remove the legacy print macros and timer code that are no longer needed as reference.
+
+## 🚨 CRITICAL VALIDATION REQUIREMENT 🚨
+
+**ALWAYS validate implementations with Cursor CLI before declaring success**
+
+When implementing or fixing features, you MUST:
+1. **Present all evidence to Cursor CLI** for critical validation
+2. **Include all implementation details**, file changes, and test results
+3. **Ask Cursor CLI to verify** correctness, completeness, and identify issues
+4. **Address any concerns** raised by the validation
+5. **Only declare victory** after passing validation
+
+This validation step is MANDATORY for:
+- New feature implementations
+- Bug fixes that claim to work
+- Test infrastructure changes
+- CI/CD workflow additions
+- Any claim of "this is now working"
+
+**Example**: When adding ENOSYS test, present all files, test results, and implementation details to Cursor CLI for thorough review before claiming success.
+
+## 🚨 CURSOR AGENT USAGE REQUIREMENT 🚨
+
+**Use cursor-oneshot from the command line for quick consultations:**
+
+```bash
+# Basic usage with text output
+~/bin/cursor-oneshot.mjs "Your prompt here"
+
+# Example usage
+~/bin/cursor-oneshot.mjs "What is the likely cause of a triple fault after CR3 switch?"
+```
+
+The ONLY input to cursor-oneshot is the text prompt, but of course you can ask it to review files, send it an arbitrarily complex and long block of text in that string, etc.
+
+**CRITICAL: CONSULT CURSOR AGENT FREQUENTLY**
+- **You are NOT qualified to debug complex kernel issues without help**
+- **STOP and consult Cursor Agent BEFORE making changes** when debugging
+- **Don't iterate too quickly** - get expert analysis first
+- **Bias towards asking for help** rather than trying multiple solutions alone
+- **Every debugging session should involve Cursor Agent** for guidance
+- **NEVER do more than 10 things without checking in with Cursor** for validation and next steps
+- **Use gpt-5-thinking model if you perceive the issue is complex** (kernel bugs are ALWAYS complex)
+
+**IMPORTANT: Cursor Agent's Role**
+When calling Cursor Agent, remember that its role is to:
+- **Perform READ-ONLY analysis** of code and logs
+- **Provide review, validation, or planning guidance**
+- **Identify issues and suggest fixes**
+- **NOT responsible for running the kernel**
+- **NOT responsible for making code changes**
+
+Always inform Cursor Agent that it should analyze the provided information and give recommendations, but Claude Code (you) will be the one implementing any suggested changes and running tests.
+
+## 🚨 CONTEXT COMPRESSION REMINDER 🚨
+
+**RE-READ THIS FILE AFTER EVERY CONTEXT COMPRESSION**
+
+When you receive a message about context being compressed or conversation being summarized:
+1. **IMMEDIATELY re-read this entire CLAUDE.md file** to refresh critical instructions
+2. **Pay special attention** to the NO TIME CONSTRAINTS mindset
+3. **Remember** that you should continue iterating with Cursor until ACCEPT
+4. **Check your todo list** and continue where you left off

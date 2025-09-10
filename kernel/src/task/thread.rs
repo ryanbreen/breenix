@@ -138,6 +138,9 @@ pub struct Thread {
 
     /// Kernel stack for syscalls/interrupts (only for userspace threads)
     pub kernel_stack_top: Option<VirtAddr>,
+    
+    /// Kernel stack allocation (must be kept alive for RAII)
+    pub kernel_stack_allocation: Option<crate::memory::kernel_stack::KernelStack>,
 
     /// TLS block address
     pub tls_block: VirtAddr,
@@ -153,6 +156,9 @@ pub struct Thread {
 
     /// Privilege level
     pub privilege: ThreadPrivilege,
+    
+    /// Has this thread ever run? (false for brand new threads)
+    pub has_started: bool,
 }
 
 impl Clone for Thread {
@@ -165,11 +171,13 @@ impl Clone for Thread {
             stack_top: self.stack_top,
             stack_bottom: self.stack_bottom,
             kernel_stack_top: self.kernel_stack_top,
+            kernel_stack_allocation: None, // Can't clone kernel stack allocation
             tls_block: self.tls_block,
             priority: self.priority,
             time_slice: self.time_slice,
             entry_point: self.entry_point, // fn pointers can be copied
             privilege: self.privilege,
+            has_started: self.has_started,
         }
     }
 }
@@ -184,7 +192,7 @@ impl Thread {
         let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
 
         // Allocate a kernel stack
-        const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16 KiB
+        const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16 KiB (ignored by bitmap allocator)
         let stack = crate::memory::alloc_kernel_stack(KERNEL_STACK_SIZE)
             .ok_or("Failed to allocate kernel stack")?;
 
@@ -211,12 +219,14 @@ impl Thread {
             context,
             stack_top,
             stack_bottom,
-            kernel_stack_top: None, // Kernel threads don't need a separate kernel stack
+            kernel_stack_top: Some(stack_top), // Kernel threads use their stack for everything
+            kernel_stack_allocation: Some(stack), // Keep allocation alive
             tls_block,
             priority: 64,      // Higher priority for kernel threads
             time_slice: 20,    // Longer time slice
             entry_point: None, // Kernel threads use direct entry
             privilege: ThreadPrivilege::Kernel,
+            has_started: false, // New thread hasn't run yet
         })
     }
 
@@ -247,11 +257,13 @@ impl Thread {
             stack_top,
             stack_bottom,
             kernel_stack_top: None, // Will be set separately for userspace threads
+            kernel_stack_allocation: None, // No kernel stack allocation for regular threads
             tls_block,
             priority: 128,  // Default medium priority
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
+            has_started: false, // New thread hasn't run yet
         }
     }
 
@@ -293,11 +305,13 @@ impl Thread {
             stack_top,
             stack_bottom,
             kernel_stack_top: None, // Will be set separately
+            kernel_stack_allocation: None, // Will be set separately for userspace threads
             tls_block: actual_tls_block,
             priority: 128,     // Default medium priority
             time_slice: 10,    // Default time slice
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: ThreadPrivilege::User,
+            has_started: false, // New thread hasn't run yet
         }
     }
 
@@ -358,11 +372,13 @@ impl Thread {
             stack_top,
             stack_bottom,
             kernel_stack_top: None, // Will be set separately for userspace threads
+            kernel_stack_allocation: None, // No kernel stack allocation for regular threads
             tls_block,
             priority: 128,  // Default medium priority
             time_slice: 10, // Default time slice
             entry_point: Some(entry_point),
             privilege,
+            has_started: false, // New thread hasn't run yet
         }
     }
 }

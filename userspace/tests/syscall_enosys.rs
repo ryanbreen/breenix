@@ -16,7 +16,7 @@ unsafe fn syscall0(num: u64) -> u64 {
         "int 0x80",
         in("rax") num,
         lateout("rax") ret,
-        options(nostack, preserves_flags),
+        options(nostack),  // Removed preserves_flags - INT changes RFLAGS
     );
     ret
 }
@@ -28,7 +28,7 @@ unsafe fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> u64 {
         "int 0x80",
         in("rax") num, in("rdi") a1, in("rsi") a2, in("rdx") a3,
         lateout("rax") ret,
-        options(nostack, preserves_flags),
+        options(nostack),  // Removed preserves_flags - INT changes RFLAGS
     );
     ret
 }

@@ -2,7 +2,7 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x10000000; /* Start at 256MB (userspace area) */
+    . = 0x40000000; /* Start at 1GB (userspace area) - TEMPORARY FIX for PML4[0] conflict */
     
     .text : ALIGN(4K) {
         *(.text .text.*)

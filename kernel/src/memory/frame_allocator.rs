@@ -8,6 +8,13 @@ use x86_64::PhysAddr;
 /// Increased from 32 to 128 to handle UEFI's fragmented memory map
 const MAX_REGIONS: usize = 128;
 
+/// Low memory floor - we never allocate frames below 1MiB
+/// This avoids issues with:
+/// - Frame 0x0 (null pointer confusion)
+/// - BIOS/firmware reserved areas
+/// - Legacy device memory (VGA, etc)
+const LOW_MEMORY_FLOOR: u64 = 0x100000; // 1 MiB
+
 /// A memory region descriptor
 #[derive(Debug, Clone, Copy)]
 struct UsableRegion {
@@ -60,10 +67,26 @@ impl BootInfoFrameAllocator {
                     let frame_offset = n - count;
                     let frame_addr = region.start + (frame_offset as u64 * 4096);
 
+                    // CRITICAL: Assert we never return frame 0x0
+                    debug_assert!(
+                        frame_addr >= LOW_MEMORY_FLOOR,
+                        "Attempting to allocate frame below low memory floor: {:#x}",
+                        frame_addr
+                    );
+                    
                     // Log problematic frame allocations
                     if frame_addr == 0x62f000 {
                         log::warn!("Allocating problematic frame 0x62f000 (frame #{}, region {}, offset {})", 
                                   n, i, frame_offset);
+                    }
+                    
+                    // Production safety: Never return frames below the floor
+                    if frame_addr < LOW_MEMORY_FLOOR {
+                        log::error!(
+                            "CRITICAL: Attempted to allocate frame {:#x} below low memory floor {:#x}",
+                            frame_addr, LOW_MEMORY_FLOOR
+                        );
+                        return None;
                     }
 
                     return Some(PhysFrame::containing_address(PhysAddr::new(frame_addr)));
@@ -99,16 +122,38 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     let mut ignored_regions = 0;
     let mut ignored_memory = 0u64;
 
-    // Extract usable regions
+    // Extract usable regions, excluding low memory below the floor
     for region in memory_regions.iter() {
         if region.kind == MemoryRegionKind::Usable {
+            // Skip regions entirely below the low memory floor
+            if region.end <= LOW_MEMORY_FLOOR {
+                log::debug!(
+                    "Skipping low memory region {:#x}..{:#x} (below floor {:#x})",
+                    region.start, region.end, LOW_MEMORY_FLOOR
+                );
+                ignored_regions += 1;
+                ignored_memory += region.end - region.start;
+                continue;
+            }
+            
             if region_count < MAX_REGIONS {
+                // Adjust region start if it begins below the floor
+                let adjusted_start = if region.start < LOW_MEMORY_FLOOR {
+                    log::info!(
+                        "Adjusting region start from {:#x} to {:#x} (low memory floor)",
+                        region.start, LOW_MEMORY_FLOOR
+                    );
+                    LOW_MEMORY_FLOOR
+                } else {
+                    region.start
+                };
+                
                 regions[region_count] = Some(UsableRegion {
-                    start: region.start,
+                    start: adjusted_start,
                     end: region.end,
                 });
                 region_count += 1;
-                total_memory += region.end - region.start;
+                total_memory += region.end - adjusted_start;
             } else {
                 // Count ignored regions instead of logging each one
                 ignored_regions += 1;
@@ -124,9 +169,10 @@ pub fn init(memory_regions: &'static MemoryRegions) {
     });
 
     log::info!(
-        "Frame allocator initialized with {} MiB of usable memory in {} regions",
+        "Frame allocator initialized with {} MiB of usable memory in {} regions (floor={:#x})",
         total_memory / (1024 * 1024),
-        region_count
+        region_count,
+        LOW_MEMORY_FLOOR
     );
 
     if ignored_regions > 0 {

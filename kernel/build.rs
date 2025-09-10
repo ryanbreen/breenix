@@ -34,13 +34,34 @@ fn main() {
         panic!("Failed to assemble timer entry");
     }
     
+    // Assemble breakpoint exception entry code
+    let status = Command::new("nasm")
+        .args(&[
+            "-f", "elf64",
+            "-o", &format!("{}/breakpoint_entry.o", out_dir),
+            "src/interrupts/breakpoint_entry.asm"
+        ])
+        .status()
+        .expect("Failed to run nasm");
+    
+    if !status.success() {
+        panic!("Failed to assemble breakpoint entry");
+    }
+    
     // Tell cargo to link the assembled object files
     println!("cargo:rustc-link-arg={}/syscall_entry.o", out_dir);
     println!("cargo:rustc-link-arg={}/timer_entry.o", out_dir);
+    println!("cargo:rustc-link-arg={}/breakpoint_entry.o", out_dir);
+    
+    // Use our custom linker script
+    // Temporarily disabled to test with bootloader's default
+    // println!("cargo:rustc-link-arg=-Tkernel/linker.ld");
     
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
+    println!("cargo:rerun-if-changed=src/interrupts/breakpoint_entry.asm");
+    println!("cargo:rerun-if-changed=linker.ld");
     
     // Build userspace test program if it exists
     let userspace_test_dir = Path::new("../../userspace/tests");

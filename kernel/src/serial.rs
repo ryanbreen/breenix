@@ -104,6 +104,78 @@ pub fn _print(args: fmt::Arguments) {
     });
 }
 
+/// Try to print without blocking - returns Err if lock is held
+pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
+    use core::fmt::Write;
+    use x86_64::instructions::interrupts;
+
+    interrupts::without_interrupts(|| {
+        // spin::Mutex has try_lock() method
+        match SERIAL1.try_lock() {
+            Some(mut serial) => {
+                serial.write_fmt(args).map_err(|_| ())?;
+                Ok(())
+            }
+            None => Err(()), // Lock is held
+        }
+    })
+}
+
+/// Emergency print for panics - uses direct port I/O without locking
+/// WARNING: May corrupt output if racing with normal serial output
+pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
+    use core::fmt::Write;
+    use x86_64::instructions::interrupts;
+    
+    // Use a simple global flag to reduce corruption
+    static EMERGENCY_IN_USE: core::sync::atomic::AtomicBool = 
+        core::sync::atomic::AtomicBool::new(false);
+    
+    // Try to claim exclusive emergency access
+    if EMERGENCY_IN_USE.swap(true, core::sync::atomic::Ordering::Acquire) {
+        return Err(()); // Someone else is using emergency path
+    }
+    
+    // Write directly to serial port without locking
+    // This is unsafe but necessary for panic handling
+    struct EmergencySerial;
+    
+    impl fmt::Write for EmergencySerial {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            for byte in s.bytes() {
+                unsafe {
+                    // Direct port I/O to COM1
+                    x86_64::instructions::port::Port::<u8>::new(0x3F8).write(byte);
+                }
+            }
+            Ok(())
+        }
+    }
+    
+    interrupts::without_interrupts(|| {
+        let mut emergency = EmergencySerial;
+        let result = emergency.write_fmt(args).map_err(|_| ());
+        
+        // Release emergency access
+        EMERGENCY_IN_USE.store(false, core::sync::atomic::Ordering::Release);
+        
+        result
+    })
+}
+
+/// Flush serial output  
+pub fn flush_serial() {
+    // For UART, there's not much to flush - it's synchronous
+    // But we can ensure the transmit holding register is empty
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut status_port = Port::<u8>::new(0x3F8 + 5);
+        while (status_port.read() & 0x20) == 0 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => ($crate::serial::_print(format_args!($($arg)*)));

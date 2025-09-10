@@ -181,9 +181,9 @@ fn load_segment(
     let file_size = ph.p_filesz as usize;
     let mem_size = ph.p_memsz as usize;
 
-    // Our userspace binaries use absolute addressing starting at 0x10000000
-    // Don't add base_offset for absolute addresses in the userspace range
-    let vaddr = if ph.p_vaddr >= 0x10000000 {
+    // Our userspace binaries use absolute addressing starting at USERSPACE_BASE
+    // Don't add base_offset for absolute addresses in the userspace range  
+    let vaddr = if ph.p_vaddr >= crate::memory::layout::USERSPACE_BASE {
         // Absolute userspace address - use directly
         VirtAddr::new(ph.p_vaddr)
     } else {
@@ -385,15 +385,24 @@ fn load_segment_into_page_table(
     // Determine final permissions
     let segment_writable = ph.p_flags & 2 != 0;
     let segment_executable = ph.p_flags & 1 != 0;
+    
+    log::debug!("Segment flags analysis: p_flags={:#x}, writable={}, executable={}", 
+        ph.p_flags, segment_writable, segment_executable);
 
     // Set up final page flags
     let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     if segment_writable {
         flags |= PageTableFlags::WRITABLE;
+        log::debug!("Added WRITABLE flag");
     }
     if !segment_executable {
         flags |= PageTableFlags::NO_EXECUTE;
+        log::debug!("Added NO_EXECUTE flag (segment not executable)");
+    } else {
+        log::debug!("NOT adding NO_EXECUTE flag (segment is executable)");
     }
+    
+    log::debug!("Final flags before mapping: {:?}", flags);
 
     log::debug!("Linux-style ELF loading: staying in kernel space, using physical memory access");
 
@@ -428,6 +437,34 @@ fn load_segment_into_page_table(
             }
         }
         log::debug!("After page_table.map_page");
+        
+        // TEMPORARY WORKAROUND: Also map userspace in kernel page table
+        // This allows IRETQ to succeed without CR3 switch
+        // TODO: Remove this when kernel stacks are properly mapped in process page tables
+        if page.start_address().as_u64() == 0x10000000 {
+            log::warn!("TEMPORARY: Also mapping userspace page {:#x} in kernel page table", 
+                page.start_address().as_u64());
+            
+            // Map in current (kernel) page table
+            let mut kernel_mapper = unsafe { crate::memory::paging::get_mapper() };
+            unsafe {
+                match kernel_mapper.map_to(
+                    page,
+                    frame,
+                    flags,
+                    &mut crate::memory::frame_allocator::GlobalFrameAllocator,
+                ) {
+                    Ok(flush) => {
+                        flush.flush();
+                        log::warn!("Successfully mapped userspace in kernel page table (temporary)");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to map userspace in kernel page table: {:?}", e);
+                        // Non-fatal for now
+                    }
+                }
+            }
+        }
 
         // Get physical address for direct memory access (Linux-style)
         let physical_memory_offset = crate::memory::physical_memory_offset();

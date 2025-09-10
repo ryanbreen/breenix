@@ -51,10 +51,15 @@ impl ProcessManager {
         name: String,
         elf_data: &[u8],
     ) -> Result<ProcessId, &'static str> {
+        crate::serial_println!("manager.create_process: ENTRY - name='{}', elf_size={}", name, elf_data.len());
+        
         // Generate a new PID
+        crate::serial_println!("manager.create_process: Generating PID");
         let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        crate::serial_println!("manager.create_process: Generated PID {}", pid.as_u64());
 
         // Create a new page table for this process
+        crate::serial_println!("manager.create_process: Creating ProcessPageTable");
         let mut page_table = Box::new(
             crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
                 log::error!(
@@ -62,9 +67,11 @@ impl ProcessManager {
                     pid.as_u64(),
                     e
                 );
+                crate::serial_println!("manager.create_process: ProcessPageTable creation failed: {}", e);
                 "Failed to create process page table"
             })?,
         );
+        crate::serial_println!("manager.create_process: ProcessPageTable created");
 
         // WORKAROUND: We'd like to clear existing userspace mappings before loading ELF
         // but since L3 tables are shared between processes, unmapping pages affects
@@ -81,11 +88,101 @@ impl ProcessManager {
 
         // Load the ELF binary into the process's page table
         // Use the standard userspace base address for all processes
+        crate::serial_println!("manager.create_process: Loading ELF into page table");
         let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
+        crate::serial_println!("manager.create_process: ELF loaded, entry={:#x}", loaded_elf.entry_point.as_u64());
+        
+        // CRITICAL FIX: Re-map kernel low-half after ELF loading
+        // The ELF loader may have created new page tables that don't preserve kernel mappings
+        // We need to explicitly ensure the kernel code/data remains mapped
+        {
+            use x86_64::VirtAddr;
+            use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
+            
+            log::info!("Restoring kernel mappings after ELF load...");
+            crate::serial_println!("manager.create_process: Restoring kernel mappings");
+            
+            // CRITICAL: The kernel is running from the direct physical memory mapping,
+            // NOT from the low identity-mapped region! 
+            // We need to preserve the direct mapping where the kernel actually executes.
+            //
+            // Based on RIP=0x10000068f65, the kernel is in the 0x100000xxxxx range
+            // which is the direct physical memory mapping starting at PHYS_MEM_OFFSET
+            //
+            // Actually, let's just ensure the kernel's actual physical addresses are mapped
+            // Map kernel code/data region: 0x100000 - 0x300000 (2MB physical)
+            let kernel_start = 0x100000u64;
+            let kernel_end = 0x300000u64;
+            
+            for addr in (kernel_start..kernel_end).step_by(0x1000) {
+                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+                let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
+                
+                // Check if already mapped correctly
+                if let Some(existing_frame) = page_table.translate_page(VirtAddr::new(addr)) {
+                    if existing_frame.as_u64() == addr {
+                        continue; // Already mapped correctly
+                    }
+                }
+                
+                // Map with kernel-only access (no USER_ACCESSIBLE)
+                let flags = if addr < 0x200000 {
+                    // Text section - read-only, executable
+                    PageTableFlags::PRESENT | PageTableFlags::GLOBAL
+                } else {
+                    // Data/BSS sections - read-write
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL
+                };
+                
+                if let Err(e) = page_table.map_page(page, frame, flags) {
+                    log::error!("Failed to restore kernel mapping at {:#x}: {}", addr, e);
+                    return Err("Failed to restore kernel mappings");
+                }
+            }
+            
+            // Also map GDT/IDT/TSS/per-CPU region: 0x100000f0000 - 0x100000f4000
+            let control_start = 0x100000f0000u64;
+            let control_end = 0x100000f4000u64;
+            
+            for addr in (control_start..control_end).step_by(0x1000) {
+                let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+                let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
+                
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+                
+                // Ignore if already mapped
+                if page_table.translate_page(VirtAddr::new(addr)).is_some() {
+                    continue;
+                }
+                
+                if let Err(e) = page_table.map_page(page, frame, flags) {
+                    log::error!("Failed to map control structure at {:#x}: {}", addr, e);
+                    // Non-fatal, continue
+                }
+            }
+            
+            log::info!("✓ Kernel low-half mappings restored");
+            crate::serial_println!("manager.create_process: Kernel mappings restored");
+            
+            // Verify the mapping actually worked
+            let kernel_test_addr = VirtAddr::new(0x100000);
+            match page_table.translate_page(kernel_test_addr) {
+                Some(phys_addr) => {
+                    log::info!("✓✓ VERIFIED: Kernel at {:#x} -> {:#x} after restoration", 
+                             kernel_test_addr.as_u64(), phys_addr.as_u64());
+                },
+                None => {
+                    log::error!("✗✗ CRITICAL: Kernel still not mapped after restoration!");
+                    return Err("Kernel restoration failed!");
+                }
+            }
+        }
 
         // Create the process
+        crate::serial_println!("manager.create_process: Creating Process struct");
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
         process.page_table = Some(page_table);
+        crate::serial_println!("manager.create_process: Process struct created");
 
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
@@ -95,9 +192,14 @@ impl ProcessManager {
         use crate::task::thread::ThreadPrivilege;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
+        crate::serial_println!("manager.create_process: Allocating user stack");
         let user_stack =
             stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User)
-                .map_err(|_| "Failed to allocate user stack")?;
+                .map_err(|_| {
+                    crate::serial_println!("manager.create_process: Stack allocation failed");
+                    "Failed to allocate user stack"
+                })?;
+        crate::serial_println!("manager.create_process: User stack allocated at {:#x}", user_stack.top());
 
         let stack_top = user_stack.top();
         process.memory_usage.stack_size = USER_STACK_SIZE;
@@ -108,6 +210,7 @@ impl ProcessManager {
         // CRITICAL: Map the user stack pages into the process page table
         // The stack was allocated in the kernel page table, but userspace needs it mapped
         log::debug!("Mapping user stack pages into process page table...");
+        crate::serial_println!("manager.create_process: Mapping user stack into process page table");
         if let Some(ref mut page_table) = process.page_table {
             let stack_bottom = stack_top - USER_STACK_SIZE as u64;
             crate::memory::process_memory::map_user_stack_to_process(
@@ -120,21 +223,28 @@ impl ProcessManager {
                 "Failed to map user stack in process page table"
             })?;
             log::debug!("✓ User stack mapped in process page table");
+            crate::serial_println!("manager.create_process: User stack mapped successfully");
         } else {
             return Err("Process page table not available for stack mapping");
         }
 
         // Create the main thread
+        crate::serial_println!("manager.create_process: Creating main thread");
         let thread = self.create_main_thread(&mut process, stack_top)?;
+        crate::serial_println!("manager.create_process: Main thread created");
         process.set_main_thread(thread);
+        crate::serial_println!("manager.create_process: Main thread set on process");
 
         // Add to ready queue
+        crate::serial_println!("manager.create_process: Adding PID {} to ready queue", pid.as_u64());
         self.ready_queue.push(pid);
 
         // Insert into process table
+        crate::serial_println!("manager.create_process: Inserting process into process table");
         self.processes.insert(pid, process);
 
         log::info!("Created process {} (PID {})", name, pid.as_u64());
+        crate::serial_println!("manager.create_process: SUCCESS - returning PID {}", pid.as_u64());
 
         Ok(pid)
     }
@@ -200,11 +310,13 @@ impl ProcessManager {
             stack_top,
             stack_bottom,
             kernel_stack_top: Some(kernel_stack_top),
+            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
             tls_block: actual_tls_block,
             priority: 128,
             time_slice: 10,
             entry_point: None,
             privilege: crate::task::thread::ThreadPrivilege::User,
+            has_started: false,
         };
 
         Ok(thread)
@@ -430,16 +542,19 @@ impl ProcessManager {
             return Err("Cannot implement fork without testing feature");
         }
 
-        child_process.page_table = Some(child_page_table);
+        #[cfg(feature = "testing")]
+        {
+            child_process.page_table = Some(child_page_table);
 
-        // Continue with the rest of the fork logic...
-        self.complete_fork(
-            parent_pid,
-            child_pid,
-            &parent_thread_info,
-            userspace_rsp,
-            child_process,
-        )
+            // Continue with the rest of the fork logic...
+            self.complete_fork(
+                parent_pid,
+                child_pid,
+                &parent_thread_info,
+                userspace_rsp,
+                child_process,
+            )
+        }
     }
 
     /// Complete the fork operation after page table is created
@@ -725,16 +840,21 @@ impl ProcessManager {
             return Err("Cannot implement fork without testing feature");
         }
 
-        child_process.page_table = Some(child_page_table);
+        #[cfg(feature = "testing")]
+        {
+            child_process.page_table = Some(child_page_table);
 
-        log::info!(
-            "Created page table for child process {}",
-            child_pid.as_u64()
-        );
-
-        // Create a new stack for the child process (64KB userspace stack)
-        const CHILD_STACK_SIZE: usize = 64 * 1024;
-        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
+            log::info!(
+                "Created page table for child process {}",
+                child_pid.as_u64()
+            );
+        }
+        
+        #[cfg(feature = "testing")]
+        {
+            // Create a new stack for the child process (64KB userspace stack)
+            const CHILD_STACK_SIZE: usize = 64 * 1024;
+            let child_stack = crate::memory::stack::allocate_stack_with_privilege(
             CHILD_STACK_SIZE,
             crate::task::thread::ThreadPrivilege::User,
         )
@@ -792,11 +912,13 @@ impl ProcessManager {
             stack_top: child_stack_top,
             stack_bottom: child_stack_top - (64 * 1024),
             kernel_stack_top: child_kernel_stack_top,
+            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
             tls_block: child_tls_block,
             priority: parent_thread.priority,
             time_slice: parent_thread.time_slice,
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: parent_thread.privilege,
+            has_started: false, // New thread hasn't run yet
         };
 
         // CRITICAL: Use the userspace RSP if provided (from syscall frame)
@@ -864,8 +986,9 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // Return the child PID to the parent
-        Ok(child_pid)
+            // Return the child PID to the parent
+            Ok(child_pid)
+        } // End of #[cfg(feature = "testing")] block
     }
 
     /// Replace a process's address space with a new program (exec)
@@ -929,9 +1052,11 @@ impl ProcessManager {
 
         // Unmap the old program's pages in common userspace ranges
         // This is necessary because entry 0 contains both kernel and user mappings
-        // Typical userspace code location: 0x10000000 - 0x10100000 (1MB range)
-        if let Err(e) =
-            new_page_table.unmap_user_pages(VirtAddr::new(0x10000000), VirtAddr::new(0x10100000))
+        // Typical userspace code location: USERSPACE_BASE + 1MB range  
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000)
+        )
         {
             log::warn!("Failed to unmap old user code pages: {}", e);
         }
@@ -1081,14 +1206,11 @@ impl ProcessManager {
             // 3. The syscall return path will handle the actual switch
 
             // Schedule the page table switch for when we return to userspace
-            // This is the ONLY safe way to do it - switching while in kernel mode would crash
-            unsafe {
-                // This will be picked up by the interrupt return path
-                crate::interrupts::context_switch::NEXT_PAGE_TABLE =
-                    process.page_table.as_ref().map(|pt| pt.level_4_frame());
-            }
-
-            log::info!("exec_process: Current process exec - page table switch scheduled for interrupt return");
+            // FIXED: CR3 switching now happens in the scheduler during context switch
+            // When we return from this syscall and the next timer interrupt fires,
+            // the scheduler will switch to the new page table if needed
+            
+            log::info!("exec_process: Current process exec - page table will be used on next context switch");
 
             // DO NOT flush TLB here - let the interrupt return path handle it
             // Flushing TLB while still using the old page table mappings is dangerous
@@ -1097,7 +1219,7 @@ impl ProcessManager {
             // Process is scheduled but not current - it will pick up the new page table
             // when it's next scheduled to run. The context switch code will handle it.
             log::info!("exec_process: Process {} is scheduled - new page table will be used on next schedule", pid.as_u64());
-            // No need to set NEXT_PAGE_TABLE - the scheduler will use the process's page table
+            // The scheduler will use the process's page table during context switch
         } else {
             // Process is not scheduled - it will use the new page table when it runs
             log::info!(
