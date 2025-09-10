@@ -29,6 +29,16 @@ jobs:
 
       - name: Install NASM
         uses: ilammy/setup-nasm@v1
+      
+      - name: Install rust-objcopy
+        run: |
+          # Install llvm-tools-preview which includes rust-objcopy
+          rustup component add llvm-tools-preview
+          # Add cargo binutils for easier access to rust-objcopy
+          cargo install cargo-binutils || true
+          # Ensure rust-objcopy is in PATH
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's|host: ||p')/bin" >> $GITHUB_PATH
 
       - name: Install QEMU
         run: |
