@@ -16,6 +16,9 @@ Cargo.lock
 # Build directories
 build/
 
+# Worktree directories
+.worktrees/
+
 # Debug files
 rust-os-gdb
 
