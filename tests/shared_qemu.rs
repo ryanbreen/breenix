@@ -1,5 +1,5 @@
 //! Shared QEMU test infrastructure for all Breenix tests
-//! 
+//!
 //! This module provides a single QEMU instance that runs once and captures
 //! kernel output for all tests to share, eliminating concurrency issues.
 
@@ -9,6 +9,9 @@ use std::time::Duration;
 use std::thread;
 use std::io::Read;
 use std::sync::OnceLock;
+
+mod checkpoint_tracker;
+use checkpoint_tracker::CheckpointTracker;
 
 // Static container for shared QEMU output - runs once for all tests
 static KERNEL_OUTPUT: OnceLock<String> = OnceLock::new();
@@ -109,45 +112,111 @@ pub fn get_kernel_output() -> &'static str {
         // Wait for kernel to complete POST tests by polling the output file
         println!("⏳ Waiting for kernel POST completion marker...");
         let mut post_complete = false;
+        // Note: Debug builds run significantly slower than release builds
         let max_wait_time = Duration::from_secs(30); // Maximum wait time as safety
         let start_time = std::time::Instant::now();
-        
-        // In visual mode, wait for serial file to be created
-        if visual_mode {
-            let file_wait_start = std::time::Instant::now();
-            let file_wait_timeout = Duration::from_secs(10);
-            
-            while !std::path::Path::new(serial_output_file).exists() 
-                && file_wait_start.elapsed() < file_wait_timeout {
-                thread::sleep(Duration::from_millis(100));
-            }
-            
-            if !std::path::Path::new(serial_output_file).exists() {
-                panic!("Serial output file not created after {} seconds in visual mode", 
-                       file_wait_timeout.as_secs());
-            }
-            
-            // Give QEMU a moment to start writing content
-            thread::sleep(Duration::from_millis(500));
+
+        // Wait for serial file to be created (QEMU may still be starting up)
+        // Note: This needs to account for kernel compilation time when running via cargo test
+        // Compilation can take 10-20 seconds in debug mode, plus ~2 seconds for QEMU startup
+        let file_wait_start = std::time::Instant::now();
+        let file_wait_timeout = Duration::from_secs(30);
+
+        while !std::path::Path::new(serial_output_file).exists()
+            && file_wait_start.elapsed() < file_wait_timeout {
+            thread::sleep(Duration::from_millis(100));
         }
-        
-        while !post_complete && start_time.elapsed() < max_wait_time {
-            thread::sleep(Duration::from_millis(200)); // Check every 200ms
-            
-            // Try to read current output
-            if let Ok(current_output) = fs::read_to_string(serial_output_file) {
-                if current_output.contains("🎯 KERNEL_POST_TESTS_COMPLETE 🎯") {
-                    post_complete = true;
-                    println!("✅ Kernel POST completion detected!");
-                    // Give it a moment to finish writing any final output
-                    thread::sleep(Duration::from_millis(500));
+
+        if !std::path::Path::new(serial_output_file).exists() {
+            // Try to get stderr output to diagnose the problem
+            let mut stderr_output = String::new();
+            if let Some(mut stderr) = qemu.stderr.take() {
+                let _ = stderr.read_to_string(&mut stderr_output);
+            }
+            panic!("Serial output file not created after {} seconds - QEMU may have failed to start.\nStderr: {}",
+                   file_wait_timeout.as_secs(), stderr_output);
+        }
+
+        // Give QEMU a moment to start writing content
+        thread::sleep(Duration::from_millis(500));
+
+        // Use checkpoint-based detection for fast, signal-driven testing
+        // Get absolute path to serial output file for CheckpointTracker
+        let serial_output_file_abs = std::path::Path::new(serial_output_file)
+            .canonicalize()
+            .expect("Failed to get absolute path for serial output file");
+
+        println!("🔍 Setting up CheckpointTracker for file: {:?}", serial_output_file_abs);
+
+        let checkpoints = vec![
+            ("POST_COMPLETE".to_string(), Duration::from_secs(5)),
+        ];
+        let mut tracker = CheckpointTracker::new(
+            serial_output_file_abs.to_str().unwrap(),
+            checkpoints
+        );
+
+        println!("✅ CheckpointTracker created, waiting for checkpoint...");
+
+
+        let poll_interval = Duration::from_millis(100); // Check every 100ms
+        let mut last_check = std::time::Instant::now();
+        let mut check_count = 0;
+
+        loop {
+            // Only check at the poll interval to avoid excessive I/O
+            if last_check.elapsed() >= poll_interval {
+                check_count += 1;
+                last_check = std::time::Instant::now();
+
+                // Check for new checkpoints
+                match tracker.check_for_new_checkpoints() {
+                    Ok(true) => {
+                        // All checkpoints reached!
+                        post_complete = true;
+                        println!("✅ Kernel reached final checkpoint: POST_COMPLETE (after {} checks)", check_count);
+                        // Give it a moment to finish writing any final output
+                        thread::sleep(Duration::from_millis(200));
+                        break;
+                    }
+                    Ok(false) => {
+                        // Still waiting for checkpoints
+                        if tracker.is_timed_out() {
+                            println!("⚠️  Checkpoint timeout: {}", tracker.timeout_info());
+                            break;
+                        }
+
+                        // Show progress every 5 checks
+                        if check_count % 5 == 0 {
+                            println!("⏳ Check #{}: {}", check_count, tracker.timeout_info());
+                        }
+                    }
+                    Err(e) => {
+                        // File read error - might be too early, try again
+                        if check_count == 1 || check_count % 10 == 0 {
+                            println!("⚠️  Check #{}: File read error: {}", check_count, e);
+                        }
+                        if check_count > 50 {
+                            // After 5 seconds of file errors, something is wrong
+                            println!("⚠️  Failed to read serial file after {} checks: {}", check_count, e);
+                            break;
+                        }
+                    }
+                }
+
+                // Safety timeout after 30 seconds
+                if start_time.elapsed() >= max_wait_time {
+                    println!("⚠️  Safety timeout reached after {} seconds", max_wait_time.as_secs());
                     break;
                 }
+            } else {
+                // Sleep a tiny bit to avoid busy waiting
+                thread::sleep(Duration::from_millis(10));
             }
         }
-        
+
         if !post_complete {
-            println!("⚠️  Timeout waiting for POST completion, using fallback timing");
+            println!("⚠️  Checkpoint detection incomplete, kernel may not have reached POST completion");
         }
         
         // Kill QEMU

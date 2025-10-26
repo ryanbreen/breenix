@@ -26,9 +26,10 @@ pub unsafe extern "C" fn switch_stack_and_call_with_arg(
     core::arch::naked_asm!(
         // rdi = stack_top, rsi = entry, rdx = arg (SysV ABI)
         "mov rsp, rdi",      // switch to new stack
-        "and rsp, -16",      // ensure 16-byte alignment before call
+        "and rsp, -16",      // align to 16-byte boundary
+        "sub rsp, 8",        // pre-misalign by 8 so call instruction re-aligns
         "mov rdi, rdx",      // move arg into first-arg reg
-        "call rsi",          // call entry(arg) — must not return
+        "call rsi",          // call entry(arg) — pushes 8 bytes, achieving 16-byte alignment
         "ud2"                // trap if it does
     );
 }

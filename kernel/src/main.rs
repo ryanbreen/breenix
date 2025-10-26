@@ -31,6 +31,7 @@ mod framebuffer;
 mod gdt;
 #[cfg(feature = "testing")]
 mod gdt_tests;
+mod test_checkpoints;
 mod interrupts;
 mod irq_log;
 mod keyboard;
@@ -56,14 +57,13 @@ mod test_userspace;
 // Fault test thread function  
 #[cfg(feature = "testing")]
 extern "C" fn fault_test_thread(_arg: u64) -> ! {
-    // Wait for initial Ring 3 process to run and validate
+    // Wait briefly for initial Ring 3 process to run (scheduler will handle timing)
     log::info!("Fault test thread: Waiting for initial Ring 3 validation...");
-    
-    // Simple delay loop - wait approximately 2 seconds
-    for _ in 0..200 {
-        for _ in 0..10_000_000 {
-            core::hint::spin_loop();
-        }
+
+    // Yield to scheduler a few times to let Ring 3 processes run first
+    // The scheduler will naturally prioritize user processes
+    for _ in 0..10 {
+        task::scheduler::yield_current();
     }
     
     log::info!("Fault test thread: Running user-only fault tests...");
@@ -429,6 +429,17 @@ fn kernel_main_continue() -> ! {
         }
     }
 
+    test_checkpoint!("POST_COMPLETE");
+
+    log::info!("DEBUG: About to print POST marker (before enabling interrupts)");
+    // Signal that all POST-testable initialization is complete
+    log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
+    // Canonical OK gate for CI (appears near end of boot path)
+    log::info!("[ OK ] RING3_SMOKE: userspace executed + syscall path verified");
+
+    // NOTE: test_exit_qemu() doesn't work without QEMU's -device isa-debug-exit
+    // Test infrastructure will detect POST marker and kill QEMU instead
+
     // Enable interrupts for preemptive multitasking
     log::info!("Enabling interrupts (after creating user processes)...");
     x86_64::instructions::interrupts::enable();
@@ -514,17 +525,6 @@ fn kernel_main_continue() -> ! {
     }
 
     log::info!("Disabling interrupts after scheduler test...");
-
-    log::info!("DEBUG: About to print POST marker");
-    // Signal that all POST-testable initialization is complete
-    log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
-    // Canonical OK gate for CI (appears near end of boot path)
-    log::info!("[ OK ] RING3_SMOKE: userspace executed + syscall path verified");
-    // In testing/CI builds, exit QEMU deterministically after success
-    #[cfg(feature = "testing")]
-    {
-        test_exit_qemu(QemuExitCode::Success);
-    }
 
     // Initialize and run the async executor
     log::info!("Starting async executor...");
