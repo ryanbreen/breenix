@@ -1,0 +1,47 @@
+{
+  "name": "breenix-skills",
+  "owner": {
+    "name": "Ryan Breen",
+    "email": "ryan@breen.com"
+  },
+  "metadata": {
+    "description": "Breenix OS kernel development skills for debugging, testing, CI/CD, and code quality",
+    "version": "1.1.0"
+  },
+  "plugins": [
+    {
+      "name": "breenix-ci",
+      "description": "GitHub Actions CI/CD workflows: authoring, optimization, and failure analysis for kernel testing",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./breenix-github-workflow-authoring",
+        "./breenix-ci-failure-analysis"
+      ]
+    },
+    {
+      "name": "breenix-development",
+      "description": "Core kernel development: fast debug loops, log analysis, systematic debugging, code quality checks, memory debugging, boot analysis, and legacy migration",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./breenix-kernel-debug-loop",
+        "./breenix-log-analysis",
+        "./breenix-systematic-debugging",
+        "./breenix-code-quality-check",
+        "./breenix-memory-debugging",
+        "./breenix-boot-analysis",
+        "./breenix-legacy-migration"
+      ]
+    },
+    {
+      "name": "breenix-testing",
+      "description": "Integration test authoring and execution for kernel features",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./breenix-integration-test-authoring"
+      ]
+    }
+  ]
+}
