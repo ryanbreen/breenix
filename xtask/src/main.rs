@@ -152,8 +152,8 @@ fn ring3_enosys() -> Result<()> {
         .status();
     thread::sleep(Duration::from_millis(500));
     
-    println!("Building and running kernel with testing and external_test_bins features...");
-    
+    println!("Building and running kernel with testing features...");
+
     // Start QEMU with serial output to file
     let mut child = Command::new("cargo")
         .args(&[
@@ -162,7 +162,7 @@ fn ring3_enosys() -> Result<()> {
             "-p",
             "breenix",
             "--features",
-            "testing,external_test_bins",
+            "testing",
             "--bin",
             "qemu-uefi",
             "--",
