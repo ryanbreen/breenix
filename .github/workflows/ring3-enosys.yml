@@ -39,7 +39,7 @@ jobs:
           # Allow failure since userspace/ may not exist yet
 
       - name: Build kernel with test features
-        run: cargo build --all --release --features "testing,external_test_bins"
+        run: cargo build -p kernel --release --features "testing,external_test_bins"
 
       - name: Run ENOSYS integration test
         run: |
