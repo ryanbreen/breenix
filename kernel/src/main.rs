@@ -434,6 +434,33 @@ fn kernel_main_continue() -> ! {
     log::info!("DEBUG: About to print POST marker (before enabling interrupts)");
     // Signal that all POST-testable initialization is complete
     log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
+
+    // Run tests BEFORE enabling interrupts so they actually execute
+    #[cfg(feature = "testing")]
+    {
+        log::info!("=== Running kernel tests before enabling scheduler ===");
+
+        // Also run original tests
+        log::info!("=== BASELINE TEST: Direct userspace execution ===");
+        test_exec::test_direct_execution();
+        log::info!("Direct execution test completed.");
+
+        // Test fork from userspace
+        log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
+        test_exec::test_userspace_fork();
+        log::info!("Userspace fork test completed.");
+
+        // Test ENOSYS syscall
+        log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
+        test_exec::test_syscall_enosys();
+        log::info!("ENOSYS test completed.");
+
+        // Run fault tests to validate privilege isolation
+        log::info!("=== FAULT TEST: Running privilege violation tests ===");
+        userspace_fault_tests::run_fault_tests();
+        log::info!("Fault tests scheduled.");
+    }
+
     // Canonical OK gate for CI (appears near end of boot path)
     log::info!("[ OK ] RING3_SMOKE: userspace executed + syscall path verified");
 
@@ -486,34 +513,6 @@ fn kernel_main_continue() -> ! {
     }
 
     log::info!("✅ Kernel initialization complete!");
-    
-    // Disable interrupts during process creation to prevent logger deadlock
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        // Skip timer test for now to debug hello world
-        // log::info!("=== TIMER TEST: Validating timer subsystem ===");
-        // test_exec::test_timer_functionality();
-        // log::info!("Timer test process created - check output for results.");
-
-        // Also run original tests
-        log::info!("=== BASELINE TEST: Direct userspace execution ===");
-        test_exec::test_direct_execution();
-        log::info!("Direct execution test completed.");
-
-        // Test fork from userspace
-        log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
-        test_exec::test_userspace_fork();
-        log::info!("Userspace fork test completed.");
-
-        // Test ENOSYS syscall
-        log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
-        test_exec::test_syscall_enosys();
-        log::info!("ENOSYS test completed.");
-        
-        // Run fault tests to validate privilege isolation
-        log::info!("=== FAULT TEST: Running privilege violation tests ===");
-        userspace_fault_tests::run_fault_tests();
-        log::info!("Fault tests scheduled.");
-    });
 
     // Give the scheduler a chance to run the created processes
     log::info!("Enabling interrupts to allow scheduler to run...");
