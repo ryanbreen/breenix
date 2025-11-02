@@ -139,19 +139,19 @@ fn ring3_smoke() -> Result<()> {
 /// Builds the kernel, boots it in QEMU, and tests ENOSYS syscall handling.
 fn ring3_enosys() -> Result<()> {
     println!("Starting Ring-3 ENOSYS test...");
-    
+
     // Use serial output to file approach like the tests do
     let serial_output_file = "target/xtask_ring3_enosys_output.txt";
-    
+
     // Remove old output file if it exists
     let _ = fs::remove_file(serial_output_file);
-    
+
     // Kill any existing QEMU processes
     let _ = Command::new("pkill")
         .args(&["-9", "qemu-system-x86_64"])
         .status();
     thread::sleep(Duration::from_millis(500));
-    
+
     println!("Building and running kernel with testing features...");
 
     // Start QEMU with serial output to file
@@ -162,7 +162,7 @@ fn ring3_enosys() -> Result<()> {
             "-p",
             "breenix",
             "--features",
-            "testing",
+            "testing,external_test_bins",
             "--bin",
             "qemu-uefi",
             "--",
@@ -259,11 +259,13 @@ fn ring3_enosys() -> Result<()> {
     } else if found_enosys_ok {
         println!("\n✅  ENOSYS test passed - syscall 999 correctly returned -38");
         Ok(())
-    } else if found_invalid_syscall {
-        println!("\n⚠️  Kernel logged invalid syscall but userspace test result not found");
-        println!("This may indicate the test binary isn't running or userspace execution issue");
-        Ok(())  // Don't fail in this case as kernel behavior is correct
     } else {
-        bail!("\n❌  ENOSYS test inconclusive: no evidence of test execution");
+        // No longer accept fake markers - require actual userspace validation
+        bail!("\n❌  ENOSYS test failed: userspace did not report 'ENOSYS OK'.\n\
+               This test requires:\n\
+               1. Userspace process created successfully\n\
+               2. Userspace executes syscall(999) from Ring 3\n\
+               3. Userspace validates return value == -38\n\
+               4. Userspace prints 'ENOSYS OK'");
     }
 }

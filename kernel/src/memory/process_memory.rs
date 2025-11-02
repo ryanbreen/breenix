@@ -459,22 +459,25 @@ impl ProcessPageTable {
                 }
                 log::info!("PHASE2: Inherited {} upper-half kernel mappings (256-511) from master PML4", upper_half_copied);
                 
+                // FIX: DO NOT copy PML4[0] from master - each process needs its own PML4[0] for userspace
+                // PML4[0] covers virtual addresses 0x0 - 0x7FFFFFFFFF (512GB)
+                // This is where userspace programs are loaded (e.g., 0x50000000)
+                // Sharing PML4[0] between processes causes "Page already mapped" errors
+                // because processes see each other's userspace mappings
+                //
+                // The kernel identity mapping at 0x100000 is NOT needed in process page tables
+                // because the kernel executes from upper-half addresses (PML4[256-511])
+                // when running in process context
+                //
                 // TEMPORARY FIX: Copy lower-half kernel mappings from master
                 // The kernel executes from multiple lower-half regions:
-                // - PML4[0]: Identity mapping at 0x100000
+                // - PML4[0]: Identity mapping at 0x100000 [REMOVED - conflicts with userspace]
                 // - PML4[2]: Direct physical memory mapping where kernel actually runs (0x100_xxxx_xxxx)
                 // Once we move to high-half execution, we can remove this
-                
-                // Copy PML4[0] for identity mapping
-                if !master_pml4[0].is_unused() {
-                    // CRITICAL FIX: Keep PML4[0] EXACTLY as it is in master
-                    // DO NOT modify flags - copy verbatim
-                    let master_flags = master_pml4[0].flags();
-                    level_4_table[0].set_addr(master_pml4[0].addr(), master_flags);
-                    // log::info!("PHASE2-TEMP: Copied PML4[0] from master with original flags");
-                } else {
-                    log::warn!("PHASE2-TEMP: Master PML4[0] is empty - kernel identity map may not be accessible!");
-                }
+
+                // PML4[0] is left EMPTY (all entries set to unused) - this is intentional
+                // Each process gets its own independent userspace address range
+                log::info!("PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)");
                 
                 // CRITICAL: Also copy PML4[2] for direct physical memory mapping
                 // The kernel actually executes from here (RIP=0x100_xxxx_xxxx)
