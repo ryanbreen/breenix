@@ -42,6 +42,13 @@ syscall_entry:
     ; Clear direction flag for string operations
     cld
 
+    ; CRITICAL: Switch CR3 back to kernel page table
+    ; Syscalls only come from userspace, so CR3 is always a process PT
+    ; We MUST switch to kernel PT before running kernel code
+    ; TODO: Make this dynamic by storing kernel CR3 in per-CPU data
+    mov rax, 0x101000                  ; Kernel CR3 (hardcoded for now)
+    mov cr3, rax                       ; Switch to kernel page table
+
     ; Always switch to kernel GS for INT 0x80 entry
     ; INT 0x80 is only used from userspace, so we always need swapgs
     swapgs
@@ -88,6 +95,12 @@ syscall_entry:
     
     ; We know we're returning to userspace since this is a syscall
 
+    ; CRITICAL: Disable interrupts NOW to prevent race condition
+    ; A timer interrupt during trace_iretq_to_ring3() could switch CR3
+    ; before we finish, causing page faults when kernel code runs on
+    ; process page tables. Must be atomic from here to IRETQ.
+    cli
+
     ; Trace that we're about to return to Ring 3 with full frame info
     ; Save all registers that might be clobbered by the call
     push rax                   ; Save syscall return value (CRITICAL!)
@@ -130,8 +143,62 @@ syscall_entry:
     pop rdx
     pop rax
 
+    ; CRITICAL: Check if we need to switch CR3 before IRETQ (syscall return)
+    ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
+    ; If non-zero, switch to it and clear the flag
+    push rax
+    push rdx
+
+    ; CRITICAL: Swap back to kernel GS to read next_cr3
+    ; We're currently in user GS mode, but next_cr3 is in kernel GS
+    swapgs
+
+    ; Read next_cr3 from per-CPU data (GS:64)
+    mov rax, qword [gs:64]
+
+    ; Check if CR3 switch is needed (non-zero)
+    test rax, rax
+    jz .no_cr3_switch_syscall_back_to_user
+
+    ; Interrupts already disabled (CLI before trace function)
+    ; Safe to switch CR3 now
+
+    ; Debug: Output marker for CR3 switch
+    mov dx, 0x3F8
+    push rax
+    mov al, '$'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'Y'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    pop rax
+
+    ; Switch CR3 to process page table
+    mov cr3, rax
+
+    ; Clear next_cr3 flag (set to 0)
+    xor rdx, rdx
+    mov qword [gs:64], rdx
+
+    ; Swap back to user GS for IRETQ
+    swapgs
+
+    jmp .after_cr3_check_syscall
+
+.no_cr3_switch_syscall_back_to_user:
+    ; No CR3 switch needed, swap back to user GS
+    swapgs
+
+.after_cr3_check_syscall:
+    pop rdx
+    pop rax
+
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
+    ; IRETQ will re-enable interrupts from the saved RFLAGS
     iretq
     
     ; Should never reach here - add marker for triple fault debugging
@@ -226,7 +293,65 @@ syscall_return_to_userspace:
     pop rdx
     pop rax
 
+    ; CRITICAL: Check if we need to switch CR3 before IRETQ (first userspace entry)
+    ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
+    ; If non-zero, switch to it and clear the flag
+    push rax
+    push rdx
+
+    ; CRITICAL: Swap back to kernel GS to read next_cr3
+    ; We're currently in user GS mode, but next_cr3 is in kernel GS
+    swapgs
+
+    ; Read next_cr3 from per-CPU data (GS:64)
+    mov rax, qword [gs:64]
+
+    ; Check if CR3 switch is needed (non-zero)
+    test rax, rax
+    jz .no_cr3_switch_first_entry_back_to_user
+
+    ; Interrupts already disabled (CLI at function start line 211)
+    ; Safe to switch CR3 now
+
+    ; Debug: Output marker for CR3 switch
+    mov dx, 0x3F8
+    push rax
+    mov al, '$'
+    out dx, al
+    mov al, 'F'
+    out dx, al
+    mov al, 'I'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'T'
+    out dx, al
+    pop rax
+
+    ; Switch CR3 to process page table
+    mov cr3, rax
+
+    ; Clear next_cr3 flag (set to 0)
+    xor rdx, rdx
+    mov qword [gs:64], rdx
+
+    ; Swap back to user GS for IRETQ
+    swapgs
+
+    jmp .after_cr3_check_first_entry
+
+.no_cr3_switch_first_entry_back_to_user:
+    ; No CR3 switch needed, swap back to user GS
+    swapgs
+
+.after_cr3_check_first_entry:
+    pop rdx
+    pop rax
+
     ; Jump to userspace
+    ; IRETQ will re-enable interrupts from the saved RFLAGS
     iretq
     
     ; Should never reach here - add marker for triple fault debugging

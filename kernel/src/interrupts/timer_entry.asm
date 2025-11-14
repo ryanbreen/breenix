@@ -41,7 +41,7 @@ timer_interrupt_entry:
     push r14
     push r15
     
-    ; CRITICAL: Check if we came from userspace and need to swap GS
+    ; CRITICAL: Check if we came from userspace and need to swap GS/CR3
     ; Get CS from interrupt frame to check privilege level
     ; Frame layout after pushes: [r15...rax][RIP][CS][RFLAGS][RSP][SS]
     ; CS is at RSP + 15*8 + 8 (15 saved regs + RIP)
@@ -49,7 +49,14 @@ timer_interrupt_entry:
     and rax, 3                         ; Check privilege level (RPL bits)
     cmp rax, 3                         ; Ring 3?
     jne .skip_swapgs_entry             ; If not from userspace, skip swapgs
-    
+
+    ; CRITICAL: Switch CR3 back to kernel page table
+    ; When interrupt fires from userspace, CR3 is still the process PT
+    ; We MUST switch to kernel PT before running any kernel code
+    ; TODO: Make this dynamic by storing kernel CR3 in per-CPU data
+    mov rax, 0x101000                  ; Kernel CR3 (hardcoded for now)
+    mov cr3, rax                       ; Switch to kernel page table
+
     ; We came from userspace, swap to kernel GS
     swapgs
     
@@ -169,82 +176,25 @@ timer_interrupt_entry:
     mov dx, 0x3F8       ; COM1 port
     mov al, 'Z'         ; After swapgs marker
     out dx, al
-    
-    ; CRITICAL DIAGNOSTIC: Verify GDT descriptors before IRETQ
-    ; Test if CS and SS selectors are valid for Ring 3
-    push rax
-    push rdx
-    push rcx
-    
-    ; Test CS selector (0x33) with VERR
-    mov ax, 0x33
-    verr ax
-    jz .cs_verr_ok
-    ; CS not readable from Ring 3 - print error
-    mov dx, 0x3F8
-    mov al, '!'
-    out dx, al
-    mov al, 'C'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-.cs_verr_ok:
-    
-    ; Test SS selector (0x2b) with VERW
-    mov ax, 0x2b
-    verw ax
-    jz .ss_verw_ok
-    ; SS not writable from Ring 3 - print error
-    mov dx, 0x3F8
-    mov al, '!'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-.ss_verw_ok:
-    
-    ; Get access rights with LAR for CS
-    mov ax, 0x33
-    lar rdx, ax
-    jnz .cs_lar_failed
-    ; Success - RDX has access rights
-    jmp .cs_lar_ok
-.cs_lar_failed:
-    mov dx, 0x3F8
-    mov al, '?'
-    out dx, al
-    mov al, 'C'
-    out dx, al
-.cs_lar_ok:
-    
-    ; Get access rights with LAR for SS
-    mov ax, 0x2b
-    lar rcx, ax
-    jnz .ss_lar_failed
-    ; Success - RCX has access rights
-    jmp .ss_lar_ok
-.ss_lar_failed:
-    mov dx, 0x3F8
-    mov al, '?'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-.ss_lar_ok:
-    
-    ; REMOVED: Logging CR3/GDTR here - already done before CR3 switch
-    ; After swapgs, we can't safely call kernel functions that might
-    ; access per-CPU data or other kernel structures
-    
-    pop rcx
-    pop rdx
-    pop rax
+
+    ; GDT verification temporarily disabled for debugging
     
 .stack_looks_ok:
     ; No error code to remove
     ; NO EXTRA POPS - registers already restored above!
     
     ; Call trace function to log IRETQ frame with IF bit check
+    ; CRITICAL: We need kernel GS for the trace function to work
+
+    ; CRITICAL: Disable interrupts NOW to prevent race condition
+    ; A timer interrupt during trace_iretq_to_ring3() could switch CR3
+    ; before we finish, causing page faults when kernel code runs on
+    ; process page tables. Must be atomic from here to IRETQ.
+    cli
+
+    ; Swap back to kernel GS temporarily
+    swapgs
+
     ; Save registers we need
     push rdi
     push rsi
@@ -254,12 +204,12 @@ timer_interrupt_entry:
     push r9
     push r10
     push r11
-    
+
     ; Pass pointer to IRETQ frame (RIP is at RSP+64 after our pushes)
     mov rdi, rsp
     add rdi, 64         ; Skip 8 pushed registers to point to RIP
     call trace_iretq_to_ring3
-    
+
     ; Restore registers
     pop r11
     pop r10
@@ -269,7 +219,28 @@ timer_interrupt_entry:
     pop rdx
     pop rsi
     pop rdi
-    
+
+    ; Debug: Output marker after register restore
+    push rax
+    push rdx
+    mov dx, 0x3F8
+    mov al, '1'
+    out dx, al
+    pop rdx
+    pop rax
+
+    ; Swap back to user GS before IRETQ
+    swapgs
+
+    ; Debug: Output marker after swapgs
+    push rax
+    push rdx
+    mov dx, 0x3F8
+    mov al, '2'
+    out dx, al
+    pop rdx
+    pop rax
+
     ; CRITICAL DEBUG: Output marker to prove we reach IRETQ
     ; If we see this marker, we made it to iretq
     push rax
@@ -279,8 +250,62 @@ timer_interrupt_entry:
     out dx, al
     pop rdx
     pop rax
-    
+
+    ; CRITICAL: Check if we need to switch CR3 before IRETQ
+    ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
+    ; If non-zero, switch to it and clear the flag
+    push rax
+    push rdx
+
+    ; CRITICAL: Swap back to kernel GS to read next_cr3
+    ; We're currently in user GS mode, but next_cr3 is in kernel GS
+    swapgs
+
+    ; Read next_cr3 from per-CPU data (GS:64)
+    mov rax, qword [gs:64]
+
+    ; Check if CR3 switch is needed (non-zero)
+    test rax, rax
+    jz .no_cr3_switch_back_to_user
+
+    ; Interrupts already disabled (CLI before)
+    ; Safe to switch CR3 now
+
+    ; Debug: Output marker for CR3 switch
+    mov dx, 0x3F8
+    push rax
+    mov al, '$'
+    out dx, al
+    mov al, 'C'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, '3'
+    out dx, al
+    pop rax
+
+    ; Switch CR3 to process page table
+    mov cr3, rax
+
+    ; Clear next_cr3 flag (set to 0)
+    xor rdx, rdx
+    mov qword [gs:64], rdx
+
+    ; Swap back to user GS for IRETQ
+    swapgs
+
+    jmp .after_cr3_check
+
+.no_cr3_switch_back_to_user:
+    ; No CR3 switch needed, swap back to user GS
+    swapgs
+
+.after_cr3_check:
+    pop rdx
+    pop rax
+
     ; Return from interrupt to userspace
+    ; IRETQ will re-enable interrupts from the saved RFLAGS
     iretq
     
 .no_userspace_return:
