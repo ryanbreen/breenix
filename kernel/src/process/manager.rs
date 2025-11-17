@@ -258,8 +258,11 @@ impl ProcessManager {
         // For now, use a null TLS block (we'll implement TLS later)
         let _tls_block = x86_64::VirtAddr::new(0);
 
-        // For the main thread, use PID as TID (Unix convention)
-        let thread_id = process.id.as_u64();
+        // Allocate a globally unique thread ID
+        // NOTE: While Unix convention is TID = PID for main thread, we need global
+        // uniqueness across all threads (kernel + user). Using the global allocator
+        // prevents collisions with kernel threads.
+        let thread_id = crate::task::thread::allocate_thread_id();
 
         // Allocate a TLS block for this thread ID
         let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
@@ -451,10 +454,30 @@ impl ProcessManager {
         &mut self,
         thread_id: u64,
     ) -> Option<(ProcessId, &mut Process)> {
-        self.processes
+        // DIAGNOSTIC: Log all process->thread mappings
+        crate::serial_println!("🔍 find_process_by_thread_mut: Looking for thread {}", thread_id);
+        for (pid, process) in self.processes.iter() {
+            if let Some(ref thread) = process.main_thread {
+                crate::serial_println!("  Process {} ({}) -> Thread {}",
+                    pid.as_u64(), process.name, thread.id);
+            } else {
+                crate::serial_println!("  Process {} ({}) -> No thread",
+                    pid.as_u64(), process.name);
+            }
+        }
+
+        let result = self.processes
             .iter_mut()
             .find(|(_, process)| process.main_thread.as_ref().map(|t| t.id) == Some(thread_id))
-            .map(|(pid, process)| (*pid, process))
+            .map(|(pid, process)| (*pid, process));
+
+        if let Some((pid, _)) = &result {
+            crate::serial_println!("  ✓ Found: Process {} has thread {}", pid.as_u64(), thread_id);
+        } else {
+            crate::serial_println!("  ✗ NOT FOUND: No process has thread {}", thread_id);
+        }
+
+        result
     }
 
     /// Debug print all processes
@@ -604,8 +627,10 @@ impl ProcessManager {
         // In the future, we should properly copy parent's TLS data
         let _dummy_tls = VirtAddr::new(0);
 
-        // Create the child thread with PID as TID (Unix convention for main thread)
-        let child_thread_id = child_pid.as_u64();
+        // Allocate a globally unique thread ID for the child's main thread
+        // NOTE: While Unix convention is TID = PID for main thread, we need global
+        // uniqueness across all threads (kernel + user).
+        let child_thread_id = crate::task::thread::allocate_thread_id();
 
         // Allocate a TLS block for this thread ID
         let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
@@ -865,8 +890,10 @@ impl ProcessManager {
         // In the future, we should properly copy parent's TLS data
         let _dummy_tls = VirtAddr::new(0);
 
-        // Create the child thread with PID as TID (Unix convention for main thread)
-        let child_thread_id = child_pid.as_u64();
+        // Allocate a globally unique thread ID for the child's main thread
+        // NOTE: While Unix convention is TID = PID for main thread, we need global
+        // uniqueness across all threads (kernel + user).
+        let child_thread_id = crate::task::thread::allocate_thread_id();
 
         // Allocate a TLS block for this thread ID
         let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);

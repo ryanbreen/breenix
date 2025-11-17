@@ -211,8 +211,15 @@ fn ring3_enosys() -> Result<()> {
             let mut contents = String::new();
             if file.read_to_string(&mut contents).is_ok() {
                 // Look for ENOSYS test results
-                if contents.contains("USERSPACE OUTPUT: ENOSYS OK") || 
-                   contents.contains("ENOSYS OK") {
+                // IMPORTANT: Must use specific prefix to avoid matching instructional messages
+                // like "Should print 'ENOSYS OK'" which would cause false positives.
+                if contents.contains("USERSPACE OUTPUT: ENOSYS OK") {
+                    found_enosys_ok = true;
+                    break;
+                }
+
+                // Also accept plain "ENOSYS OK\n" at start of line (actual userspace output)
+                if contents.lines().any(|line| line.trim() == "ENOSYS OK") {
                     found_enosys_ok = true;
                     break;
                 }

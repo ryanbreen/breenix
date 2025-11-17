@@ -564,10 +564,8 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
             // After CR3 switch, kernel static data won't be accessible
             let phys_offset = crate::memory::physical_memory_offset();
 
-            // TEMPORARY DEBUG: Disable CR3 switching to see if kernel works without it
             // Now safe to switch CR3 since we're on the upper-half kernel stack (PML4[402])
             // which is mapped in all page tables
-            if false {
             if let Some(page_table) = process.page_table.as_ref() {
                     let new_frame = page_table.level_4_frame();
                     crate::serial_println!("Switching CR3 to {:#x} for first run", new_frame.start_address().as_u64());
@@ -998,9 +996,8 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
 
                     crate::serial_println!("After interrupts::without_interrupts block");
                 }
-            } // Close the `if false {`
 
-            // CRITICAL: Set kernel stack for TSS RSP0 - this MUST happen even when CR3 switch is disabled!
+            // CRITICAL: Set kernel stack for TSS RSP0
             crate::serial_println!("Setting kernel stack for thread {}...", thread_id);
 
             // Set kernel stack for this thread (using the value we saved before CR3 switch)

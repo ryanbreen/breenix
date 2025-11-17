@@ -69,6 +69,15 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                         // Note: spawn() internally uses without_interrupts
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
                         crate::serial_println!("create_user_process: scheduler::spawn completed");
+
+                        // CRITICAL: Set target CR3 for this process's first entry to userspace
+                        // The assembly interrupt return will switch to this CR3 before IRETQ
+                        if let Some(ref page_table) = process.page_table {
+                            let target_cr3 = page_table.level_4_frame().start_address().as_u64();
+                            crate::serial_println!("create_user_process: Setting next_cr3={:#x} for first userspace entry", target_cr3);
+                            crate::per_cpu::set_next_cr3(target_cr3);
+                        }
+
                         log::info!(
                             "create_user_process: User thread {} enqueued for scheduling",
                             main_thread.id

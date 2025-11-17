@@ -249,6 +249,7 @@ impl ProcessPageTable {
             Some(frame) => {
                 let frame_addr = frame.start_address().as_u64();
                 log::debug!("Successfully allocated frame: {:#x}", frame_addr);
+                crate::serial_println!("🔍 ProcessPageTable::new() allocated L4 frame={:#x}", frame_addr);
 
                 // Check for problematic frames
                 if frame_addr == 0x611000 {
@@ -269,6 +270,7 @@ impl ProcessPageTable {
             "Allocated L4 frame: {:#x}",
             level_4_frame.start_address().as_u64()
         );
+        crate::serial_println!("🔍 ProcessPageTable will use L4 frame={:#x}", level_4_frame.start_address().as_u64());
 
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();

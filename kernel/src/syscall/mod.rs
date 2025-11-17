@@ -90,9 +90,19 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
 
     // Check if this is from userspace (Ring 3)
     if stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3 {
+        // CRITICAL: Log current CR3 to verify process isolation is working
+        let current_cr3 = unsafe {
+            use x86_64::registers::control::Cr3;
+            Cr3::read().0.start_address().as_u64()
+        };
+
         log::info!("🎉 USERSPACE SYSCALL: Received INT 0x80 from userspace!");
         log::info!("    RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
         log::info!("    RSP: {:#x}", stack_frame.stack_pointer.as_u64());
+        log::info!("    CR3: {:#x} (process page table)", current_cr3);
+
+        // Also output to serial for easy CI detection
+        crate::serial_println!("✅ SYSCALL with CR3={:#x} (process isolated)", current_cr3);
 
         // For the hello world test, we know it's trying to call sys_write
         // Let's call it directly to prove userspace syscalls work

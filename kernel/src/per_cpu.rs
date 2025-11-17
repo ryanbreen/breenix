@@ -49,9 +49,13 @@ pub struct PerCpuData {
     
     /// Softirq pending bitmap (offset 56) - 32 bits for different softirq types
     pub softirq_pending: u32,
-    
-    /// Reserved for future use - maintains 64-byte alignment
-    _reserved: u32,
+
+    /// Padding to align next_cr3 (offset 60-63)
+    _pad2: u32,
+
+    /// Target CR3 for next IRETQ (offset 64) - set before context switch
+    /// 0 means no CR3 switch needed
+    pub next_cr3: u64,
 }
 
 // Linux-style preempt_count bit layout constants
@@ -91,6 +95,7 @@ const NEED_RESCHED_OFFSET: usize = 36;     // offset 36: u8 (1 byte)
 const USER_RSP_SCRATCH_OFFSET: usize = 40; // offset 40: u64 (8 bytes) - ALIGNED
 const TSS_OFFSET: usize = 48;              // offset 48: *mut TSS (8 bytes)
 const SOFTIRQ_PENDING_OFFSET: usize = 56;  // offset 56: u32 (4 bytes)
+const NEXT_CR3_OFFSET: usize = 64;         // offset 64: u64 (8 bytes) - ALIGNED
 
 // Compile-time assertions to ensure offsets are correct
 // These will fail to compile if the offsets don't match expected values
@@ -99,8 +104,9 @@ const _: () = assert!(PREEMPT_COUNT_OFFSET == 32, "preempt_count offset mismatch
 const _: () = assert!(USER_RSP_SCRATCH_OFFSET % 8 == 0, "user_rsp_scratch must be 8-byte aligned");
 const _: () = assert!(core::mem::size_of::<usize>() == 8, "This code assumes 64-bit pointers");
 
-// Verify struct size is exactly 64 bytes (cache line)
-const _: () = assert!(core::mem::size_of::<PerCpuData>() == 64, "PerCpuData must be exactly 64 bytes");
+// Verify struct size is 128 bytes due to align(64) attribute
+// The actual data is 72 bytes, but align(64) rounds up to 128
+const _: () = assert!(core::mem::size_of::<PerCpuData>() == 128, "PerCpuData must be 128 bytes (aligned to 64)");
 
 // Verify bit layout matches Linux kernel
 const _: () = assert!(PREEMPT_MASK == 0x000000FF, "PREEMPT_MASK incorrect");
@@ -123,7 +129,8 @@ impl PerCpuData {
             user_rsp_scratch: 0,
             tss: ptr::null_mut(),
             softirq_pending: 0,
-            _reserved: 0,
+            _pad2: 0,
+            next_cr3: 0,
         }
     }
 }
@@ -865,6 +872,43 @@ pub fn do_softirq() {
     
     // Exit softirq context
     softirq_exit();
+}
+
+/// Get the target CR3 for next IRETQ
+/// Returns 0 if no CR3 switch is needed
+pub fn get_next_cr3() -> u64 {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return 0;
+    }
+
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!(
+            "mov {}, gs:[{offset}]",
+            out(reg) cr3,
+            offset = const NEXT_CR3_OFFSET,
+            options(nostack, readonly, preserves_flags)
+        );
+        cr3
+    }
+}
+
+/// Set the target CR3 for next IRETQ
+/// Set to 0 to disable CR3 switching
+/// This is called from context_switch.rs before returning to userspace
+pub fn set_next_cr3(cr3: u64) {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        core::arch::asm!(
+            "mov gs:[{offset}], {}",
+            in(reg) cr3,
+            offset = const NEXT_CR3_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
 /// Check if we can schedule (preempt_count == 0 and returning to userspace)
