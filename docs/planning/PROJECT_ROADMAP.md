@@ -21,7 +21,7 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
 
 ## Current Development Status
 
-### Currently Working On (July 21 2025)
+### Currently Working On (November 2025)
 
 - 🚧 **Timer System Enhancement**: Implementing remaining timer features from TIMER_NEXT_STEPS.md
   - Task 2: POSIX clock_gettime syscall
@@ -29,7 +29,32 @@ Under **NO CIRCUMSTANCES** are we allowed to choose "easy" workarounds that devi
   - Task 4: TSC-deadline fast path (optional)
   - Task 5: Virtualization optimizations
 
-### Recently Completed (Last Sprint) - July 2025
+### Recently Completed (November 2025)
+
+- ✅ **Fixed CR3 Switching Bug** (Nov 2025)
+  - **Root Cause**: CR3 switching code was disabled by `if false {}` wrapper in context_switch.rs
+  - **Problem**: Userspace processes ran with kernel page table (CR3=0x101000) instead of process page table
+  - **Solution**: Re-enabled CR3 switching code by removing the debug wrapper
+  - **Result**:
+    - ✅ Userspace processes now run with correct CR3 (e.g., 0x670000)
+    - ✅ Memory isolation restored between processes
+    - ✅ All safety checks pass (kernel code/stack accessible after switch)
+    - ✅ Ring 3 execution and syscalls work correctly
+  - **Evidence**: Verification document at docs/planning/CR3_FIX_VERIFICATION.md
+
+- ✅ **Fixed CI/CD Test Failures** (Nov 2025)
+  - **Issue 1**: Ring-3 ENOSYS workflow missing userspace build step
+    - Added `Build userspace tests` step to ring3-enosys.yml
+    - Kernel uses `include_bytes!()` to embed ELF files which must exist at compile time
+  - **Issue 2**: Ring-3 Smoke test using outdated pattern matching
+    - Updated xtask to look for current success markers
+    - Old patterns: `"USERSPACE OUTPUT: Hello from userspace"`
+    - New patterns: `"[ OK ] RING3_SMOKE"` and `"KERNEL_POST_TESTS_COMPLETE"`
+  - **Files Modified**:
+    - `.github/workflows/ring3-enosys.yml`
+    - `xtask/src/main.rs`
+
+### Previously Completed (July 2025)
 
 - ✅ **Implemented RTC Driver and Wall-Clock API** (Jul 21 2025)
   - **Achievement**: Real Time Clock (RTC) support for wall clock time
@@ -801,6 +826,6 @@ Key documents:
 
 ---
 
-Last Updated: 2025-02-01
-Next Review: After Phase 8 completion
+Last Updated: 2025-11-20
+Next Review: After CI/CD fixes verified
 Current Development Status should be updated after each PR merge

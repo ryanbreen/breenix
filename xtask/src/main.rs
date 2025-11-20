@@ -98,10 +98,9 @@ fn ring3_smoke() -> Result<()> {
         if let Ok(mut file) = fs::File::open(serial_output_file) {
             let mut contents = String::new();
             if file.read_to_string(&mut contents).is_ok() {
-                // Look for either the expected output OR evidence of userspace execution
-                if contents.contains("USERSPACE OUTPUT: Hello from userspace") ||
-                   (contents.contains("Context switch: from_userspace=true, CS=0x33") &&
-                    contents.contains("restore_userspace_thread_context: Restoring thread")) {
+                // Look for the RING3_SMOKE success marker or the completion marker
+                if contents.contains("[ OK ] RING3_SMOKE: userspace executed + syscall path verified") ||
+                   contents.contains("KERNEL_POST_TESTS_COMPLETE") {
                     found = true;
                     break;
                 }

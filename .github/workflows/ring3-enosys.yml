@@ -35,6 +35,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 qemu-utils nasm
 
+      - name: Build userspace tests
+        run: |
+          # Add LLVM tools to PATH
+          export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
+          cd userspace/tests
+          ./build.sh
+
       - name: Run Ring-3 ENOSYS test
         run: cargo run -p xtask -- ring3-enosys
 
