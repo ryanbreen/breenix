@@ -74,6 +74,21 @@ gh pr create --title "Brief description" --body "Details"
 - Use proper patterns (e.g., `Once`) to avoid unsafe warnings
 - Only `#[allow(dead_code)]` for legitimate API functions
 
+### Testing Integrity - CRITICAL
+
+**NEVER fake a passing test.** If a test fails, it fails. Do not:
+- Add fallbacks that accept weaker evidence than the test requires
+- Change test criteria to match broken behavior
+- Accept "process was created" as proof of "process executed correctly"
+- Let CI pass by detecting markers printed before the actual test runs
+
+If a test cannot pass because the underlying code is broken:
+1. **Fix the underlying code** - this is the job
+2. Or disable the test explicitly with documentation explaining why
+3. NEVER make the test pass by weakening its criteria
+
+A test that passes without testing what it claims to test is worse than a failing test - it gives false confidence and hides real bugs.
+
 ### Testing
 - Most tests use shared QEMU (`tests/shared_qemu.rs`)
 - Special tests marked `#[ignore]` require specific configs
