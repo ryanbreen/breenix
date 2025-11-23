@@ -13,6 +13,9 @@ const PER_CPU_STACK_BASE: u64 = 0xffffc980_0000_0000;
 /// Size of each emergency stack (8 KiB)
 const EMERGENCY_STACK_SIZE: u64 = 8 * 1024;
 
+/// Total size per CPU: emergency stack + page fault stack (16 KiB)
+const TOTAL_STACK_SIZE_PER_CPU: u64 = 2 * EMERGENCY_STACK_SIZE;
+
 /// Maximum number of CPUs supported
 const MAX_CPUS: usize = 256;
 
@@ -28,7 +31,8 @@ pub struct PerCpuStack {
 ///
 /// This allocates and maps emergency stacks for each CPU.
 /// Should be called during early boot before SMP initialization.
-pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<alloc::vec::Vec<PerCpuStack>, &'static str> {
+/// Returns number of stacks initialized.
+pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<usize, &'static str> {
     if num_cpus > MAX_CPUS {
         return Err("Too many CPUs");
     }
@@ -38,17 +42,17 @@ pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<alloc::vec::Vec<PerCpuStac
         num_cpus
     );
 
-    use alloc::vec::Vec;
-    let mut stacks = Vec::new();
+    // Don't use Vec here to avoid heap allocation during early boot
+    // (heap allocator lock can deadlock with other locks)
 
     for cpu_id in 0..num_cpus {
         // Calculate stack address for this CPU
         let stack_base = PER_CPU_STACK_BASE + (cpu_id as u64 * 0x10000); // 64KB spacing
         let stack_bottom = VirtAddr::new(stack_base);
-        let stack_top = VirtAddr::new(stack_base + EMERGENCY_STACK_SIZE);
+        let stack_top = VirtAddr::new(stack_base + TOTAL_STACK_SIZE_PER_CPU);
 
-        // Map the stack pages
-        let num_pages = (EMERGENCY_STACK_SIZE / 4096) as usize;
+        // Map both emergency stack and page fault stack (16KB total = 4 pages)
+        let num_pages = (TOTAL_STACK_SIZE_PER_CPU / 4096) as usize;
         for i in 0..num_pages {
             let virt_addr = stack_bottom + (i as u64 * 4096);
 
@@ -72,16 +76,9 @@ pub fn init_per_cpu_stacks(num_cpus: usize) -> Result<alloc::vec::Vec<PerCpuStac
             stack_bottom,
             stack_top
         );
-
-        stacks.push(PerCpuStack {
-            cpu_id,
-            stack_top,
-            stack_bottom,
-        });
     }
-
-    log::info!("Initialized {} per-CPU emergency stacks", stacks.len());
-    Ok(stacks)
+    log::info!("Initialized {} per-CPU emergency stacks", num_cpus);
+    Ok(num_cpus)
 }
 
 /// Get the emergency stack for the current CPU (used for double fault)

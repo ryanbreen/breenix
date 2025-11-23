@@ -137,19 +137,35 @@ pub unsafe fn map_kernel_page(
     let pd_index = (virt.as_u64() >> 21) & 0x1FF;
     let pt_index = (virt.as_u64() >> 12) & 0x1FF;
 
-    // Ensure PML4 entry points to kernel PDPT
-    if pml4_index >= 256 {
+    // Determine which PDPT to use based on PML4 index
+    // PML4[402] (kernel stacks) and PML4[403] (IST stacks) have their own PDPTs
+    // Other upper-half entries use the shared kernel PDPT
+    let pdpt_frame = if pml4_index >= 256 {
         let entry = &mut pml4[pml4_index as usize];
-        if entry.is_unused() || entry.frame().unwrap() != kernel_pdpt_frame {
-            entry.set_frame(
-                kernel_pdpt_frame,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-            );
+
+        if pml4_index == 402 || pml4_index == 403 {
+            // Kernel/IST stack regions have their own PDPT - don't override!
+            if entry.is_unused() {
+                return Err("PML4 entry for kernel/IST stacks is not initialized");
+            }
+            entry.frame().unwrap()
+        } else {
+            // Other upper-half entries use the shared kernel PDPT
+            if entry.is_unused() || entry.frame().unwrap() != kernel_pdpt_frame {
+                entry.set_frame(
+                    kernel_pdpt_frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+            }
+            kernel_pdpt_frame
         }
-    }
+    } else {
+        // Low-half PML4 entries - shouldn't happen for kernel addresses
+        return Err("map_kernel_page called for low-half address");
+    };
 
     // Walk the page tables, allocating as needed
-    let pdpt_virt = phys_mem_offset + kernel_pdpt_frame.start_address().as_u64();
+    let pdpt_virt = phys_mem_offset + pdpt_frame.start_address().as_u64();
     let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
 
     // Get or allocate PD (L2)
@@ -274,29 +290,79 @@ pub fn build_master_kernel_pml4() {
         let current_pml4_virt = phys_mem_offset + current_pml4_frame.start_address().as_u64();
         let current_pml4 = &*(current_pml4_virt.as_ptr() as *const PageTable);
         
-        // Copy upper-half entries (256-511) from current - these already exist
+        // Copy upper-half entries (256-511) from current - EXCEPT 402 and 403
+        // which we'll handle specially to always allocate fresh PDPTs
         for i in 256..512 {
+            if i == 402 || i == 403 {
+                continue; // Handle these separately below
+            }
             if !current_pml4[i].is_unused() {
                 master_pml4[i] = current_pml4[i].clone();
             }
         }
-        
-        // CRITICAL: Also preserve PML4[2] - the direct physical memory mapping
-        // The kernel actually executes from here (0x100_xxxx_xxxx range)
-        if !current_pml4[2].is_unused() {
-            master_pml4[2] = current_pml4[2].clone();
-            log::info!("PHASE2: Preserved PML4[2] (direct physical memory mapping) in master");
-        } else {
-            log::warn!("PHASE2: PML4[2] is empty in current - kernel may not be accessible!");
+
+        // CRITICAL: Always allocate fresh PDPTs for PML4[402] and PML4[403]
+        // The bootloader creates them aliased to the same frame, which causes
+        // kernel stack and IST stack corruption. Linux-style: always build fresh.
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
+
+        // PML4[402] - kernel stacks at 0xffffc90000000000
+        let kernel_stack_pml3_frame = allocate_frame()
+            .expect("Failed to allocate PDPT for kernel stacks");
+        let pml3_virt = phys_mem_offset + kernel_stack_pml3_frame.start_address().as_u64();
+        let new_pml3_402 = &mut *(pml3_virt.as_mut_ptr() as *mut PageTable);
+
+        // Initialize and copy existing entries from bootloader
+        for i in 0..512 {
+            new_pml3_402[i].set_unused();
         }
-        
-        // CRITICAL: Also preserve PML4[3] - kernel stack region
-        // The kernel stack is at 0x180_xxxx_xxxx range
-        if !current_pml4[3].is_unused() {
-            master_pml4[3] = current_pml4[3].clone();
-            log::info!("PHASE2: Preserved PML4[3] (kernel stack region) in master");
+        if !current_pml4[402].is_unused() {
+            let old_pml3_frame = current_pml4[402].frame().unwrap();
+            let old_pml3_virt = phys_mem_offset + old_pml3_frame.start_address().as_u64();
+            let old_pml3 = &*(old_pml3_virt.as_ptr() as *const PageTable);
+            for i in 0..512 {
+                if !old_pml3[i].is_unused() {
+                    new_pml3_402[i] = old_pml3[i].clone();
+                }
+            }
         }
+        master_pml4[402].set_frame(kernel_stack_pml3_frame, flags);
+
+        // PML4[403] - IST stacks at 0xffffc98000000000
+        let ist_stack_pml3_frame = allocate_frame()
+            .expect("Failed to allocate PDPT for IST stacks");
+        let pml3_virt = phys_mem_offset + ist_stack_pml3_frame.start_address().as_u64();
+        let new_pml3_403 = &mut *(pml3_virt.as_mut_ptr() as *mut PageTable);
+
+        // Initialize and copy existing entries from bootloader
+        for i in 0..512 {
+            new_pml3_403[i].set_unused();
+        }
+        if !current_pml4[403].is_unused() {
+            let old_pml3_frame = current_pml4[403].frame().unwrap();
+            let old_pml3_virt = phys_mem_offset + old_pml3_frame.start_address().as_u64();
+            let old_pml3 = &*(old_pml3_virt.as_ptr() as *const PageTable);
+            for i in 0..512 {
+                if !old_pml3[i].is_unused() {
+                    new_pml3_403[i] = old_pml3[i].clone();
+                }
+            }
+        }
+        master_pml4[403].set_frame(ist_stack_pml3_frame, flags);
+
+        log::info!("Allocated fresh PDPTs: PML4[402]={:?}, PML4[403]={:?}",
+            kernel_stack_pml3_frame, ist_stack_pml3_frame);
         
+        // CRITICAL: Preserve ALL lower-half entries (0-255) from the bootloader
+        // These contain essential mappings like kernel code, stack, physical memory offset, etc.
+        // The bootloader may use different indices depending on configuration.
+        for i in 0..256 {
+            if !current_pml4[i].is_unused() {
+                master_pml4[i] = current_pml4[i].clone();
+            }
+        }
+        log::info!("PHASE2: Preserved all lower-half entries (0-255) from bootloader");
+
         // PHASE2 CRITICAL: Create alias mapping for kernel code/data
         // The kernel is currently at 0x100000 (PML4[0])
         // We need to alias it at 0xffffffff80000000 (PML4[511])
@@ -324,78 +390,7 @@ pub fn build_master_kernel_pml4() {
                       kernel_pml4_idx);
         }
         
-        // Copy kernel stack mappings (PML4[402] for 0xffffc90000000000)
-        let kernel_stack_idx = 402;
-        if !current_pml4[kernel_stack_idx].is_unused() {
-            master_pml4[kernel_stack_idx] = current_pml4[kernel_stack_idx].clone();
-            // Set GLOBAL flag
-            let flags = master_pml4[kernel_stack_idx].flags() | PageTableFlags::GLOBAL;
-            let frame = master_pml4[kernel_stack_idx].frame().unwrap();
-            master_pml4[kernel_stack_idx].set_frame(frame, flags);
-            log::info!("PHASE2: Master PML4[{}] kernel stacks -> frame {:?}", kernel_stack_idx, frame);
-        }
-        
-        // Copy IST stack mappings (PML4[403] for 0xffffc98000000000)
-        let ist_stack_idx = 403;
-        if !current_pml4[ist_stack_idx].is_unused() {
-            // CRITICAL FIX: Check if PML4[402] and PML4[403] incorrectly alias
-            let kernel_stack_frame = if !current_pml4[kernel_stack_idx].is_unused() {
-                current_pml4[kernel_stack_idx].frame().ok()
-            } else {
-                None
-            };
-            
-            let ist_frame = current_pml4[ist_stack_idx].frame().unwrap();
-            
-            if let Some(ks_frame) = kernel_stack_frame {
-                if ks_frame == ist_frame {
-                    // CRITICAL BUG: PML4[402] and PML4[403] point to the same PML3!
-                    // This will cause kernel stack faults. Fix it by allocating a new PML3 for IST.
-                    log::error!("🔴 CRITICAL: PML4[402] and PML4[403] both point to frame {:?}", ist_frame);
-                    log::info!("🔧 FIX: Allocating separate PML3 for PML4[403] (IST stacks)");
-                    
-                    // Allocate a new PML3 table for IST stacks
-                    use crate::memory::frame_allocator::allocate_frame;
-                    let new_ist_pml3_frame = allocate_frame()
-                        .expect("Failed to allocate PML3 for IST stacks");
-                    
-                    // Zero the new PML3 table
-                    let new_pml3_virt = phys_mem_offset + new_ist_pml3_frame.start_address().as_u64();
-                    unsafe {
-                        let new_pml3 = &mut *(new_pml3_virt.as_mut_ptr() as *mut PageTable);
-                        for i in 0..512 {
-                            new_pml3[i].set_unused();
-                        }
-                    }
-                    
-                    // Set PML4[403] to point to the new PML3
-                    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
-                    master_pml4[ist_stack_idx].set_frame(new_ist_pml3_frame, flags);
-                    log::info!("PHASE2: Master PML4[{}] IST stacks -> NEW frame {:?}", ist_stack_idx, new_ist_pml3_frame);
-                    
-                    // Verify the fix was applied
-                    let verify_frame = master_pml4[ist_stack_idx].frame().unwrap();
-                    log::info!("PHASE2: VERIFIED PML4[403] now points to {:?}", verify_frame);
-                    assert_ne!(verify_frame, ks_frame, "PML4[403] still aliases PML4[402]!");
-                    
-                    // Log the actual memory address we're modifying
-                    log::info!("PHASE2: Modified PML4[403] at virtual address {:p}", &master_pml4[ist_stack_idx]);
-                    log::info!("PHASE2: Master PML4 base address is {:p}", master_pml4);
-                } else {
-                    // No aliasing, just copy normally
-                    master_pml4[ist_stack_idx] = current_pml4[ist_stack_idx].clone();
-                    let flags = master_pml4[ist_stack_idx].flags() | PageTableFlags::GLOBAL;
-                    master_pml4[ist_stack_idx].set_frame(ist_frame, flags);
-                    log::info!("PHASE2: Master PML4[{}] IST stacks -> frame {:?}", ist_stack_idx, ist_frame);
-                }
-            } else {
-                // PML4[402] is empty, just copy PML4[403] normally
-                master_pml4[ist_stack_idx] = current_pml4[ist_stack_idx].clone();
-                let flags = master_pml4[ist_stack_idx].flags() | PageTableFlags::GLOBAL;
-                master_pml4[ist_stack_idx].set_frame(ist_frame, flags);
-                log::info!("PHASE2: Master PML4[{}] IST stacks -> frame {:?}", ist_stack_idx, ist_frame);
-            }
-        }
+        // PML4[402] and PML4[403] already handled above with fresh PDPT allocation
         
         // Log what's in PML4[510] if present
         if !master_pml4[510].is_unused() {
@@ -500,61 +495,133 @@ pub fn build_master_kernel_pml4() {
         log::info!("  PTEs: Left unmapped (will be populated by allocate_kernel_stack)");
         
         log::info!("STEP 2: Successfully pre-built page table hierarchy for kernel stacks");
-    }
-    
-    // CRITICAL FIX: Ensure PML4[402] and PML4[403] point to different PML3 tables
-    // This is a final check and fix right before storing
-    unsafe {
-        let master_pml4_virt = phys_mem_offset + master_pml4_frame.start_address().as_u64();
-        let master_pml4 = &mut *(master_pml4_virt.as_mut_ptr() as *mut PageTable);
-        
-        // Check if they're aliased
-        if !master_pml4[402].is_unused() && !master_pml4[403].is_unused() {
-            let frame_402 = master_pml4[402].frame().unwrap();
-            let frame_403 = master_pml4[403].frame().unwrap();
-            
-            if frame_402 == frame_403 {
-                log::error!("🔴 FINAL FIX NEEDED: PML4[402] and [403] still alias to {:?}", frame_402);
-                
-                // Allocate a new PML3 for IST stacks
-                use crate::memory::frame_allocator::allocate_frame;
-                let new_ist_pml3 = allocate_frame().expect("Failed to allocate PML3 for IST final fix");
-                
-                // Zero it
-                let new_pml3_virt = phys_mem_offset + new_ist_pml3.start_address().as_u64();
-                let new_pml3_table = &mut *(new_pml3_virt.as_mut_ptr() as *mut PageTable);
+
+        // === STEP 3: Pre-build page table hierarchy for IST stacks (PML4[403]) ===
+        // Per skeptical review: PML4[403] needs the same hierarchy treatment as PML4[402]
+        // Emergency/IST stacks are at 0xffffc98000000000
+        log::info!("STEP 3: Pre-building page table hierarchy for IST stacks (without leaf mappings)");
+
+        let ist_stack_pml4_idx = 403;
+
+        // Ensure PML4[403] has a PDPT allocated (should already exist from fresh allocation above)
+        let ist_pdpt_frame = if master_pml4[ist_stack_pml4_idx].is_unused() {
+            // Allocate PDPT for IST stacks
+            let frame = allocate_frame().expect("Failed to allocate PDPT for IST stacks");
+            let pdpt_virt = phys_mem_offset + frame.start_address().as_u64();
+            let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
+            for i in 0..512 {
+                pdpt[i].set_unused();
+            }
+
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+            master_pml4[ist_stack_pml4_idx].set_frame(frame, flags);
+            log::info!("STEP 3: Allocated PDPT for IST stacks at frame {:?}", frame);
+            frame
+        } else {
+            let frame = master_pml4[ist_stack_pml4_idx].frame().unwrap();
+            log::info!("STEP 3: Using existing PDPT for IST stacks at frame {:?}", frame);
+            frame
+        };
+
+        // Build the page table hierarchy for the IST stack region
+        // IST stacks at 0xffffc980_0000_0000, need to cover at least 16MB for safety
+        const IST_STACK_REGION_START: u64 = 0xffffc980_0000_0000;
+        const IST_STACK_REGION_END: u64 = 0xffffc980_0100_0000;
+
+        let ist_pdpt_virt = phys_mem_offset + ist_pdpt_frame.start_address().as_u64();
+        let ist_pdpt = &mut *(ist_pdpt_virt.as_mut_ptr() as *mut PageTable);
+
+        log::info!("STEP 3: Building hierarchy for IST stack region {:#x}-{:#x}",
+                  IST_STACK_REGION_START, IST_STACK_REGION_END);
+
+        // IST region spans PDPT index 0 (similar to kernel stacks)
+        let ist_pdpt_index = 0;
+
+        // Ensure PD exists for the IST stack region
+        let ist_pd_frame = if ist_pdpt[ist_pdpt_index].is_unused() {
+            let frame = allocate_frame().expect("Failed to allocate PD for IST stacks");
+            let pd_virt = phys_mem_offset + frame.start_address().as_u64();
+            let pd = &mut *(pd_virt.as_mut_ptr() as *mut PageTable);
+            for i in 0..512 {
+                pd[i].set_unused();
+            }
+
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+            ist_pdpt[ist_pdpt_index].set_frame(frame, flags);
+            log::info!("STEP 3: Allocated PD for IST stacks at frame {:?}", frame);
+            frame
+        } else {
+            ist_pdpt[ist_pdpt_index].frame().unwrap()
+        };
+
+        let ist_pd_virt = phys_mem_offset + ist_pd_frame.start_address().as_u64();
+        let ist_pd = &mut *(ist_pd_virt.as_mut_ptr() as *mut PageTable);
+
+        // Pre-allocate PTs for the IST region (8 x 2MB = 16MB)
+        for pd_index in 0..8 {
+            if ist_pd[pd_index].is_unused() {
+                let frame = allocate_frame().expect("Failed to allocate PT for IST stacks");
+                let pt_virt = phys_mem_offset + frame.start_address().as_u64();
+                let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
                 for i in 0..512 {
-                    new_pml3_table[i].set_unused();
+                    pt[i].set_unused();  // Leave all PTEs unmapped
                 }
-                
-                // Set PML4[403] to the new PML3
-                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
-                master_pml4[403].set_frame(new_ist_pml3, flags);
-                
-                log::info!("🔧 FINAL FIX: Set PML4[403] to new frame {:?}", new_ist_pml3);
-                
-                // Verify the fix
-                let final_402 = master_pml4[402].frame().unwrap();
-                let final_403 = master_pml4[403].frame().unwrap();
-                log::info!("✓ FINAL VERIFICATION: PML4[402]={:?}, PML4[403]={:?}", final_402, final_403);
-                assert_ne!(final_402, final_403, "Final fix failed!");
+
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+                ist_pd[pd_index].set_frame(frame, flags);
+                log::debug!("STEP 3: Allocated PT[{}] for IST stacks at frame {:?}", pd_index, frame);
             }
         }
+
+        log::info!("STEP 3: Page table hierarchy built for IST stack region:");
+        log::info!("  PML4[{}] -> PDPT frame {:?}", ist_stack_pml4_idx, ist_pdpt_frame);
+        log::info!("  PDPT[0] -> PD frame {:?}", ist_pd_frame);
+        log::info!("  PD[0-7] -> PT frames allocated");
+        log::info!("  PTEs: Left unmapped (will be populated by per_cpu_stack)");
+
+        log::info!("STEP 3: Successfully pre-built page table hierarchy for IST stacks");
     }
-    
+
+    // Verify that PML4[402] and PML4[403] are properly separated
+    unsafe {
+        let master_pml4_virt = phys_mem_offset + master_pml4_frame.start_address().as_u64();
+        let master_pml4 = &*(master_pml4_virt.as_ptr() as *const PageTable);
+        let f402 = master_pml4[402].frame().unwrap();
+        let f403 = master_pml4[403].frame().unwrap();
+        assert_ne!(f402, f403, "PML4[402] and [403] still aliased after fresh allocation!");
+        log::info!("Verified: PML4[402]={:?} != PML4[403]={:?}", f402, f403);
+    }
+
+
     // Store the master PML4 for process creation
+    log::info!("STORING: master_pml4_frame={:?}", master_pml4_frame);
     *MASTER_KERNEL_PML4.lock() = Some(master_pml4_frame);
-    
-    log::info!("PHASE2: Master kernel PML4 built at frame {:?}", master_pml4_frame);
-    
-    // === STEP 3: Defer CR3 switch to master kernel PML4 ===
-    // NOTE: We cannot switch CR3 here because we're still on the bootstrap stack
-    // which may not be properly mapped in the master PML4. The CR3 switch will
-    // happen later after we've switched to the per-CPU kernel stack.
-    log::info!("STEP 3: Master kernel PML4 ready, deferring CR3 switch until after stack switch");
+
+    // CRITICAL: Switch to master PML4 immediately
+    log::info!("Switching CR3 to master kernel PML4: {:?}", master_pml4_frame);
+    unsafe {
+        Cr3::write(master_pml4_frame, Cr3Flags::empty());
+        x86_64::instructions::tlb::flush_all();
+    }
+    log::info!("CR3 switched to master PML4");
+
+    // Verify fix persisted by reading back from CR3
+    unsafe {
+        let (verify_frame, _) = Cr3::read();
+        let verify_pml4_virt = phys_mem_offset + verify_frame.start_address().as_u64();
+        let verify_pml4 = &*(verify_pml4_virt.as_ptr() as *const PageTable);
+        let f402 = verify_pml4[402].frame().unwrap();
+        let f403 = verify_pml4[403].frame().unwrap();
+        assert_ne!(f402, f403, "PML4[402] and [403] still aliased after CR3 switch!");
+        log::info!("Post-CR3 verification: PML4[402]={:?} != PML4[403]={:?}", f402, f403);
+    }
+
+    log::info!("PHASE2: Master kernel PML4 built and active at frame {:?}", master_pml4_frame);
 }
 
 /// Get the master kernel PML4 frame for process creation (Phase 2)
 pub fn master_kernel_pml4() -> Option<PhysFrame> {
-    MASTER_KERNEL_PML4.lock().clone()
+    let result = MASTER_KERNEL_PML4.lock().clone();
+    log::debug!("master_kernel_pml4() returning {:?}", result);
+    result
 }

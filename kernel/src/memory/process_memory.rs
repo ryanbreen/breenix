@@ -405,11 +405,29 @@ impl ProcessPageTable {
                     new_flags.insert(PageTableFlags::USER_ACCESSIBLE);  // Must be accessible from Ring 3 for exception handling
                     new_flags.insert(PageTableFlags::GLOBAL);           // Global for TLB efficiency
                     new_flags.insert(PageTableFlags::WRITABLE);         // Ensure kernel can write to its data structures
-                    
+
+                    log::info!("DIAG PML4[2]: master_flags={:?}, new_flags={:?}, addr={:#x}",
+                              master_flags, new_flags, master_pml4[2].addr().as_u64());
+
                     level_4_table[2].set_addr(master_pml4[2].addr(), new_flags);
                     log::info!("CRITICAL: Copied PML4[2] (direct phys mapping) from master to process with USER_ACCESSIBLE");
                 }
-                
+
+                // Copy lower-half entries (0-255) from master for shared kernel resources
+                // This includes the heap (PML4[136]) and other kernel allocations
+                let mut lower_half_copied = 0;
+                for i in 0..256 {
+                    if i == 2 {
+                        continue; // Already handled above with special flags
+                    }
+                    if !master_pml4[i].is_unused() {
+                        // Keep master flags as-is (kernel mappings don't need USER_ACCESSIBLE)
+                        level_4_table[i] = master_pml4[i].clone();
+                        lower_half_copied += 1;
+                    }
+                }
+                log::info!("PHASE2: Copied {} lower-half entries (0-255) from master", lower_half_copied);
+
                 // Copy PML4[256-511] from master (shared kernel upper half)
                 // This includes IDT, TSS, GDT, per-CPU, kernel stacks, IST stacks, and all kernel structures
                 let mut upper_half_copied = 0;
@@ -460,7 +478,29 @@ impl ProcessPageTable {
                     }
                 }
                 log::info!("PHASE2: Inherited {} upper-half kernel mappings (256-511) from master PML4", upper_half_copied);
-                
+
+                // INVARIANT ASSERTION: Kernel stacks and IST stacks must be in different frames
+                // This catches bugs where PML4[402] and PML4[403] alias to the same PDPT,
+                // which causes stack corruption during exception handling
+                let pml4_402_frame = level_4_table[402].frame();
+                let pml4_403_frame = level_4_table[403].frame();
+
+                if let (Ok(f402), Ok(f403)) = (pml4_402_frame, pml4_403_frame) {
+                    assert_ne!(
+                        f402, f403,
+                        "BUG: PML4[402] (kernel stacks) and PML4[403] (IST stacks) point to same frame {:?}. \
+                         This will cause stack corruption during exception handling. \
+                         Master PML4[402]={:?}, Master PML4[403]={:?}",
+                        f402,
+                        master_pml4[402].frame(),
+                        master_pml4[403].frame()
+                    );
+                    log::info!("✓ INVARIANT OK: PML4[402]={:?} != PML4[403]={:?}", f402, f403);
+                } else {
+                    log::warn!("INVARIANT CHECK: Missing kernel stack entries - [402]={:?}, [403]={:?}",
+                              pml4_402_frame, pml4_403_frame);
+                }
+
                 // FIX: DO NOT copy PML4[0] from master - each process needs its own PML4[0] for userspace
                 // PML4[0] covers virtual addresses 0x0 - 0x7FFFFFFFFF (512GB)
                 // This is where userspace programs are loaded (e.g., 0x50000000)

@@ -54,7 +54,12 @@ mod preempt_count_test;
 mod stack_switch;
 mod test_userspace;
 
-// Fault test thread function  
+#[cfg(feature = "testing")]
+mod contracts;
+#[cfg(feature = "testing")]
+mod contract_runner;
+
+// Fault test thread function
 #[cfg(feature = "testing")]
 extern "C" fn fault_test_thread(_arg: u64) -> ! {
     // Wait briefly for initial Ring 3 process to run (scheduler will handle timing)
@@ -157,6 +162,31 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
     log::info!("Updated IST stacks with per-CPU emergency and page fault stacks");
+
+    // Allocate initial kernel stack and set TSS.RSP0 before contract tests
+    // This ensures Ring 3 → Ring 0 transitions will work
+    {
+        let initial_kernel_stack = memory::kernel_stack::allocate_kernel_stack()
+            .expect("Failed to allocate initial kernel stack");
+        let stack_top = initial_kernel_stack.top();
+        per_cpu::set_kernel_stack_top(stack_top);
+        // Use gdt::set_tss_rsp0 which works with TSS_PTR directly
+        gdt::set_tss_rsp0(stack_top);
+        log::info!("Initial TSS.RSP0 set to {:#x}", stack_top);
+        // This stack will be replaced later by the idle thread stack
+        core::mem::forget(initial_kernel_stack);
+    }
+
+    // Run contract tests to verify kernel invariants
+    #[cfg(feature = "testing")]
+    {
+        log::info!("Running contract tests...");
+        let (passed, failed) = contract_runner::run_all_contracts();
+        log::info!("Contract tests: {} passed, {} failed", passed, failed);
+        if failed > 0 {
+            panic!("Contract test failures!");
+        }
+    }
 
     // Test heap allocation
     log::info!("Testing heap allocation...");

@@ -48,12 +48,16 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
 
     // Migrate any existing processes (though there shouldn't be any yet)
     kernel_page_table::migrate_existing_processes();
-    
+
     // PHASE 2: Enable global pages support (CR4.PGE)
     // This must be done after kernel page tables are set up but before userspace
     unsafe {
         paging::enable_global_pages();
     }
+
+    // CRITICAL: Recreate mapper after CR3 switch to master PML4
+    // The old mapper pointed to bootloader's PML4, which is now stale
+    let mapper = unsafe { paging::init(physical_memory_offset) };
 
     // Initialize heap
     log::info!("Initializing heap allocator...");
