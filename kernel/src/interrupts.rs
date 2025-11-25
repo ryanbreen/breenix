@@ -102,7 +102,7 @@ pub fn init_idt() {
             let timer_entry_low = timer_interrupt_entry as u64;
             
             // CRITICAL: Validate the address is in expected range before conversion
-            if timer_entry_low < 0x100000 || timer_entry_low > 0x400000 {
+            if timer_entry_low < 0x100000 || timer_entry_low > 0x40000000 {
                 log::error!("INVALID timer_interrupt_entry address: {:#x}", timer_entry_low);
                 // For now, use the low address directly - it should work since we preserve PML4[0]
                 log::warn!("Using low-half address for timer entry (temporary workaround)");
@@ -129,7 +129,7 @@ pub fn init_idt() {
             let syscall_entry_low = syscall_entry as u64;
             
             // CRITICAL: Validate the address is in expected range before conversion
-            if syscall_entry_low < 0x100000 || syscall_entry_low > 0x400000 {
+            if syscall_entry_low < 0x100000 || syscall_entry_low > 0x40000000 {
                 log::error!("INVALID syscall_entry address: {:#x}", syscall_entry_low);
                 // For now, use the low address directly - it should work since we preserve PML4[0]
                 log::warn!("Using low-half address for syscall entry (temporary workaround)");
@@ -148,7 +148,7 @@ pub fn init_idt() {
         // Log IDT gate attributes for verification
         log::info!("IDT[0x80] gate attributes:");
         let actual_syscall_addr = syscall_entry as u64;
-        if actual_syscall_addr < 0x100000 || actual_syscall_addr > 0x400000 {
+        if actual_syscall_addr < 0x100000 || actual_syscall_addr > 0x40000000 {
             log::info!("  Handler address: {:#x} (low-half, validation failed)", actual_syscall_addr);
         } else {
             let syscall_entry_high = crate::memory::layout::high_alias_from_low(actual_syscall_addr);
@@ -837,5 +837,80 @@ pub fn get_idt_info() -> (u64, u16) {
     unsafe {
         let idtr = x86_64::instructions::tables::sidt();
         (idtr.base.as_u64(), idtr.limit)
+    }
+}
+
+/// Validate that the IDT entry for the timer interrupt is properly configured
+/// Returns (is_valid, handler_address, description)
+pub fn validate_timer_idt_entry() -> (bool, u64, &'static str) {
+    // Read the IDT entry for vector 32 (timer interrupt)
+    if let Some(idt) = IDT.get() {
+        let entry = &idt[InterruptIndex::Timer.as_u8()];
+
+        // Get the handler address from the IDT entry
+        // The x86_64 crate doesn't expose this directly, so we need to read IDTR
+        unsafe {
+            let idtr = x86_64::instructions::tables::sidt();
+            let idt_base = idtr.base.as_ptr() as *const u64;
+
+            // Each IDT entry is 16 bytes
+            let entry_offset = InterruptIndex::Timer.as_usize() * 2;
+            let entry_ptr = idt_base.add(entry_offset);
+
+            // Read the two 64-bit words that make up the IDT entry
+            let low = core::ptr::read_volatile(entry_ptr);
+            let high = core::ptr::read_volatile(entry_ptr.add(1));
+
+            // Extract handler address from IDT entry format:
+            // Low word: bits 0-15: offset low, bits 48-63: offset mid
+            // High word: bits 0-31: offset high
+            let offset_low = low & 0xFFFF;
+            let offset_mid = (low >> 48) & 0xFFFF;
+            let offset_high = (high & 0xFFFFFFFF) << 32;
+            let handler_addr = offset_low | (offset_mid << 16) | offset_high;
+
+            // Validate the handler address
+            if handler_addr == 0 {
+                return (false, 0, "Handler address is NULL");
+            }
+
+            // Check if the address looks like kernel code (should be in high half or low kernel region)
+            if handler_addr < 0x100000 && handler_addr > 0x1000 {
+                return (false, handler_addr, "Handler address looks invalid (in low memory)");
+            }
+
+            // Check that it's in a reasonable range for kernel code
+            if handler_addr > 0xFFFF_FFFF_FFFF_FFFF {
+                return (false, handler_addr, "Handler address is out of range");
+            }
+
+            (true, handler_addr, "Handler address valid")
+        }
+    } else {
+        (false, 0, "IDT not initialized")
+    }
+}
+
+/// Check if interrupts are currently enabled
+pub fn are_interrupts_enabled() -> bool {
+    x86_64::instructions::interrupts::are_enabled()
+}
+
+/// Validate that the PIC has IRQ0 (timer) unmasked
+/// Returns (is_unmasked, mask_value, description)
+pub fn validate_pic_irq0_unmasked() -> (bool, u8, &'static str) {
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut pic1_data = Port::<u8>::new(0x21);
+        let mask = pic1_data.read();
+
+        // Bit 0 should be clear (0) for IRQ0 to be unmasked
+        let irq0_masked = (mask & 0x01) != 0;
+
+        if irq0_masked {
+            (false, mask, "IRQ0 is MASKED (bit 0 set)")
+        } else {
+            (true, mask, "IRQ0 is UNMASKED (bit 0 clear)")
+        }
     }
 }

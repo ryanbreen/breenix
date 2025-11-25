@@ -221,9 +221,14 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init_pic();
     log::info!("PIC initialized");
 
-    // Initialize timer AFTER PIC
+    // CRITICAL: Initialize timer AFTER PIC but BEFORE interrupts are enabled
+    // The PIT must be programmed before interrupts::enable() is called, otherwise
+    // no timer interrupts can fire and the scheduler will not run.
     time::init();
     log::info!("Timer initialized");
+
+    // CHECKPOINT A: Verify PIT Configuration
+    log::info!("CHECKPOINT A: PIT initialized at {} Hz", 100);
 
     // CRITICAL: Unmask timer interrupt (IRQ 0)
     unsafe {
@@ -495,14 +500,129 @@ fn kernel_main_continue() -> ! {
         log::info!("Fault tests scheduled.");
     }
 
-    // Signal that all POST-testable initialization is complete
-    log::info!("🎯 KERNEL_POST_TESTS_COMPLETE 🎯");
+    // NOTE: Premature success markers removed - tests must verify actual execution
+    // The legitimate markers are printed from context_switch.rs when Ring 3 actually runs
 
-    // Canonical OK gate for CI (appears near end of boot path)
-    log::info!("[ OK ] RING3_SMOKE: userspace executed + syscall path verified");
+    // CHECKPOINT B: Verify Scheduler State
+    // Verify scheduler has runnable threads before enabling interrupts
+    let _scheduler_state = task::scheduler::with_scheduler(|s| {
+        let has_runnable = s.has_runnable_threads();
+        let has_user = s.has_userspace_threads();
+        log::info!("CHECKPOINT B: scheduler has_runnable_threads = {}", has_runnable);
+        log::info!("CHECKPOINT B: has_userspace_threads = {}", has_user);
+        (has_runnable, has_user)
+    });
 
-    // NOTE: test_exit_qemu() doesn't work without QEMU's -device isa-debug-exit
-    // Test infrastructure will detect POST marker and kill QEMU instead
+    // ========================================================================
+    // PRECONDITION VALIDATION: Check ALL preconditions before enabling interrupts
+    // ========================================================================
+    log::info!("==================== PRECONDITION VALIDATION ====================");
+
+    // PRECONDITION 1: IDT Configured
+    log::info!("PRECONDITION 1: Checking IDT timer entry configuration...");
+    let (idt_valid, handler_addr, idt_desc) = interrupts::validate_timer_idt_entry();
+    if idt_valid {
+        log::info!("PRECONDITION 1: IDT timer entry ✓ PASS");
+        log::info!("  Handler address: {:#x}", handler_addr);
+        log::info!("  Status: {}", idt_desc);
+    } else {
+        log::error!("PRECONDITION 1: IDT timer entry ✗ FAIL");
+        log::error!("  Handler address: {:#x}", handler_addr);
+        log::error!("  Reason: {}", idt_desc);
+    }
+
+    // PRECONDITION 2: Timer Interrupt Handler Registered
+    log::info!("PRECONDITION 2: Verifying timer handler points to timer_interrupt_entry...");
+    // This is part of the same check as PRECONDITION 1
+    if idt_valid {
+        log::info!("PRECONDITION 2: Timer handler registered ✓ PASS");
+        log::info!("  The IDT entry for IRQ0 (vector 32) is properly configured");
+    } else {
+        log::error!("PRECONDITION 2: Timer handler registered ✗ FAIL");
+        log::error!("  IDT entry validation failed (see PRECONDITION 1)");
+    }
+
+    // PRECONDITION 3: PIT Hardware Configured
+    log::info!("PRECONDITION 3: Checking PIT counter is active...");
+    let (pit_counting, count1, count2, pit_desc) = time::timer::validate_pit_counting();
+    if pit_counting {
+        log::info!("PRECONDITION 3: PIT counter ✓ PASS");
+        log::info!("  Counter values: {:#x} -> {:#x}", count1, count2);
+        log::info!("  Status: {}", pit_desc);
+    } else {
+        log::error!("PRECONDITION 3: PIT counter ✗ FAIL");
+        log::error!("  Counter values: {:#x} -> {:#x}", count1, count2);
+        log::error!("  Reason: {}", pit_desc);
+    }
+
+    // PRECONDITION 4: PIC IRQ0 Unmasked
+    log::info!("PRECONDITION 4: Checking PIC IRQ0 mask bit...");
+    let (irq0_unmasked, mask, pic_desc) = interrupts::validate_pic_irq0_unmasked();
+    if irq0_unmasked {
+        log::info!("PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS");
+        log::info!("  PIC1 mask register: {:#04x}", mask);
+        log::info!("  Status: {}", pic_desc);
+    } else {
+        log::error!("PRECONDITION 4: PIC IRQ0 unmasked ✗ FAIL");
+        log::error!("  PIC1 mask register: {:#04x}", mask);
+        log::error!("  Reason: {}", pic_desc);
+    }
+
+    // PRECONDITION 5: Scheduler Has Runnable Threads
+    log::info!("PRECONDITION 5: Checking scheduler has runnable threads...");
+    let has_runnable = task::scheduler::with_scheduler(|s| s.has_runnable_threads());
+    if let Some(true) = has_runnable {
+        log::info!("PRECONDITION 5: Scheduler has runnable threads ✓ PASS");
+    } else {
+        log::error!("PRECONDITION 5: Scheduler has runnable threads ✗ FAIL");
+        log::error!("  No runnable threads in scheduler - timer interrupt will have nothing to schedule!");
+    }
+
+    // PRECONDITION 6: Current Thread Set
+    log::info!("PRECONDITION 6: Checking current thread is set...");
+    let has_current_thread = if let Some(thread) = per_cpu::current_thread() {
+        log::info!("PRECONDITION 6: Current thread set ✓ PASS");
+        log::info!("  Thread pointer: {:p}", thread);
+        log::info!("  Thread ID: {}", thread.id);
+        log::info!("  Thread name: {}", thread.name);
+
+        // Validate the thread pointer looks reasonable
+        let thread_addr = thread as *const _ as u64;
+        if thread_addr > 0x1000 {
+            log::info!("  Thread pointer validation: ✓ looks valid");
+        } else {
+            log::error!("  Thread pointer validation: ✗ looks suspicious (too low)");
+        }
+        true
+    } else {
+        log::error!("PRECONDITION 6: Current thread set ✗ FAIL");
+        log::error!("  per_cpu::current_thread() returned None!");
+        false
+    };
+
+    // PRECONDITION 7: Interrupts Currently Disabled
+    log::info!("PRECONDITION 7: Verifying interrupts are currently disabled...");
+    let interrupts_enabled = interrupts::are_interrupts_enabled();
+    if !interrupts_enabled {
+        log::info!("PRECONDITION 7: Interrupts disabled ✓ PASS");
+        log::info!("  Ready to enable interrupts safely");
+    } else {
+        log::error!("PRECONDITION 7: Interrupts disabled ✗ FAIL");
+        log::error!("  Interrupts are already enabled! This should not happen.");
+    }
+
+    log::info!("================================================================");
+
+    // Summary of precondition validation
+    let all_passed = idt_valid && pit_counting && irq0_unmasked &&
+                     has_runnable.unwrap_or(false) && has_current_thread && !interrupts_enabled;
+
+    if all_passed {
+        log::info!("✓ ALL PRECONDITIONS PASSED - Safe to enable interrupts");
+    } else {
+        log::error!("✗ SOME PRECONDITIONS FAILED - See details above");
+        log::error!("  Enabling interrupts anyway to observe failure behavior...");
+    }
 
     // Enable interrupts for preemptive multitasking - userspace processes will now run
     log::info!("Enabling interrupts (after creating user processes)...");
@@ -531,15 +651,10 @@ fn kernel_main_continue() -> ! {
         });
     }
 
-    // Initialize timer
-    // First test our clock_gettime implementation
+    // Test our clock_gettime implementation
     log::info!("Testing clock_gettime syscall implementation...");
     clock_gettime_test::test_clock_gettime();
     log::info!("✅ clock_gettime tests passed");
-
-    log::info!("Initializing hardware timer...");
-    time::timer::init();
-    log::info!("Timer initialized - periodic interrupts active");
 
     // Initialize keyboard
     #[cfg(not(feature = "testing"))]

@@ -397,20 +397,17 @@ impl ProcessPageTable {
                 
                 // CRITICAL FIX: Copy PML4[2] (direct physical memory mapping) where kernel code/data lives
                 // The kernel is mapped at 0x100000000 (PML4[2]), not in the upper half!
+                //
+                // BUG FIX: DO NOT set USER_ACCESSIBLE on kernel mappings!
+                // PML4[2] contains kernel code, data, GDT, IDT, TSS - these must be Ring 0 only.
+                // The CPU can access these structures during exception handling because the exception
+                // handler runs in Ring 0 (kernel mode), not Ring 3 (user mode).
                 if !master_pml4[2].is_unused() {
                     let master_flags = master_pml4[2].flags();
-                    let mut new_flags = master_flags;
-                    // CRITICAL: Keep USER_ACCESSIBLE so CPU can access GDT/IDT/TSS during exception from Ring 3
-                    // Without this, iretq causes triple fault when trying to validate selectors
-                    new_flags.insert(PageTableFlags::USER_ACCESSIBLE);  // Must be accessible from Ring 3 for exception handling
-                    new_flags.insert(PageTableFlags::GLOBAL);           // Global for TLB efficiency
-                    new_flags.insert(PageTableFlags::WRITABLE);         // Ensure kernel can write to its data structures
-
-                    log::info!("DIAG PML4[2]: master_flags={:?}, new_flags={:?}, addr={:#x}",
-                              master_flags, new_flags, master_pml4[2].addr().as_u64());
-
-                    level_4_table[2].set_addr(master_pml4[2].addr(), new_flags);
-                    log::info!("CRITICAL: Copied PML4[2] (direct phys mapping) from master to process with USER_ACCESSIBLE");
+                    // Keep the master flags EXACTLY as they are - no modifications
+                    // The kernel structures at PML4[2] should remain kernel-only
+                    level_4_table[2].set_addr(master_pml4[2].addr(), master_flags);
+                    log::info!("CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: {:?}", master_flags);
                 }
 
                 // Copy lower-half entries (0-255) from master for shared kernel resources
@@ -521,29 +518,10 @@ impl ProcessPageTable {
                 // Each process gets its own independent userspace address range
                 log::info!("PHASE2: PML4[0] left empty for process-specific userspace mappings (0x0 - 0x7FFFFFFFFF)");
                 
-                // CRITICAL: Also copy PML4[2] for direct physical memory mapping
-                // The kernel actually executes from here (RIP=0x100_xxxx_xxxx)
-                if !master_pml4[2].is_unused() {
-                    // Skip logging that might cause issues during page table creation
-                    // let pml4_2_flags = master_pml4[2].flags();
-                    // log::info!("PHASE2-TEMP: PML4[2] flags from master: {:?}", pml4_2_flags);
-                    
-                    // // Check for problematic flags
-                    // if pml4_2_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                    //     log::warn!("WARNING: PML4[2] has USER_ACCESSIBLE flag - kernel code might be accessible from userspace!");
-                    // }
-                    // if pml4_2_flags.contains(PageTableFlags::NO_EXECUTE) {
-                    //     log::error!("ERROR: PML4[2] has NO_EXECUTE flag - kernel code cannot be executed!");
-                    // }
-                    
-                    // CRITICAL FIX: Keep PML4[2] EXACTLY as it is in master
-                    // DO NOT modify flags - copy verbatim
-                    let master_flags = master_pml4[2].flags();
-                    level_4_table[2].set_addr(master_pml4[2].addr(), master_flags);
-                    // log::info!("PHASE2-TEMP: Copied PML4[2] from master with original flags");
-                } else {
-                    log::warn!("PHASE2-TEMP: Master PML4[2] is empty - kernel execution will fail!");
-                }
+                // NOTE: PML4[2] is already handled above at lines 398-483 with USER_ACCESSIBLE
+                // set on all levels. Do NOT overwrite it here!
+                // The earlier code sets USER_ACCESSIBLE on PML4[2] and all its PDPT/PD/PT entries
+                // which is required for Ring 3 to execute INT 0x80 (CPU needs to read IDT).
                 
                 // CRITICAL: Also copy PML4[3] for kernel stack region
                 // The kernel stack is at 0x180_xxxx_xxxx range  

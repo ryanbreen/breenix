@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 /// Create an ELF that attempts CLI instruction (should cause #GP)
 pub fn create_cli_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
-    
-    // Code section - attempt CLI then exit
+
+    // Code section - attempt CLI then exit (must be 32 bytes)
     elf.extend_from_slice(&[
         // Attempt CLI (privileged instruction)
         0xfa,                                       // cli - should cause #GP(0)
@@ -16,15 +16,17 @@ pub fn create_cli_test_elf() -> Vec<u8> {
         0x48, 0x31, 0xff,                          // xor rdi, rdi
         0xcd, 0x80,                                // int 0x80
     ]);
-    
+    // Pad to 32 bytes (13 bytes of code + 19 bytes of nop padding)
+    for _ in 0..19 { elf.push(0x90); }
+
     elf
 }
 
 /// Create an ELF that attempts HLT instruction (should cause #GP)
 pub fn create_hlt_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
-    
-    // Code section - attempt HLT then exit
+
+    // Code section - attempt HLT then exit (must be 32 bytes)
     elf.extend_from_slice(&[
         // Attempt HLT (privileged instruction)
         0xf4,                                       // hlt - should cause #GP(0)
@@ -33,15 +35,17 @@ pub fn create_hlt_test_elf() -> Vec<u8> {
         0x48, 0x31, 0xff,                          // xor rdi, rdi
         0xcd, 0x80,                                // int 0x80
     ]);
-    
+    // Pad to 32 bytes (13 bytes of code + 19 bytes of nop padding)
+    for _ in 0..19 { elf.push(0x90); }
+
     elf
 }
 
 /// Create an ELF that attempts to write CR3 (should cause #GP)
 pub fn create_cr3_write_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
-    
-    // Code section - attempt to write CR3 then exit
+
+    // Code section - attempt to write CR3 then exit (must be 32 bytes)
     elf.extend_from_slice(&[
         // Attempt to write CR3 (privileged operation)
         0x48, 0x31, 0xc0,                          // xor rax, rax
@@ -51,15 +55,17 @@ pub fn create_cr3_write_test_elf() -> Vec<u8> {
         0x48, 0x31, 0xff,                          // xor rdi, rdi
         0xcd, 0x80,                                // int 0x80
     ]);
-    
+    // Pad to 32 bytes (18 bytes of code + 14 bytes of nop padding)
+    for _ in 0..14 { elf.push(0x90); }
+
     elf
 }
 
 /// Create an ELF that accesses unmapped memory (should cause #PF with U=1)
 pub fn create_unmapped_access_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
-    
-    // Code section - access unmapped memory then exit
+
+    // Code section - access unmapped memory then exit (must be 32 bytes)
     elf.extend_from_slice(&[
         // Try to read from unmapped userspace address
         0x48, 0xb8, 0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x00, // mov rax, 0x50000000 (unmapped)
@@ -69,7 +75,9 @@ pub fn create_unmapped_access_test_elf() -> Vec<u8> {
         0x48, 0x31, 0xff,                          // xor rdi, rdi
         0xcd, 0x80,                                // int 0x80
     ]);
-    
+    // Pad to 32 bytes (25 bytes of code + 7 bytes of nop padding)
+    for _ in 0..7 { elf.push(0x90); }
+
     elf
 }
 
@@ -98,8 +106,8 @@ fn create_elf_header() -> Vec<u8> {
         0x01, 0x00, 0x00, 0x00,     // Version 1
     ]);
     
-    // Entry point: 0x10000000
-    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00]);
+    // Entry point: 0x40000000 (userspace address)
+    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00]);
     
     // Program header offset: 64
     elf.extend_from_slice(&[0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -126,11 +134,11 @@ fn create_elf_header() -> Vec<u8> {
     // Offset: 120
     elf.extend_from_slice(&[0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
     
-    // Virtual address: 0x10000000
-    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00]);
-    
-    // Physical address: 0x10000000
-    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00]);
+    // Virtual address: 0x40000000 (userspace address)
+    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00]);
+
+    // Physical address: 0x40000000 (userspace address)
+    elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00]);
     
     // File size: 32 (will be small code)
     elf.extend_from_slice(&[0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);

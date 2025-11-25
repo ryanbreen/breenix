@@ -10,6 +10,7 @@ use std::thread;
 use std::io::Read;
 use std::sync::OnceLock;
 
+#[path = "shared_qemu/checkpoint_tracker.rs"]
 mod checkpoint_tracker;
 use checkpoint_tracker::CheckpointTracker;
 

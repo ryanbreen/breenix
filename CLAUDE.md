@@ -57,6 +57,41 @@ echo '-A50 "Creating user process"' > /tmp/log-query.txt
 
 ## Development Workflow
 
+### Agent-Based Development (MANDATORY)
+
+**The main conversation is for ORCHESTRATION ONLY.** Never execute tests, run builds, or perform iterative debugging directly in the top-level session. This burns token context and leads to session exhaustion.
+
+**ALWAYS dispatch to agents:**
+- Running tests (`cargo test`, `cargo run -p xtask -- boot-stages`, etc.)
+- Build verification and compilation checks
+- Debugging sessions that involve iterative log analysis
+- Code exploration and codebase research
+- Any task that may require multiple iterations or produce verbose output
+
+**The orchestrator session should only:**
+- Plan and decompose work into agent-dispatchable tasks
+- Review agent reports and synthesize findings
+- Make high-level decisions based on agent results
+- Coordinate multiple parallel agent investigations
+- Communicate summaries and next steps to the user
+
+**Anti-pattern (NEVER DO THIS):**
+```
+# DON'T run tests directly in main session
+cargo run -p xtask -- boot-stages
+# DON'T grep through large outputs in main session
+cat target/output.txt | grep ...
+```
+
+**Correct pattern:**
+```
+# DO dispatch to an agent with clear instructions
+Task(subagent_type="general-purpose", prompt="Run boot-stages test, analyze
+the output, and report which stage fails and why. Include relevant log excerpts.")
+```
+
+When a debugging task requires multiple iterations, dispatch it ONCE to an agent with comprehensive instructions. The agent will iterate internally and return a summary. If more investigation is needed, dispatch another agent - don't bring the iteration into the main session.
+
 ### Feature Branches (REQUIRED)
 Never push directly to main. Always:
 ```bash

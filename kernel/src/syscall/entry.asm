@@ -163,6 +163,16 @@ syscall_entry:
     ; Interrupts already disabled (CLI before trace function)
     ; Safe to switch CR3 now
 
+    ; CRITICAL FIX: Clear next_cr3 BEFORE switching CR3!
+    ; We must do this while kernel page tables are still active,
+    ; because after CR3 switch the process page tables may not
+    ; have the kernel per-CPU region mapped. Accessing [gs:64]
+    ; after CR3 switch would cause a page fault -> triple fault.
+    push rdx
+    xor rdx, rdx
+    mov qword [gs:64], rdx
+    pop rdx
+
     ; Debug: Output marker for CR3 switch
     mov dx, 0x3F8
     push rax
@@ -176,12 +186,9 @@ syscall_entry:
     out dx, al
     pop rax
 
-    ; Switch CR3 to process page table
+    ; NOW safe to switch CR3 to process page table
+    ; Kernel per-CPU data already cleared while kernel PT was active
     mov cr3, rax
-
-    ; Clear next_cr3 flag (set to 0)
-    xor rdx, rdx
-    mov qword [gs:64], rdx
 
     ; Swap back to user GS for IRETQ
     swapgs

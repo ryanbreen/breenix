@@ -40,8 +40,8 @@ impl ProcessManager {
             current_pid: None,
             next_pid: AtomicU64::new(1), // PIDs start at 1 (0 is kernel)
             ready_queue: Vec::new(),
-            // Start process virtual addresses at 0x10000000, with 16MB spacing
-            next_process_base: VirtAddr::new(0x10000000),
+            // Start process virtual addresses at 0x40000000, with 16MB spacing
+            next_process_base: VirtAddr::new(0x40000000),
         }
     }
 
@@ -493,6 +493,11 @@ impl ProcessManager {
         }
         log::info!("Current PID: {:?}", self.current_pid);
         log::info!("Ready queue: {:?}", self.ready_queue);
+    }
+
+    /// Get all processes (for contract testing)
+    pub fn all_processes(&self) -> Vec<&Process> {
+        self.processes.values().collect()
     }
 
     /// Fork a process - create a child process that's a copy of the parent

@@ -24,6 +24,14 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    // CHECKPOINT D: Context Switch Check Called
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static CHECK_RESCHED_COUNT: AtomicU64 = AtomicU64::new(0);
+    let count = CHECK_RESCHED_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count < 5 {
+        crate::serial_println!("CHECKPOINT D: check_need_resched_and_switch #{}", count);
+    }
+
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
         return;
@@ -776,6 +784,11 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                                                          efer.contains(EferFlags::NO_EXECUTE_ENABLE));
                                 }
 
+                                // DIAGNOSTIC CODE DISABLED - was causing #GP after CR3 switch
+                                // The PML4[402]/[403] aliasing bug is fixed, so these diagnostics
+                                // are no longer needed.
+
+                                if false {  // DISABLED DIAGNOSTIC BLOCK
                                 unsafe {
                                     crate::serial_println!("Inside unsafe block");
 
@@ -975,6 +988,7 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                                     val => crate::serial_println!("✓ User stack read successful, value: {:#x}", val),
                                 }
                             }
+                            }  // END DISABLED DIAGNOSTIC BLOCK (if false)
 
                             // Output 0xBB to indicate CR3 switch completed
                             unsafe {
@@ -989,6 +1003,125 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                             }
 
                             crate::serial_println!("CR3 switched: {:#x} -> {:#x}", old_cr3, cr3_value);
+
+                            // TEST 6: Userspace code accessibility check
+                            // Walk the page tables to verify userspace RIP is mapped
+                            unsafe {
+                                let user_rip = 0x40000000u64; // Standard userspace entry point (from linker.ld)
+                                crate::serial_println!("USER_CODE_CHECK: Walking page tables for RIP {:#x}", user_rip);
+
+                                // Get physical memory offset for page table walking
+                                let phys_offset = crate::memory::physical_memory_offset();
+
+                                // Get current CR3 (should be process page table)
+                                let cr3_phys = cr3_value;
+                                let pml4_virt = phys_offset + cr3_phys;
+                                let pml4 = &*(pml4_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+
+                                // Calculate indices for userspace RIP
+                                let pml4_idx = ((user_rip >> 39) & 0x1FF) as usize;
+                                let pdpt_idx = ((user_rip >> 30) & 0x1FF) as usize;
+                                let pd_idx = ((user_rip >> 21) & 0x1FF) as usize;
+                                let pt_idx = ((user_rip >> 12) & 0x1FF) as usize;
+
+                                // Check PML4
+                                let pml4_entry = &pml4[pml4_idx];
+                                if pml4_entry.is_unused() {
+                                    crate::serial_println!("  PML4[{}]: UNUSED ❌", pml4_idx);
+                                    crate::serial_println!("USER_CODE_CHECK: DIVERGENCE FOUND - userspace code NOT mapped at PML4!");
+                                } else {
+                                    let pml4_flags = pml4_entry.flags();
+                                    let has_user = pml4_flags.contains(x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE);
+                                    crate::serial_println!("  PML4[{}]: PRESENT {} (USER={})",
+                                                         pml4_idx,
+                                                         if has_user { "✅" } else { "⚠️" },
+                                                         has_user);
+
+                                    // Check PDPT
+                                    let pdpt_phys = pml4_entry.addr();
+                                    let pdpt_virt = phys_offset + pdpt_phys.as_u64();
+                                    let pdpt = &*(pdpt_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+                                    let pdpt_entry = &pdpt[pdpt_idx];
+
+                                    if pdpt_entry.is_unused() {
+                                        crate::serial_println!("  PDPT[{}]: UNUSED ❌", pdpt_idx);
+                                        crate::serial_println!("USER_CODE_CHECK: DIVERGENCE FOUND - userspace code NOT mapped at PDPT!");
+                                    } else {
+                                        let pdpt_flags = pdpt_entry.flags();
+                                        let has_user = pdpt_flags.contains(x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE);
+                                        crate::serial_println!("  PDPT[{}]: PRESENT {} (USER={})",
+                                                             pdpt_idx,
+                                                             if has_user { "✅" } else { "⚠️" },
+                                                             has_user);
+
+                                        // Check PD
+                                        let pd_phys = pdpt_entry.addr();
+                                        let pd_virt = phys_offset + pd_phys.as_u64();
+                                        let pd = &*(pd_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+                                        let pd_entry = &pd[pd_idx];
+
+                                        if pd_entry.is_unused() {
+                                            crate::serial_println!("  PD[{}]: UNUSED ❌", pd_idx);
+                                            crate::serial_println!("USER_CODE_CHECK: DIVERGENCE FOUND - userspace code NOT mapped at PD!");
+                                        } else {
+                                            let pd_flags = pd_entry.flags();
+                                            let has_user = pd_flags.contains(x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE);
+                                            let is_huge = pd_flags.contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE);
+
+                                            if is_huge {
+                                                // 2MB huge page - no PT level
+                                                crate::serial_println!("  PD[{}]: PRESENT, HUGE {} (USER={})",
+                                                                     pd_idx,
+                                                                     if has_user { "✅" } else { "⚠️" },
+                                                                     has_user);
+                                                if has_user {
+                                                    crate::serial_println!("USER_CODE_CHECK: Userspace code IS accessible (2MB huge page)");
+                                                } else {
+                                                    crate::serial_println!("USER_CODE_CHECK: DIVERGENCE FOUND - huge page missing USER flag!");
+                                                }
+                                            } else {
+                                                crate::serial_println!("  PD[{}]: PRESENT {} (USER={})",
+                                                                     pd_idx,
+                                                                     if has_user { "✅" } else { "⚠️" },
+                                                                     has_user);
+
+                                                // Check PT
+                                                let pt_phys = pd_entry.addr();
+                                                let pt_virt = phys_offset + pt_phys.as_u64();
+                                                let pt = &*(pt_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+                                                let pt_entry = &pt[pt_idx];
+
+                                                if pt_entry.is_unused() {
+                                                    crate::serial_println!("  PT[{}]: UNUSED ❌", pt_idx);
+                                                    crate::serial_println!("USER_CODE_CHECK: DIVERGENCE FOUND - userspace code NOT mapped at PT!");
+                                                } else {
+                                                    let pt_flags = pt_entry.flags();
+                                                    let has_user = pt_flags.contains(x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE);
+                                                    let has_nx = pt_flags.contains(x86_64::structures::paging::PageTableFlags::NO_EXECUTE);
+                                                    crate::serial_println!("  PT[{}]: PRESENT {} (USER={}, NX={})",
+                                                                         pt_idx,
+                                                                         if has_user && !has_nx { "✅" } else { "⚠️" },
+                                                                         has_user,
+                                                                         has_nx);
+
+                                                    if has_user && !has_nx {
+                                                        crate::serial_println!("USER_CODE_CHECK: Userspace code IS accessible ✅");
+
+                                                        // Try to actually read the first few bytes
+                                                        let user_code_ptr = user_rip as *const u64;
+                                                        let first_bytes = core::ptr::read_volatile(user_code_ptr);
+                                                        crate::serial_println!("USER_CODE_CHECK: First 8 bytes at RIP: {:#018x}", first_bytes);
+                                                    } else if !has_user {
+                                                        crate::serial_println!("USER_CODE_CHECK: DIVERGENCE FOUND - PT entry missing USER flag!");
+                                                    } else if has_nx {
+                                                        crate::serial_println!("USER_CODE_CHECK: DIVERGENCE FOUND - PT entry has NX flag (code not executable)!");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             crate::serial_println!("WARNING: Not on upper-half kernel stack (PML4[{}]), skipping CR3 switch", pml4_index);
                         }

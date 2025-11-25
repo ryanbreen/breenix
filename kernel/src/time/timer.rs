@@ -53,3 +53,51 @@ pub fn get_ticks() -> u64 {
 pub fn get_monotonic_time() -> u64 {
     get_ticks()
 }
+
+/// Validate that the PIT hardware is configured and counting
+/// Returns (is_counting, count1, count2, description)
+pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
+    unsafe {
+        let mut ch0: Port<u8> = Port::new(PIT_CHANNEL0_PORT);
+        let mut cmd: Port<u8> = Port::new(PIT_COMMAND_PORT);
+
+        // Latch counter 0
+        cmd.write(0x00);
+
+        // Read low byte then high byte
+        let low1 = ch0.read() as u16;
+        let high1 = ch0.read() as u16;
+        let count1 = (high1 << 8) | low1;
+
+        // Wait a tiny bit (execute some instructions)
+        for _ in 0..100 {
+            core::hint::spin_loop();
+        }
+
+        // Latch counter 0 again
+        cmd.write(0x00);
+
+        // Read low byte then high byte
+        let low2 = ch0.read() as u16;
+        let high2 = ch0.read() as u16;
+        let count2 = (high2 << 8) | low2;
+
+        // The counter should be counting down, so count2 should be less than count1
+        // (unless it wrapped, which is unlikely in such a short time)
+        if count1 == 0 && count2 == 0 {
+            return (false, count1, count2, "Counter reads as zero (not initialized?)");
+        }
+
+        if count1 == count2 {
+            return (false, count1, count2, "Counter not changing (not counting)");
+        }
+
+        // Counter is counting down, so we expect count2 < count1 (or wrapped)
+        if count2 < count1 || count1 < 100 {
+            return (true, count1, count2, "Counter is actively counting down");
+        }
+
+        // If count2 > count1, it might have wrapped or be counting wrong
+        (true, count1, count2, "Counter changed (possibly wrapped)")
+    }
+}

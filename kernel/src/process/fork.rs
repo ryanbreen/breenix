@@ -165,11 +165,11 @@ pub fn copy_page_table_contents(
 
     // DEBUG: Test if parent page table can translate addresses we know should work
     let test_addresses = [
-        0x10000000u64,
-        0x10001000u64,
-        0x10001001u64,
-        0x10001082u64,
-        0x10002000u64,
+        0x40000000u64,
+        0x40001000u64,
+        0x40001001u64,
+        0x40001082u64,
+        0x40002000u64,
     ];
     for &addr in &test_addresses {
         match parent_page_table.translate_page(VirtAddr::new(addr)) {
@@ -180,15 +180,15 @@ pub fn copy_page_table_contents(
 
     // For a minimal implementation, we'll copy the program's memory regions
     // These are typically at standard userspace addresses:
-    // - 0x10000000: Code segment
-    // - 0x10001000: Data segment
-    // - 0x10002000: BSS segment
+    // - 0x40000000: Code segment
+    // - 0x40001000: Data segment
+    // - 0x40002000: BSS segment
 
     // Define the address ranges we know contain program data
     let program_regions = [
-        (VirtAddr::new(0x10000000), VirtAddr::new(0x10001000)), // Code
-        (VirtAddr::new(0x10001000), VirtAddr::new(0x10002000)), // Data
-        (VirtAddr::new(0x10002000), VirtAddr::new(0x10003000)), // BSS
+        (VirtAddr::new(0x40000000), VirtAddr::new(0x40001000)), // Code
+        (VirtAddr::new(0x40001000), VirtAddr::new(0x40002000)), // Data
+        (VirtAddr::new(0x40002000), VirtAddr::new(0x40003000)), // BSS
     ];
 
     for (start_addr, end_addr) in program_regions.iter() {

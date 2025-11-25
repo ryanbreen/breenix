@@ -17,10 +17,18 @@ const TIME_QUANTUM: u32 = 10;
 static mut CURRENT_QUANTUM: u32 = TIME_QUANTUM;
 
 /// Timer interrupt handler - absolutely minimal work
-/// 
+///
 /// @param from_userspace: 1 if interrupted userspace, 0 if interrupted kernel
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
+    // CHECKPOINT C: Timer Interrupt Handler Entry
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static TIMER_ENTRY_COUNT: AtomicU64 = AtomicU64::new(0);
+    let entry_count = TIMER_ENTRY_COUNT.fetch_add(1, Ordering::Relaxed);
+    if entry_count < 5 {
+        crate::serial_println!("CHECKPOINT C: Timer handler entry #{}", entry_count);
+    }
+
     // Enter hardware IRQ context (increments HARDIRQ count)
     crate::per_cpu::irq_enter();
     // Log the first few timer interrupts for debugging
@@ -29,7 +37,7 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
     
     // Check if we're coming from userspace (for Ring 3 verification)
     // The assembly entry point now passes this as a parameter
-    use core::sync::atomic::{AtomicU32, Ordering};
+    use core::sync::atomic::AtomicU32;
     static TIMER_FROM_USERSPACE_COUNT: AtomicU32 = AtomicU32::new(0);
     
     if from_userspace != 0 {

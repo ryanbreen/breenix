@@ -151,4 +151,14 @@ impl Process {
     pub fn remove_child(&mut self, child_id: ProcessId) {
         self.children.retain(|&id| id != child_id);
     }
+
+    /// Get the process ID
+    pub fn pid(&self) -> ProcessId {
+        self.id
+    }
+
+    /// Get a reference to the page table
+    pub fn page_table(&self) -> Option<&ProcessPageTable> {
+        self.page_table.as_ref().map(|b| b.as_ref())
+    }
 }
