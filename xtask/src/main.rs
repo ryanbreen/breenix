@@ -64,6 +64,48 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "interrupts::init() in kernel/src/interrupts/mod.rs",
         },
         BootStage {
+            name: "GDT segment test passed",
+            marker: "GDT segment test passed",
+            failure_meaning: "Segment registers have wrong values or privilege levels",
+            check_hint: "gdt_tests::test_gdt_segments() - CS/DS not Ring 0",
+        },
+        BootStage {
+            name: "GDT readability test passed",
+            marker: "GDT readability test passed",
+            failure_meaning: "GDT not accessible via SGDT or wrong size",
+            check_hint: "gdt_tests::test_gdt_readable() - check GDT base/limit",
+        },
+        BootStage {
+            name: "User segment configuration test passed",
+            marker: "User segment configuration test passed",
+            failure_meaning: "User segments (Ring 3) not properly configured",
+            check_hint: "gdt_tests::test_user_segments() - verify user code/data selectors 0x33/0x2B",
+        },
+        BootStage {
+            name: "User segment descriptor validation passed",
+            marker: "User segment descriptor validation passed",
+            failure_meaning: "User segment descriptors have wrong DPL or flags",
+            check_hint: "gdt_tests::test_user_segment_descriptors() - check descriptor bits",
+        },
+        BootStage {
+            name: "TSS descriptor test passed",
+            marker: "TSS descriptor test passed",
+            failure_meaning: "TSS descriptor not present or has wrong type",
+            check_hint: "gdt_tests::test_tss_descriptor() - verify TSS type and presence",
+        },
+        BootStage {
+            name: "TSS.RSP0 test passed",
+            marker: "TSS.RSP0 test passed",
+            failure_meaning: "TSS.RSP0 not properly configured or misaligned",
+            check_hint: "gdt_tests::test_tss_rsp0() - check kernel stack pointer",
+        },
+        BootStage {
+            name: "GDT tests completed",
+            marker: "GDT tests completed",
+            failure_meaning: "GDT validation did not finish",
+            check_hint: "gdt_tests::run_all_tests() in main.rs",
+        },
+        BootStage {
             name: "Per-CPU data initialized",
             marker: "Per-CPU data initialized",
             failure_meaning: "Per-CPU storage failed",

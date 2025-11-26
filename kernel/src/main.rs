@@ -130,6 +130,14 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     interrupts::init();
     log::info!("GDT and IDT initialized");
 
+    // Run GDT validation tests (after GDT/IDT init, before per-CPU setup)
+    #[cfg(feature = "testing")]
+    {
+        log::info!("Running GDT validation tests...");
+        gdt_tests::run_all_tests();
+        log::info!("GDT tests completed");
+    }
+
     // Initialize per-CPU data (must be after GDT/TSS setup)
     per_cpu::init();
     // Set the TSS pointer in per-CPU data
