@@ -56,6 +56,14 @@ pub struct PerCpuData {
     /// Target CR3 for next IRETQ (offset 64) - set before context switch
     /// 0 means no CR3 switch needed
     pub next_cr3: u64,
+
+    /// Kernel CR3 (offset 72) - the master kernel page table
+    /// Used by interrupt/syscall entry to switch to kernel page tables
+    pub kernel_cr3: u64,
+
+    /// Saved process CR3 (offset 80) - saved on interrupt entry from userspace
+    /// Used to restore process page tables on interrupt exit if no context switch
+    pub saved_process_cr3: u64,
 }
 
 // Linux-style preempt_count bit layout constants
@@ -123,6 +131,10 @@ const TSS_OFFSET: usize = 48;              // offset 48: *mut TSS (8 bytes)
 const SOFTIRQ_PENDING_OFFSET: usize = 56;  // offset 56: u32 (4 bytes)
 #[allow(dead_code)]
 const NEXT_CR3_OFFSET: usize = 64;         // offset 64: u64 (8 bytes) - ALIGNED
+#[allow(dead_code)]
+const KERNEL_CR3_OFFSET: usize = 72;       // offset 72: u64 (8 bytes) - ALIGNED
+#[allow(dead_code)]
+const SAVED_PROCESS_CR3_OFFSET: usize = 80; // offset 80: u64 (8 bytes) - ALIGNED
 
 // Compile-time assertions to ensure offsets are correct
 // These will fail to compile if the offsets don't match expected values
@@ -132,7 +144,7 @@ const _: () = assert!(USER_RSP_SCRATCH_OFFSET % 8 == 0, "user_rsp_scratch must b
 const _: () = assert!(core::mem::size_of::<usize>() == 8, "This code assumes 64-bit pointers");
 
 // Verify struct size is 128 bytes due to align(64) attribute
-// The actual data is 72 bytes, but align(64) rounds up to 128
+// The actual data is 88 bytes (saved_process_cr3 at offset 80), but align(64) rounds up to 128
 const _: () = assert!(core::mem::size_of::<PerCpuData>() == 128, "PerCpuData must be 128 bytes (aligned to 64)");
 
 // Verify bit layout matches Linux kernel
@@ -158,6 +170,8 @@ impl PerCpuData {
             softirq_pending: 0,
             _pad2: 0,
             next_cr3: 0,
+            kernel_cr3: 0,
+            saved_process_cr3: 0,
         }
     }
 }
@@ -195,6 +209,25 @@ pub fn init() {
     // Mark per-CPU data as initialized and safe to use
     PER_CPU_INITIALIZED.store(true, Ordering::Release);
     log::info!("Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage");
+
+    // Store the current CR3 as the initial kernel CR3
+    // NOTE: At this point, we're still using the bootloader's page tables.
+    // After memory::init() calls build_master_kernel_pml4(), the kernel switches
+    // to the master PML4 and calls set_kernel_cr3() to update this value.
+    // This initial value provides a fallback during early boot.
+    let (current_frame, _) = x86_64::registers::control::Cr3::read();
+    let kernel_cr3_val = current_frame.start_address().as_u64();
+    log::info!("Storing initial kernel_cr3 = {:#x} in per-CPU data (bootloader PT)", kernel_cr3_val);
+
+    unsafe {
+        core::arch::asm!(
+            "mov gs:[{offset}], {}",
+            in(reg) kernel_cr3_val,
+            offset = const KERNEL_CR3_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
+    log::info!("kernel_cr3 stored successfully - interrupt handlers can now switch to kernel page tables");
 }
 
 /// Get the current thread from per-CPU data
@@ -936,6 +969,46 @@ pub fn set_next_cr3(cr3: u64) {
             "mov gs:[{offset}], {}",
             in(reg) cr3,
             offset = const NEXT_CR3_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+/// Get the kernel CR3 (master kernel page table)
+/// Returns 0 if not initialized
+#[allow(dead_code)]
+pub fn get_kernel_cr3() -> u64 {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return 0;
+    }
+
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!(
+            "mov {}, gs:[{offset}]",
+            out(reg) cr3,
+            offset = const KERNEL_CR3_OFFSET,
+            options(nostack, readonly, preserves_flags)
+        );
+        cr3
+    }
+}
+
+/// Set the kernel CR3 (master kernel page table)
+/// This should be called once after build_master_kernel_pml4()
+pub fn set_kernel_cr3(cr3: u64) {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        log::warn!("set_kernel_cr3 called before per-CPU init, storing for later");
+        // We can't store it yet, but we'll set it during init
+        return;
+    }
+
+    log::info!("Setting kernel_cr3 in per-CPU data to {:#x}", cr3);
+    unsafe {
+        core::arch::asm!(
+            "mov gs:[{offset}], {}",
+            in(reg) cr3,
+            offset = const KERNEL_CR3_OFFSET,
             options(nostack, preserves_flags)
         );
     }

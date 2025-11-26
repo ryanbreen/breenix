@@ -50,15 +50,25 @@ timer_interrupt_entry:
     cmp rax, 3                         ; Ring 3?
     jne .skip_swapgs_entry             ; If not from userspace, skip swapgs
 
+    ; We came from userspace, swap to kernel GS FIRST
+    ; We need kernel GS to read kernel_cr3 from per-CPU data
+    swapgs
+
+    ; CRITICAL: Save the process CR3 BEFORE switching to kernel CR3
+    ; This allows us to restore it on exit if no context switch happens
+    ; Save process CR3 to per-CPU data at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
+    mov rax, cr3                       ; Read current (process) CR3
+    mov qword [gs:80], rax             ; Save to per-CPU saved_process_cr3
+
     ; CRITICAL: Switch CR3 back to kernel page table
     ; When interrupt fires from userspace, CR3 is still the process PT
     ; We MUST switch to kernel PT before running any kernel code
-    ; TODO: Make this dynamic by storing kernel CR3 in per-CPU data
-    mov rax, 0x101000                  ; Kernel CR3 (hardcoded for now)
+    ; Read kernel_cr3 from per-CPU data at gs:[72] (KERNEL_CR3_OFFSET)
+    mov rax, qword [gs:72]             ; Read kernel CR3 from per-CPU data
+    test rax, rax                      ; Check if kernel_cr3 is set
+    jz .skip_cr3_switch_entry          ; If not set, skip (early boot fallback)
     mov cr3, rax                       ; Switch to kernel page table
-
-    ; We came from userspace, swap to kernel GS
-    swapgs
+.skip_cr3_switch_entry:
     
     ; Log full frame details for first few userspace interrupts
     ; Pass frame pointer to logging function
@@ -304,7 +314,32 @@ timer_interrupt_entry:
     jmp .after_cr3_check
 
 .no_cr3_switch_back_to_user:
-    ; No CR3 switch needed, swap back to user GS
+    ; No context switch, but we still need to restore the ORIGINAL process CR3!
+    ; We saved it on entry at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
+    mov rax, qword [gs:80]             ; Read saved process CR3
+    test rax, rax                      ; Check if it was saved (non-zero)
+    jz .no_saved_cr3                   ; If 0, skip (shouldn't happen from userspace)
+
+    ; Debug: Output marker for saved CR3 restore
+    push rdx
+    mov dx, 0x3F8
+    push rax
+    mov al, '!'                        ; '!' for saved CR3 restore
+    out dx, al
+    mov al, 'C'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, '3'
+    out dx, al
+    pop rax
+    pop rdx
+
+    ; Switch back to original process CR3
+    mov cr3, rax
+
+.no_saved_cr3:
+    ; Swap back to user GS for IRETQ
     swapgs
 
 .after_cr3_check:

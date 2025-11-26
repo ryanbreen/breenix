@@ -42,16 +42,26 @@ syscall_entry:
     ; Clear direction flag for string operations
     cld
 
+    ; Always switch to kernel GS FIRST for INT 0x80 entry
+    ; We need kernel GS to read kernel_cr3 from per-CPU data
+    ; INT 0x80 is only used from userspace, so we always need swapgs
+    swapgs
+
+    ; CRITICAL: Save the process CR3 BEFORE switching to kernel CR3
+    ; This allows us to restore it on exit if no context switch happens
+    ; Save process CR3 to per-CPU data at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
+    mov rax, cr3                       ; Read current (process) CR3
+    mov qword [gs:80], rax             ; Save to per-CPU saved_process_cr3
+
     ; CRITICAL: Switch CR3 back to kernel page table
     ; Syscalls only come from userspace, so CR3 is always a process PT
     ; We MUST switch to kernel PT before running kernel code
-    ; TODO: Make this dynamic by storing kernel CR3 in per-CPU data
-    mov rax, 0x101000                  ; Kernel CR3 (hardcoded for now)
+    ; Read kernel_cr3 from per-CPU data at gs:[72] (KERNEL_CR3_OFFSET)
+    mov rax, qword [gs:72]             ; Read kernel CR3 from per-CPU data
+    test rax, rax                      ; Check if kernel_cr3 is set
+    jz .skip_cr3_switch                ; If not set, skip (early boot fallback)
     mov cr3, rax                       ; Switch to kernel page table
-
-    ; Always switch to kernel GS for INT 0x80 entry
-    ; INT 0x80 is only used from userspace, so we always need swapgs
-    swapgs
+.skip_cr3_switch:
 
     ; Call the Rust syscall handler
     ; Pass pointer to saved registers as argument
@@ -196,7 +206,32 @@ syscall_entry:
     jmp .after_cr3_check_syscall
 
 .no_cr3_switch_syscall_back_to_user:
-    ; No CR3 switch needed, swap back to user GS
+    ; No context switch, but we still need to restore the ORIGINAL process CR3!
+    ; We saved it on entry at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
+    mov rax, qword [gs:80]             ; Read saved process CR3
+    test rax, rax                      ; Check if it was saved (non-zero)
+    jz .no_saved_cr3_syscall           ; If 0, skip (shouldn't happen from userspace)
+
+    ; Debug: Output marker for saved CR3 restore
+    push rdx
+    mov dx, 0x3F8
+    push rax
+    mov al, '!'                        ; '!' for saved CR3 restore
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'Y'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    pop rax
+    pop rdx
+
+    ; Switch back to original process CR3
+    mov cr3, rax
+
+.no_saved_cr3_syscall:
+    ; Swap back to user GS for IRETQ
     swapgs
 
 .after_cr3_check_syscall:
@@ -317,8 +352,18 @@ syscall_return_to_userspace:
     test rax, rax
     jz .no_cr3_switch_first_entry_back_to_user
 
-    ; Interrupts already disabled (CLI at function start line 211)
+    ; Interrupts already disabled (CLI at function start line 260)
     ; Safe to switch CR3 now
+
+    ; CRITICAL FIX: Clear next_cr3 BEFORE switching CR3!
+    ; We must do this while kernel page tables are still active,
+    ; because after CR3 switch the process page tables may not
+    ; have the kernel per-CPU region mapped. Accessing [gs:64]
+    ; after CR3 switch would cause a page fault -> triple fault.
+    push rdx
+    xor rdx, rdx
+    mov qword [gs:64], rdx
+    pop rdx
 
     ; Debug: Output marker for CR3 switch
     mov dx, 0x3F8
@@ -337,12 +382,9 @@ syscall_return_to_userspace:
     out dx, al
     pop rax
 
-    ; Switch CR3 to process page table
+    ; NOW safe to switch CR3 to process page table
+    ; Kernel per-CPU data already cleared while kernel PT was active
     mov cr3, rax
-
-    ; Clear next_cr3 flag (set to 0)
-    xor rdx, rdx
-    mov qword [gs:64], rdx
 
     ; Swap back to user GS for IRETQ
     swapgs
@@ -350,7 +392,36 @@ syscall_return_to_userspace:
     jmp .after_cr3_check_first_entry
 
 .no_cr3_switch_first_entry_back_to_user:
-    ; No CR3 switch needed, swap back to user GS
+    ; No context switch, but we still need to restore the ORIGINAL process CR3!
+    ; We saved it on entry at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
+    mov rax, qword [gs:80]             ; Read saved process CR3
+    test rax, rax                      ; Check if it was saved (non-zero)
+    jz .no_saved_cr3_first_entry       ; If 0, skip (shouldn't happen from userspace)
+
+    ; Debug: Output marker for saved CR3 restore
+    push rdx
+    mov dx, 0x3F8
+    push rax
+    mov al, '!'                        ; '!' for saved CR3 restore
+    out dx, al
+    mov al, 'F'
+    out dx, al
+    mov al, 'I'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'S'
+    out dx, al
+    mov al, 'T'
+    out dx, al
+    pop rax
+    pop rdx
+
+    ; Switch back to original process CR3
+    mov cr3, rax
+
+.no_saved_cr3_first_entry:
+    ; Swap back to user GS for IRETQ
     swapgs
 
 .after_cr3_check_first_entry:

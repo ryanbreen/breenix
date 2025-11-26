@@ -46,6 +46,17 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     // PHASE 2: Build master kernel PML4 with upper-half mappings
     kernel_page_table::build_master_kernel_pml4();
 
+    // CRITICAL: Update kernel_cr3 in per-CPU data to the new master PML4
+    // per_cpu::init() already ran and set kernel_cr3 to the bootloader's CR3
+    // Now that we've switched to the master PML4, we must update it
+    {
+        use x86_64::registers::control::Cr3;
+        let (current_frame, _) = Cr3::read();
+        let master_cr3 = current_frame.start_address().as_u64();
+        log::info!("CRITICAL: Updating kernel_cr3 to master PML4: {:#x}", master_cr3);
+        crate::per_cpu::set_kernel_cr3(master_cr3);
+    }
+
     // Migrate any existing processes (though there shouldn't be any yet)
     kernel_page_table::migrate_existing_processes();
 
