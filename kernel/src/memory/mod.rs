@@ -34,7 +34,7 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
 
     // Initialize paging
     log::info!("Initializing paging...");
-    let mapper = unsafe { paging::init(physical_memory_offset) };
+    let _mapper = unsafe { paging::init(physical_memory_offset) };
 
     // Save the kernel page table for later switching
     process_memory::init_kernel_page_table();

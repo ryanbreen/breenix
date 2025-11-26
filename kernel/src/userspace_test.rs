@@ -97,6 +97,7 @@ pub fn get_test_binary_static(name: &str) -> &'static [u8] {
 
 // Add test to ensure binaries are included
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
+#[allow(dead_code)]
 fn _test_binaries_included() {
     assert!(HELLO_TIME_ELF.len() > 0, "hello_time.elf not included");
     assert!(HELLO_WORLD_ELF.len() > 0, "hello_world.elf not included");
@@ -108,6 +109,7 @@ fn _test_binaries_included() {
 
 /// Test running a userspace program
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_userspace_syscalls() {
     log::info!("=== Testing Userspace Syscalls ===");
 
@@ -167,11 +169,13 @@ pub fn test_userspace_syscalls() {
 
 /// Alternative without std::fs for non-testing builds
 #[cfg(not(feature = "testing"))]
+#[allow(dead_code)]
 pub fn test_userspace_syscalls() {
     log::info!("Userspace syscall testing requires 'testing' feature");
 }
 
 /// Run userspace test - callable from keyboard handler
+#[allow(dead_code)]
 pub fn run_userspace_test() {
     log::info!("=== Running Userspace Test Program ===");
 
@@ -219,6 +223,7 @@ pub fn run_userspace_test() {
 
 /// Run the timer test program
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
+#[allow(dead_code)]
 pub fn run_timer_test() {
     log::info!("=== Running Timer Test Program ===");
 
@@ -241,6 +246,7 @@ pub fn run_timer_test() {
 }
 
 /// Test multiple processes - callable from keyboard handler
+#[allow(dead_code)]
 pub fn test_multiple_processes() {
     log::info!("=== Testing Multiple Processes ===");
 
@@ -301,6 +307,7 @@ pub fn test_multiple_processes() {
 
 /// Test fork system call implementation (debug version)
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_fork_debug() {
     log::info!("=== Testing Fork System Call (Debug Mode) ===");
 
@@ -326,6 +333,7 @@ pub fn test_fork_debug() {
 
 /// Test fork system call implementation (non-testing version)
 #[cfg(not(feature = "testing"))]
+#[allow(dead_code)]
 pub fn test_fork_debug() {
     log::warn!("Fork test binary not available - compile with --features testing");
     log::info!("However, we can still test the fork system call directly...");
@@ -355,6 +363,7 @@ pub fn test_fork_debug() {
 }
 
 /// Test fork manually by creating a proper userspace process context
+#[allow(dead_code)]
 fn test_fork_manually() {
     log::info!("test_fork_manually: Creating a minimal process to test fork");
 
@@ -386,6 +395,7 @@ fn test_fork_manually() {
 }
 
 /// Trampoline function for the kernel thread (matches expected signature)
+#[allow(dead_code)]
 extern "C" fn fork_creator_thread_trampoline(_arg: u64) -> ! {
     fork_creator_thread_fn();
 
@@ -396,6 +406,7 @@ extern "C" fn fork_creator_thread_trampoline(_arg: u64) -> ! {
 }
 
 /// Fork creator thread - creates a process and tests fork
+#[allow(dead_code)]
 fn fork_creator_thread_fn() {
     log::info!("fork_creator_thread_fn: Starting - will test fork mechanism");
 
@@ -445,6 +456,7 @@ fn fork_creator_thread_fn() {
 }
 
 /// Create a minimal but valid ELF binary for testing
+#[allow(dead_code)]
 fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     use alloc::vec::Vec;
 
@@ -539,6 +551,7 @@ fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
 }
 
 /// Create a minimal ELF binary for exec testing (different from fork test)
+#[allow(dead_code)]
 fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
     use alloc::vec::Vec;
 
@@ -622,6 +635,7 @@ fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
 }
 
 /// Test fork mechanism with minimal setup
+#[allow(dead_code)]
 fn test_fork_mechanism_minimal() {
     log::info!("test_fork_mechanism_minimal: Testing basic fork mechanism");
 
@@ -653,6 +667,7 @@ fn test_fork_mechanism_minimal() {
 }
 
 /// Test fork from a specific process context
+#[allow(dead_code)]
 fn test_fork_from_process(test_pid: crate::process::ProcessId) {
     log::info!(
         "test_fork_from_process: Testing fork from PID {}",
@@ -704,6 +719,7 @@ fn test_fork_from_process(test_pid: crate::process::ProcessId) {
 }
 
 /// Test exec on a specific process
+#[allow(dead_code)]
 fn test_exec_on_process(pid: crate::process::ProcessId) {
     log::info!("test_exec_on_process: Testing exec on PID {}", pid.as_u64());
 

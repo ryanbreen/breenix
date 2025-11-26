@@ -154,10 +154,10 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "process::init() - ProcessManager allocation",
         },
         BootStage {
-            name: "Userspace process created",
+            name: "First userspace process scheduled",
             marker: "RING3_SMOKE: created userspace PID",
-            failure_meaning: "Failed to create userspace process",
-            check_hint: "process::creation::create_user_process() - ELF loading",
+            failure_meaning: "Failed to schedule first userspace process",
+            check_hint: "process::creation::create_user_process() - ELF loading. This is a checkpoint - actual execution verified by stages 31-32",
         },
         BootStage {
             name: "Breakpoint test passed",
@@ -172,22 +172,22 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check kernel initialization before tests",
         },
         BootStage {
-            name: "Direct execution test process created",
-            marker: "Direct execution test completed",
-            failure_meaning: "Failed to create direct execution test process",
-            check_hint: "Check test_exec::test_direct_execution() and process creation logs",
+            name: "Direct execution test: process scheduled",
+            marker: "Direct execution test: process scheduled for execution",
+            failure_meaning: "Failed to schedule direct execution test process",
+            check_hint: "Check test_exec::test_direct_execution() and process creation logs. This is a checkpoint - actual execution verified by stage 31",
         },
         BootStage {
-            name: "Second test process created",
-            marker: "Userspace fork test completed",
-            failure_meaning: "Failed to create second test process",
-            check_hint: "Check test_exec::test_userspace_fork() and process creation logs",
+            name: "Fork test: process scheduled",
+            marker: "Fork test: process scheduled for execution",
+            failure_meaning: "Failed to schedule fork test process",
+            check_hint: "Check test_exec::test_userspace_fork() and process creation logs. This is a checkpoint - actual execution verified by stage 31",
         },
         BootStage {
-            name: "ENOSYS test process created",
-            marker: "ENOSYS test completed",
-            failure_meaning: "Failed to create ENOSYS test process",
-            check_hint: "Check test_exec::test_syscall_enosys() and process creation logs",
+            name: "ENOSYS test: process scheduled",
+            marker: "ENOSYS test: process scheduled for execution",
+            failure_meaning: "Failed to schedule ENOSYS test process",
+            check_hint: "Check test_exec::test_syscall_enosys() and process creation logs. This is a checkpoint - actual execution verified by stage 32",
         },
         BootStage {
             name: "Fault tests scheduled",
@@ -701,7 +701,7 @@ fn ring3_enosys() -> Result<()> {
     // Monitor the output file for expected strings
     let mut found_enosys_ok = false;
     let mut found_enosys_fail = false;
-    let mut found_invalid_syscall = false;
+    let mut _found_invalid_syscall = false;
     let test_start = Instant::now();
     let timeout = if std::env::var("CI").is_ok() {
         Duration::from_secs(60)  // 60 seconds for CI
@@ -736,7 +736,7 @@ fn ring3_enosys() -> Result<()> {
                 // Also check for kernel warning about invalid syscall
                 if contents.contains("Invalid syscall number: 999") ||
                    contents.contains("unknown syscall: 999") {
-                    found_invalid_syscall = true;
+                    _found_invalid_syscall = true;
                 }
             }
         }

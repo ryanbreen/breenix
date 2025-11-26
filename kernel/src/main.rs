@@ -61,6 +61,7 @@ mod contract_runner;
 
 // Fault test thread function
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 extern "C" fn fault_test_thread(_arg: u64) -> ! {
     // Wait briefly for initial Ring 3 process to run (scheduler will handle timing)
     log::info!("Fault test thread: Waiting for initial Ring 3 validation...");
@@ -482,17 +483,17 @@ fn kernel_main_continue() -> ! {
         // Also run original tests
         log::info!("=== BASELINE TEST: Direct userspace execution ===");
         test_exec::test_direct_execution();
-        log::info!("Direct execution test completed.");
+        log::info!("Direct execution test: process scheduled for execution.");
 
         // Test fork from userspace
         log::info!("=== USERSPACE TEST: Fork syscall from Ring 3 ===");
         test_exec::test_userspace_fork();
-        log::info!("Userspace fork test completed.");
+        log::info!("Fork test: process scheduled for execution.");
 
         // Test ENOSYS syscall
         log::info!("=== SYSCALL TEST: Undefined syscall returns ENOSYS ===");
         test_exec::test_syscall_enosys();
-        log::info!("ENOSYS test completed.");
+        log::info!("ENOSYS test: process scheduled for execution.");
 
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");

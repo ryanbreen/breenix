@@ -119,6 +119,7 @@ pub fn verify_tss_config() -> Result<(), alloc::string::String> {
 }
 
 /// Contract: Verify all TSS invariants
+#[allow(dead_code)]
 pub fn verify_all_tss_invariants() -> Result<(), alloc::string::String> {
     let mut errors = alloc::vec::Vec::new();
 

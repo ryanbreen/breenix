@@ -11,6 +11,7 @@ use x86_64::VirtAddr;
 /// This includes additional state needed for Ring 3 processes
 #[derive(Debug, Clone)]
 #[repr(C)]
+#[allow(dead_code)]
 pub struct ProcessContext {
     /// Base CPU context
     pub cpu_context: CpuContext,
@@ -24,6 +25,7 @@ pub struct ProcessContext {
 
 impl ProcessContext {
     /// Create a new process context from a Thread
+    #[allow(dead_code)]
     pub fn from_thread(thread: &Thread) -> Self {
         ProcessContext {
             cpu_context: thread.context.clone(),
@@ -33,6 +35,7 @@ impl ProcessContext {
     }
 
     /// Create from an interrupt stack frame (for saving userspace state)
+    #[allow(dead_code)]
     pub fn from_interrupt_frame(frame: &InterruptStackFrame, saved_regs: &SavedRegisters) -> Self {
         let context = CpuContext {
             rax: saved_regs.rax,

@@ -22,6 +22,7 @@ pub enum ThreadState {
     /// Thread is ready to run and in scheduler queue
     Ready,
     /// Thread is blocked waiting for something
+    #[allow(dead_code)]
     Blocked,
     /// Thread has terminated
     Terminated,
@@ -138,8 +139,9 @@ pub struct Thread {
 
     /// Kernel stack for syscalls/interrupts (only for userspace threads)
     pub kernel_stack_top: Option<VirtAddr>,
-    
+
     /// Kernel stack allocation (must be kept alive for RAII)
+    #[allow(dead_code)]
     pub kernel_stack_allocation: Option<crate::memory::kernel_stack::KernelStack>,
 
     /// TLS block address
@@ -268,6 +270,7 @@ impl Thread {
     }
 
     /// Create a new userspace thread
+    #[allow(dead_code)]
     pub fn new_userspace(
         name: alloc::string::String,
         entry_point: VirtAddr,
@@ -338,6 +341,7 @@ impl Thread {
     }
 
     /// Mark thread as blocked
+    #[allow(dead_code)]
     pub fn set_blocked(&mut self) {
         self.state = ThreadState::Blocked;
     }
@@ -348,6 +352,7 @@ impl Thread {
     }
 
     /// Create a new thread with a specific ID (used for fork)
+    #[allow(dead_code)]
     pub fn new_with_id(
         id: u64,
         name: alloc::string::String,

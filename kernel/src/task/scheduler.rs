@@ -70,6 +70,7 @@ impl Scheduler {
     }
 
     /// Get the current running thread
+    #[allow(dead_code)]
     pub fn current_thread(&self) -> Option<&Thread> {
         self.current_thread.and_then(|id| self.get_thread(id))
     }
@@ -202,6 +203,7 @@ impl Scheduler {
     }
 
     /// Block the current thread
+    #[allow(dead_code)]
     pub fn block_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
             current.set_blocked();
@@ -209,6 +211,7 @@ impl Scheduler {
     }
 
     /// Unblock a thread by ID
+    #[allow(dead_code)]
     pub fn unblock(&mut self, thread_id: u64) {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked {
@@ -221,6 +224,7 @@ impl Scheduler {
     }
 
     /// Terminate the current thread
+    #[allow(dead_code)]
     pub fn terminate_current(&mut self) {
         if let Some(current) = self.current_thread_mut() {
             current.set_terminated();
@@ -260,12 +264,14 @@ impl Scheduler {
     }
 
     /// Set the current thread (used by spawn mechanism)
+    #[allow(dead_code)]
     pub fn set_current_thread(&mut self, thread_id: u64) {
         self.current_thread = Some(thread_id);
     }
 }
 
 /// Initialize the global scheduler
+#[allow(dead_code)]
 pub fn init(idle_thread: Box<Thread>) {
     let mut scheduler_lock = SCHEDULER.lock();
     *scheduler_lock = Some(Scheduler::new(idle_thread));
@@ -419,6 +425,7 @@ pub fn yield_current() {
 
 /// Get pending context switch if any
 /// Returns Some((old_thread_id, new_thread_id)) if a switch is pending
+#[allow(dead_code)]
 pub fn get_pending_switch() -> Option<(u64, u64)> {
     // For now, just call schedule to see if we would switch
     // In a real implementation, we might cache this decision
@@ -426,6 +433,7 @@ pub fn get_pending_switch() -> Option<(u64, u64)> {
 }
 
 /// Allocate a new thread ID
+#[allow(dead_code)]
 pub fn allocate_thread_id() -> Option<u64> {
     Some(super::thread::allocate_thread_id())
 }

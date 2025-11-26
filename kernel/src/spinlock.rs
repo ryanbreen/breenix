@@ -47,8 +47,9 @@ impl SpinLock {
     }
 
     /// Try to acquire the spinlock without blocking
-    /// 
+    ///
     /// Returns Some(guard) if successful, None if the lock is held
+    #[allow(dead_code)]
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_>> {
         // Disable preemption first
         crate::per_cpu::preempt_disable();
@@ -95,14 +96,16 @@ unsafe impl Sync for SpinLock {}
 unsafe impl Send for SpinLock {}
 
 /// A spinlock that also disables interrupts
-/// 
+///
 /// This is used for locks that may be taken in interrupt context
+#[allow(dead_code)]
 pub struct SpinLockIrq {
     lock: SpinLock,
 }
 
 impl SpinLockIrq {
     /// Create a new unlocked spinlock
+    #[allow(dead_code)]
     pub const fn new() -> Self {
         Self {
             lock: SpinLock::new(),
@@ -110,6 +113,7 @@ impl SpinLockIrq {
     }
 
     /// Acquire the spinlock with interrupts disabled
+    #[allow(dead_code)]
     pub fn lock(&self) -> SpinLockIrqGuard<'_> {
         // Save interrupt state and disable interrupts
         let was_enabled = x86_64::instructions::interrupts::are_enabled();
@@ -126,6 +130,7 @@ impl SpinLockIrq {
 }
 
 /// RAII guard for IRQ spinlock
+#[allow(dead_code)]
 pub struct SpinLockIrqGuard<'a> {
     lock: &'a SpinLock,
     irq_was_enabled: bool,

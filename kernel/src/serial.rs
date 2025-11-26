@@ -123,6 +123,7 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
 
 /// Emergency print for panics - uses direct port I/O without locking
 /// WARNING: May corrupt output if racing with normal serial output
+#[allow(dead_code)]
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
     use x86_64::instructions::interrupts;
@@ -163,7 +164,8 @@ pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     })
 }
 
-/// Flush serial output  
+/// Flush serial output
+#[allow(dead_code)]
 pub fn flush_serial() {
     // For UART, there's not much to flush - it's synchronous
     // But we can ensure the transmit holding register is empty
@@ -187,9 +189,11 @@ macro_rules! serial_println {
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
 }
 
+#[allow(dead_code)]
 pub struct SerialLogger;
 
 impl SerialLogger {
+    #[allow(dead_code)]
     pub const fn new() -> Self {
         SerialLogger
     }

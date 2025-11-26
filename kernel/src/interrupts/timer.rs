@@ -34,6 +34,11 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
     // Log the first few timer interrupts for debugging
     static TIMER_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // DIAGNOSTIC: Log every 50th timer IRQ to verify they continue after IRETQ
+    if count % 50 == 0 {
+        crate::serial_println!("[DIAG:TIMER] IRQ #{} fired (from_userspace={})", count, from_userspace);
+    }
     
     // Check if we're coming from userspace (for Ring 3 verification)
     // The assembly entry point now passes this as a parameter
@@ -60,12 +65,15 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
     crate::time::timer_interrupt();
     // Decrement current thread's quantum
     unsafe {
+        // Use raw pointer to avoid creating references to mutable static (Rust 2024 compatibility)
+        let quantum_ptr = core::ptr::addr_of_mut!(CURRENT_QUANTUM);
+
         // CRITICAL DEBUG: Log all quantum state
-        let quantum_before = CURRENT_QUANTUM;
-        if CURRENT_QUANTUM > 0 {
-            CURRENT_QUANTUM -= 1;
+        let quantum_before = *quantum_ptr;
+        if *quantum_ptr > 0 {
+            *quantum_ptr -= 1;
         }
-        let quantum_after = CURRENT_QUANTUM;
+        let quantum_after = *quantum_ptr;
 
         // Check if there are user threads ready to run
         let has_user_threads =
@@ -73,34 +81,34 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
 
         // CRITICAL DEBUG: Log condition evaluation
         if count < 10 {  // Log first 10 to see pattern
-            crate::irq_debug!("TIMER DEBUG #{}: quantum_before={}, quantum_after={}, has_user_threads={}", 
+            crate::irq_debug!("TIMER DEBUG #{}: quantum_before={}, quantum_after={}, has_user_threads={}",
                       count, quantum_before, quantum_after, has_user_threads);
         }
 
         // If quantum expired OR there are user threads ready (for idle thread), set need_resched flag
-        let should_set_need_resched = CURRENT_QUANTUM == 0 || has_user_threads;
-        
+        let should_set_need_resched = *quantum_ptr == 0 || has_user_threads;
+
         if count < 10 {
-            crate::irq_debug!("TIMER DEBUG #{}: should_set_need_resched={} (quantum_zero={}, has_user={})", 
-                      count, should_set_need_resched, CURRENT_QUANTUM == 0, has_user_threads);
+            crate::irq_debug!("TIMER DEBUG #{}: should_set_need_resched={} (quantum_zero={}, has_user={})",
+                      count, should_set_need_resched, *quantum_ptr == 0, has_user_threads);
         }
-        
+
         if should_set_need_resched {
             // ENABLE LOGGING FOR CI DEBUGGING
             if count < 10 {
-                crate::irq_debug!("TIMER DEBUG #{}: Setting need_resched (quantum={}, has_user={})", 
-                          count, CURRENT_QUANTUM, has_user_threads);
+                crate::irq_debug!("TIMER DEBUG #{}: Setting need_resched (quantum={}, has_user={})",
+                          count, *quantum_ptr, has_user_threads);
                 crate::irq_debug!("About to call scheduler::set_need_resched()");
             }
             scheduler::set_need_resched();
             if count < 10 {
                 crate::irq_debug!("scheduler::set_need_resched() completed");
             }
-            CURRENT_QUANTUM = TIME_QUANTUM; // Reset for next thread
+            *quantum_ptr = TIME_QUANTUM; // Reset for next thread
         } else {
             if count < 10 {
                 crate::irq_debug!("TIMER DEBUG #{}: NOT setting need_resched (quantum={}, has_user={})",
-                          count, CURRENT_QUANTUM, has_user_threads);
+                          count, *quantum_ptr, has_user_threads);
             }
         }
     }
@@ -126,7 +134,9 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
 /// Reset the quantum counter (called when switching threads)
 pub fn reset_quantum() {
     unsafe {
-        CURRENT_QUANTUM = TIME_QUANTUM;
+        // Use raw pointer to avoid creating reference to mutable static (Rust 2024 compatibility)
+        let quantum_ptr = core::ptr::addr_of_mut!(CURRENT_QUANTUM);
+        *quantum_ptr = TIME_QUANTUM;
     }
 }
 
@@ -291,7 +301,7 @@ pub extern "C" fn log_cr3_switch(new_cr3: u64) {
 #[no_mangle]
 pub extern "C" fn dump_iret_frame_to_serial(frame_ptr: *const u64) {
     use core::sync::atomic::{AtomicU64, Ordering};
-    use x86_64::{VirtAddr, structures::paging::{PageTable, PageTableFlags}};
+    use x86_64::VirtAddr;
     
     static DUMP_COUNT: AtomicU64 = AtomicU64::new(0);
     let count = DUMP_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -332,7 +342,7 @@ pub extern "C" fn dump_iret_frame_to_serial(frame_ptr: *const u64) {
                 crate::serial_println!("  ✓ RIP in user range");
                 
                 // CRITICAL: Walk the page table for userspace RIP
-                let rip_vaddr = VirtAddr::new(rip);
+                let _rip_vaddr = VirtAddr::new(rip);
                 let p4_index = (rip >> 39) & 0x1FF;
                 let p3_index = (rip >> 30) & 0x1FF;
                 let p2_index = (rip >> 21) & 0x1FF;

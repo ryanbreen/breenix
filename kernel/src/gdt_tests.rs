@@ -3,6 +3,7 @@ use x86_64::registers::segmentation::{Segment, CS, DS, ES, FS};
 use x86_64::PrivilegeLevel;
 
 /// Test that GDT segments are loaded correctly
+#[allow(dead_code)]
 pub fn test_gdt_segments() {
     log::info!("Testing GDT segment registers...");
 
@@ -48,6 +49,7 @@ pub fn test_gdt_segments() {
 }
 
 /// Test that we can read from the GDT
+#[allow(dead_code)]
 pub fn test_gdt_readable() {
     use x86_64::instructions::tables::sgdt;
 
@@ -89,6 +91,7 @@ pub fn test_gdt_readable() {
 }
 
 /// Test that double fault stack is set up correctly
+#[allow(dead_code)]
 pub fn test_double_fault_stack() {
     log::info!("Entering test_double_fault_stack function");
     log::info!("Testing double fault stack setup...");
@@ -122,6 +125,7 @@ pub fn test_double_fault_stack() {
 }
 
 /// Run all GDT tests
+#[allow(dead_code)]
 pub fn run_all_tests() {
     log::info!("=== Running GDT Tests ===");
     test_gdt_segments();

@@ -20,6 +20,7 @@ pub struct GuardedStack {
     /// Size of the usable stack area (excluding guard page)
     stack_size: usize,
     /// Privilege level of the stack
+    #[allow(dead_code)]
     privilege: ThreadPrivilege,
 }
 
@@ -247,6 +248,7 @@ pub fn allocate_stack_with_privilege(
 }
 
 /// Check if a page fault is due to guard page access
+#[allow(dead_code)]
 pub fn is_guard_page_fault(fault_addr: VirtAddr) -> Option<&'static GuardedStack> {
     unsafe {
         if let Some(ref stacks) = STACK_REGISTRY {

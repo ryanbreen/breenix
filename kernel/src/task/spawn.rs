@@ -8,14 +8,17 @@ use alloc::{boxed::Box, string::ToString};
 use x86_64::VirtAddr;
 
 /// Default stack size for threads (64 KB)
+#[allow(dead_code)]
 const DEFAULT_STACK_SIZE: usize = 64 * 1024;
 
 /// Spawn a new kernel thread
+#[allow(dead_code)]
 pub fn spawn_thread(name: &str, entry_point: fn()) -> Result<u64, &'static str> {
     spawn_thread_with_privilege(name, entry_point, ThreadPrivilege::Kernel)
 }
 
 /// Spawn a new thread with specified privilege
+#[allow(dead_code)]
 pub fn spawn_thread_with_privilege(
     name: &str,
     entry_point: fn(),
@@ -53,6 +56,7 @@ pub fn spawn_thread_with_privilege(
 
 /// Create the idle thread
 /// The idle thread runs when no other threads are ready
+#[allow(dead_code)]
 pub fn create_idle_thread() -> Box<Thread> {
     // Idle thread uses the current stack and TLS (kernel main thread)
     // It doesn't need its own stack since it's already running
@@ -76,6 +80,7 @@ pub fn create_idle_thread() -> Box<Thread> {
 }
 
 /// Idle thread function - runs when nothing else is ready
+#[allow(dead_code)]
 fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
@@ -102,6 +107,7 @@ fn idle_thread_fn() {
 }
 
 /// Spawn a userspace thread from ELF binary data
+#[allow(dead_code)]
 pub fn spawn_userspace_from_elf(name: &str, elf_data: &[u8]) -> Result<u64, &'static str> {
     // Load the ELF binary
     let loaded_elf = elf::load_elf(elf_data)?;
@@ -168,6 +174,7 @@ pub fn spawn_userspace_from_elf(name: &str, elf_data: &[u8]) -> Result<u64, &'st
 }
 
 /// Initialize the threading subsystem
+#[allow(dead_code)]
 pub fn init() {
     // Create and set up the idle thread
     let idle_thread = create_idle_thread();

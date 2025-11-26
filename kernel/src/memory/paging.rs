@@ -66,14 +66,17 @@ pub unsafe fn get_mapper_with_offset(physical_memory_offset: VirtAddr) -> Offset
 
 /// Base address for the kernel/user split
 /// Addresses >= this value are kernel-only
+#[allow(dead_code)]
 pub const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
 
 /// Check if an address is in kernel space
+#[allow(dead_code)]
 pub fn is_kernel_address(addr: VirtAddr) -> bool {
     addr.as_u64() >= KERNEL_BASE
 }
 
 /// Get appropriate page flags based on privilege level
+#[allow(dead_code)]
 pub fn get_page_flags(privilege: ThreadPrivilege, writable: bool) -> PageTableFlags {
     let mut flags = PageTableFlags::PRESENT;
 
@@ -91,6 +94,7 @@ pub fn get_page_flags(privilege: ThreadPrivilege, writable: bool) -> PageTableFl
 ///
 /// # Safety
 /// Caller must ensure the mapper is valid and the frame is not already mapped
+#[allow(dead_code)]
 pub unsafe fn map_page(
     mapper: &mut OffsetPageTable,
     page: Page<Size4KiB>,

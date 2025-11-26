@@ -15,9 +15,11 @@ const RING_BUFFER_SIZE: usize = 8192;
 #[repr(u8)]
 pub enum LogLevel {
     Error = 1,
+    #[allow(dead_code)]
     Warn = 2,
     Info = 3,
     Debug = 4,
+    #[allow(dead_code)]
     Trace = 5,
 }
 
@@ -57,6 +59,7 @@ impl LogRing {
 
     /// Push a log message to the ring buffer
     /// MUST be called with local interrupts disabled on this CPU
+    #[allow(dead_code)]
     pub fn push(&mut self, level: LogLevel, args: fmt::Arguments) {
         // Format the message into a temporary buffer first
         let mut temp_buf = [0u8; 512]; // Max message size
@@ -189,12 +192,14 @@ impl LogRing {
 }
 
 /// Simple buffer writer for formatting
+#[allow(dead_code)]
 struct BufferWriter<'a> {
     buffer: &'a mut [u8],
     pos: usize,
 }
 
 impl<'a> BufferWriter<'a> {
+    #[allow(dead_code)]
     fn new(buffer: &'a mut [u8]) -> Self {
         Self { buffer, pos: 0 }
     }
@@ -226,11 +231,12 @@ static mut CPU0_LOG_RING: LogRing = LogRing::new();
 pub unsafe fn get_log_ring() -> &'static mut LogRing {
     // For now, we only support CPU 0
     // TODO: Use proper per-CPU infrastructure
-    &mut CPU0_LOG_RING
+    // Use raw pointer to avoid creating reference to mutable static (Rust 2024 compatibility)
+    &mut *core::ptr::addr_of_mut!(CPU0_LOG_RING)
 }
 
 /// Main IRQ-safe logging function
-pub fn irq_safe_log(level: LogLevel, args: fmt::Arguments) {
+pub fn irq_safe_log(_level: LogLevel, args: fmt::Arguments) {
     // TEMPORARY: Bypass IRQ-safe logging to debug hang
     // Just try to print directly, ignore failures
     let _ = crate::serial::try_print(args);
@@ -285,6 +291,7 @@ pub fn flush_local_try() {
 }
 
 /// Emergency logging function for panics
+#[allow(dead_code)]
 pub fn emergency_log(args: fmt::Arguments) {
     // Try direct serial output first (polling mode)
     if crate::serial::emergency_print(args).is_ok() {

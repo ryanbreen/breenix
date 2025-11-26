@@ -456,7 +456,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         );
 
         // Get current process and thread
-        let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        let _current_thread_id = match crate::task::scheduler::current_thread_id() {
             Some(id) => id,
             None => {
                 log::error!("sys_exec: No current thread");
@@ -472,7 +472,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 
         // For testing purposes, we'll check the program name to select the right ELF
         // In a real implementation, this would come from the filesystem
-        let elf_data = if program_name_ptr != 0 {
+        let _elf_data = if program_name_ptr != 0 {
             // Try to read the program name from userspace
             // For now, we'll just use a simple check
             log::info!("sys_exec: Program name requested, checking for known programs");
@@ -515,12 +515,12 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             let current_pid = {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
-                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                if let Some((pid, _)) = manager.find_process_by_thread(_current_thread_id) {
                     pid
                 } else {
                     log::error!(
                         "sys_exec: Thread {} not found in any process",
-                        current_thread_id
+                        _current_thread_id
                     );
                     return SyscallResult::Err(3); // ESRCH
                 }
@@ -533,13 +533,13 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         log::info!(
             "sys_exec: Replacing process {} (thread {}) with new program",
             current_pid.as_u64(),
-            current_thread_id
+            _current_thread_id
         );
 
         // Replace the process's address space
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            match manager.exec_process(current_pid, elf_data) {
+            match manager.exec_process(current_pid, _elf_data) {
                 Ok(new_entry_point) => {
                     log::info!(
                         "sys_exec: Successfully replaced process address space, entry point: {:#x}",

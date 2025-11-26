@@ -45,13 +45,20 @@ pub struct Elf64Header {
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SegmentType {
+    #[allow(dead_code)]
     Null = 0,
     Load = 1,
+    #[allow(dead_code)]
     Dynamic = 2,
+    #[allow(dead_code)]
     Interp = 3,
+    #[allow(dead_code)]
     Note = 4,
+    #[allow(dead_code)]
     Shlib = 5,
+    #[allow(dead_code)]
     Phdr = 6,
+    #[allow(dead_code)]
     Tls = 7,
 }
 
@@ -72,6 +79,7 @@ pub struct Elf64ProgramHeader {
 /// ELF loader result
 pub struct LoadedElf {
     pub entry_point: VirtAddr,
+    #[allow(dead_code)]
     pub stack_top: VirtAddr,
 }
 

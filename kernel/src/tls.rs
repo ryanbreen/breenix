@@ -370,6 +370,7 @@ pub fn current_tls_base() -> u64 {
 
 /// Test TLS functionality
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn test_tls() {
     log::info!("Testing TLS functionality...");
 

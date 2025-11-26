@@ -20,6 +20,7 @@ const TOTAL_STACK_SIZE_PER_CPU: u64 = 2 * EMERGENCY_STACK_SIZE;
 const MAX_CPUS: usize = 256;
 
 /// Per-CPU emergency stack info
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct PerCpuStack {
     pub cpu_id: usize,

@@ -299,9 +299,12 @@ impl ProcessManager {
         Box::leak(Box::new(kernel_stack));
 
         // Set up initial context for userspace
+        // CRITICAL: RSP must point WITHIN the mapped stack region, not past it
+        // The stack grows down, so we start RSP at (stack_top - 16) for alignment
+        let initial_rsp = VirtAddr::new(stack_top.as_u64() - 16);
         let context = crate::task::thread::CpuContext::new(
             process.entry_point,
-            stack_top,
+            initial_rsp,
             crate::task::thread::ThreadPrivilege::User,
         );
 
@@ -496,6 +499,7 @@ impl ProcessManager {
     }
 
     /// Get all processes (for contract testing)
+    #[allow(dead_code)]
     pub fn all_processes(&self) -> Vec<&Process> {
         self.processes.values().collect()
     }
@@ -510,10 +514,11 @@ impl ProcessManager {
     pub fn fork_process_with_page_table(
         &mut self,
         parent_pid: ProcessId,
-        userspace_rsp: Option<u64>,
-        mut child_page_table: Box<ProcessPageTable>,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let (parent_name, parent_entry_point, parent_thread_info) = {
             let parent = self
                 .processes
@@ -586,6 +591,7 @@ impl ProcessManager {
     }
 
     /// Complete the fork operation after page table is created
+    #[allow(dead_code)]
     fn complete_fork(
         &mut self,
         parent_pid: ProcessId,

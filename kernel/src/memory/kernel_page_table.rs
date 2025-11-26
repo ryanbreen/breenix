@@ -211,6 +211,14 @@ pub unsafe fn map_kernel_page(
     let page_frame = PhysFrame::containing_address(phys);
     pt[pt_index as usize].set_frame(page_frame, flags);
 
+    // Log detailed mapping for kernel/IST stacks
+    if pml4_index == 402 || pml4_index == 403 {
+        crate::serial_println!(
+            "🗺️ map_kernel_page: PML4[{}] virt={:#x} -> phys={:#x}, PT frame={:#x}, PT[{}]",
+            pml4_index, virt.as_u64(), phys.as_u64(), pt_frame.start_address().as_u64(), pt_index
+        );
+    }
+
     // Flush TLB for this specific page
     use x86_64::instructions::tlb;
     tlb::flush(virt);
@@ -255,6 +263,7 @@ pub fn migrate_existing_processes() {
 }
 
 /// Get the kernel PDPT frame for use in new process creation
+#[allow(dead_code)]
 pub fn kernel_pdpt_frame() -> Option<PhysFrame> {
     KERNEL_PDPT_FRAME.lock().clone()
 }
@@ -264,7 +273,7 @@ pub fn kernel_pdpt_frame() -> Option<PhysFrame> {
 /// 
 /// === STEP 2: Build Real Master Kernel PML4 with Stacks Mapped ===
 pub fn build_master_kernel_pml4() {
-    use crate::memory::layout::{KERNEL_BASE, percpu_stack_base, percpu_stack_top, PERCPU_STACK_SIZE};
+    use crate::memory::layout::KERNEL_BASE;
     
     let phys_mem_offset = unsafe { 
         PHYS_MEM_OFFSET.expect("Physical memory offset not initialized") 
@@ -312,20 +321,13 @@ pub fn build_master_kernel_pml4() {
         let pml3_virt = phys_mem_offset + kernel_stack_pml3_frame.start_address().as_u64();
         let new_pml3_402 = &mut *(pml3_virt.as_mut_ptr() as *mut PageTable);
 
-        // Initialize and copy existing entries from bootloader
+        // DO NOT copy bootloader's entries - create fresh hierarchy
+        // The bootloader's PML4[402] may point to stale PT frames that won't
+        // receive our new kernel stack mappings. We need a clean slate.
         for i in 0..512 {
             new_pml3_402[i].set_unused();
         }
-        if !current_pml4[402].is_unused() {
-            let old_pml3_frame = current_pml4[402].frame().unwrap();
-            let old_pml3_virt = phys_mem_offset + old_pml3_frame.start_address().as_u64();
-            let old_pml3 = &*(old_pml3_virt.as_ptr() as *const PageTable);
-            for i in 0..512 {
-                if !old_pml3[i].is_unused() {
-                    new_pml3_402[i] = old_pml3[i].clone();
-                }
-            }
-        }
+        // Intentionally skip copying from bootloader - fresh hierarchy only
         master_pml4[402].set_frame(kernel_stack_pml3_frame, flags);
 
         // PML4[403] - IST stacks at 0xffffc98000000000
@@ -334,20 +336,12 @@ pub fn build_master_kernel_pml4() {
         let pml3_virt = phys_mem_offset + ist_stack_pml3_frame.start_address().as_u64();
         let new_pml3_403 = &mut *(pml3_virt.as_mut_ptr() as *mut PageTable);
 
-        // Initialize and copy existing entries from bootloader
+        // DO NOT copy bootloader's entries - create fresh hierarchy
+        // Same reasoning as PML4[402] - avoid stale PT frame references
         for i in 0..512 {
             new_pml3_403[i].set_unused();
         }
-        if !current_pml4[403].is_unused() {
-            let old_pml3_frame = current_pml4[403].frame().unwrap();
-            let old_pml3_virt = phys_mem_offset + old_pml3_frame.start_address().as_u64();
-            let old_pml3 = &*(old_pml3_virt.as_ptr() as *const PageTable);
-            for i in 0..512 {
-                if !old_pml3[i].is_unused() {
-                    new_pml3_403[i] = old_pml3[i].clone();
-                }
-            }
-        }
+        // Intentionally skip copying from bootloader - fresh hierarchy only
         master_pml4[403].set_frame(ist_stack_pml3_frame, flags);
 
         log::info!("Allocated fresh PDPTs: PML4[402]={:?}, PML4[403]={:?}",

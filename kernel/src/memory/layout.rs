@@ -10,22 +10,29 @@ use x86_64::VirtAddr;
 // Virtual address layout constants
 pub const KERNEL_LOW_BASE: u64 = 0x100000;           // Current low-half kernel base (1MB)
 pub const KERNEL_BASE: u64 = 0xffffffff80000000;     // Upper half kernel base
+#[allow(dead_code)]
 pub const HHDM_BASE: u64 = 0xffff800000000000;       // Higher-half direct map
+#[allow(dead_code)]
 pub const PERCPU_BASE: u64 = 0xfffffe0000000000;     // Per-CPU area
+#[allow(dead_code)]
 pub const FIXMAP_BASE: u64 = 0xfffffd0000000000;     // Fixed mappings (GDT/IDT/TSS)
+#[allow(dead_code)]
 pub const MMIO_BASE: u64 = 0xffffe00000000000;       // MMIO regions
 
 // TEMPORARY FIX: Userspace base moved to 1GB to avoid PML4[0] conflict with kernel
 // This places userspace in PDPT[1] while kernel stays in PDPT[0]
+#[allow(dead_code)]
 pub const USERSPACE_BASE: u64 = 0x40000000;          // 1GB - avoids kernel conflict
 
 // PML4 indices for different regions
 pub const KERNEL_PML4_INDEX: u64 = 402;              // Kernel stacks at 0xffffc90000000000
+#[allow(dead_code)]
 pub const BOOTSTRAP_PML4_INDEX: u64 = 3;             // Bootstrap stack at 0x180000000000
 
 // === STEP 1: Canonical per-CPU stack layout constants ===
 
 /// Base address for the kernel higher half
+#[allow(dead_code)]
 pub const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
 
 /// Base address for per-CPU kernel stacks region
@@ -71,9 +78,10 @@ pub fn percpu_stack_top(cpu_id: usize) -> VirtAddr {
 }
 
 /// Get the guard page address for a specific CPU's stack
-/// 
+///
 /// The guard page is placed immediately after the stack (at lower addresses)
 /// to catch stack overflows
+#[allow(dead_code)]
 pub fn percpu_stack_guard(cpu_id: usize) -> VirtAddr {
     let base = percpu_stack_base(cpu_id);
     base - PERCPU_STACK_GUARD_SIZE as u64
@@ -109,6 +117,7 @@ pub fn is_kernel_address(addr: x86_64::VirtAddr) -> bool {
 }
 
 /// Check if an address is in the bootstrap stack region
+#[allow(dead_code)]
 #[inline]
 pub fn is_bootstrap_address(addr: x86_64::VirtAddr) -> bool {
     let pml4_index = (addr.as_u64() >> 39) & 0x1FF;
@@ -116,6 +125,7 @@ pub fn is_bootstrap_address(addr: x86_64::VirtAddr) -> bool {
 }
 
 /// Convert a low-half kernel address to its high-half alias
+#[allow(dead_code)]
 #[inline]
 pub fn high_alias_from_low(low: u64) -> u64 {
     // Kernel is currently at 0x100000, will be aliased at 0xffffffff80000000
@@ -125,27 +135,32 @@ pub fn high_alias_from_low(low: u64) -> u64 {
 // Get kernel section addresses
 // TODO: Phase 3 will provide real symbols via linker script
 // For now, we use approximate values based on typical kernel layout
+#[allow(dead_code)]
 pub fn get_kernel_image_range() -> (usize, usize) {
     // Kernel is currently loaded at 0x100000 (1MB)
     // Typical kernel size is under 2MB
     (0x100000, 0x300000)
 }
 
+#[allow(dead_code)]
 pub fn get_kernel_text_range() -> (usize, usize) {
     // Text section starts at kernel base
     (0x100000, 0x200000)
 }
 
+#[allow(dead_code)]
 pub fn get_kernel_rodata_range() -> (usize, usize) {
     // Read-only data follows text
     (0x200000, 0x250000)
 }
 
+#[allow(dead_code)]
 pub fn get_kernel_data_range() -> (usize, usize) {
     // Data section
     (0x250000, 0x280000)
 }
 
+#[allow(dead_code)]
 pub fn get_kernel_bss_range() -> (usize, usize) {
     // BSS section at end
     (0x280000, 0x300000)

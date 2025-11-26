@@ -103,11 +103,33 @@ git push -u origin feature-name
 gh pr create --title "Brief description" --body "Details"
 ```
 
-### Code Quality
-- Fix ALL compiler warnings before committing
-- Fix ALL clippy warnings
-- Use proper patterns (e.g., `Once`) to avoid unsafe warnings
-- Only `#[allow(dead_code)]` for legitimate API functions
+### Code Quality - ZERO TOLERANCE FOR WARNINGS
+
+**Every build must be completely clean.** Zero warnings, zero errors. This is non-negotiable.
+
+When you run any build or test command and observe warnings or errors in the compile stage, you MUST fix them before proceeding. Do not continue with broken builds.
+
+**Honest fixes only.** Do NOT suppress warnings dishonestly:
+- `#[allow(dead_code)]` is NOT acceptable for code that should be removed or actually used
+- `#[allow(unused_variables)]` is NOT acceptable for variables that indicate incomplete implementation
+- Prefixing with `_` is NOT acceptable if the variable was meant to be used
+- These annotations hide problems instead of fixing them
+
+**When to use suppression attributes:**
+- `#[allow(dead_code)]` ONLY for legitimate public API functions that are intentionally available but not yet called (e.g., `SpinLock::try_lock()` as part of a complete lock API)
+- `#[cfg(never)]` for code intentionally disabled for debugging (must be in Cargo.toml check-cfg)
+- Never use suppressions to hide incomplete work or actual bugs
+
+**Proper fixes:**
+- Unused variable? Either use it (complete the implementation) or remove it entirely
+- Dead code? Either call it or delete it
+- Unnecessary `mut`? Remove the `mut`
+- Unnecessary `unsafe`? Remove the `unsafe` block
+
+**Before every commit, verify:**
+```bash
+cargo run -p xtask -- boot-stages  # Must show 0 warnings in compile output
+```
 
 ### Testing Integrity - CRITICAL
 

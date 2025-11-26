@@ -1,5 +1,6 @@
 //! Quick timer test module
 
+#[allow(dead_code)]
 pub fn test_timer_directly() {
     log::info!("=== DIRECT TIMER TEST ===");
 

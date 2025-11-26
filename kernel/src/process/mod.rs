@@ -82,11 +82,13 @@ pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>
 }
 
 /// Create a new user process using the new architecture
+#[allow(dead_code)]
 pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
     creation::create_user_process(name, elf_data)
 }
 
 /// Get the current process ID
+#[allow(dead_code)]
 pub fn current_pid() -> Option<ProcessId> {
     log::trace!("Getting current PID...");
     log::debug!("current_pid: Acquiring PROCESS_MANAGER lock");
@@ -100,6 +102,7 @@ pub fn current_pid() -> Option<ProcessId> {
 }
 
 /// Exit the current process
+#[allow(dead_code)]
 pub fn exit_current(exit_code: i32) {
     log::debug!("exit_current called with code {}", exit_code);
 

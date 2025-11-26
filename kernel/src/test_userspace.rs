@@ -6,6 +6,7 @@ use x86_64::VirtAddr;
 use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
 
 /// Test reaching Ring 3 with minimal setup - just an int3 instruction
+#[allow(dead_code)]
 pub fn test_minimal_userspace() {
     crate::serial_println!("=== MINIMAL INT3 TRAMPOLINE TEST ===");
     
@@ -103,27 +104,25 @@ pub fn test_minimal_userspace() {
                     
                     // Map the same frame in process page table
                     let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-                    unsafe {
-                        use x86_64::PhysAddr;
-                        let frame = x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(frame));
-                        page_table.map_page(user_page, frame, flags)
-                            .expect("Failed to map user page in process table");
-                        
-                        // Verify the mapping worked
-                        if let Some(phys_addr) = page_table.translate_page(user_page.start_address()) {
-                            if phys_addr == frame.start_address() {
-                                crate::serial_println!("✓ Mapped int3 at 0x400000 in process page table -> {:#x}", 
-                                    frame.start_address().as_u64());
-                            } else {
-                                crate::serial_println!("ERROR: page mapped to wrong frame in process table!");
-                            }
+                    use x86_64::PhysAddr;
+                    let frame = x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(frame));
+                    page_table.map_page(user_page, frame, flags)
+                        .expect("Failed to map user page in process table");
+
+                    // Verify the mapping worked
+                    if let Some(phys_addr) = page_table.translate_page(user_page.start_address()) {
+                        if phys_addr == frame.start_address() {
+                            crate::serial_println!("✓ Mapped int3 at 0x400000 in process page table -> {:#x}",
+                                frame.start_address().as_u64());
                         } else {
-                            crate::serial_println!("ERROR: page not mapped in process table after map_page!");
+                            crate::serial_println!("ERROR: page mapped to wrong frame in process table!");
                         }
-                        
-                        use x86_64::instructions::tlb;
-                        tlb::flush(user_page.start_address());
+                    } else {
+                        crate::serial_println!("ERROR: page not mapped in process table after map_page!");
                     }
+
+                    use x86_64::instructions::tlb;
+                    tlb::flush(user_page.start_address());
                 } else {
                     crate::serial_println!("⚠️ Process has no page table!");
                 }
@@ -201,18 +200,16 @@ pub fn test_minimal_userspace() {
                             .start_address()
                             .as_u64()
                     };
-                    
+
                     // Map stack with User|Present|Writable|NX flags
-                    let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | 
+                    let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE |
                                PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-                    unsafe {
-                        use x86_64::PhysAddr;
-                        let stack_frame = x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(stack_frame_addr));
-                        page_table.map_page(stack_page, stack_frame, flags)
-                            .expect("Failed to map user stack in process table");
-                        use x86_64::instructions::tlb;
-                        tlb::flush(stack_page.start_address());
-                    }
+                    use x86_64::PhysAddr;
+                    let stack_frame = x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(stack_frame_addr));
+                    page_table.map_page(stack_page, stack_frame, flags)
+                        .expect("Failed to map user stack in process table");
+                    use x86_64::instructions::tlb;
+                    tlb::flush(stack_page.start_address());
                     
                     crate::serial_println!("✓ Mapped user stack at 0x800000 in process page table");
                 }

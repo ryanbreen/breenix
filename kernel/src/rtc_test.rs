@@ -1,5 +1,6 @@
 //! RTC and real time test
 
+#[allow(dead_code)]
 pub fn test_rtc_and_real_time() {
     log::info!("=== RTC AND REAL TIME TEST ===");
 

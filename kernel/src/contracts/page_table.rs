@@ -118,6 +118,7 @@ pub fn verify_stack_regions_present(pml4: &PageTable) -> Result<(), alloc::strin
 }
 
 /// Contract: Page table flags must be correct (PRESENT, WRITABLE, etc.)
+#[allow(dead_code)]
 pub fn verify_entry_flags(
     pml4: &PageTable,
     index: usize,

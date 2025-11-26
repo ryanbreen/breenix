@@ -81,6 +81,7 @@ pub static mut SYSCALL_RESULT: i64 = 0;
 /// INT 0x80 handler for system calls
 ///
 /// Note: This is replaced by assembly entry point for proper register handling
+#[allow(dead_code)]
 pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
     // Log that we received a syscall
     log::debug!(
@@ -91,10 +92,8 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
     // Check if this is from userspace (Ring 3)
     if stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3 {
         // CRITICAL: Log current CR3 to verify process isolation is working
-        let current_cr3 = unsafe {
-            use x86_64::registers::control::Cr3;
-            Cr3::read().0.start_address().as_u64()
-        };
+        use x86_64::registers::control::Cr3;
+        let current_cr3 = Cr3::read().0.start_address().as_u64();
 
         log::info!("🎉 USERSPACE SYSCALL: Received INT 0x80 from userspace!");
         log::info!("    RIP: {:#x}", stack_frame.instruction_pointer.as_u64());

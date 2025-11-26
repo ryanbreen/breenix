@@ -40,6 +40,7 @@ impl KeyEvent {
     }
 
     /// Check if this is Ctrl+U (userspace test)
+    #[allow(dead_code)]
     pub fn is_ctrl_u(&self) -> bool {
         self.ctrl && self.character == Some('u')
     }

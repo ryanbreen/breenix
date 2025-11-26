@@ -60,41 +60,68 @@ pub struct PerCpuData {
 
 // Linux-style preempt_count bit layout constants
 // Matches Linux kernel's exact bit partitioning
+#[allow(dead_code)]
 const PREEMPT_BITS: u32 = 8;
+#[allow(dead_code)]
 const SOFTIRQ_BITS: u32 = 8;
+#[allow(dead_code)]
 const HARDIRQ_BITS: u32 = 10;  // Linux uses 10 bits for HARDIRQ
+#[allow(dead_code)]
 const NMI_BITS: u32 = 1;       // Linux uses 1 bit for NMI
 
+#[allow(dead_code)]
 const PREEMPT_SHIFT: u32 = 0;
+#[allow(dead_code)]
 const SOFTIRQ_SHIFT: u32 = PREEMPT_SHIFT + PREEMPT_BITS;  // 8
+#[allow(dead_code)]
 const HARDIRQ_SHIFT: u32 = SOFTIRQ_SHIFT + SOFTIRQ_BITS;   // 16
+#[allow(dead_code)]
 const NMI_SHIFT: u32 = HARDIRQ_SHIFT + HARDIRQ_BITS;       // 26
 
+#[allow(dead_code)]
 const PREEMPT_MASK: u32 = ((1 << PREEMPT_BITS) - 1) << PREEMPT_SHIFT;  // 0x000000FF
+#[allow(dead_code)]
 const SOFTIRQ_MASK: u32 = ((1 << SOFTIRQ_BITS) - 1) << SOFTIRQ_SHIFT;  // 0x0000FF00
+#[allow(dead_code)]
 const HARDIRQ_MASK: u32 = ((1 << HARDIRQ_BITS) - 1) << HARDIRQ_SHIFT;  // 0x03FF0000
+#[allow(dead_code)]
 const NMI_MASK: u32 = ((1 << NMI_BITS) - 1) << NMI_SHIFT;              // 0x04000000
 
+#[allow(dead_code)]
 const PREEMPT_ACTIVE: u32 = 1 << 28;
 
 // Increment values for each nesting level
+#[allow(dead_code)]
 const PREEMPT_OFFSET: u32 = 1 << PREEMPT_SHIFT;
+#[allow(dead_code)]
 const SOFTIRQ_OFFSET: u32 = 1 << SOFTIRQ_SHIFT;
+#[allow(dead_code)]
 const HARDIRQ_OFFSET: u32 = 1 << HARDIRQ_SHIFT;
+#[allow(dead_code)]
 const NMI_OFFSET: u32 = 1 << NMI_SHIFT;
 
 // Compile-time offset calculations and validation
 // These MUST match the actual struct layout or GS-relative access will be incorrect
+#[allow(dead_code)]
 const CPU_ID_OFFSET: usize = 0;           // offset 0: usize (8 bytes)
+#[allow(dead_code)]
 const CURRENT_THREAD_OFFSET: usize = 8;    // offset 8: *mut Thread (8 bytes)
+#[allow(dead_code)]
 const KERNEL_STACK_TOP_OFFSET: usize = 16; // offset 16: VirtAddr (8 bytes)
+#[allow(dead_code)]
 const IDLE_THREAD_OFFSET: usize = 24;      // offset 24: *mut Thread (8 bytes)
+#[allow(dead_code)]
 const PREEMPT_COUNT_OFFSET: usize = 32;    // offset 32: u32 (4 bytes) - ALIGNED
+#[allow(dead_code)]
 const NEED_RESCHED_OFFSET: usize = 36;     // offset 36: u8 (1 byte)
 // Padding at 37-39 (3 bytes)
+#[allow(dead_code)]
 const USER_RSP_SCRATCH_OFFSET: usize = 40; // offset 40: u64 (8 bytes) - ALIGNED
+#[allow(dead_code)]
 const TSS_OFFSET: usize = 48;              // offset 48: *mut TSS (8 bytes)
+#[allow(dead_code)]
 const SOFTIRQ_PENDING_OFFSET: usize = 56;  // offset 56: u32 (4 bytes)
+#[allow(dead_code)]
 const NEXT_CR3_OFFSET: usize = 64;         // offset 64: u64 (8 bytes) - ALIGNED
 
 // Compile-time assertions to ensure offsets are correct
@@ -151,25 +178,23 @@ pub fn is_initialized() -> bool {
 /// Initialize per-CPU data for the current CPU
 pub fn init() {
     log::info!("Initializing per-CPU data via GS segment");
-    
-    unsafe {
-        // Get pointer to CPU0's per-CPU data
-        let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
-        let cpu_data_addr = cpu_data_ptr as u64;
-        
-        // Set up GS base to point to per-CPU data
-        // This allows us to access per-CPU data via GS segment
-        GsBase::write(VirtAddr::new(cpu_data_addr));
-        KernelGsBase::write(VirtAddr::new(cpu_data_addr));
-        
-        log::info!("Per-CPU data initialized at {:#x}", cpu_data_addr);
-        log::debug!("  GS_BASE = {:#x}", GsBase::read().as_u64());
-        log::debug!("  KERNEL_GS_BASE = {:#x}", KernelGsBase::read().as_u64());
-        
-        // Mark per-CPU data as initialized and safe to use
-        PER_CPU_INITIALIZED.store(true, Ordering::Release);
-        log::info!("Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage");
-    }
+
+    // Get pointer to CPU0's per-CPU data
+    let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
+    let cpu_data_addr = cpu_data_ptr as u64;
+
+    // Set up GS base to point to per-CPU data
+    // This allows us to access per-CPU data via GS segment
+    GsBase::write(VirtAddr::new(cpu_data_addr));
+    KernelGsBase::write(VirtAddr::new(cpu_data_addr));
+
+    log::info!("Per-CPU data initialized at {:#x}", cpu_data_addr);
+    log::debug!("  GS_BASE = {:#x}", GsBase::read().as_u64());
+    log::debug!("  KERNEL_GS_BASE = {:#x}", KernelGsBase::read().as_u64());
+
+    // Mark per-CPU data as initialized and safe to use
+    PER_CPU_INITIALIZED.store(true, Ordering::Release);
+    log::info!("Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage");
 }
 
 /// Get the current thread from per-CPU data
@@ -412,8 +437,8 @@ pub fn nmi_enter() {
                 offset = const PREEMPT_COUNT_OFFSET,
                 options(nostack, preserves_flags)
             );
-            
-            let new_count = old_count + NMI_OFFSET;
+
+            let _new_count = old_count + NMI_OFFSET;
             
             // Check for overflow in debug builds (NMI only has 1 bit, so max nesting is 1)
             debug_assert!(
@@ -445,8 +470,8 @@ pub fn nmi_exit() {
                 offset = const PREEMPT_COUNT_OFFSET,
                 options(nostack, preserves_flags)
             );
-            
-            let new_count = old_count.wrapping_sub(NMI_OFFSET);
+
+            let _new_count = old_count.wrapping_sub(NMI_OFFSET);
             
             // Check for underflow in debug builds
             debug_assert!(
@@ -537,6 +562,7 @@ pub fn softirq_exit() {
 }
 
 /// Get the idle thread from per-CPU data
+#[allow(dead_code)]
 pub fn idle_thread() -> Option<&'static mut crate::task::thread::Thread> {
     unsafe {
         // Access idle_thread field via GS segment
@@ -608,6 +634,7 @@ pub fn set_tss(tss: *mut x86_64::structures::tss::TaskStateSegment) {
 }
 
 /// Get the user RSP scratch space (used during syscall entry)
+#[allow(dead_code)]
 pub fn user_rsp_scratch() -> u64 {
     unsafe {
         let cpu_data: *const PerCpuData;
@@ -626,6 +653,7 @@ pub fn user_rsp_scratch() -> u64 {
 }
 
 /// Set the user RSP scratch space (used during syscall entry)
+#[allow(dead_code)]
 pub fn set_user_rsp_scratch(rsp: u64) {
     unsafe {
         let cpu_data: *mut PerCpuData;
@@ -728,18 +756,18 @@ pub fn preempt_enable() {
         
         // Compiler barrier after decrementing preempt count
         compiler_fence(Ordering::Release);
-        
+
         // Get CPU ID for logging (at offset 0)
-        let cpu_id: usize;
+        let _cpu_id: usize;
         core::arch::asm!(
             "mov {}, gs:[0]",
-            out(reg) cpu_id,
+            out(reg) _cpu_id,
             options(nostack)
         );
-        
+
         // CRITICAL: Disable logging to prevent recursion issues
         #[cfg(never)]
-        log::debug!("preempt_enable: {:#x} -> {:#x} (per-CPU, CPU {})", old_count, new_count, cpu_id);
+        log::debug!("preempt_enable: {:#x} -> {:#x} (per-CPU, CPU {})", old_count, new_count, _cpu_id);
         
         // Check for underflow in debug builds
         debug_assert!(
@@ -804,6 +832,7 @@ pub fn softirq_pending() -> u32 {
 }
 
 /// Set softirq pending bit
+#[allow(dead_code)]
 pub fn raise_softirq(nr: u32) {
     debug_assert!(nr < 32, "Invalid softirq number");
     
@@ -876,6 +905,7 @@ pub fn do_softirq() {
 
 /// Get the target CR3 for next IRETQ
 /// Returns 0 if no CR3 switch is needed
+#[allow(dead_code)]
 pub fn get_next_cr3() -> u64 {
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return 0;
@@ -949,11 +979,10 @@ pub fn can_schedule(saved_cs: u64) -> bool {
 }
 
 /// Get per-CPU base address and size for logging
+#[allow(dead_code)]
 pub fn get_percpu_info() -> (u64, usize) {
-    unsafe {
-        let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
-        let base = cpu_data_ptr as u64;
-        let size = core::mem::size_of::<PerCpuData>();
-        (base, size)
-    }
+    let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
+    let base = cpu_data_ptr as u64;
+    let size = core::mem::size_of::<PerCpuData>();
+    (base, size)
 }

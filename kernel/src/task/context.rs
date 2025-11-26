@@ -115,9 +115,11 @@ switch_to_thread:
 
 extern "C" {
     /// Switch from old_context to new_context
+    #[allow(dead_code)]
     pub fn switch_context(old_context: *mut CpuContext, new_context: *const CpuContext);
 
     /// Switch to a thread for the first time (doesn't save current context)
+    #[allow(dead_code)]
     pub fn switch_to_thread(new_context: *const CpuContext) -> !;
 }
 
@@ -125,6 +127,7 @@ extern "C" {
 ///
 /// # Safety
 /// Both context pointers must be valid and properly aligned
+#[allow(dead_code)]
 pub unsafe fn perform_context_switch(old_context: &mut CpuContext, new_context: &CpuContext) {
     switch_context(
         old_context as *mut CpuContext,
@@ -136,6 +139,7 @@ pub unsafe fn perform_context_switch(old_context: &mut CpuContext, new_context: 
 ///
 /// # Safety
 /// The context must be valid and properly initialized
+#[allow(dead_code)]
 pub unsafe fn perform_initial_switch(new_context: &CpuContext) -> ! {
     switch_to_thread(new_context as *const CpuContext);
 }

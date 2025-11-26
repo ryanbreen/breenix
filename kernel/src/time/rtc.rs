@@ -224,6 +224,7 @@ impl DateTime {
     }
 }
 
+#[allow(dead_code)]
 fn rtc_time_to_datetime(rtc: &RTCTime) -> DateTime {
     DateTime {
         year: rtc.year,
@@ -253,6 +254,7 @@ pub fn read_rtc_time() -> Result<u64, &'static str> {
 }
 
 /// Read the current date and time from the RTC
+#[allow(dead_code)]
 pub fn read_datetime() -> DateTime {
     let time = read_rtc_raw();
     rtc_time_to_datetime(&time)

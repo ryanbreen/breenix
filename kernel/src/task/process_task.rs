@@ -34,6 +34,7 @@ impl ProcessScheduler {
     }
 
     /// Get the current process ID from the scheduler context
+    #[allow(dead_code)]
     pub fn current_pid() -> Option<ProcessId> {
         // Get current thread from scheduler
         let thread_id = scheduler::current_thread_id()?;
@@ -48,6 +49,7 @@ impl ProcessScheduler {
 }
 
 /// Extension trait for Thread to support process operations
+#[allow(dead_code)]
 pub trait ProcessThread {
     /// Check if this thread belongs to a userspace process
     fn is_process_thread(&self) -> bool;

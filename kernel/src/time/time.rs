@@ -7,6 +7,7 @@ pub struct Time {
 }
 
 impl Time {
+    #[allow(dead_code)]
     pub const fn new(seconds: u64, millis: u64, nanos: u64) -> Self {
         Self {
             seconds,
@@ -15,6 +16,7 @@ impl Time {
         }
     }
 
+    #[allow(dead_code)]
     pub const fn from_seconds(seconds: u64) -> Self {
         Self {
             seconds,
@@ -23,6 +25,7 @@ impl Time {
         }
     }
 
+    #[allow(dead_code)]
     pub const fn from_millis(total_millis: u64) -> Self {
         let seconds = total_millis / 1000;
         let millis = total_millis % 1000;
@@ -33,10 +36,12 @@ impl Time {
         }
     }
 
+    #[allow(dead_code)]
     pub const fn total_millis(&self) -> u64 {
         self.seconds * 1000 + self.millis + self.nanos / 1_000_000
     }
 
+    #[allow(dead_code)]
     pub const fn total_nanos(&self) -> u128 {
         self.seconds as u128 * 1_000_000_000 + self.millis as u128 * 1_000_000 + self.nanos as u128
     }

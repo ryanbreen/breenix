@@ -12,9 +12,11 @@ const BUFFER_SIZE: usize = 8192;
 
 /// Counting sink to suppress TRACE logs while preserving timing
 /// This prevents log spam while maintaining the synchronization side effects
+#[allow(dead_code)]
 struct CountingSink(AtomicU64);
 
 impl CountingSink {
+    #[allow(dead_code)]
     const fn new() -> Self {
         CountingSink(AtomicU64::new(0))
     }
@@ -46,6 +48,7 @@ impl Log for CountingSink {
     }
 }
 
+#[allow(dead_code)]
 static COUNTING_SINK: CountingSink = CountingSink::new();
 
 /// Buffer for storing log messages before serial is initialized

@@ -28,7 +28,9 @@ pub const SYSCALL_INTERRUPT_ID: u8 = 0x80;
 
 // Assembly entry points
 extern "C" {
+    #[allow(dead_code)]
     fn syscall_entry();
+    #[allow(dead_code)]
     fn timer_interrupt_entry();
 }
 
@@ -262,9 +264,9 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
         let frame = frame_ptr;
         let rip_ptr = frame.offset(16);  // Skip 15 regs + error code
         let cs_ptr = frame.offset(17);
-        let rflags_ptr = frame.offset(18);
+        let _rflags_ptr = frame.offset(18);
         let rsp_ptr = frame.offset(19);
-        let ss_ptr = frame.offset(20);
+        let _ss_ptr = frame.offset(20);
         
         let rip = *rip_ptr;
         let cs = *cs_ptr;
@@ -280,18 +282,16 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
 
         if from_userspace {
             // Raw serial output for userspace breakpoint - SUCCESS!
-            unsafe {
-                core::arch::asm!(
-                    "mov dx, 0x3F8",
-                    "mov al, 0x55",      // 'U' for Userspace
-                    "out dx, al",
-                    "mov al, 0x33",      // '3' for Ring 3
-                    "out dx, al",
-                    "mov al, 0x21",      // '!' for success
-                    "out dx, al",
-                    options(nostack, nomem, preserves_flags)
-                );
-            }
+            core::arch::asm!(
+                "mov dx, 0x3F8",
+                "mov al, 0x55",      // 'U' for Userspace
+                "out dx, al",
+                "mov al, 0x33",      // '3' for Ring 3
+                "out dx, al",
+                "mov al, 0x21",      // '!' for success
+                "out dx, al",
+                options(nostack, nomem, preserves_flags)
+            );
             
             // Use only serial output to avoid framebuffer issues
             crate::serial_println!("🎉 BREAKPOINT from USERSPACE - Ring 3 SUCCESS!");
@@ -318,6 +318,30 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
+    // DIAGNOSTIC OUTPUT AT THE VERY START
+    let cr2: u64;
+    let cr3: u64;
+    let actual_rsp: u64;
+    unsafe {
+        use x86_64::registers::control::{Cr2, Cr3};
+        cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
+        let (frame, _) = Cr3::read();
+        cr3 = frame.start_address().as_u64();
+        core::arch::asm!("mov {}, rsp", out(reg) actual_rsp);
+    }
+
+    crate::serial_println!("[DIAG:DOUBLEFAULT] ==============================");
+    crate::serial_println!("[DIAG:DOUBLEFAULT] Error code: {:#x}", error_code);
+    crate::serial_println!("[DIAG:DOUBLEFAULT] RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    crate::serial_println!("[DIAG:DOUBLEFAULT] CS: {:#x}", stack_frame.code_segment.0);
+    crate::serial_println!("[DIAG:DOUBLEFAULT] RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
+    crate::serial_println!("[DIAG:DOUBLEFAULT] RSP (frame): {:#x}", stack_frame.stack_pointer.as_u64());
+    crate::serial_println!("[DIAG:DOUBLEFAULT] RSP (actual): {:#x}", actual_rsp);
+    crate::serial_println!("[DIAG:DOUBLEFAULT] SS: {:#x}", stack_frame.stack_segment.0);
+    crate::serial_println!("[DIAG:DOUBLEFAULT] CR2: {:#x}", cr2);
+    crate::serial_println!("[DIAG:DOUBLEFAULT] CR3: {:#x}", cr3);
+    crate::serial_println!("[DIAG:DOUBLEFAULT] ==============================");
+
     // Raw serial output FIRST to confirm we're in DF handler
     unsafe {
         core::arch::asm!(
@@ -328,19 +352,6 @@ extern "x86-interrupt" fn double_fault_handler(
             "out dx, al",
             options(nostack, nomem, preserves_flags)
         );
-    }
-    
-    // CRITICAL: Get actual RSP to verify IST is being used
-    let actual_rsp: u64;
-    unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) actual_rsp);
-    }
-    
-    // Get CR2 - contains the faulting address from the original page fault
-    let cr2: u64;
-    unsafe {
-        use x86_64::registers::control::Cr2;
-        cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
     }
     
     // Log comprehensive debug info before panicking
@@ -465,10 +476,29 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
-    
+
+    // DIAGNOSTIC OUTPUT AT THE VERY START
+    let cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
+    let cr3 = {
+        use x86_64::registers::control::Cr3;
+        let (frame, _) = Cr3::read();
+        frame.start_address().as_u64()
+    };
+
+    crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
+    crate::serial_println!("[DIAG:PAGEFAULT] Fault addr: {:#x}", cr2);
+    crate::serial_println!("[DIAG:PAGEFAULT] Error code: {:#x}", error_code.bits());
+    crate::serial_println!("[DIAG:PAGEFAULT] RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    crate::serial_println!("[DIAG:PAGEFAULT] CS: {:#x}", stack_frame.code_segment.0);
+    crate::serial_println!("[DIAG:PAGEFAULT] RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
+    crate::serial_println!("[DIAG:PAGEFAULT] RSP: {:#x}", stack_frame.stack_pointer.as_u64());
+    crate::serial_println!("[DIAG:PAGEFAULT] SS: {:#x}", stack_frame.stack_segment.0);
+    crate::serial_println!("[DIAG:PAGEFAULT] CR3: {:#x}", cr3);
+    crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
+
     // Increment preempt count on exception entry FIRST to avoid recursion
     crate::per_cpu::preempt_disable();
-    
+
     let accessed_addr = Cr2::read().expect("Failed to read accessed address from CR2");
     
     // Use raw serial output for critical info to avoid recursion
@@ -593,10 +623,10 @@ extern "x86-interrupt" fn page_fault_handler(
         let (current_cr3, _flags) = Cr3::read();
         let rsp: u64;
         let rbp: u64;
-        let rflags: u64;
+        let _rflags: u64;
         core::arch::asm!("mov {}, rsp", out(reg) rsp);
         core::arch::asm!("mov {}, rbp", out(reg) rbp);
-        core::arch::asm!("pushfq; pop {}", out(reg) rflags);
+        core::arch::asm!("pushfq; pop {}", out(reg) _rflags);
         
         crate::serial_println!("CR3 SWITCH DEBUG:");
         crate::serial_println!("  Current CR3: {:#x}", current_cr3.start_address().as_u64());
@@ -727,18 +757,35 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
+    // DIAGNOSTIC OUTPUT AT THE VERY START
+    let cr3 = {
+        use x86_64::registers::control::Cr3;
+        let (frame, _) = Cr3::read();
+        frame.start_address().as_u64()
+    };
+
+    crate::serial_println!("[DIAG:GPF] ==============================");
+    crate::serial_println!("[DIAG:GPF] Error code: {:#x}", error_code);
+    crate::serial_println!("[DIAG:GPF] RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+    crate::serial_println!("[DIAG:GPF] CS: {:#x}", stack_frame.code_segment.0);
+    crate::serial_println!("[DIAG:GPF] RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
+    crate::serial_println!("[DIAG:GPF] RSP: {:#x}", stack_frame.stack_pointer.as_u64());
+    crate::serial_println!("[DIAG:GPF] SS: {:#x}", stack_frame.stack_segment.0);
+    crate::serial_println!("[DIAG:GPF] CR3: {:#x}", cr3);
+    crate::serial_println!("[DIAG:GPF] ==============================");
+
     // Raw serial output FIRST to confirm we're in GP handler
     unsafe {
         core::arch::asm!(
             "mov dx, 0x3F8",
             "mov al, 0x47",      // 'G' for GP fault
             "out dx, al",
-            "mov al, 0x50",      // 'P' 
+            "mov al, 0x50",      // 'P'
             "out dx, al",
             options(nostack, nomem, preserves_flags)
         );
     }
-    
+
     // Increment preempt count on exception entry
     crate::per_cpu::preempt_disable();
     
@@ -785,15 +832,15 @@ extern "x86-interrupt" fn general_protection_fault_handler(
         log::error!("  GPF from USERSPACE (Ring 3)");
         
         // Try to identify which instruction caused the fault
-        unsafe {
+        {
             let rip = stack_frame.instruction_pointer.as_u64() as *const u8;
-            let byte = core::ptr::read_volatile(rip);
+            let byte = unsafe { core::ptr::read_volatile(rip) };
                 match byte {
                     0xfa => log::info!("  ✓ CLI instruction detected (0xfa) - expected privilege violation"),
                     0xf4 => log::info!("  ✓ HLT instruction detected (0xf4) - expected privilege violation"),
                     0x0f => {
                         // Check for MOV CR3 (0x0f 0x22 0xd8)
-                        let byte2 = core::ptr::read_volatile(rip.offset(1));
+                        let byte2 = unsafe { core::ptr::read_volatile(rip.offset(1)) };
                         if byte2 == 0x22 {
                             log::info!("  ✓ MOV CR3 instruction detected (0x0f 0x22) - expected privilege violation");
                         }
@@ -834,10 +881,8 @@ extern "x86-interrupt" fn general_protection_fault_handler(
 
 /// Get IDT base and limit for logging
 pub fn get_idt_info() -> (u64, u16) {
-    unsafe {
-        let idtr = x86_64::instructions::tables::sidt();
-        (idtr.base.as_u64(), idtr.limit)
-    }
+    let idtr = x86_64::instructions::tables::sidt();
+    (idtr.base.as_u64(), idtr.limit)
 }
 
 /// Validate that the IDT entry for the timer interrupt is properly configured
@@ -845,7 +890,7 @@ pub fn get_idt_info() -> (u64, u16) {
 pub fn validate_timer_idt_entry() -> (bool, u64, &'static str) {
     // Read the IDT entry for vector 32 (timer interrupt)
     if let Some(idt) = IDT.get() {
-        let entry = &idt[InterruptIndex::Timer.as_u8()];
+        let _entry = &idt[InterruptIndex::Timer.as_u8()];
 
         // Get the handler address from the IDT entry
         // The x86_64 crate doesn't expose this directly, so we need to read IDTR
@@ -877,11 +922,6 @@ pub fn validate_timer_idt_entry() -> (bool, u64, &'static str) {
             // Check if the address looks like kernel code (should be in high half or low kernel region)
             if handler_addr < 0x100000 && handler_addr > 0x1000 {
                 return (false, handler_addr, "Handler address looks invalid (in low memory)");
-            }
-
-            // Check that it's in a reasonable range for kernel code
-            if handler_addr > 0xFFFF_FFFF_FFFF_FFFF {
-                return (false, handler_addr, "Handler address is out of range");
             }
 
             (true, handler_addr, "Handler address valid")

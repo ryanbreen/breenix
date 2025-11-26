@@ -4,6 +4,7 @@
 use alloc::vec::Vec;
 
 /// Create an ELF that attempts CLI instruction (should cause #GP)
+#[allow(dead_code)]
 pub fn create_cli_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
 
@@ -23,6 +24,7 @@ pub fn create_cli_test_elf() -> Vec<u8> {
 }
 
 /// Create an ELF that attempts HLT instruction (should cause #GP)
+#[allow(dead_code)]
 pub fn create_hlt_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
 
@@ -42,6 +44,7 @@ pub fn create_hlt_test_elf() -> Vec<u8> {
 }
 
 /// Create an ELF that attempts to write CR3 (should cause #GP)
+#[allow(dead_code)]
 pub fn create_cr3_write_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
 
@@ -62,6 +65,7 @@ pub fn create_cr3_write_test_elf() -> Vec<u8> {
 }
 
 /// Create an ELF that accesses unmapped memory (should cause #PF with U=1)
+#[allow(dead_code)]
 pub fn create_unmapped_access_test_elf() -> Vec<u8> {
     let mut elf = create_elf_header();
 
@@ -153,6 +157,7 @@ fn create_elf_header() -> Vec<u8> {
 }
 
 /// Run all user-only fault tests
+#[allow(dead_code)]
 pub fn run_fault_tests() {
     #[cfg(not(feature = "testing"))]
     {

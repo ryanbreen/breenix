@@ -6,6 +6,7 @@ use x86_64::VirtAddr;
 use x86_64::structures::paging::{PageTable, PageTableFlags};
 
 /// Contract: Kernel stack at given address must be mapped with correct flags
+#[allow(dead_code)]
 pub fn verify_stack_mapping(
     vaddr: VirtAddr,
     phys_offset: VirtAddr,
@@ -100,6 +101,7 @@ pub fn verify_stack_mapping(
 }
 
 /// Contract: Guard pages must NOT be mapped (to catch stack overflow)
+#[allow(dead_code)]
 pub fn verify_guard_page_unmapped(
     guard_addr: VirtAddr,
     phys_offset: VirtAddr,
@@ -204,6 +206,7 @@ pub fn verify_tss_rsp0_valid() -> Result<(), alloc::string::String> {
 }
 
 /// Contract: Verify that a stack region is properly set up
+#[allow(dead_code)]
 pub fn verify_stack_region(
     stack_top: VirtAddr,
     stack_size: usize,

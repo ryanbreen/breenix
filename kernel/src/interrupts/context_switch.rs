@@ -430,22 +430,20 @@ fn restore_userspace_thread_context(
                                     crate::serial_println!("CR3_WRITE_COMPLETED");
 
                                     // Try accessing various kernel structures to verify they're mapped
-                                    unsafe {
-                                        // Test 1: Can we read from TSS location?
-                                        let tss_ptr = 0x100000f5320 as *const u8;
-                                        let _tss_byte = core::ptr::read_volatile(tss_ptr);
-                                        crate::serial_println!("TSS_READABLE");
+                                    // Test 1: Can we read from TSS location?
+                                    let tss_ptr = 0x100000f5320 as *const u8;
+                                    let _tss_byte = core::ptr::read_volatile(tss_ptr);
+                                    crate::serial_println!("TSS_READABLE");
 
-                                        // Test 2: Can we read from GDT location?
-                                        let gdt_ptr = 0x100000f5390 as *const u8;
-                                        let _gdt_byte = core::ptr::read_volatile(gdt_ptr);
-                                        crate::serial_println!("GDT_READABLE");
+                                    // Test 2: Can we read from GDT location?
+                                    let gdt_ptr = 0x100000f5390 as *const u8;
+                                    let _gdt_byte = core::ptr::read_volatile(gdt_ptr);
+                                    crate::serial_println!("GDT_READABLE");
 
-                                        // Test 3: Can we read from IDT location?
-                                        let idt_ptr = 0x100000f6930 as *const u8;
-                                        let _idt_byte = core::ptr::read_volatile(idt_ptr);
-                                        crate::serial_println!("IDT_READABLE");
-                                    }
+                                    // Test 3: Can we read from IDT location?
+                                    let idt_ptr = 0x100000f6930 as *const u8;
+                                    let _idt_byte = core::ptr::read_volatile(idt_ptr);
+                                    crate::serial_println!("IDT_READABLE");
 
                                     // Skip enabling interrupts for now to isolate the issue
                                     crate::serial_println!("SKIPPING_INTERRUPT_ENABLE");
@@ -521,14 +519,12 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                 // RFLAGS = 0x2 (IF=0, bit 1=1 which is reserved and must be 1)
                 // CRITICAL TEST: Disabling interrupts to see if we reach userspace
                 // Using raw value since from_bits_truncate might be clearing bit 1
-                unsafe {
-                    let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
-                    // CRITICAL: Set TF (bit 8) and IF (bit 9) per Cursor guidance
-                    // TF will trigger #DB on first user instruction, proving IRETQ succeeded
-                    // IF enables interrupts for visibility
-                    *flags_ptr = 0x202;  // Bit 1=1 (required), IF=1 (bit 9) - TF removed
-                }
-                let actual_flags = unsafe { *((&frame.cpu_flags) as *const _ as *const u64) };
+                let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+                // CRITICAL: Set TF (bit 8) and IF (bit 9) per Cursor guidance
+                // TF will trigger #DB on first user instruction, proving IRETQ succeeded
+                // IF enables interrupts for visibility
+                *flags_ptr = 0x202;  // Bit 1=1 (required), IF=1 (bit 9) - TF removed
+                let actual_flags = *((&frame.cpu_flags) as *const _ as *const u64);
                 crate::serial_println!("Set RFLAGS to {:#x} (IF=1, TF removed per cursor guidance)", actual_flags);
 
                 log::info!(
@@ -733,63 +729,58 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
 
                                 // CURSOR AGENT DIAGNOSTIC: Log addresses of critical kernel structures
                                 // before attempting int3 test
-                                unsafe {
-                                    // Get IDT base address
-                                    let idtr = x86_64::instructions::tables::sidt();
-                                    crate::serial_println!("IDT base address: {:#x} (PML4[{}])",
-                                                         idtr.base.as_u64(), (idtr.base.as_u64() >> 39) & 0x1FF);
+                                // Get IDT base address
+                                let idtr = x86_64::instructions::tables::sidt();
+                                crate::serial_println!("IDT base address: {:#x} (PML4[{}])",
+                                                     idtr.base.as_u64(), (idtr.base.as_u64() >> 39) & 0x1FF);
 
-                                    // Get GDT base address
-                                    let gdtr = x86_64::instructions::tables::sgdt();
-                                    crate::serial_println!("GDT base address: {:#x} (PML4[{}])",
-                                                         gdtr.base.as_u64(), (gdtr.base.as_u64() >> 39) & 0x1FF);
+                                // Get GDT base address
+                                let gdtr = x86_64::instructions::tables::sgdt();
+                                crate::serial_println!("GDT base address: {:#x} (PML4[{}])",
+                                                     gdtr.base.as_u64(), (gdtr.base.as_u64() >> 39) & 0x1FF);
 
-                                    // Get TSS address and RSP0
-                                    let (tss_base, rsp0) = crate::gdt::get_tss_info();
-                                    crate::serial_println!("TSS base address: {:#x} (PML4[{}])",
-                                                         tss_base, (tss_base >> 39) & 0x1FF);
-                                    crate::serial_println!("TSS RSP0 stack: {:#x} (PML4[{}])",
-                                                         rsp0, (rsp0 >> 39) & 0x1FF);
+                                // Get TSS address and RSP0
+                                let (tss_base, rsp0) = crate::gdt::get_tss_info();
+                                crate::serial_println!("TSS base address: {:#x} (PML4[{}])",
+                                                     tss_base, (tss_base >> 39) & 0x1FF);
+                                crate::serial_println!("TSS RSP0 stack: {:#x} (PML4[{}])",
+                                                     rsp0, (rsp0 >> 39) & 0x1FF);
 
-                                    // Check IST stacks in TSS - invalid IST can cause issues
-                                    let tss_ptr = crate::gdt::get_tss_ptr();
-                                    if !tss_ptr.is_null() {
-                                        let ist0 = (*tss_ptr).interrupt_stack_table[0];
-                                        let ist1 = (*tss_ptr).interrupt_stack_table[1];
-                                        crate::serial_println!("TSS IST[0] (double fault): {:#x} (PML4[{}])",
-                                                             ist0.as_u64(), (ist0.as_u64() >> 39) & 0x1FF);
-                                        crate::serial_println!("TSS IST[1] (page fault): {:#x} (PML4[{}])",
-                                                             ist1.as_u64(), (ist1.as_u64() >> 39) & 0x1FF);
-                                    }
-
-                                    // Log breakpoint handler address
-                                    crate::serial_println!("Breakpoint handler: {:#x} (PML4[{}])",
-                                                         handler_addr, (handler_addr >> 39) & 0x1FF);
+                                // Check IST stacks in TSS - invalid IST can cause issues
+                                let tss_ptr = crate::gdt::get_tss_ptr();
+                                if !tss_ptr.is_null() {
+                                    let ist0 = (*tss_ptr).interrupt_stack_table[0];
+                                    let ist1 = (*tss_ptr).interrupt_stack_table[1];
+                                    crate::serial_println!("TSS IST[0] (double fault): {:#x} (PML4[{}])",
+                                                         ist0.as_u64(), (ist0.as_u64() >> 39) & 0x1FF);
+                                    crate::serial_println!("TSS IST[1] (page fault): {:#x} (PML4[{}])",
+                                                         ist1.as_u64(), (ist1.as_u64() >> 39) & 0x1FF);
                                 }
+
+                                // Log breakpoint handler address
+                                crate::serial_println!("Breakpoint handler: {:#x} (PML4[{}])",
+                                                     handler_addr, (handler_addr >> 39) & 0x1FF);
 
                                 // CURSOR AGENT DIAGNOSTIC: Log CR4 and EFER to check SMEP/SMAP/NXE
-                                unsafe {
-                                    use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
-                                    use x86_64::registers::model_specific::{Efer, EferFlags};
-                                    let cr0 = Cr0::read();
-                                    let cr4 = Cr4::read();
-                                    let efer = Efer::read();
-                                    crate::serial_println!("CPU state: CR0={:?}", cr0);
-                                    crate::serial_println!("CPU state: CR4={:?} (SMEP={}, SMAP={})",
-                                                         cr4,
-                                                         cr4.contains(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION),
-                                                         cr4.contains(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION));
-                                    crate::serial_println!("CPU state: EFER={:?} (NXE={})",
-                                                         efer,
-                                                         efer.contains(EferFlags::NO_EXECUTE_ENABLE));
-                                }
+                                use x86_64::registers::control::{Cr0, Cr4, Cr4Flags};
+                                use x86_64::registers::model_specific::{Efer, EferFlags};
+                                let cr0 = Cr0::read();
+                                let cr4 = Cr4::read();
+                                let efer = Efer::read();
+                                crate::serial_println!("CPU state: CR0={:?}", cr0);
+                                crate::serial_println!("CPU state: CR4={:?} (SMEP={}, SMAP={})",
+                                                     cr4,
+                                                     cr4.contains(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION),
+                                                     cr4.contains(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION));
+                                crate::serial_println!("CPU state: EFER={:?} (NXE={})",
+                                                     efer,
+                                                     efer.contains(EferFlags::NO_EXECUTE_ENABLE));
 
                                 // DIAGNOSTIC CODE DISABLED - was causing #GP after CR3 switch
                                 // The PML4[402]/[403] aliasing bug is fixed, so these diagnostics
                                 // are no longer needed.
 
                                 if false {  // DISABLED DIAGNOSTIC BLOCK
-                                unsafe {
                                     crate::serial_println!("Inside unsafe block");
 
                                     // CURSOR TEST: Inline asm OUT that doesn't touch stack
@@ -804,7 +795,7 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                                     crate::serial_println!("Inline asm OUT succeeded");
 
                                     // CRITICAL TEST: Check if stack is readable after CR3 switch
-                                    let mut stack_test_result: u8 = 0;
+                                    let mut _stack_test_result: u8 = 0;
                                     core::arch::asm!(
                                         "mov rdx, rsp",         // Get current stack pointer
                                         "mov al, [rdx]",        // Try to read from stack
@@ -812,7 +803,7 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                                         "mov dx, 0x00E9",       // Port for debug output
                                         "mov al, 0x53",         // ASCII 'S' for Success
                                         "out dx, al",           // Output success marker
-                                        out(reg_byte) stack_test_result,
+                                        out(reg_byte) _stack_test_result,
                                         options(nostack, preserves_flags)
                                     );
                                     // crate::serial_println!("✓ Stack is readable! Read value: {:#x}", stack_test_result);
@@ -856,7 +847,7 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                                     );
                                     // crate::serial_println!("After B output");
 
-                                    let handler_vaddr = x86_64::VirtAddr::new(handler_addr);
+                                    let _handler_vaddr = x86_64::VirtAddr::new(handler_addr);
 
                                     // Already output C and D in combined block above
 
@@ -933,7 +924,6 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                                         "out dx, al",
                                         options(nostack, nomem, preserves_flags)
                                     );
-                                }
 
                                 // CURSOR AGENT DIAGNOSTIC: Test kernel exception viability FIRST after CR3 switch
                                 // This is THE CRITICAL TEST - can we handle exceptions under process CR3?
@@ -942,26 +932,24 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                                 // crate::serial_println!("🔥 CRITICAL TEST: Testing kernel exception handling under process CR3");
                                 // crate::serial_println!("Still in CPL0 (kernel mode) - triggering int3...");
 
-                                unsafe {
-                                    // Output marker before int3
-                                    core::arch::asm!(
-                                        "mov dx, 0x3F8",  // COM1 port
-                                        "mov al, 0x4A",  // ASCII 'J' - about to int3
-                                        "out dx, al",
-                                        options(nostack, nomem, preserves_flags)
-                                    );
+                                // Output marker before int3
+                                core::arch::asm!(
+                                    "mov dx, 0x3F8",  // COM1 port
+                                    "mov al, 0x4A",  // ASCII 'J' - about to int3
+                                    "out dx, al",
+                                    options(nostack, nomem, preserves_flags)
+                                );
 
-                                    // SKIP INT3 FOR NOW - it might be causing issues
-                                    // core::arch::asm!("int3", options(nomem, nostack));
+                                // SKIP INT3 FOR NOW - it might be causing issues
+                                // core::arch::asm!("int3", options(nomem, nostack));
 
-                                    // Output marker at end of unsafe block
-                                    core::arch::asm!(
-                                        "mov dx, 0x3F8",  // COM1 port
-                                        "mov al, 0x4B",  // ASCII 'K' - end of unsafe block
-                                        "out dx, al",
-                                        options(nostack, nomem, preserves_flags)
-                                    );
-                                }
+                                // Output marker at end of unsafe block
+                                core::arch::asm!(
+                                    "mov dx, 0x3F8",  // COM1 port
+                                    "mov al, 0x4B",  // ASCII 'K' - end of unsafe block
+                                    "out dx, al",
+                                    options(nostack, nomem, preserves_flags)
+                                );
 
                                 // If we reach here, the breakpoint was handled successfully
                                 // crate::serial_println!("✓ SUCCESS: Kernel exception handling works under process CR3!");
@@ -1128,6 +1116,106 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                     });
 
                     crate::serial_println!("After interrupts::without_interrupts block");
+
+                    // CRITICAL VALIDATION: Verify that TSS.RSP0, IST[1], and user RSP are mapped
+                    // in the process page table BEFORE we IRETQ
+                    // This catches page table setup bugs immediately instead of triple faulting
+                    crate::serial_println!("DEBUG: About to run validation check");
+                    unsafe {
+                        let cr3_phys = new_frame.start_address().as_u64();
+                        let phys_offset = crate::memory::physical_memory_offset();
+                        let pml4_virt = phys_offset + cr3_phys;
+                        let pml4 = &*(pml4_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+
+                        // Get the actual addresses we need to validate
+                        let (_tss_base, tss_rsp0) = crate::gdt::get_tss_info();
+                        let tss_ptr = crate::gdt::get_tss_ptr();
+                        let ist1_addr = if !tss_ptr.is_null() {
+                            (*tss_ptr).interrupt_stack_table[1].as_u64()
+                        } else {
+                            0
+                        };
+                        // Get user RSP from the thread context (already aligned in setup)
+                        let user_rsp = scheduler::with_thread_mut(thread_id, |thread| thread.context.rsp)
+                            .unwrap_or(0x7fffff010ff8); // Default to adjusted stack top if not found
+
+                        crate::serial_println!("=== PRE-IRETQ VALIDATION: Checking critical mappings ===");
+                        crate::serial_println!("  Will validate:");
+                        crate::serial_println!("    1. TSS.RSP0 (kernel stack): {:#x} (PML4[{}])",
+                                             tss_rsp0, (tss_rsp0 >> 39) & 0x1FF);
+                        crate::serial_println!("    2. IST[1] (page fault stack): {:#x} (PML4[{}])",
+                                             ist1_addr, (ist1_addr >> 39) & 0x1FF);
+                        crate::serial_println!("    3. User RSP (user stack): {:#x} (PML4[{}])",
+                                             user_rsp, (user_rsp >> 39) & 0x1FF);
+
+                        // Helper function to check if an address is mapped
+                        let check_mapping = |addr: u64, name: &str| -> bool {
+                            let pml4_idx = ((addr >> 39) & 0x1FF) as usize;
+                            let pdpt_idx = ((addr >> 30) & 0x1FF) as usize;
+                            let pd_idx = ((addr >> 21) & 0x1FF) as usize;
+                            let pt_idx = ((addr >> 12) & 0x1FF) as usize;
+
+                            // Check PML4
+                            if pml4[pml4_idx].is_unused() {
+                                crate::serial_println!("❌ {} UNMAPPED: PML4[{}] is empty", name, pml4_idx);
+                                return false;
+                            }
+
+                            // Check PDPT
+                            let pdpt_phys = pml4[pml4_idx].addr();
+                            let pdpt_virt = phys_offset + pdpt_phys.as_u64();
+                            let pdpt = &*(pdpt_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+                            if pdpt[pdpt_idx].is_unused() {
+                                crate::serial_println!("❌ {} UNMAPPED: PDPT[{}] is empty", name, pdpt_idx);
+                                return false;
+                            }
+
+                            // Check PD
+                            let pd_phys = pdpt[pdpt_idx].addr();
+                            let pd_virt = phys_offset + pd_phys.as_u64();
+                            let pd = &*(pd_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+
+                            // Check for huge page
+                            if pd[pd_idx].flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+                                crate::serial_println!("✅ {} mapped via 2MB huge page at PD[{}]", name, pd_idx);
+                                return true;
+                            }
+
+                            if pd[pd_idx].is_unused() {
+                                crate::serial_println!("❌ {} UNMAPPED: PD[{}] is empty", name, pd_idx);
+                                return false;
+                            }
+
+                            // Check PT
+                            let pt_phys = pd[pd_idx].addr();
+                            let pt_virt = phys_offset + pt_phys.as_u64();
+                            let pt = &*(pt_virt.as_ptr() as *const x86_64::structures::paging::PageTable);
+                            if pt[pt_idx].is_unused() {
+                                crate::serial_println!("❌ {} UNMAPPED: PT[{}] is empty", name, pt_idx);
+                                return false;
+                            }
+
+                            crate::serial_println!("✅ {} mapped: PT[{}] -> frame {:#x}",
+                                                 name, pt_idx, pt[pt_idx].addr().as_u64());
+                            true
+                        };
+
+                        // Check stack addresses - 16 bytes (stack tops point past last valid byte)
+                        let tss_rsp0_mapped = check_mapping(tss_rsp0.wrapping_sub(16), "TSS.RSP0");
+                        let ist1_mapped = check_mapping(ist1_addr.wrapping_sub(16), "IST[1]");
+                        // User RSP is already adjusted in manager.rs, check it directly
+                        let user_rsp_mapped = check_mapping(user_rsp, "User RSP");
+
+                        if !tss_rsp0_mapped || !ist1_mapped || !user_rsp_mapped {
+                            crate::serial_println!("❌❌❌ CRITICAL: One or more required addresses are UNMAPPED!");
+                            crate::serial_println!("This will cause a page fault or triple fault on IRETQ!");
+                            crate::serial_println!("Halting instead of triple faulting...");
+                            loop { x86_64::instructions::hlt(); }
+                        }
+
+                        crate::serial_println!("✅✅✅ All critical mappings verified - safe to IRETQ");
+                        log::info!("[CHECKPOINT:PAGETABLE_VALIDATED] All critical mappings verified before IRETQ");
+                    }
                 }
 
             // CRITICAL: Set kernel stack for TSS RSP0

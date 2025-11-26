@@ -56,6 +56,7 @@ impl KernelStack {
     }
 
     /// Get the guard page address
+    #[allow(dead_code)]
     pub fn guard_page(&self) -> VirtAddr {
         VirtAddr::new(self.bottom.as_u64() - GUARD_PAGE_SIZE)
     }
@@ -137,11 +138,13 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
 
         // Map it in the global kernel page tables
         unsafe {
+            crate::serial_println!("🔍 Mapping kernel stack page {:#x} -> {:#x}", virt_addr, frame.start_address());
             crate::memory::kernel_page_table::map_kernel_page(
                 virt_addr,
                 frame.start_address(),
                 flags,
             )?;
+            crate::serial_println!("✓ Kernel stack page {:#x} mapped successfully", virt_addr);
         }
     }
 

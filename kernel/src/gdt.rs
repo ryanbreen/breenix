@@ -192,6 +192,7 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
 }
 
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub fn double_fault_stack_top() -> VirtAddr {
     TSS.get()
         .expect("TSS not initialized")
@@ -230,6 +231,7 @@ pub fn update_ist_stacks() {
 }
 
 /// Legacy function - now calls update_ist_stacks()
+#[allow(dead_code)]
 pub fn update_ist_stack(stack_top: VirtAddr) {
     let _ = stack_top; // Ignore parameter, use proper per-CPU stacks
     update_ist_stacks();
@@ -257,7 +259,7 @@ pub fn set_tss_rsp0(kernel_stack_top: VirtAddr) {
 
 /// Get GDT base and limit for logging
 pub fn get_gdt_info() -> (u64, u16) {
-    let gdtr = unsafe { x86_64::instructions::tables::sgdt() };
+    let gdtr = x86_64::instructions::tables::sgdt();
     (gdtr.base.as_u64(), gdtr.limit)
 }
 

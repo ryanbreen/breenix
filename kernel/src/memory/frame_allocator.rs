@@ -192,6 +192,7 @@ pub fn allocate_frame() -> Option<PhysFrame> {
 
 /// Deallocate a physical frame (currently a no-op)
 /// TODO: Implement proper frame deallocation
+#[allow(dead_code)]
 pub fn deallocate_frame(_frame: PhysFrame) {
     // For now, we don't reclaim frames
     // A proper implementation would add the frame back to a free list

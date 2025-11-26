@@ -40,6 +40,7 @@ pub enum ProcessState {
 /// A process represents a running program with its own address space
 pub struct Process {
     /// Unique process identifier
+    #[allow(dead_code)]
     pub id: ProcessId,
 
     /// Process name (for debugging)
@@ -142,6 +143,7 @@ impl Process {
     }
 
     /// Add a child process
+    #[allow(dead_code)]
     pub fn add_child(&mut self, child_id: ProcessId) {
         self.children.push(child_id);
     }
@@ -153,11 +155,13 @@ impl Process {
     }
 
     /// Get the process ID
+    #[allow(dead_code)]
     pub fn pid(&self) -> ProcessId {
         self.id
     }
 
     /// Get a reference to the page table
+    #[allow(dead_code)]
     pub fn page_table(&self) -> Option<&ProcessPageTable> {
         self.page_table.as_ref().map(|b| b.as_ref())
     }

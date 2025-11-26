@@ -25,6 +25,7 @@ impl ProcessPageTable {
     ///
     /// This creates a complete copy of the page table hierarchy below this L4 entry,
     /// ensuring that each process has its own isolated page tables.
+    #[allow(dead_code)]
     fn deep_copy_pml4_entry(
         source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
         entry_index: usize,
@@ -95,6 +96,7 @@ impl ProcessPageTable {
     }
 
     /// Deep copy an L3 entry, creating independent L2/L1 tables
+    #[allow(dead_code)]
     fn deep_copy_l3_entry(
         source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
         entry_index: usize,
@@ -175,6 +177,7 @@ impl ProcessPageTable {
     }
 
     /// Deep copy an L2 entry, creating independent L1 tables
+    #[allow(dead_code)]
     fn deep_copy_l2_entry(
         source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
         _entry_index: usize,
@@ -948,6 +951,7 @@ impl ProcessPageTable {
     }
 
     /// Unmap a page in this process's address space
+    #[allow(dead_code)]
     pub fn unmap_page(
         &mut self,
         page: Page<Size4KiB>,
@@ -962,6 +966,7 @@ impl ProcessPageTable {
     }
 
     /// Translate a virtual address to physical address
+    #[allow(dead_code)]
     pub fn translate(&self, addr: VirtAddr) -> Option<PhysAddr> {
         self.mapper.translate_addr(addr)
     }
@@ -1086,11 +1091,13 @@ impl ProcessPageTable {
     }
 
     /// Get a reference to the mapper
+    #[allow(dead_code)]
     pub fn mapper(&mut self) -> &mut OffsetPageTable<'static> {
         &mut self.mapper
     }
 
     /// Allocate a stack in this process's page table
+    #[allow(dead_code)]
     pub fn allocate_stack(
         &mut self,
         size: usize,
@@ -1103,6 +1110,7 @@ impl ProcessPageTable {
     ///
     /// WORKAROUND: Since we share L3 tables between processes, we need to
     /// unmap pages that might conflict with the new program.
+    #[allow(dead_code)]
     pub fn clear_userspace_for_exec(&mut self) -> Result<(), &'static str> {
         log::debug!("clear_userspace_for_exec: Clearing common userspace regions");
 
@@ -1206,6 +1214,7 @@ impl ProcessPageTable {
 /// - The new page table is valid
 /// - The kernel mappings are present in the new page table
 /// - This is called from a safe context (e.g., during interrupt return)
+#[allow(dead_code)]
 pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
     let (current_frame, flags) = Cr3::read();
     let new_frame = page_table.level_4_frame();
@@ -1259,6 +1268,7 @@ pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
 static mut KERNEL_PAGE_TABLE_FRAME: Option<PhysFrame> = None;
 
 /// Get the kernel page table frame
+#[allow(dead_code)]
 pub fn kernel_page_table_frame() -> PhysFrame {
     unsafe { KERNEL_PAGE_TABLE_FRAME.expect("Kernel page table frame not initialized") }
 }

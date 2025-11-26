@@ -11,6 +11,15 @@ use alloc::vec;
 /// This test validates that multiple processes can run concurrently without
 /// stomping on each other's memory or causing crashes.
 ///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (This function): Creates and schedules the process
+///   - Marker: "Direct execution test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+///   - Does NOT prove the process executed
+/// - Stage 2 (Boot stage 31): Validates actual execution
+///   - Marker: "USERSPACE OUTPUT: Hello from userspace"
+///   - This PROVES the process ran and printed output
+///
 /// SUCCESS CRITERIA:
 /// - Must see: Multiple "Hello from userspace! Current time: XXXXX" outputs with different times
 /// - Must see: All processes complete successfully without crashes
@@ -57,6 +66,15 @@ pub fn test_direct_execution() {
 }
 
 /// Test fork from userspace - validates that userspace processes can call fork()
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (This function): Creates and schedules the process
+///   - Marker: "Fork test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+///   - Does NOT prove the process executed
+/// - Stage 2 (Boot stage 31): Validates actual execution
+///   - Marker: "USERSPACE OUTPUT: Hello from userspace"
+///   - This PROVES the process ran and printed output
 pub fn test_userspace_fork() {
     log::info!("=== Testing multiple instances of same program ===");
     log::info!("This test runs TWO hello_time processes to isolate the issue");
@@ -863,6 +881,15 @@ fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
 }
 
 /// Test that undefined syscalls return ENOSYS
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (This function): Creates and schedules the process
+///   - Marker: "ENOSYS test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+///   - Does NOT prove the process executed or that ENOSYS works
+/// - Stage 2 (Boot stage 32): Validates actual execution and ENOSYS return value
+///   - Marker: "USERSPACE OUTPUT: ENOSYS OK"
+///   - This PROVES the process ran AND syscall 999 returned -38
 pub fn test_syscall_enosys() {
     log::info!("Testing undefined syscall returns ENOSYS");
 
