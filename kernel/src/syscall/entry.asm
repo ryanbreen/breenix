@@ -158,18 +158,20 @@ syscall_entry:
     ; CRITICAL: Check if we need to switch CR3 before IRETQ (syscall return)
     ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
     ; If non-zero, switch to it and clear the flag
-    push rax
+    ; IMPORTANT: Use R10 for CR3 operations to preserve RAX (syscall return value)
+    ; R10 is caller-saved so we can clobber it (it's already saved on stack)
+    push r10
     push rdx
 
     ; CRITICAL: Swap back to kernel GS to read next_cr3
     ; We're currently in user GS mode, but next_cr3 is in kernel GS
     swapgs
 
-    ; Read next_cr3 from per-CPU data (GS:64)
-    mov rax, qword [gs:64]
+    ; Read next_cr3 from per-CPU data (GS:64) - use R10, not RAX!
+    mov r10, qword [gs:64]
 
     ; Check if CR3 switch is needed (non-zero)
-    test rax, rax
+    test r10, r10
     jz .no_cr3_switch_syscall_back_to_user
 
     ; Interrupts already disabled (CLI before trace function)
@@ -200,7 +202,7 @@ syscall_entry:
 
     ; NOW safe to switch CR3 to process page table
     ; Kernel per-CPU data already cleared while kernel PT was active
-    mov cr3, rax
+    mov cr3, r10
 
     ; Swap back to user GS for IRETQ
     swapgs
@@ -210,8 +212,8 @@ syscall_entry:
 .no_cr3_switch_syscall_back_to_user:
     ; No context switch, but we still need to restore the ORIGINAL process CR3!
     ; We saved it on entry at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
-    mov rax, qword [gs:80]             ; Read saved process CR3
-    test rax, rax                      ; Check if it was saved (non-zero)
+    mov r10, qword [gs:80]             ; Read saved process CR3 into R10
+    test r10, r10                      ; Check if it was saved (non-zero)
     jz .no_saved_cr3_syscall           ; If 0, skip (shouldn't happen from userspace)
 
     ; Debug: Output marker for saved CR3 restore
@@ -230,7 +232,7 @@ syscall_entry:
     pop rdx
 
     ; Switch back to original process CR3
-    mov cr3, rax
+    mov cr3, r10
 
 .no_saved_cr3_syscall:
     ; Swap back to user GS for IRETQ
@@ -238,7 +240,7 @@ syscall_entry:
 
 .after_cr3_check_syscall:
     pop rdx
-    pop rax
+    pop r10
 
     ; Return to userspace with IRETQ
     ; This will restore RIP, CS, RFLAGS, RSP, SS from stack
@@ -340,18 +342,20 @@ syscall_return_to_userspace:
     ; CRITICAL: Check if we need to switch CR3 before IRETQ (first userspace entry)
     ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
     ; If non-zero, switch to it and clear the flag
-    push rax
+    ; IMPORTANT: Use R10 for CR3 operations (RAX already cleared to zero above)
+    ; R10 is caller-saved and was cleared to zero, so we can use it
+    push r10
     push rdx
 
     ; CRITICAL: Swap back to kernel GS to read next_cr3
     ; We're currently in user GS mode, but next_cr3 is in kernel GS
     swapgs
 
-    ; Read next_cr3 from per-CPU data (GS:64)
-    mov rax, qword [gs:64]
+    ; Read next_cr3 from per-CPU data (GS:64) - use R10, not RAX!
+    mov r10, qword [gs:64]
 
     ; Check if CR3 switch is needed (non-zero)
-    test rax, rax
+    test r10, r10
     jz .no_cr3_switch_first_entry_back_to_user
 
     ; Interrupts already disabled (CLI at function start line 260)
@@ -386,7 +390,7 @@ syscall_return_to_userspace:
 
     ; NOW safe to switch CR3 to process page table
     ; Kernel per-CPU data already cleared while kernel PT was active
-    mov cr3, rax
+    mov cr3, r10
 
     ; Swap back to user GS for IRETQ
     swapgs
@@ -396,8 +400,8 @@ syscall_return_to_userspace:
 .no_cr3_switch_first_entry_back_to_user:
     ; No context switch, but we still need to restore the ORIGINAL process CR3!
     ; We saved it on entry at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
-    mov rax, qword [gs:80]             ; Read saved process CR3
-    test rax, rax                      ; Check if it was saved (non-zero)
+    mov r10, qword [gs:80]             ; Read saved process CR3 into R10
+    test r10, r10                      ; Check if it was saved (non-zero)
     jz .no_saved_cr3_first_entry       ; If 0, skip (shouldn't happen from userspace)
 
     ; Debug: Output marker for saved CR3 restore
@@ -420,7 +424,7 @@ syscall_return_to_userspace:
     pop rdx
 
     ; Switch back to original process CR3
-    mov cr3, rax
+    mov cr3, r10
 
 .no_saved_cr3_first_entry:
     ; Swap back to user GS for IRETQ
@@ -428,7 +432,7 @@ syscall_return_to_userspace:
 
 .after_cr3_check_first_entry:
     pop rdx
-    pop rax
+    pop r10
 
     ; Jump to userspace
     ; IRETQ will re-enable interrupts from the saved RFLAGS

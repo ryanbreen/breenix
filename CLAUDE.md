@@ -57,40 +57,147 @@ echo '-A50 "Creating user process"' > /tmp/log-query.txt
 
 ## Development Workflow
 
-### Agent-Based Development (MANDATORY)
+### Agent-Based Development (MANDATORY) 🚨
 
-**The main conversation is for ORCHESTRATION ONLY.** Never execute tests, run builds, or perform iterative debugging directly in the top-level session. This burns token context and leads to session exhaustion.
+**READ THIS FIRST - THIS IS THE MOST IMPORTANT RULE IN THIS ENTIRE FILE**
 
-**ALWAYS dispatch to agents:**
-- Running tests (`cargo test`, `cargo run -p xtask -- boot-stages`, etc.)
-- Build verification and compilation checks
-- Debugging sessions that involve iterative log analysis
-- Code exploration and codebase research
-- Any task that may require multiple iterations or produce verbose output
+The main conversation is for **ORCHESTRATION ONLY**. Period. Full stop. No exceptions.
 
-**The orchestrator session should only:**
-- Plan and decompose work into agent-dispatchable tasks
-- Review agent reports and synthesize findings
-- Make high-level decisions based on agent results
-- Coordinate multiple parallel agent investigations
-- Communicate summaries and next steps to the user
+#### Why This Matters
 
-**Anti-pattern (NEVER DO THIS):**
-```
-# DON'T run tests directly in main session
+Long debugging sessions in the main conversation cause:
+1. **Token context exhaustion** - The session fills up with build output, test logs, and iterative attempts
+2. **Quality degradation** - As context fills, you start cutting corners and making mistakes
+3. **"Fatigue cheating"** - You weaken tests to pass, suppress warnings instead of fixing them, or accept "good enough" solutions
+4. **Loss of focus** - The original task gets buried under layers of debugging output
+
+Agents solve this by giving **fresh context** for each discrete task. They can't cheat because they don't have the fatigue. They can't cut corners because they don't have the history of failed attempts.
+
+#### The Iron Law: What NEVER Happens in Main Session
+
+**NEVER in the main conversation:**
+- ❌ Run tests (`cargo test`, `cargo run -p xtask -- boot-stages`, etc.)
+- ❌ Run builds or compilation checks
+- ❌ Execute the kernel (`./scripts/run_breenix.sh`, `cargo run`)
+- ❌ Perform iterative debugging or log analysis
+- ❌ Write significant implementation code
+- ❌ Explore the codebase with multiple file reads
+- ❌ Search through large outputs with grep/sed/awk
+- ❌ Any task that might require iteration or produce verbose output
+
+**If you catch yourself typing `cargo`, `./scripts/`, or opening multiple files to understand something - STOP. Dispatch an agent.**
+
+#### What the Orchestrator DOES Do
+
+The main session is for:
+- ✅ Planning work and decomposing into agent-dispatchable tasks
+- ✅ Reviewing agent reports and synthesizing findings
+- ✅ Making high-level architectural decisions
+- ✅ Coordinating multiple parallel agent investigations
+- ✅ Communicating summaries and decisions to the user
+- ✅ Updating documentation (CLAUDE.md, PROJECT_ROADMAP.md)
+- ✅ Small, targeted file edits based on agent findings (e.g., fixing a specific line an agent identified)
+
+Think of yourself as a **project manager**, not an **implementer**. You delegate all actual work.
+
+#### Anti-Patterns (NEVER DO THIS)
+
+```bash
+# ❌ DON'T run tests directly in main session
 cargo run -p xtask -- boot-stages
-# DON'T grep through large outputs in main session
-cat target/output.txt | grep ...
+
+# ❌ DON'T build in main session
+cargo build --release
+
+# ❌ DON'T debug iteratively in main session
+./scripts/run_breenix.sh
+# (check output)
+# (make change)
+./scripts/run_breenix.sh
+# (check again)
+# ... this cycle BURNS context
+
+# ❌ DON'T grep through large outputs in main session
+cat target/output.txt | grep -A50 "error"
+
+# ❌ DON'T explore code directly in main session
+Read file1.rs
+Read file2.rs
+Read file3.rs
+# ... burns tokens trying to understand
 ```
 
-**Correct pattern:**
-```
-# DO dispatch to an agent with clear instructions
+#### Correct Patterns (DO THIS)
+
+```bash
+# ✅ DO dispatch to an agent with clear instructions
 Task(subagent_type="general-purpose", prompt="Run boot-stages test, analyze
 the output, and report which stage fails and why. Include relevant log excerpts.")
+
+# ✅ DO dispatch debugging to an agent
+Task(subagent_type="general-purpose", prompt="Debug why clock_gettime test is
+failing. Run the test, analyze logs, identify root cause, and propose a fix.
+Include the specific code location and error message.")
+
+# ✅ DO dispatch code exploration to an agent
+Task(subagent_type="general-purpose", prompt="Find all places where we handle
+syscall arguments. Map out the flow from syscall entry to argument extraction
+to handler dispatch. Report the file paths and function names involved.")
+
+# ✅ DO dispatch implementation to an agent
+Task(subagent_type="general-purpose", prompt="Implement the clock_gettime
+syscall handler. Follow the existing syscall patterns in syscall/time.rs.
+Ensure zero compiler warnings. Report when complete with the changes made.")
+
+# ✅ DO coordinate multiple agents for complex tasks
+Task 1: "Run boot-stages and report results"
+Task 2: "Run integration tests and report failures"
+Task 3: "Analyze logs from latest run and identify errors"
+# Then synthesize their reports in main session
 ```
 
-When a debugging task requires multiple iterations, dispatch it ONCE to an agent with comprehensive instructions. The agent will iterate internally and return a summary. If more investigation is needed, dispatch another agent - don't bring the iteration into the main session.
+#### Agent Dispatch Guidelines
+
+**When dispatching agents:**
+1. **Be comprehensive** - Give the agent enough context to complete the task independently
+2. **Be specific** - State exactly what you want: test results, root cause, proposed fix, etc.
+3. **Request structured output** - Ask for file paths, line numbers, specific error messages
+4. **Single dispatch for iterative work** - If debugging requires multiple attempts, let the AGENT iterate, not you
+
+**Example of a good agent dispatch:**
+```
+Task(subagent_type="general-purpose", prompt="
+The clock_gettime test is failing. Your mission:
+
+1. Run: cargo test clock_gettime
+2. Analyze the failure output and kernel logs
+3. Identify the root cause (be specific: file, function, line if possible)
+4. Determine if this is a test issue or an implementation bug
+5. Propose a fix with rationale
+
+Deliver:
+- Root cause statement
+- Relevant code excerpts
+- Proposed fix or next investigation step
+")
+```
+
+**When a debugging task requires multiple iterations**, dispatch it ONCE to an agent with comprehensive instructions. The agent will iterate internally and return a summary. If more investigation is needed after reviewing the agent's report, dispatch ANOTHER agent - don't bring the iteration into the main session.
+
+#### Quality Enforcement
+
+This rule exists to maintain quality. When you violate it:
+- Your context fills with noise
+- You start making mistakes
+- You cut corners to "just get it working"
+- You suppress warnings instead of fixing them
+- You weaken tests instead of fixing bugs
+
+**If you find yourself tempted to "just quickly run this test" in the main session, that's EXACTLY when you should dispatch an agent.** The temptation is a sign of fatigue, which is a sign you need fresh context.
+
+#### Emergency Override
+
+The ONLY exception: If the user explicitly says "run X in this session" or "don't use agents for this", then and only then can you violate this rule. Otherwise, it's agents all the way down.
 
 ### Feature Branches (REQUIRED)
 Never push directly to main. Always:

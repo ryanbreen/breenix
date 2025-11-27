@@ -292,6 +292,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Userspace process called clock_gettime syscall but got zero time or syscall failed",
             check_hint: "Verify INT 0x80 dispatch to SYS_clock_gettime (228) works from Ring 3 and returns non-zero time",
         },
+        BootStage {
+            name: "Userspace brk() heap allocation validated",
+            marker: "USERSPACE BRK: ALL TESTS PASSED",
+            failure_meaning: "Userspace process called brk syscall but heap allocation failed",
+            check_hint: "Verify INT 0x80 dispatch to SYS_brk (12) works from Ring 3, allocates/frees memory correctly, and userspace can read/write allocated pages",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

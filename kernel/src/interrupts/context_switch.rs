@@ -373,9 +373,13 @@ fn restore_userspace_thread_context(
     );
 
     // Check if this thread has ever run before
+    // NOTE: with_thread_mut returns None ONLY if the thread doesn't exist (spinlocks don't fail on contention)
+    // If the scheduler gave us a non-existent thread_id, that's a critical bug - panic immediately.
     let has_started = scheduler::with_thread_mut(thread_id, |thread| {
         thread.has_started
-    }).unwrap_or(false);
+    }).unwrap_or_else(|| {
+        panic!("FATAL: Scheduler scheduled non-existent thread {}! This is a bug in the scheduler.", thread_id);
+    });
 
     if !has_started {
         // CRITICAL: This is a brand new thread that has never run
@@ -386,6 +390,26 @@ fn restore_userspace_thread_context(
         scheduler::with_thread_mut(thread_id, |thread| {
             thread.has_started = true;
         });
+
+        // CRITICAL FIX: Zero out all registers for first-time userspace entry
+        // The thread.context was initialized with zeros, but saved_regs on the stack
+        // contains garbage from the interrupt/syscall that triggered this context switch.
+        // We must clear them so the assembly pop instructions restore clean state.
+        saved_regs.rax = 0;
+        saved_regs.rbx = 0;
+        saved_regs.rcx = 0;
+        saved_regs.rdx = 0;
+        saved_regs.rsi = 0;
+        saved_regs.rdi = 0;  // This fixes the RDI corruption!
+        saved_regs.rbp = 0;
+        saved_regs.r8 = 0;
+        saved_regs.r9 = 0;
+        saved_regs.r10 = 0;
+        saved_regs.r11 = 0;
+        saved_regs.r12 = 0;
+        saved_regs.r13 = 0;
+        saved_regs.r14 = 0;
+        saved_regs.r15 = 0;
 
         // For first run, we need to set up the interrupt frame to jump to userspace
         // We should NOT try to "return" from this function

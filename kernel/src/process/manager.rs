@@ -90,7 +90,8 @@ impl ProcessManager {
         // Use the standard userspace base address for all processes
         crate::serial_println!("manager.create_process: Loading ELF into page table");
         let loaded_elf = elf::load_elf_into_page_table(elf_data, page_table.as_mut())?;
-        crate::serial_println!("manager.create_process: ELF loaded, entry={:#x}", loaded_elf.entry_point.as_u64());
+        crate::serial_println!("manager.create_process: ELF loaded, entry={:#x}, heap_start={:#x}",
+                             loaded_elf.entry_point.as_u64(), loaded_elf.segments_end);
         
         // CRITICAL FIX: Re-map kernel low-half after ELF loading
         // The ELF loader may have created new page tables that don't preserve kernel mappings
@@ -182,7 +183,16 @@ impl ProcessManager {
         crate::serial_println!("manager.create_process: Creating Process struct");
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
         process.page_table = Some(page_table);
-        crate::serial_println!("manager.create_process: Process struct created");
+
+        // Initialize heap tracking - heap starts at end of loaded segments
+        process.heap_start = loaded_elf.segments_end;
+        process.heap_end = loaded_elf.segments_end; // Initially empty heap
+        log::info!(
+            "Process heap initialized: start={:#x}, end={:#x}",
+            process.heap_start,
+            process.heap_end
+        );
+        crate::serial_println!("manager.create_process: Process struct created, heap={:#x}", process.heap_start);
 
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
@@ -753,9 +763,29 @@ impl ProcessManager {
         log::debug!("  CS: {:#x}", child_thread.context.cs);
         log::debug!("  SS: {:#x}", child_thread.context.ss);
 
-        // Crucial: Set the child's return value to 0
-        // In x86_64, system call return values go in RAX
+        // CRITICAL FIX: Clear all registers that could contain stale values
+        // The parent's context might have been saved during a syscall, so registers
+        // like RDI might contain a stack pointer (from 'mov rdi, rsp' in syscall entry)
+        // or other garbage. The child should start with clean register state.
+        //
+        // Set return value to 0 (fork returns 0 in child)
         child_thread.context.rax = 0;
+        // Clear syscall argument registers (System V ABI: rdi, rsi, rdx, r10, r8, r9)
+        child_thread.context.rdi = 0;
+        child_thread.context.rsi = 0;
+        child_thread.context.rdx = 0;
+        child_thread.context.r10 = 0;
+        child_thread.context.r8 = 0;
+        child_thread.context.r9 = 0;
+        // Also clear other general purpose registers for safety
+        child_thread.context.rbx = 0;
+        child_thread.context.rcx = 0;
+        child_thread.context.r11 = 0;
+        child_thread.context.r12 = 0;
+        child_thread.context.r13 = 0;
+        child_thread.context.r14 = 0;
+        child_thread.context.r15 = 0;
+        child_thread.context.rbp = 0;
 
         // Update child's stack pointer based on userspace RSP if provided
         if let Some(user_rsp) = userspace_rsp {
