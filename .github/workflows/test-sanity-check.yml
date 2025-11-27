@@ -1,11 +1,9 @@
 name: Test Sanity Check Branch
 
 on:
-  push:
-    branches: [ sanity-check-happy-ring-3 ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
+    # Manual trigger only - this workflow is disabled
+    # Replaced by boot-stages.yml for comprehensive validation
 
 env:
   RUST_BACKTRACE: 1

@@ -1,9 +1,9 @@
 name: Ring‑3 Smoke Test
 
 on:
-  push:
-    branches: [ "**" ]
-  pull_request:
+  workflow_dispatch:
+    # Manual trigger only - this workflow is disabled
+    # Replaced by boot-stages.yml for comprehensive validation
 
 jobs:
   ring3-smoke:

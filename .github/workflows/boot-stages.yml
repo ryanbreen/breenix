@@ -1,0 +1,69 @@
+name: Boot Stages Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  boot-stages:
+    name: Validate 41 Boot Stages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2025-06-24
+          override: true
+          target: x86_64-unknown-none
+          components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            ovmf \
+            nasm
+          qemu-system-x86_64 --version
+          nasm --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build userspace tests
+        run: |
+          # Add LLVM tools to PATH
+          export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
+          cd userspace/tests
+          ./build.sh
+
+      - name: Run boot-stages test
+        run: cargo run -p xtask -- boot-stages
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-stages-output-${{ github.run_number }}
+          path: |
+            target/xtask_boot_stages_output.txt
+            logs/*.log
+          if-no-files-found: warn

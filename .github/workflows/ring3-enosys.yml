@@ -1,16 +1,9 @@
 name: Ring-3 ENOSYS Test
 
 on:
-  pull_request:
-    paths:
-      - 'kernel/**'
-      - 'userspace/**'
-      - 'tests/**'
-      - 'xtask/**'
-      - '.github/workflows/ring3-enosys.yml'
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    # Manual trigger only - this workflow is disabled
+    # Replaced by boot-stages.yml for comprehensive validation
 
 jobs:
   ring3-enosys:
