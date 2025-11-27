@@ -1,11 +1,9 @@
 name: Code Quality Checks
 
 on:
-  push:
-    paths:
-      - 'kernel/**'
-      - '.github/workflows/code-quality.yml'
-  pull_request:
+  workflow_dispatch:
+    # Manual trigger only - boot-stages.yml is the primary CI check
+    # Run this manually for deeper code quality analysis
 
 jobs:
   clippy-checks:

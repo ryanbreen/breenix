@@ -1,11 +1,7 @@
+use crate::memory::layout::{USER_STACK_REGION_START, USER_STACK_REGION_END};
 use crate::task::thread::ThreadPrivilege;
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 use x86_64::VirtAddr;
-
-/// Base address for user stack allocation area
-/// Using a high canonical range (below kernel space) for better compatibility
-/// This address is more standard and works better with different QEMU configs
-pub const USER_STACK_ALLOC_START: u64 = 0x_7FFF_FF00_0000;
 
 /// Base address for kernel stack allocation area
 /// Must be in kernel space (high canonical addresses)
@@ -125,7 +121,7 @@ impl GuardedStack {
     ) -> Result<VirtAddr, &'static str> {
         // For now, use a simple incrementing allocator
         // TODO: Implement proper virtual memory management
-        static mut NEXT_USER_STACK_ADDR: u64 = USER_STACK_ALLOC_START;
+        static mut NEXT_USER_STACK_ADDR: u64 = USER_STACK_REGION_START;
         static mut NEXT_KERNEL_STACK_ADDR: u64 = KERNEL_STACK_ALLOC_START;
 
         unsafe {
@@ -136,7 +132,7 @@ impl GuardedStack {
 
                     // Simple bounds check for user stacks
                     // Keep user stacks well below kernel space
-                    if NEXT_USER_STACK_ADDR > 0x_7FFF_FFFF_0000 {
+                    if NEXT_USER_STACK_ADDR > USER_STACK_REGION_END {
                         return Err("Out of virtual address space for user stacks");
                     }
 

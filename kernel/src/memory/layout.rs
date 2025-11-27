@@ -19,10 +19,33 @@ pub const FIXMAP_BASE: u64 = 0xfffffd0000000000;     // Fixed mappings (GDT/IDT/
 #[allow(dead_code)]
 pub const MMIO_BASE: u64 = 0xffffe00000000000;       // MMIO regions
 
-// TEMPORARY FIX: Userspace base moved to 1GB to avoid PML4[0] conflict with kernel
-// This places userspace in PDPT[1] while kernel stays in PDPT[0]
+// === User Space Memory Layout ===
+
+/// Base of user space (1GB mark)
+/// Userspace base moved to 1GB to avoid PML4[0] conflict with kernel
+/// This places userspace in PDPT[1] while kernel stays in PDPT[0]
 #[allow(dead_code)]
 pub const USERSPACE_BASE: u64 = 0x40000000;          // 1GB - avoids kernel conflict
+
+/// End of user code/data region (2GB)
+/// This defines the upper boundary of the region where user programs' code and data
+/// can be loaded. The stack lives in a separate, higher region.
+pub const USERSPACE_CODE_DATA_END: u64 = 0x80000000;
+
+/// User stack allocation region start (high canonical space)
+/// User stacks are allocated in this high canonical range for better compatibility
+/// with different QEMU configurations and to avoid conflicts with code/data region
+pub const USER_STACK_REGION_START: u64 = 0x7FFF_FF00_0000;
+
+/// User stack allocation region end (canonical boundary)
+/// This is the top of the lower-half canonical address space, just before
+/// the non-canonical hole that separates user and kernel space
+pub const USER_STACK_REGION_END: u64 = 0x8000_0000_0000;
+
+/// Default user stack size (64 KiB)
+/// This is the standard size allocated for user process stacks
+#[allow(dead_code)]
+pub const USER_STACK_SIZE: usize = 64 * 1024;
 
 // PML4 indices for different regions
 pub const KERNEL_PML4_INDEX: u64 = 402;              // Kernel stacks at 0xffffc90000000000
@@ -209,3 +232,43 @@ fn log_control_structures() {
     let percpu_info = per_cpu::get_percpu_info();
     log::info!("KLAYOUT: Per-CPU base={:#x} size={:#x}", percpu_info.0, percpu_info.1);
 }
+
+// === User Space Address Validation Functions ===
+
+/// Check if an address is in userspace code/data region
+///
+/// The code/data region spans from USERSPACE_BASE (1GB) to USERSPACE_CODE_DATA_END (2GB).
+/// This is where ELF programs are loaded and where their .text, .data, .rodata, and .bss
+/// sections reside.
+#[inline]
+pub fn is_user_code_data_address(addr: u64) -> bool {
+    addr >= USERSPACE_BASE && addr < USERSPACE_CODE_DATA_END
+}
+
+/// Check if an address is in userspace stack region
+///
+/// The stack region is in high canonical space, from USER_STACK_REGION_START to
+/// USER_STACK_REGION_END. This region is separate from code/data to allow for
+/// better compatibility and to avoid conflicts.
+#[inline]
+pub fn is_user_stack_address(addr: u64) -> bool {
+    addr >= USER_STACK_REGION_START && addr < USER_STACK_REGION_END
+}
+
+/// Check if an address is in ANY valid userspace region
+///
+/// This validates that an address falls within either the code/data region or
+/// the stack region. Any other address is considered invalid for userspace access.
+#[inline]
+pub fn is_valid_user_address(addr: u64) -> bool {
+    is_user_code_data_address(addr) || is_user_stack_address(addr)
+}
+
+// === Compile-time Layout Assertions ===
+
+/// Verify that user regions don't overlap
+/// This compile-time check ensures our memory layout is consistent
+const _: () = assert!(
+    USERSPACE_CODE_DATA_END <= USER_STACK_REGION_START,
+    "User code/data region overlaps with stack region!"
+);

@@ -24,16 +24,13 @@ const FD_STDERR: u64 = 2;
 fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
     // SIMPLIFIED: Just validate address range and copy directly
     // No logging, no process lookups - to avoid any potential double faults
-    
+
     if user_ptr == 0 {
         return Err("null pointer");
     }
 
-    // Basic validation - check if address is in reasonable userspace range
-    let is_code_data_range = user_ptr >= crate::memory::layout::USERSPACE_BASE && user_ptr < 0x80000000;
-    let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5570_0000;
-
-    if !is_code_data_range && !is_stack_range {
+    // Validate address is in valid userspace region (code/data or stack)
+    if !crate::memory::layout::is_valid_user_address(user_ptr) {
         return Err("invalid userspace address");
     }
 
@@ -61,11 +58,8 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
         return Err("null pointer");
     }
 
-    // Basic validation - check if address is in reasonable userspace range
-    let is_code_data_range = user_ptr >= crate::memory::layout::USERSPACE_BASE && user_ptr < 0x80000000;
-    let is_stack_range = user_ptr >= 0x5555_5554_0000 && user_ptr < 0x5555_5570_0000;
-
-    if !is_code_data_range && !is_stack_range {
+    // Validate address is in valid userspace region (code/data or stack)
+    if !crate::memory::layout::is_valid_user_address(user_ptr) {
         log::error!("copy_to_user: Invalid userspace address {:#x}", user_ptr);
         return Err("invalid userspace address");
     }

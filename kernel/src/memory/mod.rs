@@ -176,8 +176,8 @@ pub fn debug_memory_info() {
     // Stack allocation area info
     log::info!("\nStack Allocation Areas:");
     log::info!(
-        "  - USER_STACK_ALLOC_START: {:#x}",
-        stack::USER_STACK_ALLOC_START
+        "  - USER_STACK_REGION_START: {:#x}",
+        layout::USER_STACK_REGION_START
     );
     log::info!(
         "  - KERNEL_STACK_ALLOC_START: {:#x}",

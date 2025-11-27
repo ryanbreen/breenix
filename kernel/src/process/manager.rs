@@ -40,8 +40,8 @@ impl ProcessManager {
             current_pid: None,
             next_pid: AtomicU64::new(1), // PIDs start at 1 (0 is kernel)
             ready_queue: Vec::new(),
-            // Start process virtual addresses at 0x40000000, with 16MB spacing
-            next_process_base: VirtAddr::new(0x40000000),
+            // Start process virtual addresses at USERSPACE_BASE, with 16MB spacing
+            next_process_base: VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
         }
     }
 
