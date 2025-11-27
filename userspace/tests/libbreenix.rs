@@ -25,14 +25,15 @@ pub struct Timespec {
 }
 
 // Inline assembly for INT 0x80 syscalls
+// NOTE: INT 0x80 may clobber argument registers - use inlateout to force the
+// compiler to actually emit MOV instructions and not assume register values
+// persist across syscalls.
 #[inline(always)]
 unsafe fn syscall0(num: u64) -> u64 {
     let ret: u64;
     asm!(
         "int 0x80",
-        in("rax") num,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
+        inlateout("rax") num => ret,
     );
     ret
 }
@@ -42,10 +43,8 @@ unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
     let ret: u64;
     asm!(
         "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
+        inlateout("rax") num => ret,
+        inlateout("rdi") arg1 => _,
     );
     ret
 }
@@ -55,11 +54,9 @@ unsafe fn syscall2(num: u64, arg1: u64, arg2: u64) -> u64 {
     let ret: u64;
     asm!(
         "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        in("rsi") arg2,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
+        inlateout("rax") num => ret,
+        inlateout("rdi") arg1 => _,
+        inlateout("rsi") arg2 => _,
     );
     ret
 }
@@ -69,12 +66,10 @@ unsafe fn syscall3(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     let ret: u64;
     asm!(
         "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        in("rsi") arg2,
-        in("rdx") arg3,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
+        inlateout("rax") num => ret,
+        inlateout("rdi") arg1 => _,
+        inlateout("rsi") arg2 => _,
+        inlateout("rdx") arg3 => _,
     );
     ret
 }
