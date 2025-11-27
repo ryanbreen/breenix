@@ -182,6 +182,11 @@ impl ProcessManager {
         crate::serial_println!("manager.create_process: Creating Process struct");
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
         process.page_table = Some(page_table);
+
+        // Initialize heap tracking - cache value before using twice
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
         crate::serial_println!("manager.create_process: Process struct created");
 
         // Update memory usage

@@ -76,6 +76,12 @@ pub struct Process {
 
     /// Per-process page table
     pub page_table: Option<Box<ProcessPageTable>>,
+
+    /// Heap start address
+    pub heap_start: u64,
+
+    /// Current heap end
+    pub heap_end: u64,
 }
 
 /// Memory usage tracking
@@ -106,6 +112,8 @@ impl Process {
             memory_usage: MemoryUsage::default(),
             stack: None,
             page_table: None,
+            heap_start: 0,
+            heap_end: 0,
         }
     }
 

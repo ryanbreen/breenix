@@ -259,6 +259,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
         Some(SyscallNumber::Fork) => super::handlers::sys_fork_with_frame(frame),
         Some(SyscallNumber::Exec) => super::handlers::sys_exec(args.0, args.1),
+        Some(SyscallNumber::Brk) => super::memory::sys_brk(args.0),
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
         Some(SyscallNumber::ClockGetTime) => {
