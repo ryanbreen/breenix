@@ -10,7 +10,7 @@
 
 use crate::task::scheduler;
 
-/// Time quantum in timer ticks (10ms per tick, 100ms quantum = 10 ticks)
+/// Time quantum in timer ticks (100ms per tick, 1000ms quantum = 10 ticks)
 const TIME_QUANTUM: u32 = 10;
 
 /// Current thread's remaining time quantum
@@ -85,8 +85,11 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
                       count, quantum_before, quantum_after, has_user_threads);
         }
 
-        // If quantum expired OR there are user threads ready (for idle thread), set need_resched flag
-        let should_set_need_resched = *quantum_ptr == 0 || has_user_threads;
+        // Only reschedule when quantum expires - NOT every tick
+        // The previous "|| has_user_threads" caused rescheduling on EVERY timer tick,
+        // which combined with logging overhead meant userspace never got to execute.
+        // Idle thread awakening should be handled separately (e.g., when new threads are enqueued).
+        let should_set_need_resched = *quantum_ptr == 0;
 
         if count < 10 {
             crate::irq_debug!("TIMER DEBUG #{}: should_set_need_resched={} (quantum_zero={}, has_user={})",
@@ -113,19 +116,14 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
         }
     }
 
-    // Send End Of Interrupt
-    // TEMPORARILY DISABLE LOGGING
-    // if count < 5 {
-    //     log::debug!("Timer interrupt #{} - sending EOI", count);
-    // }
-    unsafe {
-        super::PICS
-            .lock()
-            .notify_end_of_interrupt(super::InterruptIndex::Timer.as_u8());
-    }
-    // if count < 5 {
-    //     log::debug!("Timer interrupt #{} - EOI sent", count);
-    // }
+    // CRITICAL FIX: EOI moved to assembly code just before IRETQ
+    // Previously, EOI was sent here early, which allowed the PIC to queue
+    // another timer interrupt during context switch processing. When IRETQ
+    // re-enabled interrupts (IF=1), the pending interrupt fired immediately,
+    // preventing any userspace instruction from executing.
+    //
+    // EOI is now sent by send_timer_eoi() called from timer_entry.asm
+    // just before IRETQ, after all processing is complete.
 
     // Exit hardware IRQ context (decrements HARDIRQ count and may schedule)
     crate::per_cpu::irq_exit();
@@ -460,4 +458,18 @@ pub extern "C" fn timer_interrupt_handler_asm() {
     // This wrapper is no longer used since the assembly calls timer_interrupt_handler directly
     // Kept for backward compatibility but should be removed
     timer_interrupt_handler(0);
+}
+
+/// Send End-Of-Interrupt for the timer
+/// CRITICAL: This MUST be called just before IRETQ, after all timer interrupt
+/// processing is complete. Calling EOI earlier allows the PIC to queue another
+/// timer interrupt during processing, which fires immediately when IRETQ
+/// re-enables interrupts.
+#[no_mangle]
+pub extern "C" fn send_timer_eoi() {
+    unsafe {
+        super::PICS
+            .lock()
+            .notify_end_of_interrupt(super::InterruptIndex::Timer.as_u8());
+    }
 }

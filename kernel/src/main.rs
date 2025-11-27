@@ -437,6 +437,21 @@ fn kernel_main_continue() -> ! {
                     log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
                 }
             }
+
+            // Launch clock_gettime_test after hello_time
+            #[cfg(feature = "external_test_bins")]
+            {
+                serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
+                let clock_test_buf = crate::userspace_test::get_test_binary("clock_gettime_test");
+                match process::creation::create_user_process(String::from("clock_gettime_test"), &clock_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created clock_gettime_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create clock_gettime_test process: {}", e);
+                    }
+                }
+            }
         });
     }
 
@@ -633,10 +648,30 @@ fn kernel_main_continue() -> ! {
         log::error!("  Enabling interrupts anyway to observe failure behavior...");
     }
 
+    // Test timer resolution BEFORE enabling interrupts
+    // This validates that get_monotonic_time() correctly converts PIT ticks to milliseconds
+    log::info!("Testing timer resolution...");
+    time_test::test_timer_resolution();
+    log::info!("✅ Timer resolution test passed");
+
+    // Test our clock_gettime implementation BEFORE enabling interrupts
+    // This must run before interrupts are enabled because once interrupts are on,
+    // the scheduler will preempt to userspace and this code will never execute.
+    log::info!("Testing clock_gettime syscall implementation...");
+    clock_gettime_test::test_clock_gettime();
+    log::info!("✅ clock_gettime tests passed");
+
+    // Mark kernel initialization complete BEFORE enabling interrupts
+    // Once interrupts are enabled, the scheduler will preempt to userspace
+    // and kernel_main may never execute again
+    log::info!("✅ Kernel initialization complete!");
+
     // Enable interrupts for preemptive multitasking - userspace processes will now run
+    // WARNING: After this call, kernel_main will likely be preempted immediately
+    // by the timer interrupt and scheduler. All essential init must be done above.
     log::info!("Enabling interrupts (after creating user processes)...");
     x86_64::instructions::interrupts::enable();
-    log::info!("Interrupts enabled - scheduler is now active!");
+    // NOTE: Code below this point may never execute due to scheduler preemption
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done after interrupts are enabled but before other tests
@@ -660,11 +695,6 @@ fn kernel_main_continue() -> ! {
         });
     }
 
-    // Test our clock_gettime implementation
-    log::info!("Testing clock_gettime syscall implementation...");
-    clock_gettime_test::test_clock_gettime();
-    log::info!("✅ clock_gettime tests passed");
-
     // Initialize keyboard
     #[cfg(not(feature = "testing"))]
     {
@@ -672,12 +702,6 @@ fn kernel_main_continue() -> ! {
         keyboard::init();
         log::info!("Keyboard initialized");
     }
-
-    log::info!("✅ Kernel initialization complete!");
-
-    // Give the scheduler a chance to run the created processes
-    log::info!("Enabling interrupts to allow scheduler to run...");
-    x86_64::instructions::interrupts::enable();
 
     // Wait briefly for processes to run
     for _ in 0..1000000 {

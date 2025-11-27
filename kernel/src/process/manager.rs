@@ -483,6 +483,45 @@ impl ProcessManager {
         result
     }
 
+    /// Find a process by its CR3 (page table frame)
+    #[allow(dead_code)]
+    pub fn find_process_by_cr3(&self, cr3: u64) -> Option<(ProcessId, &Process)> {
+        self.processes
+            .iter()
+            .find(|(_, process)| {
+                if let Some(ref pt) = process.page_table {
+                    pt.level_4_frame().start_address().as_u64() == cr3
+                } else {
+                    false
+                }
+            })
+            .map(|(pid, process)| (*pid, process))
+    }
+
+    /// Find a process by its CR3 (page table frame) - mutable version
+    pub fn find_process_by_cr3_mut(&mut self, cr3: u64) -> Option<(ProcessId, &mut Process)> {
+        log::trace!("find_process_by_cr3_mut: Looking for CR3={:#x}", cr3);
+
+        let result = self.processes
+            .iter_mut()
+            .find(|(_, process)| {
+                if let Some(ref pt) = process.page_table {
+                    pt.level_4_frame().start_address().as_u64() == cr3
+                } else {
+                    false
+                }
+            })
+            .map(|(pid, process)| (*pid, process));
+
+        if let Some((pid, _)) = &result {
+            log::trace!("Found: Process {} has CR3={:#x}", pid.as_u64(), cr3);
+        } else {
+            log::trace!("NOT FOUND: No process has CR3={:#x}", cr3);
+        }
+
+        result
+    }
+
     /// Debug print all processes
     pub fn debug_processes(&self) {
         log::info!("=== Process List ===");

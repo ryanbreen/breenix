@@ -70,13 +70,9 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
                         crate::serial_println!("create_user_process: scheduler::spawn completed");
 
-                        // CRITICAL: Set target CR3 for this process's first entry to userspace
-                        // The assembly interrupt return will switch to this CR3 before IRETQ
-                        if let Some(ref page_table) = process.page_table {
-                            let target_cr3 = page_table.level_4_frame().start_address().as_u64();
-                            crate::serial_println!("create_user_process: Setting next_cr3={:#x} for first userspace entry", target_cr3);
-                            crate::per_cpu::set_next_cr3(target_cr3);
-                        }
+                        // REMOVED: set_next_cr3() call - CR3 switching happens during scheduling,
+                        // not during process creation. The context_switch.rs::setup_first_userspace_entry()
+                        // function handles CR3 switching when the thread is actually scheduled to run.
 
                         log::info!(
                             "create_user_process: User thread {} enqueued for scheduling",

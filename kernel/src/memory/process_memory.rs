@@ -413,10 +413,14 @@ impl ProcessPageTable {
                     log::info!("CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: {:?}", master_flags);
                 }
 
-                // Copy lower-half entries (0-255) from master for shared kernel resources
+                // Copy lower-half entries (1-255) from master for shared kernel resources
                 // This includes the heap (PML4[136]) and other kernel allocations
+                // CRITICAL: Skip PML4[0] - it covers 0x0 - 0x7FFFFFFFFF (512GB) which is userspace
+                // Each process needs its own PML4[0] so they have independent page tables for
+                // userspace addresses like 0x40000000 where ELF programs are loaded.
+                // Sharing PML4[0] causes "Page already mapped to different frame" errors.
                 let mut lower_half_copied = 0;
-                for i in 0..256 {
+                for i in 1..256 {  // Start at 1, NOT 0 - skip PML4[0] for per-process userspace
                     if i == 2 {
                         continue; // Already handled above with special flags
                     }
@@ -426,7 +430,25 @@ impl ProcessPageTable {
                         lower_half_copied += 1;
                     }
                 }
-                log::info!("PHASE2: Copied {} lower-half entries (0-255) from master", lower_half_copied);
+                log::info!("PHASE2: Copied {} lower-half entries (1-255) from master, PML4[0] left empty for userspace", lower_half_copied);
+
+                // CREATE a fresh PDPT for PML4[0] to enable userspace mappings
+                // PML4[0] covers 0x0 - 0x7FFFFFFFFF (512GB) - this is the userspace region
+                // Each process needs its own independent page table hierarchy here
+                let fresh_pdpt_frame = allocate_frame().ok_or("Failed to allocate PDPT for PML4[0]")?;
+
+                // Map and zero out the fresh PDPT
+                let fresh_pdpt_virt = phys_offset + fresh_pdpt_frame.start_address().as_u64();
+                let fresh_pdpt = &mut *(fresh_pdpt_virt.as_mut_ptr() as *mut PageTable);
+                for i in 0..512 {
+                    fresh_pdpt[i].set_unused();
+                }
+
+                // Install the fresh PDPT in PML4[0] with user-accessible flags
+                // The intermediate page tables need USER_ACCESSIBLE for userspace to work
+                let pml4_0_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+                level_4_table[0].set_addr(fresh_pdpt_frame.start_address(), pml4_0_flags);
+                log::info!("PHASE2: Created fresh PDPT for PML4[0] at frame {:#x}", fresh_pdpt_frame.start_address().as_u64());
 
                 // Copy PML4[256-511] from master (shared kernel upper half)
                 // This includes IDT, TSS, GDT, per-CPU, kernel stacks, IST stacks, and all kernel structures

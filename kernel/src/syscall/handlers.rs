@@ -83,13 +83,7 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
     {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
-            if let Some((pid, _process)) = manager.find_process_by_thread(current_thread_id) {
-                log::debug!(
-                    "copy_to_user: Thread {} belongs to process {:?}",
-                    current_thread_id,
-                    pid
-                );
-            } else {
+            if manager.find_process_by_thread(current_thread_id).is_none() {
                 log::error!(
                     "copy_to_user: No process found for thread {}",
                     current_thread_id
@@ -102,24 +96,10 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
         }
     }
 
-    // Get current CR3 for logging only
-    let current_cr3 = x86_64::registers::control::Cr3::read();
-    log::debug!(
-        "copy_to_user: Current CR3: {:#x}, writing to user memory at {:#x}",
-        current_cr3.0.start_address(),
-        user_ptr
-    );
-
     // CRITICAL: Access user memory WITHOUT switching CR3
     // This works because when we're in a syscall from userspace, we're already
     // using the process's page table, which has both kernel and user mappings
     unsafe {
-        log::debug!(
-            "copy_to_user: Directly writing {} bytes to {:#x} (no CR3 switch)",
-            len,
-            user_ptr
-        );
-
         // Directly copy the data - the memory should be accessible
         // because we're already in the process's context
         let dst = user_ptr as *mut u8;
@@ -127,11 +107,6 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
         core::ptr::copy_nonoverlapping(src, dst, len);
     }
 
-    log::debug!(
-        "copy_to_user: Successfully copied {} bytes to {:#x}",
-        len,
-        user_ptr
-    );
     Ok(())
 }
 
@@ -291,7 +266,7 @@ pub fn sys_yield() -> SyscallResult {
     // Note: The actual context switch will happen on the next timer interrupt
     // We don't force an immediate switch here because:
     // 1. Software interrupts from userspace context are complex
-    // 2. The timer interrupt will fire soon anyway (every 10ms)
+    // 2. The timer interrupt will fire soon anyway (every 100ms)
     // 3. This matches typical OS behavior where yield is a hint, not a guarantee
 
     SyscallResult::Ok(0)

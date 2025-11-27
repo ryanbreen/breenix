@@ -23,6 +23,9 @@ pub static SYSCALL_ENOSYS_ELF: &[u8] = include_bytes!("../../userspace/tests/sys
 // When external_test_bins is not enabled, TIMER_TEST_ELF is unavailable. Keep references gated.
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static TIMER_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/timer_test.elf");
+
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+pub static CLOCK_GETTIME_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/clock_gettime_test.elf");
 #[cfg(feature = "testing")]
 pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
     #[cfg(feature = "external_test_bins")]
@@ -36,6 +39,7 @@ pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
             "fork_test" => FORK_TEST_ELF,
             "syscall_enosys" => SYSCALL_ENOSYS_ELF,
             "timer_test" => TIMER_TEST_ELF,
+            "clock_gettime_test" => CLOCK_GETTIME_TEST_ELF,
             _ => {
                 log::warn!("Unknown test binary '{}', using minimal ELF", name);
                 return create_minimal_valid_elf();
@@ -105,6 +109,7 @@ fn _test_binaries_included() {
     assert!(SPINNER_ELF.len() > 0, "spinner.elf not included");
     assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
     assert!(TIMER_TEST_ELF.len() > 0, "timer_test.elf not included");
+    assert!(CLOCK_GETTIME_TEST_ELF.len() > 0, "clock_gettime_test.elf not included");
 }
 
 /// Test running a userspace program
@@ -456,6 +461,13 @@ fn fork_creator_thread_fn() {
 }
 
 /// Create a minimal but valid ELF binary for testing
+///
+/// This generates x86-64 machine code that:
+/// 1. Calls sys_write(1, "Hello from userspace!\n", 22) via INT 0x80
+/// 2. Calls sys_exit(0) via INT 0x80
+///
+/// This is a simple stub used when external_test_bins is not enabled.
+/// For real tests, use the compiled ELF binaries in userspace/tests/*.elf
 #[allow(dead_code)]
 fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     use alloc::vec::Vec;
@@ -506,7 +518,7 @@ fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     // Program header (56 bytes)
     elf.extend_from_slice(&[
         0x01, 0x00, 0x00, 0x00, // p_type = PT_LOAD (1)
-        0x05, 0x00, 0x00, 0x00, // p_flags = PF_R | PF_X (5)
+        0x07, 0x00, 0x00, 0x00, // p_flags = PF_R | PF_W | PF_X (7) - need write for stack
     ]);
 
     // p_offset (8 bytes) = 120 (after headers)
@@ -518,33 +530,57 @@ fn create_minimal_valid_elf() -> alloc::vec::Vec<u8> {
     // p_paddr (8 bytes) = 0x40000000
     elf.extend_from_slice(&[0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00]);
 
-    // p_filesz (8 bytes) = 64 (42 bytes code + 22 bytes string)
-    elf.extend_from_slice(&[0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    // p_filesz (8 bytes) = 56 (code + string)
+    // Code: 34 bytes, String: 22 bytes, Total = 56 bytes
+    elf.extend_from_slice(&[0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-    // p_memsz (8 bytes) = 64
-    elf.extend_from_slice(&[0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    // p_memsz (8 bytes) = 56
+    elf.extend_from_slice(&[0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
     // p_align (8 bytes) = 4096
     elf.extend_from_slice(&[0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-    // Code section (starting at offset 120) - make write syscall then exit
-    // Modified to write "Hello from userspace!" for clear ASCII output
+    // Code section (starting at offset 120 = 0x78)
+    // Virtual address at runtime: 0x40000000
+    //
+    // Simple stub that just prints "Hello from userspace!\n" and exits
+    //
+    // Layout:
+    // 0x00-0x1b: Print hello message (28 bytes)
+    // 0x1c-0x21: Exit (6 bytes)
+    // 0x22-0x37: String data (22 bytes)
+    // Total: 56 bytes
+    //
+    // RIP-relative addressing:
+    // - lea at 0x0e targets hello_msg at 0x22: offset = 0x22 - (0x0e + 7) = 0x22 - 0x15 = 0x0d
+
     elf.extend_from_slice(&[
-        // sys_write(1, "Hello from userspace!\n", 22)
-        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // mov rax, 1 (sys_write)
-        0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00, // mov rdi, 1 (stdout)
-        0x48, 0x8d, 0x35, 0x15, 0x00, 0x00, 0x00, // lea rsi, [rip+0x15] (string at offset 0x2a)
-        0x48, 0xc7, 0xc2, 0x16, 0x00, 0x00, 0x00, // mov rdx, 22 (length)
-        0xcd, 0x80, // int 0x80 (syscall)
-        // sys_exit(0)
-        0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00, // mov rax, 0 (sys_exit)
-        0x48, 0x31, 0xff, // xor rdi, rdi (exit code 0)
-        0xcd, 0x80, // int 0x80 (syscall)
-        // Data: "Hello from userspace!\n" (22 bytes)
-        b'H', b'e', b'l', b'l', b'o', b' ',        // "Hello "
-        b'f', b'r', b'o', b'm', b' ',              // "from "
-        b'u', b's', b'e', b'r', b's', b'p',        // "usersp"
-        b'a', b'c', b'e', b'!', b'\n',             // "ace!\n"
+        // === Print "Hello from userspace!\n" ===
+        // 0x00: mov rax, 1 (sys_write)
+        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00,
+        // 0x07: mov rdi, 1 (stdout)
+        0x48, 0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00,
+        // 0x0e: lea rsi, [rip+0x0d] (hello_msg at 0x22)
+        0x48, 0x8d, 0x35, 0x0d, 0x00, 0x00, 0x00,
+        // 0x15: mov rdx, 22 (length)
+        0x48, 0xc7, 0xc2, 0x16, 0x00, 0x00, 0x00,
+        // 0x1c: int 0x80
+        0xcd, 0x80,
+
+        // === Exit ===
+        // 0x1e: mov rax, 0 (sys_exit)
+        0x48, 0xc7, 0xc0, 0x00, 0x00, 0x00, 0x00,
+        // 0x25: xor rdi, rdi (exit code 0)
+        0x48, 0x31, 0xff,
+        // 0x28: int 0x80
+        0xcd, 0x80,
+
+        // === Data: hello message ===
+        // 0x2b: "Hello from userspace!\n" (22 bytes)
+        b'H', b'e', b'l', b'l', b'o', b' ',
+        b'f', b'r', b'o', b'm', b' ',
+        b'u', b's', b'e', b'r', b's', b'p',
+        b'a', b'c', b'e', b'!', b'\n',
     ]);
 
     elf

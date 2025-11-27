@@ -37,6 +37,19 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
+    // CRITICAL FIX: Always save context when coming from userspace, BEFORE any early returns.
+    // This ensures thread.context.rip is always up-to-date. Without this, if no context switch
+    // happens on this syscall return, but a later context switch restores this thread,
+    // it would use stale context.rip (the entry point 0x40000000) instead of the actual RIP.
+    let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
+    if from_userspace {
+        if let Some(current_tid) = scheduler::current_thread_id() {
+            // Save context unconditionally so it's always current
+            // Ignore return value - we continue even if save fails (no context switch happening)
+            let _ = save_current_thread_context(current_tid, saved_regs, interrupt_frame);
+        }
+    }
+
     // Check if reschedule is needed
     if !scheduler::check_and_clear_need_resched() {
         // No reschedule needed, just return
@@ -85,6 +98,9 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
     if let Some((old_thread_id, new_thread_id)) = schedule_result {
+        // Clear exception cleanup context since we're doing a context switch
+        crate::per_cpu::clear_exception_cleanup_context();
+
         if old_thread_id == new_thread_id {
             // Same thread continues running
             return;
@@ -96,8 +112,7 @@ pub extern "C" fn check_need_resched_and_switch(
             new_thread_id
         );
 
-        // Check if we're coming from userspace and surface prominently for CI
-        let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
+        // Log context switch details (from_userspace already computed above)
         log::info!(
             "Context switch: from_userspace={}, CS={:#x}",
             from_userspace,
@@ -131,8 +146,19 @@ pub extern "C" fn check_need_resched_and_switch(
         }
 
         // Save current thread's context if coming from userspace
+        // CRITICAL: If save fails, we MUST NOT switch contexts!
+        // Switching without saving would cause the process to return to stale RIP (entry point)
         if from_userspace {
-            save_current_thread_context(old_thread_id, saved_regs, interrupt_frame);
+            if !save_current_thread_context(old_thread_id, saved_regs, interrupt_frame) {
+                log::error!(
+                    "Context switch aborted: failed to save thread {} context. \
+                     Would cause return to stale RIP!",
+                    old_thread_id
+                );
+                // Don't clear need_resched - we'll try again on next interrupt return
+                // The lock contention should resolve by then
+                return;
+            }
         }
 
         // Switch to the new thread
@@ -154,11 +180,12 @@ pub extern "C" fn check_need_resched_and_switch(
 }
 
 /// Save the current thread's userspace context
+/// Returns true if context was saved successfully, false otherwise
 fn save_current_thread_context(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
-) {
+) -> bool {
     // CRITICAL: Use try_manager in interrupt context to avoid deadlock
     // Never use with_process_manager() from interrupt handlers!
     if let Some(mut manager_guard) = crate::process::try_manager() {
@@ -171,15 +198,31 @@ fn save_current_thread_context(
                         pid.as_u64(),
                         thread_id
                     );
+                    return true;
+                } else {
+                    log::error!(
+                        "Process {} has no main_thread for thread {}",
+                        pid.as_u64(),
+                        thread_id
+                    );
                 }
+            } else {
+                log::error!(
+                    "Could not find process for thread {} in process manager",
+                    thread_id
+                );
             }
+        } else {
+            log::error!("Process manager is None");
         }
     } else {
-        log::warn!(
-            "Could not acquire process manager lock in interrupt context for thread {}",
+        log::error!(
+            "CRITICAL: Could not acquire process manager lock in interrupt context for thread {}. \
+             Context switch will be aborted to prevent returning to stale RIP.",
             thread_id
         );
     }
+    false
 }
 
 /// Switch to a different thread
@@ -481,10 +524,14 @@ fn restore_userspace_thread_context(
             }
         }
     } else {
-        log::warn!(
-            "Could not acquire process manager lock in interrupt context for thread {}",
+        log::error!(
+            "CRITICAL: Could not acquire process manager lock to restore context for thread {}. \
+             Interrupt frame NOT modified - will return to previous thread instead!",
             thread_id
         );
+        // NOTE: This is a serious inconsistency - the scheduler thinks thread_id is running
+        // but we're actually going to return to the previous thread's context.
+        // TODO: Consider panicking here, or implement proper rollback
     }
 }
 
@@ -690,6 +737,19 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
 
                                 // Do the actual CR3 switch
                                 core::arch::asm!("mov cr3, {}", in(reg) cr3_value, options(nostack, preserves_flags));
+
+                                // CRITICAL: Tell interrupt return path to use this CR3
+                                // Set NEXT_CR3 at gs:[64] so that timer_entry.asm restores the correct CR3
+                                crate::per_cpu::set_next_cr3(cr3_value);
+
+                                // CRITICAL: Also set saved_process_cr3 at gs:[80]
+                                // The timer interrupt expects this to be set when returning to userspace
+                                // On first entry, there's nothing saved yet, so we set it to the process CR3
+                                core::arch::asm!(
+                                    "mov gs:[80], {}",
+                                    in(reg) cr3_value,
+                                    options(nostack, preserves_flags)
+                                );
 
                                 // IMMEDIATELY verify we can still execute
                                 // If this fails, we'll triple fault right here

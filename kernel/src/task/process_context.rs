@@ -128,7 +128,6 @@ pub fn save_userspace_context(
     thread.context.rflags = interrupt_frame.cpu_flags.bits();
     thread.context.cs = interrupt_frame.code_segment.0 as u64;
     thread.context.ss = interrupt_frame.stack_segment.0 as u64;
-
     log::trace!(
         "Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}, RAX={:#x}",
         thread.id,

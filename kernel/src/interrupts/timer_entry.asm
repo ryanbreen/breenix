@@ -10,6 +10,7 @@ extern timer_interrupt_handler
 extern check_need_resched_and_switch
 extern log_timer_frame_from_userspace
 extern trace_iretq_to_ring3
+extern send_timer_eoi
 
 ; CRITICAL: Place interrupt entry code in dedicated section that stays mapped
 ; This ensures the code is accessible after CR3 switches to process page tables
@@ -60,15 +61,17 @@ timer_interrupt_entry:
     mov rax, cr3                       ; Read current (process) CR3
     mov qword [gs:80], rax             ; Save to per-CPU saved_process_cr3
 
-    ; CRITICAL: Switch CR3 back to kernel page table
-    ; When interrupt fires from userspace, CR3 is still the process PT
-    ; We MUST switch to kernel PT before running any kernel code
-    ; Read kernel_cr3 from per-CPU data at gs:[72] (KERNEL_CR3_OFFSET)
-    mov rax, qword [gs:72]             ; Read kernel CR3 from per-CPU data
-    test rax, rax                      ; Check if kernel_cr3 is set
-    jz .skip_cr3_switch_entry          ; If not set, skip (early boot fallback)
-    mov cr3, rax                       ; Switch to kernel page table
-.skip_cr3_switch_entry:
+    ; NOTE: We intentionally do NOT switch CR3 on timer interrupt entry anymore.
+    ; Process page tables have all kernel mappings copied from the master PML4,
+    ; so kernel code can run with the process's page table active.
+    ; This keeps userspace memory accessible during kernel execution.
+    ;
+    ; The old CR3-switch code is kept for reference but disabled:
+    ; mov rax, qword [gs:72]             ; Read kernel CR3 from per-CPU data
+    ; test rax, rax                      ; Check if kernel_cr3 is set
+    ; jz .skip_cr3_switch_entry          ; If not set, skip (early boot fallback)
+    ; mov cr3, rax                       ; Switch to kernel page table
+    ; .skip_cr3_switch_entry:
     
     ; Log full frame details for first few userspace interrupts
     ; Pass frame pointer to logging function
@@ -239,6 +242,9 @@ timer_interrupt_entry:
     pop rdx
     pop rax
 
+    ; EOI is now sent just before IRETQ to minimize the window for PIC to queue
+    ; another interrupt. See .after_cr3_check and .no_userspace_return
+
     ; Swap back to user GS before IRETQ
     swapgs
 
@@ -346,6 +352,13 @@ timer_interrupt_entry:
     pop rdx
     pop rax
 
+    ; CRITICAL FIX: Send EOI just before IRETQ to minimize window for spurious interrupts
+    ; We're on user GS here, but send_timer_eoi needs kernel GS to access PICS lock
+    ; Sequence: swapgs to kernel, call EOI, swapgs to user, iretq
+    swapgs                  ; Switch to kernel GS
+    call send_timer_eoi     ; Send EOI (requires kernel GS for PICS access)
+    swapgs                  ; Switch back to user GS for iretq
+
     ; Return from interrupt to userspace
     ; IRETQ will re-enable interrupts from the saved RFLAGS
     iretq
@@ -353,6 +366,10 @@ timer_interrupt_entry:
 .no_userspace_return:
     ; No error code to remove
     ; NO EXTRA POPS - registers already restored above!
-    
+
+    ; CRITICAL FIX: Send EOI for kernel return path too
+    ; We're still on kernel GS (we never swapped since we came from kernel mode)
+    call send_timer_eoi
+
     ; Return from interrupt to kernel
     iretq

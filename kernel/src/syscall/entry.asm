@@ -53,15 +53,17 @@ syscall_entry:
     mov rax, cr3                       ; Read current (process) CR3
     mov qword [gs:80], rax             ; Save to per-CPU saved_process_cr3
 
-    ; CRITICAL: Switch CR3 back to kernel page table
-    ; Syscalls only come from userspace, so CR3 is always a process PT
-    ; We MUST switch to kernel PT before running kernel code
-    ; Read kernel_cr3 from per-CPU data at gs:[72] (KERNEL_CR3_OFFSET)
-    mov rax, qword [gs:72]             ; Read kernel CR3 from per-CPU data
-    test rax, rax                      ; Check if kernel_cr3 is set
-    jz .skip_cr3_switch                ; If not set, skip (early boot fallback)
-    mov cr3, rax                       ; Switch to kernel page table
-.skip_cr3_switch:
+    ; NOTE: We intentionally do NOT switch CR3 on syscall entry anymore.
+    ; Process page tables have all kernel mappings copied from the master PML4,
+    ; so kernel code can run with the process's page table active.
+    ; This allows copy_from_user/copy_to_user to access userspace memory directly.
+    ;
+    ; The old CR3-switch code is kept for reference but disabled:
+    ; mov rax, qword [gs:72]             ; Read kernel CR3 from per-CPU data
+    ; test rax, rax                      ; Check if kernel_cr3 is set
+    ; jz .skip_cr3_switch                ; If not set, skip (early boot fallback)
+    ; mov cr3, rax                       ; Switch to kernel page table
+    ; .skip_cr3_switch:
 
     ; Call the Rust syscall handler
     ; Pass pointer to saved registers as argument

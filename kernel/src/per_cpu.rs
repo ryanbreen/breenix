@@ -632,19 +632,35 @@ pub fn set_idle_thread(thread: *mut crate::task::thread::Thread) {
 /// This must be called on every context switch to a thread
 pub fn update_tss_rsp0(kernel_stack_top: VirtAddr) {
     unsafe {
-        // Get TSS pointer from per-CPU data
-        let cpu_data: *mut PerCpuData;
+        // BUG FIX: Previously this code read gs:0 expecting a pointer to PerCpuData,
+        // but gs:0 contains cpu_id (value 0), not a pointer. When cpu_id is 0,
+        // the code treated it as a null pointer and skipped the TSS update entirely!
+        // This caused syscalls to use stale kernel stacks, leading to page faults.
+        //
+        // The fix is to access the TSS pointer directly at its correct offset (48),
+        // and update kernel_stack_top at its correct offset (16).
+
+        // Get TSS pointer from per-CPU data at offset 48 (TSS_OFFSET)
+        let tss_ptr: *mut x86_64::structures::tss::TaskStateSegment;
         core::arch::asm!(
-            "mov {}, gs:0",
-            out(reg) cpu_data,
+            "mov {}, gs:[{offset}]",
+            out(reg) tss_ptr,
+            offset = const TSS_OFFSET,
             options(nostack, preserves_flags)
         );
-        
-        if !cpu_data.is_null() && !(*cpu_data).tss.is_null() {
-            // Update both per-CPU kernel_stack_top and TSS.RSP0
-            (*cpu_data).kernel_stack_top = kernel_stack_top;
-            (*(*cpu_data).tss).privilege_stack_table[0] = kernel_stack_top;
-            
+
+        if !tss_ptr.is_null() {
+            // Update per-CPU kernel_stack_top at offset 16 (KERNEL_STACK_TOP_OFFSET)
+            core::arch::asm!(
+                "mov gs:[{offset}], {}",
+                in(reg) kernel_stack_top.as_u64(),
+                offset = const KERNEL_STACK_TOP_OFFSET,
+                options(nostack, preserves_flags)
+            );
+
+            // Update TSS.RSP0
+            (*tss_ptr).privilege_stack_table[0] = kernel_stack_top;
+
             // log::trace!("Updated TSS.RSP0 to {:#x}", kernel_stack_top);  // Disabled to avoid deadlock
         }
     }
@@ -653,16 +669,14 @@ pub fn update_tss_rsp0(kernel_stack_top: VirtAddr) {
 /// Set the TSS pointer for this CPU
 pub fn set_tss(tss: *mut x86_64::structures::tss::TaskStateSegment) {
     unsafe {
-        let cpu_data: *mut PerCpuData;
+        // Store TSS pointer directly at offset 48 (TSS_OFFSET) in per-CPU data
+        // BUG FIX: Previously read gs:0 (cpu_id) as a pointer, which is wrong.
         core::arch::asm!(
-            "mov {}, gs:0",
-            out(reg) cpu_data,
+            "mov gs:[{offset}], {}",
+            in(reg) tss,
+            offset = const TSS_OFFSET,
             options(nostack, preserves_flags)
         );
-        
-        if !cpu_data.is_null() {
-            (*cpu_data).tss = tss;
-        }
     }
 }
 
@@ -670,18 +684,16 @@ pub fn set_tss(tss: *mut x86_64::structures::tss::TaskStateSegment) {
 #[allow(dead_code)]
 pub fn user_rsp_scratch() -> u64 {
     unsafe {
-        let cpu_data: *const PerCpuData;
+        // Read user_rsp_scratch directly at offset 40 (USER_RSP_SCRATCH_OFFSET)
+        // BUG FIX: Previously read gs:0 (cpu_id) as a pointer, which is wrong.
+        let rsp: u64;
         core::arch::asm!(
-            "mov {}, gs:0",
-            out(reg) cpu_data,
+            "mov {}, gs:[{offset}]",
+            out(reg) rsp,
+            offset = const USER_RSP_SCRATCH_OFFSET,
             options(nostack, preserves_flags)
         );
-        
-        if cpu_data.is_null() {
-            0
-        } else {
-            (*cpu_data).user_rsp_scratch
-        }
+        rsp
     }
 }
 
@@ -689,16 +701,14 @@ pub fn user_rsp_scratch() -> u64 {
 #[allow(dead_code)]
 pub fn set_user_rsp_scratch(rsp: u64) {
     unsafe {
-        let cpu_data: *mut PerCpuData;
+        // Store user_rsp_scratch directly at offset 40 (USER_RSP_SCRATCH_OFFSET)
+        // BUG FIX: Previously read gs:0 (cpu_id) as a pointer, which is wrong.
         core::arch::asm!(
-            "mov {}, gs:0",
-            out(reg) cpu_data,
+            "mov gs:[{offset}], {}",
+            in(reg) rsp,
+            offset = const USER_RSP_SCRATCH_OFFSET,
             options(nostack, preserves_flags)
         );
-        
-        if !cpu_data.is_null() {
-            (*cpu_data).user_rsp_scratch = rsp;
-        }
     }
 }
 
@@ -956,9 +966,11 @@ pub fn get_next_cr3() -> u64 {
     }
 }
 
-/// Set the target CR3 for next IRETQ
-/// Set to 0 to disable CR3 switching
-/// This is called from context_switch.rs before returning to userspace
+/// LEGACY: Set the target CR3 for next IRETQ
+/// This function is currently unused because CR3 switching now happens
+/// directly in context_switch.rs when scheduling threads, not deferred
+/// to interrupt return. Kept for assembly code compatibility.
+#[allow(dead_code)]
 pub fn set_next_cr3(cr3: u64) {
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return;
@@ -1014,6 +1026,31 @@ pub fn set_kernel_cr3(cr3: u64) {
     }
 }
 
+/// Global flag indicating we're in exception cleanup context
+/// (e.g., page fault handler after terminating a process)
+/// This allows scheduling even when returning to kernel mode
+static EXCEPTION_CLEANUP_CONTEXT: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Set the exception cleanup context flag
+/// This should be called from exception handlers that terminate a process
+/// and need to allow scheduling to switch to another thread
+pub fn set_exception_cleanup_context() {
+    EXCEPTION_CLEANUP_CONTEXT.store(true, Ordering::SeqCst);
+    log::info!("Exception cleanup context flag set - scheduling will be allowed");
+}
+
+/// Clear the exception cleanup context flag
+/// Called after successfully switching to a new thread
+pub fn clear_exception_cleanup_context() {
+    EXCEPTION_CLEANUP_CONTEXT.store(false, Ordering::SeqCst);
+}
+
+/// Check if we're in exception cleanup context
+pub fn in_exception_cleanup_context() -> bool {
+    EXCEPTION_CLEANUP_CONTEXT.load(Ordering::SeqCst)
+}
+
 /// Check if we can schedule (preempt_count == 0 and returning to userspace)
 pub fn can_schedule(saved_cs: u64) -> bool {
     let current_preempt = preempt_count();
@@ -1028,21 +1065,25 @@ pub fn can_schedule(saved_cs: u64) -> bool {
         }
     }
 
-    let can_sched = current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel);
+    // Also allow scheduling if we're in exception cleanup context
+    let in_exception_cleanup = in_exception_cleanup_context();
+
+    let can_sched = current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel || in_exception_cleanup);
 
     log::debug!(
-        "can_schedule: preempt_count={}, cs_rpl={}, userspace={}, idle_kernel={}, result={}",
+        "can_schedule: preempt_count={}, cs_rpl={}, userspace={}, idle_kernel={}, exception_cleanup={}, result={}",
         current_preempt,
         saved_cs & 3,
         returning_to_userspace,
         returning_to_idle_kernel,
+        in_exception_cleanup,
         can_sched
     );
 
     if current_preempt > 0 {
         log::debug!("can_schedule: BLOCKED by preempt_count={}", current_preempt);
     }
-    if !returning_to_userspace && !returning_to_idle_kernel {
+    if !returning_to_userspace && !returning_to_idle_kernel && !in_exception_cleanup {
         log::debug!(
             "can_schedule: BLOCKED - returning to kernel (non-idle) context, CS RPL={}",
             saved_cs & 3

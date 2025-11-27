@@ -1,14 +1,16 @@
-//! Core PIT-backed timer facilities (1 kHz, 1 ms resolution).
+//! Core PIT-backed timer facilities (10 Hz, 100 ms resolution).
+//! NOTE: Temporarily reduced from 100 Hz to 10 Hz for debugging userspace execution.
+//! The serial logging overhead causes timer interrupts to fire before userspace can execute.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::instructions::port::Port;
 
 const PIT_INPUT_FREQ_HZ: u32 = 1_193_182;
-const PIT_HZ: u32 = 100; // 100 Hz ⇒ 10 ms per tick (reduced from 1000 Hz to avoid interrupt storms)
+const PIT_HZ: u32 = 10; // 10 Hz ⇒ 100 ms per tick (reduced to allow userspace to execute)
 const PIT_COMMAND_PORT: u16 = 0x43;
 const PIT_CHANNEL0_PORT: u16 = 0x40;
 
-/// Global monotonic tick counter (1 tick == 1 ms).
+/// Global monotonic tick counter (1 tick == 100 ms at 10 Hz).
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Program the PIT to generate periodic interrupts at `PIT_HZ`.
@@ -32,7 +34,7 @@ pub fn init() {
     super::rtc::init();
 }
 
-/// Invoked from the CPU-side interrupt stub every 1 ms.
+/// Invoked from the CPU-side interrupt stub every 100 ms (at 10 Hz).
 #[inline]
 pub fn timer_interrupt() {
     TICKS.fetch_add(1, Ordering::Relaxed);
@@ -51,7 +53,8 @@ pub fn get_ticks() -> u64 {
 /// Guaranteed monotonic and never wraps earlier than ~584 million years.
 #[inline]
 pub fn get_monotonic_time() -> u64 {
-    get_ticks()
+    // Convert ticks to milliseconds: 10 Hz = 100 ms per tick
+    get_ticks() * (1000 / PIT_HZ as u64)
 }
 
 /// Validate that the PIT hardware is configured and counting

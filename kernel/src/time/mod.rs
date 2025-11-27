@@ -79,6 +79,6 @@ pub fn debug_time_info() {
         }
     }
 
-    log::info!("Timer frequency: 1000 Hz (1ms resolution)");
+    log::info!("Timer frequency: 10 Hz (100ms resolution)");
     log::info!("=============================");
 }
