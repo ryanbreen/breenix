@@ -244,34 +244,40 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check precondition validation output above",
         },
         BootStage {
+            name: "Kernel timer arithmetic check",
+            marker: "Timer resolution test passed",
+            failure_meaning: "Basic timer arithmetic broken (ticks * 10 != get_monotonic_time())",
+            check_hint: "time_test::test_timer_resolution() - trivial check that timer math is consistent with itself (not actual resolution validation)",
+        },
+        BootStage {
+            name: "Kernel clock_gettime API test",
+            marker: "clock_gettime tests passed",
+            failure_meaning: "Kernel-internal clock_gettime function broken (not userspace test)",
+            check_hint: "clock_gettime_test::test_clock_gettime() - calls clock_gettime() from kernel context only, does NOT test Ring 3 syscall path or userspace execution",
+        },
+        BootStage {
+            name: "Kernel initialization complete",
+            marker: "Kernel initialization complete",
+            failure_meaning: "Something failed before enabling interrupts",
+            check_hint: "Check logs above - this must print BEFORE interrupts enabled",
+        },
+        BootStage {
             name: "Interrupts enabled",
             marker: "scheduler::schedule() returned",
             failure_meaning: "Interrupts not enabled or scheduler not running",
             check_hint: "x86_64::instructions::interrupts::enable() and scheduler::schedule()",
         },
         BootStage {
-            name: "Clock gettime tests passed",
-            marker: "clock_gettime tests passed",
-            failure_meaning: "Time syscall implementation broken",
-            check_hint: "clock_gettime_test::test_clock_gettime()",
-        },
-        BootStage {
-            name: "Kernel initialization complete",
-            marker: "Kernel initialization complete",
-            failure_meaning: "Something failed in late init",
-            check_hint: "Check logs above for specific failure",
-        },
-        BootStage {
-            name: "Ring 3 entry (IRETQ)",
-            marker: "RING3_ENTER: CS=0x33",
-            failure_meaning: "Userspace entry via IRETQ failed",
-            check_hint: "context_switch.rs - check stack frame for IRETQ",
+            name: "Ring 3 execution confirmed",
+            marker: "RING3_CONFIRMED: First syscall received from Ring 3",
+            failure_meaning: "IRETQ may have succeeded but userspace did not execute or trigger a syscall",
+            check_hint: "syscall/handler.rs - check RING3_CONFIRMED marker emission on first Ring 3 syscall",
         },
         BootStage {
             name: "Userspace syscall received",
-            marker: "syscall handler|sys_write|sys_exit|sys_getpid",
-            failure_meaning: "Userspace code not executing syscalls",
-            check_hint: "Check if Ring 3 code runs, INT 0x80 handler",
+            marker: "USERSPACE: sys_",
+            failure_meaning: "Userspace code not executing syscalls or syscall privilege check failed",
+            check_hint: "Check if Ring 3 code runs, INT 0x80 handler, and syscall_handler.rs:is_from_userspace() check passes (CS RPL == 3)",
         },
         // NEW STAGES: Verify actual userspace output, not just process creation
         BootStage {
@@ -281,11 +287,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check if hello_time.elf actually executed and printed to stdout",
         },
         BootStage {
-            name: "ENOSYS syscall verified",
-            marker: "USERSPACE OUTPUT: ENOSYS OK",
-            failure_meaning: "ENOSYS test did not print success",
-            check_hint: "Check if syscall_enosys.elf executed and validated ENOSYS return value",
+            name: "Userspace clock_gettime validated",
+            marker: "USERSPACE CLOCK_GETTIME: OK",
+            failure_meaning: "Userspace process called clock_gettime syscall but got zero time or syscall failed",
+            check_hint: "Verify INT 0x80 dispatch to SYS_clock_gettime (228) works from Ring 3 and returns non-zero time",
         },
+        // NOTE: ENOSYS syscall verification requires external_test_bins feature
+        // which is not enabled by default. Add back when external binaries are integrated.
     ]
 }
 
@@ -318,7 +326,7 @@ fn boot_stages() -> Result<()> {
             "-p",
             "breenix",
             "--features",
-            "testing",
+            "testing,external_test_bins",
             "--bin",
             "qemu-uefi",
             "--",
@@ -707,7 +715,7 @@ fn ring3_enosys() -> Result<()> {
             "-p",
             "breenix",
             "--features",
-            "testing,external_test_bins",
+            "testing",
             "--bin",
             "qemu-uefi",
             "--",

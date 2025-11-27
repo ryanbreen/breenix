@@ -11,6 +11,18 @@ const SYS_GET_TIME: u64 = 4;
 const SYS_FORK: u64 = 5;
 const SYS_EXEC: u64 = 11;
 const SYS_GETPID: u64 = 39;
+const SYS_CLOCK_GETTIME: u64 = 228;
+
+// Clock IDs (Linux conventions)
+pub const CLOCK_REALTIME: u32 = 0;
+pub const CLOCK_MONOTONIC: u32 = 1;
+
+/// Timespec structure for clock_gettime
+#[repr(C)]
+pub struct Timespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
+}
 
 // Inline assembly for INT 0x80 syscalls
 #[inline(always)]
@@ -99,4 +111,10 @@ pub unsafe fn sys_exec(path: &str, args: &str) -> u64 {
 
 pub unsafe fn sys_getpid() -> u64 {
     syscall0(SYS_GETPID)
+}
+
+/// Get clock time (clock_gettime syscall)
+/// Returns 0 on success, negative error code on failure
+pub unsafe fn sys_clock_gettime(clock_id: u32, ts: &mut Timespec) -> i64 {
+    syscall2(SYS_CLOCK_GETTIME, clock_id as u64, ts as *mut Timespec as u64) as i64
 }

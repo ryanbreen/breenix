@@ -1,4 +1,5 @@
 use super::{SyscallNumber, SyscallResult};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -54,9 +55,23 @@ impl SyscallFrame {
     }
 }
 
+// Static flag to track first Ring 3 syscall
+static RING3_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
 /// Main syscall handler called from assembly
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
+    // CRITICAL MARKER: Emit RING3_CONFIRMED marker on FIRST Ring 3 syscall
+    // This proves that:
+    // 1. IRETQ succeeded (CPU transitioned to Ring 3)
+    // 2. Userspace code actually executed
+    // 3. INT 0x80 was triggered from userspace
+    // 4. We received a syscall with CS RPL == 3
+    if (frame.cs & 3) == 3 && !RING3_CONFIRMED.swap(true, Ordering::SeqCst) {
+        log::info!("🎯 RING3_CONFIRMED: First syscall received from Ring 3 (CS={:#x}, RPL=3)", frame.cs);
+        crate::serial_println!("🎯 RING3_CONFIRMED: First syscall received from Ring 3 (CS={:#x}, RPL=3)", frame.cs);
+    }
+
     // Raw serial output to detect if syscall handler is called
     unsafe {
         core::arch::asm!(
@@ -68,39 +83,99 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             options(nostack, nomem, preserves_flags)
         );
     }
-    
+
     // Increment preempt count on syscall entry (prevents scheduling during syscall)
     crate::per_cpu::preempt_disable();
-    
+
+    // Raw serial output to detect if we got past preempt_disable
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0x3F8",
+            "mov al, 0x50",      // 'P' for Past preempt_disable
+            "out dx, al",
+            "mov al, 0x44",      // 'D'
+            "out dx, al",
+            options(nostack, nomem, preserves_flags)
+        );
+    }
+
     // Enhanced syscall entry logging per Cursor requirements
     let from_userspace = frame.is_from_userspace();
-    
-    // Get current CR3 for logging
-    let cr3: u64;
+
+    // Raw serial output to detect if we got past is_from_userspace check
     unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) cr3);
+        core::arch::asm!(
+            "mov dx, 0x3F8",
+            "mov al, 0x46",      // 'F' for Frame check passed
+            "out dx, al",
+            "mov al, 0x55",      // 'U' for Userspace
+            "out dx, al",
+            options(nostack, nomem, preserves_flags)
+        );
     }
-    
+
+    // Raw serial output to detect if we got past CR3 read
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0x3F8",
+            "mov al, 0x43",      // 'C' for CR3 read
+            "out dx, al",
+            "mov al, 0x33",      // '3'
+            "out dx, al",
+            options(nostack, nomem, preserves_flags)
+        );
+    }
+
     // Log syscall entry with full frame info for first few syscalls
-    use core::sync::atomic::{AtomicU32, Ordering};
     static SYSCALL_ENTRY_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-    
-    let entry_count = SYSCALL_ENTRY_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if entry_count < 5 {
-        log::info!("R3-SYSCALL ENTRY #{}: CS={:#x} (RPL={}), RIP={:#x}, RSP={:#x}, SS={:#x}, CR3={:#x}",
-            entry_count + 1, frame.cs, frame.cs & 3, frame.rip, frame.rsp, frame.ss, cr3);
-        
-        if from_userspace {
-            log::info!("  ✓ Syscall from Ring 3 confirmed (CPL=3)");
-        } else {
-            log::error!("  ⚠ WARNING: Syscall from Ring {}!", frame.cs & 3);
-        }
-        
-        // Log syscall number and arguments
-        log::info!("  Syscall: num={}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
-            frame.syscall_number(), frame.args().0, frame.args().1, frame.args().2,
-            frame.args().3, frame.args().4, frame.args().5);
+
+    let _entry_count = SYSCALL_ENTRY_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Raw serial output before log
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0x3F8",
+            "mov al, 0x4C",      // 'L' for Log
+            "out dx, al",
+            "mov al, 0x42",      // 'B' for Before
+            "out dx, al",
+            options(nostack, nomem, preserves_flags)
+        );
     }
+
+    // Try to acquire serial lock - if it fails, we have a deadlock
+    use crate::serial::SERIAL1;
+    let serial_locked = SERIAL1.try_lock().is_some();
+
+    // Raw serial output to show if serial lock is available
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0x3F8",
+            "mov al, 0x53",      // 'S' for Serial lock test
+            "out dx, al",
+            options(nostack, nomem, preserves_flags)
+        );
+        if serial_locked {
+            core::arch::asm!(
+                "mov dx, 0x3F8",
+                "mov al, 0x59",      // 'Y' for Yes (lock available)
+                "out dx, al",
+                options(nostack, nomem, preserves_flags)
+            );
+        } else {
+            core::arch::asm!(
+                "mov dx, 0x3F8",
+                "mov al, 0x4E",      // 'N' for No (lock held by someone else)
+                "out dx, al",
+                options(nostack, nomem, preserves_flags)
+            );
+        }
+    }
+
+    // COMPLETELY SKIP all lock-based logging for the second syscall onwards
+    // The first syscall (entry_count == 0) worked fine
+    // Something is holding a lock when the second syscall starts
+    // For now, bypass ALL logging to see if the syscall itself works
 
     // Verify this came from userspace (security check)
     if !from_userspace {
@@ -168,22 +243,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
                 core::arch::asm!("mov {}, cr3", out(reg) cr3);
             }
             log::info!("  CR3: {:#x} (current page table)", cr3);
-            
-            // Try to read the previous 2 bytes (should be 0xcd 0x80 for int 0x80)
-            if frame.rip >= 2 {
-                unsafe {
-                    let int_addr = (frame.rip - 2) as *const u8;
-                    // Use volatile read to prevent optimization
-                    let byte1 = core::ptr::read_volatile(int_addr);
-                    let byte2 = core::ptr::read_volatile(int_addr.offset(1));
-                    log::info!("  Previous 2 bytes at RIP-2: {:#02x} {:#02x}", byte1, byte2);
-                    if byte1 == 0xcd && byte2 == 0x80 {
-                        log::info!("  ✓ Confirmed: int 0x80 instruction detected");
-                    } else {
-                        log::warn!("  ⚠ Expected int 0x80 (0xcd 0x80) but found {:#02x} {:#02x}", byte1, byte2);
-                    }
-                }
-            }
+
+            // NOTE: Cannot safely read userspace memory at RIP-2 from kernel context
+            // without proper page table validation. This diagnostic code was causing
+            // page faults when attempting to access userspace addresses.
         }
     }
 
@@ -201,6 +264,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::ClockGetTime) => {
             let clock_id = args.0 as u32;
             let user_timespec_ptr = args.1 as *mut super::time::Timespec;
+            log::debug!("clock_gettime syscall (228) received: clock_id={}, user_ptr={:#x}",
+                clock_id, user_timespec_ptr as u64);
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
         None => {
@@ -263,7 +328,6 @@ extern "C" {
 /// Called from assembly with pointer to IRETQ frame on stack
 #[no_mangle]
 pub extern "C" fn trace_iretq_to_ring3(frame_ptr: *const u64) {
-    use core::sync::atomic::{AtomicU32, Ordering};
     static IRETQ_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
 
     let count = IRETQ_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
