@@ -170,13 +170,6 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 ///
 /// Currently only supports stdout/stderr writing to serial port.
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
-    log::info!(
-        "USERSPACE: sys_write called: fd={}, buf_ptr={:#x}, count={}",
-        fd,
-        buf_ptr,
-        count
-    );
-
     // Validate file descriptor
     if fd != FD_STDOUT && fd != FD_STDERR {
         return SyscallResult::Err(22); // EINVAL
@@ -188,48 +181,40 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     }
 
     // Copy data from userspace
-    log::info!("sys_write: About to call copy_from_user for {} bytes at {:#x}", count, buf_ptr);
     let buffer = match copy_from_user(buf_ptr, count as usize) {
-        Ok(buf) => {
-            log::info!("sys_write: copy_from_user succeeded, got {} bytes", buf.len());
-            buf
-        },
+        Ok(buf) => buf,
         Err(e) => {
             log::error!("sys_write: Failed to copy from user: {}", e);
             return SyscallResult::Err(14); // EFAULT
         }
     };
 
-    // Log the actual data being written (for verification)
-    if buffer.len() <= 30 {
-        // For small writes, show the actual content
-        let s = core::str::from_utf8(&buffer).unwrap_or("<invalid UTF-8>");
-        
-        // Also log the raw bytes in hex for verification
-        let mut hex_str = alloc::string::String::new();
-        for (i, &byte) in buffer.iter().enumerate() {
-            if i > 0 {
-                hex_str.push(' ');
-            }
-            hex_str.push_str(&alloc::format!("{:02x}", byte));
-        }
-        
-        log::info!("sys_write: Writing '{}' ({} bytes) to fd {}", s, buffer.len(), fd);
-        log::info!("  Raw bytes: [{}]", hex_str);
-    } else {
-        log::info!("sys_write: Writing {} bytes to fd {}", buffer.len(), fd);
-    }
-    
-    // Write to serial port
+    // Write to serial port first (so the actual output appears in console)
     let mut bytes_written = 0;
     for &byte in &buffer {
         crate::serial::write_byte(byte);
         bytes_written += 1;
     }
 
-    // Log the output for userspace writes
+    // Log every write syscall with clear formatting showing fd, length, and content
+    // This provides visibility into what userspace programs are communicating
     if let Ok(s) = core::str::from_utf8(&buffer) {
-        log::info!("USERSPACE OUTPUT: {}", s.trim_end());
+        // Format: "USERSPACE OUTPUT: content (fd=X, len=Y)"
+        // This maintains backward compatibility with test markers while adding visibility
+        log::info!("USERSPACE OUTPUT: {} (fd={}, len={})", s.trim_end(), fd, buffer.len());
+    } else {
+        // For non-UTF8 data, show hex dump
+        let mut hex_str = alloc::string::String::new();
+        for (i, &byte) in buffer.iter().enumerate().take(32) {  // Limit to 32 bytes to avoid slowdown
+            if i > 0 && i % 16 == 0 {
+                hex_str.push(' ');
+            }
+            hex_str.push_str(&alloc::format!("{:02x} ", byte));
+        }
+        if buffer.len() > 32 {
+            hex_str.push_str("...");
+        }
+        log::info!("USERSPACE OUTPUT: <binary data> (fd={}, len={}, hex: {})", fd, buffer.len(), hex_str.trim_end());
     }
 
     SyscallResult::Ok(bytes_written)

@@ -42,6 +42,41 @@ struct StageTiming {
     duration: Duration,
 }
 
+/// Userspace output line extracted from kernel logs
+#[derive(Clone, Debug)]
+struct UserspaceOutput {
+    content: String,
+    program_name: String,
+}
+
+/// Extract userspace output from a log line
+/// Format: "USERSPACE OUTPUT: content (fd=X, len=Y)"
+fn extract_userspace_output(line: &str) -> Option<String> {
+    if let Some(pos) = line.find("USERSPACE OUTPUT: ") {
+        let after_marker = &line[pos + 18..]; // Skip "USERSPACE OUTPUT: "
+        // Find the last " (fd=" to strip metadata
+        if let Some(fd_pos) = after_marker.rfind(" (fd=") {
+            return Some(after_marker[..fd_pos].to_string());
+        }
+    }
+    None
+}
+
+/// Guess the program name from userspace output content
+fn guess_program_name(content: &str) -> &'static str {
+    if content.contains("clock_gettime") || content.contains("CLOCK_MONOTONIC") {
+        "clock_gettime"
+    } else if content.contains("brk") || content.contains("program break") || content.contains("heap") {
+        "brk"
+    } else if content.contains("ENOSYS") {
+        "enosys"
+    } else if content.contains("fork") {
+        "fork"
+    } else {
+        "userspace"
+    }
+}
+
 /// Define all boot stages in order
 fn get_boot_stages() -> Vec<BootStage> {
     vec![
@@ -364,6 +399,8 @@ fn boot_stages() -> Result<()> {
     let mut last_content_len = 0;
     let mut checked_stages: Vec<bool> = vec![false; total_stages];
     let mut stage_timings: Vec<Option<StageTiming>> = vec![None; total_stages];
+    let mut stage_userspace_output: Vec<Vec<UserspaceOutput>> = vec![vec![]; total_stages];
+    let mut last_processed_line_count = 0;
     let mut stage_start_time = Instant::now();
 
     let test_start = Instant::now();
@@ -386,6 +423,25 @@ fn boot_stages() -> Result<()> {
                 let contents = String::from_utf8_lossy(&contents_bytes);
                 // Only process if content has changed
                 if contents.len() > last_content_len {
+                    // Extract new userspace output from new lines only
+                    let all_lines: Vec<&str> = contents.lines().collect();
+                    for line in all_lines.iter().skip(last_processed_line_count) {
+                        if let Some(output_content) = extract_userspace_output(line) {
+                            // Find the current stage we're on (last unchecked stage)
+                            for (i, checked) in checked_stages.iter().enumerate() {
+                                if !checked {
+                                    let program_name = guess_program_name(&output_content);
+                                    stage_userspace_output[i].push(UserspaceOutput {
+                                        content: output_content.clone(),
+                                        program_name: program_name.to_string(),
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    last_processed_line_count = all_lines.len();
                     last_content_len = contents.len();
 
                     // Check each unchecked stage
@@ -423,6 +479,23 @@ fn boot_stages() -> Result<()> {
                                     print!(" ");
                                 }
                                 println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
+
+                                // Print userspace output for this stage
+                                if !stage_userspace_output[i].is_empty() {
+                                    for output in &stage_userspace_output[i] {
+                                        // Skip empty lines or whitespace-only lines
+                                        let trimmed = output.content.trim();
+                                        if !trimmed.is_empty() {
+                                            // Truncate long lines to keep output concise
+                                            let display_content = if trimmed.len() > 80 {
+                                                format!("{}...", &trimmed[..77])
+                                            } else {
+                                                trimmed.to_string()
+                                            };
+                                            println!("        → {}: {}", output.program_name, display_content);
+                                        }
+                                    }
+                                }
 
                                 // Print next stage we're waiting for
                                 if i + 1 < total_stages {
@@ -476,6 +549,25 @@ fn boot_stages() -> Result<()> {
                 let mut contents_bytes = Vec::new();
                 if file.read_to_end(&mut contents_bytes).is_ok() {
                     let contents = String::from_utf8_lossy(&contents_bytes);
+
+                    // Extract any remaining userspace output
+                    let all_lines: Vec<&str> = contents.lines().collect();
+                    for line in all_lines.iter().skip(last_processed_line_count) {
+                        if let Some(output_content) = extract_userspace_output(line) {
+                            for (i, checked) in checked_stages.iter().enumerate() {
+                                if !checked {
+                                    let program_name = guess_program_name(&output_content);
+                                    stage_userspace_output[i].push(UserspaceOutput {
+                                        content: output_content.clone(),
+                                        program_name: program_name.to_string(),
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    last_processed_line_count = all_lines.len();
+
                     // Check all remaining stages
                     let mut any_found = false;
                     for (i, stage) in stages.iter().enumerate() {
@@ -503,6 +595,21 @@ fn boot_stages() -> Result<()> {
                                 };
 
                                 println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
+
+                                // Print userspace output for this stage
+                                if !stage_userspace_output[i].is_empty() {
+                                    for output in &stage_userspace_output[i] {
+                                        let trimmed = output.content.trim();
+                                        if !trimmed.is_empty() {
+                                            let display_content = if trimmed.len() > 80 {
+                                                format!("{}...", &trimmed[..77])
+                                            } else {
+                                                trimmed.to_string()
+                                            };
+                                            println!("        → {}: {}", output.program_name, display_content);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

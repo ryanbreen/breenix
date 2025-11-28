@@ -133,16 +133,39 @@ cargo run -p xtask -- boot-stages  # Must show 0 warnings in compile output
 
 ### Testing Integrity - CRITICAL
 
+**YOUR WORK WILL BE INDEPENDENTLY VERIFIED.** Every task you complete will be reviewed by an expert third party specifically tasked with detecting test fraud, fabricated results, and misleading claims. There is NO way to hide a failure to complete a task. Fraudulent completions will always be discovered.
+
+**It is FAR BETTER to say "I don't know how to proceed" or "I was unable to complete this task" than to:**
+- Provide misleading results
+- Weaken tests to make them pass
+- Claim success without verification
+- Use euphemisms like "simplified" to hide test gutting
+
 **NEVER fake a passing test.** If a test fails, it fails. Do not:
 - Add fallbacks that accept weaker evidence than the test requires
 - Change test criteria to match broken behavior
 - Accept "process was created" as proof of "process executed correctly"
 - Let CI pass by detecting markers printed before the actual test runs
+- "Simplify" a test by removing assertions (this is TEST FRAUD)
+- Create tests that print "PASSED" without actually validating anything
+
+**Test weakening is FRAUD.** These actions are never acceptable:
+- Replacing a real test with one that always passes
+- Removing assertions from a failing test
+- Calling test gutting "simplification" or "cleanup"
+- Committing a stub that prints success markers without testing
 
 If a test cannot pass because the underlying code is broken:
 1. **Fix the underlying code** - this is the job
-2. Or disable the test explicitly with documentation explaining why
-3. NEVER make the test pass by weakening its criteria
+2. Or disable the test explicitly with `#[ignore]` and documentation explaining why
+3. Or report honestly: "The test fails because X. I don't know how to fix it."
+4. NEVER make the test pass by weakening its criteria
+
+**When reporting test results:**
+- Always show actual terminal output, not just summaries
+- Verify ALL stages/tests actually executed (not just early ones)
+- If a prerequisite test fails, don't claim later tests passed
+- Raw output is proof; claims without output are suspect
 
 A test that passes without testing what it claims to test is worse than a failing test - it gives false confidence and hides real bugs.
 
