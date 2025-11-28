@@ -9,7 +9,7 @@ on:
 
 jobs:
   boot-stages:
-    name: Validate 41 Boot Stages
+    name: Validate 42 Boot Stages
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
