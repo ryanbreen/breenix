@@ -270,18 +270,22 @@ timer_interrupt_entry:
     ; CRITICAL: Check if we need to switch CR3 before IRETQ
     ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
     ; If non-zero, switch to it and clear the flag
-    push rax
+    ;
+    ; CRITICAL FIX: Use RCX for CR3 manipulation to preserve RAX (syscall return value)
+    ; RAX must not be modified here because it may contain the return value
+    ; from a syscall that userspace is waiting for.
+    push rcx
     push rdx
 
     ; CRITICAL: Swap back to kernel GS to read next_cr3
     ; We're currently in user GS mode, but next_cr3 is in kernel GS
     swapgs
 
-    ; Read next_cr3 from per-CPU data (GS:64)
-    mov rax, qword [gs:64]
+    ; Read next_cr3 from per-CPU data (GS:64) - use RCX to preserve RAX
+    mov rcx, qword [gs:64]
 
     ; Check if CR3 switch is needed (non-zero)
-    test rax, rax
+    test rcx, rcx
     jz .no_cr3_switch_back_to_user
 
     ; Interrupts already disabled (CLI before)
@@ -312,7 +316,7 @@ timer_interrupt_entry:
 
     ; NOW safe to switch CR3 to process page table
     ; Kernel per-CPU data already cleared while kernel PT was active
-    mov cr3, rax
+    mov cr3, rcx
 
     ; Swap back to user GS for IRETQ
     swapgs
@@ -322,8 +326,9 @@ timer_interrupt_entry:
 .no_cr3_switch_back_to_user:
     ; No context switch, but we still need to restore the ORIGINAL process CR3!
     ; We saved it on entry at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
-    mov rax, qword [gs:80]             ; Read saved process CR3
-    test rax, rax                      ; Check if it was saved (non-zero)
+    ; Use RCX to preserve RAX (syscall return value)
+    mov rcx, qword [gs:80]             ; Read saved process CR3
+    test rcx, rcx                      ; Check if it was saved (non-zero)
     jz .no_saved_cr3                   ; If 0, skip (shouldn't happen from userspace)
 
     ; Debug: Output marker for saved CR3 restore
@@ -342,7 +347,7 @@ timer_interrupt_entry:
     pop rdx
 
     ; Switch back to original process CR3
-    mov cr3, rax
+    mov cr3, rcx
 
 .no_saved_cr3:
     ; Swap back to user GS for IRETQ
@@ -350,7 +355,7 @@ timer_interrupt_entry:
 
 .after_cr3_check:
     pop rdx
-    pop rax
+    pop rcx
 
     ; CRITICAL FIX: Send EOI just before IRETQ to minimize window for spurious interrupts
     ; We're on user GS here, but send_timer_eoi needs kernel GS to access PICS lock

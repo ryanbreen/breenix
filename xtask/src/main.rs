@@ -298,9 +298,9 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "Interrupts enabled",
-            marker: "scheduler::schedule() returned",
-            failure_meaning: "Interrupts not enabled or scheduler not running",
-            check_hint: "x86_64::instructions::interrupts::enable() and scheduler::schedule()",
+            marker: "INTERRUPTS_ENABLED: All preconditions met",
+            failure_meaning: "Kernel did not reach the point of enabling interrupts, or panicked before reaching it",
+            check_hint: "Check kernel/src/main.rs - marker emitted immediately before interrupts::enable(). Note: marker is before enable() because x86_64 sti fires pending interrupts immediately, making post-enable markers unreliable",
         },
         BootStage {
             name: "Ring 3 execution confirmed",
@@ -444,68 +444,73 @@ fn boot_stages() -> Result<()> {
                     last_processed_line_count = all_lines.len();
                     last_content_len = contents.len();
 
-                    // Check each unchecked stage
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            // Check if marker is found (support regex-like patterns with |)
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| contents.contains(m))
+                    // Check stages SEQUENTIALLY - only check the next uncompleted stage
+                    // This enforces that boot stages must pass in order, treating boot as a sequential process
+                    while stages_passed < total_stages {
+                        let i = stages_passed;
+                        let stage = &stages[i];
+
+                        // Check if marker is found (support regex-like patterns with |)
+                        let found = if stage.marker.contains('|') {
+                            stage.marker.split('|').any(|m| contents.contains(m))
+                        } else {
+                            contents.contains(stage.marker)
+                        };
+
+                        if found {
+                            checked_stages[i] = true;
+                            stages_passed += 1;
+                            last_progress = Instant::now();
+
+                            // Record timing for this stage
+                            let duration = stage_start_time.elapsed();
+                            stage_timings[i] = Some(StageTiming { duration });
+                            stage_start_time = Instant::now();
+
+                            // Format timing string
+                            let time_str = if duration.as_secs() >= 1 {
+                                format!("{:.2}s", duration.as_secs_f64())
                             } else {
-                                contents.contains(stage.marker)
+                                format!("{}ms", duration.as_millis())
                             };
 
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                                last_progress = Instant::now();
+                            // Print result for this stage with timing
+                            // Clear current line and print result
+                            print!("\r[{}/{}] {}... ", i + 1, total_stages, stage.name);
+                            // Pad to clear previous content
+                            for _ in 0..(50 - stage.name.len().min(50)) {
+                                print!(" ");
+                            }
+                            println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
 
-                                // Record timing for this stage
-                                let duration = stage_start_time.elapsed();
-                                stage_timings[i] = Some(StageTiming { duration });
-                                stage_start_time = Instant::now();
-
-                                // Format timing string
-                                let time_str = if duration.as_secs() >= 1 {
-                                    format!("{:.2}s", duration.as_secs_f64())
-                                } else {
-                                    format!("{}ms", duration.as_millis())
-                                };
-
-                                // Print result for this stage with timing
-                                // Clear current line and print result
-                                print!("\r[{}/{}] {}... ", i + 1, total_stages, stage.name);
-                                // Pad to clear previous content
-                                for _ in 0..(50 - stage.name.len().min(50)) {
-                                    print!(" ");
-                                }
-                                println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
-
-                                // Print userspace output for this stage
-                                if !stage_userspace_output[i].is_empty() {
-                                    for output in &stage_userspace_output[i] {
-                                        // Skip empty lines or whitespace-only lines
-                                        let trimmed = output.content.trim();
-                                        if !trimmed.is_empty() {
-                                            // Truncate long lines to keep output concise
-                                            let display_content = if trimmed.len() > 80 {
-                                                format!("{}...", &trimmed[..77])
-                                            } else {
-                                                trimmed.to_string()
-                                            };
-                                            println!("        → {}: {}", output.program_name, display_content);
-                                        }
-                                    }
-                                }
-
-                                // Print next stage we're waiting for
-                                if i + 1 < total_stages {
-                                    if let Some(next_stage) = stages.get(i + 1) {
-                                        print!("[{}/{}] {}...", i + 2, total_stages, next_stage.name);
-                                        use std::io::Write;
-                                        let _ = std::io::stdout().flush();
+                            // Print userspace output for this stage
+                            if !stage_userspace_output[i].is_empty() {
+                                for output in &stage_userspace_output[i] {
+                                    // Skip empty lines or whitespace-only lines
+                                    let trimmed = output.content.trim();
+                                    if !trimmed.is_empty() {
+                                        // Truncate long lines to keep output concise
+                                        let display_content = if trimmed.len() > 80 {
+                                            format!("{}...", &trimmed[..77])
+                                        } else {
+                                            trimmed.to_string()
+                                        };
+                                        println!("        → {}: {}", output.program_name, display_content);
                                     }
                                 }
                             }
+
+                            // Print next stage we're waiting for
+                            if i + 1 < total_stages {
+                                if let Some(next_stage) = stages.get(i + 1) {
+                                    print!("[{}/{}] {}...", i + 2, total_stages, next_stage.name);
+                                    use std::io::Write;
+                                    let _ = std::io::stdout().flush();
+                                }
+                            }
+                        } else {
+                            // Current stage not found yet, stop checking further stages
+                            break;
                         }
                     }
 
@@ -568,49 +573,53 @@ fn boot_stages() -> Result<()> {
                     }
                     last_processed_line_count = all_lines.len();
 
-                    // Check all remaining stages
+                    // Check remaining stages SEQUENTIALLY after buffer flush
                     let mut any_found = false;
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| contents.contains(m))
+                    while stages_passed < total_stages {
+                        let i = stages_passed;
+                        let stage = &stages[i];
+
+                        let found = if stage.marker.contains('|') {
+                            stage.marker.split('|').any(|m| contents.contains(m))
+                        } else {
+                            contents.contains(stage.marker)
+                        };
+
+                        if found {
+                            checked_stages[i] = true;
+                            stages_passed += 1;
+                            any_found = true;
+
+                            // Record timing for this stage
+                            let duration = stage_start_time.elapsed();
+                            stage_timings[i] = Some(StageTiming { duration });
+                            stage_start_time = Instant::now();
+
+                            let time_str = if duration.as_secs() >= 1 {
+                                format!("{:.2}s", duration.as_secs_f64())
                             } else {
-                                contents.contains(stage.marker)
+                                format!("{}ms", duration.as_millis())
                             };
 
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                                any_found = true;
+                            println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
 
-                                // Record timing for this stage
-                                let duration = stage_start_time.elapsed();
-                                stage_timings[i] = Some(StageTiming { duration });
-                                stage_start_time = Instant::now();
-
-                                let time_str = if duration.as_secs() >= 1 {
-                                    format!("{:.2}s", duration.as_secs_f64())
-                                } else {
-                                    format!("{}ms", duration.as_millis())
-                                };
-
-                                println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
-
-                                // Print userspace output for this stage
-                                if !stage_userspace_output[i].is_empty() {
-                                    for output in &stage_userspace_output[i] {
-                                        let trimmed = output.content.trim();
-                                        if !trimmed.is_empty() {
-                                            let display_content = if trimmed.len() > 80 {
-                                                format!("{}...", &trimmed[..77])
-                                            } else {
-                                                trimmed.to_string()
-                                            };
-                                            println!("        → {}: {}", output.program_name, display_content);
-                                        }
+                            // Print userspace output for this stage
+                            if !stage_userspace_output[i].is_empty() {
+                                for output in &stage_userspace_output[i] {
+                                    let trimmed = output.content.trim();
+                                    if !trimmed.is_empty() {
+                                        let display_content = if trimmed.len() > 80 {
+                                            format!("{}...", &trimmed[..77])
+                                        } else {
+                                            trimmed.to_string()
+                                        };
+                                        println!("        → {}: {}", output.program_name, display_content);
                                     }
                                 }
                             }
+                        } else {
+                            // Current stage not found, stop checking further stages
+                            break;
                         }
                     }
 

@@ -684,9 +684,14 @@ fn kernel_main_continue() -> ! {
     // Enable interrupts for preemptive multitasking - userspace processes will now run
     // WARNING: After this call, kernel_main will likely be preempted immediately
     // by the timer interrupt and scheduler. All essential init must be done above.
-    log::info!("Enabling interrupts (after creating user processes)...");
+    //
+    // NOTE: The marker is emitted BEFORE enable() because the x86_64 `sti` instruction
+    // enables interrupts immediately, and any pending interrupt (like the PIT timer)
+    // will fire before the next instruction executes. Printing after enable() is
+    // unreliable because preemption can occur instantly.
+    log::info!("INTERRUPTS_ENABLED: All preconditions met, calling interrupts::enable() now");
     x86_64::instructions::interrupts::enable();
-    // NOTE: Code below this point may never execute due to scheduler preemption
+    // NOTE: Code below this point may never execute due to immediate scheduler preemption
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done after interrupts are enabled but before other tests

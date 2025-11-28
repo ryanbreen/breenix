@@ -559,7 +559,7 @@ impl ProcessManager {
         &mut self,
         parent_pid: ProcessId,
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] mut child_page_table: Box<ProcessPageTable>,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))] mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
@@ -814,7 +814,7 @@ impl ProcessManager {
     pub fn fork_process_with_context(
         &mut self,
         parent_pid: ProcessId,
-        userspace_rsp: Option<u64>,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process
         let parent = self
@@ -823,6 +823,7 @@ impl ProcessManager {
             .ok_or("Parent process not found")?;
 
         // Get parent's main thread
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_thread = parent
             .main_thread
             .as_ref()
@@ -863,6 +864,7 @@ impl ProcessManager {
         log::debug!("fork_process: About to create child page table");
         let child_page_table_result = crate::memory::process_memory::ProcessPageTable::new();
         log::debug!("fork_process: ProcessPageTable::new() returned");
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))]
         let mut child_page_table =
             Box::new(child_page_table_result.map_err(|_| "Failed to create child page table")?);
         log::debug!("fork_process: Child page table created successfully");
