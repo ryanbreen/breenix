@@ -26,6 +26,9 @@ pub static TIMER_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/timer_t
 
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static CLOCK_GETTIME_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/clock_gettime_test.elf");
+
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+pub static TIMER_PRESSURE_ELF: &[u8] = include_bytes!("../../userspace/tests/timer_pressure.elf");
 #[cfg(feature = "testing")]
 pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
     #[cfg(feature = "external_test_bins")]
@@ -40,6 +43,7 @@ pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
             "syscall_enosys" => SYSCALL_ENOSYS_ELF,
             "timer_test" => TIMER_TEST_ELF,
             "clock_gettime_test" => CLOCK_GETTIME_TEST_ELF,
+            "timer_pressure" => TIMER_PRESSURE_ELF,
             _ => {
                 log::warn!("Unknown test binary '{}', using minimal ELF", name);
                 return create_minimal_valid_elf();
@@ -87,6 +91,13 @@ pub fn get_test_binary_static(name: &str) -> &'static [u8] {
                 Box::leak(v.into_boxed_slice())
             })
         }
+        "timer_pressure" => {
+            static TIMER_PRESSURE_SLICE: Once<&'static [u8]> = Once::new();
+            *TIMER_PRESSURE_SLICE.call_once(|| {
+                let v = get_test_binary("timer_pressure");
+                Box::leak(v.into_boxed_slice())
+            })
+        }
         other => {
             // Default: generate minimal ELF per name
             static FALLBACK_SLICE: Once<&'static [u8]> = Once::new();
@@ -110,6 +121,7 @@ fn _test_binaries_included() {
     assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
     assert!(TIMER_TEST_ELF.len() > 0, "timer_test.elf not included");
     assert!(CLOCK_GETTIME_TEST_ELF.len() > 0, "clock_gettime_test.elf not included");
+    assert!(TIMER_PRESSURE_ELF.len() > 0, "timer_pressure.elf not included");
 }
 
 /// Test running a userspace program

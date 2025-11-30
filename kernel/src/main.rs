@@ -518,7 +518,16 @@ fn kernel_main_continue() -> ! {
         test_exec::test_syscall_enosys();
         log::info!("ENOSYS test: process scheduled for execution.");
 
+        // Run timer pressure test - 10 concurrent processes to stress test timer/scheduler
+        // IMPORTANT: Run BEFORE fault tests so when fault tests die, there are already-started
+        // processes to switch to (avoids the "start new thread from exception context" issue)
+        log::info!("=== TIMER PRESSURE TEST: High-concurrency timer interrupt stress test ===");
+        test_exec::test_timer_pressure();
+        log::info!("Timer pressure test: 10 processes scheduled for concurrent execution.");
+
         // Run fault tests to validate privilege isolation
+        // These tests intentionally cause faults and terminate - run AFTER other tests
+        // so there are runnable threads to switch to when these die
         log::info!("=== FAULT TEST: Running privilege violation tests ===");
         userspace_fault_tests::run_fault_tests();
         log::info!("Fault tests scheduled.");

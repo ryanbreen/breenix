@@ -917,3 +917,110 @@ pub fn test_syscall_enosys() {
         }
     }
 }
+
+/// Timer pressure test - spawns 10 concurrent processes to stress test timer/scheduler
+///
+/// This test validates:
+/// 1. Timer interrupts correctly preempt userspace threads under high concurrency
+/// 2. Context switches preserve all register state across many threads
+/// 3. No corruption occurs when switching between many concurrent threads
+/// 4. Each thread makes forward progress (no starvation)
+/// 5. The scheduler maintains fairness under pressure
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (This function): Creates and schedules 10 pressure test processes
+///   - Marker: "[TIMER_PRESSURE_TEST] Created N processes"
+///   - This confirms all processes were created successfully
+/// - Stage 2 (Kernel output): Each process prints progress and completion markers
+///   - Marker: "[PRESSURE:N] COMPLETE" for each process
+///   - All 10 processes must complete without errors
+///
+/// PASS CRITERIA:
+/// - All 10 processes are created successfully
+/// - Each process prints "[PRESSURE:N] COMPLETE" marker
+/// - No "[PRESSURE:N] ERROR" markers appear
+/// - No kernel panics or stack corruption detected
+pub fn test_timer_pressure() {
+    log::info!("=== TIMER PRESSURE TEST ===");
+    log::info!("Spawning 10 concurrent processes to stress test timer/scheduler");
+    log::info!("Each process will:");
+    log::info!("  - Do CPU-bound work (will be preempted by timer)");
+    log::info!("  - Verify register checksum after each iteration");
+    log::info!("  - Occasionally yield voluntarily");
+    log::info!("  - Complete 50 iterations and print COMPLETE marker");
+
+    const NUM_PRESSURE_PROCESSES: usize = 10;
+    let mut created_count = 0;
+    let mut failed_count = 0;
+
+    // Get the timer_pressure ELF binary
+    #[cfg(feature = "testing")]
+    let pressure_elf_buf = crate::userspace_test::get_test_binary("timer_pressure");
+    #[cfg(feature = "testing")]
+    let pressure_elf: &[u8] = &pressure_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let pressure_elf = &create_hello_world_elf();
+
+    log::info!(
+        "[TIMER_PRESSURE_TEST] Loading timer_pressure.elf, size: {} bytes",
+        pressure_elf.len()
+    );
+
+    // Create 10 concurrent pressure test processes
+    for i in 0..NUM_PRESSURE_PROCESSES {
+        let process_name = alloc::format!("pressure_{}", i);
+
+        match create_user_process(String::from(process_name.as_str()), pressure_elf) {
+            Ok(pid) => {
+                created_count += 1;
+                log::info!(
+                    "[TIMER_PRESSURE_TEST] Created process '{}' with PID {} ({}/{})",
+                    process_name,
+                    pid.as_u64(),
+                    created_count,
+                    NUM_PRESSURE_PROCESSES
+                );
+            }
+            Err(e) => {
+                failed_count += 1;
+                log::error!(
+                    "[TIMER_PRESSURE_TEST] FAILED to create process '{}': {} ({} failures)",
+                    process_name,
+                    e,
+                    failed_count
+                );
+            }
+        }
+    }
+
+    // Report creation results
+    if created_count == NUM_PRESSURE_PROCESSES {
+        log::info!(
+            "[TIMER_PRESSURE_TEST] SUCCESS: Created all {} pressure test processes",
+            NUM_PRESSURE_PROCESSES
+        );
+        log::info!("[TIMER_PRESSURE_TEST] All processes scheduled - watch for:");
+        log::info!("  - Progress markers: [PRESSURE:N] Progress: X/50");
+        log::info!("  - Completion markers: [PRESSURE:N] COMPLETE");
+        log::info!("  - Error markers (should not appear): [PRESSURE:N] ERROR");
+    } else {
+        log::error!(
+            "[TIMER_PRESSURE_TEST] PARTIAL: Created {}/{} processes ({} failed)",
+            created_count,
+            NUM_PRESSURE_PROCESSES,
+            failed_count
+        );
+    }
+
+    // Log scheduler state for debugging
+    if let Some(ref manager) = *crate::process::manager() {
+        log::info!(
+            "[TIMER_PRESSURE_TEST] Process manager has {} processes total",
+            manager.process_count()
+        );
+    }
+
+    log::info!("[TIMER_PRESSURE_TEST] Test initialization complete");
+    log::info!("[TIMER_PRESSURE_TEST] Timer interrupts will now preempt these processes");
+    log::info!("[TIMER_PRESSURE_TEST] Monitoring for completion markers...");
+}

@@ -32,10 +32,19 @@ pub extern "C" fn check_need_resched_and_switch(
         crate::serial_println!("CHECKPOINT D: check_need_resched_and_switch #{}", count);
     }
 
+    // DIAGNOSTIC: Log before can_schedule check
+    crate::serial_println!("[RESCHED_CHECK] check_need_resched_and_switch called, CS={:#x}", interrupt_frame.code_segment.0);
+
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
-    if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
+    let can_sched = crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64);
+    crate::serial_println!("[RESCHED_CHECK] can_schedule returned: {}", can_sched);
+
+    if !can_sched {
+        crate::serial_println!("[RESCHED_CHECK] Returning early - cannot schedule");
         return;
     }
+
+    crate::serial_println!("[RESCHED_CHECK] can_schedule=true, proceeding to check need_resched");
 
     // CRITICAL FIX: Always save context when coming from userspace, BEFORE any early returns.
     // This ensures thread.context.rip is always up-to-date. Without this, if no context switch
@@ -51,10 +60,16 @@ pub extern "C" fn check_need_resched_and_switch(
     }
 
     // Check if reschedule is needed
-    if !scheduler::check_and_clear_need_resched() {
+    let need_resched_was_set = scheduler::check_and_clear_need_resched();
+    crate::serial_println!("[RESCHED_CHECK] check_and_clear_need_resched returned: {}", need_resched_was_set);
+
+    if !need_resched_was_set {
+        crate::serial_println!("[RESCHED_CHECK] need_resched was NOT set, returning early");
         // No reschedule needed, just return
         return;
     }
+
+    crate::serial_println!("[RESCHED_CHECK] need_resched WAS set, calling scheduler::schedule()");
 
     // log::debug!("check_need_resched_and_switch: Need resched is true, proceeding...");
 
@@ -98,6 +113,26 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
     if let Some((old_thread_id, new_thread_id)) = schedule_result {
+        // CRITICAL: Check if we're in exception cleanup mode and trying to start a brand-new thread
+        // Starting a new thread from exception context crashes because the interrupt frame
+        // we're modifying is on a stale/invalid stack. Only allow switching to already-started threads.
+        let in_exception_cleanup = crate::per_cpu::in_exception_cleanup_context();
+        if in_exception_cleanup {
+            let new_thread_has_started = scheduler::with_thread_mut(new_thread_id, |t| t.has_started)
+                .unwrap_or(false);
+            if !new_thread_has_started {
+                crate::serial_println!(
+                    "SKIPPING context switch to unstarted thread {} from exception cleanup - undoing schedule",
+                    new_thread_id
+                );
+                // Undo the schedule() call - restore old thread as current and re-enqueue new thread
+                scheduler::undo_schedule(old_thread_id, new_thread_id);
+                // Keep need_resched set so next timer will try again
+                scheduler::set_need_resched();
+                return;
+            }
+        }
+
         // Clear exception cleanup context since we're doing a context switch
         crate::per_cpu::clear_exception_cleanup_context();
 

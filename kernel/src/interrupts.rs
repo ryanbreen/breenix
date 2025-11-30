@@ -938,10 +938,70 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     log::error!("  Selector Index: {}", selector_index);
 
     log::error!("{:#?}", stack_frame);
-    
-    // Decrement preempt count before panic
+
+    // For userspace faults, terminate the process and schedule another
+    if from_userspace {
+        log::error!("Terminating faulting userspace process due to GPF...");
+
+        // Find the process by CR3 - this is more reliable than using current_thread_id
+        let mut faulting_thread_id: Option<u64> = None;
+
+        crate::process::with_process_manager(|pm| {
+            if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
+                let name = process.name.clone();
+                // Get the thread ID before we exit the process
+                faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
+                log::error!("Killing process {} (PID {}) due to GPF (CR3={:#x})",
+                    name, pid.as_u64(), cr3);
+                pm.exit_process(pid, -11); // SIGSEGV exit code (same as page fault)
+            } else {
+                log::error!("Could not find process with CR3={:#x} - cannot terminate", cr3);
+            }
+        });
+
+        // Mark thread as terminated by setting it not runnable
+        if let Some(thread_id) = faulting_thread_id {
+            crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+                thread.state = crate::task::thread::ThreadState::Terminated;
+            });
+        }
+
+        // Re-enable preemption before scheduling
+        crate::per_cpu::preempt_enable();
+
+        // Force a reschedule to pick up the next thread
+        crate::task::scheduler::set_need_resched();
+
+        log::info!("About to schedule next thread after killing faulting process...");
+
+        // Switch CR3 back to kernel page table
+        unsafe {
+            use x86_64::registers::control::Cr3;
+            use x86_64::structures::paging::PhysFrame;
+            let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
+            if kernel_cr3 != 0 {
+                log::info!("Switching to kernel CR3: {:#x}", kernel_cr3);
+                Cr3::write(
+                    PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
+                    Cr3::read().1,
+                );
+            }
+        }
+
+        // Set a flag that makes this context schedulable BEFORE enabling interrupts
+        crate::per_cpu::set_exception_cleanup_context();
+
+        // Now enable interrupts so timer can fire and trigger scheduling
+        x86_64::instructions::interrupts::enable();
+
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+
+    // Kernel GPF - this is a bug, panic
     crate::per_cpu::preempt_enable();
-    panic!("General Protection Fault");
+    panic!("General Protection Fault from kernel mode");
 }
 
 /// Get IDT base and limit for logging

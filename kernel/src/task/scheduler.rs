@@ -11,6 +11,14 @@ use spin::Mutex;
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
 /// Global need_resched flag for timer interrupt
+///
+/// NOTE: This is a legacy global flag that is REDUNDANT with the per-CPU need_resched flag.
+/// On single-CPU systems (which Breenix currently is), both flags are kept in sync:
+/// - set_need_resched() sets BOTH flags
+/// - check_and_clear_need_resched() clears BOTH flags only when handling a reschedule
+///
+/// When Breenix supports SMP, this global flag should be removed in favor of per-CPU flags only.
+/// The per-CPU flag in gs:[NEED_RESCHED_OFFSET] is the authoritative source.
 static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 
 /// The kernel scheduler
@@ -447,7 +455,73 @@ pub fn set_need_resched() {
 /// Check and clear the need_resched flag (called from interrupt return path)
 pub fn check_and_clear_need_resched() -> bool {
     let need = crate::per_cpu::need_resched();
-    if need { crate::per_cpu::set_need_resched(false); }
-    let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
+    if need {
+        crate::per_cpu::set_need_resched(false);
+        // Only clear global flag when we're actually handling the reschedule request
+        // BUG FIX: Previously this was unconditionally cleared, causing races
+        // where the flag could be cleared before the scheduler had a chance to act
+        NEED_RESCHED.store(false, Ordering::Relaxed);
+    }
     need
+}
+
+/// Undo a schedule() call by re-enqueuing the new thread and restoring the old thread as current
+/// This is used when we can't actually perform the context switch (e.g., starting new thread from exception)
+/// If the old thread is terminated, we try to find another started thread to switch to instead.
+pub fn undo_schedule(old_thread_id: u64, new_thread_id: u64) {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            // Check if the old thread is terminated
+            let old_thread_terminated = scheduler.get_thread(old_thread_id)
+                .map(|t| matches!(t.state, ThreadState::Terminated))
+                .unwrap_or(false);
+
+            if old_thread_terminated {
+                // Old thread is dead - we can't return to it. Try to find a started thread to switch to.
+                crate::serial_println!(
+                    "undo_schedule: old thread {} is terminated, looking for alternative",
+                    old_thread_id
+                );
+
+                // Look for a started thread in the ready queue
+                let mut found_started = false;
+                for (idx, &tid) in scheduler.ready_queue.iter().enumerate() {
+                    if let Some(thread) = scheduler.get_thread(tid) {
+                        if thread.has_started {
+                            // Found a started thread! Move it to front and set as current
+                            scheduler.ready_queue.remove(idx);
+                            scheduler.current_thread = Some(tid);
+                            // Put the new_thread_id (unstarted) back at front for next timer
+                            scheduler.ready_queue.push_front(new_thread_id);
+                            crate::serial_println!(
+                                "undo_schedule: switching to started thread {} instead, re-enqueued thread {} at front",
+                                tid, new_thread_id
+                            );
+                            found_started = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !found_started {
+                    // No started threads available - set current to None and re-enqueue new thread
+                    crate::serial_println!(
+                        "undo_schedule: no started threads available, setting current=None"
+                    );
+                    scheduler.current_thread = None;
+                    scheduler.ready_queue.push_front(new_thread_id);
+                }
+            } else {
+                // Old thread is still valid - restore it as current
+                scheduler.current_thread = Some(old_thread_id);
+                // Put new thread back at the FRONT of the ready queue so it's picked next
+                scheduler.ready_queue.push_front(new_thread_id);
+                crate::serial_println!(
+                    "undo_schedule: restored current={}, re-enqueued thread {} at front",
+                    old_thread_id, new_thread_id
+                );
+            }
+        }
+    });
 }

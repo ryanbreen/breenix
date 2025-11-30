@@ -292,8 +292,19 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Userspace process called clock_gettime syscall but got zero time or syscall failed",
             check_hint: "Verify INT 0x80 dispatch to SYS_clock_gettime (228) works from Ring 3 and returns non-zero time",
         },
-        // NOTE: ENOSYS syscall verification requires external_test_bins feature
-        // which is not enabled by default. Add back when external binaries are integrated.
+        // Timer pressure test - validates concurrent timer interrupt handling
+        BootStage {
+            name: "Pressure test started",
+            marker: "[PRESSURE:",
+            failure_meaning: "Timer pressure test process never started executing",
+            check_hint: "Check if pressure_X processes are being scheduled and executing userspace code",
+        },
+        BootStage {
+            name: "Pressure test completed",
+            marker: "] COMPLETE - All",
+            failure_meaning: "No pressure test process completed all 50 iterations",
+            check_hint: "Check if context switches preserve register state during timer preemption",
+        },
     ]
 }
 

@@ -97,6 +97,9 @@ pub extern "C" fn timer_interrupt_handler(from_userspace: u8) {
         }
 
         if should_set_need_resched {
+            // CRITICAL DIAGNOSTIC: Log quantum expiration with no count limit
+            crate::serial_println!("[QUANTUM_EXPIRED] Timer #{}: quantum reached 0, setting need_resched", count);
+
             // ENABLE LOGGING FOR CI DEBUGGING
             if count < 10 {
                 crate::irq_debug!("TIMER DEBUG #{}: Setting need_resched (quantum={}, has_user={})",

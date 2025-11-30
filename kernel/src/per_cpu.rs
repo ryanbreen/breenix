@@ -1056,6 +1056,10 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     let current_preempt = preempt_count();
     let returning_to_userspace = (saved_cs & 3) == 3;
 
+    // DIAGNOSTIC: Log preempt_count value
+    crate::serial_println!("[CAN_SCHEDULE] preempt_count={:#x}, CS={:#x}, RPL={}",
+                           current_preempt, saved_cs, saved_cs & 3);
+
     let mut returning_to_idle_kernel = false;
     if !returning_to_userspace {
         let current_tid = crate::task::scheduler::current_thread_id();
@@ -1070,6 +1074,10 @@ pub fn can_schedule(saved_cs: u64) -> bool {
 
     let can_sched = current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel || in_exception_cleanup);
 
+    // DIAGNOSTIC: Log detailed reason
+    crate::serial_println!("[CAN_SCHEDULE] userspace={}, idle_kernel={}, exception_cleanup={}, result={}",
+                           returning_to_userspace, returning_to_idle_kernel, in_exception_cleanup, can_sched);
+
     log::debug!(
         "can_schedule: preempt_count={}, cs_rpl={}, userspace={}, idle_kernel={}, exception_cleanup={}, result={}",
         current_preempt,
@@ -1081,9 +1089,16 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     );
 
     if current_preempt > 0 {
+        // DIAGNOSTIC: Show why preempt_count is blocking
+        crate::serial_println!("[CAN_SCHEDULE] BLOCKED: preempt_count={:#x} (HARDIRQ={}, SOFTIRQ={}, PREEMPT={})",
+                               current_preempt,
+                               (current_preempt & HARDIRQ_MASK) >> HARDIRQ_SHIFT,
+                               (current_preempt & SOFTIRQ_MASK) >> SOFTIRQ_SHIFT,
+                               (current_preempt & PREEMPT_MASK) >> PREEMPT_SHIFT);
         log::debug!("can_schedule: BLOCKED by preempt_count={}", current_preempt);
     }
     if !returning_to_userspace && !returning_to_idle_kernel && !in_exception_cleanup {
+        crate::serial_println!("[CAN_SCHEDULE] BLOCKED: returning to kernel (non-idle) context");
         log::debug!(
             "can_schedule: BLOCKED - returning to kernel (non-idle) context, CS RPL={}",
             saved_cs & 3

@@ -188,38 +188,14 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     }
 
     // Copy data from userspace
-    log::info!("sys_write: About to call copy_from_user for {} bytes at {:#x}", count, buf_ptr);
     let buffer = match copy_from_user(buf_ptr, count as usize) {
-        Ok(buf) => {
-            log::info!("sys_write: copy_from_user succeeded, got {} bytes", buf.len());
-            buf
-        },
+        Ok(buf) => buf,
         Err(e) => {
             log::error!("sys_write: Failed to copy from user: {}", e);
             return SyscallResult::Err(14); // EFAULT
         }
     };
 
-    // Log the actual data being written (for verification)
-    if buffer.len() <= 30 {
-        // For small writes, show the actual content
-        let s = core::str::from_utf8(&buffer).unwrap_or("<invalid UTF-8>");
-        
-        // Also log the raw bytes in hex for verification
-        let mut hex_str = alloc::string::String::new();
-        for (i, &byte) in buffer.iter().enumerate() {
-            if i > 0 {
-                hex_str.push(' ');
-            }
-            hex_str.push_str(&alloc::format!("{:02x}", byte));
-        }
-        
-        log::info!("sys_write: Writing '{}' ({} bytes) to fd {}", s, buffer.len(), fd);
-        log::info!("  Raw bytes: [{}]", hex_str);
-    } else {
-        log::info!("sys_write: Writing {} bytes to fd {}", buffer.len(), fd);
-    }
-    
     // Write to serial port
     let mut bytes_written = 0;
     for &byte in &buffer {
@@ -227,9 +203,12 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         bytes_written += 1;
     }
 
-    // Log the output for userspace writes
+    // Log userspace output (needed for test framework detection)
     if let Ok(s) = core::str::from_utf8(&buffer) {
-        log::info!("USERSPACE OUTPUT: {}", s.trim_end());
+        let trimmed = s.trim_end();
+        if !trimmed.is_empty() {
+            log::info!("USERSPACE OUTPUT: {}", trimmed);
+        }
     }
 
     SyscallResult::Ok(bytes_written)
