@@ -1,6 +1,6 @@
 // ─── File: kernel/src/syscall/time.rs ──────────────────────────────
 use crate::syscall::{ErrorCode, SyscallResult};
-use crate::time::{get_monotonic_time, get_real_time};
+use crate::time::{get_monotonic_time_ns, get_real_time_ns};
 
 /// POSIX clock identifiers
 pub const CLOCK_REALTIME: u32 = 0;
@@ -21,21 +21,21 @@ pub struct Timespec {
 /// userspace memory operations. Use this from kernel code that
 /// needs to read the system time directly.
 ///
-/// Granularity: 1 ms until TSC‑deadline fast‑path is enabled.
+/// Granularity: nanosecond precision via TSC (falls back to 1ms via PIT).
 pub fn clock_gettime(clock_id: u32) -> Result<Timespec, ErrorCode> {
     match clock_id {
         CLOCK_REALTIME => {
-            let dt = get_real_time();
+            let (secs, nanos) = get_real_time_ns();
             Ok(Timespec {
-                tv_sec: dt.to_unix_timestamp() as i64,
-                tv_nsec: 0,
+                tv_sec: secs,
+                tv_nsec: nanos,
             })
         }
         CLOCK_MONOTONIC => {
-            let ms = get_monotonic_time();
+            let (secs, nanos) = get_monotonic_time_ns();
             Ok(Timespec {
-                tv_sec: (ms / 1_000) as i64,
-                tv_nsec: ((ms % 1_000) * 1_000_000) as i64,
+                tv_sec: secs as i64,
+                tv_nsec: nanos as i64,
             })
         }
         _ => Err(ErrorCode::InvalidArgument),

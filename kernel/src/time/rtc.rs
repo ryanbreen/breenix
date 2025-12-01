@@ -165,6 +165,7 @@ fn rtc_to_unix_timestamp(rtc: &RTCTime) -> u64 {
 
 impl DateTime {
     /// Convert DateTime to Unix timestamp
+    #[allow(dead_code)] // Public API used by tests and external code
     pub fn to_unix_timestamp(&self) -> u64 {
         let rtc = RTCTime {
             second: self.second,

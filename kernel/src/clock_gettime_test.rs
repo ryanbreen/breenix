@@ -6,7 +6,7 @@
 //! clock_gettime implementation and API contract, NOT time progression:
 //!
 //! ✓ clock_gettime returns Timespec for valid clock IDs
-//! ✓ CLOCK_MONOTONIC returns Timespec with millisecond-aligned nanoseconds
+//! ✓ CLOCK_MONOTONIC returns valid nanoseconds (0-999999999)
 //! ✓ CLOCK_REALTIME returns plausible RTC timestamp (year >= 2024)
 //! ✓ Multiple rapid calls don't go backwards (basic monotonicity)
 //! ✓ Invalid clock IDs return EINVAL
@@ -36,9 +36,13 @@ pub fn test_clock_gettime() {
     // ── Test CLOCK_MONOTONIC ──────────────────────────────────────
     let mono = clock_gettime(CLOCK_MONOTONIC).expect("CLOCK_MONOTONIC failed");
     log::info!("CLOCK_MONOTONIC: {} s, {} ns", mono.tv_sec, mono.tv_nsec);
+
+    // TSC provides nanosecond precision, PIT provides millisecond precision
+    // Either way, nanoseconds must be in valid range [0, 999999999]
     assert!(
-        mono.tv_nsec % 1_000_000 == 0,
-        "nanoseconds not ms‑aligned"
+        mono.tv_nsec >= 0 && mono.tv_nsec < 1_000_000_000,
+        "nanoseconds out of valid range: {}",
+        mono.tv_nsec
     );
 
     // ── Test CLOCK_REALTIME ───────────────────────────────────────
@@ -53,7 +57,14 @@ pub fn test_clock_gettime() {
         dt.minute,
         dt.second
     );
-    assert!(real.tv_nsec == 0, "realtime nsec should be 0");
+
+    // CLOCK_REALTIME combines RTC (second precision) with TSC (nanosecond precision)
+    // So nanoseconds will be non-zero due to elapsed time since boot
+    assert!(
+        real.tv_nsec >= 0 && real.tv_nsec < 1_000_000_000,
+        "nanoseconds out of valid range: {}",
+        real.tv_nsec
+    );
     assert!(dt.year >= 2024, "RTC returned implausible year");
 
     // ── Monotonicity check ────────────────────────────────────────

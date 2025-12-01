@@ -1,16 +1,18 @@
-//! Core PIT-backed timer facilities (10 Hz, 100 ms resolution).
-//! NOTE: Temporarily reduced from 100 Hz to 10 Hz for debugging userspace execution.
-//! The serial logging overhead causes timer interrupts to fire before userspace can execute.
+//! Core PIT-backed timer facilities (1000 Hz, 1 ms resolution).
+//!
+//! The PIT provides a fallback timer for systems where TSC is unavailable
+//! or as a reference during TSC calibration. For high-precision timing,
+//! use the TSC module directly.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::instructions::port::Port;
 
 const PIT_INPUT_FREQ_HZ: u32 = 1_193_182;
-const PIT_HZ: u32 = 10; // 10 Hz ⇒ 100 ms per tick (reduced to allow userspace to execute)
+const PIT_HZ: u32 = 1000; // 1000 Hz ⇒ 1 ms per tick
 const PIT_COMMAND_PORT: u16 = 0x43;
 const PIT_CHANNEL0_PORT: u16 = 0x40;
 
-/// Global monotonic tick counter (1 tick == 100 ms at 10 Hz).
+/// Global monotonic tick counter (1 tick == 1 ms at 1000 Hz).
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Program the PIT to generate periodic interrupts at `PIT_HZ`.
@@ -34,7 +36,7 @@ pub fn init() {
     super::rtc::init();
 }
 
-/// Invoked from the CPU-side interrupt stub every 100 ms (at 10 Hz).
+/// Invoked from the CPU-side interrupt stub every 1 ms (at 1000 Hz).
 #[inline]
 pub fn timer_interrupt() {
     TICKS.fetch_add(1, Ordering::Relaxed);
@@ -48,13 +50,30 @@ pub fn get_ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
-/// Milliseconds since the kernel was initialized.
+/// Milliseconds since the kernel was initialized (PIT-based, 1ms resolution).
 ///
+/// For nanosecond precision, use `get_monotonic_time_ns()` instead.
 /// Guaranteed monotonic and never wraps earlier than ~584 million years.
 #[inline]
 pub fn get_monotonic_time() -> u64 {
-    // Convert ticks to milliseconds: 10 Hz = 100 ms per tick
-    get_ticks() * (1000 / PIT_HZ as u64)
+    // At 1000 Hz, ticks == milliseconds
+    get_ticks()
+}
+
+/// Nanoseconds since the kernel was initialized (TSC-based, nanosecond resolution).
+///
+/// Falls back to PIT-based millisecond timing if TSC is not calibrated.
+/// Returns (seconds, nanoseconds) tuple for POSIX timespec compatibility.
+#[inline]
+pub fn get_monotonic_time_ns() -> (u64, u64) {
+    // Try TSC first for nanosecond precision
+    if let Some((secs, nanos)) = super::tsc::monotonic_time() {
+        return (secs, nanos);
+    }
+
+    // Fallback to PIT (millisecond precision)
+    let ms = get_monotonic_time();
+    (ms / 1000, (ms % 1000) * 1_000_000)
 }
 
 /// Validate that the PIT hardware is configured and counting
