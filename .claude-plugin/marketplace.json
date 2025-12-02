@@ -21,7 +21,7 @@
     },
     {
       "name": "breenix-development",
-      "description": "Core kernel development: fast debug loops, log analysis, systematic debugging, code quality checks, memory debugging, boot analysis, and legacy migration",
+      "description": "Core kernel development: fast debug loops, log analysis, systematic debugging, code quality checks, memory debugging, boot analysis, legacy migration, and advanced debugging tools",
       "source": "./",
       "strict": false,
       "skills": [
@@ -31,7 +31,11 @@
         "./breenix-code-quality-check",
         "./breenix-memory-debugging",
         "./breenix-boot-analysis",
-        "./breenix-legacy-migration"
+        "./breenix-legacy-migration",
+        "./breenix-interrupt-trace",
+        "./breenix-gdb-attach",
+        "./breenix-register-watch",
+        "./breenix-qemu-debug-session"
       ]
     },
     {

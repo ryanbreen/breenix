@@ -77,14 +77,6 @@ syscall_entry:
     mov rdi, rsp
     call rust_syscall_handler
 
-    ; CRITICAL FIX: Update RAX in SavedRegisters struct on stack
-    ; rust_syscall_handler returns the syscall result in RAX, but the SavedRegisters
-    ; struct on the stack still has the OLD RAX value (syscall number from entry).
-    ; If check_need_resched_and_switch causes a context switch, it will save the
-    ; wrong RAX value. We must update the stack copy NOW before any potential switch.
-    ; RAX was pushed first (line 33), so it's at [rsp + 0]
-    mov [rsp], rax
-
     ; Return value is in RAX, which will be restored to userspace
     ; NOTE: We stay in kernel GS mode until just before iretq
     ; All kernel functions (scheduling, page table, tracing) need kernel GS
