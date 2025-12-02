@@ -544,7 +544,7 @@ impl ProcessManager {
                 .get(&parent_pid)
                 .ok_or("Parent process not found")?;
 
-            let parent_thread = parent
+            let _parent_thread = parent
                 .main_thread
                 .as_ref()
                 .ok_or("Parent process has no main thread")?;
@@ -553,7 +553,7 @@ impl ProcessManager {
             (
                 parent.name.clone(),
                 parent.entry_point,
-                parent_thread.clone(),
+                _parent_thread.clone(),
             )
         };
 

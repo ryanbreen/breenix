@@ -69,6 +69,38 @@ pub fn reset_quantum() {
     }
 }
 
+/// Debug function to log timer interrupt frame from userspace
+/// Called from assembly when timer interrupt arrives from userspace
+#[no_mangle]
+pub extern "C" fn log_timer_frame_from_userspace(_frame: *const u64) {
+    // Disabled to avoid serial lock contention during timer interrupts
+    // Uncomment only for deep debugging sessions
+    // unsafe {
+    //     crate::serial_println!("Timer from userspace");
+    // }
+}
+
+/// Debug function to dump IRET frame to serial port
+/// Called from assembly just before IRETQ to userspace
+#[no_mangle]
+pub extern "C" fn dump_iret_frame_to_serial(_frame: *const u64) {
+    // Disabled to avoid serial lock contention during timer interrupts
+    // Uncomment only for deep debugging sessions
+    // unsafe {
+    //     if !_frame.is_null() {
+    //         let rip = *_frame.offset(0);
+    //         let cs = *_frame.offset(1);
+    //         let rflags = *_frame.offset(2);
+    //         let rsp = *_frame.offset(3);
+    //         let ss = *_frame.offset(4);
+    //         crate::serial_println!(
+    //             "IRET: RIP={:#x} CS={:#x} RFLAGS={:#x} RSP={:#x} SS={:#x}",
+    //             rip, cs, rflags, rsp, ss
+    //         );
+    //     }
+    // }
+}
+
 /// Send End-Of-Interrupt for the timer
 ///
 /// CRITICAL: This MUST be called just before IRETQ, after all timer interrupt

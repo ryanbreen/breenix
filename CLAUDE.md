@@ -186,6 +186,53 @@ When new implementation reaches parity:
 - Red zone: disabled for interrupt safety
 - Features: `-mmx,-sse,+soft-float`
 
+## Interrupt and Syscall Development - CRITICAL PATH REQUIREMENTS
+
+**The interrupt and syscall paths MUST remain pristine.** This is non-negotiable architectural guidance.
+
+### Why This Matters
+
+Timer interrupts fire every ~1ms (1000 Hz). At 3 GHz, that's only 3 million cycles between interrupts. If the timer handler takes too long:
+- Nested interrupts pile up
+- Stack overflow occurs
+- Userspace never executes (timer fires before IRETQ completes)
+
+Real-world example: Adding 230 lines of page table diagnostics to `trace_iretq_to_ring3()` caused timer interrupts to fire within 100-500 cycles after IRETQ, before userspace could execute a single instruction. Result: 0 syscalls executed, infinite kernel loop.
+
+### MANDATORY RULES
+
+**In interrupt handlers (`kernel/src/interrupts/`):**
+- NO serial output (`serial_println!`, `log!`, `debug!`)
+- NO page table walks or memory mapping operations
+- NO locks that might contend (use `try_lock()` with direct hardware fallback)
+- NO heap allocations
+- NO string formatting
+- Target: <1000 cycles total
+
+**In syscall entry/exit (`kernel/src/syscall/entry.asm`, `handler.rs`):**
+- NO logging on the hot path
+- NO diagnostic tracing by default
+- Frame transitions must be minimal
+
+**Stub functions for assembly references:**
+If assembly code calls logging functions that were removed, provide empty `#[no_mangle]` stubs rather than modifying assembly. See `kernel/src/interrupts/timer.rs` for examples.
+
+### Approved Debugging Alternatives
+
+1. **QEMU interrupt tracing**: `BREENIX_QEMU_DEBUG_FLAGS="int,cpu_reset"` logs to file without affecting kernel timing
+2. **GDB breakpoints**: `BREENIX_GDB=1` enables GDB server
+3. **Post-mortem analysis**: Analyze logs after crashes, not during execution
+4. **Dedicated diagnostic threads**: Run diagnostics in separate threads with proper scheduling
+
+### Code Review Checklist
+
+Before approving changes to interrupt/syscall code:
+- [ ] No `serial_println!` or logging macros
+- [ ] No page table operations
+- [ ] No locks without try_lock fallback
+- [ ] No heap allocations
+- [ ] Timing-critical paths marked with comments
+
 ## Work Tracking
 
 We use Beads (bd) instead of Markdown for issue tracking. Run `bd quickstart` to get started.

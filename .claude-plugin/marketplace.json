@@ -35,7 +35,8 @@
         "./breenix-interrupt-trace",
         "./breenix-gdb-attach",
         "./breenix-register-watch",
-        "./breenix-qemu-debug-session"
+        "./breenix-qemu-debug-session",
+        "./breenix-interrupt-syscall-development"
       ]
     },
     {
