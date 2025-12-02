@@ -264,6 +264,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::ClockGetTime) => {
             let clock_id = args.0 as u32;
             let user_timespec_ptr = args.1 as *mut super::time::Timespec;
+            log::debug!("clock_gettime syscall (228) received: frame.rdi={:#x}, frame.rsi={:#x}", frame.rdi, frame.rsi);
+            log::debug!("clock_gettime syscall (228) received: args.0={:#x}, args.1={:#x}", args.0, args.1);
             log::debug!("clock_gettime syscall (228) received: clock_id={}, user_ptr={:#x}",
                 clock_id, user_timespec_ptr as u64);
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)

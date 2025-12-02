@@ -287,10 +287,53 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check if hello_time.elf actually executed and printed to stdout",
         },
         BootStage {
+            name: "Userspace register initialization validated",
+            marker: "✓ PASS: All registers initialized to zero",
+            failure_meaning: "General-purpose registers not initialized to zero on first userspace entry",
+            check_hint: "Check setup_first_userspace_entry() in kernel/src/interrupts/context_switch.rs - should zero all general-purpose registers in SavedRegisters before IRETQ",
+        },
+        BootStage {
             name: "Userspace clock_gettime validated",
             marker: "USERSPACE CLOCK_GETTIME: OK",
             failure_meaning: "Userspace process called clock_gettime syscall but got zero time or syscall failed",
             check_hint: "Verify INT 0x80 dispatch to SYS_clock_gettime (228) works from Ring 3 and returns non-zero time",
+        },
+        // Diagnostic tests for syscall register corruption
+        BootStage {
+            name: "Diagnostic: Multiple getpid calls",
+            marker: "Test 41a: Multiple no-arg syscalls (getpid)|Result: PASS",
+            failure_meaning: "Multiple no-arg syscalls (getpid) failed - basic syscall mechanism broken",
+            check_hint: "Check syscall0() wrapper and SYS_GETPID (39) handler in syscall_diagnostic_test.rs",
+        },
+        BootStage {
+            name: "Diagnostic: Multiple sys_write calls",
+            marker: "Test 41b: Multiple sys_write calls|Result: PASS",
+            failure_meaning: "Multiple sys_write calls failed - multi-arg syscalls broken",
+            check_hint: "Check syscall3() wrapper and SYS_WRITE (1) handler in syscall_diagnostic_test.rs",
+        },
+        BootStage {
+            name: "Diagnostic: Single clock_gettime",
+            marker: "Test 41c: Single clock_gettime|Result: PASS",
+            failure_meaning: "First clock_gettime call failed - syscall2 or clock_gettime handler broken",
+            check_hint: "Check syscall2() wrapper and SYS_CLOCK_GETTIME (228) handler",
+        },
+        BootStage {
+            name: "Diagnostic: Register preservation",
+            marker: "Test 41d: Register preservation|Result: PASS",
+            failure_meaning: "Callee-saved registers (R12, R13) corrupted across syscall - context switch broken",
+            check_hint: "Check SavedRegisters save/restore in interrupts/context_switch.rs",
+        },
+        BootStage {
+            name: "Diagnostic: Second clock_gettime",
+            marker: "Test 41e: Second clock_gettime|Result: PASS",
+            failure_meaning: "Second clock_gettime call failed - register corruption between syscalls",
+            check_hint: "Check SyscallFrame vs SavedRegisters sync in context_switch.rs - RDI corruption likely",
+        },
+        BootStage {
+            name: "Diagnostic: Summary",
+            marker: "=== SUMMARY: 5/5 tests passed ===",
+            failure_meaning: "Not all diagnostic tests passed - see individual test results above",
+            check_hint: "Check which specific diagnostic test failed and follow its check_hint",
         },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.

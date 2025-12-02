@@ -26,6 +26,13 @@ pub static TIMER_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/timer_t
 
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static CLOCK_GETTIME_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/clock_gettime_test.elf");
+
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+pub static REGISTER_INIT_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/register_init_test.elf");
+
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+pub static SYSCALL_DIAGNOSTIC_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/syscall_diagnostic_test.elf");
+
 #[cfg(feature = "testing")]
 pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
     #[cfg(feature = "external_test_bins")]
@@ -40,6 +47,8 @@ pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
             "syscall_enosys" => SYSCALL_ENOSYS_ELF,
             "timer_test" => TIMER_TEST_ELF,
             "clock_gettime_test" => CLOCK_GETTIME_TEST_ELF,
+            "register_init_test" => REGISTER_INIT_TEST_ELF,
+            "syscall_diagnostic_test" => SYSCALL_DIAGNOSTIC_TEST_ELF,
             _ => {
                 log::warn!("Unknown test binary '{}', using minimal ELF", name);
                 return create_minimal_valid_elf();
@@ -110,6 +119,8 @@ fn _test_binaries_included() {
     assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
     assert!(TIMER_TEST_ELF.len() > 0, "timer_test.elf not included");
     assert!(CLOCK_GETTIME_TEST_ELF.len() > 0, "clock_gettime_test.elf not included");
+    assert!(REGISTER_INIT_TEST_ELF.len() > 0, "register_init_test.elf not included");
+    assert!(SYSCALL_DIAGNOSTIC_TEST_ELF.len() > 0, "syscall_diagnostic_test.elf not included");
 }
 
 /// Test running a userspace program

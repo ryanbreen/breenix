@@ -17,7 +17,9 @@ pub enum LogLevel {
     Error = 1,
     #[allow(dead_code)]
     Warn = 2,
+    #[allow(dead_code)]
     Info = 3,
+    #[allow(dead_code)]
     Debug = 4,
     #[allow(dead_code)]
     Trace = 5,
@@ -236,6 +238,7 @@ pub unsafe fn get_log_ring() -> &'static mut LogRing {
 }
 
 /// Main IRQ-safe logging function
+#[allow(dead_code)]
 pub fn irq_safe_log(_level: LogLevel, args: fmt::Arguments) {
     // TEMPORARY: Bypass IRQ-safe logging to debug hang
     // Just try to print directly, ignore failures

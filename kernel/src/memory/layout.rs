@@ -48,7 +48,6 @@ pub const USER_STACK_REGION_END: u64 = 0x8000_0000_0000;
 pub const USER_STACK_SIZE: usize = 64 * 1024;
 
 // PML4 indices for different regions
-pub const KERNEL_PML4_INDEX: u64 = 402;              // Kernel stacks at 0xffffc90000000000
 #[allow(dead_code)]
 pub const BOOTSTRAP_PML4_INDEX: u64 = 3;             // Bootstrap stack at 0x180000000000
 
@@ -130,13 +129,6 @@ pub fn log_layout() {
             percpu_stack_top(cpu_id).as_u64()
         );
     }
-}
-
-/// Check if an address is in the kernel's upper-half region
-#[inline]
-pub fn is_kernel_address(addr: x86_64::VirtAddr) -> bool {
-    let pml4_index = (addr.as_u64() >> 39) & 0x1FF;
-    pml4_index == KERNEL_PML4_INDEX
 }
 
 /// Check if an address is in the bootstrap stack region

@@ -68,29 +68,6 @@ pub fn write_byte(byte: u8) {
     });
 }
 
-/// Flush the UART transmitter by waiting until both THR empty (THRE)
-/// and transmitter empty (TEMT) bits are set in the Line Status Register.
-/// This ensures all bytes have left the FIFO before returning.
-pub fn flush() {
-    use x86_64::instructions::interrupts;
-    use x86_64::instructions::port::Port;
-    const LSR_OFFSET: u16 = 5; // Line Status Register at base+5
-    const LSR_THRE: u8 = 0x20; // Transmitter Holding Register Empty
-    const LSR_TEMT: u8 = 0x40; // Transmitter Empty
-
-    interrupts::without_interrupts(|| {
-        let mut lsr: Port<u8> = Port::new(COM1_PORT + LSR_OFFSET);
-        // Poll until both bits are set
-        for _ in 0..1_000_000 {
-            // Safety: reading I/O port
-            let status = unsafe { lsr.read() };
-            if (status & (LSR_THRE | LSR_TEMT)) == (LSR_THRE | LSR_TEMT) {
-                break;
-            }
-        }
-    });
-}
-
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;

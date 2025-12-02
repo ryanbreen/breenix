@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::instructions::port::Port;
 
 const PIT_INPUT_FREQ_HZ: u32 = 1_193_182;
-const PIT_HZ: u32 = 1000; // 1000 Hz ⇒ 1 ms per tick
+const PIT_HZ: u32 = 200; // 200 Hz ⇒ 5 ms per tick
 const PIT_COMMAND_PORT: u16 = 0x43;
 const PIT_CHANNEL0_PORT: u16 = 0x40;
 

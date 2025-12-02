@@ -457,30 +457,10 @@ impl ProcessManager {
         &mut self,
         thread_id: u64,
     ) -> Option<(ProcessId, &mut Process)> {
-        // DIAGNOSTIC: Log all process->thread mappings
-        crate::serial_println!("🔍 find_process_by_thread_mut: Looking for thread {}", thread_id);
-        for (pid, process) in self.processes.iter() {
-            if let Some(ref thread) = process.main_thread {
-                crate::serial_println!("  Process {} ({}) -> Thread {}",
-                    pid.as_u64(), process.name, thread.id);
-            } else {
-                crate::serial_println!("  Process {} ({}) -> No thread",
-                    pid.as_u64(), process.name);
-            }
-        }
-
-        let result = self.processes
+        self.processes
             .iter_mut()
             .find(|(_, process)| process.main_thread.as_ref().map(|t| t.id) == Some(thread_id))
-            .map(|(pid, process)| (*pid, process));
-
-        if let Some((pid, _)) = &result {
-            crate::serial_println!("  ✓ Found: Process {} has thread {}", pid.as_u64(), thread_id);
-        } else {
-            crate::serial_println!("  ✗ NOT FOUND: No process has thread {}", thread_id);
-        }
-
-        result
+            .map(|(pid, process)| (*pid, process))
     }
 
     /// Find a process by its CR3 (page table frame)

@@ -438,6 +438,21 @@ fn kernel_main_continue() -> ! {
                 }
             }
 
+            // Launch register_init_test to verify registers are properly initialized
+            #[cfg(feature = "external_test_bins")]
+            {
+                serial_println!("RING3_SMOKE: creating register_init_test userspace process");
+                let register_test_buf = crate::userspace_test::get_test_binary("register_init_test");
+                match process::creation::create_user_process(String::from("register_init_test"), &register_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created register_init_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create register_init_test process: {}", e);
+                    }
+                }
+            }
+
             // Launch clock_gettime_test after hello_time
             #[cfg(feature = "external_test_bins")]
             {
@@ -449,6 +464,21 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create clock_gettime_test process: {}", e);
+                    }
+                }
+            }
+
+            // Launch syscall_diagnostic_test to isolate register corruption bug
+            #[cfg(feature = "external_test_bins")]
+            {
+                serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
+                let diagnostic_test_buf = crate::userspace_test::get_test_binary("syscall_diagnostic_test");
+                match process::creation::create_user_process(String::from("syscall_diagnostic_test"), &diagnostic_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created syscall_diagnostic_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create syscall_diagnostic_test process: {}", e);
                     }
                 }
             }

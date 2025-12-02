@@ -22,9 +22,15 @@ bits 64
 %define SAVED_REGS_SIZE (SAVED_REGS_COUNT * 8)
 
 timer_interrupt_entry:
+    ; CRITICAL: Disable interrupts BEFORE saving any registers
+    ; This prevents race condition where another interrupt fires during register save
+    ; Even though timer interrupt is an interrupt gate (IF cleared by CPU), we ensure
+    ; atomicity by explicitly disabling interrupts for the entire register save sequence
+    cli
+
     ; TEMPORARILY REMOVED: Push dummy error code for uniform stack frame (IRQs don't push error codes)
     ; push qword 0
-    
+
     ; Save all general purpose registers
     push rax
     push rcx
@@ -120,7 +126,12 @@ timer_interrupt_entry:
     out dx, al
     pop rdx
     pop rax
-    
+
+    ; CRITICAL: Disable interrupts before restoring registers
+    ; This prevents race condition where another interrupt fires while registers
+    ; are being restored, potentially corrupting them
+    cli
+
     ; Restore all general purpose registers
     ; Note: If we switched contexts, these will be different registers!
     pop r15

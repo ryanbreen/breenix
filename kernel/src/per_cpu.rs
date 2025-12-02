@@ -4,9 +4,14 @@
 //! efficiently via the GS segment register without locks.
 
 use core::ptr;
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{compiler_fence, Ordering, AtomicU64};
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase};
+
+// Global tracking counters for irq_enter/irq_exit balance analysis
+static IRQ_ENTER_COUNT: AtomicU64 = AtomicU64::new(0);
+static IRQ_EXIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static MAX_PREEMPT_IMBALANCE: AtomicU64 = AtomicU64::new(0);
 
 /// Per-CPU data structure with cache-line alignment and stable ABI
 /// This structure is accessed from assembly code, so field order and offsets must be stable
@@ -352,9 +357,12 @@ pub fn in_nmi() -> bool {
 
 /// Enter hardware IRQ context (called by interrupt handlers)
 pub fn irq_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "irq_enter called before per-CPU initialization");
-    
+
+    // Track irq_enter calls for balance analysis
+    IRQ_ENTER_COUNT.fetch_add(1, Ordering::Relaxed);
+
     unsafe {
         let old_count: u32;
         core::arch::asm!(
@@ -365,9 +373,9 @@ pub fn irq_enter() {
             offset = const PREEMPT_COUNT_OFFSET,
             options(nostack, preserves_flags)
         );
-        
+
         let new_count = old_count + HARDIRQ_OFFSET;
-        
+
         // Check for overflow in debug builds
         debug_assert!(
             (new_count & HARDIRQ_MASK) >= (old_count & HARDIRQ_MASK),
@@ -375,24 +383,28 @@ pub fn irq_enter() {
             old_count & HARDIRQ_MASK,
             new_count & HARDIRQ_MASK
         );
-        
-        // Log first few for CI validation
-        static IRQ_ENTER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        let enter_count = IRQ_ENTER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if enter_count < 10 {
-            log::info!("irq_enter #{}: preempt_count {:#x} -> {:#x} (HARDIRQ incremented)", 
-                      enter_count, old_count, new_count);
-        }
-        // CRITICAL: Do NOT log after the first few interrupts to avoid deadlock
-        // Logging from interrupt context can deadlock if main thread holds serial lock
+
+        // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
+        // Previously logged first 10 irq_enter calls for CI validation
     }
 }
 
 /// Exit hardware IRQ context
 pub fn irq_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "irq_exit called before per-CPU initialization");
-    
+
+    // Track irq_exit calls for balance analysis
+    IRQ_EXIT_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Check for imbalance
+    let enters = IRQ_ENTER_COUNT.load(Ordering::Relaxed);
+    let exits = IRQ_EXIT_COUNT.load(Ordering::Relaxed);
+    if enters > exits {
+        let imbalance = enters - exits;
+        MAX_PREEMPT_IMBALANCE.fetch_max(imbalance, Ordering::Relaxed);
+    }
+
     unsafe {
             let old_count: u32;
             core::arch::asm!(
@@ -403,52 +415,33 @@ pub fn irq_exit() {
                 offset = const PREEMPT_COUNT_OFFSET,
                 options(nostack, preserves_flags)
             );
-            
+
             let new_count = old_count.wrapping_sub(HARDIRQ_OFFSET);
-            
+
             // Check for underflow in debug builds
             debug_assert!(
                 (old_count & HARDIRQ_MASK) >= HARDIRQ_OFFSET,
                 "irq_exit: HARDIRQ count underflow! Was {:#x}",
                 old_count & HARDIRQ_MASK
             );
-            
-            // Log first few for CI validation
-            static IRQ_EXIT_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-            let exit_count = IRQ_EXIT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if exit_count < 10 {
-                log::info!("irq_exit #{}: preempt_count {:#x} -> {:#x} (HARDIRQ decremented)", 
-                          exit_count, old_count, new_count);
-            }
-            // CRITICAL: Do NOT log after the first few interrupts to avoid deadlock
-            
+
+            // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
+            // Previously logged first 10 irq_exit calls for CI validation
+
         // Check if we should process softirqs
         // Linux processes softirqs when returning to non-interrupt context
         if new_count == 0 {
             // Check if any softirqs are pending
             let pending = softirq_pending();
             if pending != 0 {
-                // Only log first few times to avoid deadlock
-                static SOFTIRQ_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                if SOFTIRQ_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 5 {
-                    log::info!("irq_exit: Processing pending softirqs (bitmap={:#x})", pending);
-                }
-                // Process softirqs
+                // Process softirqs (logging removed to prevent deadlock)
                 do_softirq();
             }
-            
+
             // After softirq processing, re-check if we should schedule
             // Only if we're still at preempt_count == 0 with need_resched set
             // Defer the actual scheduling to the interrupt return path
-            if need_resched() {
-                // Only log first few times to avoid deadlock
-                static SCHED_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                if SCHED_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 5 {
-                    log::info!("irq_exit: Scheduling deferred to return path (need_resched set)");
-                }
-                // Do not clear need_resched here;
-                // check_need_resched_and_switch() will handle it and perform the switch.
-            }
+            // (No logging to avoid deadlock)
         }
     }
 }
@@ -1068,28 +1061,7 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // Also allow scheduling if we're in exception cleanup context
     let in_exception_cleanup = in_exception_cleanup_context();
 
-    let can_sched = current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel || in_exception_cleanup);
-
-    log::debug!(
-        "can_schedule: preempt_count={}, cs_rpl={}, userspace={}, idle_kernel={}, exception_cleanup={}, result={}",
-        current_preempt,
-        saved_cs & 3,
-        returning_to_userspace,
-        returning_to_idle_kernel,
-        in_exception_cleanup,
-        can_sched
-    );
-
-    if current_preempt > 0 {
-        log::debug!("can_schedule: BLOCKED by preempt_count={}", current_preempt);
-    }
-    if !returning_to_userspace && !returning_to_idle_kernel && !in_exception_cleanup {
-        log::debug!(
-            "can_schedule: BLOCKED - returning to kernel (non-idle) context, CS RPL={}",
-            saved_cs & 3
-        );
-    }
-    can_sched
+    current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel || in_exception_cleanup)
 }
 
 /// Get per-CPU base address and size for logging
@@ -1100,3 +1072,20 @@ pub fn get_percpu_info() -> (u64, usize) {
     let size = core::mem::size_of::<PerCpuData>();
     (base, size)
 }
+
+/// Get total number of irq_enter calls (for diagnostics)
+pub fn get_irq_enter_count() -> u64 {
+    IRQ_ENTER_COUNT.load(Ordering::Relaxed)
+}
+
+/// Get total number of irq_exit calls (for diagnostics)
+pub fn get_irq_exit_count() -> u64 {
+    IRQ_EXIT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Get maximum observed preempt imbalance (enters - exits)
+/// A persistently high value may indicate missing irq_exit calls
+pub fn get_max_preempt_imbalance() -> u64 {
+    MAX_PREEMPT_IMBALANCE.load(Ordering::Relaxed)
+}
+

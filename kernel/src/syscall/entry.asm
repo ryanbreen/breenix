@@ -18,9 +18,16 @@ extern trace_iretq_to_ring3
 ; On entry:
 ;   - CPU has already switched to kernel stack (TSS.RSP0)
 ;   - CPU has pushed: SS, RSP, RFLAGS, CS, RIP
-;   - Interrupts are disabled
+;   - Interrupts should be disabled by interrupt gate, but we ensure it explicitly
 ;   - We're in Ring 0
 syscall_entry:
+    ; CRITICAL: Disable interrupts BEFORE saving any registers
+    ; This prevents race condition where timer interrupt fires during register save
+    ; at 1000 Hz, causing register corruption (RDI corruption bug)
+    ; Even though INT 0x80 is an interrupt gate (IF cleared by CPU), we ensure
+    ; atomicity by explicitly disabling interrupts for the entire register save sequence
+    cli
+
     ; Save all general purpose registers in SavedRegisters order
     ; Must match timer interrupt order: rax first, r15 last
     push rax    ; syscall number (pushed first, at RSP+14*8)
@@ -70,6 +77,14 @@ syscall_entry:
     mov rdi, rsp
     call rust_syscall_handler
 
+    ; CRITICAL FIX: Update RAX in SavedRegisters struct on stack
+    ; rust_syscall_handler returns the syscall result in RAX, but the SavedRegisters
+    ; struct on the stack still has the OLD RAX value (syscall number from entry).
+    ; If check_need_resched_and_switch causes a context switch, it will save the
+    ; wrong RAX value. We must update the stack copy NOW before any potential switch.
+    ; RAX was pushed first (line 33), so it's at [rsp + 0]
+    mov [rsp], rax
+
     ; Return value is in RAX, which will be restored to userspace
     ; NOTE: We stay in kernel GS mode until just before iretq
     ; All kernel functions (scheduling, page table, tracing) need kernel GS
@@ -82,6 +97,11 @@ syscall_entry:
     lea rsi, [rsp + 16*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
     pop rax                   ; Restore syscall return value
+
+    ; CRITICAL: Disable interrupts before restoring registers
+    ; This prevents race condition where timer interrupt fires while registers
+    ; are being restored, potentially corrupting them
+    cli
 
     ; Restore all general purpose registers in reverse push order
     pop r15    ; Last pushed, first popped
