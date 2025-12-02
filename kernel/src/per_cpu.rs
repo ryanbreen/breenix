@@ -1049,6 +1049,15 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     let current_preempt = preempt_count();
     let returning_to_userspace = (saved_cs & 3) == 3;
 
+    // CRITICAL: Check if current_thread is set before accessing scheduler.
+    // During early boot or before first context switch, gs:[8] may be NULL.
+    // Timer interrupts can fire before any thread is set, causing a page fault
+    // at CR2=0x8 (offset 8 in PerCpuData = current_thread pointer).
+    if current_thread().is_none() {
+        // No current thread set yet - cannot schedule
+        return false;
+    }
+
     let mut returning_to_idle_kernel = false;
     if !returning_to_userspace {
         let current_tid = crate::task::scheduler::current_thread_id();
@@ -1074,17 +1083,20 @@ pub fn get_percpu_info() -> (u64, usize) {
 }
 
 /// Get total number of irq_enter calls (for diagnostics)
+#[allow(dead_code)]
 pub fn get_irq_enter_count() -> u64 {
     IRQ_ENTER_COUNT.load(Ordering::Relaxed)
 }
 
 /// Get total number of irq_exit calls (for diagnostics)
+#[allow(dead_code)]
 pub fn get_irq_exit_count() -> u64 {
     IRQ_EXIT_COUNT.load(Ordering::Relaxed)
 }
 
 /// Get maximum observed preempt imbalance (enters - exits)
 /// A persistently high value may indicate missing irq_exit calls
+#[allow(dead_code)]
 pub fn get_max_preempt_imbalance() -> u64 {
     MAX_PREEMPT_IMBALANCE.load(Ordering::Relaxed)
 }
