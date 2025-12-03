@@ -105,9 +105,7 @@ pub fn save_userspace_context(
     interrupt_frame: &InterruptStackFrame,
     saved_regs: &SavedRegisters,
 ) {
-    // DEBUG: Log before saving
-    log::debug!("SAVE_CTX: tid={}, reading rdi={:#x} from saved_regs", thread.id, saved_regs.rdi);
-
+    // NOTE: No logging here per CLAUDE.md - this is called from interrupt context
     // Update thread's context from interrupt frame
     thread.context.rax = saved_regs.rax;
     thread.context.rbx = saved_regs.rbx;
@@ -147,9 +145,7 @@ pub fn restore_userspace_context(
     interrupt_frame: &mut InterruptStackFrame,
     saved_regs: &mut SavedRegisters,
 ) {
-    // DEBUG: Log before restoring
-    log::debug!("RESTORE_CTX: tid={}, writing rdi={:#x} to saved_regs", thread.id, thread.context.rdi);
-
+    // NOTE: No logging here per CLAUDE.md - this is called from interrupt context
     // Restore general purpose registers
     saved_regs.rax = thread.context.rax;
     saved_regs.rbx = thread.context.rbx;
@@ -186,8 +182,5 @@ pub fn restore_userspace_context(
             }
         });
     }
-
-    log::info!("Restored userspace context for thread {}: RIP={:#x}, RSP={:#x}, CS={:#x}, SS={:#x}, RFLAGS={:#x}", 
-               thread.id, thread.context.rip, thread.context.rsp, 
-               thread.context.cs, thread.context.ss, thread.context.rflags);
+    // NOTE: No logging here per CLAUDE.md - this is called from interrupt context
 }

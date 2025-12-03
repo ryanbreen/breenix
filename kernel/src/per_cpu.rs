@@ -819,13 +819,11 @@ pub fn preempt_enable() {
             // 2. need_resched is set
             if (new_count & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK)) == 0 {
                 // Not in interrupt context, safe to check for scheduling
-                if need_resched() {
-                    // CRITICAL: Don't schedule from exception context on process CR3
-                    // The scheduler may access unmapped kernel structures (like framebuffer)
-                    crate::serial_println!("preempt_enable: SKIPPING schedule in exception context");
-                    // Clear need_resched to prevent infinite loops
-                    crate::per_cpu::set_need_resched(false);
-                }
+                // Note: We intentionally do NOT call try_schedule() or clear need_resched here.
+                // The syscall return path and timer interrupt return path both check
+                // need_resched and call check_need_resched_and_switch() which performs
+                // the actual context switch with proper register save/restore.
+                // Clearing the flag here would prevent those paths from scheduling.
             }
         }
     }

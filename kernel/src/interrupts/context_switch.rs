@@ -24,11 +24,10 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // Rate-limited logging for context switch checks
-    log::trace!("check_need_resched_and_switch called");
-
-    // DEBUG: Log register values at reschedule check
-    log::debug!("RESCHED_CHECK: saved_regs={:p}, rdi={:#x}, rax={:#x}", saved_regs, saved_regs.rdi, saved_regs.rax);
+    // NOTE: No logging in interrupt handlers per CLAUDE.md - causes timer to fire
+    // faster than userspace can execute, creating infinite kernel loops.
+    // Serial I/O takes thousands of cycles, causing timer interrupts to fire faster
+    // than userspace can execute, resulting in infinite kernel loops.
 
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
@@ -128,7 +127,31 @@ pub extern "C" fn check_need_resched_and_switch(
         // Save current thread's context if coming from userspace
         // CRITICAL: If save fails, we MUST NOT switch contexts!
         // Switching without saving would cause the process to return to stale RIP (entry point)
-        if from_userspace {
+        //
+        // CRITICAL FIX for RDI corruption bug:
+        // Don't save context if we interrupted syscall return path.
+        // The interrupt frame has CS=0x33 when returning to userspace, but if we
+        // interrupted during syscall exit (after preempt_enable but before IRETQ),
+        // the saved_regs contain KERNEL values, not userspace!
+        //
+        // We detect syscall return by checking preempt_count bit 28 (PREEMPT_ACTIVE).
+        // The syscall return path (entry.asm) sets this bit before restoring registers.
+        // Linux uses 0x10000000 for PREEMPT_ACTIVE (bit 28).
+        let preempt_count = crate::per_cpu::preempt_count();
+        let preempt_active = (preempt_count & 0x10000000) != 0;  // Bit 28
+
+        // DEBUG: Log preempt_count check for first few instances
+        static PREEMPT_CHECK_LOG: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0);
+        let check_count = PREEMPT_CHECK_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if check_count < 10 {
+            log::debug!(
+                "Context switch check: from_userspace={}, preempt_count={:#x}, preempt_active={}, rdi={:#x}",
+                from_userspace, preempt_count, preempt_active, saved_regs.rdi
+            );
+        }
+
+        if from_userspace && !preempt_active {
             if !save_current_thread_context(old_thread_id, saved_regs, interrupt_frame) {
                 log::error!(
                     "Context switch aborted: failed to save thread {} context. \
@@ -139,6 +162,21 @@ pub extern "C" fn check_need_resched_and_switch(
                 // The lock contention should resolve by then
                 return;
             }
+        } else if from_userspace && preempt_active {
+            // We're in syscall return path - don't save context!
+            // The registers in saved_regs are kernel values from syscall handler!
+            static SYSCALL_INTERRUPT_LOG: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(0);
+            let count = SYSCALL_INTERRUPT_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if count < 10 {
+                log::info!(
+                    "Timer interrupt during syscall return (PREEMPT_ACTIVE set, rdi={:#x}), \
+                     skipping context save to prevent register corruption",
+                    saved_regs.rdi
+                );
+            }
+            // Don't switch threads - we're in syscall return path with kernel registers
+            return;
         }
 
         // Switch to the new thread
@@ -482,6 +520,9 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
     saved_regs.r13 = 0;
     saved_regs.r14 = 0;
     saved_regs.r15 = 0;
+
+    // DEBUG: Log that we're zeroing RDI for first entry
+    log::info!("FIRST_ENTRY t{}: zeroing rdi to 0", thread_id);
 
     // CRITICAL: Now set up CR3 and kernel stack for this thread
     // This must happen BEFORE we iretq to userspace

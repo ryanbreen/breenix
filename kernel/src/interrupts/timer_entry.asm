@@ -366,9 +366,36 @@ timer_interrupt_entry:
     ; CRITICAL FIX: Send EOI just before IRETQ to minimize window for spurious interrupts
     ; We're on user GS here, but send_timer_eoi needs kernel GS to access PICS lock
     ; Sequence: swapgs to kernel, call EOI, swapgs to user, iretq
+    ;
+    ; CRITICAL FIX #2: Save/restore ALL caller-saved registers around the call!
+    ; send_timer_eoi is a Rust function following System V AMD64 ABI.
+    ; Per the ABI, caller-saved registers (RAX, RCX, RDX, RSI, RDI, R8-R11) can be clobbered.
+    ; Without saving them, userspace returns with corrupted registers!
+    ; This was the root cause of the RDI corruption bug.
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+
     swapgs                  ; Switch to kernel GS
     call send_timer_eoi     ; Send EOI (requires kernel GS for PICS access)
     swapgs                  ; Switch back to user GS for iretq
+
+    ; Restore all caller-saved registers
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
 
     ; Return from interrupt to userspace
     ; IRETQ will re-enable interrupts from the saved RFLAGS
@@ -380,7 +407,31 @@ timer_interrupt_entry:
 
     ; CRITICAL FIX: Send EOI for kernel return path too
     ; We're still on kernel GS (we never swapped since we came from kernel mode)
+    ;
+    ; CRITICAL FIX #2: Save/restore caller-saved registers around the call!
+    ; Same fix as userspace path - send_timer_eoi can clobber registers.
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+
     call send_timer_eoi
+
+    ; Restore all caller-saved registers
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
 
     ; Return from interrupt to kernel
     iretq
