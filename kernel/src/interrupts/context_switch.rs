@@ -35,18 +35,12 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
-    // CRITICAL FIX: Always save context when coming from userspace, BEFORE any early returns.
-    // This ensures thread.context.rip is always up-to-date. Without this, if no context switch
-    // happens on this syscall return, but a later context switch restores this thread,
-    // it would use stale context.rip (the entry point 0x40000000) instead of the actual RIP.
+    // NOTE: Context is saved ONLY when actually switching threads (see line ~135).
+    // We do NOT save on every timer interrupt - that caused massive overhead
+    // preventing userspace from executing even one instruction.
+    // The interrupt frame captures the current RIP; we save to thread.context
+    // only when switching away.
     let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
-    if from_userspace {
-        if let Some(current_tid) = scheduler::current_thread_id() {
-            // Save context unconditionally so it's always current
-            // Ignore return value - we continue even if save fails (no context switch happening)
-            let _ = save_current_thread_context(current_tid, saved_regs, interrupt_frame);
-        }
-    }
 
     // Check if reschedule is needed
     if !scheduler::check_and_clear_need_resched() {
