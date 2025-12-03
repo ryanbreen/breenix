@@ -27,6 +27,9 @@ pub extern "C" fn check_need_resched_and_switch(
     // Rate-limited logging for context switch checks
     log::trace!("check_need_resched_and_switch called");
 
+    // DEBUG: Log register values at reschedule check
+    log::debug!("RESCHED_CHECK: saved_regs={:p}, rdi={:#x}, rax={:#x}", saved_regs, saved_regs.rdi, saved_regs.rax);
+
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
         return;

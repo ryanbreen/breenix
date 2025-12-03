@@ -84,6 +84,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         );
     }
 
+    // DEBUG: Log syscall entry
+    log::debug!("SYSCALL_ENTRY: frame_ptr={:p}, rdi={:#x}", frame, frame.rdi);
+
     // Increment preempt count on syscall entry (prevents scheduling during syscall)
     crate::per_cpu::preempt_disable();
 
