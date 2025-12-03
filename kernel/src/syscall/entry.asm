@@ -78,6 +78,14 @@ syscall_entry:
     call rust_syscall_handler
 
     ; Return value is in RAX, which will be restored to userspace
+    ; CRITICAL FIX: Update the stack copy of RAX with the return value!
+    ; The handler modified frame.rax, but if a context switch happens in
+    ; check_need_resched_and_switch, save_userspace_context reads from the
+    ; stack. Without this update, it would save the stale syscall number
+    ; instead of the return value, causing userspace to see wrong RAX.
+    ; RAX is at offset 14*8 = 112 bytes from RSP (pushed first, highest addr)
+    mov qword [rsp + 112], rax
+
     ; NOTE: We stay in kernel GS mode until just before iretq
     ; All kernel functions (scheduling, page table, tracing) need kernel GS
 
