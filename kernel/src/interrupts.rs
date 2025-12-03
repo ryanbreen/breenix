@@ -308,12 +308,6 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
     crate::serial_println!("BP handler: Called preempt_enable, exiting handler");
 }
 
-// Keep the old x86-interrupt handler for now until we update the IDT
-pub extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
-    // This is the old handler - should not be called once we switch to assembly entry
-    panic!("Old breakpoint handler called - should be using assembly entry!");
-}
-
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
