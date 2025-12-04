@@ -725,13 +725,7 @@ fn kernel_main_continue() -> ! {
         });
     }
 
-    // Initialize keyboard
-    #[cfg(not(feature = "testing"))]
-    {
-        log::info!("Initializing keyboard...");
-        keyboard::init();
-        log::info!("Keyboard initialized");
-    }
+    // Keyboard was already initialized earlier (line 225), don't initialize again
 
     // Wait briefly for processes to run
     for _ in 0..1000000 {

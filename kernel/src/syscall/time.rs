@@ -49,31 +49,26 @@ pub fn clock_gettime(clock_id: u32) -> Result<Timespec, ErrorCode> {
 ///
 /// For kernel code that needs to read the time, use `clock_gettime()`
 /// directly instead of this syscall wrapper.
+///
+/// NOTE: No logging in this hot path! Serial I/O takes thousands of cycles
+/// and would cause the sub-millisecond precision test to fail.
 pub fn sys_clock_gettime(clock_id: u32, user_ptr: *mut Timespec) -> SyscallResult {
-    log::debug!("sys_clock_gettime: clock_id={}, user_ptr={:#x}", clock_id, user_ptr as u64);
-
     // Get the time using internal implementation
     let ts = match clock_gettime(clock_id) {
         Ok(ts) => ts,
         Err(e) => {
-            log::debug!("sys_clock_gettime: clock_gettime failed with error {:?}", e);
             return SyscallResult::Err(e as u64);
         }
     };
 
-    log::debug!("sys_clock_gettime: got time tv_sec={}, tv_nsec={}", ts.tv_sec, ts.tv_nsec);
-
     // Copy result to userspace
-    log::debug!("sys_clock_gettime: calling copy_to_user to {:#x}", user_ptr as u64);
-    if let Err(e) = crate::syscall::handlers::copy_to_user(
+    if let Err(_e) = crate::syscall::handlers::copy_to_user(
         user_ptr as u64,
         &ts as *const _ as u64,
         core::mem::size_of::<Timespec>(),
     ) {
-        log::error!("sys_clock_gettime: Failed to copy to user: {}", e);
         return SyscallResult::Err(ErrorCode::Fault as u64);
     }
 
-    log::debug!("sys_clock_gettime: copy_to_user succeeded, returning 0");
     SyscallResult::Ok(0)
 }

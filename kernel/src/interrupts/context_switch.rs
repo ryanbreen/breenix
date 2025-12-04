@@ -60,6 +60,36 @@ pub extern "C" fn check_need_resched_and_switch(
         );
     }
 
+    // CRITICAL FIX: Acquire and HOLD process manager lock across entire critical section.
+    // This prevents a TOCTOU race where:
+    //   1. Check lock is available (old approach: immediately dropped)
+    //   2. syscall acquires lock
+    //   3. scheduler::schedule() modifies state
+    //   4. save_current_thread_context() fails to acquire lock
+    //   5. Scheduler state is corrupted: wrong thread in ready queue
+    //
+    // By HOLDING the lock, we ensure atomicity of the schedule + save operation.
+    let mut process_manager_guard = if from_userspace {
+        match crate::process::try_manager() {
+            Some(guard) => Some(guard),
+            None => {
+                // Process manager lock is held (likely by a syscall in progress).
+                // Don't even attempt to schedule - we'd corrupt scheduler state if we did.
+                // The need_resched flag was already cleared, so set it again for next time.
+                scheduler::set_need_resched();
+                if count < 20 {
+                    log::warn!(
+                        "Rescheduling deferred: process manager lock held (count: {})",
+                        count
+                    );
+                }
+                return;
+            }
+        }
+    } else {
+        None
+    };
+
     // Perform scheduling decision
     let schedule_result = scheduler::schedule();
     // Always log the first few results
@@ -85,6 +115,9 @@ pub extern "C" fn check_need_resched_and_switch(
                 count
             );
         }
+        // CRITICAL: Clear exception cleanup context even when no switch happens.
+        // Otherwise the flag stays set forever, causing unexpected scheduling later.
+        crate::per_cpu::clear_exception_cleanup_context();
         // Early return if no scheduling decision
         return;
     }
@@ -152,14 +185,20 @@ pub extern "C" fn check_need_resched_and_switch(
         }
 
         if from_userspace && !preempt_active {
-            if !save_current_thread_context(old_thread_id, saved_regs, interrupt_frame) {
-                log::error!(
-                    "Context switch aborted: failed to save thread {} context. \
-                     Would cause return to stale RIP!",
-                    old_thread_id
-                );
-                // Don't clear need_resched - we'll try again on next interrupt return
-                // The lock contention should resolve by then
+            // Use the already-held guard to save context (prevents TOCTOU race)
+            if let Some(ref mut guard) = process_manager_guard {
+                if !save_current_thread_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard) {
+                    log::error!(
+                        "Context switch aborted: failed to save thread {} context. \
+                         Would cause return to stale RIP!",
+                        old_thread_id
+                    );
+                    // Don't clear need_resched - we'll try again on next interrupt return
+                    return;
+                }
+            } else {
+                // This shouldn't happen - from_userspace implies we acquired the guard
+                log::error!("BUG: from_userspace=true but no process_manager_guard");
                 return;
             }
         } else if from_userspace && preempt_active {
@@ -180,7 +219,20 @@ pub extern "C" fn check_need_resched_and_switch(
         }
 
         // Switch to the new thread
-        switch_to_thread(new_thread_id, saved_regs, interrupt_frame);
+        // Pass the process_manager_guard so we don't try to re-acquire the lock
+        switch_to_thread(new_thread_id, saved_regs, interrupt_frame, process_manager_guard.take());
+
+        // CRITICAL: Clear PREEMPT_ACTIVE after context switch completes
+        // PREEMPT_ACTIVE (bit 28) is set in syscall/entry.asm to protect register
+        // restoration during syscall return. When we switch to a different thread,
+        // that flag should NOT persist - the NEW thread is not in syscall return.
+        //
+        // Without this, PREEMPT_ACTIVE would carry over to the new thread, causing:
+        // 1. can_schedule() to return false (blocks scheduling)
+        // 2. Exception handlers to need the bypass workaround
+        //
+        // Linux clears this in schedule_tail() after context switch.
+        crate::per_cpu::clear_preempt_active();
 
         // Log userspace transition
         if scheduler::with_thread_mut(new_thread_id, |t| t.privilege == ThreadPrivilege::User)
@@ -194,48 +246,43 @@ pub extern "C" fn check_need_resched_and_switch(
     }
 }
 
-/// Save the current thread's userspace context
+/// Save the current thread's userspace context using an already-held guard
 /// Returns true if context was saved successfully, false otherwise
-fn save_current_thread_context(
+///
+/// This version takes an already-acquired process manager guard to prevent
+/// TOCTOU races where the lock could be acquired between checking availability
+/// and actually using it.
+fn save_current_thread_context_with_guard(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
+    manager_guard: &mut spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
 ) -> bool {
-    // CRITICAL: Use try_manager in interrupt context to avoid deadlock
-    // Never use with_process_manager() from interrupt handlers!
-    if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
-                if let Some(ref mut thread) = process.main_thread {
-                    save_userspace_context(thread, interrupt_frame, saved_regs);
-                    log::trace!(
-                        "Saved context for process {} (thread {})",
-                        pid.as_u64(),
-                        thread_id
-                    );
-                    return true;
-                } else {
-                    log::error!(
-                        "Process {} has no main_thread for thread {}",
-                        pid.as_u64(),
-                        thread_id
-                    );
-                }
+    if let Some(ref mut manager) = **manager_guard {
+        if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some(ref mut thread) = process.main_thread {
+                save_userspace_context(thread, interrupt_frame, saved_regs);
+                log::trace!(
+                    "Saved context for process {} (thread {})",
+                    pid.as_u64(),
+                    thread_id
+                );
+                return true;
             } else {
                 log::error!(
-                    "Could not find process for thread {} in process manager",
+                    "Process {} has no main_thread for thread {}",
+                    pid.as_u64(),
                     thread_id
                 );
             }
         } else {
-            log::error!("Process manager is None");
+            log::error!(
+                "Could not find process for thread {} in process manager",
+                thread_id
+            );
         }
     } else {
-        log::error!(
-            "CRITICAL: Could not acquire process manager lock in interrupt context for thread {}. \
-             Context switch will be aborted to prevent returning to stale RIP.",
-            thread_id
-        );
+        log::error!("Process manager is None");
     }
     false
 }
@@ -245,6 +292,7 @@ fn switch_to_thread(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
+    process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
 ) {
     // Update per-CPU current thread and TSS.RSP0
     scheduler::with_thread_mut(thread_id, |thread| {
@@ -285,7 +333,8 @@ fn switch_to_thread(
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
     } else {
         // Restore userspace thread context
-        restore_userspace_thread_context(thread_id, saved_regs, interrupt_frame);
+        // Pass the process_manager_guard to avoid double-lock
+        restore_userspace_thread_context(thread_id, saved_regs, interrupt_frame, process_manager_guard);
     }
 }
 
@@ -381,6 +430,7 @@ fn restore_userspace_thread_context(
     thread_id: u64,
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
+    process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
 ) {
     log::trace!("restore_userspace_thread_context: thread {}", thread_id);
 
@@ -400,16 +450,18 @@ fn restore_userspace_thread_context(
         });
 
         // For first run, we need to set up the interrupt frame to jump to userspace
-        setup_first_userspace_entry(thread_id, interrupt_frame, saved_regs);
+        setup_first_userspace_entry(thread_id, interrupt_frame, saved_regs, process_manager_guard);
         return;
     }
 
     // Thread has run before - do normal context restore
     log::trace!("Resuming thread {}", thread_id);
 
-    // CRITICAL: Use try_manager in interrupt context to avoid deadlock
-    // Never use with_process_manager() from interrupt handlers!
-    if let Some(mut manager_guard) = crate::process::try_manager() {
+    // CRITICAL: Use the passed-in guard if available, otherwise try to acquire one.
+    // The guard is passed from check_need_resched_and_switch to avoid double-lock deadlock.
+    // If we're called from elsewhere without a guard, try_manager() as fallback.
+    let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
+    if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
             if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                 if let Some(ref mut thread) = process.main_thread {
@@ -417,27 +469,40 @@ fn restore_userspace_thread_context(
                         restore_userspace_context(thread, interrupt_frame, saved_regs);
                         log::trace!("Restored context for thread {}", thread_id);
 
-                        // Switch to process page table immediately during context switch
+                        // CRITICAL: Defer CR3 switch to timer_entry.asm before IRETQ
+                        // We do NOT switch CR3 here because:
+                        // 1. Kernel can run on process page tables (they have kernel mappings)
+                        // 2. timer_entry.asm will perform the actual switch before IRETQ (line 324)
+                        // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
+                        //
+                        // Instead, we set next_cr3 and saved_process_cr3 to communicate
+                        // the target CR3 to the assembly code.
                         if let Some(ref page_table) = process.page_table {
                             let page_table_frame = page_table.level_4_frame();
+                            let cr3_value = page_table_frame.start_address().as_u64();
 
-                            // Switch CR3 immediately
                             unsafe {
                                 use x86_64::registers::control::Cr3;
-                                let (current_frame, flags) = Cr3::read();
+                                let (current_frame, _flags) = Cr3::read();
                                 if current_frame != page_table_frame {
                                     log::trace!(
-                                        "CR3 switch: {:#x} -> {:#x} (pid {})",
+                                        "CR3 switch deferred: {:#x} -> {:#x} (pid {})",
                                         current_frame.start_address().as_u64(),
-                                        page_table_frame.start_address().as_u64(),
+                                        cr3_value,
                                         pid.as_u64()
                                     );
-
-                                    // Disable interrupts during CR3 switch
-                                    x86_64::instructions::interrupts::disable();
-                                    Cr3::write(page_table_frame, flags);
-                                    x86_64::instructions::tlb::flush_all();
                                 }
+
+                                // Tell timer_entry.asm to switch CR3 before IRETQ
+                                crate::per_cpu::set_next_cr3(cr3_value);
+
+                                // Update saved_process_cr3 so future timer interrupts
+                                // without context switch restore the correct CR3
+                                core::arch::asm!(
+                                    "mov gs:[80], {}",
+                                    in(reg) cr3_value,
+                                    options(nostack, preserves_flags)
+                                );
                             }
                         } else {
                             log::warn!("Process {} has no page table!", pid.as_u64());
@@ -464,7 +529,12 @@ fn restore_userspace_thread_context(
 }
 
 /// Set up interrupt frame for first entry to userspace
-fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptStackFrame, saved_regs: &mut SavedRegisters) {
+fn setup_first_userspace_entry(
+    thread_id: u64,
+    interrupt_frame: &mut InterruptStackFrame,
+    saved_regs: &mut SavedRegisters,
+    process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
+) {
     log::info!("setup_first_userspace_entry: thread {}", thread_id);
 
     // Get the thread's context (entry point, stack, etc.)
@@ -526,7 +596,9 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
 
     // CRITICAL: Now set up CR3 and kernel stack for this thread
     // This must happen BEFORE we iretq to userspace
-    if let Some(mut manager_guard) = crate::process::try_manager() {
+    // Use the passed-in guard if available, otherwise try to acquire one.
+    let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
+    if let Some(mut manager_guard) = guard_option {
         if let Some((pid, process)) = manager_guard.as_mut().and_then(|m| m.find_process_by_thread_mut(thread_id)) {
             log::trace!("Thread {} belongs to process {}", thread_id, pid.as_u64());
 
@@ -540,35 +612,27 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
                     }
                 });
 
-            // Switch to process page table
+            // CRITICAL: Defer CR3 switch to entry.asm before IRETQ
+            // We do NOT switch CR3 here for the same reasons as restore_userspace_thread_context():
+            // 1. Kernel can run on process page tables (they have kernel mappings)
+            // 2. entry.asm (syscall_return_to_userspace) will perform the actual switch before IRETQ
+            // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
             if let Some(page_table) = process.page_table.as_ref() {
                 let new_frame = page_table.level_4_frame();
-                log::trace!("Switching CR3 to {:#x}", new_frame.start_address().as_u64());
+                let cr3_value = new_frame.start_address().as_u64();
+                log::trace!("CR3 switch deferred to {:#x}", cr3_value);
 
-                // Switch CR3 atomically with interrupts disabled
-                x86_64::instructions::interrupts::without_interrupts(|| {
-                    unsafe {
-                        let cr3_value = new_frame.start_address().as_u64();
+                unsafe {
+                    // Tell interrupt return path to use this CR3
+                    crate::per_cpu::set_next_cr3(cr3_value);
 
-                        // Switch to process page table
-                        core::arch::asm!("mov cr3, {}", in(reg) cr3_value, options(nostack, preserves_flags));
-
-                        // Tell interrupt return path to use this CR3
-                        crate::per_cpu::set_next_cr3(cr3_value);
-
-                        // Set saved_process_cr3 for timer interrupt
-                        core::arch::asm!(
-                            "mov gs:[80], {}",
-                            in(reg) cr3_value,
-                            options(nostack, preserves_flags)
-                        );
-
-                        // Flush TLB
-                        x86_64::instructions::tlb::flush_all();
-
-                        log::trace!("CR3 switched to {:#x}", cr3_value);
-                    }
-                });
+                    // Set saved_process_cr3 for timer interrupt
+                    core::arch::asm!(
+                        "mov gs:[80], {}",
+                        in(reg) cr3_value,
+                        options(nostack, preserves_flags)
+                    );
+                }
             }
 
             // Set kernel stack for TSS RSP0
@@ -584,8 +648,8 @@ fn setup_first_userspace_entry(thread_id: u64, interrupt_frame: &mut InterruptSt
     log::info!("First userspace entry setup complete for thread {}", thread_id);
 }
 
-/// Simple idle loop
-fn idle_loop() -> ! {
+/// Simple idle loop - made pub for exception handlers that need to jump to idle
+pub fn idle_loop() -> ! {
     loop {
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();

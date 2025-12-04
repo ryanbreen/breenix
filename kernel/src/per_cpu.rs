@@ -69,6 +69,11 @@ pub struct PerCpuData {
     /// Saved process CR3 (offset 80) - saved on interrupt entry from userspace
     /// Used to restore process page tables on interrupt exit if no context switch
     pub saved_process_cr3: u64,
+
+    /// Exception cleanup context flag (offset 88) - allows scheduling from kernel mode
+    /// Set by exception handlers (GPF, page fault) when they terminate a process
+    /// and need to allow scheduling from kernel mode
+    pub exception_cleanup_context: bool,
 }
 
 // Linux-style preempt_count bit layout constants
@@ -140,6 +145,8 @@ const NEXT_CR3_OFFSET: usize = 64;         // offset 64: u64 (8 bytes) - ALIGNED
 const KERNEL_CR3_OFFSET: usize = 72;       // offset 72: u64 (8 bytes) - ALIGNED
 #[allow(dead_code)]
 const SAVED_PROCESS_CR3_OFFSET: usize = 80; // offset 80: u64 (8 bytes) - ALIGNED
+#[allow(dead_code)]
+const EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88; // offset 88: bool (1 byte)
 
 // Compile-time assertions to ensure offsets are correct
 // These will fail to compile if the offsets don't match expected values
@@ -177,6 +184,7 @@ impl PerCpuData {
             next_cr3: 0,
             kernel_cr3: 0,
             saved_process_cr3: 0,
+            exception_cleanup_context: false,
         }
     }
 }
@@ -831,9 +839,9 @@ pub fn preempt_enable() {
 
 /// Get current preempt count
 pub fn preempt_count() -> u32 {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "preempt_count called before per-CPU initialization");
-    
+
     // Read preempt_count directly from GS segment
     unsafe {
         let count: u32;
@@ -844,6 +852,31 @@ pub fn preempt_count() -> u32 {
             options(nostack, readonly)
         );
         count
+    }
+}
+
+/// Clear PREEMPT_ACTIVE bit (bit 28) from preempt_count
+///
+/// This is called after a context switch completes to clear the flag that was
+/// protecting the OLD thread's syscall return path. The NEW thread is not in
+/// syscall return, so the flag should not persist.
+///
+/// Linux clears PREEMPT_ACTIVE in schedule_tail() after a context switch.
+/// We follow the same pattern here.
+pub fn clear_preempt_active() {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        // Clear bit 28 (PREEMPT_ACTIVE) from preempt_count
+        // Use AND with ~PREEMPT_ACTIVE to clear the bit
+        core::arch::asm!(
+            "and dword ptr gs:[{offset}], {mask:e}",
+            mask = in(reg) !PREEMPT_ACTIVE,
+            offset = const PREEMPT_COUNT_OFFSET,
+            options(nostack, preserves_flags)
+        );
     }
 }
 
@@ -957,11 +990,10 @@ pub fn get_next_cr3() -> u64 {
     }
 }
 
-/// LEGACY: Set the target CR3 for next IRETQ
-/// This function is currently unused because CR3 switching now happens
-/// directly in context_switch.rs when scheduling threads, not deferred
-/// to interrupt return. Kept for assembly code compatibility.
-#[allow(dead_code)]
+/// Set the target CR3 for next IRETQ
+/// This communicates to timer_entry.asm and entry.asm (syscall return)
+/// which CR3 to switch to before returning to userspace.
+/// CR3 switching is deferred to assembly code to avoid double TLB flushes.
 pub fn set_next_cr3(cr3: u64) {
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return;
@@ -1017,29 +1049,61 @@ pub fn set_kernel_cr3(cr3: u64) {
     }
 }
 
-/// Global flag indicating we're in exception cleanup context
-/// (e.g., page fault handler after terminating a process)
-/// This allows scheduling even when returning to kernel mode
-static EXCEPTION_CLEANUP_CONTEXT: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
-/// Set the exception cleanup context flag
-/// This should be called from exception handlers that terminate a process
-/// and need to allow scheduling to switch to another thread
+/// Set the exception cleanup context flag (per-CPU)
+/// Called by exception handlers (GPF, page fault) when they terminate a process
+/// and need to allow scheduling from kernel mode
 pub fn set_exception_cleanup_context() {
-    EXCEPTION_CLEANUP_CONTEXT.store(true, Ordering::SeqCst);
-    log::info!("Exception cleanup context flag set - scheduling will be allowed");
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        // Set exception_cleanup_context to true (1) at offset 88
+        let value: u8 = 1;
+        core::arch::asm!(
+            "mov byte ptr gs:[{offset}], {val}",
+            val = in(reg_byte) value,
+            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
-/// Clear the exception cleanup context flag
+/// Clear the exception cleanup context flag (per-CPU)
 /// Called after successfully switching to a new thread
 pub fn clear_exception_cleanup_context() {
-    EXCEPTION_CLEANUP_CONTEXT.store(false, Ordering::SeqCst);
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        // Set exception_cleanup_context to false (0) at offset 88
+        let value: u8 = 0;
+        core::arch::asm!(
+            "mov byte ptr gs:[{offset}], {val}",
+            val = in(reg_byte) value,
+            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
-/// Check if we're in exception cleanup context
+/// Check if we're in exception cleanup context (per-CPU)
 pub fn in_exception_cleanup_context() -> bool {
-    EXCEPTION_CLEANUP_CONTEXT.load(Ordering::SeqCst)
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    unsafe {
+        let value: u8;
+        core::arch::asm!(
+            "mov {val}, byte ptr gs:[{offset}]",
+            val = out(reg_byte) value,
+            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+            options(nostack, readonly, preserves_flags)
+        );
+        value != 0
+    }
 }
 
 /// Check if we can schedule (preempt_count == 0 and returning to userspace)
@@ -1053,6 +1117,11 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // at CR2=0x8 (offset 8 in PerCpuData = current_thread pointer).
     if current_thread().is_none() {
         // No current thread set yet - cannot schedule
+        static EARLY_RETURN_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let count = EARLY_RETURN_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if count < 10 {
+            log::warn!("can_schedule: returning false - current_thread is None");
+        }
         return false;
     }
 
@@ -1068,7 +1137,23 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // Also allow scheduling if we're in exception cleanup context
     let in_exception_cleanup = in_exception_cleanup_context();
 
-    current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel || in_exception_cleanup)
+    // CRITICAL: When in exception cleanup context, allow scheduling regardless of PREEMPT_ACTIVE.
+    // The exception handler has explicitly requested a reschedule after terminating a process.
+    // Without this, PREEMPT_ACTIVE (bit 28) blocks scheduling even though we need to recover.
+    let result = in_exception_cleanup
+                 || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel));
+
+    // Debug logging for exception handler path
+    static CAN_SCHED_LOG_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let count = CAN_SCHED_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if count < 20 || (in_exception_cleanup && count < 100) {
+        log::debug!(
+            "can_schedule: preempt={}, to_user={}, to_idle_kern={}, exc_cleanup={}, result={}",
+            current_preempt, returning_to_userspace, returning_to_idle_kernel, in_exception_cleanup, result
+        );
+    }
+
+    result
 }
 
 /// Get per-CPU base address and size for logging

@@ -451,3 +451,27 @@ pub fn check_and_clear_need_resched() -> bool {
     let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
     need
 }
+
+/// Switch to idle thread immediately (for use by exception handlers)
+/// This updates scheduler state so subsequent timer interrupts can properly schedule.
+/// Call this before modifying exception frame to return to idle_loop.
+pub fn switch_to_idle() {
+    with_scheduler(|sched| {
+        let idle_id = sched.idle_thread;
+        sched.current_thread = Some(idle_id);
+
+        // Also update per-CPU current thread pointer
+        if let Some(thread) = sched.get_thread_mut(idle_id) {
+            let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
+            crate::per_cpu::set_current_thread(thread_ptr);
+            log::info!(
+                "Exception handler: Set per_cpu thread to idle {} at {:p}",
+                idle_id, thread_ptr
+            );
+        } else {
+            log::error!("Exception handler: Failed to get idle thread {} from scheduler!", idle_id);
+        }
+
+        log::info!("Exception handler: Switched scheduler to idle thread {}", idle_id);
+    });
+}

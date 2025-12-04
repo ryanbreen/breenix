@@ -195,11 +195,9 @@ timer_interrupt_entry:
     ; We already know we're returning to userspace (checked above)
     ; so we need to ensure GS is set for userspace
     swapgs
-    
-    ; DEBUG: Output after swapgs to confirm we survived
-    mov dx, 0x3F8       ; COM1 port
-    mov al, 'Z'         ; After swapgs marker
-    out dx, al
+
+    ; NOTE: Debug 'Z' marker removed - it was corrupting RAX (writing 0x5a to AL)
+    ; after registers were restored, causing userspace to see wrong syscall returns
 
     ; GDT verification temporarily disabled for debugging
     
