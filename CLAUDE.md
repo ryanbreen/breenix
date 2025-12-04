@@ -14,33 +14,68 @@ tests/           # Integration tests
 docs/planning/   # Numbered phase directories (00-15)
 ```
 
-## Build & Test
+## Build & Run
 
-### Quick Start
+### 🚨 MANDATORY: All Kernel Execution Through GDB 🚨
+
+**ALL kernel execution MUST go through GDB.** This is non-negotiable.
+
+Even when you just want to "run the kernel and see what happens", you MUST use GDB. This ensures:
+- You can intercept panics and examine state
+- You can set breakpoints if something goes wrong
+- You see both serial output AND have debugging capability
+- You're always one command away from debugging
+
+### Interactive GDB Session (PRIMARY WORKFLOW)
+
+Use `gdb_session.sh` for persistent, interactive debugging:
+
 ```bash
-# Run with automatic logging
-./scripts/run_breenix.sh
+# Start a persistent GDB session (QEMU + GDB running in background)
+./breenix-gdb-chat/scripts/gdb_session.sh start
 
-# Run tests (21 tests with shared QEMU, ~45 seconds)
-cargo test
+# Send individual commands and make decisions based on results
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::kernel_main"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+# See the result, think about it, then decide next command...
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rip rsp"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 5"
 
-# Run specific test
-cargo test memory
+# Get serial output at any time
+./breenix-gdb-chat/scripts/gdb_session.sh serial
 
-# Visual testing (shows QEMU window)
-BREENIX_VISUAL_TEST=1 cargo test
+# Stop when done
+./breenix-gdb-chat/scripts/gdb_session.sh stop
 ```
 
-### Direct Cargo Commands
+### Auto-Run Mode (Let Kernel Boot, Intercept on Panic)
+
+Even when you want to just "run the kernel", do it through GDB:
+
 ```bash
-# UEFI mode
-cargo run --release --bin qemu-uefi -- -serial stdio -display none
+# Start session, continue without breakpoints - will run until panic or completion
+./breenix-gdb-chat/scripts/gdb_session.sh start
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+# If kernel panics, GDB catches it - examine state with:
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 20"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers"
+```
 
-# BIOS mode
-cargo run --release --bin qemu-bios -- -serial stdio -display none
+### Build Only (No Execution)
 
-# With runtime testing
-cargo run --features testing --bin qemu-uefi -- -serial stdio
+```bash
+cargo build --release --features testing,external_test_bins --bin qemu-uefi
+```
+
+### Prohibited Commands (NEVER USE)
+
+These commands run the kernel without GDB and are **forbidden**:
+```bash
+# ❌ FORBIDDEN - runs kernel without GDB
+cargo run --release --bin qemu-uefi
+cargo run -p xtask -- boot-stages
+./scripts/run_breenix.sh
+cargo test
 ```
 
 ### Logs
@@ -49,10 +84,6 @@ All runs are logged to `logs/breenix_YYYYMMDD_HHMMSS.log`
 ```bash
 # View latest log
 ls -t logs/*.log | head -1 | xargs less
-
-# Search logs (avoids approval prompts)
-echo '-A50 "Creating user process"' > /tmp/log-query.txt
-./scripts/find-in-logs
 ```
 
 ## Development Workflow
@@ -62,9 +93,8 @@ echo '-A50 "Creating user process"' > /tmp/log-query.txt
 **The main conversation is for ORCHESTRATION ONLY.** Never execute tests, run builds, or perform iterative debugging directly in the top-level session. This burns token context and leads to session exhaustion.
 
 **ALWAYS dispatch to agents:**
-- Running tests (`cargo test`, `cargo run -p xtask -- boot-stages`, etc.)
 - Build verification and compilation checks
-- Debugging sessions that involve iterative log analysis
+- GDB debugging sessions (via gdb_chat.py)
 - Code exploration and codebase research
 - Any task that may require multiple iterations or produce verbose output
 
@@ -77,7 +107,8 @@ echo '-A50 "Creating user process"' > /tmp/log-query.txt
 
 **Anti-pattern (NEVER DO THIS):**
 ```
-# DON'T run tests directly in main session
+# DON'T run kernel directly - ALWAYS use GDB
+cargo run --release --bin qemu-uefi
 cargo run -p xtask -- boot-stages
 # DON'T grep through large outputs in main session
 cat target/output.txt | grep ...
@@ -85,9 +116,12 @@ cat target/output.txt | grep ...
 
 **Correct pattern:**
 ```
-# DO dispatch to an agent with clear instructions
-Task(subagent_type="general-purpose", prompt="Run boot-stages test, analyze
-the output, and report which stage fails and why. Include relevant log excerpts.")
+# DO use GDB for kernel debugging
+printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 breenix-gdb-chat/scripts/gdb_chat.py
+
+# DO dispatch to an agent for GDB sessions
+Task(subagent_type="general-purpose", prompt="Use gdb_chat.py to debug the
+clock_gettime syscall. Set breakpoint, examine registers, report findings.")
 ```
 
 When a debugging task requires multiple iterations, dispatch it ONCE to an agent with comprehensive instructions. The agent will iterate internally and return a summary. If more investigation is needed, dispatch another agent - don't bring the iteration into the main session.
@@ -128,7 +162,9 @@ When you run any build or test command and observe warnings or errors in the com
 
 **Before every commit, verify:**
 ```bash
-cargo run -p xtask -- boot-stages  # Must show 0 warnings in compile output
+# Build must complete with 0 warnings
+cargo build --release --features testing,external_test_bins --bin qemu-uefi 2>&1 | grep -E "^(warning|error)"
+# Should produce no output (no warnings/errors)
 ```
 
 ### Testing Integrity - CRITICAL
@@ -186,6 +222,46 @@ When new implementation reaches parity:
 - Red zone: disabled for interrupt safety
 - Features: `-mmx,-sse,+soft-float`
 
+## 🚨 PROHIBITED CODE SECTIONS 🚨
+
+The following files are on the **prohibited modifications list**. Agents MUST NOT modify these files without explicit user approval.
+
+### Tier 1: Absolutely Forbidden (ask before ANY change)
+| File | Reason |
+|------|--------|
+| `kernel/src/syscall/handler.rs` | Syscall hot path - ANY logging breaks timing tests |
+| `kernel/src/syscall/time.rs` | clock_gettime precision - called in tight loops |
+| `kernel/src/syscall/entry.asm` | Assembly syscall entry - must be minimal |
+| `kernel/src/interrupts/timer.rs` | Timer fires every 1ms - <1000 cycles budget |
+| `kernel/src/interrupts/timer_entry.asm` | Assembly timer entry - must be minimal |
+
+### Tier 2: High Scrutiny (explain why GDB is insufficient)
+| File | Reason |
+|------|--------|
+| `kernel/src/interrupts/context_switch.rs` | Context switch path - timing sensitive |
+| `kernel/src/interrupts/mod.rs` | Interrupt dispatch - timing sensitive |
+| `kernel/src/gdt.rs` | GDT/TSS - rarely needs changes |
+| `kernel/src/per_cpu.rs` | Per-CPU data - used in hot paths |
+
+### When Modifying Prohibited Sections
+
+If you believe you must modify a prohibited file:
+
+1. **Explain why GDB debugging is insufficient** for this specific problem
+2. **Get explicit user approval** before making any changes
+3. **Never add logging** - use GDB breakpoints instead
+4. **Remove any temporary debug code** before committing
+5. **Test via GDB** to verify the fix works
+
+### Detecting Violations
+
+Look for these red flags in prohibited files:
+- `log::*` macros
+- `serial_println!`
+- `format!` or string formatting
+- Raw serial port writes (`out dx, al` to 0x3F8)
+- Any I/O operations
+
 ## Interrupt and Syscall Development - CRITICAL PATH REQUIREMENTS
 
 **The interrupt and syscall paths MUST remain pristine.** This is non-negotiable architectural guidance.
@@ -232,6 +308,187 @@ Before approving changes to interrupt/syscall code:
 - [ ] No locks without try_lock fallback
 - [ ] No heap allocations
 - [ ] Timing-critical paths marked with comments
+
+## GDB-Only Kernel Debugging - MANDATORY
+
+**ALL kernel execution and debugging MUST be done through GDB.** This is non-negotiable.
+
+Running the kernel directly (`cargo run`, `cargo test`, `cargo run -p xtask -- boot-stages`) without GDB:
+- Provides only serial output, which is insufficient for timing-sensitive bugs
+- Cannot inspect register state, memory, or call stacks
+- Cannot set breakpoints to catch issues before they cascade
+- Cannot intercept panics to examine state
+- Burns context analyzing log output instead of actual debugging
+
+### Interactive GDB Session (PRIMARY WORKFLOW)
+
+Use `gdb_session.sh` for persistent, interactive debugging sessions:
+
+```bash
+# Start a persistent session (keeps QEMU + GDB running)
+./breenix-gdb-chat/scripts/gdb_session.sh start
+
+# Send commands one at a time, making decisions based on results
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+# Examine what happened, then decide next step...
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rax rdi rsi"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "print/x \$rdi"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
+
+# Get all serial output (kernel print statements)
+./breenix-gdb-chat/scripts/gdb_session.sh serial
+
+# Stop when done
+./breenix-gdb-chat/scripts/gdb_session.sh stop
+```
+
+This is **conversational debugging** - you send a command, see the result, think about it, and decide what to do next. Just like a human sitting at a GDB terminal.
+
+### GDB Chat Tool (Underlying Engine)
+
+The session wrapper uses `breenix-gdb-chat/scripts/gdb_chat.py`:
+
+```bash
+# Can also use directly for scripted debugging
+printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 breenix-gdb-chat/scripts/gdb_chat.py
+```
+
+The tool:
+1. Starts QEMU with GDB server enabled (`BREENIX_GDB=1`)
+2. Starts GDB and connects to QEMU on localhost:1234
+3. Loads kernel symbols at the correct PIE base address (0x10000000000)
+4. Accepts commands via stdin, returns JSON responses with serial output included
+5. **No automatic interrupt** - you control the timeout per command
+
+### Essential GDB Commands
+
+**Setting breakpoints:**
+```
+break kernel::kernel_main              # Break at function
+break kernel::syscall::time::sys_clock_gettime
+break *0x10000047b60                   # Break at address
+info breakpoints                       # List all breakpoints
+delete 1                               # Delete breakpoint #1
+```
+
+**Execution control:**
+```
+continue                               # Run until breakpoint or interrupt
+stepi                                  # Step one instruction
+stepi 20                               # Step 20 instructions
+next                                   # Step over function calls
+finish                                 # Run until current function returns
+```
+
+**Inspecting state:**
+```
+info registers                         # All registers
+info registers rip rsp rax rdi rsi     # Specific registers
+backtrace 10                           # Call stack (10 frames)
+x/10i $rip                             # Disassemble 10 instructions at RIP
+x/5xg $rsp                             # Examine 5 quad-words at RSP
+x/2xg 0x7fffff032f98                   # Examine memory at address
+print/x $rax                           # Print register in hex
+```
+
+**Kernel-specific patterns:**
+```
+# Check if syscall returned correctly (RAX = 0 for success)
+info registers rax
+
+# Examine userspace timespec after clock_gettime
+x/2xg $rsi                             # tv_sec, tv_nsec
+
+# Check stack frame integrity
+x/10xg $rsp
+
+# Verify we're in userspace (CS RPL = 3)
+print $cs & 3
+```
+
+### Debugging Workflow
+
+1. **Set breakpoints BEFORE continuing:**
+   ```
+   break kernel::syscall::time::sys_clock_gettime
+   continue
+   ```
+
+2. **Examine state at breakpoint:**
+   ```
+   info registers rip rdi rsi          # RIP, syscall args
+   backtrace 5                          # Where did we come from?
+   ```
+
+3. **Step through problematic code:**
+   ```
+   stepi 10                             # Step through instructions
+   info registers rax                   # Check return value
+   ```
+
+4. **Inspect memory if needed:**
+   ```
+   x/2xg 0x7fffff032f98                 # Examine user buffer
+   ```
+
+### Symbol Loading
+
+The PIE kernel loads at base address `0x10000000000` (1 TiB). The gdb_chat.py tool handles this automatically via `add-symbol-file` with correct section offsets:
+
+- `.text` offset: varies by build
+- Runtime address = `0x10000000000 + elf_section_offset`
+
+If symbols don't resolve, verify with:
+```
+info address kernel::kernel_main
+```
+
+### Anti-Patterns (NEVER DO THIS)
+
+```bash
+# DON'T run kernel directly for debugging
+cargo run -p xtask -- boot-stages
+cargo run --release --bin qemu-uefi
+
+# DON'T analyze log output to debug timing issues
+cat target/xtask_boot_stages_output.txt | grep ...
+
+# DON'T add logging to debug syscalls (causes timing bugs!)
+log::debug!("clock_gettime called");
+
+# DON'T script a batch of commands hoping they work
+# This prevents learning and adapting based on what you see
+```
+
+### Correct Debugging Pattern (Interactive)
+
+```bash
+# DO start a persistent GDB session
+./breenix-gdb-chat/scripts/gdb_session.sh start
+
+# DO send commands ONE AT A TIME and THINK about the result
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+
+# Examine the result - what did we learn?
+# clock_id was 0x1 (CLOCK_MONOTONIC) - is that expected?
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rdi rsi"
+
+# Based on what we learned, examine more state
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "x/2xg \$rsi"
+
+# Continue and see what happens
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+
+# Check return value
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rax"
+
+# Stop when done
+./breenix-gdb-chat/scripts/gdb_session.sh stop
+```
+
+This is **conversational debugging** - each command informs the next decision.
 
 ## Work Tracking
 

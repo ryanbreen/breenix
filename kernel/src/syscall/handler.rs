@@ -1,5 +1,32 @@
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                         🚨 CRITICAL HOT PATH 🚨                               ║
+// ║                                                                              ║
+// ║  THIS FILE IS ON THE PROHIBITED MODIFICATIONS LIST.                          ║
+// ║                                                                              ║
+// ║  DO NOT ADD:                                                                 ║
+// ║    - log::*, serial_println!, or ANY serial output                           ║
+// ║    - Raw assembly that writes to port 0x3F8 (serial)                         ║
+// ║    - Heap allocations (Box, Vec, String, format!)                            ║
+// ║    - Locks that might contend (use try_lock with fallback only)              ║
+// ║    - Page table walks or memory mapping operations                           ║
+// ║    - Any code that takes more than ~100 cycles                               ║
+// ║                                                                              ║
+// ║  Timer interrupts fire every 1ms. Serial output takes 10,000+ cycles.        ║
+// ║  Adding a single log statement here will cause:                              ║
+// ║    - clock_gettime precision tests to fail (need sub-ms timing)              ║
+// ║    - Userspace to never execute (timer fires before IRETQ completes)         ║
+// ║    - Infinite kernel loops and stack overflows                               ║
+// ║                                                                              ║
+// ║  To debug syscalls, use GDB: See CLAUDE.md "GDB-Only Kernel Debugging"       ║
+// ║                                                                              ║
+// ║  If you believe you need to modify this file, you MUST:                      ║
+// ║    1. Explain why GDB debugging is insufficient                              ║
+// ║    2. Get explicit user approval                                             ║
+// ║    3. Remove any added logging before committing                             ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
 use super::{SyscallNumber, SyscallResult};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -59,201 +86,34 @@ impl SyscallFrame {
 static RING3_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 /// Main syscall handler called from assembly
+///
+/// CRITICAL: This is a hot path. NO logging, NO serial output, NO allocations.
+/// See CLAUDE.md "Interrupt and Syscall Development - CRITICAL PATH REQUIREMENTS"
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
-    // CRITICAL MARKER: Emit RING3_CONFIRMED marker on FIRST Ring 3 syscall
-    // This proves that:
-    // 1. IRETQ succeeded (CPU transitioned to Ring 3)
-    // 2. Userspace code actually executed
-    // 3. INT 0x80 was triggered from userspace
-    // 4. We received a syscall with CS RPL == 3
+    // CRITICAL MARKER: Emit RING3_CONFIRMED marker on FIRST Ring 3 syscall only
+    // This proves userspace executed and triggered INT 0x80
     if (frame.cs & 3) == 3 && !RING3_CONFIRMED.swap(true, Ordering::SeqCst) {
         log::info!("🎯 RING3_CONFIRMED: First syscall received from Ring 3 (CS={:#x}, RPL=3)", frame.cs);
         crate::serial_println!("🎯 RING3_CONFIRMED: First syscall received from Ring 3 (CS={:#x}, RPL=3)", frame.cs);
     }
 
-    // Raw serial output to detect if syscall handler is called
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x53",      // 'S' for Syscall
-            "out dx, al",
-            "mov al, 0x43",      // 'C'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
-    // DEBUG: Log syscall entry
-    log::debug!("SYSCALL_ENTRY: frame_ptr={:p}, rdi={:#x}", frame, frame.rdi);
-
     // Increment preempt count on syscall entry (prevents scheduling during syscall)
     crate::per_cpu::preempt_disable();
 
-    // Raw serial output to detect if we got past preempt_disable
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x50",      // 'P' for Past preempt_disable
-            "out dx, al",
-            "mov al, 0x44",      // 'D'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
-    // Enhanced syscall entry logging per Cursor requirements
-    let from_userspace = frame.is_from_userspace();
-
-    // Raw serial output to detect if we got past is_from_userspace check
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x46",      // 'F' for Frame check passed
-            "out dx, al",
-            "mov al, 0x55",      // 'U' for Userspace
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
-    // Raw serial output to detect if we got past CR3 read
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x43",      // 'C' for CR3 read
-            "out dx, al",
-            "mov al, 0x33",      // '3'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
-    // Log syscall entry with full frame info for first few syscalls
-    static SYSCALL_ENTRY_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-
-    let _entry_count = SYSCALL_ENTRY_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    // Raw serial output before log
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x4C",      // 'L' for Log
-            "out dx, al",
-            "mov al, 0x42",      // 'B' for Before
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-    }
-
-    // Try to acquire serial lock - if it fails, we have a deadlock
-    use crate::serial::SERIAL1;
-    let serial_locked = SERIAL1.try_lock().is_some();
-
-    // Raw serial output to show if serial lock is available
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x53",      // 'S' for Serial lock test
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-        if serial_locked {
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x59",      // 'Y' for Yes (lock available)
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-        } else {
-            core::arch::asm!(
-                "mov dx, 0x3F8",
-                "mov al, 0x4E",      // 'N' for No (lock held by someone else)
-                "out dx, al",
-                options(nostack, nomem, preserves_flags)
-            );
-        }
-    }
-
-    // COMPLETELY SKIP all lock-based logging for the second syscall onwards
-    // The first syscall (entry_count == 0) worked fine
-    // Something is holding a lock when the second syscall starts
-    // For now, bypass ALL logging to see if the syscall itself works
-
     // Verify this came from userspace (security check)
-    if !from_userspace {
+    if !frame.is_from_userspace() {
         log::warn!("Syscall from kernel mode - this shouldn't happen!");
         frame.set_return_value(u64::MAX); // Error
+        crate::per_cpu::preempt_enable();
         return;
     }
 
     let syscall_num = frame.syscall_number();
     let args = frame.args();
 
-    // Only log non-write syscalls to reduce noise
-    if syscall_num != 1 {
-        // 1 is sys_write
-        log::trace!(
-            "Syscall {} from userspace: RIP={:#x}, args=({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})",
-            syscall_num,
-            frame.rip,
-            args.0,
-            args.1,
-            args.2,
-            args.3,
-            args.4,
-            args.5
-        );
-
-        // Debug: Log critical frame values
-        log::debug!(
-            "Syscall frame before: RIP={:#x}, CS={:#x}, RSP={:#x}, SS={:#x}, RAX={:#x}",
-            frame.rip,
-            frame.cs,
-            frame.rsp,
-            frame.ss,
-            frame.rax
-        );
-    }
-    
-    // Log first few syscalls from userspace with full frame validation
-    static SYSCALL_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
-    
-    if (frame.cs & 3) == 3 {
-        let count = SYSCALL_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-        if count < 5 {  // Log first 5 syscalls for verification
-            log::info!("Syscall #{} from userspace - full frame validation:", count + 1);
-            log::info!("  RIP: {:#x}", frame.rip);
-            log::info!("  CS: {:#x} (RPL={})", frame.cs, frame.cs & 3);
-            log::info!("  SS: {:#x} (RPL={})", frame.ss, frame.ss & 3);
-            log::info!("  RSP: {:#x} (user stack)", frame.rsp);
-            log::info!("  RFLAGS: {:#x} (IF={})", frame.rflags, if frame.rflags & 0x200 != 0 { "1" } else { "0" });
-            
-            // Validate invariants
-            if (frame.cs & 3) != 3 {
-                log::error!("  ERROR: CS RPL is not 3!");
-            }
-            if (frame.ss & 3) != 3 {
-                log::error!("  ERROR: SS RPL is not 3!");
-            }
-            if frame.rsp < 0x10000000 || frame.rsp > 0x20000000 {
-                log::warn!("  WARNING: RSP {:#x} may be outside expected user range", frame.rsp);
-            }
-            
-            // Get current CR3
-            let cr3: u64;
-            unsafe {
-                core::arch::asm!("mov {}, cr3", out(reg) cr3);
-            }
-            log::info!("  CR3: {:#x} (current page table)", cr3);
-
-            // NOTE: Cannot safely read userspace memory at RIP-2 from kernel context
-            // without proper page table validation. This diagnostic code was causing
-            // page faults when attempting to access userspace addresses.
-        }
-    }
-
     // Dispatch to the appropriate syscall handler
+    // NOTE: No logging here! This is the hot path.
     let result = match SyscallNumber::from_u64(syscall_num) {
         Some(SyscallNumber::Exit) => super::handlers::sys_exit(args.0 as i32),
         Some(SyscallNumber::Write) => super::handlers::sys_write(args.0, args.1, args.2),
@@ -265,12 +125,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
         Some(SyscallNumber::ClockGetTime) => {
+            // NOTE: No logging here! Serial I/O takes thousands of cycles
+            // and would cause the sub-millisecond precision test to fail.
             let clock_id = args.0 as u32;
             let user_timespec_ptr = args.1 as *mut super::time::Timespec;
-            log::debug!("clock_gettime syscall (228) received: frame.rdi={:#x}, frame.rsi={:#x}", frame.rdi, frame.rsi);
-            log::debug!("clock_gettime syscall (228) received: args.0={:#x}, args.1={:#x}", args.0, args.1);
-            log::debug!("clock_gettime syscall (228) received: clock_id={}, user_ptr={:#x}",
-                clock_id, user_timespec_ptr as u64);
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
         None => {
@@ -288,35 +146,19 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         }
     }
 
-    // Debug: Log frame after handling
-    if syscall_num != 1 {
-        // 1 is sys_write
-        log::debug!(
-            "Syscall frame after: RIP={:#x}, CS={:#x}, RSP={:#x}, SS={:#x}, RAX={:#x} (return)",
-            frame.rip,
-            frame.cs,
-            frame.rsp,
-            frame.ss,
-            frame.rax
-        );
-    }
-
-    // Note: Context switches after sys_yield happen on the next timer interrupt
-    
     // CRITICAL FIX: Update TSS.RSP0 before returning to userspace
     // When userspace triggers an interrupt (like int3), the CPU switches to kernel
     // mode and uses TSS.RSP0 as the kernel stack. This must be set correctly!
     let kernel_stack_top = crate::per_cpu::kernel_stack_top();
     if kernel_stack_top.as_u64() != 0 {
         crate::gdt::set_tss_rsp0(kernel_stack_top);
-        log::trace!("Updated TSS.RSP0 to {:#x} for userspace return", kernel_stack_top.as_u64());
     } else {
         log::error!("CRITICAL: Cannot set TSS.RSP0 - kernel_stack_top is 0!");
     }
-    
+
     // Flush any pending IRQ logs before returning to userspace
     crate::irq_log::flush_local_try();
-    
+
     // Decrement preempt count on syscall exit
     crate::per_cpu::preempt_enable();
 }

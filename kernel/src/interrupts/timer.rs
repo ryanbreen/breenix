@@ -1,3 +1,12 @@
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                         🚨 CRITICAL HOT PATH 🚨                               ║
+// ║                                                                              ║
+// ║  THIS FILE IS ON THE PROHIBITED MODIFICATIONS LIST.                          ║
+// ║  Timer interrupts fire every 1ms. This handler MUST complete in <1000 cycles.║
+// ║                                                                              ║
+// ║  DO NOT ADD ANY LOGGING. See kernel/src/syscall/handler.rs for full rules.   ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+//!
 //! Timer interrupt handler following OS design best practices
 //!
 //! This handler is MINIMAL - it does the absolute minimum work required in interrupt context:

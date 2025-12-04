@@ -331,7 +331,7 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "Diagnostic: Summary",
-            marker: "=== SUMMARY: 5/5 tests passed ===",
+            marker: "✓ All diagnostic tests passed",
             failure_meaning: "Not all diagnostic tests passed - see individual test results above",
             check_hint: "Check which specific diagnostic test failed and follow its check_hint",
         },

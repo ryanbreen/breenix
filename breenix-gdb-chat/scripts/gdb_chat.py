@@ -5,6 +5,19 @@ Unified GDB chat interface for Breenix kernel debugging.
 This script maintains a persistent GDB session and accepts commands via stdin.
 Each line of input is a GDB command; output is JSON on stdout.
 
+SERIAL OUTPUT CAPTURE:
+Serial output from the kernel is captured to /tmp/breenix_gdb_serial.log and
+included in JSON responses. This allows agents to see boot stage markers and
+kernel print statements alongside GDB debugging output.
+
+Each GDB command response includes a "serial_output" field with any NEW serial
+output that appeared during command execution.
+
+Special commands:
+    serial      - Get ALL serial output accumulated since session start
+    serial-new  - Get only NEW serial output since last read
+    quit/exit/q - Terminate session
+
 Usage:
     # Interactive mode (for testing)
     python3 gdb_chat.py
@@ -12,8 +25,8 @@ Usage:
     # Single command mode
     echo "info registers" | python3 gdb_chat.py
 
-    # Multiple commands
-    printf "break main\ncontinue\ninfo registers\n" | python3 gdb_chat.py
+    # Multiple commands with serial visibility
+    printf "break kernel::kernel_main\\ncontinue\\nserial\\nquit\\n" | python3 gdb_chat.py
 """
 
 import os
@@ -35,20 +48,32 @@ class GDBChat:
     GDB_PROMPT = "(gdb)"
     # Breenix kernel is loaded at 1 TiB (PIE binary)
     KERNEL_BASE = 0x10000000000
+    # Serial output file for capturing kernel print statements
+    SERIAL_LOG_FILE = "/tmp/breenix_gdb_serial.log"
 
-    def __init__(self, kernel_binary: Path, mode: str = "uefi"):
+    def __init__(self, kernel_binary: Path, mode: str = "uefi", profile: str = "release"):
         self.kernel_binary = kernel_binary
         self.mode = mode
+        self.profile = profile  # "release" or "dev" (debug)
         self.gdb_process: Optional[subprocess.Popen] = None
         self.qemu_process: Optional[subprocess.Popen] = None
         self.breenix_dir = Path.home() / "fun/code/breenix"
         self.section_addrs: Dict[str, int] = {}  # ELF section addresses
+        self.serial_read_pos: int = 0  # Track how much serial output we've read
 
     def start(self) -> Dict[str, Any]:
         """Start QEMU and GDB, connect them."""
+        # Clean up old serial log file
+        try:
+            os.remove(self.SERIAL_LOG_FILE)
+        except FileNotFoundError:
+            pass
+        self.serial_read_pos = 0
+
         # Start QEMU
         self.qemu_process = self._start_qemu()
-        time.sleep(3)
+        # Wait longer for UEFI bootloader to load kernel (8 seconds minimum)
+        time.sleep(8)
 
         if self.qemu_process.poll() is not None:
             return {"success": False, "error": "QEMU failed to start"}
@@ -81,30 +106,51 @@ class GDBChat:
         # Load symbols at correct runtime addresses for PIE kernel
         symbol_output = self._load_symbols_at_runtime_addr()
 
-        return {
+        # Note: QEMU starts halted at reset vector (0xFFF0) when using -S flag.
+        # The bootloader runs when GDB issues 'continue', which loads the kernel.
+        # Breakpoints will be hit after the bootloader loads the kernel.
+
+        # Get any initial serial output from UEFI bootloader
+        initial_serial = self.get_new_serial_output()
+
+        result = {
             "success": True,
             "gdb_pid": self.gdb_process.pid,
             "qemu_pid": self.qemu_process.pid,
             "status": "connected",
             "symbols": f"loaded at base {hex(self.KERNEL_BASE)}",
-            "sections": {k: hex(v) for k, v in self.section_addrs.items()}
+            "sections": {k: hex(v) for k, v in self.section_addrs.items()},
+            "serial_log_file": self.SERIAL_LOG_FILE
         }
 
+        # Include initial serial output if any
+        if initial_serial:
+            result["serial_output"] = initial_serial[:4000]
+
+        return result
+
     def _start_qemu(self) -> subprocess.Popen:
-        """Start QEMU with GDB server using debug build for symbol matching."""
+        """Start QEMU with GDB server and serial output to file."""
         env = os.environ.copy()
         env["BREENIX_GDB"] = "1"
 
-        # Use debug build (--profile dev) to match debug kernel symbols
-        # Include testing features to run userspace tests
-        cmd = ["cargo", "run", "--profile", "dev", "--features", "testing,external_test_bins", "--bin", f"qemu-{self.mode}"]
-        cmd.extend(["--", "-serial", "stdio", "-display", "none"])
+        # Build command based on profile
+        # Note: Debug builds have timing issues (interrupts fire before init completes)
+        # Release builds are recommended for GDB debugging
+        if self.profile == "dev":
+            cmd = ["cargo", "run", "--profile", "dev", "--features", "testing,external_test_bins", "--bin", f"qemu-{self.mode}"]
+        else:
+            cmd = ["cargo", "run", "--release", "--features", "testing,external_test_bins", "--bin", f"qemu-{self.mode}"]
+
+        # Serial output goes to file so we can read it and include in JSON responses
+        # This allows agents to see boot stage markers and kernel print statements
+        cmd.extend(["--", "-serial", f"file:{self.SERIAL_LOG_FILE}", "-display", "none"])
 
         return subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,  # Don't inherit stdin!
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,  # Cargo build output goes to /dev/null
+            stderr=subprocess.DEVNULL,  # Cargo warnings go to /dev/null
             env=env,
             cwd=self.breenix_dir
         )
@@ -221,51 +267,41 @@ class GDBChat:
         self.gdb_process.stdin.flush()
         return self._wait_for_prompt(timeout, allow_breakpoint)
 
-    def execute(self, command: str, timeout: int = None, interrupt_after: int = None) -> Dict[str, Any]:
+    def execute(self, command: str, timeout: int = None) -> Dict[str, Any]:
         """Execute GDB command and return structured result.
 
         Args:
             command: GDB command to execute
-            timeout: Total timeout for waiting for prompt (default varies by command)
-            interrupt_after: For continue/run, send Ctrl+C after this many seconds to interrupt execution
+            timeout: Total timeout for waiting for prompt (default varies by command).
+                     For interactive debugging, the agent decides the appropriate timeout
+                     per command based on what they're expecting.
+
+        NOTE: No automatic interrupt! The agent controls execution by choosing:
+        - Short timeouts for commands that should complete quickly
+        - Long timeouts (or default) for continue/run waiting for breakpoints
+        - The agent can always issue Ctrl+C via a separate mechanism if needed
         """
         if not self.gdb_process or self.gdb_process.poll() is not None:
             return {"success": False, "error": "GDB not running", "command": command}
 
-        # Auto-detect timeout and interrupt behavior based on command
+        # Auto-detect timeout based on command, but NO auto-interrupt
+        # The agent decides when to interrupt based on what they learn
         cmd_lower = command.strip().lower()
         allow_breakpoint = False
 
         if timeout is None:
             if cmd_lower in ('continue', 'c', 'cont'):
-                timeout = 120  # 2 minutes for continue
+                timeout = 300  # 5 minutes for continue - let kernel boot fully
                 allow_breakpoint = True
-                if interrupt_after is None:
-                    interrupt_after = 30  # Auto-interrupt after 30s if no breakpoint hit
             elif cmd_lower.startswith('run'):
-                timeout = 120  # 2 minutes for run
+                timeout = 300  # 5 minutes for run
                 allow_breakpoint = True
-                if interrupt_after is None:
-                    interrupt_after = 30  # Auto-interrupt after 30s if no breakpoint hit
             else:
-                timeout = 30  # 30 seconds default
+                timeout = 30  # 30 seconds default for other commands
 
         start = time.time()
 
         try:
-            # If we have interrupt_after, start a timer to send Ctrl+C
-            if interrupt_after:
-                def send_interrupt():
-                    time.sleep(interrupt_after)
-                    if self.gdb_process and self.gdb_process.poll() is None:
-                        sys.stderr.write(f"[DEBUG] Sending Ctrl+C to GDB after {interrupt_after}s\n")
-                        sys.stderr.flush()
-                        self.gdb_process.send_signal(signal.SIGINT)
-
-                import threading
-                interrupt_thread = threading.Thread(target=send_interrupt, daemon=True)
-                interrupt_thread.start()
-
             raw = self._send_raw(command, timeout, allow_breakpoint)
 
             # Clean output
@@ -276,7 +312,10 @@ class GDBChat:
             # Parse special outputs
             parsed = self._parse(command, output)
 
-            return {
+            # Get any new serial output that appeared during command execution
+            serial_output = self.get_new_serial_output()
+
+            result = {
                 "success": True,
                 "command": command,
                 "output": parsed,
@@ -284,10 +323,25 @@ class GDBChat:
                 "time_ms": int((time.time() - start) * 1000)
             }
 
+            # Include serial output if there's any new content
+            if serial_output:
+                result["serial_output"] = serial_output[:4000]  # Truncate to 4KB
+
+            return result
+
         except TimeoutError:
-            return {"success": False, "error": "timeout", "command": command}
+            # Still try to get serial output on timeout
+            serial_output = self.get_new_serial_output()
+            result = {"success": False, "error": "timeout", "command": command}
+            if serial_output:
+                result["serial_output"] = serial_output[:4000]
+            return result
         except Exception as e:
-            return {"success": False, "error": str(e), "command": command}
+            serial_output = self.get_new_serial_output()
+            result = {"success": False, "error": str(e), "command": command}
+            if serial_output:
+                result["serial_output"] = serial_output[:4000]
+            return result
 
     def _parse(self, command: str, output: str) -> Any:
         """Parse GDB output based on command."""
@@ -321,6 +375,51 @@ class GDBChat:
             })
         return frames
 
+    def get_new_serial_output(self, max_bytes: int = 8192) -> str:
+        """Read new serial output since last read.
+
+        Returns only the NEW output that hasn't been returned before.
+        This allows agents to see kernel print statements incrementally
+        as they execute GDB commands.
+        """
+        try:
+            if not os.path.exists(self.SERIAL_LOG_FILE):
+                return ""
+
+            with open(self.SERIAL_LOG_FILE, 'rb') as f:
+                f.seek(0, 2)  # Seek to end
+                file_size = f.tell()
+
+                if file_size <= self.serial_read_pos:
+                    return ""  # No new content
+
+                # Read from last position
+                f.seek(self.serial_read_pos)
+                new_content = f.read(max_bytes)
+                self.serial_read_pos = f.tell()
+
+                # Decode as UTF-8, replacing invalid bytes
+                return new_content.decode('utf-8', errors='replace')
+        except Exception as e:
+            return f"[Error reading serial output: {e}]"
+
+    def get_all_serial_output(self) -> str:
+        """Read all serial output accumulated so far.
+
+        Useful for getting the complete boot log at any point.
+        Does NOT update the read position, so get_new_serial_output()
+        will still return incremental output.
+        """
+        try:
+            if not os.path.exists(self.SERIAL_LOG_FILE):
+                return ""
+
+            with open(self.SERIAL_LOG_FILE, 'rb') as f:
+                content = f.read()
+                return content.decode('utf-8', errors='replace')
+        except Exception as e:
+            return f"[Error reading serial output: {e}]"
+
     def stop(self):
         """Stop GDB and QEMU."""
         if self.gdb_process and self.gdb_process.poll() is None:
@@ -339,23 +438,38 @@ class GDBChat:
                 self.qemu_process.kill()
 
 
-def find_kernel() -> Path:
-    """Find kernel binary."""
+def find_kernel(profile: str = "release") -> Path:
+    """Find kernel binary for the specified profile."""
+    import glob as glob_mod
+
     breenix = Path.home() / "fun/code/breenix"
 
-    # Prefer debug build
-    debug = breenix / "target/x86_64-breenix/debug/kernel"
-    if debug.exists():
-        return debug
+    # First try the symlink location (works for debug builds)
+    if profile == "dev":
+        symlink_path = breenix / "target/x86_64-breenix/debug/kernel"
+        if symlink_path.exists():
+            return symlink_path
 
-    release = breenix / "target/x86_64-breenix/release/kernel"
-    if release.exists():
-        return release
+    # For release builds (and fallback), find the actual kernel artifact
+    profile_dir = "debug" if profile == "dev" else "release"
+    pattern = str(breenix / f"target/x86_64-unknown-none/{profile_dir}/deps/artifact/kernel-*/bin/kernel-*")
+    matches = [p for p in glob_mod.glob(pattern) if not p.endswith('.d')]
 
-    raise FileNotFoundError("Kernel not found")
+    if matches:
+        # Return the most recently modified one
+        return Path(max(matches, key=lambda p: Path(p).stat().st_mtime))
+
+    raise FileNotFoundError(f"Kernel not found for profile {profile}")
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="GDB chat for Breenix kernel")
+    parser.add_argument("--profile", choices=["release", "dev"], default="release",
+                        help="Build profile (default: release)")
+    args = parser.parse_args()
+
     # Force stdin line buffering
     import io
     stdin_unbuffered = io.TextIOWrapper(
@@ -365,13 +479,13 @@ def main():
 
     # Find kernel
     try:
-        kernel = find_kernel()
+        kernel = find_kernel(args.profile)
     except FileNotFoundError as e:
         print(json.dumps({"success": False, "error": str(e)}))
         sys.exit(1)
 
     # Create session
-    chat = GDBChat(kernel)
+    chat = GDBChat(kernel, profile=args.profile)
 
     # Handle Ctrl+C
     def signal_handler(sig, frame):
@@ -398,6 +512,29 @@ def main():
                 chat.stop()
                 print(json.dumps({"success": True, "status": "terminated"}))
                 break
+
+            # Special commands for serial output
+            if cmd.lower() == "serial":
+                # Get ALL serial output accumulated so far
+                serial_output = chat.get_all_serial_output()
+                print(json.dumps({
+                    "success": True,
+                    "command": "serial",
+                    "serial_output": serial_output[:16000]  # 16KB limit for full log
+                }))
+                sys.stdout.flush()
+                continue
+
+            if cmd.lower() == "serial-new":
+                # Get only NEW serial output since last read
+                serial_output = chat.get_new_serial_output()
+                print(json.dumps({
+                    "success": True,
+                    "command": "serial-new",
+                    "serial_output": serial_output[:8000] if serial_output else ""
+                }))
+                sys.stdout.flush()
+                continue
 
             result = chat.execute(cmd)
             print(json.dumps(result))

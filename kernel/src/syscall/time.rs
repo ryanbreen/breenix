@@ -1,4 +1,12 @@
-// ─── File: kernel/src/syscall/time.rs ──────────────────────────────
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                         🚨 CRITICAL HOT PATH 🚨                               ║
+// ║                                                                              ║
+// ║  THIS FILE IS ON THE PROHIBITED MODIFICATIONS LIST.                          ║
+// ║  sys_clock_gettime is called repeatedly in tight loops for precision timing. ║
+// ║                                                                              ║
+// ║  DO NOT ADD ANY LOGGING. See kernel/src/syscall/handler.rs for full rules.   ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
 use crate::syscall::{ErrorCode, SyscallResult};
 use crate::time::{get_monotonic_time_ns, get_real_time_ns};
 
