@@ -93,11 +93,25 @@ fn main() {
         "-smp", "1",
         "-m", "512",
         "-nographic",
-        "-monitor", "none",
         "-boot", "strict=on",
         "-no-reboot",
         "-no-shutdown",
     ]);
+    // QEMU monitor access for debugging (default: disabled)
+    let monitor_mode = env::var("BREENIX_QEMU_MONITOR").unwrap_or_else(|_| "none".to_string());
+    match monitor_mode.as_str() {
+        "stdio" => {
+            qemu.args(["-monitor", "stdio"]);
+            eprintln!("[qemu-uefi] Monitor on stdio (WARNING: mixes with kernel output)");
+        }
+        "tcp" => {
+            qemu.args(["-monitor", "tcp:127.0.0.1:4444,server,nowait"]);
+            eprintln!("[qemu-uefi] Monitor on tcp:127.0.0.1:4444 (connect via: telnet localhost 4444)");
+        }
+        _ => {
+            qemu.args(["-monitor", "none"]);
+        }
+    }
     // Deterministic guest-driven exit for CI via isa-debug-exit on port 0xF4
     qemu.args([
         "-device",
@@ -105,8 +119,10 @@ fn main() {
     ]);
     // Optional debug log and firmware debug console capture
     if let Ok(log_path) = env::var("BREENIX_QEMU_LOG_PATH") {
-        qemu.args(["-d", "guest_errors", "-D", &log_path]);
-        eprintln!("[qemu-uefi] QEMU debug log at {}", log_path);
+        let debug_flags = env::var("BREENIX_QEMU_DEBUG_FLAGS")
+            .unwrap_or_else(|_| "guest_errors".to_string());
+        qemu.args(["-d", &debug_flags, "-D", &log_path]);
+        eprintln!("[qemu-uefi] Debug log: {} (flags: {})", log_path, debug_flags);
     }
     // If a file path is provided, route firmware debug console (0x402) to file.
     if let Ok(path) = env::var("BREENIX_QEMU_DEBUGCON_FILE") {
@@ -125,6 +141,19 @@ fn main() {
     if !extra_args.is_empty() {
         eprintln!("[qemu-uefi] Extra args: {:?}", extra_args);
         qemu.args(&extra_args);
+    }
+    // Enable GDB debugging if BREENIX_GDB=1
+    if env::var("BREENIX_GDB").ok().as_deref() == Some("1") {
+        qemu.args(["-s", "-S"]);
+        eprintln!("[qemu-uefi] ════════════════════════════════════════════════════════");
+        eprintln!("[qemu-uefi] GDB server enabled on localhost:1234 (paused at startup)");
+        eprintln!("[qemu-uefi] ════════════════════════════════════════════════════════");
+        eprintln!("[qemu-uefi] Connect with:");
+        eprintln!("[qemu-uefi]   gdb target/x86_64-breenix/release/kernel -ex 'target remote localhost:1234'");
+        eprintln!("[qemu-uefi] Or use .gdbinit helper:");
+        eprintln!("[qemu-uefi]   gdb target/x86_64-breenix/release/kernel");
+        eprintln!("[qemu-uefi]   (gdb) breenix-connect");
+        eprintln!("[qemu-uefi] ════════════════════════════════════════════════════════");
     }
     eprintln!("[qemu-uefi] Launching QEMU...");
     let exit_status = qemu.status().unwrap();

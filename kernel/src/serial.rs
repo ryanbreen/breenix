@@ -63,32 +63,20 @@ pub fn add_serial_byte(byte: u8) {
 pub fn write_byte(byte: u8) {
     use x86_64::instructions::interrupts;
 
-    interrupts::without_interrupts(|| {
-        SERIAL1.lock().send(byte);
-    });
-}
+    // CRITICAL: Check if interrupts are currently enabled
+    // We must NOT re-enable interrupts if they were disabled by syscall entry
+    let irq_enabled = interrupts::are_enabled();
 
-/// Flush the UART transmitter by waiting until both THR empty (THRE)
-/// and transmitter empty (TEMT) bits are set in the Line Status Register.
-/// This ensures all bytes have left the FIFO before returning.
-pub fn flush() {
-    use x86_64::instructions::interrupts;
-    use x86_64::instructions::port::Port;
-    const LSR_OFFSET: u16 = 5; // Line Status Register at base+5
-    const LSR_THRE: u8 = 0x20; // Transmitter Holding Register Empty
-    const LSR_TEMT: u8 = 0x40; // Transmitter Empty
+    // Disable interrupts while holding the lock
+    interrupts::disable();
 
-    interrupts::without_interrupts(|| {
-        let mut lsr: Port<u8> = Port::new(COM1_PORT + LSR_OFFSET);
-        // Poll until both bits are set
-        for _ in 0..1_000_000 {
-            // Safety: reading I/O port
-            let status = unsafe { lsr.read() };
-            if (status & (LSR_THRE | LSR_TEMT)) == (LSR_THRE | LSR_TEMT) {
-                break;
-            }
-        }
-    });
+    SERIAL1.lock().send(byte);
+
+    // Only re-enable if they were enabled before
+    // This prevents race condition in syscall handler where interrupts must stay disabled
+    if irq_enabled {
+        interrupts::enable();
+    }
 }
 
 #[doc(hidden)]
@@ -96,12 +84,24 @@ pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     use x86_64::instructions::interrupts;
 
-    interrupts::without_interrupts(|| {
-        SERIAL1
-            .lock()
-            .write_fmt(args)
-            .expect("Printing to serial failed");
-    });
+    // CRITICAL FIX: Check if interrupts are currently enabled BEFORE disabling
+    // We must NOT re-enable interrupts if they were disabled by syscall entry
+    // This fixes the RDI corruption bug where timer interrupts fire during syscalls
+    let irq_enabled = interrupts::are_enabled();
+
+    // Disable interrupts while holding the lock
+    interrupts::disable();
+
+    SERIAL1
+        .lock()
+        .write_fmt(args)
+        .expect("Printing to serial failed");
+
+    // Only re-enable if they were enabled before
+    // This prevents race condition in syscall handler where interrupts must stay disabled
+    if irq_enabled {
+        interrupts::enable();
+    }
 }
 
 /// Try to print without blocking - returns Err if lock is held
@@ -109,16 +109,28 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
     use x86_64::instructions::interrupts;
 
-    interrupts::without_interrupts(|| {
-        // spin::Mutex has try_lock() method
-        match SERIAL1.try_lock() {
-            Some(mut serial) => {
-                serial.write_fmt(args).map_err(|_| ())?;
-                Ok(())
-            }
-            None => Err(()), // Lock is held
+    // CRITICAL: Check if interrupts are currently enabled
+    // We must NOT re-enable interrupts if they were disabled by syscall entry
+    let irq_enabled = interrupts::are_enabled();
+
+    // Disable interrupts while holding the lock
+    interrupts::disable();
+
+    let result = match SERIAL1.try_lock() {
+        Some(mut serial) => {
+            serial.write_fmt(args).map_err(|_| ())?;
+            Ok(())
         }
-    })
+        None => Err(()), // Lock is held
+    };
+
+    // Only re-enable if they were enabled before
+    // This prevents race condition in syscall handler where interrupts must stay disabled
+    if irq_enabled {
+        interrupts::enable();
+    }
+
+    result
 }
 
 /// Emergency print for panics - uses direct port I/O without locking

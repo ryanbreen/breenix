@@ -457,30 +457,10 @@ impl ProcessManager {
         &mut self,
         thread_id: u64,
     ) -> Option<(ProcessId, &mut Process)> {
-        // DIAGNOSTIC: Log all process->thread mappings
-        crate::serial_println!("🔍 find_process_by_thread_mut: Looking for thread {}", thread_id);
-        for (pid, process) in self.processes.iter() {
-            if let Some(ref thread) = process.main_thread {
-                crate::serial_println!("  Process {} ({}) -> Thread {}",
-                    pid.as_u64(), process.name, thread.id);
-            } else {
-                crate::serial_println!("  Process {} ({}) -> No thread",
-                    pid.as_u64(), process.name);
-            }
-        }
-
-        let result = self.processes
+        self.processes
             .iter_mut()
             .find(|(_, process)| process.main_thread.as_ref().map(|t| t.id) == Some(thread_id))
-            .map(|(pid, process)| (*pid, process));
-
-        if let Some((pid, _)) = &result {
-            crate::serial_println!("  ✓ Found: Process {} has thread {}", pid.as_u64(), thread_id);
-        } else {
-            crate::serial_println!("  ✗ NOT FOUND: No process has thread {}", thread_id);
-        }
-
-        result
+            .map(|(pid, process)| (*pid, process))
     }
 
     /// Find a process by its CR3 (page table frame)
@@ -554,7 +534,7 @@ impl ProcessManager {
         &mut self,
         parent_pid: ProcessId,
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))] userspace_rsp: Option<u64>,
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))] mut child_page_table: Box<ProcessPageTable>,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))] mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
@@ -564,7 +544,7 @@ impl ProcessManager {
                 .get(&parent_pid)
                 .ok_or("Parent process not found")?;
 
-            let parent_thread = parent
+            let _parent_thread = parent
                 .main_thread
                 .as_ref()
                 .ok_or("Parent process has no main thread")?;
@@ -573,7 +553,7 @@ impl ProcessManager {
             (
                 parent.name.clone(),
                 parent.entry_point,
-                parent_thread.clone(),
+                _parent_thread.clone(),
             )
         };
 
@@ -809,6 +789,7 @@ impl ProcessManager {
     pub fn fork_process_with_context(
         &mut self,
         parent_pid: ProcessId,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         userspace_rsp: Option<u64>,
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process
@@ -817,7 +798,8 @@ impl ProcessManager {
             .get(&parent_pid)
             .ok_or("Parent process not found")?;
 
-        // Get parent's main thread
+        // Get parent's main thread (used in testing builds for context cloning)
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_thread = parent
             .main_thread
             .as_ref()
@@ -858,6 +840,7 @@ impl ProcessManager {
         log::debug!("fork_process: About to create child page table");
         let child_page_table_result = crate::memory::process_memory::ProcessPageTable::new();
         log::debug!("fork_process: ProcessPageTable::new() returned");
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut))]
         let mut child_page_table =
             Box::new(child_page_table_result.map_err(|_| "Failed to create child page table")?);
         log::debug!("fork_process: Child page table created successfully");

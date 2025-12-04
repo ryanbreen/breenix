@@ -4,9 +4,14 @@
 //! efficiently via the GS segment register without locks.
 
 use core::ptr;
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{compiler_fence, Ordering, AtomicU64};
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase};
+
+// Global tracking counters for irq_enter/irq_exit balance analysis
+static IRQ_ENTER_COUNT: AtomicU64 = AtomicU64::new(0);
+static IRQ_EXIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static MAX_PREEMPT_IMBALANCE: AtomicU64 = AtomicU64::new(0);
 
 /// Per-CPU data structure with cache-line alignment and stable ABI
 /// This structure is accessed from assembly code, so field order and offsets must be stable
@@ -64,6 +69,11 @@ pub struct PerCpuData {
     /// Saved process CR3 (offset 80) - saved on interrupt entry from userspace
     /// Used to restore process page tables on interrupt exit if no context switch
     pub saved_process_cr3: u64,
+
+    /// Exception cleanup context flag (offset 88) - allows scheduling from kernel mode
+    /// Set by exception handlers (GPF, page fault) when they terminate a process
+    /// and need to allow scheduling from kernel mode
+    pub exception_cleanup_context: bool,
 }
 
 // Linux-style preempt_count bit layout constants
@@ -135,6 +145,8 @@ const NEXT_CR3_OFFSET: usize = 64;         // offset 64: u64 (8 bytes) - ALIGNED
 const KERNEL_CR3_OFFSET: usize = 72;       // offset 72: u64 (8 bytes) - ALIGNED
 #[allow(dead_code)]
 const SAVED_PROCESS_CR3_OFFSET: usize = 80; // offset 80: u64 (8 bytes) - ALIGNED
+#[allow(dead_code)]
+const EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88; // offset 88: bool (1 byte)
 
 // Compile-time assertions to ensure offsets are correct
 // These will fail to compile if the offsets don't match expected values
@@ -172,6 +184,7 @@ impl PerCpuData {
             next_cr3: 0,
             kernel_cr3: 0,
             saved_process_cr3: 0,
+            exception_cleanup_context: false,
         }
     }
 }
@@ -352,9 +365,12 @@ pub fn in_nmi() -> bool {
 
 /// Enter hardware IRQ context (called by interrupt handlers)
 pub fn irq_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "irq_enter called before per-CPU initialization");
-    
+
+    // Track irq_enter calls for balance analysis
+    IRQ_ENTER_COUNT.fetch_add(1, Ordering::Relaxed);
+
     unsafe {
         let old_count: u32;
         core::arch::asm!(
@@ -365,9 +381,9 @@ pub fn irq_enter() {
             offset = const PREEMPT_COUNT_OFFSET,
             options(nostack, preserves_flags)
         );
-        
+
         let new_count = old_count + HARDIRQ_OFFSET;
-        
+
         // Check for overflow in debug builds
         debug_assert!(
             (new_count & HARDIRQ_MASK) >= (old_count & HARDIRQ_MASK),
@@ -375,24 +391,28 @@ pub fn irq_enter() {
             old_count & HARDIRQ_MASK,
             new_count & HARDIRQ_MASK
         );
-        
-        // Log first few for CI validation
-        static IRQ_ENTER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        let enter_count = IRQ_ENTER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if enter_count < 10 {
-            log::info!("irq_enter #{}: preempt_count {:#x} -> {:#x} (HARDIRQ incremented)", 
-                      enter_count, old_count, new_count);
-        }
-        // CRITICAL: Do NOT log after the first few interrupts to avoid deadlock
-        // Logging from interrupt context can deadlock if main thread holds serial lock
+
+        // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
+        // Previously logged first 10 irq_enter calls for CI validation
     }
 }
 
 /// Exit hardware IRQ context
 pub fn irq_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "irq_exit called before per-CPU initialization");
-    
+
+    // Track irq_exit calls for balance analysis
+    IRQ_EXIT_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Check for imbalance
+    let enters = IRQ_ENTER_COUNT.load(Ordering::Relaxed);
+    let exits = IRQ_EXIT_COUNT.load(Ordering::Relaxed);
+    if enters > exits {
+        let imbalance = enters - exits;
+        MAX_PREEMPT_IMBALANCE.fetch_max(imbalance, Ordering::Relaxed);
+    }
+
     unsafe {
             let old_count: u32;
             core::arch::asm!(
@@ -403,52 +423,33 @@ pub fn irq_exit() {
                 offset = const PREEMPT_COUNT_OFFSET,
                 options(nostack, preserves_flags)
             );
-            
+
             let new_count = old_count.wrapping_sub(HARDIRQ_OFFSET);
-            
+
             // Check for underflow in debug builds
             debug_assert!(
                 (old_count & HARDIRQ_MASK) >= HARDIRQ_OFFSET,
                 "irq_exit: HARDIRQ count underflow! Was {:#x}",
                 old_count & HARDIRQ_MASK
             );
-            
-            // Log first few for CI validation
-            static IRQ_EXIT_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-            let exit_count = IRQ_EXIT_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if exit_count < 10 {
-                log::info!("irq_exit #{}: preempt_count {:#x} -> {:#x} (HARDIRQ decremented)", 
-                          exit_count, old_count, new_count);
-            }
-            // CRITICAL: Do NOT log after the first few interrupts to avoid deadlock
-            
+
+            // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
+            // Previously logged first 10 irq_exit calls for CI validation
+
         // Check if we should process softirqs
         // Linux processes softirqs when returning to non-interrupt context
         if new_count == 0 {
             // Check if any softirqs are pending
             let pending = softirq_pending();
             if pending != 0 {
-                // Only log first few times to avoid deadlock
-                static SOFTIRQ_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                if SOFTIRQ_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 5 {
-                    log::info!("irq_exit: Processing pending softirqs (bitmap={:#x})", pending);
-                }
-                // Process softirqs
+                // Process softirqs (logging removed to prevent deadlock)
                 do_softirq();
             }
-            
+
             // After softirq processing, re-check if we should schedule
             // Only if we're still at preempt_count == 0 with need_resched set
             // Defer the actual scheduling to the interrupt return path
-            if need_resched() {
-                // Only log first few times to avoid deadlock
-                static SCHED_LOG_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-                if SCHED_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 5 {
-                    log::info!("irq_exit: Scheduling deferred to return path (need_resched set)");
-                }
-                // Do not clear need_resched here;
-                // check_need_resched_and_switch() will handle it and perform the switch.
-            }
+            // (No logging to avoid deadlock)
         }
     }
 }
@@ -826,13 +827,11 @@ pub fn preempt_enable() {
             // 2. need_resched is set
             if (new_count & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK)) == 0 {
                 // Not in interrupt context, safe to check for scheduling
-                if need_resched() {
-                    // CRITICAL: Don't schedule from exception context on process CR3
-                    // The scheduler may access unmapped kernel structures (like framebuffer)
-                    crate::serial_println!("preempt_enable: SKIPPING schedule in exception context");
-                    // Clear need_resched to prevent infinite loops
-                    crate::per_cpu::set_need_resched(false);
-                }
+                // Note: We intentionally do NOT call try_schedule() or clear need_resched here.
+                // The syscall return path and timer interrupt return path both check
+                // need_resched and call check_need_resched_and_switch() which performs
+                // the actual context switch with proper register save/restore.
+                // Clearing the flag here would prevent those paths from scheduling.
             }
         }
     }
@@ -840,9 +839,9 @@ pub fn preempt_enable() {
 
 /// Get current preempt count
 pub fn preempt_count() -> u32 {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "preempt_count called before per-CPU initialization");
-    
+
     // Read preempt_count directly from GS segment
     unsafe {
         let count: u32;
@@ -853,6 +852,31 @@ pub fn preempt_count() -> u32 {
             options(nostack, readonly)
         );
         count
+    }
+}
+
+/// Clear PREEMPT_ACTIVE bit (bit 28) from preempt_count
+///
+/// This is called after a context switch completes to clear the flag that was
+/// protecting the OLD thread's syscall return path. The NEW thread is not in
+/// syscall return, so the flag should not persist.
+///
+/// Linux clears PREEMPT_ACTIVE in schedule_tail() after a context switch.
+/// We follow the same pattern here.
+pub fn clear_preempt_active() {
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        // Clear bit 28 (PREEMPT_ACTIVE) from preempt_count
+        // Use AND with ~PREEMPT_ACTIVE to clear the bit
+        core::arch::asm!(
+            "and dword ptr gs:[{offset}], {mask:e}",
+            mask = in(reg) !PREEMPT_ACTIVE,
+            offset = const PREEMPT_COUNT_OFFSET,
+            options(nostack, preserves_flags)
+        );
     }
 }
 
@@ -966,11 +990,10 @@ pub fn get_next_cr3() -> u64 {
     }
 }
 
-/// LEGACY: Set the target CR3 for next IRETQ
-/// This function is currently unused because CR3 switching now happens
-/// directly in context_switch.rs when scheduling threads, not deferred
-/// to interrupt return. Kept for assembly code compatibility.
-#[allow(dead_code)]
+/// Set the target CR3 for next IRETQ
+/// This communicates to timer_entry.asm and entry.asm (syscall return)
+/// which CR3 to switch to before returning to userspace.
+/// CR3 switching is deferred to assembly code to avoid double TLB flushes.
 pub fn set_next_cr3(cr3: u64) {
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return;
@@ -1026,35 +1049,81 @@ pub fn set_kernel_cr3(cr3: u64) {
     }
 }
 
-/// Global flag indicating we're in exception cleanup context
-/// (e.g., page fault handler after terminating a process)
-/// This allows scheduling even when returning to kernel mode
-static EXCEPTION_CLEANUP_CONTEXT: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
-/// Set the exception cleanup context flag
-/// This should be called from exception handlers that terminate a process
-/// and need to allow scheduling to switch to another thread
+/// Set the exception cleanup context flag (per-CPU)
+/// Called by exception handlers (GPF, page fault) when they terminate a process
+/// and need to allow scheduling from kernel mode
 pub fn set_exception_cleanup_context() {
-    EXCEPTION_CLEANUP_CONTEXT.store(true, Ordering::SeqCst);
-    log::info!("Exception cleanup context flag set - scheduling will be allowed");
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        // Set exception_cleanup_context to true (1) at offset 88
+        let value: u8 = 1;
+        core::arch::asm!(
+            "mov byte ptr gs:[{offset}], {val}",
+            val = in(reg_byte) value,
+            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
-/// Clear the exception cleanup context flag
+/// Clear the exception cleanup context flag (per-CPU)
 /// Called after successfully switching to a new thread
 pub fn clear_exception_cleanup_context() {
-    EXCEPTION_CLEANUP_CONTEXT.store(false, Ordering::SeqCst);
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    unsafe {
+        // Set exception_cleanup_context to false (0) at offset 88
+        let value: u8 = 0;
+        core::arch::asm!(
+            "mov byte ptr gs:[{offset}], {val}",
+            val = in(reg_byte) value,
+            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+            options(nostack, preserves_flags)
+        );
+    }
 }
 
-/// Check if we're in exception cleanup context
+/// Check if we're in exception cleanup context (per-CPU)
 pub fn in_exception_cleanup_context() -> bool {
-    EXCEPTION_CLEANUP_CONTEXT.load(Ordering::SeqCst)
+    if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    unsafe {
+        let value: u8;
+        core::arch::asm!(
+            "mov {val}, byte ptr gs:[{offset}]",
+            val = out(reg_byte) value,
+            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+            options(nostack, readonly, preserves_flags)
+        );
+        value != 0
+    }
 }
 
 /// Check if we can schedule (preempt_count == 0 and returning to userspace)
 pub fn can_schedule(saved_cs: u64) -> bool {
     let current_preempt = preempt_count();
     let returning_to_userspace = (saved_cs & 3) == 3;
+
+    // CRITICAL: Check if current_thread is set before accessing scheduler.
+    // During early boot or before first context switch, gs:[8] may be NULL.
+    // Timer interrupts can fire before any thread is set, causing a page fault
+    // at CR2=0x8 (offset 8 in PerCpuData = current_thread pointer).
+    if current_thread().is_none() {
+        // No current thread set yet - cannot schedule
+        static EARLY_RETURN_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let count = EARLY_RETURN_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if count < 10 {
+            log::warn!("can_schedule: returning false - current_thread is None");
+        }
+        return false;
+    }
 
     let mut returning_to_idle_kernel = false;
     if !returning_to_userspace {
@@ -1068,28 +1137,23 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // Also allow scheduling if we're in exception cleanup context
     let in_exception_cleanup = in_exception_cleanup_context();
 
-    let can_sched = current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel || in_exception_cleanup);
+    // CRITICAL: When in exception cleanup context, allow scheduling regardless of PREEMPT_ACTIVE.
+    // The exception handler has explicitly requested a reschedule after terminating a process.
+    // Without this, PREEMPT_ACTIVE (bit 28) blocks scheduling even though we need to recover.
+    let result = in_exception_cleanup
+                 || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel));
 
-    log::debug!(
-        "can_schedule: preempt_count={}, cs_rpl={}, userspace={}, idle_kernel={}, exception_cleanup={}, result={}",
-        current_preempt,
-        saved_cs & 3,
-        returning_to_userspace,
-        returning_to_idle_kernel,
-        in_exception_cleanup,
-        can_sched
-    );
-
-    if current_preempt > 0 {
-        log::debug!("can_schedule: BLOCKED by preempt_count={}", current_preempt);
-    }
-    if !returning_to_userspace && !returning_to_idle_kernel && !in_exception_cleanup {
+    // Debug logging for exception handler path
+    static CAN_SCHED_LOG_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let count = CAN_SCHED_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if count < 20 || (in_exception_cleanup && count < 100) {
         log::debug!(
-            "can_schedule: BLOCKED - returning to kernel (non-idle) context, CS RPL={}",
-            saved_cs & 3
+            "can_schedule: preempt={}, to_user={}, to_idle_kern={}, exc_cleanup={}, result={}",
+            current_preempt, returning_to_userspace, returning_to_idle_kernel, in_exception_cleanup, result
         );
     }
-    can_sched
+
+    result
 }
 
 /// Get per-CPU base address and size for logging
@@ -1100,3 +1164,23 @@ pub fn get_percpu_info() -> (u64, usize) {
     let size = core::mem::size_of::<PerCpuData>();
     (base, size)
 }
+
+/// Get total number of irq_enter calls (for diagnostics)
+#[allow(dead_code)]
+pub fn get_irq_enter_count() -> u64 {
+    IRQ_ENTER_COUNT.load(Ordering::Relaxed)
+}
+
+/// Get total number of irq_exit calls (for diagnostics)
+#[allow(dead_code)]
+pub fn get_irq_exit_count() -> u64 {
+    IRQ_EXIT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Get maximum observed preempt imbalance (enters - exits)
+/// A persistently high value may indicate missing irq_exit calls
+#[allow(dead_code)]
+pub fn get_max_preempt_imbalance() -> u64 {
+    MAX_PREEMPT_IMBALANCE.load(Ordering::Relaxed)
+}
+

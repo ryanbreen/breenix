@@ -22,9 +22,15 @@ bits 64
 %define SAVED_REGS_SIZE (SAVED_REGS_COUNT * 8)
 
 timer_interrupt_entry:
+    ; CRITICAL: Disable interrupts BEFORE saving any registers
+    ; This prevents race condition where another interrupt fires during register save
+    ; Even though timer interrupt is an interrupt gate (IF cleared by CPU), we ensure
+    ; atomicity by explicitly disabling interrupts for the entire register save sequence
+    cli
+
     ; TEMPORARILY REMOVED: Push dummy error code for uniform stack frame (IRQs don't push error codes)
     ; push qword 0
-    
+
     ; Save all general purpose registers
     push rax
     push rcx
@@ -120,7 +126,12 @@ timer_interrupt_entry:
     out dx, al
     pop rdx
     pop rax
-    
+
+    ; CRITICAL: Disable interrupts before restoring registers
+    ; This prevents race condition where another interrupt fires while registers
+    ; are being restored, potentially corrupting them
+    cli
+
     ; Restore all general purpose registers
     ; Note: If we switched contexts, these will be different registers!
     pop r15
@@ -184,11 +195,9 @@ timer_interrupt_entry:
     ; We already know we're returning to userspace (checked above)
     ; so we need to ensure GS is set for userspace
     swapgs
-    
-    ; DEBUG: Output after swapgs to confirm we survived
-    mov dx, 0x3F8       ; COM1 port
-    mov al, 'Z'         ; After swapgs marker
-    out dx, al
+
+    ; NOTE: Debug 'Z' marker removed - it was corrupting RAX (writing 0x5a to AL)
+    ; after registers were restored, causing userspace to see wrong syscall returns
 
     ; GDT verification temporarily disabled for debugging
     
@@ -355,9 +364,36 @@ timer_interrupt_entry:
     ; CRITICAL FIX: Send EOI just before IRETQ to minimize window for spurious interrupts
     ; We're on user GS here, but send_timer_eoi needs kernel GS to access PICS lock
     ; Sequence: swapgs to kernel, call EOI, swapgs to user, iretq
+    ;
+    ; CRITICAL FIX #2: Save/restore ALL caller-saved registers around the call!
+    ; send_timer_eoi is a Rust function following System V AMD64 ABI.
+    ; Per the ABI, caller-saved registers (RAX, RCX, RDX, RSI, RDI, R8-R11) can be clobbered.
+    ; Without saving them, userspace returns with corrupted registers!
+    ; This was the root cause of the RDI corruption bug.
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+
     swapgs                  ; Switch to kernel GS
     call send_timer_eoi     ; Send EOI (requires kernel GS for PICS access)
     swapgs                  ; Switch back to user GS for iretq
+
+    ; Restore all caller-saved registers
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
 
     ; Return from interrupt to userspace
     ; IRETQ will re-enable interrupts from the saved RFLAGS
@@ -369,7 +405,31 @@ timer_interrupt_entry:
 
     ; CRITICAL FIX: Send EOI for kernel return path too
     ; We're still on kernel GS (we never swapped since we came from kernel mode)
+    ;
+    ; CRITICAL FIX #2: Save/restore caller-saved registers around the call!
+    ; Same fix as userspace path - send_timer_eoi can clobber registers.
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+
     call send_timer_eoi
+
+    ; Restore all caller-saved registers
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
 
     ; Return from interrupt to kernel
     iretq

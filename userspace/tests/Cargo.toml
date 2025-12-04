@@ -37,6 +37,14 @@ path = "syscall_enosys.rs"
 name = "clock_gettime_test"
 path = "clock_gettime_test.rs"
 
+[[bin]]
+name = "register_init_test"
+path = "register_init_test.rs"
+
+[[bin]]
+name = "syscall_diagnostic_test"
+path = "syscall_diagnostic_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

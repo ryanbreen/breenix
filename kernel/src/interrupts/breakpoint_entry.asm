@@ -16,10 +16,16 @@ bits 64
 %define SAVED_REGS_SIZE (SAVED_REGS_COUNT * 8)
 
 breakpoint_entry:
+    ; CRITICAL: Disable interrupts BEFORE saving any registers
+    ; This prevents race condition where another interrupt fires during register save
+    ; Even though breakpoint is an exception/trap, we ensure atomicity by explicitly
+    ; disabling interrupts for the entire register save sequence
+    cli
+
     ; Breakpoint exception doesn't push error code
     ; Push dummy error code for uniform stack frame
     push qword 0
-    
+
     ; Save all general purpose registers
     push rax
     push rcx
@@ -76,8 +82,13 @@ breakpoint_entry:
     
     ; Returning to userspace, swap back to user GS
     swapgs
-    
+
 .skip_swapgs_exit:
+    ; CRITICAL: Disable interrupts before restoring registers
+    ; This prevents race condition where another interrupt fires while registers
+    ; are being restored, potentially corrupting them
+    cli
+
     ; Restore all general purpose registers
     pop r15
     pop r14

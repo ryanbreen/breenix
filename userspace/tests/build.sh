@@ -16,6 +16,8 @@ cp target/x86_64-breenix/release/fork_test fork_test.elf
 cp target/x86_64-breenix/release/timer_test timer_test.elf
 cp target/x86_64-breenix/release/syscall_enosys syscall_enosys.elf
 cp target/x86_64-breenix/release/clock_gettime_test clock_gettime_test.elf
+cp target/x86_64-breenix/release/register_init_test register_init_test.elf
+cp target/x86_64-breenix/release/syscall_diagnostic_test syscall_diagnostic_test.elf
 
 # Create flat binaries
 rust-objcopy -O binary hello_time.elf hello_time.bin
@@ -26,6 +28,8 @@ rust-objcopy -O binary fork_test.elf fork_test.bin
 rust-objcopy -O binary timer_test.elf timer_test.bin
 rust-objcopy -O binary syscall_enosys.elf syscall_enosys.bin
 rust-objcopy -O binary clock_gettime_test.elf clock_gettime_test.bin
+rust-objcopy -O binary register_init_test.elf register_init_test.bin
+rust-objcopy -O binary syscall_diagnostic_test.elf syscall_diagnostic_test.bin
 
 echo "Built all ELF files"
 echo "hello_time size: $(stat -f%z hello_time.bin 2>/dev/null || stat -c%s hello_time.bin) bytes"
@@ -36,3 +40,5 @@ echo "fork_test size: $(stat -f%z fork_test.bin 2>/dev/null || stat -c%s fork_te
 echo "timer_test size: $(stat -f%z timer_test.bin 2>/dev/null || stat -c%s timer_test.bin) bytes"
 echo "syscall_enosys size: $(stat -f%z syscall_enosys.bin 2>/dev/null || stat -c%s syscall_enosys.bin) bytes"
 echo "clock_gettime_test size: $(stat -f%z clock_gettime_test.bin 2>/dev/null || stat -c%s clock_gettime_test.bin) bytes"
+echo "register_init_test size: $(stat -f%z register_init_test.bin 2>/dev/null || stat -c%s register_init_test.bin) bytes"
+echo "syscall_diagnostic_test size: $(stat -f%z syscall_diagnostic_test.bin 2>/dev/null || stat -c%s syscall_diagnostic_test.bin) bytes"

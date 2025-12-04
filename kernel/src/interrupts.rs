@@ -308,12 +308,6 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
     crate::serial_println!("BP handler: Called preempt_enable, exiting handler");
 }
 
-// Keep the old x86-interrupt handler for now until we update the IDT
-pub extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
-    // This is the old handler - should not be called once we switch to assembly entry
-    panic!("Old breakpoint handler called - should be using assembly entry!");
-}
-
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
@@ -472,7 +466,7 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
 }
 
 extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
+    mut stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
@@ -748,25 +742,46 @@ extern "x86-interrupt" fn page_fault_handler(
                 }
             }
 
-            // Set a flag that makes this context schedulable BEFORE enabling interrupts
-            // This tells can_schedule() that we're in exception cleanup and can be preempted
+            // CRITICAL: Set exception cleanup context so can_schedule() returns true
+            // This allows scheduling from kernel mode after terminating a process
             crate::per_cpu::set_exception_cleanup_context();
 
-            // Now enable interrupts so timer can fire and trigger scheduling
-            x86_64::instructions::interrupts::enable();
+            // CRITICAL: Update scheduler to point to idle thread BEFORE modifying exception frame.
+            // This ensures subsequent timer interrupts can properly schedule other threads.
+            crate::task::scheduler::switch_to_idle();
 
-            loop {
-                x86_64::instructions::hlt();
+            // CRITICAL FIX: Instead of entering an hlt loop (which doesn't work because
+            // timer interrupts can't properly schedule from exception context), modify
+            // the exception frame to return directly to the idle loop.
+            //
+            // NOTE: CR3 was already switched to kernel page table above. DO NOT call
+            // switch_to_kernel_page_table() again - redundant CR3 writes with TLB flush
+            // can cause hangs when on the IST stack.
+            unsafe {
+                stack_frame.as_mut().update(|frame| {
+                    frame.code_segment = crate::gdt::kernel_code_selector();
+                    frame.stack_segment = crate::gdt::kernel_data_selector();
+                    frame.instruction_pointer = x86_64::VirtAddr::new(
+                        context_switch::idle_loop as *const () as u64
+                    );
+                    frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+
+                    // Set up kernel stack - use current RSP with some headroom
+                    let current_rsp: u64;
+                    core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+                    frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
+                });
             }
+
+            log::info!("Page fault handler: Modified exception frame to return to idle loop");
+
+            // Return from handler - IRET will jump to idle_loop
+            return;
         }
 
-        // Kernel page fault - this is a bug, halt
-        loop {
-            x86_64::instructions::hlt();
-        }
+        // Kernel page fault - this is a bug, panic
+        panic!("Kernel page fault at {:#x} (error: {:?})", accessed_addr.as_u64(), error_code);
     }
-
-    // Note: preempt_enable() not called here since we enter infinite loop or exit
 }
 
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
@@ -819,7 +834,7 @@ extern "x86-interrupt" fn stack_segment_fault_handler(
 }
 
 extern "x86-interrupt" fn general_protection_fault_handler(
-    stack_frame: InterruptStackFrame,
+    mut stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
     // DIAGNOSTIC OUTPUT AT THE VERY START
@@ -938,8 +953,94 @@ extern "x86-interrupt" fn general_protection_fault_handler(
     log::error!("  Selector Index: {}", selector_index);
 
     log::error!("{:#?}", stack_frame);
-    
-    // Decrement preempt count before panic
+
+    // Handle userspace GPFs gracefully by terminating the process
+    if from_userspace {
+        log::error!("Terminating faulting userspace process due to GPF...");
+
+        // Find the process by CR3
+        let mut faulting_thread_id: Option<u64> = None;
+
+        crate::process::with_process_manager(|pm| {
+            if let Some((pid, process)) = pm.find_process_by_cr3_mut(cr3) {
+                let name = process.name.clone();
+                // Get the thread ID before we exit the process
+                faulting_thread_id = process.main_thread.as_ref().map(|t| t.id);
+                log::error!("Killing process {} (PID {}) due to GPF (CR3={:#x})",
+                    name, pid.as_u64(), cr3);
+                pm.exit_process(pid, -11); // SIGSEGV exit code
+            } else {
+                log::error!("Could not find process with CR3={:#x} - cannot terminate", cr3);
+            }
+        });
+
+        // Mark thread as terminated by setting it not runnable
+        if let Some(thread_id) = faulting_thread_id {
+            crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+                thread.state = crate::task::thread::ThreadState::Terminated;
+            });
+        }
+
+        // Re-enable preemption before scheduling
+        crate::per_cpu::preempt_enable();
+
+        // Force a reschedule to pick up the next thread
+        crate::task::scheduler::set_need_resched();
+
+        log::info!("About to schedule next thread after killing faulting process...");
+
+        // Switch CR3 back to kernel page table
+        unsafe {
+            use x86_64::registers::control::Cr3;
+            use x86_64::structures::paging::PhysFrame;
+            let kernel_cr3 = crate::per_cpu::get_kernel_cr3();
+            if kernel_cr3 != 0 {
+                log::info!("Switching to kernel CR3: {:#x}", kernel_cr3);
+                Cr3::write(
+                    PhysFrame::containing_address(x86_64::PhysAddr::new(kernel_cr3)),
+                    Cr3::read().1,
+                );
+            }
+        }
+
+        // CRITICAL: Set exception cleanup context so can_schedule() returns true
+        // This allows scheduling from kernel mode after terminating a process
+        crate::per_cpu::set_exception_cleanup_context();
+
+        // CRITICAL: Update scheduler to point to idle thread BEFORE modifying exception frame.
+        // This ensures subsequent timer interrupts can properly schedule other threads.
+        crate::task::scheduler::switch_to_idle();
+
+        // CRITICAL FIX: Instead of entering an hlt loop (which doesn't work because
+        // timer interrupts can't properly schedule from exception context), modify
+        // the exception frame to return directly to the idle loop.
+        //
+        // NOTE: CR3 was already switched to kernel page table above. DO NOT call
+        // switch_to_kernel_page_table() again - redundant CR3 writes with TLB flush
+        // can cause hangs when on the IST stack.
+        unsafe {
+            stack_frame.as_mut().update(|frame| {
+                frame.code_segment = crate::gdt::kernel_code_selector();
+                frame.stack_segment = crate::gdt::kernel_data_selector();
+                frame.instruction_pointer = x86_64::VirtAddr::new(
+                    context_switch::idle_loop as *const () as u64
+                );
+                frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+
+                // Set up kernel stack - use current RSP with some headroom
+                let current_rsp: u64;
+                core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
+                frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
+            });
+        }
+
+        log::info!("GPF handler: Modified exception frame to return to idle loop");
+
+        // Return from handler - IRET will jump to idle_loop
+        return;
+    }
+
+    // Kernel GPF - this is a bug, panic
     crate::per_cpu::preempt_enable();
     panic!("General Protection Fault");
 }

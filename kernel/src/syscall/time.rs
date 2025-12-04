@@ -1,6 +1,14 @@
-// ─── File: kernel/src/syscall/time.rs ──────────────────────────────
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║                         🚨 CRITICAL HOT PATH 🚨                               ║
+// ║                                                                              ║
+// ║  THIS FILE IS ON THE PROHIBITED MODIFICATIONS LIST.                          ║
+// ║  sys_clock_gettime is called repeatedly in tight loops for precision timing. ║
+// ║                                                                              ║
+// ║  DO NOT ADD ANY LOGGING. See kernel/src/syscall/handler.rs for full rules.   ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
 use crate::syscall::{ErrorCode, SyscallResult};
-use crate::time::{get_monotonic_time, get_real_time};
+use crate::time::{get_monotonic_time_ns, get_real_time_ns};
 
 /// POSIX clock identifiers
 pub const CLOCK_REALTIME: u32 = 0;
@@ -21,21 +29,21 @@ pub struct Timespec {
 /// userspace memory operations. Use this from kernel code that
 /// needs to read the system time directly.
 ///
-/// Granularity: 1 ms until TSC‑deadline fast‑path is enabled.
+/// Granularity: nanosecond precision via TSC (falls back to 1ms via PIT).
 pub fn clock_gettime(clock_id: u32) -> Result<Timespec, ErrorCode> {
     match clock_id {
         CLOCK_REALTIME => {
-            let dt = get_real_time();
+            let (secs, nanos) = get_real_time_ns();
             Ok(Timespec {
-                tv_sec: dt.to_unix_timestamp() as i64,
-                tv_nsec: 0,
+                tv_sec: secs,
+                tv_nsec: nanos,
             })
         }
         CLOCK_MONOTONIC => {
-            let ms = get_monotonic_time();
+            let (secs, nanos) = get_monotonic_time_ns();
             Ok(Timespec {
-                tv_sec: (ms / 1_000) as i64,
-                tv_nsec: ((ms % 1_000) * 1_000_000) as i64,
+                tv_sec: secs as i64,
+                tv_nsec: nanos as i64,
             })
         }
         _ => Err(ErrorCode::InvalidArgument),
@@ -49,31 +57,26 @@ pub fn clock_gettime(clock_id: u32) -> Result<Timespec, ErrorCode> {
 ///
 /// For kernel code that needs to read the time, use `clock_gettime()`
 /// directly instead of this syscall wrapper.
+///
+/// NOTE: No logging in this hot path! Serial I/O takes thousands of cycles
+/// and would cause the sub-millisecond precision test to fail.
 pub fn sys_clock_gettime(clock_id: u32, user_ptr: *mut Timespec) -> SyscallResult {
-    log::debug!("sys_clock_gettime: clock_id={}, user_ptr={:#x}", clock_id, user_ptr as u64);
-
     // Get the time using internal implementation
     let ts = match clock_gettime(clock_id) {
         Ok(ts) => ts,
         Err(e) => {
-            log::debug!("sys_clock_gettime: clock_gettime failed with error {:?}", e);
             return SyscallResult::Err(e as u64);
         }
     };
 
-    log::debug!("sys_clock_gettime: got time tv_sec={}, tv_nsec={}", ts.tv_sec, ts.tv_nsec);
-
     // Copy result to userspace
-    log::debug!("sys_clock_gettime: calling copy_to_user to {:#x}", user_ptr as u64);
-    if let Err(e) = crate::syscall::handlers::copy_to_user(
+    if let Err(_e) = crate::syscall::handlers::copy_to_user(
         user_ptr as u64,
         &ts as *const _ as u64,
         core::mem::size_of::<Timespec>(),
     ) {
-        log::error!("sys_clock_gettime: Failed to copy to user: {}", e);
         return SyscallResult::Err(ErrorCode::Fault as u64);
     }
 
-    log::debug!("sys_clock_gettime: copy_to_user succeeded, returning 0");
     SyscallResult::Ok(0)
 }

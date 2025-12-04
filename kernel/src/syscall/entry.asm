@@ -18,9 +18,16 @@ extern trace_iretq_to_ring3
 ; On entry:
 ;   - CPU has already switched to kernel stack (TSS.RSP0)
 ;   - CPU has pushed: SS, RSP, RFLAGS, CS, RIP
-;   - Interrupts are disabled
+;   - Interrupts should be disabled by interrupt gate, but we ensure it explicitly
 ;   - We're in Ring 0
 syscall_entry:
+    ; CRITICAL: Disable interrupts BEFORE saving any registers
+    ; This prevents race condition where timer interrupt fires during register save
+    ; at 1000 Hz, causing register corruption (RDI corruption bug)
+    ; Even though INT 0x80 is an interrupt gate (IF cleared by CPU), we ensure
+    ; atomicity by explicitly disabling interrupts for the entire register save sequence
+    cli
+
     ; Save all general purpose registers in SavedRegisters order
     ; Must match timer interrupt order: rax first, r15 last
     push rax    ; syscall number (pushed first, at RSP+14*8)
@@ -47,6 +54,13 @@ syscall_entry:
     ; INT 0x80 is only used from userspace, so we always need swapgs
     swapgs
 
+    ; CRITICAL FIX: Clear PREEMPT_ACTIVE flag at syscall entry
+    ; This flag is set during syscall return to prevent context switches
+    ; from saving kernel register values as userspace context.
+    ; We clear it here to ensure a clean state for this syscall.
+    ; NOTE: This MUST be after swapgs so we access kernel gs, not user gs!
+    and dword [gs:32], 0xEFFFFFFF    ; Clear bit 28 (PREEMPT_ACTIVE = ~0x10000000)
+
     ; CRITICAL: Save the process CR3 BEFORE switching to kernel CR3
     ; This allows us to restore it on exit if no context switch happens
     ; Save process CR3 to per-CPU data at gs:[80] (SAVED_PROCESS_CR3_OFFSET)
@@ -70,18 +84,59 @@ syscall_entry:
     mov rdi, rsp
     call rust_syscall_handler
 
-    ; Return value is in RAX, which will be restored to userspace
+    ; NOTE: The Rust handler already set frame.rax (at RSP+112) to the return value
+    ; via frame.set_return_value(). RAX register contains garbage after the call
+    ; (since the function returns void), but the stack has the correct value.
+    ; The pop at line ~155 will restore the correct value to RAX.
+    ;
+    ; CRITICAL: DO NOT write RAX to the stack here! The previous code did:
+    ;   mov qword [rsp + 112], rax
+    ; This OVERWROTE the correct return value with garbage, causing syscall
+    ; return values to be corrupted (e.g., clock_gettime returning 90 instead of 0).
+
     ; NOTE: We stay in kernel GS mode until just before iretq
     ; All kernel functions (scheduling, page table, tracing) need kernel GS
 
-    ; Check if we need to reschedule before returning to userspace
-    ; This is critical for sys_exit to work correctly
+    ; CRITICAL: Disable interrupts BEFORE restoring registers
+    ; At this point, the interrupt frame has CS=0x33 (userspace) because we're
+    ; returning from syscall, but registers still contain kernel data. If timer
+    ; fires now, it would see from_userspace=true and save corrupted registers.
+    ; Linux keeps interrupts disabled throughout the entire syscall return path.
+    cli
+
+    ; Check if we need to reschedule before returning to userspace.
+    ; This is safe because:
+    ; 1. cli was executed above, so no timer interrupts can fire
+    ; 2. PREEMPT_ACTIVE mechanism protects against saving kernel registers as userspace
+    ; 3. This is critical for sys_exit to work - it sets need_resched expecting us to schedule
+    ;
+    ; NOTE: The previous comment about "RDI corruption" is now fixed by the cli above
+    ; and the PREEMPT_ACTIVE flag in the timer interrupt path.
     push rax                  ; Save syscall return value
     mov rdi, rsp              ; Pass pointer to saved registers (after push)
     add rdi, 8                ; Adjust for the pushed rax
     lea rsi, [rsp + 16*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
     pop rax                   ; Restore syscall return value
+
+    ; CRITICAL FIX Part 2: Decrement preempt_count in assembly BEFORE restoring registers
+    ; The Rust code called preempt_disable() at syscall entry and will call preempt_enable()
+    ; at syscall exit. But preempt_enable() happens BEFORE we restore registers!
+    ; This creates a window where timer interrupts can fire and see preempt_count=0
+    ; with kernel register values. To fix this, we manually decrement preempt_count
+    ; here in assembly, AFTER preempt_enable() and BEFORE restoring registers.
+    ;
+    ; Actually, the Rust code already called preempt_enable(), so preempt_count should
+    ; be 0 now. The issue is that timer interrupts can fire AFTER preempt_enable but
+    ; BEFORE we restore registers. Solution: Keep preempt_count elevated until after
+    ; registers are restored. But we can't modify the Rust code flow easily.
+    ;
+    ; Better solution: Set a flag that timer interrupts can check. Use preempt_count
+    ; bit 28 (PREEMPT_ACTIVE) to indicate "in syscall return path".
+    ; Linux uses PREEMPT_ACTIVE=0x10000000 (bit 28).
+    ;
+    ; Set PREEMPT_ACTIVE before restoring registers:
+    or dword [gs:32], 0x10000000    ; Set bit 28 (PREEMPT_ACTIVE)
 
     ; Restore all general purpose registers in reverse push order
     pop r15    ; Last pushed, first popped
