@@ -41,5 +41,6 @@ pub fn dispatch_syscall(
             let user_timespec_ptr = arg2 as *mut super::time::Timespec;
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
+        SyscallNumber::Brk => super::memory::sys_brk(arg1),
     }
 }

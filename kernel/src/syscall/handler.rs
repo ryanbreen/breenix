@@ -131,6 +131,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             let user_timespec_ptr = args.1 as *mut super::time::Timespec;
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
+        Some(SyscallNumber::Brk) => super::memory::sys_brk(args.0),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

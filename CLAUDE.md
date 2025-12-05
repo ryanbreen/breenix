@@ -193,6 +193,15 @@ All commits co-authored by Ryan Breen and Claude Code.
 
 ## Documentation
 
+### Visual Progress Dashboard
+**Public Dashboard**: https://v0-breenix-dashboard.vercel.app/
+- Interactive visualization of POSIX compliance progress
+- 12 subsystem regions with completion percentages
+- Phase timeline showing current position (Phase 8.5)
+
+**Updating the Dashboard**: Use the `collaboration:ux-research` skill to update the v0.dev dashboard.
+When features are completed, invoke the skill to update progress percentages and feature lists.
+
 ### Master Roadmap
 `docs/planning/PROJECT_ROADMAP.md` tracks:
 - Current development status

@@ -11,7 +11,9 @@ Breenix is a working OS with:
 - Basic POSIX system calls
 - Keyboard and timer drivers
 
-See [docs/planning/PROJECT_ROADMAP.md](docs/planning/PROJECT_ROADMAP.md) for current development status and roadmap.
+**[📊 View Interactive Progress Dashboard](https://v0-breenix-dashboard.vercel.app/)** - Visual roadmap showing POSIX compliance progress across all subsystems.
+
+See [docs/planning/PROJECT_ROADMAP.md](docs/planning/PROJECT_ROADMAP.md) for detailed development status.
 
 ## Quick Start
 

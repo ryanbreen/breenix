@@ -468,6 +468,21 @@ fn kernel_main_continue() -> ! {
                 }
             }
 
+            // Launch brk_test to validate heap management syscall
+            #[cfg(feature = "external_test_bins")]
+            {
+                serial_println!("RING3_SMOKE: creating brk_test userspace process");
+                let brk_test_buf = crate::userspace_test::get_test_binary("brk_test");
+                match process::creation::create_user_process(String::from("brk_test"), &brk_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created brk_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create brk_test process: {}", e);
+                    }
+                }
+            }
+
             // Launch syscall_diagnostic_test to isolate register corruption bug
             #[cfg(feature = "external_test_bins")]
             {
