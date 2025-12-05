@@ -53,23 +53,53 @@ for bin in "${BINARIES[@]}"; do
 done
 
 echo ""
-echo "Creating flat binaries..."
-
-# Create flat binaries
-for bin in "${BINARIES[@]}"; do
-    rust-objcopy -O binary "$bin.elf" "$bin.bin"
-done
-
-echo ""
 echo "========================================"
 echo "  BUILD COMPLETE - libbreenix binaries"
 echo "========================================"
 echo ""
-echo "Binary sizes:"
-for bin in "${BINARIES[@]}"; do
-    size=$(stat -f%z "$bin.bin" 2>/dev/null || stat -c%s "$bin.bin")
-    printf "  %-30s %6d bytes\n" "$bin.bin" "$size"
-done
+
+# Find rust-objcopy (it's in the rustup toolchain's llvm-tools)
+OBJCOPY=""
+if command -v rust-objcopy &> /dev/null; then
+    OBJCOPY="rust-objcopy"
+else
+    # Try to find it in the rustup toolchain
+    SYSROOT=$(rustc --print sysroot 2>/dev/null || true)
+    if [ -n "$SYSROOT" ]; then
+        # Check multiple possible locations
+        for path in \
+            "$SYSROOT/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-objcopy" \
+            "$SYSROOT/lib/rustlib/aarch64-apple-darwin/bin/rust-objcopy" \
+            "$SYSROOT/lib/rustlib/x86_64-apple-darwin/bin/rust-objcopy"; do
+            if [ -x "$path" ]; then
+                OBJCOPY="$path"
+                break
+            fi
+        done
+    fi
+fi
+
+if [ -n "$OBJCOPY" ]; then
+    echo "Creating flat binaries (using $OBJCOPY)..."
+    for bin in "${BINARIES[@]}"; do
+        "$OBJCOPY" -O binary "$bin.elf" "$bin.bin"
+    done
+    echo ""
+    echo "Binary sizes (.bin flat format):"
+    for bin in "${BINARIES[@]}"; do
+        size=$(stat -f%z "$bin.bin" 2>/dev/null || stat -c%s "$bin.bin")
+        printf "  %-30s %6d bytes\n" "$bin.bin" "$size"
+    done
+else
+    echo "Skipping flat binary creation (rust-objcopy not found)"
+    echo "Note: ELF files are still available and are what the kernel embeds"
+    echo ""
+    echo "ELF binary sizes:"
+    for bin in "${BINARIES[@]}"; do
+        size=$(stat -f%z "$bin.elf" 2>/dev/null || stat -c%s "$bin.elf")
+        printf "  %-30s %6d bytes\n" "$bin.elf" "$size"
+    done
+fi
 echo ""
 echo "These binaries use libbreenix for syscalls:"
 echo "  - libbreenix::process (exit, fork, exec, getpid, gettid, yield)"
