@@ -1,24 +1,46 @@
-#![allow(unused_features, dead_code, unused_variables)]
-#![feature(const_fn, prelude_import, test, raw, ptr_as_ref,
-           core_prelude, core_slice_ext, libc, unique, asm)]
+//! Breenix Userspace System Call Library
+//!
+//! This library provides safe(r) wrappers around Breenix kernel syscalls,
+//! allowing userspace programs to interact with the kernel without writing
+//! raw inline assembly.
+//!
+//! # Stages of Development
+//!
+//! This library is being developed in stages toward full POSIX libc compatibility:
+//!
+//! - **Stage 1 (Current)**: Raw syscall wrappers for Rust programs
+//! - **Stage 2**: Higher-level abstractions (File, Process types)
+//! - **Stage 3**: Memory allocator (malloc/free equivalent)
+//! - **Stage 4**: C-compatible ABI for libc
+//! - **Stage 5**: Full POSIX libc port (musl or custom)
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! #![no_std]
+//! #![no_main]
+//!
+//! use libbreenix::io::stdout;
+//! use libbreenix::process::exit;
+//!
+//! #[no_mangle]
+//! pub extern "C" fn _start() -> ! {
+//!     stdout().write(b"Hello from Breenix!\n");
+//!     exit(0);
+//! }
+//! ```
+
 #![no_std]
 
-extern crate spin;
+// Re-export all public APIs
+pub use errno::Errno;
+pub use syscall::raw;
+pub use types::*;
 
-mod rand;
-mod syscall;
-
-#[no_mangle]
-pub extern fn sys_time() -> u64 {
-  unsafe { syscall::syscall0(201) }
-}
-
-#[no_mangle]
-pub fn sys_test() -> u64 {
-  unsafe { syscall::syscall6(16, 32, 64, 128, 256, 512, 1024) }
-}
-
-#[no_mangle]
-pub fn sys_exit(pid: usize) {
-  panic!("unimplemented");
-}
+pub mod errno;
+pub mod io;
+pub mod memory;
+pub mod process;
+pub mod syscall;
+pub mod time;
+pub mod types;

@@ -1,115 +1,142 @@
-//! Invokes an OS system-call handler at privilege level 0.
-///
-/// It does so by loading RIP from the IA32_LSTAR MSR (after saving the address of the instruction following SYSCALL into RCX).
-///
-/// "A.2 AMD64 Linux Kernel Conventions" of System V Application Binary Interface AMD64 Architecture Processor Supplement:
-///
-/// * The kernel interface uses %rdi, %rsi, %rdx, %r10, %r8 and %r9.
-/// * A system-call is done via the syscall instruction. The kernel destroys registers %rcx and %r11.
-/// * The number of the syscall has to be passed in register %rax.
-/// * System-calls are limited to six arguments, no argument is passed directly on the stack.
-/// * Returning from the syscall, register %rax contains the result of the system-call. A value in the range between -4095 and -1 indicates an error, it is -errno.
-/// * Only values of class INTEGER or class MEMORY are passed to the kernel.
-///
-/// This code is inspired by the syscall.rs (https://github.com/kmcallister/syscall.rs/) project.
-#[macro_export]
-macro_rules! syscall {
-    ($arg0:expr)
-        => ( $crate::util::syscall::syscall0($arg0 as u64) );
+//! Raw syscall primitives for Breenix
+//!
+//! This module provides the low-level syscall interface using INT 0x80.
+//! All syscalls follow the Linux AMD64 calling convention:
+//! - Syscall number in RAX
+//! - Arguments in RDI, RSI, RDX, R10, R8, R9
+//! - Return value in RAX
 
-    ($arg0:expr, $arg1:expr)
-        => ( $crate::util::syscall::syscall1($arg0 as u64, $arg1 as u64) );
+use core::arch::asm;
 
-    ($arg0:expr, $arg1:expr, $arg2:expr)
-        => ( $crate::util::syscall::syscall2($arg0 as u64, $arg1 as u64, $arg2 as u64) );
-
-    ($arg0:expr, $arg1:expr, $arg2:expr, $arg3:expr)
-        => ( $crate::util::syscall::syscall3($arg0 as u64, $arg1 as u64, $arg2 as u64, $arg3 as u64) );
-
-    ($arg0:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr)
-        => ( $crate::util::syscall::syscall4($arg0 as u64, $arg1 as u64, $arg2 as u64, $arg3 as u64, $arg4 as u64) );
-
-    ($arg0:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr)
-        => ( $crate::util::syscall::syscall5($arg0 as u64, $arg1 as u64, $arg2 as u64, $arg3 as u64, $arg4 as u64, $arg5 as u64) );
-
-    ($arg0:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr)
-        => ( $crate::util::syscall::syscall6($arg0 as u64, $arg1 as u64, $arg2 as u64, $arg3 as u64, $arg4 as u64, $arg5 as u64, $arg6 as u64) );
-
-    ($arg0:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr, $arg6:expr, $arg7:expr)
-        => ( $crate::util::syscall::syscall7($arg0 as u64, $arg1 as u64, $arg2 as u64, $arg3 as u64, $arg4 as u64, $arg5 as u64, $arg6 as u64, $arg7 as u64) );
+/// Syscall numbers matching kernel/src/syscall/mod.rs
+pub mod nr {
+    pub const EXIT: u64 = 0;
+    pub const WRITE: u64 = 1;
+    pub const READ: u64 = 2;
+    pub const YIELD: u64 = 3;
+    pub const GET_TIME: u64 = 4;
+    pub const FORK: u64 = 5;
+    pub const EXEC: u64 = 11;
+    pub const BRK: u64 = 12;
+    pub const GETPID: u64 = 39;
+    pub const GETTID: u64 = 186;
+    pub const CLOCK_GETTIME: u64 = 228;
 }
 
-#[inline(always)]
-#[allow(unused_mut)]
-pub unsafe fn syscall0(arg0: u64) -> u64 {
-    let mut ret: u64;
-    asm!("int 0x80" : "={rax}" (ret) : "{rax}" (arg0) : "rcx", "r11", "memory" : "intel", "volatile");
-    ret
-}
+/// Raw syscall functions - use higher-level wrappers when possible
+pub mod raw {
+    use super::*;
 
-#[inline(always)]
-#[allow(unused_mut)]
-pub unsafe fn syscall1(arg0: u64, arg1: u64) -> u64 {
-    let mut ret: u64;
-    asm!("int 0x80" : "={rax}" (ret) : "{rax}" (arg0), "{rdi}" (arg1)
-                   : "rcx", "r11", "memory" : "intel", "volatile");
-    ret
-}
+    #[inline(always)]
+    pub unsafe fn syscall0(num: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "int 0x80",
+            in("rax") num,
+            lateout("rax") ret,
+            options(nostack, preserves_flags),
+        );
+        ret
+    }
 
-#[inline(always)]
-#[allow(unused_mut)]
-pub unsafe fn syscall2(arg0: u64, arg1: u64, arg2: u64) -> u64 {
-    let mut ret: u64;
-    asm!("int 0x80" : "={rax}" (ret) : "{rax}" (arg0), "{rdi}" (arg1), "{rsi}" (arg2)
-                   : "rcx", "r11", "memory" : "intel", "volatile");
-    ret
-}
+    #[inline(always)]
+    pub unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "int 0x80",
+            in("rax") num,
+            in("rdi") arg1,
+            lateout("rax") ret,
+            options(nostack, preserves_flags),
+        );
+        ret
+    }
 
-#[inline(always)]
-#[allow(unused_mut)]
-pub unsafe fn syscall3(arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
-    let mut ret: u64;
-    asm!("int 0x80" : "={rax}" (ret) : "{rax}" (arg0), "{rdi}" (arg1), "{rsi}" (arg2), "{rdx}" (arg3)
-                   : "rcx", "r11", "memory" : "intel", "volatile");
-    ret
-}
+    #[inline(always)]
+    pub unsafe fn syscall2(num: u64, arg1: u64, arg2: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "int 0x80",
+            in("rax") num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            lateout("rax") ret,
+            options(nostack, preserves_flags),
+        );
+        ret
+    }
 
-#[inline(always)]
-#[allow(unused_mut)]
-pub unsafe fn syscall4(arg0: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> u64 {
-    let mut ret: u64;
-    asm!("int 0x80" : "={rax}" (ret)
-                   : "{rax}"  (arg0), "{rdi}"  (arg1), "{rsi}"  (arg2), "{rdx}"  (arg3), "{r10}"  (arg4)
-                   : "rcx", "r11", "memory" : "intel", "volatile");
-    ret
-}
+    #[inline(always)]
+    pub unsafe fn syscall3(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "int 0x80",
+            in("rax") num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            lateout("rax") ret,
+            options(nostack, preserves_flags),
+        );
+        ret
+    }
 
-#[inline(always)]
-#[allow(unused_mut)]
-pub unsafe fn syscall5(arg0: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> u64 {
-    let mut ret: u64;
-    asm!("int 0x80" : "={rax}" (ret)
-                   : "{rax}" (arg0), "{rdi}" (arg1), "{rsi}" (arg2), "{rdx}" (arg3), "{r10}" (arg4), "{r8}" (arg5)
-                   : "rcx", "r11", "memory"
-                   : "intel", "volatile");
-    ret
-}
+    #[inline(always)]
+    pub unsafe fn syscall4(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "int 0x80",
+            in("rax") num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            lateout("rax") ret,
+            options(nostack, preserves_flags),
+        );
+        ret
+    }
 
-#[inline(always)]
-#[allow(unused_mut)]
-pub unsafe fn syscall6(arg0: u64,
-                       arg1: u64,
-                       arg2: u64,
-                       arg3: u64,
-                       arg4: u64,
-                       arg5: u64,
-                       arg6: u64)
-                       -> u64 {
-    let mut ret: u64;
-    asm!("int 0x80" : "={rax}" (ret)
-                   : "{rax}" (arg0), "{rdi}" (arg1), "{rsi}" (arg2), "{rdx}" (arg3),
-                     "{r10}" (arg4), "{r8}" (arg5), "{r9}" (arg6)
-                   : "rcx", "r11", "memory"
-                   : "intel", "volatile");
-    ret
+    #[inline(always)]
+    pub unsafe fn syscall5(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "int 0x80",
+            in("rax") num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            lateout("rax") ret,
+            options(nostack, preserves_flags),
+        );
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall6(
+        num: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+    ) -> u64 {
+        let ret: u64;
+        asm!(
+            "int 0x80",
+            in("rax") num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            in("r9") arg6,
+            lateout("rax") ret,
+            options(nostack, preserves_flags),
+        );
+        ret
+    }
 }

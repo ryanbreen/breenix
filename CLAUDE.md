@@ -216,6 +216,61 @@ Update after each PR merge and when starting new work.
 - `docs/planning/legacy-migration/FEATURE_COMPARISON.md` - Track migration progress
 - Cross-cutting dirs: `posix-compliance/`, `legacy-migration/`
 
+## Userland Development Stages
+
+The path to full POSIX libc compatibility is broken into 5 stages:
+
+### Stage 1: libbreenix (Rust) - ✅ ~80% Complete
+Location: `libs/libbreenix/`
+
+Provides syscall wrappers for Rust programs:
+- `process.rs` - exit, fork, exec, getpid, gettid, yield
+- `io.rs` - read, write, stdout, stderr
+- `time.rs` - clock_gettime (REALTIME, MONOTONIC)
+- `memory.rs` - brk, sbrk
+- `errno.rs` - POSIX errno definitions
+- `syscall.rs` - raw syscall primitives (syscall0-6)
+
+**Usage in test programs:**
+```rust
+use libbreenix::{io::println, process::exit, time::now_monotonic};
+
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    println("Hello from userspace!");
+    let ts = now_monotonic();
+    exit(0);
+}
+```
+
+### Stage 2: Rust Runtime - 📋 Planned
+- Panic handler for userspace
+- Global allocator (using brk/sbrk)
+- `#[no_std]` program template
+- Core abstractions (File, Process types)
+
+### Stage 3: C libc Port - 📋 Planned
+- C-compatible ABI wrappers
+- stdio (printf, scanf, etc.)
+- stdlib (malloc, free, etc.)
+- string.h, unistd.h functions
+- Option: Port musl-libc or write custom
+
+### Stage 4: Shell - 📋 Planned
+Requires: Stage 3, filesystem syscalls, pipe/dup
+- Command parsing
+- Built-in commands (cd, exit, echo)
+- External command execution
+- Piping and redirection
+- Job control (requires signals)
+
+### Stage 5: Coreutils - 📋 Planned
+Requires: Stage 4, full filesystem
+- Basic: cat, echo, true, false
+- File ops: ls, cp, mv, rm
+- Dir ops: mkdir, rmdir
+- Text: head, tail, wc
+
 ## Legacy Code Removal
 
 When new implementation reaches parity:

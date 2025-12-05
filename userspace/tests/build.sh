@@ -1,46 +1,95 @@
 #!/bin/bash
 set -e
 
-# Build the userspace test program
-echo "Building userspace test program..."
+# Add LLVM tools (rust-objcopy) to PATH
+# llvm-tools-preview installs to the rustup toolchain's lib directory
+SYSROOT=$(rustc --print sysroot)
+HOST_TRIPLE=$(rustc -vV | grep host | cut -d' ' -f2)
+LLVM_TOOLS_PATH="$SYSROOT/lib/rustlib/$HOST_TRIPLE/bin"
+if [ -d "$LLVM_TOOLS_PATH" ]; then
+    export PATH="$LLVM_TOOLS_PATH:$PATH"
+fi
+
+# Verify rust-objcopy is available
+if ! command -v rust-objcopy &> /dev/null; then
+    echo "ERROR: rust-objcopy not found"
+    echo "Install llvm-tools-preview: rustup component add llvm-tools-preview"
+    exit 1
+fi
+
+echo "========================================"
+echo "  USERSPACE TEST BUILD (with libbreenix)"
+echo "========================================"
+echo ""
+
+# Show the libbreenix dependency
+echo "Dependency: libbreenix (syscall wrapper library)"
+echo "  Location: ../../libs/libbreenix"
+echo "  Provides: process, io, time, memory syscall wrappers"
+echo ""
+
+# List binaries being built
+BINARIES=(
+    "hello_world"
+    "hello_time"
+    "counter"
+    "spinner"
+    "fork_test"
+    "timer_test"
+    "syscall_enosys"
+    "clock_gettime_test"
+    "register_init_test"
+    "syscall_diagnostic_test"
+    "brk_test"
+)
+
+echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."
+echo ""
 
 # Build with cargo (config is in .cargo/config.toml)
-cargo build --release
+# This will compile libbreenix first, then link it into each binary
+cargo build --release 2>&1 | while read line; do
+    # Highlight libbreenix compilation
+    if echo "$line" | grep -q "Compiling libbreenix"; then
+        echo "  [libbreenix] $line"
+    elif echo "$line" | grep -q "Compiling userspace_tests"; then
+        echo "  [userspace]  $line"
+    else
+        echo "  $line"
+    fi
+done
 
-# The outputs are already ELF files
-cp target/x86_64-breenix/release/hello_time hello_time.elf
-cp target/x86_64-breenix/release/hello_world hello_world.elf
-cp target/x86_64-breenix/release/counter counter.elf
-cp target/x86_64-breenix/release/spinner spinner.elf
-cp target/x86_64-breenix/release/fork_test fork_test.elf
-cp target/x86_64-breenix/release/timer_test timer_test.elf
-cp target/x86_64-breenix/release/syscall_enosys syscall_enosys.elf
-cp target/x86_64-breenix/release/clock_gettime_test clock_gettime_test.elf
-cp target/x86_64-breenix/release/register_init_test register_init_test.elf
-cp target/x86_64-breenix/release/syscall_diagnostic_test syscall_diagnostic_test.elf
-cp target/x86_64-breenix/release/brk_test brk_test.elf
+echo ""
+echo "Copying ELF binaries..."
+
+# Copy and report each binary
+for bin in "${BINARIES[@]}"; do
+    cp "target/x86_64-breenix/release/$bin" "$bin.elf"
+    echo "  - $bin.elf (uses libbreenix)"
+done
+
+echo ""
+echo "Creating flat binaries..."
 
 # Create flat binaries
-rust-objcopy -O binary hello_time.elf hello_time.bin
-rust-objcopy -O binary hello_world.elf hello_world.bin
-rust-objcopy -O binary counter.elf counter.bin
-rust-objcopy -O binary spinner.elf spinner.bin
-rust-objcopy -O binary fork_test.elf fork_test.bin
-rust-objcopy -O binary timer_test.elf timer_test.bin
-rust-objcopy -O binary syscall_enosys.elf syscall_enosys.bin
-rust-objcopy -O binary clock_gettime_test.elf clock_gettime_test.bin
-rust-objcopy -O binary register_init_test.elf register_init_test.bin
-rust-objcopy -O binary syscall_diagnostic_test.elf syscall_diagnostic_test.bin
-rust-objcopy -O binary brk_test.elf brk_test.bin
+for bin in "${BINARIES[@]}"; do
+    rust-objcopy -O binary "$bin.elf" "$bin.bin"
+done
 
-echo "Built all ELF files"
-echo "hello_time size: $(stat -f%z hello_time.bin 2>/dev/null || stat -c%s hello_time.bin) bytes"
-echo "hello_world size: $(stat -f%z hello_world.bin 2>/dev/null || stat -c%s hello_world.bin) bytes"
-echo "counter size: $(stat -f%z counter.bin 2>/dev/null || stat -c%s counter.bin) bytes"
-echo "spinner size: $(stat -f%z spinner.bin 2>/dev/null || stat -c%s spinner.bin) bytes"
-echo "fork_test size: $(stat -f%z fork_test.bin 2>/dev/null || stat -c%s fork_test.bin) bytes"
-echo "timer_test size: $(stat -f%z timer_test.bin 2>/dev/null || stat -c%s timer_test.bin) bytes"
-echo "syscall_enosys size: $(stat -f%z syscall_enosys.bin 2>/dev/null || stat -c%s syscall_enosys.bin) bytes"
-echo "clock_gettime_test size: $(stat -f%z clock_gettime_test.bin 2>/dev/null || stat -c%s clock_gettime_test.bin) bytes"
-echo "register_init_test size: $(stat -f%z register_init_test.bin 2>/dev/null || stat -c%s register_init_test.bin) bytes"
-echo "syscall_diagnostic_test size: $(stat -f%z syscall_diagnostic_test.bin 2>/dev/null || stat -c%s syscall_diagnostic_test.bin) bytes"
+echo ""
+echo "========================================"
+echo "  BUILD COMPLETE - libbreenix binaries"
+echo "========================================"
+echo ""
+echo "Binary sizes:"
+for bin in "${BINARIES[@]}"; do
+    size=$(stat -f%z "$bin.bin" 2>/dev/null || stat -c%s "$bin.bin")
+    printf "  %-30s %6d bytes\n" "$bin.bin" "$size"
+done
+echo ""
+echo "These binaries use libbreenix for syscalls:"
+echo "  - libbreenix::process (exit, fork, exec, getpid, gettid, yield)"
+echo "  - libbreenix::io (read, write, print, println)"
+echo "  - libbreenix::time (clock_gettime)"
+echo "  - libbreenix::memory (brk, sbrk)"
+echo "========================================"

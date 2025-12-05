@@ -1,17 +1,19 @@
 use std::env;
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Get the output directory
+    // Get absolute paths from Cargo environment
     let out_dir = env::var("OUT_DIR").unwrap();
-    
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let kernel_dir = PathBuf::from(&manifest_dir);
+
     // Assemble syscall entry code
     let status = Command::new("nasm")
         .args(&[
             "-f", "elf64",
             "-o", &format!("{}/syscall_entry.o", out_dir),
-            "src/syscall/entry.asm"
+            kernel_dir.join("src/syscall/entry.asm").to_str().unwrap()
         ])
         .status()
         .expect("Failed to run nasm");
@@ -25,25 +27,25 @@ fn main() {
         .args(&[
             "-f", "elf64",
             "-o", &format!("{}/timer_entry.o", out_dir),
-            "src/interrupts/timer_entry.asm"
+            kernel_dir.join("src/interrupts/timer_entry.asm").to_str().unwrap()
         ])
         .status()
         .expect("Failed to run nasm");
-    
+
     if !status.success() {
         panic!("Failed to assemble timer entry");
     }
-    
+
     // Assemble breakpoint exception entry code
     let status = Command::new("nasm")
         .args(&[
             "-f", "elf64",
             "-o", &format!("{}/breakpoint_entry.o", out_dir),
-            "src/interrupts/breakpoint_entry.asm"
+            kernel_dir.join("src/interrupts/breakpoint_entry.asm").to_str().unwrap()
         ])
         .status()
         .expect("Failed to run nasm");
-    
+
     if !status.success() {
         panic!("Failed to assemble breakpoint entry");
     }
@@ -63,27 +65,46 @@ fn main() {
     println!("cargo:rerun-if-changed=src/interrupts/breakpoint_entry.asm");
     println!("cargo:rerun-if-changed=linker.ld");
     
-    // Build userspace test program if it exists
-    let userspace_test_dir = Path::new("../../userspace/tests");
+    // Build userspace test programs with libbreenix
+    // Use absolute path derived from CARGO_MANIFEST_DIR (kernel/)
+    let repo_root = kernel_dir.parent().expect("kernel dir should have parent");
+    let userspace_test_dir = repo_root.join("userspace/tests");
+
     if userspace_test_dir.exists() {
-        // Check if build script exists
         let build_script = userspace_test_dir.join("build.sh");
         if build_script.exists() {
-            println!("cargo:warning=Building userspace test program...");
-            
-            let status = Command::new("bash")
-                .arg(build_script)
-                .current_dir(userspace_test_dir)
-                .status()
+            println!("cargo:warning=");
+            println!("cargo:warning=Building userspace binaries with libbreenix...");
+
+            let output = Command::new("bash")
+                .arg(&build_script)
+                .current_dir(&userspace_test_dir)
+                .output()
                 .expect("Failed to run userspace build script");
-            
-            if !status.success() {
-                println!("cargo:warning=Failed to build userspace test program");
-            } else {
-                // Tell cargo to rerun if userspace source changes
-                println!("cargo:rerun-if-changed=../../userspace/tests/hello_time.rs");
-                println!("cargo:rerun-if-changed=../../userspace/tests/build.sh");
+
+            // Print the build output so user sees libbreenix compilation
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                println!("cargo:warning={}", line);
             }
+
+            if !output.status.success() {
+                for line in String::from_utf8_lossy(&output.stderr).lines() {
+                    println!("cargo:warning=STDERR: {}", line);
+                }
+                panic!("Failed to build userspace test programs with libbreenix");
+            }
+
+            // Tell cargo to rerun if userspace sources change
+            let userspace_tests = userspace_test_dir.to_str().unwrap();
+            let libbreenix_dir = repo_root.join("libs/libbreenix/src");
+            println!("cargo:rerun-if-changed={}/build.sh", userspace_tests);
+            println!("cargo:rerun-if-changed={}/hello_world.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/hello_time.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/fork_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/clock_gettime_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
         }
+    } else {
+        println!("cargo:warning=Userspace test directory not found at {:?}", userspace_test_dir);
     }
 }

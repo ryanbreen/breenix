@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+libbreenix = { path = "../../libs/libbreenix" }
 
 [[bin]]
 name = "hello_time"
