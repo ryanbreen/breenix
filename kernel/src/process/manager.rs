@@ -182,7 +182,12 @@ impl ProcessManager {
         crate::serial_println!("manager.create_process: Creating Process struct");
         let mut process = Process::new(pid, name.clone(), loaded_elf.entry_point);
         process.page_table = Some(page_table);
-        crate::serial_println!("manager.create_process: Process struct created");
+
+        // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+        crate::serial_println!("manager.create_process: Process struct created, heap_start={:#x}", heap_base);
 
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
@@ -583,9 +588,16 @@ impl ProcessManager {
 
             // Update the child process entry point to match the loaded ELF
             child_process.entry_point = loaded_elf.entry_point;
+
+            // Initialize heap tracking for the child
+            let heap_base = loaded_elf.segments_end;
+            child_process.heap_start = heap_base;
+            child_process.heap_end = heap_base;
+
             log::info!(
-                "fork_process: Loaded fork_test.elf into child, entry point: {:#x}",
-                loaded_elf.entry_point
+                "fork_process: Loaded fork_test.elf into child, entry point: {:#x}, heap_start: {:#x}",
+                loaded_elf.entry_point,
+                heap_base
             );
         }
         #[cfg(not(feature = "testing"))]

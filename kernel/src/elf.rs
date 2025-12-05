@@ -81,6 +81,8 @@ pub struct LoadedElf {
     pub entry_point: VirtAddr,
     #[allow(dead_code)]
     pub stack_top: VirtAddr,
+    /// End of loaded segments, page-aligned up (start of heap)
+    pub segments_end: u64,
 }
 
 /// Load an ELF64 binary into memory
@@ -154,6 +156,9 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     let ph_size = header.phentsize as usize;
     let ph_count = header.phnum as usize;
 
+    // Track the maximum end of all loaded segments for heap start calculation
+    let mut max_segment_end = 0u64;
+
     for i in 0..ph_count {
         let ph_start = ph_offset + i * ph_size;
         if ph_start + mem::size_of::<Elf64ProgramHeader>() > data.len() {
@@ -167,14 +172,29 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment(data, ph, base_offset)?;
+
+            // Calculate end of this segment (vaddr + memsz) considering base offset
+            let vaddr = if ph.p_vaddr >= crate::memory::layout::USERSPACE_BASE {
+                ph.p_vaddr
+            } else {
+                base_offset.as_u64() + ph.p_vaddr
+            };
+            let segment_end = vaddr + ph.p_memsz;
+            if segment_end > max_segment_end {
+                max_segment_end = segment_end;
+            }
         }
     }
+
+    // Align heap start to next page boundary (4KB)
+    let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
     // The entry point should be the header entry point directly
     // since our userspace binaries are compiled with absolute addresses
     Ok(LoadedElf {
         entry_point: VirtAddr::new(header.entry),
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
+        segments_end: heap_start,
     })
 }
 
@@ -329,6 +349,9 @@ pub fn load_elf_into_page_table(
         header.phnum
     );
 
+    // Track the maximum end of all loaded segments for heap start calculation
+    let mut max_segment_end = 0u64;
+
     // Load program segments
     for i in 0..header.phnum {
         let ph_offset = header.phoff as usize + (i as usize * mem::size_of::<Elf64ProgramHeader>());
@@ -346,12 +369,28 @@ pub fn load_elf_into_page_table(
 
         if ph.p_type == SegmentType::Load as u32 {
             load_segment_into_page_table(data, ph, page_table)?;
+
+            // Calculate end of this segment (vaddr + memsz)
+            let segment_end = ph.p_vaddr + ph.p_memsz;
+            if segment_end > max_segment_end {
+                max_segment_end = segment_end;
+            }
         }
     }
+
+    // Align heap start to next page boundary (4KB)
+    let heap_start = (max_segment_end + 0xfff) & !0xfff;
+
+    log::info!(
+        "ELF loaded: segments end at {:#x}, heap will start at {:#x}",
+        max_segment_end,
+        heap_start
+    );
 
     Ok(LoadedElf {
         entry_point: VirtAddr::new(header.entry),
         stack_top: VirtAddr::zero(), // Stack will be allocated by spawn function
+        segments_end: heap_start,
     })
 }
 

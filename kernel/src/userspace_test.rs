@@ -33,6 +33,9 @@ pub static REGISTER_INIT_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests
 #[cfg(all(feature = "testing", feature = "external_test_bins"))]
 pub static SYSCALL_DIAGNOSTIC_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/syscall_diagnostic_test.elf");
 
+#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+pub static BRK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/brk_test.elf");
+
 #[cfg(feature = "testing")]
 pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
     #[cfg(feature = "external_test_bins")]
@@ -49,6 +52,7 @@ pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
             "clock_gettime_test" => CLOCK_GETTIME_TEST_ELF,
             "register_init_test" => REGISTER_INIT_TEST_ELF,
             "syscall_diagnostic_test" => SYSCALL_DIAGNOSTIC_TEST_ELF,
+            "brk_test" => BRK_TEST_ELF,
             _ => {
                 log::warn!("Unknown test binary '{}', using minimal ELF", name);
                 return create_minimal_valid_elf();

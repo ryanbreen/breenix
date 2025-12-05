@@ -298,6 +298,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Userspace process called clock_gettime syscall but got zero time or syscall failed",
             check_hint: "Verify INT 0x80 dispatch to SYS_clock_gettime (228) works from Ring 3 and returns non-zero time",
         },
+        BootStage {
+            name: "Userspace brk syscall validated",
+            marker: "USERSPACE BRK: ALL TESTS PASSED",
+            failure_meaning: "brk() syscall failed - heap expansion/contraction or memory access broken",
+            check_hint: "Check sys_brk in syscall/memory.rs, verify page table mapping and heap_start/heap_end tracking",
+        },
         // Diagnostic tests for syscall register corruption
         BootStage {
             name: "Diagnostic: Multiple getpid calls",

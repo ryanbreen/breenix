@@ -45,6 +45,10 @@ path = "register_init_test.rs"
 name = "syscall_diagnostic_test"
 path = "syscall_diagnostic_test.rs"
 
+[[bin]]
+name = "brk_test"
+path = "brk_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
