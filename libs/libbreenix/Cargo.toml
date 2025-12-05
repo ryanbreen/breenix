@@ -1,7 +1,19 @@
 [package]
 name = "libbreenix"
 version = "0.1.0"
+edition = "2021"
 authors = ["Ryan Breen <rbreen@cimpress.com>"]
+description = "Breenix userspace system call library"
+license = "MIT"
 
-[dependencies.spin]
-path = "../../../spin-rs"
+# This is a standalone library, not part of the kernel workspace
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+
+[dependencies]
+# No dependencies - pure no_std library
