@@ -1,6 +1,22 @@
 #!/bin/bash
 set -e
 
+# Add LLVM tools (rust-objcopy) to PATH
+# llvm-tools-preview installs to the rustup toolchain's lib directory
+SYSROOT=$(rustc --print sysroot)
+HOST_TRIPLE=$(rustc -vV | grep host | cut -d' ' -f2)
+LLVM_TOOLS_PATH="$SYSROOT/lib/rustlib/$HOST_TRIPLE/bin"
+if [ -d "$LLVM_TOOLS_PATH" ]; then
+    export PATH="$LLVM_TOOLS_PATH:$PATH"
+fi
+
+# Verify rust-objcopy is available
+if ! command -v rust-objcopy &> /dev/null; then
+    echo "ERROR: rust-objcopy not found"
+    echo "Install llvm-tools-preview: rustup component add llvm-tools-preview"
+    exit 1
+fi
+
 echo "========================================"
 echo "  USERSPACE TEST BUILD (with libbreenix)"
 echo "========================================"
