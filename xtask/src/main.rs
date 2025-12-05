@@ -118,6 +118,18 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "BOOTLOADER_CONFIG in main.rs, check bootloader version",
         },
         BootStage {
+            name: "PCI bus enumerated",
+            marker: "PCI: Enumeration complete",
+            failure_meaning: "PCI enumeration failed or found no devices",
+            check_hint: "drivers::pci::enumerate() - check I/O port access (0xCF8/0xCFC)",
+        },
+        BootStage {
+            name: "VirtIO block device found",
+            marker: "PCI: Found VirtIO block device",
+            failure_meaning: "No VirtIO block device detected - disk I/O will fail",
+            check_hint: "Check QEMU virtio-blk-pci configuration, verify vendor ID 0x1AF4 and device ID 0x1001/0x1042",
+        },
+        BootStage {
             name: "IST stacks updated",
             marker: "Updated IST stacks with per-CPU emergency",
             failure_meaning: "Interrupt stack tables not configured",

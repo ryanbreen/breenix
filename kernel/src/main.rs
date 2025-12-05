@@ -26,6 +26,7 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 #[macro_use]
 mod macros;
 mod clock_gettime_test;
+mod drivers;
 mod elf;
 mod framebuffer;
 mod gdt;
@@ -167,6 +168,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
+
+    // Initialize PCI and enumerate devices (needed for disk I/O)
+    let pci_device_count = drivers::init();
+    log::info!("PCI subsystem initialized: {} devices found", pci_device_count);
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
