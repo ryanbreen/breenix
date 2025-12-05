@@ -199,9 +199,8 @@ All commits co-authored by Ryan Breen and Claude Code.
 - 12 subsystem regions with completion percentages
 - Phase timeline showing current position (Phase 8.5)
 
-**v0.dev Chat (for updates)**: https://v0.dev/chat/cyf9cfWiKi2
-- Use this to iterate on the dashboard design
-- Update progress percentages and feature lists as work completes
+**Updating the Dashboard**: Use the `collaboration:ux-research` skill to update the v0.dev dashboard.
+When features are completed, invoke the skill to update progress percentages and feature lists.
 
 ### Master Roadmap
 `docs/planning/PROJECT_ROADMAP.md` tracks:
