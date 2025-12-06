@@ -476,12 +476,9 @@ pub fn test_timer_functionality() {
     log::info!("Running comprehensive timer test program");
 
     // Use timer_test.elf to verify timer functionality
-    // Use TIMER_TEST_ELF only when external_test_bins is enabled; otherwise fall back to generated ELF
-    #[cfg(all(feature = "testing", feature = "external_test_bins"))]
-    let timer_test_elf = crate::userspace_test::TIMER_TEST_ELF;
-    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
-    let timer_test_elf_buf = crate::userspace_test::get_test_binary("hello_time");
-    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
+    #[cfg(feature = "testing")]
+    let timer_test_elf_buf = crate::userspace_test::get_test_binary("timer_test");
+    #[cfg(feature = "testing")]
     let timer_test_elf: &[u8] = &timer_test_elf_buf;
     #[cfg(not(feature = "testing"))]
     let timer_test_elf = &create_hello_world_elf();
@@ -893,12 +890,10 @@ fn create_exec_test_elf() -> alloc::vec::Vec<u8> {
 pub fn test_syscall_enosys() {
     log::info!("Testing undefined syscall returns ENOSYS");
 
-    // Include the syscall_enosys ELF only when external_test_bins are enabled; otherwise use generated ELF
-    #[cfg(all(feature = "testing", feature = "external_test_bins"))]
-    let syscall_enosys_elf: &[u8] = include_bytes!("../../userspace/tests/syscall_enosys.elf");
-    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
+    // ALWAYS load from disk - no embedded binaries
+    #[cfg(feature = "testing")]
     let syscall_enosys_elf_buf = crate::userspace_test::get_test_binary("syscall_enosys");
-    #[cfg(all(feature = "testing", not(feature = "external_test_bins")))]
+    #[cfg(feature = "testing")]
     let syscall_enosys_elf: &[u8] = &syscall_enosys_elf_buf;
     #[cfg(not(feature = "testing"))]
     let syscall_enosys_elf = &create_hello_world_elf();

@@ -26,6 +26,7 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 #[macro_use]
 mod macros;
 mod clock_gettime_test;
+mod drivers;
 mod elf;
 mod framebuffer;
 mod gdt;
@@ -167,6 +168,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
+
+    // Initialize PCI and enumerate devices (needed for disk I/O)
+    let pci_device_count = drivers::init();
+    log::info!("PCI subsystem initialized: {} devices found", pci_device_count);
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
@@ -439,7 +444,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch register_init_test to verify registers are properly initialized
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating register_init_test userspace process");
                 let register_test_buf = crate::userspace_test::get_test_binary("register_init_test");
@@ -454,7 +458,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch clock_gettime_test after hello_time
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
                 let clock_test_buf = crate::userspace_test::get_test_binary("clock_gettime_test");
@@ -469,7 +472,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch brk_test to validate heap management syscall
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating brk_test userspace process");
                 let brk_test_buf = crate::userspace_test::get_test_binary("brk_test");
@@ -484,7 +486,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch syscall_diagnostic_test to isolate register corruption bug
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
                 let diagnostic_test_buf = crate::userspace_test::get_test_binary("syscall_diagnostic_test");

@@ -9,6 +9,8 @@ use std::{
 use anyhow::{bail, Result};
 use structopt::StructOpt;
 
+mod test_disk;
+
 /// Simple developer utility tasks.
 #[derive(StructOpt)]
 enum Cmd {
@@ -18,6 +20,8 @@ enum Cmd {
     Ring3Enosys,
     /// Boot kernel once and validate each boot stage sequentially.
     BootStages,
+    /// Create test disk image containing all userspace test binaries.
+    CreateTestDisk,
 }
 
 fn main() -> Result<()> {
@@ -25,6 +29,7 @@ fn main() -> Result<()> {
         Cmd::Ring3Smoke => ring3_smoke(),
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => boot_stages(),
+        Cmd::CreateTestDisk => test_disk::create_test_disk(),
     }
 }
 
@@ -116,6 +121,30 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "Physical memory offset available",
             failure_meaning: "Bootloader didn't map physical memory",
             check_hint: "BOOTLOADER_CONFIG in main.rs, check bootloader version",
+        },
+        BootStage {
+            name: "PCI bus enumerated",
+            marker: "PCI: Enumeration complete",
+            failure_meaning: "PCI enumeration failed or found no devices",
+            check_hint: "drivers::pci::enumerate() - check I/O port access (0xCF8/0xCFC)",
+        },
+        BootStage {
+            name: "VirtIO block device found",
+            marker: "PCI: Found VirtIO block device",
+            failure_meaning: "No VirtIO block device detected - disk I/O will fail",
+            check_hint: "Check QEMU virtio-blk-pci configuration, verify vendor ID 0x1AF4 and device ID 0x1001/0x1042",
+        },
+        BootStage {
+            name: "VirtIO block driver initialized",
+            marker: "VirtIO block: Driver initialized with",
+            failure_meaning: "VirtIO device initialization failed - queue setup or feature negotiation issue",
+            check_hint: "drivers/virtio/block.rs - check queue size matches device (must use exact device size in legacy mode)",
+        },
+        BootStage {
+            name: "VirtIO disk read successful",
+            marker: "VirtIO block test: Read successful!",
+            failure_meaning: "VirtIO disk I/O failed - cannot read from block device",
+            check_hint: "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling",
         },
         BootStage {
             name: "IST stacks updated",
@@ -655,7 +684,7 @@ fn ring3_smoke() -> Result<()> {
             "-p",
             "breenix",
             "--features",
-            "testing",
+            "testing,external_test_bins",
             "--bin",
             "qemu-uefi",
             "--",
@@ -764,7 +793,7 @@ fn ring3_enosys() -> Result<()> {
             "-p",
             "breenix",
             "--features",
-            "testing",
+            "testing,external_test_bins",
             "--bin",
             "qemu-uefi",
             "--",

@@ -78,13 +78,102 @@ fn main() {
             eprintln!("[qemu-uefi] Storage: IDE (index=0)");
         }
         _ => {
+            // Use disable-modern=on to force legacy (virtio 0.9) interface
+            // Our VirtIO driver only supports the legacy I/O port interface
             qemu.args([
                 "-drive",
                 &format!("if=none,id=hd,format=raw,media=disk,file={}", uefi_img.display()),
-                "-device", "virtio-blk-pci,drive=hd,bootindex=0",
+                "-device", "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off",
             ]);
-            eprintln!("[qemu-uefi] Storage: virtio-blk");
+            eprintln!("[qemu-uefi] Storage: virtio-blk (legacy mode)");
         }
+    }
+
+    // Attach test binaries disk (second VirtIO device, index 1)
+    // MANDATORY - disk loading is always required
+    if storage_mode == "virtio" {
+        // Determine project root by walking up from executable directory
+        let exe_path = env::current_exe().expect("Failed to get executable path");
+        let mut project_root = exe_path.parent().expect("No parent directory");
+        // Walk up to find Cargo.toml (project root)
+        while !project_root.join("Cargo.toml").exists() {
+            project_root = project_root.parent().expect("Reached filesystem root without finding project");
+        }
+        let test_disk_path = project_root.join("target/test_binaries.img");
+
+        // Build test disk automatically - ALWAYS required
+        eprintln!("[qemu-uefi] Building test disk image...");
+        let build_status = Command::new("cargo")
+            .args(&["run", "-p", "xtask", "--", "create-test-disk"])
+            .current_dir(project_root)
+            .status();
+
+        match build_status {
+            Ok(status) if status.success() => {
+                eprintln!("[qemu-uefi] Test disk build complete");
+            }
+            Ok(status) => {
+                eprintln!();
+                eprintln!("╔══════════════════════════════════════════════════════════════╗");
+                eprintln!("║  ❌ ERROR: TEST DISK BUILD FAILED                            ║");
+                eprintln!("╠══════════════════════════════════════════════════════════════╣");
+                eprintln!("║  Exit code: {:?}                                              ", status.code());
+                eprintln!("║                                                              ║");
+                eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
+                eprintln!("║                                                              ║");
+                eprintln!("║  To fix:                                                     ║");
+                eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
+                eprintln!("║    2. Ensure userspace/tests/ binaries are compiled         ║");
+                eprintln!("║                                                              ║");
+                eprintln!("║  Exiting now to prevent silent test failures.               ║");
+                eprintln!("╚══════════════════════════════════════════════════════════════╝");
+                eprintln!();
+                process::exit(1);
+            }
+            Err(e) => {
+                eprintln!();
+                eprintln!("╔══════════════════════════════════════════════════════════════╗");
+                eprintln!("║  ❌ ERROR: TEST DISK BUILD COMMAND FAILED                    ║");
+                eprintln!("╠══════════════════════════════════════════════════════════════╣");
+                eprintln!("║  Error: {}                                                   ", e);
+                eprintln!("║                                                              ║");
+                eprintln!("║  Test disk is MANDATORY. There is NO fallback.              ║");
+                eprintln!("║                                                              ║");
+                eprintln!("║  To fix:                                                     ║");
+                eprintln!("║    1. cargo run -p xtask -- create-test-disk                ║");
+                eprintln!("║    2. Ensure userspace/tests/ binaries are compiled         ║");
+                eprintln!("║                                                              ║");
+                eprintln!("║  Exiting now to prevent silent test failures.               ║");
+                eprintln!("╚══════════════════════════════════════════════════════════════╝");
+                eprintln!();
+                process::exit(1);
+            }
+        }
+
+        // After successful build, verify disk exists
+        if !test_disk_path.exists() {
+            eprintln!();
+            eprintln!("╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("║  ❌ ERROR: TEST DISK NOT FOUND AFTER BUILD                   ║");
+            eprintln!("╠══════════════════════════════════════════════════════════════╣");
+            eprintln!("║  Path: {}                                                   ", test_disk_path.display());
+            eprintln!("║                                                              ║");
+            eprintln!("║  Build reported success but disk image doesn't exist.       ║");
+            eprintln!("║  This indicates a build system issue.                       ║");
+            eprintln!("║                                                              ║");
+            eprintln!("║  Exiting now to prevent silent test failures.               ║");
+            eprintln!("╚══════════════════════════════════════════════════════════════╝");
+            eprintln!();
+            process::exit(1);
+        }
+
+        let disk_size = fs::metadata(&test_disk_path).map(|m| m.len()).unwrap_or(0);
+        qemu.args([
+            "-drive",
+            &format!("if=none,id=testdisk,format=raw,file={}", test_disk_path.display()),
+            "-device", "virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off",
+        ]);
+        eprintln!("[qemu-uefi] Test disk: {} ({} bytes) [virtio-blk device index 1]", test_disk_path.display(), disk_size);
     }
     // Improve CI capture and stability
     qemu.args([

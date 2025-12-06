@@ -57,7 +57,9 @@ class GDBChat:
         self.profile = profile  # "release" or "dev" (debug)
         self.gdb_process: Optional[subprocess.Popen] = None
         self.qemu_process: Optional[subprocess.Popen] = None
-        self.breenix_dir = Path.home() / "fun/code/breenix"
+        # Use the script's directory to find breenix root (supports worktrees)
+        script_dir = Path(__file__).resolve().parent
+        self.breenix_dir = script_dir.parent.parent  # breenix-gdb-chat/scripts -> breenix
         self.section_addrs: Dict[str, int] = {}  # ELF section addresses
         self.serial_read_pos: int = 0  # Track how much serial output we've read
 

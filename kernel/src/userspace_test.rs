@@ -1,75 +1,191 @@
 //! Userspace program testing module
 
-/// Include the compiled userspace test binaries when explicitly enabled.
-/// On CI (default), we generate minimal valid ELF binaries instead to avoid repo file dependencies.
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static HELLO_TIME_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_time.elf");
+use alloc::vec::Vec;
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static HELLO_WORLD_ELF: &[u8] = include_bytes!("../../userspace/tests/hello_world.elf");
+/// Disk format structures for test binary loading
+///
+/// Note: This struct is not directly instantiated via ptr::read due to alignment UB.
+/// Instead, we parse fields manually using from_le_bytes(). The struct serves as
+/// documentation of the disk format that matches xtask serialization.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct TestDiskHeader {
+    magic: [u8; 8],       // "BXTEST\0\0"
+    version: u32,         // Format version (1)
+    binary_count: u32,    // Number of binaries
+    reserved: [u8; 48],   // Padding to 64 bytes
+}
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static COUNTER_ELF: &[u8] = include_bytes!("../../userspace/tests/counter.elf");
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct BinaryEntry {
+    name: [u8; 32],       // Null-terminated name (e.g., "hello_world")
+    sector_offset: u64,   // Starting sector (from disk start)
+    size_bytes: u64,      // Actual binary size
+    reserved: [u8; 16],   // Padding to 64 bytes
+}
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static SPINNER_ELF: &[u8] = include_bytes!("../../userspace/tests/spinner.elf");
+const SECTOR_SIZE: usize = 512;
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static FORK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/fork_test.elf");
+/// Get the test disk device (second VirtIO block device at index 1)
+fn get_test_disk() -> Option<alloc::sync::Arc<crate::drivers::virtio::block::VirtioBlockDevice>> {
+    crate::drivers::virtio::block::get_device_by_index(1)
+}
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static SYSCALL_ENOSYS_ELF: &[u8] = include_bytes!("../../userspace/tests/syscall_enosys.elf");
+/// Load a test binary from disk
+///
+/// Searches for the binary by name in the test disk and returns the ELF bytes.
+/// The test disk is expected to be the second VirtIO block device (index 1).
+pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
+    // Get test disk device
+    let disk = get_test_disk().ok_or("No test disk found (index 1)")?;
 
-// When external_test_bins is not enabled, TIMER_TEST_ELF is unavailable. Keep references gated.
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static TIMER_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/timer_test.elf");
+    // Read sector 0 (header)
+    let mut header_buffer = [0u8; SECTOR_SIZE];
+    disk.read_sector(0, &mut header_buffer)
+        .map_err(|_| "Failed to read header sector")?;
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static CLOCK_GETTIME_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/clock_gettime_test.elf");
+    // Parse header safely using manual field extraction
+    let magic: [u8; 8] = header_buffer[0..8]
+        .try_into()
+        .map_err(|_| "Invalid header size")?;
+    let version = u32::from_le_bytes(
+        header_buffer[8..12]
+            .try_into()
+            .map_err(|_| "Invalid header size")?,
+    );
+    let binary_count = u32::from_le_bytes(
+        header_buffer[12..16]
+            .try_into()
+            .map_err(|_| "Invalid header size")?,
+    );
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static REGISTER_INIT_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/register_init_test.elf");
+    // Validate magic
+    if &magic != b"BXTEST\0\0" {
+        return Err("Invalid test disk magic number");
+    }
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static SYSCALL_DIAGNOSTIC_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/syscall_diagnostic_test.elf");
+    if version != 1 {
+        return Err("Unsupported test disk version");
+    }
 
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-pub static BRK_TEST_ELF: &[u8] = include_bytes!("../../userspace/tests/brk_test.elf");
+    if binary_count == 0 {
+        return Err("No binaries in test disk");
+    }
+
+    // Read entry table (sectors 1-63)
+    // Each entry is 64 bytes, so 8 entries per sector
+    let entries_needed = ((binary_count as usize + 7) / 8) as u64;
+    let entries_needed = core::cmp::min(entries_needed, 63); // Max 63 sectors for entry table
+
+    let mut entries_buffer = Vec::new();
+    entries_buffer.resize(entries_needed as usize * SECTOR_SIZE, 0u8);
+
+    disk.read_sectors(1, &mut entries_buffer)
+        .map_err(|_| "Failed to read entry table")?;
+
+    // Search for matching entry by parsing each entry safely
+    const ENTRY_SIZE: usize = 64; // BinaryEntry is 64 bytes
+    let mut found_entry: Option<BinaryEntry> = None;
+
+    for i in 0..binary_count as usize {
+        let entry_offset = i * ENTRY_SIZE;
+        if entry_offset + ENTRY_SIZE > entries_buffer.len() {
+            break;
+        }
+
+        let entry_bytes = &entries_buffer[entry_offset..entry_offset + ENTRY_SIZE];
+
+        // Parse BinaryEntry fields safely using manual extraction
+        let entry_name: [u8; 32] = entry_bytes[0..32]
+            .try_into()
+            .map_err(|_| "Invalid entry size")?;
+        let sector_offset = u64::from_le_bytes(
+            entry_bytes[32..40]
+                .try_into()
+                .map_err(|_| "Invalid entry size")?,
+        );
+        let size_bytes = u64::from_le_bytes(
+            entry_bytes[40..48]
+                .try_into()
+                .map_err(|_| "Invalid entry size")?,
+        );
+        let reserved: [u8; 16] = entry_bytes[48..64]
+            .try_into()
+            .map_err(|_| "Invalid entry size")?;
+
+        let entry = BinaryEntry {
+            name: entry_name,
+            sector_offset,
+            size_bytes,
+            reserved,
+        };
+
+        // Extract null-terminated name as string
+        let name_len = entry.name.iter().position(|&c| c == 0).unwrap_or(entry.name.len());
+        let name_str = core::str::from_utf8(&entry.name[..name_len]).unwrap_or("");
+
+        if name_str == name {
+            found_entry = Some(entry);
+            break;
+        }
+    }
+
+    let entry = found_entry.ok_or("Binary not found in test disk")?;
+
+    if entry.size_bytes == 0 {
+        return Err("Binary has zero size");
+    }
+
+    // Allocate buffer for binary data
+    let mut binary_data = Vec::new();
+    binary_data.resize(entry.size_bytes as usize, 0u8);
+
+    // Calculate how many sectors we need to read
+    let sectors_to_read = ((entry.size_bytes as usize + SECTOR_SIZE - 1) / SECTOR_SIZE) as u64;
+    let mut sector_buffer = Vec::new();
+    sector_buffer.resize(sectors_to_read as usize * SECTOR_SIZE, 0u8);
+
+    // Read binary data sectors
+    disk.read_sectors(entry.sector_offset, &mut sector_buffer)
+        .map_err(|_| "Failed to read binary data")?;
+
+    // Copy actual binary data (may be less than full sectors)
+    binary_data.copy_from_slice(&sector_buffer[..entry.size_bytes as usize]);
+
+    Ok(binary_data)
+}
+
+// Note: Embedded test binaries (include_bytes!) have been removed.
+// With external_test_bins enabled, all binaries are loaded from the test disk.
+// This reduces kernel binary size and ensures disk loading is actually tested.
 
 #[cfg(feature = "testing")]
 pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
-    #[cfg(feature = "external_test_bins")]
-    {
-        // Return the actual embedded test binaries
-        let binary_data = match name {
-            "hello_time" => HELLO_TIME_ELF,
-            "hello_world" => HELLO_WORLD_ELF,
-            "counter" => COUNTER_ELF,
-            "spinner" => SPINNER_ELF,
-            "fork_test" => FORK_TEST_ELF,
-            "syscall_enosys" => SYSCALL_ENOSYS_ELF,
-            "timer_test" => TIMER_TEST_ELF,
-            "clock_gettime_test" => CLOCK_GETTIME_TEST_ELF,
-            "register_init_test" => REGISTER_INIT_TEST_ELF,
-            "syscall_diagnostic_test" => SYSCALL_DIAGNOSTIC_TEST_ELF,
-            "brk_test" => BRK_TEST_ELF,
-            _ => {
-                log::warn!("Unknown test binary '{}', using minimal ELF", name);
-                return create_minimal_valid_elf();
-            }
-        };
-
-        return alloc::vec::Vec::from(binary_data);
-    }
-
-    #[cfg(not(feature = "external_test_bins"))]
-    {
-        // For CI builds without external binaries, generate minimal valid ELFs
-        log::info!(
-            "Using generated ELF for '{}' (external_test_bins not enabled)",
-            name
-        );
-        return create_minimal_valid_elf();
+    // ALWAYS use disk loading - no fallback
+    match load_test_binary_from_disk(name) {
+        Ok(binary) => {
+            log::info!("✓ Loaded '{}' from test disk ({} bytes)", name, binary.len());
+            binary
+        }
+        Err(e) => {
+            // PANIC - disk loading is MANDATORY
+            panic!(
+                "╔══════════════════════════════════════════════════════════════╗\n\
+                 ║  ❌ FATAL: DISK LOADING FAILED                               ║\n\
+                 ╠══════════════════════════════════════════════════════════════╣\n\
+                 ║  Binary: {:<51} ║\n\
+                 ║  Error: {:<52} ║\n\
+                 ║                                                              ║\n\
+                 ║  Disk loading is MANDATORY. There is NO fallback.           ║\n\
+                 ║                                                              ║\n\
+                 ║  Ensure QEMU is configured with test disk as second         ║\n\
+                 ║  VirtIO device (index 1).                                   ║\n\
+                 ╚══════════════════════════════════════════════════════════════╝",
+                name, e
+            );
+        }
     }
 }
 
@@ -112,20 +228,9 @@ pub fn get_test_binary_static(name: &str) -> &'static [u8] {
     }
 }
 
-// Add test to ensure binaries are included
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
-#[allow(dead_code)]
-fn _test_binaries_included() {
-    assert!(HELLO_TIME_ELF.len() > 0, "hello_time.elf not included");
-    assert!(HELLO_WORLD_ELF.len() > 0, "hello_world.elf not included");
-    assert!(COUNTER_ELF.len() > 0, "counter.elf not included");
-    assert!(SPINNER_ELF.len() > 0, "spinner.elf not included");
-    assert!(FORK_TEST_ELF.len() > 0, "fork_test.elf not included");
-    assert!(TIMER_TEST_ELF.len() > 0, "timer_test.elf not included");
-    assert!(CLOCK_GETTIME_TEST_ELF.len() > 0, "clock_gettime_test.elf not included");
-    assert!(REGISTER_INIT_TEST_ELF.len() > 0, "register_init_test.elf not included");
-    assert!(SYSCALL_DIAGNOSTIC_TEST_ELF.len() > 0, "syscall_diagnostic_test.elf not included");
-}
+// Note: Embedded binary statics have been removed. All binaries are now loaded from disk.
+// The get_test_binary() function handles loading and will panic with a clear error if
+// the test disk is not properly configured.
 
 /// Test running a userspace program
 #[cfg(feature = "testing")]
@@ -242,19 +347,20 @@ pub fn run_userspace_test() {
 }
 
 /// Run the timer test program
-#[cfg(all(feature = "testing", feature = "external_test_bins"))]
+#[cfg(feature = "testing")]
 #[allow(dead_code)]
 pub fn run_timer_test() {
     log::info!("=== Running Timer Test Program ===");
 
     use alloc::string::String;
 
+    let timer_test_elf = get_test_binary("timer_test");
     log::info!(
         "Creating timer test process ({} bytes)",
-        TIMER_TEST_ELF.len()
+        timer_test_elf.len()
     );
 
-    match crate::process::create_user_process(String::from("timer_test"), TIMER_TEST_ELF) {
+    match crate::process::create_user_process(String::from("timer_test"), &timer_test_elf) {
         Ok(pid) => {
             log::info!("✓ Created timer test process with PID {}", pid.as_u64());
             log::info!("Process will test timer functionality and report results");

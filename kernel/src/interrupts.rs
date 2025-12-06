@@ -14,6 +14,11 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 pub static PICS: spin::Mutex<ChainedPics> =
     spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
+// NOTE: VirtIO block handler callback mechanism temporarily removed.
+// The atomic static was causing boot hangs at STEP 3 (IST stack initialization).
+// The VirtIO IRQ is not unmasked during boot anyway, so the handler won't be called.
+// This can be re-added once the root cause is understood.
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum InterruptIndex {
@@ -21,6 +26,8 @@ pub enum InterruptIndex {
     Keyboard,
     // Skip COM2 (IRQ3)
     Serial = PIC_1_OFFSET + 4, // COM1 is IRQ4
+    // VirtIO block device uses IRQ 11 (on PIC2)
+    VirtioBlock = PIC_2_OFFSET + 3, // IRQ 11 = 40 + 3 = 43
 }
 
 /// System call interrupt vector (INT 0x80)
@@ -119,6 +126,7 @@ pub fn init_idt() {
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
+        idt[InterruptIndex::VirtioBlock.as_u8()].set_handler_fn(virtio_block_interrupt_handler);
 
         // System call handler (INT 0x80)
         // Use assembly handler for proper syscall dispatching
@@ -165,6 +173,7 @@ pub fn init_idt() {
             if i != InterruptIndex::Timer.as_u8()
                 && i != InterruptIndex::Keyboard.as_u8()
                 && i != InterruptIndex::Serial.as_u8()
+                && i != InterruptIndex::VirtioBlock.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
             {
                 idt[i].set_handler_fn(generic_handler);
@@ -193,11 +202,37 @@ pub fn init_pic() {
         // Initialize the PIC
         PICS.lock().initialize();
 
-        // Unmask timer (IRQ0), keyboard (IRQ1), and serial (IRQ4) interrupts
+        // Unmask timer (IRQ0), keyboard (IRQ1), and serial (IRQ4) interrupts on PIC1
+        // NOTE: Do NOT unmask IRQ 11 (VirtIO) here - it must be unmasked AFTER
+        // the VirtIO driver is initialized, otherwise spurious interrupts during
+        // early boot will call get_device() on uninitialized state.
         use x86_64::instructions::port::Port;
-        let mut port: Port<u8> = Port::new(0x21); // PIC1 data port
-        let mask = port.read() & !0b00010011; // Clear bit 0 (timer), bit 1 (keyboard), and bit 4 (serial)
-        port.write(mask);
+        let mut port1: Port<u8> = Port::new(0x21); // PIC1 data port
+        let mask1 = port1.read() & !0b00010011; // Clear bit 0 (timer), bit 1 (keyboard), and bit 4 (serial)
+        port1.write(mask1);
+    }
+}
+
+/// Enable VirtIO block device interrupts (IRQ 11)
+///
+/// IMPORTANT: Only call this AFTER the VirtIO driver has been initialized.
+/// Calling earlier will cause hangs due to interrupt handler accessing
+/// uninitialized driver state.
+pub fn enable_virtio_irq() {
+    unsafe {
+        use x86_64::instructions::port::Port;
+
+        // Unmask IRQ 11 (bit 3 on PIC2) for VirtIO block device
+        let mut port2: Port<u8> = Port::new(0xA1); // PIC2 data port
+        let mask2 = port2.read() & !0b00001000; // Clear bit 3 (IRQ 11 = 8 + 3)
+        port2.write(mask2);
+
+        // Ensure cascade (IRQ2) is unmasked on PIC1
+        let mut port1: Port<u8> = Port::new(0x21); // PIC1 data port
+        let mask1_cascade = port1.read() & !0b00000100; // Clear bit 2 (cascade)
+        port1.write(mask1_cascade);
+
+        log::debug!("VirtIO IRQ 11 enabled");
     }
 }
 
@@ -419,7 +454,35 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Serial.as_u8());
     }
-    
+
+    // Exit hardware IRQ context
+    crate::per_cpu::irq_exit();
+}
+
+
+/// VirtIO block device interrupt handler
+///
+/// CRITICAL: This handler must be extremely fast. No logging, no allocations.
+/// Target: <1000 cycles total.
+///
+/// NOTE: Handler callback mechanism removed due to boot hang issue with atomic statics.
+/// For now, this is a minimal handler that just sends EOI.
+/// The VirtIO driver can poll for completion or use a different signaling mechanism.
+extern "x86-interrupt" fn virtio_block_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // Enter hardware IRQ context
+    crate::per_cpu::irq_enter();
+
+    // Call the device's interrupt handler if it exists
+    if let Some(device) = crate::drivers::virtio::block::get_device() {
+        device.handle_interrupt();
+    }
+
+    // Send EOI to both PICs (IRQ 11 is on PIC2)
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::VirtioBlock.as_u8());
+    }
+
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
 }
@@ -787,20 +850,24 @@ extern "x86-interrupt" fn page_fault_handler(
 extern "x86-interrupt" fn generic_handler(stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context for unknown interrupts
     crate::per_cpu::irq_enter();
-    
-    // Get the interrupt number from the stack
-    // Note: This is a bit hacky but helps with debugging
-    let _interrupt_num = {
-        // The interrupt number is pushed by the CPU before calling the handler
-        // We need to look at the return address to figure out which IDT entry was used
-        0 // Placeholder - can't easily get interrupt number in generic handler
-    };
+
     log::warn!(
         "UNHANDLED INTERRUPT from RIP {:#x}",
         stack_frame.instruction_pointer.as_u64()
     );
     log::warn!("{:#?}", stack_frame);
-    
+
+    // CRITICAL: Send EOI to PICs for any hardware interrupt
+    // Without this, the PIC will hang and not deliver more interrupts.
+    // We send EOI to both PICs (PIC2 cascades through PIC1) to be safe.
+    // This handles any interrupt vector in the range 32-47 (PIC hardware IRQs).
+    unsafe {
+        // Send EOI to PIC2 first (if it was a PIC2 interrupt), then PIC1
+        // notify_end_of_interrupt handles this automatically based on vector
+        // Use a high vector to ensure both PICs get EOI
+        PICS.lock().notify_end_of_interrupt(PIC_2_OFFSET + 7);
+    }
+
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
 }
