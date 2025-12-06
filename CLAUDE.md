@@ -16,66 +16,39 @@ docs/planning/   # Numbered phase directories (00-15)
 
 ## Build & Run
 
-### 🚨 MANDATORY: All Kernel Execution Through GDB 🚨
+### Standard Workflow: Boot Stages Testing
 
-**ALL kernel execution MUST go through GDB.** This is non-negotiable.
-
-Even when you just want to "run the kernel and see what happens", you MUST use GDB. This ensures:
-- You can intercept panics and examine state
-- You can set breakpoints if something goes wrong
-- You see both serial output AND have debugging capability
-- You're always one command away from debugging
-
-### Interactive GDB Session (PRIMARY WORKFLOW)
-
-Use `gdb_session.sh` for persistent, interactive debugging:
+For normal development, use the boot stages test to verify kernel health:
 
 ```bash
-# Start a persistent GDB session (QEMU + GDB running in background)
-./breenix-gdb-chat/scripts/gdb_session.sh start
+# Run boot stages test - verifies kernel progresses through all checkpoints
+cargo run -p xtask -- boot-stages
 
-# Send individual commands and make decisions based on results
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::kernel_main"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
-# See the result, think about it, then decide next command...
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rip rsp"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 5"
-
-# Get serial output at any time
-./breenix-gdb-chat/scripts/gdb_session.sh serial
-
-# Stop when done
-./breenix-gdb-chat/scripts/gdb_session.sh stop
-```
-
-### Auto-Run Mode (Let Kernel Boot, Intercept on Panic)
-
-Even when you want to just "run the kernel", do it through GDB:
-
-```bash
-# Start session, continue without breakpoints - will run until panic or completion
-./breenix-gdb-chat/scripts/gdb_session.sh start
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
-# If kernel panics, GDB catches it - examine state with:
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 20"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers"
-```
-
-### Build Only (No Execution)
-
-```bash
+# Build only (no execution)
 cargo build --release --features testing,external_test_bins --bin qemu-uefi
 ```
 
-### Prohibited Commands (NEVER USE)
+The boot stages test (`xtask boot-stages`) monitors serial output for expected markers at each boot phase. Add new stages to `xtask/src/main.rs` when adding new subsystems.
 
-These commands run the kernel without GDB and are **forbidden**:
+### GDB Debugging (For Deep Technical Issues)
+
+Use GDB when you need to understand **why** something is failing, not just **that** it failed. GDB is the right tool when:
+- You need to examine register state or memory at a specific point
+- A panic occurs and you need to inspect the call stack
+- You're debugging timing-sensitive issues that log output can't capture
+- You need to step through code instruction-by-instruction
+
+**Do NOT use GDB** for routine testing or to avoid writing proper boot stage markers. If you find yourself adding debug log statements in a loop, that's a sign you should use GDB instead.
+
 ```bash
-# ❌ FORBIDDEN - runs kernel without GDB
-cargo run --release --bin qemu-uefi
-cargo run -p xtask -- boot-stages
-./scripts/run_breenix.sh
-cargo test
+# Start interactive GDB session
+./breenix-gdb-chat/scripts/gdb_session.sh start
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::kernel_main"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
+./breenix-gdb-chat/scripts/gdb_session.sh serial
+./breenix-gdb-chat/scripts/gdb_session.sh stop
 ```
 
 ### Logs
@@ -508,51 +481,45 @@ If symbols don't resolve, verify with:
 info address kernel::kernel_main
 ```
 
-### Anti-Patterns (NEVER DO THIS)
+### When to Use GDB vs Boot Stages
+
+**Use boot stages** (`cargo run -p xtask -- boot-stages`) for:
+- Verifying a fix works
+- Checking that all subsystems initialize
+- CI/continuous testing
+- Quick sanity checks
+
+**Use GDB** for:
+- Understanding why a specific failure occurs
+- Examining register/memory state at a crash
+- Stepping through complex code paths
+- Debugging timing-sensitive issues where adding logs would change behavior
+
+### Anti-Patterns
 
 ```bash
-# DON'T run kernel directly for debugging
-cargo run -p xtask -- boot-stages
-cargo run --release --bin qemu-uefi
+# DON'T add logging to hot paths (syscalls, interrupts) to debug issues
+log::debug!("clock_gettime called");  # This changes timing!
 
-# DON'T analyze log output to debug timing issues
-cat target/xtask_boot_stages_output.txt | grep ...
-
-# DON'T add logging to debug syscalls (causes timing bugs!)
-log::debug!("clock_gettime called");
-
-# DON'T script a batch of commands hoping they work
-# This prevents learning and adapting based on what you see
+# DON'T loop on adding debug prints - use GDB breakpoints instead
+# If you're on your 3rd round of "add log, rebuild, run", switch to GDB
 ```
 
-### Correct Debugging Pattern (Interactive)
+### GDB Debugging Example
 
 ```bash
-# DO start a persistent GDB session
+# Start interactive GDB session
 ./breenix-gdb-chat/scripts/gdb_session.sh start
-
-# DO send commands ONE AT A TIME and THINK about the result
 ./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::time::sys_clock_gettime"
 ./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
 
-# Examine the result - what did we learn?
-# clock_id was 0x1 (CLOCK_MONOTONIC) - is that expected?
+# Examine state at breakpoint
 ./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rdi rsi"
-
-# Based on what we learned, examine more state
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "x/2xg \$rsi"
-
-# Continue and see what happens
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
-
-# Check return value
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers rax"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
 
 # Stop when done
 ./breenix-gdb-chat/scripts/gdb_session.sh stop
 ```
-
-This is **conversational debugging** - each command informs the next decision.
 
 ## Work Tracking
 
