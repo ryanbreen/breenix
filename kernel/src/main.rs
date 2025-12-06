@@ -444,7 +444,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch register_init_test to verify registers are properly initialized
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating register_init_test userspace process");
                 let register_test_buf = crate::userspace_test::get_test_binary("register_init_test");
@@ -459,7 +458,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch clock_gettime_test after hello_time
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
                 let clock_test_buf = crate::userspace_test::get_test_binary("clock_gettime_test");
@@ -474,7 +472,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch brk_test to validate heap management syscall
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating brk_test userspace process");
                 let brk_test_buf = crate::userspace_test::get_test_binary("brk_test");
@@ -489,7 +486,6 @@ fn kernel_main_continue() -> ! {
             }
 
             // Launch syscall_diagnostic_test to isolate register corruption bug
-            #[cfg(feature = "external_test_bins")]
             {
                 serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
                 let diagnostic_test_buf = crate::userspace_test::get_test_binary("syscall_diagnostic_test");

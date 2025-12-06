@@ -189,6 +189,45 @@ impl VirtioBlockDevice {
         Ok((phys, virt))
     }
 
+    /// Read multiple contiguous sectors into a buffer.
+    ///
+    /// Buffer size must be a multiple of SECTOR_SIZE (512 bytes).
+    /// This is a simple loop-based implementation that calls read_sector()
+    /// for each sector. While less efficient than scatter-gather, it's
+    /// simple, uses tested code, and provides acceptable performance.
+    #[allow(dead_code)] // Part of public block device API
+    pub fn read_sectors(&self, start_sector: u64, buffer: &mut [u8]) -> Result<(), &'static str> {
+        // Validate buffer size
+        if buffer.is_empty() {
+            return Err("Buffer is empty");
+        }
+        if buffer.len() % SECTOR_SIZE != 0 {
+            return Err("Buffer size must be multiple of 512");
+        }
+
+        // Calculate number of sectors
+        let num_sectors = buffer.len() / SECTOR_SIZE;
+
+        // Check sector range
+        if start_sector >= self.capacity {
+            return Err("Start sector out of range");
+        }
+        if start_sector.checked_add(num_sectors as u64).ok_or("Sector overflow")? > self.capacity {
+            return Err("Sector range exceeds disk capacity");
+        }
+
+        // Read each sector
+        for i in 0..num_sectors {
+            let sector = start_sector + i as u64;
+            let offset = i * SECTOR_SIZE;
+            let sector_buffer = &mut buffer[offset..offset + SECTOR_SIZE];
+
+            self.read_sector(sector, sector_buffer)?;
+        }
+
+        Ok(())
+    }
+
     /// Submit a read request
     ///
     /// This is an asynchronous operation. The data will be available after
@@ -374,12 +413,13 @@ impl VirtioBlockDevice {
     }
 }
 
-// Global block device instance
+// Global block device instances
 static BLOCK_DEVICE: Mutex<Option<Arc<VirtioBlockDevice>>> = Mutex::new(None);
+static BLOCK_DEVICES: Mutex<alloc::vec::Vec<Arc<VirtioBlockDevice>>> = Mutex::new(alloc::vec::Vec::new());
 
 /// Initialize the VirtIO block driver
 ///
-/// Finds and initializes the first VirtIO block device.
+/// Finds and initializes all VirtIO block devices.
 pub fn init() -> Result<(), &'static str> {
     let devices = crate::drivers::pci::find_virtio_block_devices();
 
@@ -388,31 +428,61 @@ pub fn init() -> Result<(), &'static str> {
         return Err("No VirtIO block devices found");
     }
 
-    let pci_dev = &devices[0];
-    log::info!(
-        "VirtIO block: Initializing device at {:02x}:{:02x}.{}",
-        pci_dev.bus,
-        pci_dev.device,
-        pci_dev.function
-    );
+    log::info!("VirtIO block: Found {} device(s)", devices.len());
 
-    let block_dev = VirtioBlockDevice::new(pci_dev)?;
-    let block_dev = Arc::new(block_dev);
+    let mut initialized_devices = alloc::vec::Vec::new();
 
-    *BLOCK_DEVICE.lock() = Some(block_dev);
+    for (idx, pci_dev) in devices.iter().enumerate() {
+        log::info!(
+            "VirtIO block: Initializing device {} at {:02x}:{:02x}.{}",
+            idx,
+            pci_dev.bus,
+            pci_dev.device,
+            pci_dev.function
+        );
+
+        match VirtioBlockDevice::new(pci_dev) {
+            Ok(block_dev) => {
+                let block_dev = Arc::new(block_dev);
+                initialized_devices.push(block_dev.clone());
+
+                // Keep first device as primary for backward compatibility
+                if idx == 0 {
+                    *BLOCK_DEVICE.lock() = Some(block_dev);
+                }
+
+                log::info!("VirtIO block: Device {} initialized successfully", idx);
+            }
+            Err(e) => {
+                log::error!("VirtIO block: Failed to initialize device {}: {}", idx, e);
+            }
+        }
+    }
+
+    if initialized_devices.is_empty() {
+        return Err("Failed to initialize any VirtIO block devices");
+    }
+
+    *BLOCK_DEVICES.lock() = initialized_devices;
 
     // NOTE: The VirtIO interrupt handler is registered directly in the IDT.
     // See kernel/src/interrupts.rs -> virtio_block_interrupt_handler()
     // No dynamic registration needed - the handler is static.
 
-    log::info!("VirtIO block: Driver initialized successfully");
+    log::info!("VirtIO block: Driver initialized with {} device(s)", BLOCK_DEVICES.lock().len());
 
     Ok(())
 }
 
-/// Get a reference to the block device
+/// Get a reference to the block device (primary/first device)
 pub fn get_device() -> Option<Arc<VirtioBlockDevice>> {
     BLOCK_DEVICE.lock().clone()
+}
+
+/// Get a reference to a specific block device by index
+pub fn get_device_by_index(index: usize) -> Option<Arc<VirtioBlockDevice>> {
+    let devices = BLOCK_DEVICES.lock();
+    devices.get(index).cloned()
 }
 
 /// Test the block device by reading sector 0
