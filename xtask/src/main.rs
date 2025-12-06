@@ -130,7 +130,7 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "VirtIO block device found",
-            marker: "PCI: Found VirtIO block device",
+            marker: "[1af4:1001] VirtIO MassStorage",
             failure_meaning: "No VirtIO block device detected - disk I/O will fail",
             check_hint: "Check QEMU virtio-blk-pci configuration, verify vendor ID 0x1AF4 and device ID 0x1001/0x1042",
         },
