@@ -41,6 +41,7 @@ BINARIES=(
     "register_init_test"
     "syscall_diagnostic_test"
     "brk_test"
+    "test_mmap"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

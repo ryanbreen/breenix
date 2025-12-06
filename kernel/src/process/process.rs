@@ -82,6 +82,14 @@ pub struct Process {
 
     /// Current heap end (program break)
     pub heap_end: u64,
+
+    /// Virtual memory areas for this process (mmap regions)
+    #[allow(dead_code)]
+    pub vmas: alloc::vec::Vec<crate::memory::vma::Vma>,
+
+    /// Next hint address for mmap allocation (grows downward)
+    #[allow(dead_code)]
+    pub mmap_hint: u64,
 }
 
 /// Memory usage tracking
@@ -114,6 +122,8 @@ impl Process {
             page_table: None,
             heap_start: 0,
             heap_end: 0,
+            vmas: alloc::vec::Vec::new(),
+            mmap_hint: crate::memory::vma::MMAP_REGION_END,
         }
     }
 
@@ -172,5 +182,11 @@ impl Process {
     #[allow(dead_code)]
     pub fn page_table(&self) -> Option<&ProcessPageTable> {
         self.page_table.as_ref().map(|b| b.as_ref())
+    }
+
+    /// Get mutable access to VMA list
+    #[allow(dead_code)]
+    pub fn vma_list_mut(&mut self) -> &mut alloc::vec::Vec<crate::memory::vma::Vma> {
+        &mut self.vmas
     }
 }

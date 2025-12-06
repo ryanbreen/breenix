@@ -333,6 +333,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "brk() syscall failed - heap expansion/contraction or memory access broken",
             check_hint: "Check sys_brk in syscall/memory.rs, verify page table mapping and heap_start/heap_end tracking",
         },
+        BootStage {
+            name: "Userspace mmap/munmap syscalls validated",
+            marker: "USERSPACE MMAP: ALL TESTS PASSED",
+            failure_meaning: "mmap/munmap syscalls failed - anonymous mapping or unmapping broken",
+            check_hint: "Check sys_mmap/sys_munmap in syscall/mmap.rs, verify VMA tracking and page table operations",
+        },
         // Diagnostic tests for syscall register corruption
         BootStage {
             name: "Diagnostic: Multiple getpid calls",

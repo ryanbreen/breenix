@@ -9,6 +9,7 @@ pub(crate) mod dispatcher;
 pub mod handler;
 pub mod handlers;
 pub mod memory;
+pub mod mmap;
 pub mod time;
 
 /// System call numbers following Linux conventions
@@ -22,9 +23,11 @@ pub enum SyscallNumber {
     Yield = 3,
     GetTime = 4,
     Fork = 5,
-    Exec = 11,          // Linux syscall number for execve
+    Mmap = 9,           // Linux syscall number for mmap
+    Munmap = 11,        // Linux syscall number for munmap
     Brk = 12,           // Linux syscall number for brk (heap management)
     GetPid = 39,        // Linux syscall number for getpid
+    Exec = 59,          // Linux syscall number for execve
     GetTid = 186,       // Linux syscall number for gettid
     ClockGetTime = 228, // Linux syscall number for clock_gettime
 }
@@ -40,9 +43,11 @@ impl SyscallNumber {
             3 => Some(Self::Yield),
             4 => Some(Self::GetTime),
             5 => Some(Self::Fork),
-            11 => Some(Self::Exec),
+            9 => Some(Self::Mmap),
+            11 => Some(Self::Munmap),
             12 => Some(Self::Brk),
             39 => Some(Self::GetPid),
+            59 => Some(Self::Exec),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
             _ => None,

@@ -485,6 +485,20 @@ fn kernel_main_continue() -> ! {
                 }
             }
 
+            // Launch test_mmap to validate mmap/munmap syscalls
+            {
+                serial_println!("RING3_SMOKE: creating test_mmap userspace process");
+                let test_mmap_buf = crate::userspace_test::get_test_binary("test_mmap");
+                match process::creation::create_user_process(String::from("test_mmap"), &test_mmap_buf) {
+                    Ok(pid) => {
+                        log::info!("Created test_mmap process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create test_mmap process: {}", e);
+                    }
+                }
+            }
+
             // Launch syscall_diagnostic_test to isolate register corruption bug
             {
                 serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");

@@ -12,9 +12,9 @@ pub fn dispatch_syscall(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    _arg4: u64,
-    _arg5: u64,
-    _arg6: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
 ) -> SyscallResult {
     // Convert syscall number
     let syscall = match SyscallNumber::from_u64(syscall_num) {
@@ -42,5 +42,7 @@ pub fn dispatch_syscall(
             super::time::sys_clock_gettime(clock_id, user_timespec_ptr)
         }
         SyscallNumber::Brk => super::memory::sys_brk(arg1),
+        SyscallNumber::Mmap => super::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6),
+        SyscallNumber::Munmap => super::mmap::sys_munmap(arg1, arg2),
     }
 }
