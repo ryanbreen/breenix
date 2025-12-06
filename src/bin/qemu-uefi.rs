@@ -78,12 +78,14 @@ fn main() {
             eprintln!("[qemu-uefi] Storage: IDE (index=0)");
         }
         _ => {
+            // Use disable-modern=on to force legacy (virtio 0.9) interface
+            // Our VirtIO driver only supports the legacy I/O port interface
             qemu.args([
                 "-drive",
                 &format!("if=none,id=hd,format=raw,media=disk,file={}", uefi_img.display()),
-                "-device", "virtio-blk-pci,drive=hd,bootindex=0",
+                "-device", "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off",
             ]);
-            eprintln!("[qemu-uefi] Storage: virtio-blk");
+            eprintln!("[qemu-uefi] Storage: virtio-blk (legacy mode)");
         }
     }
     // Improve CI capture and stability

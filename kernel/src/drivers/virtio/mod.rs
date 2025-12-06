@@ -142,12 +142,17 @@ impl VirtioDevice {
     pub fn get_queue_size(&self) -> u16 {
         self.read_u16(regs::QUEUE_SIZE)
     }
-
     /// Set the physical address of the currently selected queue
     /// Note: Address must be page-aligned and divided by 4096
     pub fn set_queue_address(&self, phys_addr: u64) {
         let page_num = (phys_addr / 4096) as u32;
         self.write_u32(regs::QUEUE_ADDRESS, page_num);
+    }
+
+    /// Get the physical address of the currently selected queue
+    /// Returns the PFN (page frame number), multiply by 4096 for actual address
+    pub fn get_queue_address(&self) -> u32 {
+        self.read_u32(regs::QUEUE_ADDRESS)
     }
 
     /// Notify the device that there are buffers in a queue
@@ -180,8 +185,41 @@ impl VirtioDevice {
     ///
     /// Returns Ok(()) on success, Err with description on failure.
     pub fn init(&mut self, requested_features: u32) -> Result<(), &'static str> {
+        // Step 0: Deactivate all queues BEFORE reset
+        // This ensures QEMU properly clears its internal queue state (last_avail_idx).
+        // Without this, QEMU may retain stale state from the UEFI bootloader.
+        for queue_idx in 0..16 {
+            self.select_queue(queue_idx);
+            // Writing 0 to queue address deactivates the queue
+            self.write_u32(regs::QUEUE_ADDRESS, 0);
+        }
+
         // Step 1: Reset the device
+        // This is CRITICAL for QEMU when taking over from UEFI bootloader.
         self.reset();
+
+        // Wait for reset to complete - poll status until it reads 0
+        // VirtIO spec says device must set status to 0 to indicate reset complete
+        let mut reset_attempts = 0;
+        loop {
+            // Small delay between polls
+            for _ in 0..10000 {
+                core::hint::spin_loop();
+            }
+
+            let status = self.read_status();
+            if status == 0 {
+                break;
+            }
+
+            reset_attempts += 1;
+            if reset_attempts >= 100 {
+                log::warn!("VirtIO: Device status still {:#x} after {} reset attempts", status, reset_attempts);
+                break;
+            }
+        }
+
+        log::debug!("VirtIO: Reset complete after {} attempts", reset_attempts);
 
         // Step 2: Set ACKNOWLEDGE status bit
         self.write_status(status::ACKNOWLEDGE);
@@ -192,6 +230,10 @@ impl VirtioDevice {
         // Step 4: Read device features and negotiate
         self.device_features = self.read_device_features();
         self.driver_features = self.device_features & requested_features;
+        log::debug!(
+            "VirtIO: Device features={:#x}, requested={:#x}, negotiated={:#x}",
+            self.device_features, requested_features, self.driver_features
+        );
         self.write_driver_features(self.driver_features);
 
         // Step 5: Set FEATURES_OK

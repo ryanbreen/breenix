@@ -18,12 +18,14 @@ pub fn init() -> usize {
     // Enumerate PCI bus and detect devices
     let device_count = pci::enumerate();
 
-    // TEMPORARILY DISABLED: Initialize VirtIO block driver if device was found
-    // Uncomment this block once boot issues are resolved
-    /*
+    // Initialize VirtIO block driver if device was found
     match virtio::block::init() {
         Ok(()) => {
             log::info!("VirtIO block driver initialized successfully");
+
+            // Enable VirtIO IRQ now that driver is initialized
+            // IMPORTANT: Must be done AFTER driver init, not during PIC init
+            crate::interrupts::enable_virtio_irq();
 
             // Run a quick test
             if let Err(e) = virtio::block::test_read() {
@@ -34,8 +36,6 @@ pub fn init() -> usize {
             log::warn!("VirtIO block driver initialization failed: {}", e);
         }
     }
-    */
-    log::info!("VirtIO block driver temporarily disabled for debugging");
 
     log::info!("Driver subsystem initialized");
     device_count

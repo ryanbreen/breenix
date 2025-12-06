@@ -130,6 +130,18 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check QEMU virtio-blk-pci configuration, verify vendor ID 0x1AF4 and device ID 0x1001/0x1042",
         },
         BootStage {
+            name: "VirtIO block driver initialized",
+            marker: "VirtIO block: Driver initialized successfully",
+            failure_meaning: "VirtIO device initialization failed - queue setup or feature negotiation issue",
+            check_hint: "drivers/virtio/block.rs - check queue size matches device (must use exact device size in legacy mode)",
+        },
+        BootStage {
+            name: "VirtIO disk read successful",
+            marker: "VirtIO block test: Read successful!",
+            failure_meaning: "VirtIO disk I/O failed - cannot read from block device",
+            check_hint: "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling",
+        },
+        BootStage {
             name: "IST stacks updated",
             marker: "Updated IST stacks with per-CPU emergency",
             failure_meaning: "Interrupt stack tables not configured",

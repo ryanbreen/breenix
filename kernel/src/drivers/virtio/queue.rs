@@ -176,12 +176,18 @@ impl Virtqueue {
         let phys_offset = crate::memory::physical_memory_offset();
         let virt_base = phys_addr + phys_offset.as_u64();
 
-        // Calculate layout offsets
+        // Calculate layout offsets per VirtIO legacy spec
+        // QEMU calculates: avail = desc + queue_size * 16
+        //                  used = ALIGN(avail + 4 + queue_size * 2, 4096)
+        // Note: The 4 bytes are for flags(2) + idx(2). The used_event field
+        // comes AFTER ring[queue_size], so we don't include it in alignment calc.
         let desc_size = (queue_size as usize) * 16;
         let avail_offset = desc_size;
-        let avail_size = 6 + 2 * (queue_size as usize);
-        // Used ring starts at next page boundary after avail
-        let used_offset = ((avail_offset + avail_size + 4095) / 4096) * 4096;
+        // avail_size for alignment: flags(2) + idx(2) + ring[queue_size](2*n)
+        // NOT including used_event which comes after
+        let avail_size_for_align = 4 + 2 * (queue_size as usize);
+        // Used ring starts at next 4096-byte boundary after avail (per VIRTIO_PCI_VRING_ALIGN)
+        let used_offset = ((avail_offset + avail_size_for_align + 4095) / 4096) * 4096;
 
         // Get pointers
         let desc = virt_base as *mut VirtqDesc;
@@ -189,10 +195,14 @@ impl Virtqueue {
         let used = (virt_base + used_offset as u64) as *mut VirtqUsed;
 
         // Zero the memory
+        // Full avail size includes used_event at the end: flags(2) + idx(2) + ring(2*n) + used_event(2)
+        let avail_size_full = 6 + 2 * (queue_size as usize);
+        // Full used size includes avail_event at the end: flags(2) + idx(2) + ring(8*n) + avail_event(2)
+        let used_size_full = 6 + 8 * (queue_size as usize);
         unsafe {
             core::ptr::write_bytes(desc, 0, queue_size as usize);
-            core::ptr::write_bytes(avail as *mut u8, 0, avail_size);
-            core::ptr::write_bytes(used as *mut u8, 0, 6 + 8 * (queue_size as usize));
+            core::ptr::write_bytes(avail as *mut u8, 0, avail_size_full);
+            core::ptr::write_bytes(used as *mut u8, 0, used_size_full);
         }
 
         // Initialize descriptor free list
@@ -294,22 +304,26 @@ impl Virtqueue {
     ) -> Option<u16> {
         let idx = self.alloc_desc()?;
 
-        // Set up descriptor
+        // Set up descriptor using volatile writes for device-shared memory
         unsafe {
-            let desc = &mut *self.desc.add(idx as usize);
-            desc.addr = phys_addr;
-            desc.len = len;
-            desc.flags = if device_writable { desc_flags::WRITE } else { 0 };
-            desc.next = 0;
+            let desc = self.desc.add(idx as usize);
+            let flags = if device_writable { desc_flags::WRITE } else { 0 };
+            core::ptr::write_volatile(&mut (*desc).addr, phys_addr);
+            core::ptr::write_volatile(&mut (*desc).len, len);
+            core::ptr::write_volatile(&mut (*desc).flags, flags);
+            core::ptr::write_volatile(&mut (*desc).next, 0);
         }
 
-        // Add to available ring
+        // Memory fence before updating avail ring
+        fence(Ordering::SeqCst);
+
+        // Add to available ring using volatile writes
         unsafe {
-            let avail = &mut *self.avail;
-            let ring_idx = avail.idx as usize % self.queue_size as usize;
-            avail.ring[ring_idx] = idx;
+            let avail_idx = core::ptr::read_volatile(&(*self.avail).idx);
+            let ring_idx = avail_idx as usize % self.queue_size as usize;
+            core::ptr::write_volatile(&mut (*self.avail).ring[ring_idx], idx);
             fence(Ordering::SeqCst);
-            avail.idx = avail.idx.wrapping_add(1);
+            core::ptr::write_volatile(&mut (*self.avail).idx, avail_idx.wrapping_add(1));
         }
 
         Some(idx)
@@ -345,40 +359,47 @@ impl Virtqueue {
             // Link previous descriptor to this one
             if let Some(prev) = prev_idx {
                 unsafe {
-                    let prev_desc = &mut *self.desc.add(prev as usize);
-                    prev_desc.next = idx;
-                    prev_desc.flags |= desc_flags::NEXT;
+                    let prev_desc = self.desc.add(prev as usize);
+                    // Use volatile writes for device-shared memory
+                    core::ptr::write_volatile(&mut (*prev_desc).next, idx);
+                    let old_flags = core::ptr::read_volatile(&(*prev_desc).flags);
+                    core::ptr::write_volatile(&mut (*prev_desc).flags, old_flags | desc_flags::NEXT);
                 }
             }
 
-            // Set up this descriptor
+            // Set up this descriptor using volatile writes
             unsafe {
-                let desc = &mut *self.desc.add(idx as usize);
-                desc.addr = phys_addr;
-                desc.len = len;
-                desc.flags = if device_writable { desc_flags::WRITE } else { 0 };
-                // Last descriptor doesn't have NEXT flag
-                if i < buffers.len() - 1 {
-                    desc.flags |= desc_flags::NEXT;
-                }
-                desc.next = 0;
+                let desc = self.desc.add(idx as usize);
+                let flags = if device_writable { desc_flags::WRITE } else { 0 }
+                    | if i < buffers.len() - 1 { desc_flags::NEXT } else { 0 };
+
+                // Write all descriptor fields using volatile
+                core::ptr::write_volatile(&mut (*desc).addr, phys_addr);
+                core::ptr::write_volatile(&mut (*desc).len, len);
+                core::ptr::write_volatile(&mut (*desc).flags, flags);
+                core::ptr::write_volatile(&mut (*desc).next, 0);
             }
 
             prev_idx = Some(idx);
         }
 
+        // Memory fence: ensure all descriptor writes are visible before updating avail ring
+        fence(Ordering::SeqCst);
+
         // Add head to available ring
         if let Some(head_idx) = head {
             unsafe {
-                let avail = &mut *self.avail;
-                let ring_idx = avail.idx as usize % self.queue_size as usize;
-                log::debug!("VirtIO queue: Adding to avail ring[{}] = {}, avail.idx before = {}",
-                    ring_idx, head_idx, avail.idx);
-                avail.ring[ring_idx] = head_idx;
+                // Must use volatile for all shared memory with device
+                let avail_idx = core::ptr::read_volatile(&(*self.avail).idx);
+                let ring_idx = avail_idx as usize % self.queue_size as usize;
+
+                // Write the descriptor index to the ring
+                core::ptr::write_volatile(&mut (*self.avail).ring[ring_idx], head_idx);
                 fence(Ordering::SeqCst);
-                avail.idx = avail.idx.wrapping_add(1);
-                fence(Ordering::SeqCst);  // Additional fence after idx update
-                log::debug!("VirtIO queue: avail.idx after = {}", avail.idx);
+
+                // Update the avail.idx to make it visible to the device
+                core::ptr::write_volatile(&mut (*self.avail).idx, avail_idx.wrapping_add(1));
+                fence(Ordering::SeqCst);
             }
         }
 
@@ -387,8 +408,11 @@ impl Virtqueue {
 
     /// Check if there are completed buffers in the used ring
     pub fn has_used(&self) -> bool {
+        // Memory fence to ensure we see device writes
         fence(Ordering::SeqCst);
-        unsafe { (*self.used).idx != self.last_used_idx }
+        // Must use volatile read - device writes to this memory
+        let used_idx = unsafe { core::ptr::read_volatile(&(*self.used).idx) };
+        used_idx != self.last_used_idx
     }
 
     /// Get the next completed buffer from the used ring
@@ -399,15 +423,16 @@ impl Virtqueue {
         fence(Ordering::SeqCst);
 
         unsafe {
-            let used = &*self.used;
-            if used.idx == self.last_used_idx {
+            // Must use volatile reads - device writes to this memory
+            let used_idx = core::ptr::read_volatile(&(*self.used).idx);
+            if used_idx == self.last_used_idx {
                 return None;
             }
 
             let ring_idx = self.last_used_idx as usize % self.queue_size as usize;
-            let elem = &used.ring[ring_idx];
-            let id = elem.id as u16;
-            let len = elem.len;
+            let elem_ptr = &(*self.used).ring[ring_idx];
+            let id = core::ptr::read_volatile(&elem_ptr.id) as u16;
+            let len = core::ptr::read_volatile(&elem_ptr.len);
 
             self.last_used_idx = self.last_used_idx.wrapping_add(1);
 
@@ -424,12 +449,54 @@ impl Virtqueue {
     /// Debug: get current used ring idx from device
     pub fn debug_used_idx(&self) -> u16 {
         fence(Ordering::SeqCst);
-        unsafe { (*self.used).idx }
+        unsafe { core::ptr::read_volatile(&(*self.used).idx) }
     }
 
     /// Debug: get our last_used_idx
     pub fn debug_last_used_idx(&self) -> u16 {
         self.last_used_idx
+    }
+
+    /// Debug: dump descriptor chain starting at head
+    #[allow(dead_code)] // Debug utility for diagnosing virtqueue issues
+    pub fn debug_dump_chain(&self, mut head: u16) {
+        let mut i = 0;
+        loop {
+            // Use volatile reads to see what device would see
+            unsafe {
+                let desc = self.desc.add(head as usize);
+                let addr = core::ptr::read_volatile(&(*desc).addr);
+                let len = core::ptr::read_volatile(&(*desc).len);
+                let flags = core::ptr::read_volatile(&(*desc).flags);
+                let next = core::ptr::read_volatile(&(*desc).next);
+                log::debug!(
+                    "  desc[{}]: addr={:#x} len={} flags={:#x} next={}",
+                    head, addr, len, flags, next
+                );
+                if flags & desc_flags::NEXT == 0 || i > 10 {
+                    break;
+                }
+                head = next;
+            }
+            i += 1;
+        }
+        // Dump avail ring state using volatile reads
+        unsafe {
+            let flags = core::ptr::read_volatile(&(*self.avail).flags);
+            let idx = core::ptr::read_volatile(&(*self.avail).idx);
+            let ring0 = core::ptr::read_volatile(&(*self.avail).ring[0]);
+            log::debug!(
+                "  avail: flags={:#x} idx={} ring[0]={} queue_phys={:#x}",
+                flags, idx, ring0, self.phys_addr
+            );
+            // Also show used ring state
+            let used_flags = core::ptr::read_volatile(&(*self.used).flags);
+            let used_idx = core::ptr::read_volatile(&(*self.used).idx);
+            log::debug!(
+                "  used: flags={:#x} idx={} last_used_idx={}",
+                used_flags, used_idx, self.last_used_idx
+            );
+        }
     }
 }
 

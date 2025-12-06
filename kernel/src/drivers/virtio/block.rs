@@ -62,9 +62,6 @@ struct VirtioBlkReq {
 /// Sector size in bytes
 pub const SECTOR_SIZE: usize = 512;
 
-/// Maximum queue size we'll use
-const QUEUE_SIZE: u16 = 128;
-
 /// VirtIO block device driver
 pub struct VirtioBlockDevice {
     /// VirtIO device abstraction
@@ -110,21 +107,46 @@ impl VirtioBlockDevice {
 
         // Set up the request queue (queue 0)
         device.select_queue(0);
-        let device_queue_size = device.get_queue_size();
-        let queue_size = device_queue_size.min(QUEUE_SIZE);
+        let queue_size = device.get_queue_size();
 
         if queue_size == 0 {
             return Err("Device reports queue size 0");
         }
 
-        log::info!("VirtIO block: Queue size = {}", queue_size);
+        // In VirtIO legacy mode, we MUST use the device's queue size exactly.
+        // The QUEUE_SIZE register (0x0C) is read-only - the driver cannot negotiate
+        // a smaller size. QEMU uses vring.num to calculate avail/used ring offsets,
+        // so if we allocate a differently-sized queue, the offsets won't match.
+        log::info!("VirtIO block: Device queue size = {} (must use exactly)", queue_size);
 
         // Allocate virtqueue
         let queue = Virtqueue::new(queue_size)?;
         let queue_phys = queue.phys_addr();
 
         // Tell device about the queue
+        // NOTE: In legacy VirtIO, QUEUE_SIZE at offset 0x0C is read-only.
+        // We read it to get the device's queue size, but don't write back.
+        // We MUST allocate a queue of exactly that size because the device
+        // uses it to calculate avail/used ring offsets.
+        device.select_queue(0);
+        log::info!(
+            "VirtIO block: Setting queue address phys={:#x}, PFN={:#x}",
+            queue_phys,
+            queue_phys / 4096
+        );
         device.set_queue_address(queue_phys);
+
+        // Read back and verify the queue address was set correctly
+        let readback_pfn = device.get_queue_address();
+        let expected_pfn = (queue_phys / 4096) as u32;
+        if readback_pfn != expected_pfn {
+            log::error!(
+                "VirtIO block: Queue address mismatch! Expected PFN={:#x}, got PFN={:#x}",
+                expected_pfn, readback_pfn
+            );
+            return Err("Queue address was not set correctly");
+        }
+        log::info!("VirtIO block: Queue address verified: PFN={:#x}", readback_pfn);
 
         // Device is ready
         device.driver_ok();
@@ -184,13 +206,16 @@ impl VirtioBlockDevice {
         let (data_phys, data_virt) = Self::alloc_dma_buffer(SECTOR_SIZE)?;
         let (status_phys, status_virt) = Self::alloc_dma_buffer(1)?;
 
-        // Set up request header
+        // Set up request header using volatile writes
+        // The device will read this memory via DMA
         unsafe {
             let header = header_virt as *mut VirtioBlkReq;
-            (*header).type_ = request_type::IN;
-            (*header).reserved = 0;
-            (*header).sector = sector;
+            core::ptr::write_volatile(&mut (*header).type_, request_type::IN);
+            core::ptr::write_volatile(&mut (*header).reserved, 0);
+            core::ptr::write_volatile(&mut (*header).sector, sector);
         }
+        // Ensure header writes are visible before we set up descriptors
+        core::sync::atomic::fence(Ordering::SeqCst);
 
         // Build descriptor chain
         let buffers = [
@@ -199,35 +224,23 @@ impl VirtioBlockDevice {
             (status_phys, 1, true),                          // Status: device writes
         ];
 
-        log::debug!(
-            "VirtIO block: read_sector {} - header_phys={:#x}, data_phys={:#x}, status_phys={:#x}",
-            sector, header_phys, data_phys, status_phys
-        );
-
         let mut queue = self.queue.lock();
-        let desc_head = queue
-            .add_chain(&buffers)
-            .ok_or("Queue full")?;
-
-        log::debug!("VirtIO block: Descriptor chain added at head={}", desc_head);
-
-        // Ensure queue 0 is selected before notify
-        self.device.select_queue(0);
-
-        // Debug: Check device status
-        let status = self.device.read_status();
-        log::debug!("VirtIO block: Device status before notify: {:#x}", status);
+        queue.add_chain(&buffers).ok_or("Queue full")?;
 
         // Notify device
         core::sync::atomic::fence(Ordering::SeqCst);
         self.device.notify_queue(0);
 
-        log::debug!("VirtIO block: Device notified, polling for completion...");
-
         // Poll for completion (synchronous for now)
-        let mut timeout = 10_000_000u32;  // Increased timeout
+        // Use a reasonable timeout with delays to give QEMU TCG time to process
+        let mut timeout = 100_000u32;
         while !queue.has_used() && timeout > 0 {
-            core::hint::spin_loop();
+            // Do a small spin delay - QEMU TCG needs CPU time to process I/O
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
+            // Read ISR status - this I/O operation helps yield to QEMU
+            let _ = self.device.read_isr();
             timeout -= 1;
         }
 
