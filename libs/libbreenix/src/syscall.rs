@@ -17,6 +17,7 @@ pub mod nr {
     pub const GET_TIME: u64 = 4;
     pub const FORK: u64 = 5;
     pub const MMAP: u64 = 9;       // Linux x86_64 mmap
+    pub const MPROTECT: u64 = 10;  // Linux x86_64 mprotect
     pub const MUNMAP: u64 = 11;    // Linux x86_64 munmap
     pub const BRK: u64 = 12;
     pub const EXEC: u64 = 59;      // Linux x86_64 execve

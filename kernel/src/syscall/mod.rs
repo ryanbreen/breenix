@@ -24,6 +24,7 @@ pub enum SyscallNumber {
     GetTime = 4,
     Fork = 5,
     Mmap = 9,           // Linux syscall number for mmap
+    Mprotect = 10,      // Linux syscall number for mprotect
     Munmap = 11,        // Linux syscall number for munmap
     Brk = 12,           // Linux syscall number for brk (heap management)
     GetPid = 39,        // Linux syscall number for getpid
@@ -44,6 +45,7 @@ impl SyscallNumber {
             4 => Some(Self::GetTime),
             5 => Some(Self::Fork),
             9 => Some(Self::Mmap),
+            10 => Some(Self::Mprotect),
             11 => Some(Self::Munmap),
             12 => Some(Self::Brk),
             39 => Some(Self::GetPid),
