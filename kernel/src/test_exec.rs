@@ -1023,3 +1023,38 @@ pub fn test_signal_regs() {
         }
     }
 }
+
+/// Test pipe syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Pipe test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates pipe operations
+///   - Marker: "PIPE_TEST_PASSED"
+///   - This PROVES pipe creation, read/write, and close all work
+pub fn test_pipe() {
+    log::info!("Testing pipe syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let pipe_test_elf_buf = crate::userspace_test::get_test_binary("pipe_test");
+    #[cfg(feature = "testing")]
+    let pipe_test_elf: &[u8] = &pipe_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let pipe_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("pipe_test"),
+        pipe_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created pipe_test process with PID {:?}", pid);
+            log::info!("Pipe test: process scheduled for execution.");
+            log::info!("    -> Should print 'PIPE_TEST_PASSED' if pipe operations succeed");
+        }
+        Err(e) => {
+            log::error!("Failed to create pipe_test process: {}", e);
+            log::error!("Pipe test cannot run without valid userspace process");
+        }
+    }
+}

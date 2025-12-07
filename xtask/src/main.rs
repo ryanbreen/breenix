@@ -516,6 +516,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "UDP socket test did not complete successfully",
             check_hint: "Check userspace/tests/udp_socket_test.rs for which step failed",
         },
+        // IPC (pipe) tests
+        BootStage {
+            name: "Pipe IPC test passed",
+            marker: "PIPE_TEST_PASSED",
+            failure_meaning: "pipe() syscall test failed - pipe creation, read/write, or close broken",
+            check_hint: "Check kernel/src/syscall/pipe.rs and kernel/src/ipc/pipe.rs - verify pipe creation, fd allocation, and read/write operations",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

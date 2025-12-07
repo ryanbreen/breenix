@@ -618,6 +618,10 @@ fn kernel_main_continue() -> ! {
         // log::info!("=== SIGNAL TEST: Register preservation across signals ===");
         // test_exec::test_signal_regs();
 
+        // Test pipe IPC syscalls
+        log::info!("=== IPC TEST: Pipe syscall functionality ===");
+        test_exec::test_pipe();
+
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");
         userspace_fault_tests::run_fault_tests();
