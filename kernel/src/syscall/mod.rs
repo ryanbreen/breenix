@@ -10,7 +10,9 @@ pub mod handler;
 pub mod handlers;
 pub mod memory;
 pub mod mmap;
+pub mod signal;
 pub mod time;
+pub mod userptr;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +29,12 @@ pub enum SyscallNumber {
     Mprotect = 10,      // Linux syscall number for mprotect
     Munmap = 11,        // Linux syscall number for munmap
     Brk = 12,           // Linux syscall number for brk (heap management)
+    Sigaction = 13,     // Linux syscall number for rt_sigaction
+    Sigprocmask = 14,   // Linux syscall number for rt_sigprocmask
+    Sigreturn = 15,     // Linux syscall number for rt_sigreturn
     GetPid = 39,        // Linux syscall number for getpid
     Exec = 59,          // Linux syscall number for execve
+    Kill = 62,          // Linux syscall number for kill
     GetTid = 186,       // Linux syscall number for gettid
     ClockGetTime = 228, // Linux syscall number for clock_gettime
 }
@@ -48,8 +54,12 @@ impl SyscallNumber {
             10 => Some(Self::Mprotect),
             11 => Some(Self::Munmap),
             12 => Some(Self::Brk),
+            13 => Some(Self::Sigaction),
+            14 => Some(Self::Sigprocmask),
+            15 => Some(Self::Sigreturn),
             39 => Some(Self::GetPid),
             59 => Some(Self::Exec),
+            62 => Some(Self::Kill),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
             _ => None,

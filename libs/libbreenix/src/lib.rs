@@ -41,6 +41,10 @@ pub mod errno;
 pub mod io;
 pub mod memory;
 pub mod process;
+pub mod signal;
 pub mod syscall;
 pub mod time;
 pub mod types;
+
+// Re-export commonly used signal functions
+pub use signal::{kill, sigaction, sigprocmask, Sigaction};

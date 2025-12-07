@@ -12,7 +12,7 @@ pub mod manager;
 pub mod process;
 
 pub use manager::ProcessManager;
-pub use process::{Process, ProcessId};
+pub use process::{Process, ProcessId, ProcessState};
 
 /// Wrapper to log when process manager lock is dropped
 pub struct ProcessManagerGuard {

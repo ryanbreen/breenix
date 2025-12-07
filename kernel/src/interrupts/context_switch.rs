@@ -515,6 +515,23 @@ fn restore_userspace_thread_context(
                         } else {
                             log::error!("ERROR: Userspace thread {} has no kernel stack!", thread_id);
                         }
+
+                        // SIGNAL DELIVERY: Check for pending signals before returning to userspace
+                        // This is the correct point to deliver signals - after context is restored
+                        // but before we actually return to userspace
+                        if crate::signal::delivery::has_deliverable_signals(process) {
+                            if crate::signal::delivery::deliver_pending_signals(
+                                process,
+                                interrupt_frame,
+                                saved_regs,
+                            ) {
+                                // Signal was delivered and frame was modified
+                                // If process was terminated, trigger reschedule
+                                if process.is_terminated() {
+                                    crate::task::scheduler::set_need_resched();
+                                }
+                            }
+                        }
                     }
                 }
             }

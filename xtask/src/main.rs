@@ -196,7 +196,7 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "Contract tests passed",
-            marker: "Contract tests:",
+            marker: "passed, 0 failed",
             failure_meaning: "Kernel invariants violated",
             check_hint: "contract_runner.rs - check which specific contract failed",
         },
@@ -303,10 +303,52 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check userspace_fault_tests::run_fault_tests() and process creation logs",
         },
         BootStage {
-            name: "Preconditions validated",
+            name: "Precondition 1: IDT timer entry",
+            marker: "PRECONDITION 1: IDT timer entry ✓ PASS",
+            failure_meaning: "IDT timer entry not properly configured",
+            check_hint: "interrupts::validate_timer_idt_entry() - verify IDT entry for IRQ0 (vector 32)",
+        },
+        BootStage {
+            name: "Precondition 2: Timer handler registered",
+            marker: "PRECONDITION 2: Timer handler registered ✓ PASS",
+            failure_meaning: "Timer interrupt handler not registered",
+            check_hint: "Check IDT entry for IRQ0 points to timer_interrupt_entry (same as Precondition 1)",
+        },
+        BootStage {
+            name: "Precondition 3: PIT counter active",
+            marker: "PRECONDITION 3: PIT counter ✓ PASS",
+            failure_meaning: "PIT (Programmable Interval Timer) hardware not counting",
+            check_hint: "time::timer::validate_pit_counting() - verify PIT counter changing between reads",
+        },
+        BootStage {
+            name: "Precondition 4: PIC IRQ0 unmasked",
+            marker: "PRECONDITION 4: PIC IRQ0 unmasked ✓ PASS",
+            failure_meaning: "IRQ0 is masked in PIC - timer interrupts will not fire",
+            check_hint: "interrupts::validate_pic_irq0_unmasked() - verify bit 0 of PIC1 mask register is clear",
+        },
+        BootStage {
+            name: "Precondition 5: Runnable threads exist",
+            marker: "PRECONDITION 5: Scheduler has runnable threads ✓ PASS",
+            failure_meaning: "Scheduler has no runnable threads - timer interrupt has nothing to schedule",
+            check_hint: "task::scheduler::has_runnable_threads() - verify userspace processes were created",
+        },
+        BootStage {
+            name: "Precondition 6: Current thread set",
+            marker: "PRECONDITION 6: Current thread set ✓ PASS",
+            failure_meaning: "Current thread not set in per-CPU data",
+            check_hint: "per_cpu::current_thread() - verify returns Some(thread) with valid pointer",
+        },
+        BootStage {
+            name: "Precondition 7: Interrupts disabled",
+            marker: "PRECONDITION 7: Interrupts disabled ✓ PASS",
+            failure_meaning: "Interrupts already enabled - precondition validation should run with interrupts off",
+            check_hint: "interrupts::are_interrupts_enabled() - verify RFLAGS.IF is clear",
+        },
+        BootStage {
+            name: "All preconditions passed",
             marker: "ALL PRECONDITIONS PASSED",
-            failure_meaning: "Some interrupt/scheduler precondition failed",
-            check_hint: "Check precondition validation output above",
+            failure_meaning: "Summary check failed - not all individual preconditions passed",
+            check_hint: "Check which specific precondition failed above (stages 35-41)",
         },
         BootStage {
             name: "Kernel timer arithmetic check",
@@ -338,12 +380,9 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "IRETQ may have succeeded but userspace did not execute or trigger a syscall",
             check_hint: "syscall/handler.rs - check RING3_CONFIRMED marker emission on first Ring 3 syscall",
         },
-        BootStage {
-            name: "Userspace syscall received",
-            marker: "USERSPACE: sys_",
-            failure_meaning: "Userspace code not executing syscalls or syscall privilege check failed",
-            check_hint: "Check if Ring 3 code runs, INT 0x80 handler, and syscall_handler.rs:is_from_userspace() check passes (CS RPL == 3)",
-        },
+        // NOTE: Stage "Userspace syscall received" (marker "USERSPACE: sys_") removed as redundant.
+        // Stage 36 "Ring 3 execution confirmed" already proves syscalls from Ring 3 work.
+        // The "USERSPACE: sys_*" markers in syscall handlers violate hot-path performance requirements.
         // NEW STAGES: Verify actual userspace output, not just process creation
         BootStage {
             name: "Userspace hello printed",
@@ -411,6 +450,24 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "✓ All diagnostic tests passed",
             failure_meaning: "Not all diagnostic tests passed - see individual test results above",
             check_hint: "Check which specific diagnostic test failed and follow its check_hint",
+        },
+        BootStage {
+            name: "Signal handler execution verified",
+            marker: "SIGNAL_HANDLER_EXECUTED",
+            failure_meaning: "Signal handler was registered but did not execute when signal was delivered",
+            check_hint: "Check signal delivery in kernel/src/signal/delivery.rs and handler setup in kernel/src/interrupts/context_switch.rs",
+        },
+        BootStage {
+            name: "Signal handler return verified",
+            marker: "SIGNAL_RETURN_WORKS",
+            failure_meaning: "Signal handler executed but did not return successfully - trampoline/sigreturn broken",
+            check_hint: "Check signal trampoline in kernel/src/signal/trampoline.rs and sigreturn syscall in kernel/src/syscall/signal.rs",
+        },
+        BootStage {
+            name: "Signal register preservation verified",
+            marker: "SIGNAL_REGS_PRESERVED",
+            failure_meaning: "Registers not correctly preserved across signal delivery and sigreturn - SignalFrame save/restore broken",
+            check_hint: "Check SignalFrame save/restore in kernel/src/signal/delivery.rs and sys_sigreturn in kernel/src/syscall/signal.rs - verify all 15 general-purpose registers (rax-r15) are saved and restored",
         },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.

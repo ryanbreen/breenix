@@ -912,3 +912,114 @@ pub fn test_syscall_enosys() {
         }
     }
 }
+
+/// Test signal handler execution
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (This function): Creates and schedules the process
+///   - Marker: "Signal handler test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+///   - Does NOT prove the handler executed
+/// - Stage 2 (Boot stage): Validates actual signal handler execution
+///   - Marker: "SIGNAL_HANDLER_EXECUTED"
+///   - This PROVES the signal handler was called when the signal was delivered
+pub fn test_signal_handler() {
+    log::info!("Testing signal handler execution");
+
+    #[cfg(feature = "testing")]
+    let signal_handler_test_elf_buf = crate::userspace_test::get_test_binary("signal_handler_test");
+    #[cfg(feature = "testing")]
+    let signal_handler_test_elf: &[u8] = &signal_handler_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let signal_handler_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("signal_handler_test"),
+        signal_handler_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created signal_handler_test process with PID {:?}", pid);
+            log::info!("    -> Should print 'SIGNAL_HANDLER_EXECUTED' if handler runs");
+        }
+        Err(e) => {
+            log::error!("Failed to create signal_handler_test process: {}", e);
+            log::error!("Signal handler test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test signal handler return via trampoline
+///
+/// This test validates the complete signal delivery and return mechanism:
+/// - Signal handler is registered and executed
+/// - Handler returns normally
+/// - Trampoline code calls sigreturn
+/// - Execution resumes at the point where signal was delivered
+///
+/// Boot stages:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Signal return test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+///   - Does NOT prove the trampoline worked
+/// - Stage 2 (Boot stage): Validates handler return and context restoration
+///   - Marker: "SIGNAL_RETURN_WORKS"
+///   - This PROVES the trampoline successfully restored pre-signal context
+pub fn test_signal_return() {
+    log::info!("Testing signal handler return via trampoline");
+
+    #[cfg(feature = "testing")]
+    let signal_return_test_elf_buf = crate::userspace_test::get_test_binary("signal_return_test");
+    #[cfg(feature = "testing")]
+    let signal_return_test_elf: &[u8] = &signal_return_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let signal_return_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("signal_return_test"),
+        signal_return_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created signal_return_test process with PID {:?}", pid);
+            log::info!("    -> Should print 'SIGNAL_RETURN_WORKS' if trampoline works");
+        }
+        Err(e) => {
+            log::error!("Failed to create signal_return_test process: {}", e);
+            log::error!("Signal return test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test that registers are preserved across signal delivery and sigreturn
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Signal regs test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates register preservation
+///   - Marker: "SIGNAL_REGS_PRESERVED"
+///   - This PROVES registers are correctly saved/restored across signals
+pub fn test_signal_regs() {
+    log::info!("Testing signal register preservation");
+
+    #[cfg(feature = "testing")]
+    let signal_regs_test_elf_buf = crate::userspace_test::get_test_binary("signal_regs_test");
+    #[cfg(feature = "testing")]
+    let signal_regs_test_elf: &[u8] = &signal_regs_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let signal_regs_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("signal_regs_test"),
+        signal_regs_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created signal_regs_test process with PID {:?}", pid);
+            log::info!("Signal regs test: process scheduled for execution.");
+            log::info!("    -> Should print 'SIGNAL_REGS_PRESERVED' if registers preserved");
+        }
+        Err(e) => {
+            log::error!("Failed to create signal_regs_test process: {}", e);
+            log::error!("Signal regs test cannot run without valid userspace process");
+        }
+    }
+}
