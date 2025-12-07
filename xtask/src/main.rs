@@ -129,6 +129,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "drivers::pci::enumerate() - check I/O port access (0xCF8/0xCFC)",
         },
         BootStage {
+            name: "E1000 network device found",
+            marker: "E1000 network device found",
+            failure_meaning: "No E1000 network device detected on PCI bus - network I/O will fail",
+            check_hint: "Check QEMU e1000 configuration, verify vendor ID 0x8086 and device ID 0x100E",
+        },
+        BootStage {
             name: "VirtIO block device found",
             marker: "[1af4:1001] VirtIO MassStorage",
             failure_meaning: "No VirtIO block device detected - disk I/O will fail",
@@ -145,6 +151,24 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "VirtIO block test: Read successful!",
             failure_meaning: "VirtIO disk I/O failed - cannot read from block device",
             check_hint: "drivers/virtio/block.rs:read_sector() - check descriptor chain setup and polling",
+        },
+        BootStage {
+            name: "E1000 driver initialized",
+            marker: "E1000 driver initialized",
+            failure_meaning: "E1000 device initialization failed - MMIO mapping, MAC setup, or link configuration issue",
+            check_hint: "drivers/e1000/mod.rs:init() - check MMIO BAR mapping, MAC address reading, and link status",
+        },
+        BootStage {
+            name: "Network stack initialized",
+            marker: "Network stack initialized",
+            failure_meaning: "Network stack initialization failed - ARP cache or configuration issue",
+            check_hint: "net/mod.rs:init() - check network configuration and ARP cache initialization",
+        },
+        BootStage {
+            name: "ARP request sent successfully",
+            marker: "ARP request sent successfully",
+            failure_meaning: "Failed to send ARP request for gateway - E1000 transmit path broken",
+            check_hint: "net/arp.rs:request() and drivers/e1000/mod.rs:transmit() - check TX descriptor setup and transmission",
         },
         BootStage {
             name: "IST stacks updated",

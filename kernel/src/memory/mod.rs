@@ -262,17 +262,112 @@ pub struct PhysAddrWrapper;
 impl PhysAddrWrapper {
     /// Convert a kernel virtual address to a physical address
     ///
-    /// This assumes identity mapping in the physical memory region.
-    /// The bootloader maps all physical memory at a fixed offset.
+    /// This function handles several types of kernel addresses:
+    /// 1. Direct physical memory mappings (starting at phys_offset) - subtract offset
+    /// 2. Heap and other mapped regions - walk page tables to find physical address
+    ///
+    /// NOTE: The direct physical memory map starts at phys_offset and extends for
+    /// the size of physical RAM (~500MB in QEMU). Addresses like the heap (0x4444_4444_0000)
+    /// are NOT in this region even though they may be numerically greater than phys_offset.
     pub fn from_kernel_virt(virt: usize) -> u64 {
-        let phys_offset = physical_memory_offset().as_u64();
-        // If address is above the physical memory offset, subtract it
-        if (virt as u64) >= phys_offset {
-            (virt as u64) - phys_offset
-        } else {
-            // For addresses below the offset (like heap allocations),
-            // they're identity-mapped in the lower canonical range
-            virt as u64
+        let phys_offset = physical_memory_offset();
+        let heap_start = crate::memory::heap::HEAP_START;
+        let heap_end = heap_start + crate::memory::heap::HEAP_SIZE;
+
+        // Check if this is a heap address - these are mapped, not direct
+        let is_heap = (virt as u64) >= heap_start && (virt as u64) < heap_end;
+
+        // The direct physical memory map starts at phys_offset.
+        // We can detect if an address is truly in the direct map by checking:
+        // 1. It's >= phys_offset
+        // 2. Subtracting phys_offset gives a reasonable physical address (< 4GB typically)
+        // 3. It's NOT in a known non-direct-mapped region (heap, MMIO, stack, etc.)
+        if !is_heap && (virt as u64) >= phys_offset.as_u64() {
+            let candidate_phys = (virt as u64) - phys_offset.as_u64();
+            // Physical RAM is typically < 4GB in our QEMU setup (512MB max)
+            // If the result is reasonable, it's likely a direct map address
+            if candidate_phys < 0x1_0000_0000 {
+                return candidate_phys;
+            }
         }
+
+        // For heap and other mapped regions, use the page table entry directly
+        // We can't use translate_addr because it adds the offset back when reading PTEs
+        use x86_64::registers::control::Cr3;
+        use x86_64::structures::paging::PageTable;
+
+        let virt_addr = VirtAddr::new(virt as u64);
+
+        // Get page table indices for this virtual address
+        let p4_idx = (virt_addr.as_u64() >> 39) & 0x1FF;
+        let p3_idx = (virt_addr.as_u64() >> 30) & 0x1FF;
+        let p2_idx = (virt_addr.as_u64() >> 21) & 0x1FF;
+        let p1_idx = (virt_addr.as_u64() >> 12) & 0x1FF;
+        let page_offset = virt_addr.as_u64() & 0xFFF;
+
+        // Get the CR3 (PML4 physical address)
+        let (pml4_frame, _) = Cr3::read();
+        let pml4_phys = pml4_frame.start_address().as_u64();
+
+        // Access PML4 through physical memory mapping
+        let pml4_virt = phys_offset.as_u64() + pml4_phys;
+        let pml4 = unsafe { &*(pml4_virt as *const PageTable) };
+
+        let p4_entry = &pml4[p4_idx as usize];
+        if !p4_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+            log::error!("PhysAddrWrapper: PML4[{}] not present for virt {:#x}", p4_idx, virt);
+            return virt as u64;
+        }
+
+        // Get PDPT
+        let pdpt_phys = p4_entry.addr().as_u64();
+        let pdpt_virt = phys_offset.as_u64() + pdpt_phys;
+        let pdpt = unsafe { &*(pdpt_virt as *const PageTable) };
+
+        let p3_entry = &pdpt[p3_idx as usize];
+        if !p3_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+            log::error!("PhysAddrWrapper: PDPT[{}] not present for virt {:#x}", p3_idx, virt);
+            return virt as u64;
+        }
+
+        // Check for 1GB huge page
+        if p3_entry.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+            let phys = p3_entry.addr().as_u64() + (virt_addr.as_u64() & 0x3FFFFFFF);
+            return phys;
+        }
+
+        // Get PD
+        let pd_phys = p3_entry.addr().as_u64();
+        let pd_virt = phys_offset.as_u64() + pd_phys;
+        let pd = unsafe { &*(pd_virt as *const PageTable) };
+
+        let p2_entry = &pd[p2_idx as usize];
+        if !p2_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+            log::error!("PhysAddrWrapper: PD[{}] not present for virt {:#x}", p2_idx, virt);
+            return virt as u64;
+        }
+
+        // Check for 2MB huge page
+        if p2_entry.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+            let phys = p2_entry.addr().as_u64() + (virt_addr.as_u64() & 0x1FFFFF);
+            return phys;
+        }
+
+        // Get PT
+        let pt_phys = p2_entry.addr().as_u64();
+        let pt_virt = phys_offset.as_u64() + pt_phys;
+        let pt = unsafe { &*(pt_virt as *const PageTable) };
+
+        let p1_entry = &pt[p1_idx as usize];
+        if !p1_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+            log::error!("PhysAddrWrapper: PT[{}] not present for virt {:#x}", p1_idx, virt);
+            return virt as u64;
+        }
+
+        // Final physical address
+        let frame_phys = p1_entry.addr().as_u64();
+        let phys = frame_phys + page_offset;
+
+        phys
     }
 }

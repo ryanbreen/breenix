@@ -67,8 +67,10 @@ impl RxDesc {
     }
 
     /// Check if this descriptor has been filled by hardware
+    /// Uses volatile read since hardware writes to this field asynchronously
     pub fn is_done(&self) -> bool {
-        self.status & RXD_STAT_DD != 0
+        let status = unsafe { read_volatile(&self.status) };
+        status & RXD_STAT_DD != 0
     }
 
     /// Check if this is the end of a packet
@@ -112,8 +114,12 @@ impl TxDesc {
     }
 
     /// Check if this descriptor has been processed by hardware
+    /// Uses volatile read since hardware writes to this field asynchronously
     pub fn is_done(&self) -> bool {
-        self.status & TXD_STAT_DD != 0
+        // Memory barrier to ensure we see the latest value from RAM
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        let status = unsafe { read_volatile(&self.status) };
+        status & TXD_STAT_DD != 0
     }
 }
 
@@ -242,15 +248,15 @@ impl E1000 {
     /// Initialize transmit functionality
     fn init_tx(&mut self) {
         // Set up transmit descriptor ring physical address
-        let tx_ring_phys = Self::virt_to_phys(self.tx_ring.as_ptr() as usize);
+        let tx_ring_virt = self.tx_ring.as_ptr() as usize;
+        let tx_ring_phys = Self::virt_to_phys(tx_ring_virt);
+
         self.write_reg(REG_TDBAL, tx_ring_phys as u32);
         self.write_reg(REG_TDBAH, (tx_ring_phys >> 32) as u32);
 
         // Set transmit descriptor ring length
-        self.write_reg(
-            REG_TDLEN,
-            (TX_RING_SIZE * core::mem::size_of::<TxDesc>()) as u32,
-        );
+        let tdlen = (TX_RING_SIZE * core::mem::size_of::<TxDesc>()) as u32;
+        self.write_reg(REG_TDLEN, tdlen);
 
         // Set head and tail pointers
         self.write_reg(REG_TDH, 0);
@@ -258,10 +264,8 @@ impl E1000 {
 
         // Configure transmit control register
         // Enable transmitter, pad short packets, collision threshold, collision distance
-        self.write_reg(
-            REG_TCTL,
-            TCTL_EN | TCTL_PSP | (0x10 << TCTL_CT_SHIFT) | (0x40 << TCTL_COLD_SHIFT),
-        );
+        let tctl = TCTL_EN | TCTL_PSP | (0x10 << TCTL_CT_SHIFT) | (0x40 << TCTL_COLD_SHIFT);
+        self.write_reg(REG_TCTL, tctl);
 
         // Set inter-packet gap
         // IPG transmit time: 10 + 8 + 6 (for IEEE 802.3 standard)
@@ -328,34 +332,56 @@ impl E1000 {
 
         // Wait for the descriptor to be available
         // In a real driver, we'd use interrupts, but for now poll
-        let desc = &self.tx_ring[idx];
-        if desc.cmd & TXD_CMD_RS != 0 && !desc.is_done() {
-            return Err("TX ring full");
+        if self.tx_ring[idx].is_done() == false {
+            let cmd = unsafe { read_volatile(&self.tx_ring[idx].cmd) };
+            if cmd & TXD_CMD_RS != 0 {
+                return Err("TX ring full");
+            }
         }
 
         // Copy data to a buffer (we need a stable physical address)
         // For now, allocate a buffer each time (inefficient but simple)
         let mut tx_buffer = Box::new([0u8; ETH_FRAME_MAX]);
         tx_buffer[..data.len()].copy_from_slice(data);
-        let phys_addr = Self::virt_to_phys(tx_buffer.as_ptr() as usize);
+        let buf_virt = tx_buffer.as_ptr() as usize;
+        let phys_addr = Self::virt_to_phys(buf_virt);
 
-        // Set up the descriptor
-        self.tx_ring[idx].addr = phys_addr;
-        self.tx_ring[idx].length = data.len() as u16;
-        self.tx_ring[idx].cmd = TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS;
-        self.tx_ring[idx].status = 0;
+        // Set up the descriptor using volatile writes to ensure hardware sees the values
+        let desc = &mut self.tx_ring[idx];
+        unsafe {
+            write_volatile(&mut desc.addr, phys_addr);
+            write_volatile(&mut desc.length, data.len() as u16);
+            write_volatile(&mut desc.cso, 0);
+            write_volatile(&mut desc.css, 0);
+            write_volatile(&mut desc.special, 0);
+            write_volatile(&mut desc.status, 0);
+            // Write cmd last - this signals the descriptor is ready
+            write_volatile(&mut desc.cmd, TXD_CMD_EOP | TXD_CMD_IFCS | TXD_CMD_RS);
+        }
+
+        // Memory barrier to ensure all descriptor writes are visible before tail update
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         // Advance tail pointer
         self.tx_cur = (self.tx_cur + 1) % TX_RING_SIZE;
         self.write_reg(REG_TDT, self.tx_cur as u32);
 
         // Wait for transmit to complete (polling for now)
-        for _ in 0..10000 {
+        for _ in 0..100000 {
             if self.tx_ring[idx].is_done() {
                 return Ok(());
             }
             core::hint::spin_loop();
         }
+
+        // Check status after timeout
+        let tdh_after = self.read_reg(REG_TDH);
+        let tdt_after = self.read_reg(REG_TDT);
+        let status = unsafe { read_volatile(&self.tx_ring[idx].status) };
+        log::warn!(
+            "E1000: TX timeout TDH={} TDT={} desc.status={:#x}",
+            tdh_after, tdt_after, status
+        );
 
         // Don't leak the buffer if we timeout
         core::mem::forget(tx_buffer);
@@ -438,7 +464,6 @@ impl E1000 {
     }
 
     /// Enable interrupts
-    #[allow(dead_code)] // Will be used when interrupt handler is wired up
     pub fn enable_interrupts(&self) {
         // Enable RX timer, TX descriptor written back, and link status change
         self.write_reg(REG_IMS, IMS_RXT0 | IMS_TXDW | IMS_LSC);
@@ -550,11 +575,14 @@ pub fn init() -> Result<(), &'static str> {
         log::info!("E1000: Link down (waiting for link...)");
     }
 
+    // Enable interrupts on the device
+    driver.enable_interrupts();
+
     // Store driver instance
     *E1000_DRIVER.lock() = Some(driver);
     E1000_INITIALIZED.store(true, Ordering::Release);
 
-    log::info!("E1000: Driver initialized successfully");
+    log::info!("E1000 driver initialized");
     Ok(())
 }
 
@@ -610,10 +638,13 @@ pub fn can_receive() -> bool {
         .unwrap_or(false)
 }
 
-/// Handle E1000 interrupt
-#[allow(dead_code)] // Will be called from interrupt handler
+/// Handle E1000 interrupt (called from IRQ 11 handler)
 pub fn handle_interrupt() {
     if let Some(driver) = E1000_DRIVER.lock().as_mut() {
         driver.handle_interrupt();
     }
+
+    // Process any received packets
+    // Note: This is done outside the driver lock to avoid holding it too long
+    crate::net::process_rx();
 }

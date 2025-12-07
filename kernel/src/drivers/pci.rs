@@ -553,6 +553,10 @@ pub fn enumerate() -> usize {
                         "PCI:   -> Network controller detected!{}",
                         if dev.is_virtio_net() { " (VirtIO-net)" } else { "" }
                     );
+                    // Boot stage marker for E1000 detection
+                    if dev.vendor_id == 0x8086 && dev.device_id == 0x100e {
+                        log::info!("E1000 network device found");
+                    }
                 }
 
                 devices.push(dev);
@@ -583,6 +587,10 @@ pub fn enumerate() -> usize {
                                     "PCI:   -> Network controller detected!{}",
                                     if func_dev.is_virtio_net() { " (VirtIO-net)" } else { "" }
                                 );
+                                // Boot stage marker for E1000 detection
+                                if func_dev.vendor_id == 0x8086 && func_dev.device_id == 0x100e {
+                                    log::info!("E1000 network device found");
+                                }
                             }
                             devices.push(func_dev);
                         }

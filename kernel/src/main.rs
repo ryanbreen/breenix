@@ -30,6 +30,7 @@ mod drivers;
 mod elf;
 mod framebuffer;
 mod gdt;
+mod net;
 #[cfg(feature = "testing")]
 mod gdt_tests;
 mod test_checkpoints;
@@ -172,6 +173,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
     log::info!("PCI subsystem initialized: {} devices found", pci_device_count);
+
+    // Initialize network stack (after E1000 driver is ready)
+    net::init();
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();

@@ -86,6 +86,12 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 
     for page in Page::range_inclusive(heap_start_page, heap_end_page) {
         let frame = crate::memory::frame_allocator::allocate_frame().ok_or("out of memory")?;
+        let frame_phys = frame.start_address().as_u64();
+
+        // Log the first few frame allocations for debugging
+        if frame_phys > 0xFFFF_FFFF {
+            log::error!("HEAP: Allocated frame {:#x} > 4GB - DMA will fail!", frame_phys);
+        }
 
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
