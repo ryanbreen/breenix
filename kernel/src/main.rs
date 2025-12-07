@@ -43,6 +43,7 @@ mod per_cpu;
 mod process;
 mod rtc_test;
 mod signal;
+mod ipc;
 mod serial;
 mod socket;
 mod spinlock;

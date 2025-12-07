@@ -10,10 +10,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// Global flag to signal that userspace testing is complete and kernel should exit
 pub static USERSPACE_TEST_COMPLETE: AtomicBool = AtomicBool::new(false);
 
-/// File descriptors
+/// File descriptors (legacy constants, now using FdKind-based routing)
 #[allow(dead_code)]
 const FD_STDIN: u64 = 0;
+#[allow(dead_code)]
 const FD_STDOUT: u64 = 1;
+#[allow(dead_code)]
 const FD_STDERR: u64 = 2;
 
 /// Copy data from userspace memory
@@ -168,19 +170,16 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 
 /// sys_write - Write to a file descriptor
 ///
-/// Currently only supports stdout/stderr writing to serial port.
+/// Supports stdout/stderr (serial port) and pipe write ends.
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
+    use crate::ipc::FdKind;
+
     log::info!(
         "USERSPACE: sys_write called: fd={}, buf_ptr={:#x}, count={}",
         fd,
         buf_ptr,
         count
     );
-
-    // Validate file descriptor
-    if fd != FD_STDOUT && fd != FD_STDERR {
-        return SyscallResult::Err(22); // EINVAL
-    }
 
     // Validate buffer pointer and count
     if buf_ptr == 0 || count == 0 {
@@ -200,12 +199,73 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
     };
 
+    // Get current process to look up fd
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            // Fall back to stdio behavior for kernel threads
+            return write_to_stdio(fd, &buffer);
+        }
+    };
+    let manager_guard = crate::process::manager();
+    let process = match &*manager_guard {
+        Some(manager) => match manager.find_process_by_thread(thread_id) {
+            Some((_pid, p)) => p,
+            None => {
+                // Fall back to stdio behavior for kernel threads
+                return write_to_stdio(fd, &buffer);
+            }
+        },
+        None => {
+            // Fall back to stdio behavior for kernel threads
+            return write_to_stdio(fd, &buffer);
+        }
+    };
+
+    // Look up the file descriptor
+    let fd_entry = match process.fd_table.get(fd as i32) {
+        Some(entry) => entry,
+        None => {
+            log::error!("sys_write: Bad fd {}", fd);
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    match &fd_entry.kind {
+        FdKind::StdIo(n) if *n == 1 || *n == 2 => {
+            // stdout or stderr - write to serial
+            write_to_stdio(fd, &buffer)
+        }
+        FdKind::StdIo(_) => {
+            // stdin - can't write
+            SyscallResult::Err(9) // EBADF
+        }
+        FdKind::PipeWrite(pipe_buffer) => {
+            // Write to pipe
+            let mut pipe = pipe_buffer.lock();
+            match pipe.write(&buffer) {
+                Ok(n) => {
+                    log::debug!("sys_write: Wrote {} bytes to pipe", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => {
+                    log::debug!("sys_write: Pipe write error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
+        }
+        FdKind::PipeRead(_) => {
+            // Can't write to read end of pipe
+            SyscallResult::Err(9) // EBADF
+        }
+    }
+}
+
+/// Helper function to write to stdio (serial port)
+fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
     // Log the actual data being written (for verification)
     if buffer.len() <= 30 {
-        // For small writes, show the actual content
-        let s = core::str::from_utf8(&buffer).unwrap_or("<invalid UTF-8>");
-        
-        // Also log the raw bytes in hex for verification
+        let s = core::str::from_utf8(buffer).unwrap_or("<invalid UTF-8>");
         let mut hex_str = alloc::string::String::new();
         for (i, &byte) in buffer.iter().enumerate() {
             if i > 0 {
@@ -213,22 +273,21 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             }
             hex_str.push_str(&alloc::format!("{:02x}", byte));
         }
-        
         log::info!("sys_write: Writing '{}' ({} bytes) to fd {}", s, buffer.len(), fd);
         log::info!("  Raw bytes: [{}]", hex_str);
     } else {
         log::info!("sys_write: Writing {} bytes to fd {}", buffer.len(), fd);
     }
-    
+
     // Write to serial port
     let mut bytes_written = 0;
-    for &byte in &buffer {
+    for &byte in buffer {
         crate::serial::write_byte(byte);
         bytes_written += 1;
     }
 
     // Log the output for userspace writes
-    if let Ok(s) = core::str::from_utf8(&buffer) {
+    if let Ok(s) = core::str::from_utf8(buffer) {
         log::info!("USERSPACE OUTPUT: {}", s.trim_end());
     }
 
@@ -237,17 +296,84 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
 /// sys_read - Read from a file descriptor
 ///
-/// Currently returns 0 (no data available) as keyboard is async-only.
-#[allow(dead_code)]
-pub fn sys_read(fd: u64, _buf_ptr: u64, _count: u64) -> SyscallResult {
-    // Validate file descriptor
-    if fd != FD_STDIN {
-        return SyscallResult::Err(22); // EINVAL
+/// Supports stdin (returns 0) and pipe read ends.
+pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
+    use crate::ipc::FdKind;
+
+    log::debug!("sys_read: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+
+    // Validate buffer pointer and count
+    if buf_ptr == 0 || count == 0 {
+        return SyscallResult::Ok(0);
     }
 
-    // TODO: Implement synchronous keyboard reading
-    // For now, always return 0 (no data available)
-    SyscallResult::Ok(0)
+    // Get current process to look up fd
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            // Fall back to stdin behavior for kernel threads
+            return SyscallResult::Ok(0);
+        }
+    };
+    let manager_guard = crate::process::manager();
+    let process = match &*manager_guard {
+        Some(manager) => match manager.find_process_by_thread(thread_id) {
+            Some((_pid, p)) => p,
+            None => {
+                // Fall back to stdin behavior for kernel threads
+                return SyscallResult::Ok(0);
+            }
+        },
+        None => {
+            // Fall back to stdin behavior for kernel threads
+            return SyscallResult::Ok(0);
+        }
+    };
+
+    // Look up the file descriptor
+    let fd_entry = match process.fd_table.get(fd as i32) {
+        Some(entry) => entry,
+        None => {
+            log::error!("sys_read: Bad fd {}", fd);
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    match &fd_entry.kind {
+        FdKind::StdIo(0) => {
+            // stdin - no data available (keyboard is async-only)
+            SyscallResult::Ok(0)
+        }
+        FdKind::StdIo(_) => {
+            // stdout/stderr - can't read
+            SyscallResult::Err(9) // EBADF
+        }
+        FdKind::PipeRead(pipe_buffer) => {
+            // Read from pipe
+            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut pipe = pipe_buffer.lock();
+            match pipe.read(&mut user_buf) {
+                Ok(n) => {
+                    if n > 0 {
+                        // Copy to userspace
+                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                            return SyscallResult::Err(14); // EFAULT
+                        }
+                    }
+                    log::debug!("sys_read: Read {} bytes from pipe", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => {
+                    log::debug!("sys_read: Pipe read error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
+        }
+        FdKind::PipeWrite(_) => {
+            // Can't read from write end of pipe
+            SyscallResult::Err(9) // EBADF
+        }
+    }
 }
 
 /// sys_yield - Yield CPU to another task
