@@ -26,8 +26,8 @@ pub enum InterruptIndex {
     Keyboard,
     // Skip COM2 (IRQ3)
     Serial = PIC_1_OFFSET + 4, // COM1 is IRQ4
-    // VirtIO block device uses IRQ 11 (on PIC2)
-    VirtioBlock = PIC_2_OFFSET + 3, // IRQ 11 = 40 + 3 = 43
+    // IRQ 11 is shared by VirtIO block and E1000 network devices (on PIC2)
+    Irq11 = PIC_2_OFFSET + 3, // IRQ 11 = 40 + 3 = 43
 }
 
 /// System call interrupt vector (INT 0x80)
@@ -126,7 +126,7 @@ pub fn init_idt() {
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
-        idt[InterruptIndex::VirtioBlock.as_u8()].set_handler_fn(virtio_block_interrupt_handler);
+        idt[InterruptIndex::Irq11.as_u8()].set_handler_fn(irq11_handler);
 
         // System call handler (INT 0x80)
         // Use assembly handler for proper syscall dispatching
@@ -173,7 +173,7 @@ pub fn init_idt() {
             if i != InterruptIndex::Timer.as_u8()
                 && i != InterruptIndex::Keyboard.as_u8()
                 && i != InterruptIndex::Serial.as_u8()
-                && i != InterruptIndex::VirtioBlock.as_u8()
+                && i != InterruptIndex::Irq11.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
             {
                 idt[i].set_handler_fn(generic_handler);
@@ -213,16 +213,16 @@ pub fn init_pic() {
     }
 }
 
-/// Enable VirtIO block device interrupts (IRQ 11)
+/// Enable IRQ 11 (shared by VirtIO block and E1000 network)
 ///
-/// IMPORTANT: Only call this AFTER the VirtIO driver has been initialized.
+/// IMPORTANT: Only call this AFTER devices using IRQ 11 have been initialized.
 /// Calling earlier will cause hangs due to interrupt handler accessing
 /// uninitialized driver state.
-pub fn enable_virtio_irq() {
+pub fn enable_irq11() {
     unsafe {
         use x86_64::instructions::port::Port;
 
-        // Unmask IRQ 11 (bit 3 on PIC2) for VirtIO block device
+        // Unmask IRQ 11 (bit 3 on PIC2)
         let mut port2: Port<u8> = Port::new(0xA1); // PIC2 data port
         let mask2 = port2.read() & !0b00001000; // Clear bit 3 (IRQ 11 = 8 + 3)
         port2.write(mask2);
@@ -232,8 +232,13 @@ pub fn enable_virtio_irq() {
         let mask1_cascade = port1.read() & !0b00000100; // Clear bit 2 (cascade)
         port1.write(mask1_cascade);
 
-        log::debug!("VirtIO IRQ 11 enabled");
+        log::debug!("IRQ 11 enabled (VirtIO + E1000)");
     }
+}
+
+/// Legacy alias for enable_irq11
+pub fn enable_virtio_irq() {
+    enable_irq11();
 }
 
 extern "x86-interrupt" fn debug_handler(stack_frame: InterruptStackFrame) {
@@ -460,27 +465,26 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
 }
 
 
-/// VirtIO block device interrupt handler
+/// Shared IRQ 11 handler for VirtIO block and E1000 network devices
 ///
 /// CRITICAL: This handler must be extremely fast. No logging, no allocations.
 /// Target: <1000 cycles total.
-///
-/// NOTE: Handler callback mechanism removed due to boot hang issue with atomic statics.
-/// For now, this is a minimal handler that just sends EOI.
-/// The VirtIO driver can poll for completion or use a different signaling mechanism.
-extern "x86-interrupt" fn virtio_block_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
-    // Call the device's interrupt handler if it exists
+    // Dispatch to VirtIO block if present
     if let Some(device) = crate::drivers::virtio::block::get_device() {
         device.handle_interrupt();
     }
 
+    // Dispatch to E1000 network if initialized
+    crate::drivers::e1000::handle_interrupt();
+
     // Send EOI to both PICs (IRQ 11 is on PIC2)
     unsafe {
         PICS.lock()
-            .notify_end_of_interrupt(InterruptIndex::VirtioBlock.as_u8());
+            .notify_end_of_interrupt(InterruptIndex::Irq11.as_u8());
     }
 
     // Exit hardware IRQ context

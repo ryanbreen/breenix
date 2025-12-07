@@ -225,6 +225,69 @@ fn main() {
     }
     // Hint firmware to route stdout to serial (fw_cfg toggle; ignored if unsupported)
     qemu.args(["-fw_cfg", "name=opt/org.tianocore/StdoutToSerial,string=1"]);
+
+    // Network configuration: BREENIX_NET_MODE controls the backend
+    // - "slirp" (default): User-mode NAT networking, no host interface needed
+    // - "vmnet": macOS vmnet-shared (requires sudo), creates real bridge interface
+    // - "socket_vmnet": Uses socket_vmnet daemon for host visibility WITHOUT sudo
+    // - "none": No networking
+    let net_mode = env::var("BREENIX_NET_MODE").unwrap_or_else(|_| "slirp".to_string());
+
+    // For socket_vmnet mode, we need to track that we'll wrap QEMU with the client
+    let use_socket_vmnet = net_mode == "socket_vmnet";
+
+    match net_mode.as_str() {
+        "vmnet" => {
+            // macOS vmnet-shared: Creates a real bridge interface on the host
+            // Requires: sudo or entitlements, QEMU built with vmnet support
+            // The guest gets DHCP from the host (192.168.64.x range typically)
+            // Host can see traffic with: sudo tcpdump -i bridge100 -nn
+            qemu.args([
+                "-netdev", "vmnet-shared,id=net0",
+                "-device", "e1000,netdev=net0,mac=52:54:00:12:34:56",
+            ]);
+            eprintln!("[qemu-uefi] Network: vmnet-shared (host bridge interface)");
+            eprintln!("[qemu-uefi]   To observe traffic: sudo tcpdump -i bridge100 -nn icmp");
+            eprintln!("[qemu-uefi]   Guest will get IP via DHCP (192.168.64.x range)");
+        }
+        "socket_vmnet" => {
+            // socket_vmnet: Privileged helper daemon provides vmnet access via Unix socket
+            // Install: brew install socket_vmnet && sudo brew services start socket_vmnet
+            // QEMU runs unprivileged; daemon handles vmnet interface creation
+            // File descriptor 3 is passed by socket_vmnet_client wrapper
+            // Build kernel with --features vmnet for 192.168.64.x static IP config
+            qemu.args([
+                "-netdev", "socket,id=net0,fd=3",
+                "-device", "e1000,netdev=net0,mac=52:54:00:12:34:56",
+            ]);
+            eprintln!("[qemu-uefi] Network: socket_vmnet (host bridge via daemon)");
+            eprintln!("[qemu-uefi]   To observe traffic: sudo tcpdump -i bridge102 -nn 'arp or icmp'");
+            eprintln!("[qemu-uefi]   Guest IP: 192.168.105.100 (static, build with --features vmnet)");
+        }
+        "none" => {
+            eprintln!("[qemu-uefi] Network: disabled");
+        }
+        _ => {
+            // Default: SLIRP user-mode networking
+            // Traffic is internal to QEMU, not visible on host interfaces
+            qemu.args([
+                "-netdev", "user,id=net0",
+                "-device", "e1000,netdev=net0,mac=52:54:00:12:34:56",
+            ]);
+            eprintln!("[qemu-uefi] Network: SLIRP user-mode (10.0.2.x internal)");
+        }
+    }
+
+    // Optional packet capture: BREENIX_PCAP_FILE=/path/to/capture.pcap
+    // Works with slirp and vmnet modes
+    if net_mode != "none" {
+        if let Ok(pcap_path) = env::var("BREENIX_PCAP_FILE") {
+            qemu.args([
+                "-object", &format!("filter-dump,id=dump0,netdev=net0,file={}", pcap_path),
+            ]);
+            eprintln!("[qemu-uefi] Packet capture: {}", pcap_path);
+        }
+    }
     // Forward any additional command-line arguments to QEMU (runner may supply -serial ...)
     let extra_args: Vec<String> = env::args().skip(1).collect();
     if !extra_args.is_empty() {
@@ -245,6 +308,65 @@ fn main() {
         eprintln!("[qemu-uefi] ════════════════════════════════════════════════════════");
     }
     eprintln!("[qemu-uefi] Launching QEMU...");
-    let exit_status = qemu.status().unwrap();
+
+    // For socket_vmnet mode, wrap QEMU with socket_vmnet_client
+    let exit_status = if use_socket_vmnet {
+        // socket_vmnet_client passes a vmnet file descriptor as fd=3 to the wrapped command
+        // Usage: socket_vmnet_client <socket_path> <command> [args...]
+        let socket_vmnet_client = PathBuf::from("/opt/homebrew/opt/socket_vmnet/bin/socket_vmnet_client");
+        let socket_path = PathBuf::from("/opt/homebrew/var/run/socket_vmnet");
+
+        if !socket_vmnet_client.exists() {
+            eprintln!();
+            eprintln!("╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("║  ❌ ERROR: socket_vmnet_client NOT FOUND                      ║");
+            eprintln!("╠══════════════════════════════════════════════════════════════╣");
+            eprintln!("║  socket_vmnet is required for host-visible networking.       ║");
+            eprintln!("║                                                              ║");
+            eprintln!("║  To install:                                                 ║");
+            eprintln!("║    brew install socket_vmnet                                 ║");
+            eprintln!("║    sudo brew services start socket_vmnet                     ║");
+            eprintln!("║                                                              ║");
+            eprintln!("║  Or use SLIRP mode (no host visibility):                     ║");
+            eprintln!("║    BREENIX_NET_MODE=slirp cargo run -p xtask -- boot-stages  ║");
+            eprintln!("╚══════════════════════════════════════════════════════════════╝");
+            eprintln!();
+            process::exit(1);
+        }
+
+        if !socket_path.exists() {
+            eprintln!();
+            eprintln!("╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("║  ❌ ERROR: socket_vmnet DAEMON NOT RUNNING                    ║");
+            eprintln!("╠══════════════════════════════════════════════════════════════╣");
+            eprintln!("║  The socket_vmnet daemon must be started first.              ║");
+            eprintln!("║                                                              ║");
+            eprintln!("║  To start:                                                   ║");
+            eprintln!("║    sudo brew services start socket_vmnet                     ║");
+            eprintln!("║                                                              ║");
+            eprintln!("║  To verify:                                                  ║");
+            eprintln!("║    ls -la /opt/homebrew/var/run/socket_vmnet                 ║");
+            eprintln!("╚══════════════════════════════════════════════════════════════╝");
+            eprintln!();
+            process::exit(1);
+        }
+
+        // Build wrapper command: socket_vmnet_client <socket> qemu-system-x86_64 [qemu_args...]
+        let mut wrapper = Command::new(&socket_vmnet_client);
+        wrapper.arg(&socket_path);
+        wrapper.arg("qemu-system-x86_64");
+
+        // Get all the args we've built for QEMU and pass them through
+        // We need to extract the args from the qemu Command - use get_args()
+        for arg in qemu.get_args() {
+            wrapper.arg(arg);
+        }
+
+        eprintln!("[qemu-uefi] Wrapping with socket_vmnet_client");
+        wrapper.status().unwrap()
+    } else {
+        qemu.status().unwrap()
+    };
+
     process::exit(exit_status.code().unwrap_or(-1));
 }

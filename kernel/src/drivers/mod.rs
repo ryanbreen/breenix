@@ -1,8 +1,9 @@
 //! Device drivers subsystem
 //!
 //! This module provides the driver infrastructure for Breenix, including
-//! PCI enumeration and device-specific drivers like VirtIO.
+//! PCI enumeration and device-specific drivers.
 
+pub mod e1000;
 pub mod pci;
 pub mod virtio;
 
@@ -34,6 +35,17 @@ pub fn init() -> usize {
         }
         Err(e) => {
             log::warn!("VirtIO block driver initialization failed: {}", e);
+        }
+    }
+
+    // Initialize E1000 network driver if device was found
+    match e1000::init() {
+        Ok(()) => {
+            log::info!("E1000 network driver initialized successfully");
+            // TODO: Enable E1000 IRQ when interrupt handler is wired up
+        }
+        Err(e) => {
+            log::warn!("E1000 network driver initialization failed: {}", e);
         }
     }
 

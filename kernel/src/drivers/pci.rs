@@ -42,6 +42,15 @@ pub const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
 pub const VIRTIO_BLOCK_DEVICE_ID_LEGACY: u16 = 0x1001;
 /// VirtIO block device ID (modern)
 pub const VIRTIO_BLOCK_DEVICE_ID_MODERN: u16 = 0x1042;
+/// VirtIO network device ID (legacy)
+pub const VIRTIO_NET_DEVICE_ID_LEGACY: u16 = 0x1000;
+/// VirtIO network device ID (modern)
+pub const VIRTIO_NET_DEVICE_ID_MODERN: u16 = 0x1041;
+
+/// Intel vendor ID (for reference - common in QEMU)
+pub const INTEL_VENDOR_ID: u16 = 0x8086;
+/// Red Hat / QEMU vendor ID
+pub const QEMU_VENDOR_ID: u16 = 0x1B36;
 
 /// PCI device class codes
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -174,6 +183,18 @@ impl Device {
         self.is_virtio()
             && (self.device_id == VIRTIO_BLOCK_DEVICE_ID_LEGACY
                 || self.device_id == VIRTIO_BLOCK_DEVICE_ID_MODERN)
+    }
+
+    /// Check if this is a VirtIO network device
+    pub fn is_virtio_net(&self) -> bool {
+        self.is_virtio()
+            && (self.device_id == VIRTIO_NET_DEVICE_ID_LEGACY
+                || self.device_id == VIRTIO_NET_DEVICE_ID_MODERN)
+    }
+
+    /// Check if this is any network controller
+    pub fn is_network(&self) -> bool {
+        self.class == DeviceClass::Network
     }
 
     /// Get the first valid memory-mapped BAR
@@ -465,6 +486,20 @@ static PCI_DEVICES: Mutex<Option<Vec<Device>>> = Mutex::new(None);
 /// Track whether PCI enumeration has completed
 static PCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// Get a human-readable vendor name for common vendors
+fn vendor_name(vendor_id: u16) -> &'static str {
+    match vendor_id {
+        VIRTIO_VENDOR_ID => "VirtIO",
+        INTEL_VENDOR_ID => "Intel",
+        QEMU_VENDOR_ID => "QEMU/RedHat",
+        0x1022 => "AMD",
+        0x10DE => "NVIDIA",
+        0x14E4 => "Broadcom",
+        0x10EC => "Realtek",
+        _ => "Unknown",
+    }
+}
+
 /// Enumerate all PCI devices on the bus
 ///
 /// Returns the total number of devices found.
@@ -473,6 +508,7 @@ pub fn enumerate() -> usize {
 
     let mut devices = Vec::new();
     let mut virtio_block_count = 0;
+    let mut network_count = 0;
 
     for bus in 0..=MAX_BUS {
         for device in 0..MAX_DEVICE {
@@ -480,34 +516,47 @@ pub fn enumerate() -> usize {
             if let Some(dev) = probe_device(bus, device, 0) {
                 let is_multifunction = dev.multifunction;
 
-                // Log interesting devices
+                // Log ALL discovered devices for visibility
+                log::info!(
+                    "PCI: {:02x}:{:02x}.{} [{:04x}:{:04x}] {} {:?}/0x{:02x} IRQ={}",
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    dev.vendor_id,
+                    dev.device_id,
+                    vendor_name(dev.vendor_id),
+                    dev.class,
+                    dev.subclass,
+                    dev.interrupt_line
+                );
+
+                // Log BAR info for all devices with valid BARs
+                for (i, bar) in dev.bars.iter().enumerate() {
+                    if bar.is_valid() {
+                        log::debug!(
+                            "PCI:   BAR{}: addr={:#x} size={:#x} {}",
+                            i,
+                            bar.address,
+                            bar.size,
+                            if bar.is_io { "I/O" } else { "MMIO" }
+                        );
+                    }
+                }
+
+                // Track specific device types
                 if dev.is_virtio_block() {
                     virtio_block_count += 1;
+                }
+                if dev.is_network() {
+                    network_count += 1;
                     log::info!(
-                        "PCI: Found VirtIO block device at {:02x}:{:02x}.0 (IRQ {})",
-                        bus,
-                        device,
-                        dev.interrupt_line
+                        "PCI:   -> Network controller detected!{}",
+                        if dev.is_virtio_net() { " (VirtIO-net)" } else { "" }
                     );
-                    // Log BAR info for VirtIO devices
-                    for (i, bar) in dev.bars.iter().enumerate() {
-                        if bar.is_valid() {
-                            log::info!(
-                                "PCI:   BAR{}: addr={:#x} size={:#x} {}",
-                                i,
-                                bar.address,
-                                bar.size,
-                                if bar.is_io { "I/O" } else { "MMIO" }
-                            );
-                        }
+                    // Boot stage marker for E1000 detection
+                    if dev.vendor_id == 0x8086 && dev.device_id == 0x100e {
+                        log::info!("E1000 network device found");
                     }
-                } else if dev.is_virtio() {
-                    log::info!(
-                        "PCI: Found VirtIO device {:04x} at {:02x}:{:02x}.0",
-                        dev.device_id,
-                        bus,
-                        device
-                    );
                 }
 
                 devices.push(dev);
@@ -516,14 +565,32 @@ pub fn enumerate() -> usize {
                 if is_multifunction {
                     for function in 1..MAX_FUNCTION {
                         if let Some(func_dev) = probe_device(bus, device, function) {
+                            log::info!(
+                                "PCI: {:02x}:{:02x}.{} [{:04x}:{:04x}] {} {:?}/0x{:02x} IRQ={}",
+                                func_dev.bus,
+                                func_dev.device,
+                                func_dev.function,
+                                func_dev.vendor_id,
+                                func_dev.device_id,
+                                vendor_name(func_dev.vendor_id),
+                                func_dev.class,
+                                func_dev.subclass,
+                                func_dev.interrupt_line
+                            );
+
                             if func_dev.is_virtio_block() {
                                 virtio_block_count += 1;
+                            }
+                            if func_dev.is_network() {
+                                network_count += 1;
                                 log::info!(
-                                    "PCI: Found VirtIO block device at {:02x}:{:02x}.{}",
-                                    bus,
-                                    device,
-                                    function
+                                    "PCI:   -> Network controller detected!{}",
+                                    if func_dev.is_virtio_net() { " (VirtIO-net)" } else { "" }
                                 );
+                                // Boot stage marker for E1000 detection
+                                if func_dev.vendor_id == 0x8086 && func_dev.device_id == 0x100e {
+                                    log::info!("E1000 network device found");
+                                }
                             }
                             devices.push(func_dev);
                         }
@@ -535,9 +602,10 @@ pub fn enumerate() -> usize {
 
     let device_count = devices.len();
     log::info!(
-        "PCI: Enumeration complete. Found {} devices ({} VirtIO block)",
+        "PCI: Enumeration complete. Found {} devices ({} VirtIO block, {} network)",
         device_count,
-        virtio_block_count
+        virtio_block_count,
+        network_count
     );
 
     // Store devices globally
@@ -566,6 +634,26 @@ pub fn find_virtio_block_devices() -> Vec<Device> {
     let devices = PCI_DEVICES.lock();
     match devices.as_ref() {
         Some(devs) => devs.iter().filter(|d| d.is_virtio_block()).cloned().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Find all network controller devices
+#[allow(dead_code)] // Part of public API, will be used by network driver
+pub fn find_network_devices() -> Vec<Device> {
+    let devices = PCI_DEVICES.lock();
+    match devices.as_ref() {
+        Some(devs) => devs.iter().filter(|d| d.is_network()).cloned().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Find all VirtIO network devices
+#[allow(dead_code)] // Part of public API, will be used by VirtIO-net driver
+pub fn find_virtio_net_devices() -> Vec<Device> {
+    let devices = PCI_DEVICES.lock();
+    match devices.as_ref() {
+        Some(devs) => devs.iter().filter(|d| d.is_virtio_net()).cloned().collect(),
         None => Vec::new(),
     }
 }

@@ -32,13 +32,18 @@ struct Timespec {
 }
 
 // Syscall wrappers
+// Note: int 0x80 can clobber rcx and r11, and may access memory.
+// We must declare these clobbers so the compiler doesn't keep local
+// variables in those registers across syscalls.
 unsafe fn syscall0(n: u64) -> u64 {
     let ret: u64;
     core::arch::asm!(
         "int 0x80",
         in("rax") n,
         lateout("rax") ret,
-        options(nostack, preserves_flags)
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
     );
     ret
 }
@@ -50,7 +55,9 @@ unsafe fn syscall1(n: u64, arg1: u64) -> u64 {
         in("rax") n,
         in("rdi") arg1,
         lateout("rax") ret,
-        options(nostack, preserves_flags)
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
     );
     ret
 }
@@ -63,7 +70,9 @@ unsafe fn syscall2(n: u64, arg1: u64, arg2: u64) -> u64 {
         in("rdi") arg1,
         in("rsi") arg2,
         lateout("rax") ret,
-        options(nostack, preserves_flags)
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
     );
     ret
 }
@@ -77,7 +86,9 @@ unsafe fn syscall3(n: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
         in("rsi") arg2,
         in("rdx") arg3,
         lateout("rax") ret,
-        options(nostack, preserves_flags)
+        lateout("rcx") _,
+        lateout("r11") _,
+        options(nostack)
     );
     ret
 }
@@ -266,6 +277,7 @@ fn test_41d_register_preservation() -> bool {
             out("rax") _,
             lateout("rcx") _,
             lateout("r11") _,
+            options(nostack, preserves_flags)
         );
     }
 
@@ -368,6 +380,11 @@ pub extern "C" fn _start() -> ! {
     write_str("\n=== SUMMARY: ");
     write_num(passed);
     write_str("/5 tests passed ===\n");
+    write_str("DEBUG: passed=");
+    write_num(passed);
+    write_str(", failed=");
+    write_num(failed);
+    write_str("\n");
 
     if failed == 0 {
         write_str("\n✓ All diagnostic tests passed\n");
