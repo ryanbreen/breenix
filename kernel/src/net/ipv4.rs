@@ -3,6 +3,7 @@
 //! Implements basic IPv4 packet handling (RFC 791).
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use super::ethernet::EthernetFrame;
 use super::icmp;
@@ -124,12 +125,9 @@ impl<'a> Ipv4Packet<'a> {
         packet.push(0);
         // Total length
         packet.extend_from_slice(&total_length.to_be_bytes());
-        // Identification (use a simple counter or random)
-        static mut PACKET_ID: u16 = 0;
-        let id = unsafe {
-            PACKET_ID = PACKET_ID.wrapping_add(1);
-            PACKET_ID
-        };
+        // Identification (use a simple counter)
+        static PACKET_ID: AtomicU16 = AtomicU16::new(0);
+        let id = PACKET_ID.fetch_add(1, Ordering::Relaxed);
         packet.extend_from_slice(&id.to_be_bytes());
         // Flags (Don't Fragment) + Fragment offset (0)
         packet.extend_from_slice(&0x4000u16.to_be_bytes());

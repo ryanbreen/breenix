@@ -332,7 +332,7 @@ impl E1000 {
 
         // Wait for the descriptor to be available
         // In a real driver, we'd use interrupts, but for now poll
-        if self.tx_ring[idx].is_done() == false {
+        if !self.tx_ring[idx].is_done() {
             let cmd = unsafe { read_volatile(&self.tx_ring[idx].cmd) };
             if cmd & TXD_CMD_RS != 0 {
                 return Err("TX ring full");
@@ -369,6 +369,8 @@ impl E1000 {
         // Wait for transmit to complete (polling for now)
         for _ in 0..100000 {
             if self.tx_ring[idx].is_done() {
+                // Buffer must not be deallocated - hardware still has DMA address
+                core::mem::forget(tx_buffer);
                 return Ok(());
             }
             core::hint::spin_loop();
