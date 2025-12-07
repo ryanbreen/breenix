@@ -42,6 +42,10 @@ BINARIES=(
     "syscall_diagnostic_test"
     "brk_test"
     "test_mmap"
+    "signal_test"
+    "signal_handler_test"
+    "signal_return_test"
+    "signal_regs_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."
@@ -93,4 +97,5 @@ echo "  - libbreenix::process (exit, fork, exec, getpid, gettid, yield)"
 echo "  - libbreenix::io (read, write, print, println)"
 echo "  - libbreenix::time (clock_gettime)"
 echo "  - libbreenix::memory (brk, sbrk)"
+echo "  - libbreenix::signal (kill, sigaction, sigprocmask)"
 echo "========================================"

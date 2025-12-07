@@ -2,6 +2,7 @@
 
 use crate::memory::process_memory::ProcessPageTable;
 use crate::memory::stack::GuardedStack;
+use crate::signal::SignalState;
 use crate::task::thread::Thread;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -90,6 +91,9 @@ pub struct Process {
     /// Next hint address for mmap allocation (grows downward)
     #[allow(dead_code)]
     pub mmap_hint: u64,
+
+    /// Signal handling state (pending, blocked, handlers)
+    pub signals: SignalState,
 }
 
 /// Memory usage tracking
@@ -124,6 +128,7 @@ impl Process {
             heap_end: 0,
             vmas: alloc::vec::Vec::new(),
             mmap_hint: crate::memory::vma::MMAP_REGION_END,
+            signals: SignalState::default(),
         }
     }
 

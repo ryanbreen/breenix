@@ -45,5 +45,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Mmap => super::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6),
         SyscallNumber::Munmap => super::mmap::sys_munmap(arg1, arg2),
         SyscallNumber::Mprotect => super::mmap::sys_mprotect(arg1, arg2, arg3 as u32),
+        SyscallNumber::Kill => super::signal::sys_kill(arg1 as i64, arg2 as i32),
+        SyscallNumber::Sigaction => super::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4),
+        SyscallNumber::Sigprocmask => super::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4),
+        SyscallNumber::Sigreturn => super::signal::sys_sigreturn(),
     }
 }

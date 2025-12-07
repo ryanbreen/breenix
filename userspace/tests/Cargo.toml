@@ -54,6 +54,22 @@ path = "brk_test.rs"
 name = "test_mmap"
 path = "test_mmap.rs"
 
+[[bin]]
+name = "signal_test"
+path = "signal_test.rs"
+
+[[bin]]
+name = "signal_handler_test"
+path = "signal_handler_test.rs"
+
+[[bin]]
+name = "signal_return_test"
+path = "signal_return_test.rs"
+
+[[bin]]
+name = "signal_regs_test"
+path = "signal_regs_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
