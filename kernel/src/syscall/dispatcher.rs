@@ -44,5 +44,6 @@ pub fn dispatch_syscall(
         SyscallNumber::Brk => super::memory::sys_brk(arg1),
         SyscallNumber::Mmap => super::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6),
         SyscallNumber::Munmap => super::mmap::sys_munmap(arg1, arg2),
+        SyscallNumber::Mprotect => super::mmap::sys_mprotect(arg1, arg2, arg3 as u32),
     }
 }

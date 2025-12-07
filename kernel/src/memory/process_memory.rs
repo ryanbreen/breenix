@@ -987,6 +987,61 @@ impl ProcessPageTable {
         Ok(frame)
     }
 
+    /// Update the flags of an already-mapped page
+    ///
+    /// This is used by mprotect to change page protections without remapping.
+    /// The page must already be mapped; if not, this returns an error.
+    pub fn update_page_flags(
+        &mut self,
+        page: Page<Size4KiB>,
+        new_flags: PageTableFlags,
+    ) -> Result<(), &'static str> {
+        // First, check if the page is mapped and get the physical frame
+        let frame = self
+            .mapper
+            .translate_page(page)
+            .map_err(|_| "Page not mapped")?;
+
+        // Unmap the page (get the frame back)
+        let (unmapped_frame, _flush) = self
+            .mapper
+            .unmap(page)
+            .map_err(|_| "Failed to unmap page for flag update")?;
+
+        // Sanity check: the frame should match
+        if unmapped_frame != frame {
+            log::error!(
+                "update_page_flags: frame mismatch! translate returned {:?}, unmap returned {:?}",
+                frame,
+                unmapped_frame
+            );
+            return Err("Frame mismatch during flag update");
+        }
+
+        // Remap with new flags
+        // We need to determine appropriate table flags based on the new page flags
+        let table_flags = if new_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE
+        } else {
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE
+        };
+
+        unsafe {
+            self.mapper
+                .map_to_with_table_flags(
+                    page,
+                    frame,
+                    new_flags,
+                    table_flags,
+                    &mut GlobalFrameAllocator,
+                )
+                .map_err(|_| "Failed to remap page with new flags")?
+                .ignore(); // Don't flush - caller will handle TLB
+        }
+
+        Ok(())
+    }
+
     /// Translate a virtual address to physical address
     #[allow(dead_code)]
     pub fn translate(&self, addr: VirtAddr) -> Option<PhysAddr> {

@@ -157,5 +157,34 @@ pub fn munmap(addr: *mut u8, length: usize) -> i32 {
     result as i32
 }
 
-// Future syscalls (not yet implemented in kernel):
-// pub fn mprotect(...) -> i64
+/// Change protection of a memory region.
+///
+/// # Arguments
+/// * `addr` - Start address (must be page-aligned)
+/// * `length` - Size of region
+/// * `prot` - New protection flags (PROT_READ, PROT_WRITE, PROT_EXEC)
+///
+/// # Returns
+/// 0 on success, -1 on error
+///
+/// # Example
+/// ```rust,ignore
+/// use libbreenix::memory::{mmap, mprotect, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
+/// use core::ptr::null_mut;
+///
+/// // Map read-write
+/// let ptr = mmap(null_mut(), 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+///
+/// // Change to read-only
+/// let result = mprotect(ptr, 4096, PROT_READ);
+/// if result == 0 {
+///     // Success - memory is now read-only
+/// }
+/// ```
+#[inline]
+pub fn mprotect(addr: *mut u8, length: usize, prot: i32) -> i32 {
+    let result = unsafe {
+        raw::syscall3(nr::MPROTECT, addr as u64, length as u64, prot as u64)
+    };
+    result as i32
+}

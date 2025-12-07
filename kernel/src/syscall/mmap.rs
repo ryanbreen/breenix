@@ -271,6 +271,120 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
     SyscallResult::Ok(start_addr)
 }
 
+/// Syscall 10: mprotect - Change protection of memory region
+///
+/// Arguments:
+/// - addr: Start address (must be page-aligned)
+/// - length: Size of region (will be rounded up to page size)
+/// - prot: New protection flags (PROT_READ=1, PROT_WRITE=2, PROT_EXEC=4)
+///
+/// Returns: 0 on success, negative errno on error
+pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
+    let new_prot = Protection::from_bits_truncate(prot);
+
+    log::info!(
+        "sys_mprotect: addr={:#x} length={:#x} prot={:?}",
+        addr, length, new_prot
+    );
+
+    // Validate addr is page-aligned
+    if !is_page_aligned(addr) {
+        log::warn!("sys_mprotect: address not page-aligned");
+        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    }
+
+    // Validate length
+    if length == 0 {
+        log::warn!("sys_mprotect: length is 0");
+        return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+    }
+
+    // Round length up to page size
+    let length = round_up_to_page(length);
+    let end_addr = match addr.checked_add(length) {
+        Some(a) => a,
+        None => {
+            log::warn!("sys_mprotect: addr + length would overflow");
+            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+        }
+    };
+
+    // Get current thread and process
+    let current_thread_id = match crate::per_cpu::current_thread() {
+        Some(thread) => thread.id,
+        None => {
+            log::error!("sys_mprotect: No current thread in per-CPU data!");
+            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        }
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let manager = match *manager_guard {
+        Some(ref mut m) => m,
+        None => {
+            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        }
+    };
+
+    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        Some(p) => p,
+        None => {
+            log::error!("sys_mprotect: No process found for thread_id={}", current_thread_id);
+            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        }
+    };
+
+    // Find the VMA that contains this address range
+    // For simplicity, require exact match on start address
+    let vma_index = process.vmas.iter().position(|vma| {
+        vma.start.as_u64() == addr && vma.end.as_u64() >= end_addr
+    });
+
+    let vma_index = match vma_index {
+        Some(idx) => idx,
+        None => {
+            log::warn!("sys_mprotect: no VMA found containing {:#x}..{:#x}", addr, end_addr);
+            return SyscallResult::Err(ErrorCode::InvalidArgument as u64);
+        }
+    };
+
+    // Get the process page table
+    let page_table = match process.page_table.as_mut() {
+        Some(pt) => pt,
+        None => {
+            log::error!("sys_mprotect: No page table for process!");
+            return SyscallResult::Err(ErrorCode::OutOfMemory as u64);
+        }
+    };
+
+    // Update page table flags for each page in the range
+    let new_flags = prot_to_page_flags(new_prot);
+    let start_page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+    let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(end_addr - 1));
+
+    let mut pages_updated = 0u32;
+    for page in Page::range_inclusive(start_page, end_page) {
+        match page_table.update_page_flags(page, new_flags) {
+            Ok(()) => {
+                // Flush TLB for this page to ensure new flags take effect
+                tlb::flush(page.start_address());
+                pages_updated += 1;
+            }
+            Err(e) => {
+                log::warn!("sys_mprotect: update_page_flags failed for {:#x}: {}", page.start_address().as_u64(), e);
+                // Continue trying to update other pages
+            }
+        }
+    }
+
+    log::info!("sys_mprotect: Successfully updated {} pages", pages_updated);
+
+    // Update VMA protection flags
+    process.vmas[vma_index].prot = new_prot;
+
+    SyscallResult::Ok(0)
+}
+
 /// Syscall 11: munmap - Unmap memory from process address space
 ///
 /// Arguments:
