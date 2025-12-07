@@ -136,6 +136,8 @@ pub struct E1000 {
     rx_buffers: Vec<Box<[u8; RX_BUFFER_SIZE]>>,
     /// Transmit descriptor ring
     tx_ring: Box<[TxDesc; TX_RING_SIZE]>,
+    /// Transmit buffers (pre-allocated, reused for DMA)
+    tx_buffers: Vec<Box<[u8; ETH_FRAME_MAX]>>,
     /// Current receive descriptor index
     rx_cur: usize,
     /// Current transmit descriptor index
@@ -330,8 +332,8 @@ impl E1000 {
 
         let idx = self.tx_cur;
 
-        // Wait for the descriptor to be available
-        // In a real driver, we'd use interrupts, but for now poll
+        // Check if the descriptor is available
+        // The buffer can be reused once the descriptor's DD bit is set
         if !self.tx_ring[idx].is_done() {
             let cmd = unsafe { read_volatile(&self.tx_ring[idx].cmd) };
             if cmd & TXD_CMD_RS != 0 {
@@ -339,9 +341,9 @@ impl E1000 {
             }
         }
 
-        // Copy data to a buffer (we need a stable physical address)
-        // For now, allocate a buffer each time (inefficient but simple)
-        let mut tx_buffer = Box::new([0u8; ETH_FRAME_MAX]);
+        // Copy data to the pre-allocated buffer at this index
+        // This buffer is reused - no allocation needed
+        let tx_buffer = &mut self.tx_buffers[idx];
         tx_buffer[..data.len()].copy_from_slice(data);
         let buf_virt = tx_buffer.as_ptr() as usize;
         let phys_addr = Self::virt_to_phys(buf_virt);
@@ -369,8 +371,7 @@ impl E1000 {
         // Wait for transmit to complete (polling for now)
         for _ in 0..100000 {
             if self.tx_ring[idx].is_done() {
-                // Buffer must not be deallocated - hardware still has DMA address
-                core::mem::forget(tx_buffer);
+                // Buffer remains allocated in tx_buffers[idx] for reuse
                 return Ok(());
             }
             core::hint::spin_loop();
@@ -384,9 +385,6 @@ impl E1000 {
             "E1000: TX timeout TDH={} TDT={} desc.status={:#x}",
             tdh_after, tdt_after, status
         );
-
-        // Don't leak the buffer if we timeout
-        core::mem::forget(tx_buffer);
 
         Err("TX timeout")
     }
@@ -528,6 +526,12 @@ pub fn init() -> Result<(), &'static str> {
         rx_buffers.push(Box::new([0u8; RX_BUFFER_SIZE]));
     }
 
+    // Allocate transmit buffers (pre-allocated for reuse, prevents memory leaks)
+    let mut tx_buffers = Vec::with_capacity(TX_RING_SIZE);
+    for _ in 0..TX_RING_SIZE {
+        tx_buffers.push(Box::new([0u8; ETH_FRAME_MAX]));
+    }
+
     // Create driver instance
     let mut driver = E1000 {
         pci_device: device,
@@ -535,6 +539,7 @@ pub fn init() -> Result<(), &'static str> {
         rx_ring,
         rx_buffers,
         tx_ring,
+        tx_buffers,
         rx_cur: 0,
         tx_cur: 0,
         mac_addr: [0; 6],

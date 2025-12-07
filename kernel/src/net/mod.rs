@@ -101,8 +101,10 @@ pub fn init() {
             core::hint::spin_loop();
         }
         // Check if we got the ARP reply yet
-        if arp::lookup(&gateway).is_some() {
-            log::info!("ARP request successful - gateway MAC resolved");
+        if let Some(gateway_mac) = arp::lookup(&gateway) {
+            log::info!("NET: ARP resolved gateway MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                gateway_mac[0], gateway_mac[1], gateway_mac[2],
+                gateway_mac[3], gateway_mac[4], gateway_mac[5]);
             break;
         }
     }

@@ -114,7 +114,7 @@ pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
         }
         ICMP_ECHO_REPLY => {
             log::info!(
-                "ICMP: Echo reply from {}.{}.{}.{} seq={} (RTT calculation not implemented)",
+                "NET: ICMP echo reply received from {}.{}.{}.{} seq={}",
                 ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
                 icmp.sequence
             );

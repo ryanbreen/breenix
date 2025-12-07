@@ -171,6 +171,18 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "net/arp.rs:request() and drivers/e1000/mod.rs:transmit() - check TX descriptor setup and transmission",
         },
         BootStage {
+            name: "ARP reply received and gateway MAC resolved",
+            marker: "NET: ARP resolved gateway MAC:",
+            failure_meaning: "ARP request was sent but no reply received - network RX path broken or gateway not responding",
+            check_hint: "net/arp.rs:handle_arp() - check E1000 RX descriptor processing, interrupt handling, and ARP reply parsing",
+        },
+        BootStage {
+            name: "ICMP echo reply received from gateway",
+            marker: "NET: ICMP echo reply received from",
+            failure_meaning: "Ping was sent but no reply received - ICMP handling broken or gateway not responding to ping",
+            check_hint: "net/icmp.rs:handle_icmp() - check ICMP echo reply processing and IPv4 packet handling",
+        },
+        BootStage {
             name: "IST stacks updated",
             marker: "Updated IST stacks with per-CPU emergency",
             failure_meaning: "Interrupt stack tables not configured",
