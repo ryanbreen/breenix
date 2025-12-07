@@ -34,44 +34,49 @@ pub fn deliver_pending_signals(
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> bool {
-    // Get next deliverable signal
-    let sig = match process.signals.next_deliverable_signal() {
-        Some(s) => s,
-        None => return false,
-    };
+    // Process all deliverable signals in a loop (avoids unbounded recursion)
+    loop {
+        // Get next deliverable signal
+        let sig = match process.signals.next_deliverable_signal() {
+            Some(s) => s,
+            None => return false,
+        };
 
-    // Clear pending flag for this signal
-    process.signals.clear_pending(sig);
+        // Clear pending flag for this signal
+        process.signals.clear_pending(sig);
 
-    // Get the handler for this signal
-    let action = *process.signals.get_handler(sig);
+        // Get the handler for this signal
+        let action = *process.signals.get_handler(sig);
 
-    log::debug!(
-        "Delivering signal {} ({}) to process {}, handler={:#x}",
-        sig,
-        signal_name(sig),
-        process.id.as_u64(),
-        action.handler
-    );
+        log::debug!(
+            "Delivering signal {} ({}) to process {}, handler={:#x}",
+            sig,
+            signal_name(sig),
+            process.id.as_u64(),
+            action.handler
+        );
 
-    match action.handler {
-        SIG_DFL => deliver_default_action(process, sig),
-        SIG_IGN => {
-            log::debug!(
-                "Signal {} ignored by process {}",
-                sig,
-                process.id.as_u64()
-            );
-            // Check for more signals
-            if process.signals.has_deliverable_signals() {
-                deliver_pending_signals(process, interrupt_frame, saved_regs)
-            } else {
-                false
+        match action.handler {
+            SIG_DFL => {
+                // Default action may terminate/stop the process
+                if deliver_default_action(process, sig) {
+                    return true;
+                }
+                // Default action was Ignore or Continue with no state change - check for more signals
             }
-        }
-        handler_addr => {
-            // User-defined handler
-            deliver_to_user_handler(process, interrupt_frame, saved_regs, sig, handler_addr, &action)
+            SIG_IGN => {
+                log::debug!(
+                    "Signal {} ignored by process {}",
+                    sig,
+                    process.id.as_u64()
+                );
+                // Signal ignored - continue loop to check for more signals
+            }
+            handler_addr => {
+                // User-defined handler - set up signal frame and return
+                // Only one user handler can be delivered at a time
+                return deliver_to_user_handler(process, interrupt_frame, saved_regs, sig, handler_addr, &action);
+            }
         }
     }
 }

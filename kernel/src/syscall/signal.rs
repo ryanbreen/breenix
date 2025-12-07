@@ -388,9 +388,12 @@ const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> SyscallResult {
     use crate::signal::types::SignalFrame;
 
-    // The signal frame is at the user's current RSP
-    // (We set RSP to point to the signal frame when delivering the signal)
-    let signal_frame_ptr = frame.rsp as *const SignalFrame;
+    // The signal frame is at RSP - 8
+    // When we delivered the signal, we set RSP to point to the signal frame.
+    // The signal handler's 'ret' instruction popped the return address (trampoline_addr)
+    // from RSP, incrementing it by 8. So the signal frame starts 8 bytes below
+    // the current RSP.
+    let signal_frame_ptr = (frame.rsp - 8) as *const SignalFrame;
 
     // Read the signal frame from userspace (with validation)
     let signal_frame = match copy_from_user(signal_frame_ptr) {
