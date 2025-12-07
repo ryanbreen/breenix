@@ -50,6 +50,10 @@ path = "syscall_diagnostic_test.rs"
 name = "brk_test"
 path = "brk_test.rs"
 
+[[bin]]
+name = "test_mmap"
+path = "test_mmap.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

@@ -8,6 +8,7 @@ pub mod per_cpu_stack;
 pub mod process_memory;
 pub mod stack;
 pub mod tlb;
+pub mod vma;
 
 use bootloader_api::info::MemoryRegions;
 use conquer_once::spin::OnceCell;

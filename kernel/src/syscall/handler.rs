@@ -121,6 +121,20 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Yield) => super::handlers::sys_yield(),
         Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
         Some(SyscallNumber::Fork) => super::handlers::sys_fork_with_frame(frame),
+        Some(SyscallNumber::Mmap) => {
+            let addr = args.0;
+            let length = args.1;
+            let prot = args.2 as u32;
+            let flags = args.3 as u32;
+            let fd = args.4 as i64;
+            let offset = args.5;
+            super::mmap::sys_mmap(addr, length, prot, flags, fd, offset)
+        }
+        Some(SyscallNumber::Munmap) => {
+            let addr = args.0;
+            let length = args.1;
+            super::mmap::sys_munmap(addr, length)
+        }
         Some(SyscallNumber::Exec) => super::handlers::sys_exec(args.0, args.1),
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),

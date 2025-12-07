@@ -58,7 +58,104 @@ pub fn sbrk(size: usize) -> *mut u8 {
     }
 }
 
+// mmap/munmap syscalls (Phase 9)
+
+/// Protection flags for mmap
+pub const PROT_NONE: i32 = 0;
+pub const PROT_READ: i32 = 1;
+pub const PROT_WRITE: i32 = 2;
+pub const PROT_EXEC: i32 = 4;
+
+/// Map flags for mmap
+pub const MAP_SHARED: i32 = 0x01;
+pub const MAP_PRIVATE: i32 = 0x02;
+pub const MAP_FIXED: i32 = 0x10;
+pub const MAP_ANONYMOUS: i32 = 0x20;
+
+/// Error return value for mmap
+pub const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
+
+/// Map memory into the process address space.
+///
+/// # Arguments
+/// * `addr` - Hint address (null for kernel to choose)
+/// * `length` - Size of mapping
+/// * `prot` - Protection flags (PROT_READ, PROT_WRITE, PROT_EXEC)
+/// * `flags` - Mapping flags (MAP_PRIVATE, MAP_ANONYMOUS, etc.)
+/// * `fd` - File descriptor (-1 for anonymous)
+/// * `offset` - File offset
+///
+/// # Returns
+/// Pointer to mapped region, or MAP_FAILED on error
+///
+/// # Example
+/// ```rust,ignore
+/// use libbreenix::memory::{mmap, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANONYMOUS};
+/// use core::ptr::null_mut;
+///
+/// let ptr = mmap(
+///     null_mut(),
+///     4096,
+///     PROT_READ | PROT_WRITE,
+///     MAP_PRIVATE | MAP_ANONYMOUS,
+///     -1,
+///     0,
+/// );
+/// ```
+#[inline]
+pub fn mmap(
+    addr: *mut u8,
+    length: usize,
+    prot: i32,
+    flags: i32,
+    fd: i32,
+    offset: i64,
+) -> *mut u8 {
+    let result = unsafe {
+        raw::syscall6(
+            nr::MMAP,
+            addr as u64,
+            length as u64,
+            prot as u64,
+            flags as u64,
+            fd as u64,
+            offset as u64,
+        )
+    };
+
+    // Check for error (negative values)
+    if (result as i64) < 0 {
+        MAP_FAILED
+    } else {
+        result as *mut u8
+    }
+}
+
+/// Unmap memory from the process address space.
+///
+/// # Arguments
+/// * `addr` - Address of mapping to unmap
+/// * `length` - Size of mapping
+///
+/// # Returns
+/// 0 on success, -1 on error
+///
+/// # Example
+/// ```rust,ignore
+/// use libbreenix::memory::munmap;
+///
+/// let result = munmap(ptr, 4096);
+/// if result == 0 {
+///     // Success
+/// }
+/// ```
+#[inline]
+pub fn munmap(addr: *mut u8, length: usize) -> i32 {
+    let result = unsafe {
+        raw::syscall2(nr::MUNMAP, addr as u64, length as u64)
+    };
+    result as i32
+}
+
 // Future syscalls (not yet implemented in kernel):
-// pub fn mmap(...) -> *mut u8
-// pub fn munmap(...) -> i64
 // pub fn mprotect(...) -> i64
