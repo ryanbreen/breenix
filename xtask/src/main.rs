@@ -469,6 +469,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Registers not correctly preserved across signal delivery and sigreturn - SignalFrame save/restore broken",
             check_hint: "Check SignalFrame save/restore in kernel/src/signal/delivery.rs and sys_sigreturn in kernel/src/syscall/signal.rs - verify all 15 general-purpose registers (rax-r15) are saved and restored",
         },
+        // IPC (pipe) tests
+        BootStage {
+            name: "Pipe IPC test passed",
+            marker: "PIPE_TEST_PASSED",
+            failure_meaning: "pipe() syscall test failed - pipe creation, read/write, or close broken",
+            check_hint: "Check kernel/src/syscall/pipe.rs and kernel/src/ipc/pipe.rs - verify pipe creation, fd allocation, and read/write operations",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

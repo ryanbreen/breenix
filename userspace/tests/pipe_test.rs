@@ -223,8 +223,9 @@ pub extern "C" fn _start() -> ! {
     }
     write_str("  Closed write fd\n");
 
-    // All tests passed
+    // All tests passed - emit boot stage markers
     write_str("USERSPACE PIPE: ALL TESTS PASSED\n");
+    write_str("PIPE_TEST_PASSED\n");
     unsafe {
         syscall1(SYS_EXIT, 0);
     }
