@@ -1,5 +1,6 @@
 //! Process structure and lifecycle
 
+use crate::ipc::FdTable;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::memory::stack::GuardedStack;
 use crate::signal::SignalState;
@@ -94,6 +95,9 @@ pub struct Process {
 
     /// Signal handling state (pending, blocked, handlers)
     pub signals: SignalState,
+
+    /// File descriptor table
+    pub fd_table: FdTable,
 }
 
 /// Memory usage tracking
@@ -129,6 +133,7 @@ impl Process {
             vmas: alloc::vec::Vec::new(),
             mmap_hint: crate::memory::vma::MMAP_REGION_END,
             signals: SignalState::default(),
+            fd_table: FdTable::new(),
         }
     }
 

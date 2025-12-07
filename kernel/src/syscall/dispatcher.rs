@@ -49,5 +49,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Sigaction => super::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4),
         SyscallNumber::Sigprocmask => super::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4),
         SyscallNumber::Sigreturn => super::signal::sys_sigreturn(),
+        SyscallNumber::Pipe => super::pipe::sys_pipe(arg1),
+        SyscallNumber::Close => super::pipe::sys_close(arg1 as i32),
     }
 }

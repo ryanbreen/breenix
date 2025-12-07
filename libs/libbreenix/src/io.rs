@@ -89,3 +89,30 @@ pub fn println(s: &str) {
     stdout().write_str(s);
     stdout().write(b"\n");
 }
+
+/// Close a file descriptor.
+///
+/// # Arguments
+/// * `fd` - File descriptor to close
+///
+/// # Returns
+/// 0 on success, negative errno on error.
+#[inline]
+pub fn close(file: Fd) -> i64 {
+    unsafe { raw::syscall1(nr::CLOSE, file) as i64 }
+}
+
+/// Create a pipe.
+///
+/// Creates a unidirectional data channel. pipefd[0] is the read end,
+/// pipefd[1] is the write end.
+///
+/// # Arguments
+/// * `pipefd` - Array to receive the two file descriptors
+///
+/// # Returns
+/// 0 on success, negative errno on error.
+#[inline]
+pub fn pipe(pipefd: &mut [i32; 2]) -> i64 {
+    unsafe { raw::syscall1(nr::PIPE, pipefd.as_mut_ptr() as u64) as i64 }
+}
