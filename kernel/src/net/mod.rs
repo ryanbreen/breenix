@@ -6,11 +6,15 @@
 //! - IPv4 packet handling
 //! - ICMP echo (ping) request/reply
 
+extern crate alloc;
+
 pub mod arp;
 pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
+pub mod udp;
 
+use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::drivers::e1000;
@@ -54,6 +58,43 @@ pub const DEFAULT_CONFIG: NetConfig = VMNET_CONFIG;
 pub const DEFAULT_CONFIG: NetConfig = SLIRP_CONFIG;
 
 static NET_CONFIG: Mutex<NetConfig> = Mutex::new(DEFAULT_CONFIG);
+
+/// Maximum number of packets to queue in loopback queue
+/// Prevents unbounded memory growth if drain_loopback_queue() is not called
+const MAX_LOOPBACK_QUEUE_SIZE: usize = 32;
+
+/// Loopback packet queue for deferred delivery
+/// Packets sent to our own IP are queued here and delivered after the sender releases locks
+struct LoopbackPacket {
+    /// Raw IP packet data
+    data: Vec<u8>,
+}
+
+static LOOPBACK_QUEUE: Mutex<Vec<LoopbackPacket>> = Mutex::new(Vec::new());
+
+/// Drain the loopback queue, delivering any pending packets
+/// Called after syscalls release their locks to avoid deadlock
+pub fn drain_loopback_queue() {
+    // Take all packets from the queue
+    let packets: Vec<LoopbackPacket> = {
+        let mut queue = LOOPBACK_QUEUE.lock();
+        core::mem::take(&mut *queue)
+    };
+
+    // Deliver each packet
+    for packet in packets {
+        if let Some(parsed_ip) = ipv4::Ipv4Packet::parse(&packet.data) {
+            let src_mac = e1000::mac_address().unwrap_or([0; 6]);
+            let dummy_frame = ethernet::EthernetFrame {
+                src_mac,
+                dst_mac: src_mac,
+                ethertype: ethernet::ETHERTYPE_IPV4,
+                payload: &packet.data,
+            };
+            ipv4::handle_ipv4(&dummy_frame, &parsed_ip);
+        }
+    }
+}
 
 /// Initialize the network stack
 pub fn init() {
@@ -186,6 +227,34 @@ pub fn send_ethernet(dst_mac: &[u8; 6], ethertype: u16, payload: &[u8]) -> Resul
 /// Send an IPv4 packet
 pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'static str> {
     let config = config();
+
+    // Check for loopback - sending to ourselves
+    if dst_ip == config.ip_addr {
+        log::debug!("NET: Loopback detected, queueing packet for deferred delivery");
+
+        // Build IP packet
+        let ip_packet = ipv4::Ipv4Packet::build(
+            config.ip_addr,
+            dst_ip,
+            protocol,
+            payload,
+        );
+
+        // Queue for deferred delivery (to avoid deadlock with process manager lock)
+        // The caller must call drain_loopback_queue() after releasing locks
+        let mut queue = LOOPBACK_QUEUE.lock();
+
+        // Drop oldest packet if queue is full to prevent unbounded memory growth
+        if queue.len() >= MAX_LOOPBACK_QUEUE_SIZE {
+            queue.remove(0);
+            log::warn!("NET: Loopback queue full, dropped oldest packet");
+        }
+
+        queue.push(LoopbackPacket { data: ip_packet });
+        log::debug!("NET: Loopback packet queued (queue size: {})", queue.len());
+
+        return Ok(());
+    }
 
     // Look up destination MAC in ARP cache
     let dst_mac = if is_same_subnet(&dst_ip, &config.ip_addr, &config.subnet_mask) {

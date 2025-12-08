@@ -469,6 +469,61 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Registers not correctly preserved across signal delivery and sigreturn - SignalFrame save/restore broken",
             check_hint: "Check SignalFrame save/restore in kernel/src/signal/delivery.rs and sys_sigreturn in kernel/src/syscall/signal.rs - verify all 15 general-purpose registers (rax-r15) are saved and restored",
         },
+        // UDP Socket tests - validates full userspace->kernel->network path
+        BootStage {
+            name: "UDP socket created from userspace",
+            marker: "UDP: Socket created fd=",
+            failure_meaning: "sys_socket syscall failed from userspace",
+            check_hint: "Check syscall/socket.rs:sys_socket() and socket module initialization",
+        },
+        BootStage {
+            name: "UDP socket bound to port",
+            marker: "UDP: Socket bound to port",
+            failure_meaning: "sys_bind syscall failed - socket registry or port binding broken",
+            check_hint: "Check syscall/socket.rs:sys_bind() and socket::SOCKET_REGISTRY",
+        },
+        BootStage {
+            name: "UDP packet sent from userspace",
+            marker: "UDP: Packet sent successfully",
+            failure_meaning: "sys_sendto syscall failed - UDP TX path broken",
+            check_hint: "Check syscall/socket.rs:sys_sendto(), net/udp.rs:build_udp_packet(), and net/mod.rs:send_ipv4()",
+        },
+        BootStage {
+            name: "UDP RX socket created and bound",
+            marker: "UDP: RX socket bound to port 54321",
+            failure_meaning: "Failed to create or bind RX socket",
+            check_hint: "Check syscall/socket.rs:sys_socket() and sys_bind()",
+        },
+        BootStage {
+            name: "UDP loopback packet sent",
+            marker: "UDP: Loopback packet sent",
+            failure_meaning: "Failed to send packet to ourselves",
+            check_hint: "Check net/udp.rs:build_udp_packet() and send_ipv4() for loopback handling",
+        },
+        BootStage {
+            name: "UDP packet delivered to socket RX queue",
+            marker: "UDP: Delivered packet to socket on port",
+            failure_meaning: "Packet arrived but was not delivered to socket - RX delivery path broken",
+            check_hint: "Check net/udp.rs:deliver_to_socket() - verify process lookup and packet enqueue",
+        },
+        BootStage {
+            name: "UDP packet received from userspace",
+            marker: "UDP: Received packet",
+            failure_meaning: "sys_recvfrom syscall failed or returned no data - RX syscall broken",
+            check_hint: "Check syscall/socket.rs:sys_recvfrom() and socket/udp.rs:recv_from()",
+        },
+        BootStage {
+            name: "UDP RX data verified",
+            marker: "UDP: RX data matches TX data - SUCCESS",
+            failure_meaning: "Received packet but data was corrupted",
+            check_hint: "Check packet data integrity in RX path - possible buffer corruption",
+        },
+        BootStage {
+            name: "UDP socket test completed",
+            marker: "UDP Socket Test: All tests passed",
+            failure_meaning: "UDP socket test did not complete successfully",
+            check_hint: "Check userspace/tests/udp_socket_test.rs for which step failed",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

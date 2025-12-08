@@ -46,6 +46,7 @@ BINARIES=(
     "signal_handler_test"
     "signal_return_test"
     "signal_regs_test"
+    "udp_socket_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

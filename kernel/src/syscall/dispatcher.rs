@@ -49,5 +49,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Sigaction => super::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4),
         SyscallNumber::Sigprocmask => super::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4),
         SyscallNumber::Sigreturn => super::signal::sys_sigreturn(),
+        SyscallNumber::Socket => super::socket::sys_socket(arg1, arg2, arg3),
+        SyscallNumber::Bind => super::socket::sys_bind(arg1, arg2, arg3),
+        SyscallNumber::SendTo => super::socket::sys_sendto(arg1, arg2, arg3, arg4, arg5, arg6),
+        SyscallNumber::RecvFrom => super::socket::sys_recvfrom(arg1, arg2, arg3, arg4, arg5, arg6),
     }
 }

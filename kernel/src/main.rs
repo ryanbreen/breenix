@@ -44,6 +44,7 @@ mod process;
 mod rtc_test;
 mod signal;
 mod serial;
+mod socket;
 mod spinlock;
 mod syscall;
 mod task;
@@ -514,6 +515,20 @@ fn kernel_main_continue() -> ! {
                     }
                     Err(e) => {
                         log::error!("Failed to create syscall_diagnostic_test process: {}", e);
+                    }
+                }
+            }
+
+            // Launch UDP socket test to verify network syscalls from userspace
+            {
+                serial_println!("RING3_SMOKE: creating udp_socket_test userspace process");
+                let udp_test_buf = crate::userspace_test::get_test_binary("udp_socket_test");
+                match process::creation::create_user_process(String::from("udp_socket_test"), &udp_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created udp_socket_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create udp_socket_test process: {}", e);
                     }
                 }
             }
