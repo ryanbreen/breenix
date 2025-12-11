@@ -32,15 +32,15 @@ jobs:
           sudo apt-get install -y ovmf nasm
           nasm --version
 
-      - name: Install QEMU 9.2 from source
+      - name: Install QEMU 8.1 from source
         # Ubuntu 24.04's QEMU 8.2.2 has a BQL assertion bug that crashes during signal tests.
-        # QEMU 9.2 fixes this issue.
+        # QEMU 9.2 has signal emulation regressions. QEMU 8.1 avoids both issues.
         run: |
           sudo apt-get install -y ninja-build libglib2.0-dev libpixman-1-dev libslirp-dev
           cd /tmp
-          curl -LO https://download.qemu.org/qemu-9.2.0.tar.xz
-          tar xf qemu-9.2.0.tar.xz
-          cd qemu-9.2.0
+          curl -LO https://download.qemu.org/qemu-8.1.5.tar.xz
+          tar xf qemu-8.1.5.tar.xz
+          cd qemu-8.1.5
           ./configure --target-list=x86_64-softmmu --enable-slirp --disable-docs
           make -j$(nproc)
           sudo make install
