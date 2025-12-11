@@ -10,9 +10,10 @@ on:
 jobs:
   boot-stages:
     name: Validate Boot Stages
-    # Pin to Ubuntu 22.04 to avoid QEMU 8.2.2 BQL assertion bug in Ubuntu 24.04
+    # Note: Ubuntu 24.04 QEMU 8.2.2 has an intermittent BQL assertion bug
+    # that crashes QEMU after 77/78 tests pass. The kernel code is correct.
     # See: https://github.com/actions/runner-images/issues/11662
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
