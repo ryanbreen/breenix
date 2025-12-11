@@ -10,9 +10,8 @@ on:
 jobs:
   boot-stages:
     name: Validate Boot Stages
-    # We build QEMU 9.2 from source to avoid Ubuntu 24.04's QEMU 8.2.2 BQL bug
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -29,22 +28,13 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ovmf nasm
-          nasm --version
-
-      - name: Install QEMU 8.1 from source
-        # Ubuntu 24.04's QEMU 8.2.2 has a BQL assertion bug that crashes during signal tests.
-        # QEMU 9.2 has signal emulation regressions. QEMU 8.1 avoids both issues.
-        run: |
-          sudo apt-get install -y ninja-build libglib2.0-dev libpixman-1-dev libslirp-dev
-          cd /tmp
-          curl -LO https://download.qemu.org/qemu-8.1.5.tar.xz
-          tar xf qemu-8.1.5.tar.xz
-          cd qemu-8.1.5
-          ./configure --target-list=x86_64-softmmu --enable-slirp --disable-docs
-          make -j$(nproc)
-          sudo make install
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            ovmf \
+            nasm
           qemu-system-x86_64 --version
+          nasm --version
 
       - name: Cache cargo registry
         uses: actions/cache@v4

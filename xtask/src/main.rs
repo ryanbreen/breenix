@@ -776,6 +776,31 @@ fn boot_stages() -> Result<()> {
     let _ = child.kill();
     let _ = child.wait();
 
+    // Final scan of output file after QEMU terminates
+    // This catches markers that were printed but not yet processed due to timing
+    thread::sleep(Duration::from_millis(100)); // Let filesystem sync
+    if let Ok(mut file) = fs::File::open(serial_output_file) {
+        let mut contents_bytes = Vec::new();
+        if file.read_to_end(&mut contents_bytes).is_ok() {
+            let contents = String::from_utf8_lossy(&contents_bytes);
+            for (i, stage) in stages.iter().enumerate() {
+                if !checked_stages[i] {
+                    let found = if stage.marker.contains('|') {
+                        stage.marker.split('|').any(|m| contents.contains(m))
+                    } else {
+                        contents.contains(stage.marker)
+                    };
+
+                    if found {
+                        checked_stages[i] = true;
+                        stages_passed += 1;
+                        println!("[{}/{}] {}... PASS (found in final scan)", i + 1, total_stages, stage.name);
+                    }
+                }
+            }
+        }
+    }
+
     println!();
     println!("=========================================");
 
