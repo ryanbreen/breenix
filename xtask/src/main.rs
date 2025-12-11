@@ -797,8 +797,16 @@ fn boot_stages() -> Result<()> {
     } else {
         // Check for known QEMU bug: BQL assertion in QEMU 8.2.2
         // This bug crashes QEMU after kernel tests complete, not a kernel bug.
+        // When QEMU crashes, the test harness may not finish reading all markers
+        // from the serial output file, causing a timing-based "failure".
+        //
+        // Evidence from CI logs shows all tests actually pass (markers printed),
+        // but xtask reports 77/78 due to asynchronous output processing.
+        //
+        // We require 98%+ pass rate (max 1-2 missed due to timing).
+        // Real kernel bugs would cause many more actual test failures.
         // See: https://github.com/actions/runner-images/issues/11662
-        let qemu_bug_threshold = (total_stages * 95) / 100; // 95% pass rate
+        let qemu_bug_threshold = (total_stages * 98) / 100; // 98% pass rate (stricter)
         let is_qemu_bug = stages_passed >= qemu_bug_threshold;
 
         if is_qemu_bug {
