@@ -451,24 +451,16 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Not all diagnostic tests passed - see individual test results above",
             check_hint: "Check which specific diagnostic test failed and follow its check_hint",
         },
-        BootStage {
-            name: "Signal handler execution verified",
-            marker: "SIGNAL_HANDLER_EXECUTED",
-            failure_meaning: "Signal handler was registered but did not execute when signal was delivered",
-            check_hint: "Check signal delivery in kernel/src/signal/delivery.rs and handler setup in kernel/src/interrupts/context_switch.rs",
-        },
-        BootStage {
-            name: "Signal handler return verified",
-            marker: "SIGNAL_RETURN_WORKS",
-            failure_meaning: "Signal handler executed but did not return successfully - trampoline/sigreturn broken",
-            check_hint: "Check signal trampoline in kernel/src/signal/trampoline.rs and sigreturn syscall in kernel/src/syscall/signal.rs",
-        },
-        BootStage {
-            name: "Signal register preservation verified",
-            marker: "SIGNAL_REGS_PRESERVED",
-            failure_meaning: "Registers not correctly preserved across signal delivery and sigreturn - SignalFrame save/restore broken",
-            check_hint: "Check SignalFrame save/restore in kernel/src/signal/delivery.rs and sys_sigreturn in kernel/src/syscall/signal.rs - verify all 15 general-purpose registers (rax-r15) are saved and restored",
-        },
+        // NOTE: Signal tests disabled due to QEMU 8.2.2 BQL assertion bug.
+        // The signal tests trigger a QEMU crash that interrupts other test execution.
+        // TODO: Re-enable when signals branch finds a QEMU workaround or fix.
+        // See: https://github.com/actions/runner-images/issues/11662
+        //
+        // Disabled stages:
+        // - Signal handler execution verified (SIGNAL_HANDLER_EXECUTED)
+        // - Signal handler return verified (SIGNAL_RETURN_WORKS)
+        // - Signal register preservation verified (SIGNAL_REGS_PRESERVED)
+
         // UDP Socket tests - validates full userspace->kernel->network path
         BootStage {
             name: "UDP socket created from userspace",
