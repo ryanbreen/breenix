@@ -102,6 +102,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}/hello_time.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/fork_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/clock_gettime_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/udp_socket_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
         }
     } else {

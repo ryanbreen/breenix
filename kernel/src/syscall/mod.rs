@@ -6,11 +6,13 @@
 use x86_64::structures::idt::InterruptStackFrame;
 
 pub(crate) mod dispatcher;
+pub mod errno;
 pub mod handler;
 pub mod handlers;
 pub mod memory;
 pub mod mmap;
 pub mod signal;
+pub mod socket;
 pub mod time;
 pub mod userptr;
 
@@ -33,6 +35,10 @@ pub enum SyscallNumber {
     Sigprocmask = 14,   // Linux syscall number for rt_sigprocmask
     Sigreturn = 15,     // Linux syscall number for rt_sigreturn
     GetPid = 39,        // Linux syscall number for getpid
+    Socket = 41,        // Linux syscall number for socket
+    SendTo = 44,        // Linux syscall number for sendto
+    RecvFrom = 45,      // Linux syscall number for recvfrom
+    Bind = 49,          // Linux syscall number for bind
     Exec = 59,          // Linux syscall number for execve
     Kill = 62,          // Linux syscall number for kill
     GetTid = 186,       // Linux syscall number for gettid
@@ -58,6 +64,10 @@ impl SyscallNumber {
             14 => Some(Self::Sigprocmask),
             15 => Some(Self::Sigreturn),
             39 => Some(Self::GetPid),
+            41 => Some(Self::Socket),
+            44 => Some(Self::SendTo),
+            45 => Some(Self::RecvFrom),
+            49 => Some(Self::Bind),
             59 => Some(Self::Exec),
             62 => Some(Self::Kill),
             186 => Some(Self::GetTid),

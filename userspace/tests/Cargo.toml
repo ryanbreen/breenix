@@ -70,6 +70,10 @@ path = "signal_return_test.rs"
 name = "signal_regs_test"
 path = "signal_regs_test.rs"
 
+[[bin]]
+name = "udp_socket_test"
+path = "udp_socket_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

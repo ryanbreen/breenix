@@ -160,6 +160,18 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             super::signal::sys_sigprocmask(args.0 as i32, args.1, args.2, args.3)
         }
         Some(SyscallNumber::Sigreturn) => super::signal::sys_sigreturn_with_frame(frame),
+        Some(SyscallNumber::Socket) => {
+            super::socket::sys_socket(args.0, args.1, args.2)
+        }
+        Some(SyscallNumber::Bind) => {
+            super::socket::sys_bind(args.0, args.1, args.2)
+        }
+        Some(SyscallNumber::SendTo) => {
+            super::socket::sys_sendto(args.0, args.1, args.2, args.3, args.4, args.5)
+        }
+        Some(SyscallNumber::RecvFrom) => {
+            super::socket::sys_recvfrom(args.0, args.1, args.2, args.3, args.4, args.5)
+        }
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)
