@@ -188,6 +188,17 @@ impl FdTable {
             return Err(9); // EBADF
         }
 
+        // Per POSIX: if old_fd == new_fd, just verify old_fd is valid and return it
+        // This avoids a race condition where close_read/close_write followed by
+        // add_reader/add_writer would temporarily set the count to zero
+        if old_fd == new_fd {
+            // Verify old_fd is valid
+            if self.fds[old_fd as usize].is_none() {
+                return Err(9); // EBADF
+            }
+            return Ok(new_fd);
+        }
+
         let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
 
         // If new_fd is open, close it and decrement pipe ref counts
