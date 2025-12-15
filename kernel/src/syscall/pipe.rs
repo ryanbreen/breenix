@@ -148,6 +148,16 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::StdIo(_) => {
                     log::debug!("sys_close: Closed stdio fd={}", fd);
                 }
+                FdKind::UdpSocket(socket_ref) => {
+                    // Unbind the socket if it was bound
+                    let socket = socket_ref.lock();
+                    if let Some(port) = socket.local_port {
+                        crate::socket::SOCKET_REGISTRY.unbind_udp(port);
+                        log::debug!("sys_close: Closed UDP socket fd={}, unbound port {}", fd, port);
+                    } else {
+                        log::debug!("sys_close: Closed unbound UDP socket fd={}", fd);
+                    }
+                }
             }
             SyscallResult::Ok(0)
         }

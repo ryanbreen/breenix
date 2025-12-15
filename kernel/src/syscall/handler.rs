@@ -27,6 +27,7 @@
 
 use super::{SyscallNumber, SyscallResult};
 use core::sync::atomic::{AtomicBool, Ordering};
+use x86_64::VirtAddr;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -193,8 +194,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
     // When userspace triggers an interrupt (like int3), the CPU switches to kernel
     // mode and uses TSS.RSP0 as the kernel stack. This must be set correctly!
     let kernel_stack_top = crate::per_cpu::kernel_stack_top();
-    if kernel_stack_top.as_u64() != 0 {
-        crate::gdt::set_tss_rsp0(kernel_stack_top);
+    if kernel_stack_top != 0 {
+        crate::gdt::set_tss_rsp0(VirtAddr::new(kernel_stack_top));
     } else {
         log::error!("CRITICAL: Cannot set TSS.RSP0 - kernel_stack_top is 0!");
     }

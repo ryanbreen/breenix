@@ -1,8 +1,8 @@
 //! File descriptor types and table
 //!
-//! This module provides the file descriptor abstraction for POSIX-like I/O.
+//! This module provides the unified file descriptor abstraction for POSIX-like I/O.
 //! Each process has its own file descriptor table that maps small integers
-//! to underlying file objects (pipes, stdio, etc.).
+//! to underlying file objects (pipes, stdio, sockets, etc.).
 
 use alloc::sync::Arc;
 use spin::Mutex;
@@ -23,6 +23,14 @@ pub mod flags {
 }
 
 /// Types of file descriptors
+///
+/// This unified enum supports all fd types in Breenix:
+/// - Standard I/O (stdin/stdout/stderr)
+/// - Pipes (read and write ends)
+/// - UDP sockets (with future support for TCP, files, etc.)
+///
+/// Note: Sockets use Arc<Mutex<>> like pipes because they need to be shared
+/// and cannot be cloned (they contain unique socket handles and rx queues).
 #[derive(Clone)]
 pub enum FdKind {
     /// Standard I/O (stdin, stdout, stderr)
@@ -31,6 +39,8 @@ pub enum FdKind {
     PipeRead(Arc<Mutex<super::pipe::PipeBuffer>>),
     /// Write end of a pipe
     PipeWrite(Arc<Mutex<super::pipe::PipeBuffer>>),
+    /// UDP socket (wrapped in Arc<Mutex<>> for sharing and dup/fork)
+    UdpSocket(Arc<Mutex<crate::socket::udp::UdpSocket>>),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -39,6 +49,7 @@ impl core::fmt::Debug for FdKind {
             FdKind::StdIo(n) => write!(f, "StdIo({})", n),
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
+            FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
         }
     }
 }

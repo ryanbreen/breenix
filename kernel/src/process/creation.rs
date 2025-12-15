@@ -26,11 +26,13 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     crate::serial_println!("create_user_process: ENTRY - Creating '{}'", name);
 
     // Create the process using existing infrastructure
-    // CRITICAL: Disable interrupts during process creation to prevent
-    // context switches that could leave the process in an inconsistent state
-    crate::serial_println!("create_user_process: About to disable interrupts and call manager.create_process");
-    let pid = x86_64::instructions::interrupts::without_interrupts(|| {
-        crate::serial_println!("create_user_process: Interrupts disabled, acquiring process manager lock");
+    // NOTE: We do NOT disable interrupts here. Process creation requires frame
+    // allocation which needs the MEMORY_INFO lock. If we disable interrupts while
+    // holding PROCESS_MANAGER and then try to acquire MEMORY_INFO, we can deadlock
+    // with other threads doing the same. The process manager lock itself provides
+    // mutual exclusion - interrupt protection is not needed.
+    crate::serial_println!("create_user_process: Acquiring process manager lock");
+    let pid = {
         let mut manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock");
         if let Some(ref mut manager) = *manager_guard {
@@ -42,7 +44,7 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
             crate::serial_println!("create_user_process: Process manager not available!");
             Err("Process manager not available")
         }
-    })?;
+    }?;
     crate::serial_println!("create_user_process: Process created with PID {}", pid.as_u64());
 
     // The key difference: Add the thread directly to scheduler as a user thread

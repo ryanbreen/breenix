@@ -55,6 +55,11 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
 ///
 /// CRITICAL: Like copy_from_user, this now works WITHOUT switching CR3.
 /// We rely on kernel mappings being present in all process page tables.
+///
+/// NOTE: This function does NOT acquire the PROCESS_MANAGER lock.
+/// It only validates the address range. The caller is responsible for
+/// ensuring we're in a valid syscall context. This avoids deadlock when
+/// called from syscall handlers that already hold the PROCESS_MANAGER lock.
 pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'static str> {
     if user_ptr == 0 {
         return Err("null pointer");
@@ -64,32 +69,6 @@ pub fn copy_to_user(user_ptr: u64, kernel_ptr: u64, len: usize) -> Result<(), &'
     if !crate::memory::layout::is_valid_user_address(user_ptr) {
         log::error!("copy_to_user: Invalid userspace address {:#x}", user_ptr);
         return Err("invalid userspace address");
-    }
-
-    // Get current thread to find process - just for validation
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("copy_to_user: No current thread");
-            return Err("no current thread");
-        }
-    };
-
-    // Verify that we have a valid process (but don't switch page tables)
-    {
-        let manager_guard = crate::process::manager();
-        if let Some(ref manager) = *manager_guard {
-            if manager.find_process_by_thread(current_thread_id).is_none() {
-                log::error!(
-                    "copy_to_user: No process found for thread {}",
-                    current_thread_id
-                );
-                return Err("no process for thread");
-            }
-        } else {
-            log::error!("copy_to_user: No process manager");
-            return Err("no process manager");
-        }
     }
 
     // CRITICAL: Access user memory WITHOUT switching CR3
@@ -258,6 +237,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't write to read end of pipe
             SyscallResult::Err(9) // EBADF
         }
+        FdKind::UdpSocket(_) => {
+            // Can't write to UDP socket - must use sendto
+            log::error!("sys_write: Cannot write to UDP socket, use sendto instead");
+            SyscallResult::Err(95) // EOPNOTSUPP
+        }
     }
 }
 
@@ -372,6 +356,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::PipeWrite(_) => {
             // Can't read from write end of pipe
             SyscallResult::Err(9) // EBADF
+        }
+        FdKind::UdpSocket(_) => {
+            // Can't read from UDP socket - must use recvfrom
+            log::error!("sys_read: Cannot read from UDP socket, use recvfrom instead");
+            SyscallResult::Err(95) // EOPNOTSUPP
         }
     }
 }
