@@ -148,15 +148,11 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::StdIo(_) => {
                     log::debug!("sys_close: Closed stdio fd={}", fd);
                 }
-                FdKind::UdpSocket(socket_ref) => {
-                    // Unbind the socket if it was bound
-                    let socket = socket_ref.lock();
-                    if let Some(port) = socket.local_port {
-                        crate::socket::SOCKET_REGISTRY.unbind_udp(port);
-                        log::debug!("sys_close: Closed UDP socket fd={}, unbound port {}", fd, port);
-                    } else {
-                        log::debug!("sys_close: Closed unbound UDP socket fd={}", fd);
-                    }
+                FdKind::UdpSocket(_) => {
+                    // Socket unbinding is handled by UdpSocket::Drop when the last
+                    // Arc reference is released, allowing shared sockets (via dup/fork)
+                    // to remain bound until all references are closed.
+                    log::debug!("sys_close: Closed UDP socket fd={}", fd);
                 }
             }
             SyscallResult::Ok(0)
