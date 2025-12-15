@@ -102,9 +102,20 @@ impl Default for FdTable {
 
 impl Clone for FdTable {
     fn clone(&self) -> Self {
-        FdTable {
-            fds: alloc::boxed::Box::new((*self.fds).clone()),
+        let cloned_fds = alloc::boxed::Box::new((*self.fds).clone());
+
+        // Increment pipe reference counts for all cloned pipe fds
+        for fd_opt in cloned_fds.iter() {
+            if let Some(fd_entry) = fd_opt {
+                match &fd_entry.kind {
+                    FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
+                    FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+                    _ => {}
+                }
+            }
         }
+
+        FdTable { fds: cloned_fds }
     }
 }
 
@@ -179,8 +190,21 @@ impl FdTable {
 
         let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
 
-        // Close new_fd if it's open (silently ignore errors)
-        let _ = self.close(new_fd);
+        // If new_fd is open, close it and decrement pipe ref counts
+        if let Some(old_entry) = self.fds[new_fd as usize].take() {
+            match old_entry.kind {
+                FdKind::PipeRead(buffer) => buffer.lock().close_read(),
+                FdKind::PipeWrite(buffer) => buffer.lock().close_write(),
+                _ => {}
+            }
+        }
+
+        // Increment pipe reference counts for the duplicated fd
+        match &fd_entry.kind {
+            FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
+            FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+            _ => {}
+        }
 
         self.fds[new_fd as usize] = Some(fd_entry);
         Ok(new_fd)
@@ -196,12 +220,26 @@ impl FdTable {
 
         let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
 
+        // Increment pipe reference counts for the duplicated fd
+        match &fd_entry.kind {
+            FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
+            FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+            _ => {}
+        }
+
         // Find lowest available slot
         for i in 0..MAX_FDS {
             if self.fds[i].is_none() {
                 self.fds[i] = Some(fd_entry);
                 return Ok(i as i32);
             }
+        }
+
+        // No slot found - need to decrement the counts we just added
+        match &fd_entry.kind {
+            FdKind::PipeRead(buffer) => buffer.lock().close_read(),
+            FdKind::PipeWrite(buffer) => buffer.lock().close_write(),
+            _ => {}
         }
         Err(24) // EMFILE
     }

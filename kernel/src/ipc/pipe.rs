@@ -130,6 +130,16 @@ impl PipeBuffer {
         }
     }
 
+    /// Add a reader (used when duplicating pipe read fds)
+    pub fn add_reader(&mut self) {
+        self.readers += 1;
+    }
+
+    /// Add a writer (used when duplicating pipe write fds)
+    pub fn add_writer(&mut self) {
+        self.writers += 1;
+    }
+
     /// Get the number of bytes available to read
     #[allow(dead_code)]
     pub fn available(&self) -> usize {
