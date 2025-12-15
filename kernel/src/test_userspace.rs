@@ -226,10 +226,10 @@ pub fn test_minimal_userspace() {
         let kernel_stack_top = kernel_stack.top();
         
         crate::serial_println!("Setting TSS RSP0 to {:#x}", kernel_stack_top.as_u64());
-        
+
         // Try the per_cpu method first
-        crate::per_cpu::update_tss_rsp0(kernel_stack_top);
-        
+        crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
+
         // Also set it directly via GDT module's public function
         crate::gdt::set_tss_rsp0(kernel_stack_top);
         crate::serial_println!("Set TSS.RSP0 directly via GDT module");

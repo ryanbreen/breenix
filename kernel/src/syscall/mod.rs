@@ -11,6 +11,7 @@ pub mod handler;
 pub mod handlers;
 pub mod memory;
 pub mod mmap;
+pub mod pipe;
 pub mod signal;
 pub mod socket;
 pub mod time;
@@ -24,9 +25,10 @@ pub enum SyscallNumber {
     Exit = 0,
     Write = 1,
     Read = 2,
-    Yield = 3,
+    Yield = 3,          // Note: Linux uses sched_yield = 24, but we use 3
     GetTime = 4,
     Fork = 5,
+    Close = 6,          // Custom number (Linux close = 3, conflicts with our Yield)
     Mmap = 9,           // Linux syscall number for mmap
     Mprotect = 10,      // Linux syscall number for mprotect
     Munmap = 11,        // Linux syscall number for munmap
@@ -34,6 +36,7 @@ pub enum SyscallNumber {
     Sigaction = 13,     // Linux syscall number for rt_sigaction
     Sigprocmask = 14,   // Linux syscall number for rt_sigprocmask
     Sigreturn = 15,     // Linux syscall number for rt_sigreturn
+    Pipe = 22,          // Linux syscall number for pipe
     GetPid = 39,        // Linux syscall number for getpid
     Socket = 41,        // Linux syscall number for socket
     SendTo = 44,        // Linux syscall number for sendto
@@ -56,6 +59,7 @@ impl SyscallNumber {
             3 => Some(Self::Yield),
             4 => Some(Self::GetTime),
             5 => Some(Self::Fork),
+            6 => Some(Self::Close),
             9 => Some(Self::Mmap),
             10 => Some(Self::Mprotect),
             11 => Some(Self::Munmap),
@@ -63,6 +67,7 @@ impl SyscallNumber {
             13 => Some(Self::Sigaction),
             14 => Some(Self::Sigprocmask),
             15 => Some(Self::Sigreturn),
+            22 => Some(Self::Pipe),
             39 => Some(Self::GetPid),
             41 => Some(Self::Socket),
             44 => Some(Self::SendTo),

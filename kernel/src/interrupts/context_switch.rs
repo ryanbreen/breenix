@@ -303,7 +303,7 @@ fn switch_to_thread(
         // Update TSS.RSP0 with new thread's kernel stack top
         // This is critical for interrupt/exception handling
         if let Some(kernel_stack_top) = thread.kernel_stack_top {
-            crate::per_cpu::update_tss_rsp0(kernel_stack_top);
+            crate::per_cpu::update_tss_rsp0(kernel_stack_top.as_u64());
             log::trace!("sched: switch to thread {} rsp0={:#x}", thread_id, kernel_stack_top);
         }
     });

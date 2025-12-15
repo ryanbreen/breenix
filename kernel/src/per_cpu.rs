@@ -19,17 +19,17 @@ static MAX_PREEMPT_IMBALANCE: AtomicU64 = AtomicU64::new(0);
 #[repr(C, align(64))]
 pub struct PerCpuData {
     /// CPU ID (offset 0) - for multi-processor support
-    pub cpu_id: usize,
-    
+    pub cpu_id: u64,
+
     /// Current thread pointer (offset 8)
     pub current_thread: *mut crate::task::thread::Thread,
-    
+
     /// Kernel stack pointer for syscalls/interrupts (offset 16) - TSS.RSP0
-    pub kernel_stack_top: VirtAddr,
-    
+    pub kernel_stack_top: u64,
+
     /// Idle thread pointer (offset 24)
     pub idle_thread: *mut crate::task::thread::Thread,
-    
+
     /// Preempt count for kernel preemption control (offset 32) - properly aligned u32
     /// Linux-style bit layout:
     /// Bits 0-7:   PREEMPT count (nested preempt_disable calls)
@@ -39,19 +39,19 @@ pub struct PerCpuData {
     /// Bit 28:     PREEMPT_ACTIVE flag
     /// Bits 29-31: Reserved
     pub preempt_count: u32,
-    
+
     /// Reschedule needed flag (offset 36) - u8 for compact layout
     pub need_resched: u8,
-    
+
     /// Explicit padding to maintain alignment (offset 37-39)
     _pad: [u8; 3],
-    
+
     /// User RSP scratch space for syscall entry (offset 40)
     pub user_rsp_scratch: u64,
-    
+
     /// TSS pointer for this CPU (offset 48)
     pub tss: *mut x86_64::structures::tss::TaskStateSegment,
-    
+
     /// Softirq pending bitmap (offset 56) - 32 bits for different softirq types
     pub softirq_pending: u32,
 
@@ -73,7 +73,34 @@ pub struct PerCpuData {
     /// Exception cleanup context flag (offset 88) - allows scheduling from kernel mode
     /// Set by exception handlers (GPF, page fault) when they terminate a process
     /// and need to allow scheduling from kernel mode
-    pub exception_cleanup_context: bool,
+    pub exception_cleanup_context: u8,
+
+    /// Padding to align diagnostic fields (offset 89-95)
+    _pad3: [u8; 7],
+
+    // === Context Switch Diagnostics (Ultra-low overhead) ===
+    // These fields detect state corruption during context switches without
+    // adding logging overhead to the hot path. Based on seL4/Linux patterns.
+
+    /// Pre-switch canary (offset 96): RSP ^ CR3 | MAGIC_PRE
+    /// Set before context switch, verified after to detect corruption
+    pub switch_pre_canary: u64,
+
+    /// Post-switch canary (offset 104): RSP ^ CR3 | MAGIC_POST
+    /// Set after context switch for comparison with pre-canary
+    pub switch_post_canary: u64,
+
+    /// TSC timestamp (offset 112): rdtsc value when context switch started
+    /// Used to detect stuck transitions (timeout detection)
+    pub switch_tsc: u64,
+
+    /// Switch violation count (offset 120): Number of detected violations
+    /// Incremented atomically on canary mismatch
+    pub switch_violations: u64,
+
+    /// Padding to reach 192 bytes (align(64) boundary)
+    /// (offset 128-191): 64 bytes of padding
+    _pad_final: [u8; 64],
 }
 
 // Linux-style preempt_count bit layout constants
@@ -147,6 +174,19 @@ const KERNEL_CR3_OFFSET: usize = 72;       // offset 72: u64 (8 bytes) - ALIGNED
 const SAVED_PROCESS_CR3_OFFSET: usize = 80; // offset 80: u64 (8 bytes) - ALIGNED
 #[allow(dead_code)]
 const EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88; // offset 88: bool (1 byte)
+// _pad3 at offset 89-95 (7 bytes)
+#[allow(dead_code)]
+const SWITCH_PRE_CANARY_OFFSET: usize = 96;         // offset 96: u64 (8 bytes)
+#[allow(dead_code)]
+const SWITCH_POST_CANARY_OFFSET: usize = 104;       // offset 104: u64 (8 bytes)
+#[allow(dead_code)]
+const SWITCH_TSC_OFFSET: usize = 112;               // offset 112: u64 (8 bytes)
+#[allow(dead_code)]
+const SWITCH_VIOLATIONS_OFFSET: usize = 120;        // offset 120: u64 (8 bytes)
+
+// Magic values for canary computation (non-zero to detect corruption)
+#[allow(dead_code)]
+const CANARY_MAGIC: u64 = 0xDEADCAFE_00000000;
 
 // Compile-time assertions to ensure offsets are correct
 // These will fail to compile if the offsets don't match expected values
@@ -155,9 +195,9 @@ const _: () = assert!(PREEMPT_COUNT_OFFSET == 32, "preempt_count offset mismatch
 const _: () = assert!(USER_RSP_SCRATCH_OFFSET % 8 == 0, "user_rsp_scratch must be 8-byte aligned");
 const _: () = assert!(core::mem::size_of::<usize>() == 8, "This code assumes 64-bit pointers");
 
-// Verify struct size is 128 bytes due to align(64) attribute
-// The actual data is 88 bytes (saved_process_cr3 at offset 80), but align(64) rounds up to 128
-const _: () = assert!(core::mem::size_of::<PerCpuData>() == 128, "PerCpuData must be 128 bytes (aligned to 64)");
+// Verify struct size is 192 bytes due to align(64) attribute
+// The actual data is 128 bytes (switch_violations ends at offset 128), but align(64) rounds up to 192
+const _: () = assert!(core::mem::size_of::<PerCpuData>() == 192, "PerCpuData must be 192 bytes (aligned to 64)");
 
 // Verify bit layout matches Linux kernel
 const _: () = assert!(PREEMPT_MASK == 0x000000FF, "PREEMPT_MASK incorrect");
@@ -170,9 +210,9 @@ impl PerCpuData {
     /// Create a new per-CPU data structure
     pub const fn new(cpu_id: usize) -> Self {
         Self {
-            cpu_id,
+            cpu_id: cpu_id as u64,
             current_thread: ptr::null_mut(),
-            kernel_stack_top: VirtAddr::new(0),
+            kernel_stack_top: 0,
             idle_thread: ptr::null_mut(),
             preempt_count: 0,
             need_resched: 0,
@@ -184,7 +224,13 @@ impl PerCpuData {
             next_cr3: 0,
             kernel_cr3: 0,
             saved_process_cr3: 0,
-            exception_cleanup_context: false,
+            exception_cleanup_context: 0,
+            _pad3: [0; 7],
+            switch_pre_canary: 0,
+            switch_post_canary: 0,
+            switch_tsc: 0,
+            switch_violations: 0,
+            _pad_final: [0; 64],
         }
     }
 }
@@ -277,7 +323,7 @@ pub fn set_current_thread(thread: *mut crate::task::thread::Thread) {
 }
 
 /// Get the kernel stack top from per-CPU data
-pub fn kernel_stack_top() -> VirtAddr {
+pub fn kernel_stack_top() -> u64 {
     unsafe {
         // Access kernel_stack_top field via GS segment
         // Offset 16 = cpu_id (8) + current_thread (8)
@@ -287,18 +333,18 @@ pub fn kernel_stack_top() -> VirtAddr {
             out(reg) stack_top,
             options(nostack, preserves_flags)
         );
-        VirtAddr::new(stack_top)
+        stack_top
     }
 }
 
 /// Set the kernel stack top in per-CPU data
-pub fn set_kernel_stack_top(stack_top: VirtAddr) {
+pub fn set_kernel_stack_top(stack_top: u64) {
     unsafe {
         // Write to kernel_stack_top field via GS segment
         // Offset 16 = cpu_id (8) + current_thread (8)
         core::arch::asm!(
             "mov gs:[16], {}",
-            in(reg) stack_top.as_u64(),
+            in(reg) stack_top,
             options(nostack, preserves_flags)
         );
     }
@@ -631,7 +677,7 @@ pub fn set_idle_thread(thread: *mut crate::task::thread::Thread) {
 
 /// Update TSS RSP0 with the current thread's kernel stack
 /// This must be called on every context switch to a thread
-pub fn update_tss_rsp0(kernel_stack_top: VirtAddr) {
+pub fn update_tss_rsp0(kernel_stack_top: u64) {
     unsafe {
         // BUG FIX: Previously this code read gs:0 expecting a pointer to PerCpuData,
         // but gs:0 contains cpu_id (value 0), not a pointer. When cpu_id is 0,
@@ -654,13 +700,13 @@ pub fn update_tss_rsp0(kernel_stack_top: VirtAddr) {
             // Update per-CPU kernel_stack_top at offset 16 (KERNEL_STACK_TOP_OFFSET)
             core::arch::asm!(
                 "mov gs:[{offset}], {}",
-                in(reg) kernel_stack_top.as_u64(),
+                in(reg) kernel_stack_top,
                 offset = const KERNEL_STACK_TOP_OFFSET,
                 options(nostack, preserves_flags)
             );
 
             // Update TSS.RSP0
-            (*tss_ptr).privilege_stack_table[0] = kernel_stack_top;
+            (*tss_ptr).privilege_stack_table[0] = VirtAddr::new(kernel_stack_top);
 
             // log::trace!("Updated TSS.RSP0 to {:#x}", kernel_stack_top);  // Disabled to avoid deadlock
         }
@@ -1058,11 +1104,9 @@ pub fn set_exception_cleanup_context() {
     }
 
     unsafe {
-        // Set exception_cleanup_context to true (1) at offset 88
-        let value: u8 = 1;
+        // Set exception_cleanup_context to 1 at offset 88
         core::arch::asm!(
-            "mov byte ptr gs:[{offset}], {val}",
-            val = in(reg_byte) value,
+            "mov byte ptr gs:[{offset}], 1",
             offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
             options(nostack, preserves_flags)
         );
@@ -1077,11 +1121,9 @@ pub fn clear_exception_cleanup_context() {
     }
 
     unsafe {
-        // Set exception_cleanup_context to false (0) at offset 88
-        let value: u8 = 0;
+        // Set exception_cleanup_context to 0 at offset 88
         core::arch::asm!(
-            "mov byte ptr gs:[{offset}], {val}",
-            val = in(reg_byte) value,
+            "mov byte ptr gs:[{offset}], 0",
             offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
             options(nostack, preserves_flags)
         );

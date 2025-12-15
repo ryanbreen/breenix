@@ -136,7 +136,8 @@ fn deliver_to_socket(
     src_port: u16,
     payload: &[u8],
 ) {
-    use crate::socket::{FdKind, udp::UdpPacket};
+    use crate::ipc::fd::FdKind;
+    use crate::socket::udp::UdpPacket;
 
     // Access process manager with interrupts disabled to prevent deadlock
     let result = crate::process::with_process_manager(|manager| {
@@ -151,9 +152,10 @@ fn deliver_to_socket(
 
         // Find the socket in the process's fd_table
         // We need to iterate through all FDs to find the one with matching port
-        for fd_num in 3..crate::socket::MAX_FDS {
-            if let Some(fd_entry) = process.fd_table.get(fd_num as u32) {
-                if let FdKind::UdpSocket(socket) = &fd_entry.kind {
+        for fd_num in 3..crate::ipc::fd::MAX_FDS {
+            if let Some(fd_entry) = process.fd_table.get(fd_num as i32) {
+                if let FdKind::UdpSocket(socket_ref) = &fd_entry.kind {
+                    let socket = socket_ref.lock();
                     if socket.local_port == Some(dst_port) {
                         // Found the socket! Enqueue the packet
                         let packet = UdpPacket {

@@ -43,6 +43,7 @@ mod per_cpu;
 mod process;
 mod rtc_test;
 mod signal;
+mod ipc;
 mod serial;
 mod socket;
 mod spinlock;
@@ -189,7 +190,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         let initial_kernel_stack = memory::kernel_stack::allocate_kernel_stack()
             .expect("Failed to allocate initial kernel stack");
         let stack_top = initial_kernel_stack.top();
-        per_cpu::set_kernel_stack_top(stack_top);
+        per_cpu::set_kernel_stack_top(stack_top.as_u64());
         // Use gdt::set_tss_rsp0 which works with TSS_PTR directly
         gdt::set_tss_rsp0(stack_top);
         log::info!("Initial TSS.RSP0 set to {:#x}", stack_top);
@@ -327,8 +328,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     x86_64::instructions::interrupts::without_interrupts(|| {
         // Set TSS.RSP0 to the kernel stack BEFORE switching
         // This ensures interrupts from userspace will use the correct stack
-        per_cpu::set_kernel_stack_top(idle_kernel_stack_top);
-        per_cpu::update_tss_rsp0(idle_kernel_stack_top);
+        per_cpu::set_kernel_stack_top(idle_kernel_stack_top.as_u64());
+        per_cpu::update_tss_rsp0(idle_kernel_stack_top.as_u64());
         log::info!("TSS.RSP0 set to kernel stack at {:#x}", idle_kernel_stack_top);
         
         // Keep the kernel stack alive (it will be used forever)
@@ -402,9 +403,9 @@ extern "C" fn kernel_main_on_kernel_stack(_arg: *mut core::ffi::c_void) -> ! {
     
     // CRITICAL: Ensure TSS.RSP0 is set to the kernel stack
     // This was already done before the stack switch, but verify it
-    per_cpu::set_kernel_stack_top(idle_kernel_stack_top);
-    per_cpu::update_tss_rsp0(idle_kernel_stack_top);
-    
+    per_cpu::set_kernel_stack_top(idle_kernel_stack_top.as_u64());
+    per_cpu::update_tss_rsp0(idle_kernel_stack_top.as_u64());
+
     log::info!("TSS.RSP0 verified at {:#x}", idle_kernel_stack_top);
 
     // Initialize scheduler with init_task as the current thread
@@ -616,6 +617,10 @@ fn kernel_main_continue() -> ! {
         // // Test signal register preservation
         // log::info!("=== SIGNAL TEST: Register preservation across signals ===");
         // test_exec::test_signal_regs();
+
+        // Test pipe IPC syscalls
+        log::info!("=== IPC TEST: Pipe syscall functionality ===");
+        test_exec::test_pipe();
 
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");

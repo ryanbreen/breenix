@@ -8,7 +8,8 @@ pub const EBADF: i32 = 9;
 /// Resource temporarily unavailable (would block)
 pub const EAGAIN: i32 = 11;
 
-/// Cannot allocate memory
+/// Cannot allocate memory (part of memory API)
+#[allow(dead_code)]
 pub const ENOMEM: i32 = 12;
 
 /// Bad address

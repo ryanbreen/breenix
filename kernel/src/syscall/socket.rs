@@ -2,13 +2,11 @@
 //!
 //! Implements socket, bind, sendto, recvfrom syscalls for UDP.
 
-use alloc::boxed::Box;
-
-use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINVAL, ENETUNREACH, ENOTSOCK, ENOMEM};
+use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINVAL, ENETUNREACH, ENOTSOCK};
 use super::{ErrorCode, SyscallResult};
 use crate::socket::types::{AF_INET, SOCK_DGRAM, SockAddrIn};
 use crate::socket::udp::UdpSocket;
-use crate::socket::{FdKind, FileDescriptor};
+use crate::ipc::fd::FdKind;
 
 /// sys_socket - Create a new socket
 ///
@@ -59,19 +57,18 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
         }
     };
 
-    // Create UDP socket
-    let socket = UdpSocket::new();
-    let fd = FileDescriptor::new(FdKind::UdpSocket(Box::new(socket)), 0);
+    // Create UDP socket wrapped in Arc<Mutex<>> for sharing
+    let socket = alloc::sync::Arc::new(spin::Mutex::new(UdpSocket::new()));
 
     // Allocate file descriptor in process
-    match process.fd_table.alloc(fd) {
-        Some(num) => {
+    match process.fd_table.alloc(FdKind::UdpSocket(socket)) {
+        Ok(num) => {
             log::info!("UDP: Socket created fd={}", num);
             SyscallResult::Ok(num as u64)
         }
-        None => {
+        Err(e) => {
             log::warn!("sys_socket: fd_table full (no free slots)");
-            SyscallResult::Err(ENOMEM as u64)
+            SyscallResult::Err(e as u64)
         }
     }
 }
@@ -133,18 +130,19 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     };
 
     // Get the socket from fd table
-    let fd_entry = match process.fd_table.get_mut(fd as u32) {
+    let fd_entry = match process.fd_table.get(fd as i32) {
         Some(e) => e,
         None => return SyscallResult::Err(EBADF as u64),
     };
 
-    // Verify it's a UDP socket
-    let socket = match &mut fd_entry.kind {
-        FdKind::UdpSocket(s) => s,
+    // Verify it's a UDP socket and get Arc<Mutex<>> reference
+    let socket_ref = match &fd_entry.kind {
+        FdKind::UdpSocket(s) => s.clone(),
         _ => return SyscallResult::Err(ENOTSOCK as u64),
     };
 
-    // Bind the socket
+    // Bind the socket (lock the mutex and hold the guard)
+    let mut socket = socket_ref.lock();
     match socket.bind(pid, addr.addr, addr.port_host()) {
         Ok(()) => {
             log::info!("UDP: Socket bound to port {}", addr.port_host());
@@ -225,14 +223,14 @@ pub fn sys_sendto(
         };
 
         // Get the socket from fd table
-        let fd_entry = match process.fd_table.get(fd as u32) {
+        let fd_entry = match process.fd_table.get(fd as i32) {
             Some(e) => e,
             None => return SyscallResult::Err(EBADF as u64),
         };
 
         // Verify it's a UDP socket and extract source port
         match &fd_entry.kind {
-            FdKind::UdpSocket(s) => s.local_port().unwrap_or(0),
+            FdKind::UdpSocket(s) => s.lock().local_port().unwrap_or(0),
             _ => return SyscallResult::Err(ENOTSOCK as u64),
         }
         // manager_guard dropped here, releasing the lock
@@ -308,19 +306,19 @@ pub fn sys_recvfrom(
     };
 
     // Get the socket from fd table
-    let fd_entry = match process.fd_table.get_mut(fd as u32) {
+    let fd_entry = match process.fd_table.get(fd as i32) {
         Some(e) => e,
         None => return SyscallResult::Err(EBADF as u64),
     };
 
-    // Verify it's a UDP socket
-    let socket = match &mut fd_entry.kind {
-        FdKind::UdpSocket(s) => s,
+    // Verify it's a UDP socket and get Arc<Mutex<>> reference
+    let socket_ref = match &fd_entry.kind {
+        FdKind::UdpSocket(s) => s.clone(),
         _ => return SyscallResult::Err(ENOTSOCK as u64),
     };
 
-    // Try to receive a packet
-    let packet = match socket.recv_from() {
+    // Try to receive a packet (lock the mutex)
+    let packet = match socket_ref.lock().recv_from() {
         Some(p) => p,
         None => return SyscallResult::Err(EAGAIN as u64), // Would block
     };

@@ -3,7 +3,7 @@
 use crate::memory::process_memory::ProcessPageTable;
 use crate::memory::stack::GuardedStack;
 use crate::signal::SignalState;
-use crate::socket::FdTable;
+use crate::ipc::FdTable;
 use crate::task::thread::Thread;
 use alloc::boxed::Box;
 use alloc::string::String;
