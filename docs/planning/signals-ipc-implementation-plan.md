@@ -1,5 +1,26 @@
 # Signals & IPC Implementation Plan
 
+## Status: ✅ COMPLETE (Merged to main December 2024)
+
+> **Note**: Signal tests are currently disabled due to QEMU 8.2.2 BQL assertion bug.
+> See commit 47e2232 for details. Implementation is complete but untestable in CI.
+
+## Summary of Completed Work
+
+| Feature | Status | PR |
+|---------|--------|-----|
+| Signal infrastructure (types, constants) | ✅ Complete | #58 |
+| kill() syscall | ✅ Complete | #58 |
+| sigaction() syscall | ✅ Complete | #58 |
+| sigprocmask() syscall | ✅ Complete | #58 |
+| sigreturn() syscall | ✅ Complete | #58 |
+| Signal delivery in context switch | ✅ Complete | #58 |
+| User signal handlers | ✅ Complete | #58 |
+| pipe() syscall | ✅ Complete | #58 |
+| close() syscall | ✅ Complete | #58 |
+| UDP sockets (bonus) | ✅ Complete | #58 |
+| Unified FdTable | ✅ Complete | #58 |
+
 ## Overview
 
 This document describes the implementation plan for POSIX signals and basic IPC (pipes) in Breenix. The implementation follows the existing kernel patterns and respects the prohibited code sections.
@@ -47,7 +68,7 @@ Pattern:
 
 ## Implementation Phases
 
-### Phase 1: Signal Infrastructure (Foundation)
+### Phase 1: Signal Infrastructure (Foundation) ✅ COMPLETE
 
 **Goal**: Add signal state to processes and define signal constants.
 
@@ -338,7 +359,7 @@ pub mod signal;
 
 ---
 
-### Phase 2: Basic kill Syscall
+### Phase 2: Basic kill Syscall ✅ COMPLETE
 
 **Goal**: Implement the ability to send signals between processes.
 
@@ -514,7 +535,7 @@ pub use signal::kill;
 
 ---
 
-### Phase 3: Signal Delivery Mechanism
+### Phase 3: Signal Delivery Mechanism ✅ COMPLETE
 
 **Goal**: Deliver pending signals when returning to userspace.
 
@@ -642,7 +663,7 @@ if process.signals.has_deliverable_signals() {
 
 ---
 
-### Phase 4: sigaction and sigprocmask Syscalls
+### Phase 4: sigaction and sigprocmask Syscalls ✅ COMPLETE
 
 **Goal**: Allow processes to install custom signal handlers and block signals.
 
@@ -837,7 +858,7 @@ pub fn sigprocmask(how: i32, set: Option<&u64>, oldset: Option<&mut u64>) -> Res
 
 ---
 
-### Phase 5: sigreturn and User Handlers
+### Phase 5: sigreturn and User Handlers ✅ COMPLETE
 
 **Goal**: Enable user-defined signal handlers with proper context save/restore.
 
@@ -1038,7 +1059,7 @@ This can be implemented as a special page mapped into process address space duri
 
 ---
 
-### Phase 6: Pipes (IPC)
+### Phase 6: Pipes (IPC) ✅ COMPLETE
 
 **Goal**: Implement anonymous pipes for inter-process communication.
 
