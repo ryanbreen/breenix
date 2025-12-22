@@ -415,12 +415,18 @@ pub fn current_thread_id() -> Option<u64> {
 
 /// Yield the current thread
 pub fn yield_current() {
-    // This will be called from timer interrupt or sys_yield
-    // The actual context switch happens in the interrupt handler
-    if let Some((old_id, new_id)) = schedule() {
-        crate::serial_println!("Scheduling: {} -> {}", old_id, new_id);
-        // Context switch will be performed by caller
-    }
+    // CRITICAL FIX: Do NOT call schedule() here!
+    // schedule() updates self.current_thread, but no actual context switch happens.
+    // This caused the scheduler to get out of sync with reality:
+    //   1. Thread A is running
+    //   2. yield_current() calls schedule(), returns (A, B), sets current_thread = B
+    //   3. No actual context switch - thread A continues running
+    //   4. Timer fires, schedule() returns (B, C), saves thread A's regs to thread B's context
+    //   5. Thread B's context is now corrupted with thread A's registers
+    //
+    // Instead, just set need_resched flag. The actual scheduling decision and context
+    // switch will happen at the next interrupt return via check_need_resched_and_switch.
+    set_need_resched();
 }
 
 /// Get pending context switch if any
