@@ -116,9 +116,9 @@ pub fn sys_close(fd: i32) -> SyscallResult {
         }
     };
     let mut manager_guard = manager();
-    let process = match &mut *manager_guard {
+    let (process_pid, process) = match &mut *manager_guard {
         Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_pid, p)) => p,
+            Some((pid, p)) => (pid, p),
             None => {
                 log::error!("sys_close: Process not found for thread {}", thread_id);
                 return SyscallResult::Err(3); // ESRCH
@@ -129,6 +129,13 @@ pub fn sys_close(fd: i32) -> SyscallResult {
             return SyscallResult::Err(3); // ESRCH
         }
     };
+    log::debug!(
+        "sys_close: thread {} -> process {} '{}', closing fd={}",
+        thread_id,
+        process_pid.as_u64(),
+        process.name,
+        fd
+    );
 
     // Close the file descriptor
     match process.fd_table.close(fd) {
@@ -158,7 +165,20 @@ pub fn sys_close(fd: i32) -> SyscallResult {
             SyscallResult::Ok(0)
         }
         Err(e) => {
-            log::error!("sys_close: Failed to close fd={}: error {}", fd, e);
+            log::error!(
+                "sys_close: Failed to close fd={} for process {} '{}' (thread {}): error {}",
+                fd,
+                process_pid.as_u64(),
+                process.name,
+                thread_id,
+                e
+            );
+            // Log what fds ARE present
+            for i in 0..10 {
+                if let Some(fd_entry) = process.fd_table.get(i) {
+                    log::debug!("  fd_table[{}] = {:?}", i, fd_entry.kind);
+                }
+            }
             SyscallResult::Err(e as u64)
         }
     }

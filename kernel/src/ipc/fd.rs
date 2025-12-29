@@ -102,6 +102,14 @@ impl Default for FdTable {
 
 impl Clone for FdTable {
     fn clone(&self) -> Self {
+        // Log what we're cloning
+        log::debug!("FdTable::clone() - cloning fd_table with entries:");
+        for i in 0..10 {
+            if let Some(fd_entry) = self.fds[i].as_ref() {
+                log::debug!("  fd[{}] = {:?}", i, fd_entry.kind);
+            }
+        }
+
         let cloned_fds = alloc::boxed::Box::new((*self.fds).clone());
 
         // Increment pipe reference counts for all cloned pipe fds
@@ -253,5 +261,40 @@ impl FdTable {
             _ => {}
         }
         Err(24) // EMFILE
+    }
+}
+
+/// Drop implementation for FdTable
+///
+/// When a process exits and its FdTable is dropped, we need to properly
+/// decrement pipe reader/writer counts for any open pipe fds. This ensures
+/// that when all writers close, readers get EOF instead of EAGAIN.
+///
+/// Note: UdpSocket cleanup is handled by UdpSocket's own Drop impl when the
+/// Arc reference count goes to zero.
+impl Drop for FdTable {
+    fn drop(&mut self) {
+        log::debug!("FdTable::drop() - closing all fds and decrementing pipe counts");
+        for i in 0..MAX_FDS {
+            if let Some(fd_entry) = self.fds[i].take() {
+                match fd_entry.kind {
+                    FdKind::PipeRead(buffer) => {
+                        buffer.lock().close_read();
+                        log::debug!("FdTable::drop() - closed pipe read fd {}", i);
+                    }
+                    FdKind::PipeWrite(buffer) => {
+                        buffer.lock().close_write();
+                        log::debug!("FdTable::drop() - closed pipe write fd {}", i);
+                    }
+                    FdKind::UdpSocket(_) => {
+                        // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
+                        log::debug!("FdTable::drop() - releasing UDP socket fd {}", i);
+                    }
+                    FdKind::StdIo(_) => {
+                        // StdIo doesn't need cleanup
+                    }
+                }
+            }
+        }
     }
 }

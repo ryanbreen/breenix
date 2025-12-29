@@ -608,8 +608,8 @@ fn setup_first_userspace_entry(
     saved_regs.r14 = 0;
     saved_regs.r15 = 0;
 
-    // DEBUG: Log that we're zeroing RDI for first entry
-    log::info!("FIRST_ENTRY t{}: zeroing rdi to 0", thread_id);
+    // DEBUG: Log that registers were zeroed for first entry
+    log::info!("FIRST_ENTRY t{}: zeroed all registers", thread_id);
 
     // CRITICAL: Now set up CR3 and kernel stack for this thread
     // This must happen BEFORE we iretq to userspace

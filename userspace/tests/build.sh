@@ -48,6 +48,9 @@ BINARIES=(
     "signal_regs_test"
     "udp_socket_test"
     "pipe_test"
+    "pipe_fork_test"
+    "pipe_concurrent_test"
+    "pipe_refcount_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

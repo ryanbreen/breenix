@@ -1050,11 +1050,81 @@ pub fn test_pipe() {
         Ok(pid) => {
             log::info!("Created pipe_test process with PID {:?}", pid);
             log::info!("Pipe test: process scheduled for execution.");
-            log::info!("    -> Should print 'PIPE_TEST_PASSED' if pipe operations succeed");
+            log::info!("    -> Emits pass marker on success (PIPE_TEST_...)");
         }
         Err(e) => {
             log::error!("Failed to create pipe_test process: {}", e);
             log::error!("Pipe test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test pipe + fork concurrency
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Pipe+fork test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates pipe operations across fork boundary
+///   - Marker: "PIPE_FORK_TEST_PASSED"
+///   - This PROVES pipes work correctly across fork, with proper IPC and EOF handling
+pub fn test_pipe_fork() {
+    log::info!("Testing pipe+fork concurrency");
+
+    #[cfg(feature = "testing")]
+    let pipe_fork_test_elf_buf = crate::userspace_test::get_test_binary("pipe_fork_test");
+    #[cfg(feature = "testing")]
+    let pipe_fork_test_elf: &[u8] = &pipe_fork_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let pipe_fork_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("pipe_fork_test"),
+        pipe_fork_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created pipe_fork_test process with PID {:?}", pid);
+            log::info!("Pipe+fork test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (PIPE_FORK_...)");
+        }
+        Err(e) => {
+            log::error!("Failed to create pipe_fork_test process: {}", e);
+            log::error!("Pipe+fork test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test concurrent pipe writes from multiple processes
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Pipe concurrent test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates concurrent pipe operations
+///   - Marker: "PIPE_CONCURRENT_TEST_PASSED"
+///   - This PROVES the pipe buffer handles concurrent writes correctly under Arc<Mutex<PipeBuffer>>
+pub fn test_pipe_concurrent() {
+    log::info!("Testing concurrent pipe writes from multiple processes");
+
+    #[cfg(feature = "testing")]
+    let pipe_concurrent_test_elf_buf = crate::userspace_test::get_test_binary("pipe_concurrent_test");
+    #[cfg(feature = "testing")]
+    let pipe_concurrent_test_elf: &[u8] = &pipe_concurrent_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let pipe_concurrent_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("pipe_concurrent_test"),
+        pipe_concurrent_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created pipe_concurrent_test process with PID {:?}", pid);
+            log::info!("Pipe concurrent test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (PIPE_CONCURRENT_...)");
+        }
+        Err(e) => {
+            log::error!("Failed to create pipe_concurrent_test process: {}", e);
+            log::error!("Pipe concurrent test cannot run without valid userspace process");
         }
     }
 }

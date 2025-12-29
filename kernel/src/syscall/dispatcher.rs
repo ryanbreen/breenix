@@ -55,5 +55,6 @@ pub fn dispatch_syscall(
         SyscallNumber::RecvFrom => super::socket::sys_recvfrom(arg1, arg2, arg3, arg4, arg5, arg6),
         SyscallNumber::Pipe => super::pipe::sys_pipe(arg1),
         SyscallNumber::Close => super::pipe::sys_close(arg1 as i32),
+        SyscallNumber::Dup2 => handlers::sys_dup2(arg1, arg2),
     }
 }

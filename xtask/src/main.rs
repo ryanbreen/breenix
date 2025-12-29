@@ -523,6 +523,20 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "pipe() syscall test failed - pipe creation, read/write, or close broken",
             check_hint: "Check kernel/src/syscall/pipe.rs and kernel/src/ipc/pipe.rs - verify pipe creation, fd allocation, and read/write operations",
         },
+        // Pipe + fork test
+        BootStage {
+            name: "Pipe + fork test passed",
+            marker: "PIPE_FORK_TEST_PASSED",
+            failure_meaning: "pipe+fork test failed - pipe IPC across fork boundary broken",
+            check_hint: "Check fork fd_table cloning and pipe reference counting in kernel/src/ipc/fd.rs and kernel/src/process/manager.rs",
+        },
+        // Pipe concurrent test
+        BootStage {
+            name: "Pipe concurrent test passed",
+            marker: "PIPE_CONCURRENT_TEST_PASSED",
+            failure_meaning: "concurrent pipe test failed - pipe buffer concurrency broken",
+            check_hint: "Check pipe buffer locking in kernel/src/ipc/pipe.rs",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

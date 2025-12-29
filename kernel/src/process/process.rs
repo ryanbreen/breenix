@@ -160,9 +160,49 @@ impl Process {
     }
 
     /// Terminate the process
+    ///
+    /// This sets the process state to Terminated and closes all file descriptors
+    /// to properly release resources (e.g., decrement pipe reader/writer counts).
     pub fn terminate(&mut self, exit_code: i32) {
+        // Close all file descriptors before setting state to Terminated
+        // This ensures pipe counts are properly decremented so readers get EOF
+        self.close_all_fds();
+
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
+    }
+
+    /// Close all file descriptors in this process
+    ///
+    /// This properly decrements pipe reader/writer counts, ensuring that
+    /// when all writers close, readers get EOF instead of EAGAIN.
+    fn close_all_fds(&mut self) {
+        use crate::ipc::FdKind;
+
+        log::debug!("Process::close_all_fds() for process '{}'", self.name);
+
+        // Close each fd, which will decrement pipe counts
+        for fd in 0..crate::ipc::MAX_FDS {
+            if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
+                match fd_entry.kind {
+                    FdKind::PipeRead(buffer) => {
+                        buffer.lock().close_read();
+                        log::debug!("Process::close_all_fds() - closed pipe read fd {}", fd);
+                    }
+                    FdKind::PipeWrite(buffer) => {
+                        buffer.lock().close_write();
+                        log::debug!("Process::close_all_fds() - closed pipe write fd {}", fd);
+                    }
+                    FdKind::UdpSocket(_) => {
+                        // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
+                        log::debug!("Process::close_all_fds() - released UDP socket fd {}", fd);
+                    }
+                    FdKind::StdIo(_) => {
+                        // StdIo doesn't need cleanup
+                    }
+                }
+            }
+        }
     }
 
     /// Check if process is terminated

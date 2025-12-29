@@ -71,6 +71,32 @@ pub struct CpuContext {
 }
 
 impl CpuContext {
+    /// Create a CpuContext from a syscall frame (captures actual register values at syscall time)
+    pub fn from_syscall_frame(frame: &crate::syscall::handler::SyscallFrame) -> Self {
+        Self {
+            rax: frame.rax,
+            rbx: frame.rbx,
+            rcx: frame.rcx,
+            rdx: frame.rdx,
+            rsi: frame.rsi,
+            rdi: frame.rdi,
+            rbp: frame.rbp,
+            rsp: frame.rsp,
+            r8: frame.r8,
+            r9: frame.r9,
+            r10: frame.r10,
+            r11: frame.r11,
+            r12: frame.r12,
+            r13: frame.r13,
+            r14: frame.r14,
+            r15: frame.r15,
+            rip: frame.rip,
+            rflags: frame.rflags,
+            cs: frame.cs,
+            ss: frame.ss,
+        }
+    }
+
     /// Create a new CPU context for a thread entry point
     pub fn new(entry_point: VirtAddr, stack_pointer: VirtAddr, privilege: ThreadPrivilege) -> Self {
         Self {

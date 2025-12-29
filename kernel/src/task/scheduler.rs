@@ -432,6 +432,12 @@ pub fn yield_current() {
 // NOTE: get_pending_switch() was removed because it called schedule() which mutates
 // self.current_thread. Calling it "just to peek" would corrupt scheduler state.
 // If needed in future, implement a true peek function that doesn't mutate state.
+//
+// ARCHITECTURAL CONSTRAINT: Never add a function that calls schedule() "just to look"
+// at what would happen. The schedule() function MUST only be called when an actual
+// context switch will follow immediately. Violating this invariant will desync
+// scheduler.current_thread from reality, causing register corruption in child processes.
+// See commit f59bccd for the full bug investigation.
 
 /// Allocate a new thread ID
 #[allow(dead_code)]
@@ -475,4 +481,88 @@ pub fn switch_to_idle() {
 
         log::info!("Exception handler: Switched scheduler to idle thread {}", idle_id);
     });
+}
+
+/// Test module for scheduler state invariants
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    /// Test that yield_current() does NOT modify scheduler.current_thread.
+    ///
+    /// This test validates the fix for the bug where yield_current() called schedule(),
+    /// which updated self.current_thread without an actual context switch occurring.
+    /// This caused scheduler state to desync from reality, corrupting child process
+    /// register state during fork.
+    ///
+    /// The fix changed yield_current() to only set the need_resched flag, deferring
+    /// the actual scheduling decision to the next interrupt return.
+    pub fn test_yield_current_does_not_modify_scheduler_state() {
+        log::info!("=== TEST: yield_current() scheduler state invariant ===");
+
+        // Capture the current thread ID before yield
+        let thread_id_before = current_thread_id();
+        log::info!("Thread ID before yield_current(): {:?}", thread_id_before);
+
+        // Call yield_current() - this should ONLY set need_resched flag
+        yield_current();
+
+        // Capture the current thread ID after yield
+        let thread_id_after = current_thread_id();
+        log::info!("Thread ID after yield_current(): {:?}", thread_id_after);
+
+        // CRITICAL ASSERTION: current_thread should NOT have changed
+        // If this fails, it means yield_current() is calling schedule() which
+        // would cause the register corruption bug to return.
+        assert_eq!(
+            thread_id_before, thread_id_after,
+            "BUG: yield_current() modified scheduler.current_thread! \
+             This will cause fork to corrupt child registers. \
+             yield_current() must ONLY set need_resched flag, not call schedule()."
+        );
+
+        // Verify that need_resched was set
+        let need_resched = crate::per_cpu::need_resched();
+        assert!(
+            need_resched,
+            "yield_current() should have set the need_resched flag"
+        );
+
+        // Clean up: clear the need_resched flag to avoid affecting other tests
+        crate::per_cpu::set_need_resched(false);
+
+        log::info!("=== TEST PASSED: yield_current() correctly preserves scheduler state ===");
+    }
+}
+
+/// Public wrapper for running scheduler tests (callable from kernel main)
+/// This is intentionally available but not automatically called - it can be
+/// invoked manually during debugging to verify scheduler invariants.
+#[allow(dead_code)]
+pub fn run_scheduler_tests() {
+    #[cfg(test)]
+    {
+        tests::test_yield_current_does_not_modify_scheduler_state();
+    }
+    #[cfg(not(test))]
+    {
+        // In non-test builds, run a simplified version that doesn't use assert
+        log::info!("=== Scheduler invariant check (non-test mode) ===");
+
+        let thread_id_before = current_thread_id();
+        yield_current();
+        let thread_id_after = current_thread_id();
+
+        if thread_id_before != thread_id_after {
+            log::error!(
+                "SCHEDULER BUG: yield_current() changed current_thread from {:?} to {:?}!",
+                thread_id_before, thread_id_after
+            );
+        } else {
+            log::info!("Scheduler invariant check passed: yield_current() preserves state");
+        }
+
+        // Clean up
+        crate::per_cpu::set_need_resched(false);
+    }
 }

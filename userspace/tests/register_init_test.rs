@@ -66,73 +66,79 @@ fn write_hex(n: u64) {
 }
 
 /// Entry point - captures registers in pure assembly BEFORE any Rust code runs
+///
+/// NOTE: We save registers to a static buffer instead of the stack because:
+/// 1. Calling conventions may clobber registers before we read them
+/// 2. Stack-based approach was giving incorrect results for RAX
 #[no_mangle]
 #[unsafe(naked)]
 pub unsafe extern "C" fn _start() -> ! {
     core::arch::naked_asm!(
-        // Save all registers to stack IMMEDIATELY at entry
-        // Stack layout after this: [rax][rbx][rcx][rdx][rsi][rdi][r8][r9][r10][r11][r12][r13][r14][r15]
-        "push rax",
-        "push rbx",
-        "push rcx",
-        "push rdx",
-        "push rsi",
-        "push rdi",
-        "push r8",
-        "push r9",
-        "push r10",
-        "push r11",
-        "push r12",
-        "push r13",
-        "push r14",
-        "push r15",
+        // Save all registers to a static buffer IMMEDIATELY at entry
+        // This is simpler and more reliable than stack-based approach
+        "lea r11, [{saved_regs}]",  // Load address of static buffer into r11 (clobbers r11)
+        "mov [r11 + 0*8], rax",
+        "mov [r11 + 1*8], rbx",
+        "mov [r11 + 2*8], rcx",
+        "mov [r11 + 3*8], rdx",
+        "mov [r11 + 4*8], rsi",
+        "mov [r11 + 5*8], rdi",
+        "mov [r11 + 6*8], r8",
+        "mov [r11 + 7*8], r9",
+        "mov [r11 + 8*8], r10",
+        // r11 is already used as base pointer, can't save its original value
+        "mov [r11 + 10*8], r12",
+        "mov [r11 + 11*8], r13",
+        "mov [r11 + 12*8], r14",
+        "mov [r11 + 13*8], r15",
 
-        // Now call Rust function to check them (stack pointer points to saved regs)
+        // Now call Rust function to check them
         "call {check_registers}",
 
         // Never returns
         "ud2",
 
-        check_registers = sym check_registers_from_stack,
+        saved_regs = sym SAVED_REGS,
+        check_registers = sym check_registers_from_buffer,
     );
 }
 
-/// Check register values that were saved on the stack
-unsafe extern "C" fn check_registers_from_stack() -> ! {
-    // Read values from stack
-    // Stack layout: [r15][r14][r13][r12][r11][r10][r9][r8][rdi][rsi][rdx][rcx][rbx][rax][return_addr]
-    //                                                                                        ^RSP
-    // So we need to skip return address (+8) and read backwards
-    let regs_ptr: *const u64;
-    core::arch::asm!("lea {}, [rsp + 8]", out(reg) regs_ptr);
+/// Static buffer to hold saved registers
+/// Order: rax, rbx, rcx, rdx, rsi, rdi, r8, r9, r10, (r11 skipped), r12, r13, r14, r15
+static mut SAVED_REGS: [u64; 14] = [0; 14];
 
-    // Read in reverse order (last pushed = first in memory going up)
-    let r15 = *regs_ptr.offset(0);
-    let r14 = *regs_ptr.offset(1);
-    let r13 = *regs_ptr.offset(2);
-    let r12 = *regs_ptr.offset(3);
-    let r11 = *regs_ptr.offset(4);
-    let r10 = *regs_ptr.offset(5);
-    let r9  = *regs_ptr.offset(6);
-    let r8  = *regs_ptr.offset(7);
-    let rdi = *regs_ptr.offset(8);
-    let rsi = *regs_ptr.offset(9);
-    let rdx = *regs_ptr.offset(10);
-    let rcx = *regs_ptr.offset(11);
-    let rbx = *regs_ptr.offset(12);
-    let rax = *regs_ptr.offset(13);
+/// Check register values that were saved to the static buffer
+unsafe extern "C" fn check_registers_from_buffer() -> ! {
+    // Read values from SAVED_REGS static buffer
+    // Layout: rax at 0, rbx at 1, ..., r15 at 13 (r11 is at index 9 but was clobbered)
+    let rax = SAVED_REGS[0];
+    let rbx = SAVED_REGS[1];
+    let rcx = SAVED_REGS[2];
+    let rdx = SAVED_REGS[3];
+    let rsi = SAVED_REGS[4];
+    let rdi_saved = SAVED_REGS[5];
+    let r8  = SAVED_REGS[6];
+    let r9  = SAVED_REGS[7];
+    let r10 = SAVED_REGS[8];
+    // r11 was used as base pointer, skip it (SAVED_REGS[9] contains garbage)
+    let r12 = SAVED_REGS[10];
+    let r13 = SAVED_REGS[11];
+    let r14 = SAVED_REGS[12];
+    let r15 = SAVED_REGS[13];
 
     // Check if all registers are zero
+    // Note: rdi_saved is the original rdi value (before we used rdi for argument passing)
+    // Note: r11 is not checked because we used it as base pointer to save other registers
     let all_zero = rax == 0
         && rbx == 0
         && rcx == 0
         && rdx == 0
         && rsi == 0
-        && rdi == 0
+        && rdi_saved == 0
         && r8 == 0
         && r9 == 0
         && r10 == 0
-        && r11 == 0
+        // r11 cannot be checked - used as base pointer
         && r12 == 0
         && r13 == 0
         && r14 == 0
@@ -167,9 +173,9 @@ unsafe extern "C" fn check_registers_from_stack() -> ! {
             write_hex(rsi);
             write_str(" (expected 0)\n");
         }
-        if rdi != 0 {
+        if rdi_saved != 0 {
             write_str("  RDI = ");
-            write_hex(rdi);
+            write_hex(rdi_saved);
             write_str(" (expected 0)\n");
         }
         if r8 != 0 {
@@ -187,11 +193,7 @@ unsafe extern "C" fn check_registers_from_stack() -> ! {
             write_hex(r10);
             write_str(" (expected 0)\n");
         }
-        if r11 != 0 {
-            write_str("  R11 = ");
-            write_hex(r11);
-            write_str(" (expected 0)\n");
-        }
+        // r11 not checked - used as base pointer in _start
         if r12 != 0 {
             write_str("  R12 = ");
             write_hex(r12);

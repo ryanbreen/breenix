@@ -149,12 +149,16 @@ timer_interrupt_entry:
     pop rdx
     pop rcx
     pop rax
-    
+
     ; Check if we're returning to ring 3 (userspace)
     ; Frame is now: [RIP][CS][RFLAGS][RSP][SS] at RSP
-    mov rcx, [rsp + 8]         ; Get CS from interrupt frame (use RCX instead of RAX)
+    ; CRITICAL FIX: Save RCX before using it for privilege check!
+    ; We just restored RCX from saved_regs, don't clobber it.
+    push rcx                   ; Save userspace RCX value
+    mov rcx, [rsp + 16]        ; Get CS from interrupt frame (offset +8 for our push)
     and rcx, 3                 ; Check privilege level
     cmp rcx, 3                 ; Ring 3?
+    pop rcx                    ; Restore userspace RCX (before conditional jump!)
     jne .no_userspace_return
     
     ; FIXED: CR3 switching now happens in the scheduler during context switch
@@ -217,7 +221,8 @@ timer_interrupt_entry:
     ; Swap back to kernel GS temporarily
     swapgs
 
-    ; Save registers we need
+    ; Save registers we need (including RAX which is caller-saved)
+    push rax
     push rdi
     push rsi
     push rdx
@@ -227,9 +232,9 @@ timer_interrupt_entry:
     push r10
     push r11
 
-    ; Pass pointer to IRETQ frame (RIP is at RSP+64 after our pushes)
+    ; Pass pointer to IRETQ frame (RIP is at RSP+72 after our 9 pushes)
     mov rdi, rsp
-    add rdi, 64         ; Skip 8 pushed registers to point to RIP
+    add rdi, 72         ; Skip 9 pushed registers to point to RIP
     call trace_iretq_to_ring3
 
     ; Restore registers
@@ -241,6 +246,7 @@ timer_interrupt_entry:
     pop rdx
     pop rsi
     pop rdi
+    pop rax
 
     ; Debug: Output marker after register restore
     push rax
