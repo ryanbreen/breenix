@@ -429,14 +429,9 @@ pub fn yield_current() {
     set_need_resched();
 }
 
-/// Get pending context switch if any
-/// Returns Some((old_thread_id, new_thread_id)) if a switch is pending
-#[allow(dead_code)]
-pub fn get_pending_switch() -> Option<(u64, u64)> {
-    // For now, just call schedule to see if we would switch
-    // In a real implementation, we might cache this decision
-    schedule()
-}
+// NOTE: get_pending_switch() was removed because it called schedule() which mutates
+// self.current_thread. Calling it "just to peek" would corrupt scheduler state.
+// If needed in future, implement a true peek function that doesn't mutate state.
 
 /// Allocate a new thread ID
 #[allow(dead_code)]
