@@ -96,8 +96,7 @@ fn read_line() -> &'static str {
             if LINE_LEN < 255 && ch >= 0x20 && ch < 0x7f {
                 LINE_BUF[LINE_LEN] = ch;
                 LINE_LEN += 1;
-                // Echo the character
-                print_char(ch);
+                // Note: Kernel echoes characters in push_byte, so no shell echo needed
             }
         }
     }

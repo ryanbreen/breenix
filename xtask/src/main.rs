@@ -546,6 +546,13 @@ fn get_boot_stages() -> Vec<BootStage> {
 }
 
 /// Boot kernel once and validate each stage with real-time output
+///
+/// Uses dual serial port configuration:
+/// - COM1 (0x3F8): User I/O (raw userspace output) -> target/xtask_user_output.txt
+/// - COM2 (0x2F8): Kernel logs (log::* output) -> target/xtask_boot_stages_output.txt
+///
+/// We primarily monitor COM2 since all markers use log::info!() and userspace
+/// output is also logged there with "USERSPACE OUTPUT:" prefix.
 fn boot_stages() -> Result<()> {
     let stages = get_boot_stages();
     let total_stages = stages.len();
@@ -553,10 +560,14 @@ fn boot_stages() -> Result<()> {
     println!("Boot Stage Validator - {} stages to check", total_stages);
     println!("=========================================\n");
 
+    // COM2 (log output) - this is where all test markers go
     let serial_output_file = "target/xtask_boot_stages_output.txt";
+    // COM1 (user output) - raw userspace output
+    let user_output_file = "target/xtask_user_output.txt";
 
-    // Remove old output file
+    // Remove old output files
     let _ = fs::remove_file(serial_output_file);
+    let _ = fs::remove_file(user_output_file);
 
     // Kill any existing QEMU
     let _ = Command::new("pkill")
@@ -566,7 +577,9 @@ fn boot_stages() -> Result<()> {
 
     println!("Starting QEMU...\n");
 
-    // Start QEMU with serial output to file
+    // Start QEMU with dual serial ports:
+    // - COM1 (0x3F8) -> user output file
+    // - COM2 (0x2F8) -> kernel log output file (primary for test markers)
     let mut child = Command::new("cargo")
         .args(&[
             "run",
@@ -578,6 +591,8 @@ fn boot_stages() -> Result<()> {
             "--bin",
             "qemu-uefi",
             "--",
+            "-serial",
+            &format!("file:{}", user_output_file),
             "-serial",
             &format!("file:{}", serial_output_file),
             "-display",
@@ -854,14 +869,19 @@ fn boot_stages() -> Result<()> {
 
 /// Builds the kernel, boots it in QEMU, and asserts that the
 /// hard-coded userspace program prints its greeting.
+///
+/// Uses dual serial ports: COM1 for user output, COM2 for kernel logs.
 fn ring3_smoke() -> Result<()> {
     println!("Starting Ring-3 smoke test...");
 
-    // Use serial output to file approach like the tests do
+    // COM2 (log output) - where test markers go via log::info!()
     let serial_output_file = "target/xtask_ring3_smoke_output.txt";
+    // COM1 (user output) - raw userspace output
+    let user_output_file = "target/xtask_ring3_user_output.txt";
 
-    // Remove old output file if it exists
+    // Remove old output files if they exist
     let _ = fs::remove_file(serial_output_file);
+    let _ = fs::remove_file(user_output_file);
 
     // Kill any existing QEMU processes
     let _ = Command::new("pkill")
@@ -871,7 +891,9 @@ fn ring3_smoke() -> Result<()> {
 
     println!("Building and running kernel with testing features...");
 
-    // Start QEMU with serial output to file
+    // Start QEMU with dual serial ports:
+    // - COM1 (0x3F8) -> user output file
+    // - COM2 (0x2F8) -> kernel log output file (where markers go)
     let mut child = Command::new("cargo")
         .args(&[
             "run",
@@ -883,6 +905,8 @@ fn ring3_smoke() -> Result<()> {
             "--bin",
             "qemu-uefi",
             "--",
+            "-serial",
+            &format!("file:{}", user_output_file),
             "-serial",
             &format!("file:{}", serial_output_file),
             "-display",
@@ -963,14 +987,19 @@ fn ring3_smoke() -> Result<()> {
 }
 
 /// Builds the kernel, boots it in QEMU, and tests ENOSYS syscall handling.
+///
+/// Uses dual serial ports: COM1 for user output, COM2 for kernel logs.
 fn ring3_enosys() -> Result<()> {
     println!("Starting Ring-3 ENOSYS test...");
 
-    // Use serial output to file approach like the tests do
+    // COM2 (log output) - where test markers go via log::info!()
     let serial_output_file = "target/xtask_ring3_enosys_output.txt";
+    // COM1 (user output) - raw userspace output
+    let user_output_file = "target/xtask_ring3_enosys_user_output.txt";
 
-    // Remove old output file if it exists
+    // Remove old output files if they exist
     let _ = fs::remove_file(serial_output_file);
+    let _ = fs::remove_file(user_output_file);
 
     // Kill any existing QEMU processes
     let _ = Command::new("pkill")
@@ -980,7 +1009,9 @@ fn ring3_enosys() -> Result<()> {
 
     println!("Building and running kernel with testing features...");
 
-    // Start QEMU with serial output to file
+    // Start QEMU with dual serial ports:
+    // - COM1 (0x3F8) -> user output file
+    // - COM2 (0x2F8) -> kernel log output file (where markers go)
     let mut child = Command::new("cargo")
         .args(&[
             "run",
@@ -992,6 +1023,8 @@ fn ring3_enosys() -> Result<()> {
             "--bin",
             "qemu-uefi",
             "--",
+            "-serial",
+            &format!("file:{}", user_output_file),
             "-serial",
             &format!("file:{}", serial_output_file),
             "-display",
@@ -1102,7 +1135,14 @@ fn ring3_enosys() -> Result<()> {
     }
 }
 
-/// Boot Breenix interactively with init_shell and serial console attached.
+/// Boot Breenix interactively with init_shell and graphical PS/2 keyboard input.
+///
+/// Opens a QEMU graphical window where PS/2 keyboard input is captured and fed
+/// to the init_shell via the keyboard interrupt handler.
+///
+/// Serial output goes to files for debugging:
+/// - COM1 (0x3F8) -> target/serial_output.txt (user I/O from shell)
+/// - COM2 (0x2F8) -> target/kernel.log (kernel debug logs)
 fn interactive() -> Result<()> {
     println!("Building Breenix with interactive feature...");
 
@@ -1125,12 +1165,30 @@ fn interactive() -> Result<()> {
         bail!("Build failed");
     }
 
-    println!("Launching QEMU with serial console attached to terminal...");
-    println!("Press Ctrl+A, X to exit QEMU.");
+    println!();
+    println!("=== Breenix Interactive Mode ===");
+    println!();
+    println!("A QEMU window will open shortly.");
+    println!();
+    println!("Instructions:");
+    println!("  - Type in the QEMU window (not this terminal)");
+    println!("  - The PS/2 keyboard sends input to the Breenix shell");
+    println!("  - Close the QEMU window or press the power button to exit");
+    println!();
+    println!("Serial logs (for debugging):");
+    println!("  - Shell I/O:    target/serial_output.txt");
+    println!("  - Kernel logs:  target/kernel.log");
+    println!();
+    println!("Tip: In another terminal, run:");
+    println!("  tail -f target/serial_output.txt");
+    println!("  tail -f target/kernel.log");
     println!();
 
-    // Run QEMU with serial attached to stdio for interactive use
-    // Set BREENIX_INTERACTIVE=1 to tell qemu-uefi runner to use -serial stdio
+    // Run QEMU with graphical display for PS/2 keyboard input:
+    // - Cocoa display on macOS for keyboard input (PS/2 keyboard handler feeds stdin)
+    // - COM1 (0x3F8) -> file:target/serial_output.txt for shell I/O
+    // - COM2 (0x2F8) -> file:target/kernel.log for kernel logs
+    // Set BREENIX_INTERACTIVE=1 to tell qemu-uefi runner we're in interactive mode
     let run_status = Command::new("cargo")
         .args(&[
             "run",
@@ -1142,8 +1200,12 @@ fn interactive() -> Result<()> {
             "--bin",
             "qemu-uefi",
             "--",
+            "-display",
+            "cocoa",
             "-serial",
-            "mon:stdio",
+            "file:target/serial_output.txt",
+            "-serial",
+            "file:target/kernel.log",
         ])
         .env("BREENIX_INTERACTIVE", "1")
         .status()

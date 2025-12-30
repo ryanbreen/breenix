@@ -247,33 +247,36 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
 /// Helper function to write to stdio (serial port)
 fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
-    // Log the actual data being written (for verification)
-    if buffer.len() <= 30 {
-        let s = core::str::from_utf8(buffer).unwrap_or("<invalid UTF-8>");
-        let mut hex_str = alloc::string::String::new();
-        for (i, &byte) in buffer.iter().enumerate() {
-            if i > 0 {
-                hex_str.push(' ');
-            }
-            hex_str.push_str(&alloc::format!("{:02x}", byte));
+    let bytes_written = buffer.len() as u64;
+
+    // In interactive mode, write to framebuffer so user can see shell output in QEMU window
+    #[cfg(feature = "interactive")]
+    {
+        if let Ok(s) = core::str::from_utf8(buffer) {
+            // Write to framebuffer for QEMU display
+            crate::logger::write_to_framebuffer(s);
         }
-        log::info!("sys_write: Writing '{}' ({} bytes) to fd {}", s, buffer.len(), fd);
-        log::info!("  Raw bytes: [{}]", hex_str);
-    } else {
-        log::info!("sys_write: Writing {} bytes to fd {}", buffer.len(), fd);
+        // Also write to COM1 for debugging (serial console)
+        for &byte in buffer {
+            crate::serial::write_byte(byte);
+        }
     }
 
-    // Write to serial port
-    let mut bytes_written = 0;
-    for &byte in buffer {
-        crate::serial::write_byte(byte);
-        bytes_written += 1;
+    // In non-interactive mode, write to serial port (for CI/testing)
+    #[cfg(not(feature = "interactive"))]
+    {
+        for &byte in buffer {
+            crate::serial::write_byte(byte);
+        }
+
+        // Log the output for userspace writes
+        if let Ok(s) = core::str::from_utf8(buffer) {
+            log::info!("USERSPACE OUTPUT: {}", s.trim_end());
+        }
     }
 
-    // Log the output for userspace writes
-    if let Ok(s) = core::str::from_utf8(buffer) {
-        log::info!("USERSPACE OUTPUT: {}", s.trim_end());
-    }
+    // Suppress the fd unused warning
+    let _ = fd;
 
     SyscallResult::Ok(bytes_written)
 }

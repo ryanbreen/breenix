@@ -65,7 +65,7 @@ breakpoint_entry:
     call rust_breakpoint_handler
     
     ; Raw serial output: Rust handler returned
-    mov dx, 0x3F8
+    mov dx, 0x2F8
     mov al, 'R'         ; 'R' for Return
     out dx, al
     mov al, 'E'         ; 'E' for rEturn
@@ -110,7 +110,7 @@ breakpoint_entry:
     add rsp, 8
     
     ; Raw serial output: About to IRETQ
-    mov dx, 0x3F8
+    mov dx, 0x2F8
     mov al, 'I'         ; 'I' for IRETQ
     out dx, al
     mov al, 'Q'         ; 'Q' for iretQ

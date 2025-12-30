@@ -244,6 +244,8 @@ static mut CPU0_DATA: PerCpuData = PerCpuData::new(0);
 static PER_CPU_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Check if per-CPU data has been initialized
+/// Note: Used in non-interactive builds (logger.rs framebuffer check)
+#[allow(dead_code)]
 pub fn is_initialized() -> bool {
     PER_CPU_INITIALIZED.load(Ordering::Acquire)
 }
@@ -1185,15 +1187,7 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     let result = in_exception_cleanup
                  || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel));
 
-    // Debug logging for exception handler path
-    static CAN_SCHED_LOG_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    let count = CAN_SCHED_LOG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if count < 20 || (in_exception_cleanup && count < 100) {
-        log::debug!(
-            "can_schedule: preempt={}, to_user={}, to_idle_kern={}, exc_cleanup={}, result={}",
-            current_preempt, returning_to_userspace, returning_to_idle_kernel, in_exception_cleanup, result
-        );
-    }
+    // Note: Debug logging removed from hot path - use GDB if debugging is needed
 
     result
 }

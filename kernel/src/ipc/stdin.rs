@@ -99,6 +99,59 @@ pub fn push_byte(byte: u8) {
     }
 }
 
+/// Push a byte to stdin from interrupt context (uses try_lock to avoid deadlock)
+/// Returns true if the byte was pushed, false if locks couldn't be acquired
+pub fn push_byte_from_irq(byte: u8) -> bool {
+    // Try to acquire the buffer lock - don't block in interrupt context
+    if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
+        if buffer.push_byte(byte) {
+            // Echo character to serial output (COM1)
+            crate::serial::write_byte(byte);
+
+            // In interactive mode, also echo to framebuffer so user sees their input
+            #[cfg(feature = "interactive")]
+            {
+                crate::logger::write_char_to_framebuffer(byte);
+            }
+
+            drop(buffer);
+
+            // Try to wake blocked readers (may fail if scheduler lock is held)
+            wake_blocked_readers_try();
+            return true;
+        }
+    }
+    false
+}
+
+/// Try to wake blocked readers without blocking (for interrupt context)
+fn wake_blocked_readers_try() {
+    let readers: alloc::vec::Vec<u64> = {
+        if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
+            blocked.drain(..).collect()
+        } else {
+            return; // Can't get lock, readers will be woken when they retry
+        }
+    };
+
+    if readers.is_empty() {
+        return;
+    }
+
+    // Try to wake threads via the scheduler's non-blocking path
+    // Note: We use the with_scheduler variant here which may need to disable
+    // interrupts, but since we're already in an interrupt handler with a
+    // non-reentrant interrupt, this is safe.
+    crate::task::scheduler::with_scheduler(|sched| {
+        for thread_id in readers {
+            sched.unblock(thread_id);
+        }
+    });
+
+    // Trigger reschedule so the woken thread runs soon
+    crate::task::scheduler::set_need_resched();
+}
+
 /// Read bytes from stdin buffer
 /// Returns Ok(n) with bytes read, or Err(EAGAIN) if would block
 pub fn read_bytes(buf: &mut [u8]) -> Result<usize, i32> {

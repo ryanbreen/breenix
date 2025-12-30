@@ -115,18 +115,6 @@ timer_interrupt_entry:
     lea rsi, [rsp + 15*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
     
-    ; SENTINEL: Output marker to see if we return from check_need_resched_and_switch
-    ; If context switch does a non-local return, we'll never see this
-    push rax
-    push rdx
-    mov dx, 0x3F8       ; COM1 port
-    mov al, '@'         ; Sentinel marker after call
-    out dx, al
-    mov al, '@'         ; Double for visibility
-    out dx, al
-    pop rdx
-    pop rax
-
     ; CRITICAL: Disable interrupts before restoring registers
     ; This prevents race condition where another interrupt fires while registers
     ; are being restored, potentially corrupting them
@@ -248,39 +236,11 @@ timer_interrupt_entry:
     pop rdi
     pop rax
 
-    ; Debug: Output marker after register restore
-    push rax
-    push rdx
-    mov dx, 0x3F8
-    mov al, '1'
-    out dx, al
-    pop rdx
-    pop rax
-
     ; EOI is now sent just before IRETQ to minimize the window for PIC to queue
     ; another interrupt. See .after_cr3_check and .no_userspace_return
 
     ; Swap back to user GS before IRETQ
     swapgs
-
-    ; Debug: Output marker after swapgs
-    push rax
-    push rdx
-    mov dx, 0x3F8
-    mov al, '2'
-    out dx, al
-    pop rdx
-    pop rax
-
-    ; CRITICAL DEBUG: Output marker to prove we reach IRETQ
-    ; If we see this marker, we made it to iretq
-    push rax
-    push rdx
-    mov dx, 0x3F8       ; COM1 port
-    mov al, 'Q'         ; 'Q' for iretQ
-    out dx, al
-    pop rdx
-    pop rax
 
     ; CRITICAL: Check if we need to switch CR3 before IRETQ
     ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
@@ -312,19 +272,6 @@ timer_interrupt_entry:
     mov qword [gs:64], rdx
     pop rdx
 
-    ; Debug: Output marker for CR3 switch
-    mov dx, 0x3F8
-    push rax
-    mov al, '$'
-    out dx, al
-    mov al, 'C'
-    out dx, al
-    mov al, 'R'
-    out dx, al
-    mov al, '3'
-    out dx, al
-    pop rax
-
     ; NOW safe to switch CR3 to process page table
     ; Kernel per-CPU data already cleared while kernel PT was active
     mov cr3, rax
@@ -340,21 +287,6 @@ timer_interrupt_entry:
     mov rax, qword [gs:80]             ; Read saved process CR3
     test rax, rax                      ; Check if it was saved (non-zero)
     jz .no_saved_cr3                   ; If 0, skip (shouldn't happen from userspace)
-
-    ; Debug: Output marker for saved CR3 restore
-    push rdx
-    mov dx, 0x3F8
-    push rax
-    mov al, '!'                        ; '!' for saved CR3 restore
-    out dx, al
-    mov al, 'C'
-    out dx, al
-    mov al, 'R'
-    out dx, al
-    mov al, '3'
-    out dx, al
-    pop rax
-    pop rdx
 
     ; Switch back to original process CR3
     mov cr3, rax

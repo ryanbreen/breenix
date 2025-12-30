@@ -49,16 +49,11 @@ pub extern "C" fn check_need_resched_and_switch(
 
     // log::debug!("check_need_resched_and_switch: Need resched is true, proceeding...");
 
-    // Rate limit the debug message
+    // Count reschedule attempts (for diagnostics if needed)
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0);
-    let count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if count < 5 || count % 30 == 0 {
-        log::debug!(
-            "check_need_resched_and_switch: Reschedule needed (count: {})",
-            count
-        );
-    }
+    let _count = RESCHED_LOG_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    // Note: Debug logging removed from hot path - use GDB if debugging is needed
 
     // CRITICAL FIX: Acquire and HOLD process manager lock across entire critical section.
     // This prevents a TOCTOU race where:
@@ -77,12 +72,6 @@ pub extern "C" fn check_need_resched_and_switch(
                 // Don't even attempt to schedule - we'd corrupt scheduler state if we did.
                 // The need_resched flag was already cleared, so set it again for next time.
                 scheduler::set_need_resched();
-                if count < 20 {
-                    log::warn!(
-                        "Rescheduling deferred: process manager lock held (count: {})",
-                        count
-                    );
-                }
                 return;
             }
         }
@@ -92,29 +81,16 @@ pub extern "C" fn check_need_resched_and_switch(
 
     // Perform scheduling decision
     let schedule_result = scheduler::schedule();
-    // Always log the first few results
-    if count < 10 || schedule_result.is_some() {
-        log::info!(
-            "scheduler::schedule() returned: {:?} (count: {})",
-            schedule_result,
-            count
-        );
-    } else if count % 30 == 0 {
-        log::debug!(
-            "scheduler::schedule() returned: {:?} (count: {})",
-            schedule_result,
-            count
-        );
+
+    // One-time boot stage marker (only fires once to satisfy boot-stages test)
+    static SCHEDULE_MARKER_EMITTED: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    if !SCHEDULE_MARKER_EMITTED.load(core::sync::atomic::Ordering::Relaxed) {
+        SCHEDULE_MARKER_EMITTED.store(true, core::sync::atomic::Ordering::Relaxed);
+        log::info!("scheduler::schedule() returned: {:?} (boot marker)", schedule_result);
     }
 
-    // Always log if we didn't get a schedule result
     if schedule_result.is_none() {
-        if count < 20 {
-            log::warn!(
-                "scheduler::schedule() returned None - no thread switch available (count: {})",
-                count
-            );
-        }
         // CRITICAL: Clear exception cleanup context even when no switch happens.
         // Otherwise the flag stays set forever, causing unexpected scheduling later.
         crate::per_cpu::clear_exception_cleanup_context();

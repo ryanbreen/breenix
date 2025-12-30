@@ -200,16 +200,6 @@ syscall_entry:
     ; All kernel work is now done, safe to switch GS
     swapgs
 
-    ; Direct serial output marker - about to execute IRETQ
-    ; Write 0xEE to serial port to indicate we reached IRETQ
-    push rax
-    push rdx
-    mov dx, 0x3F8  ; COM1 port
-    mov al, 0xEE   ; Marker byte
-    out dx, al
-    pop rdx
-    pop rax
-
     ; CRITICAL: Check if we need to switch CR3 before IRETQ (syscall return)
     ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
     ; If non-zero, switch to it and clear the flag
@@ -240,19 +230,6 @@ syscall_entry:
     mov qword [gs:64], rdx
     pop rdx
 
-    ; Debug: Output marker for CR3 switch
-    mov dx, 0x3F8
-    push rax
-    mov al, '$'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-    mov al, 'Y'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-    pop rax
-
     ; NOW safe to switch CR3 to process page table
     ; Kernel per-CPU data already cleared while kernel PT was active
     mov cr3, rax
@@ -268,21 +245,6 @@ syscall_entry:
     mov rax, qword [gs:80]             ; Read saved process CR3
     test rax, rax                      ; Check if it was saved (non-zero)
     jz .no_saved_cr3_syscall           ; If 0, skip (shouldn't happen from userspace)
-
-    ; Debug: Output marker for saved CR3 restore
-    push rdx
-    mov dx, 0x3F8
-    push rax
-    mov al, '!'                        ; '!' for saved CR3 restore
-    out dx, al
-    mov al, 'S'
-    out dx, al
-    mov al, 'Y'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-    pop rax
-    pop rdx
 
     ; Switch back to original process CR3
     mov cr3, rax
@@ -301,7 +263,7 @@ syscall_entry:
     iretq
     
     ; Should never reach here - add marker for triple fault debugging
-    mov dx, 0x3F8
+    mov dx, 0x2F8  ; COM2 port (debug/log output)
     mov al, 0xDD   ; Dead marker
     out dx, al
     hlt
@@ -382,16 +344,6 @@ syscall_return_to_userspace:
     xor r14, r14
     xor r15, r15
 
-    ; Direct serial output marker - about to execute IRETQ for first userspace entry
-    ; Write 0xFF to serial port to indicate we reached IRETQ
-    push rax
-    push rdx
-    mov dx, 0x3F8  ; COM1 port
-    mov al, 0xFF   ; First entry marker
-    out dx, al
-    pop rdx
-    pop rax
-
     ; CRITICAL: Check if we need to switch CR3 before IRETQ (first userspace entry)
     ; The context switcher stores target CR3 in GS:64 (NEXT_CR3_OFFSET)
     ; If non-zero, switch to it and clear the flag
@@ -422,23 +374,6 @@ syscall_return_to_userspace:
     mov qword [gs:64], rdx
     pop rdx
 
-    ; Debug: Output marker for CR3 switch
-    mov dx, 0x3F8
-    push rax
-    mov al, '$'
-    out dx, al
-    mov al, 'F'
-    out dx, al
-    mov al, 'I'
-    out dx, al
-    mov al, 'R'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-    mov al, 'T'
-    out dx, al
-    pop rax
-
     ; NOW safe to switch CR3 to process page table
     ; Kernel per-CPU data already cleared while kernel PT was active
     mov cr3, rax
@@ -454,25 +389,6 @@ syscall_return_to_userspace:
     mov rax, qword [gs:80]             ; Read saved process CR3
     test rax, rax                      ; Check if it was saved (non-zero)
     jz .no_saved_cr3_first_entry       ; If 0, skip (shouldn't happen from userspace)
-
-    ; Debug: Output marker for saved CR3 restore
-    push rdx
-    mov dx, 0x3F8
-    push rax
-    mov al, '!'                        ; '!' for saved CR3 restore
-    out dx, al
-    mov al, 'F'
-    out dx, al
-    mov al, 'I'
-    out dx, al
-    mov al, 'R'
-    out dx, al
-    mov al, 'S'
-    out dx, al
-    mov al, 'T'
-    out dx, al
-    pop rax
-    pop rdx
 
     ; Switch back to original process CR3
     mov cr3, rax
@@ -490,7 +406,7 @@ syscall_return_to_userspace:
     iretq
     
     ; Should never reach here - add marker for triple fault debugging
-    mov dx, 0x3F8
+    mov dx, 0x2F8  ; COM2 port (debug/log output)
     mov al, 0xCC   ; Crash marker
     out dx, al
     hlt

@@ -270,7 +270,8 @@ impl log::Log for SerialLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            serial_println!(
+            // Use COM2 for log output to separate from user I/O on COM1
+            log_serial_println!(
                 "[{}] {}: {}",
                 record.level(),
                 record.target(),
