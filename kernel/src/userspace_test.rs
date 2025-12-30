@@ -161,7 +161,7 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
 // With external_test_bins enabled, all binaries are loaded from the test disk.
 // This reduces kernel binary size and ensures disk loading is actually tested.
 
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "interactive"))]
 pub fn get_test_binary(name: &str) -> alloc::vec::Vec<u8> {
     // ALWAYS use disk loading - no fallback
     match load_test_binary_from_disk(name) {

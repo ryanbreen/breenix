@@ -247,44 +247,50 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
 /// Helper function to write to stdio (serial port)
 fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
-    // Log the actual data being written (for verification)
-    if buffer.len() <= 30 {
-        let s = core::str::from_utf8(buffer).unwrap_or("<invalid UTF-8>");
-        let mut hex_str = alloc::string::String::new();
-        for (i, &byte) in buffer.iter().enumerate() {
-            if i > 0 {
-                hex_str.push(' ');
-            }
-            hex_str.push_str(&alloc::format!("{:02x}", byte));
+    let bytes_written = buffer.len() as u64;
+
+    // In interactive mode, write to framebuffer so user can see shell output in QEMU window
+    #[cfg(feature = "interactive")]
+    {
+        if let Ok(s) = core::str::from_utf8(buffer) {
+            // Write to framebuffer for QEMU display
+            crate::logger::write_to_framebuffer(s);
         }
-        log::info!("sys_write: Writing '{}' ({} bytes) to fd {}", s, buffer.len(), fd);
-        log::info!("  Raw bytes: [{}]", hex_str);
-    } else {
-        log::info!("sys_write: Writing {} bytes to fd {}", buffer.len(), fd);
+        // Also write to COM1 for debugging (serial console)
+        for &byte in buffer {
+            crate::serial::write_byte(byte);
+        }
     }
 
-    // Write to serial port
-    let mut bytes_written = 0;
-    for &byte in buffer {
-        crate::serial::write_byte(byte);
-        bytes_written += 1;
+    // In non-interactive mode, write to serial port (for CI/testing)
+    #[cfg(not(feature = "interactive"))]
+    {
+        for &byte in buffer {
+            crate::serial::write_byte(byte);
+        }
+
+        // Log the output for userspace writes
+        if let Ok(s) = core::str::from_utf8(buffer) {
+            log::info!("USERSPACE OUTPUT: {}", s.trim_end());
+        }
     }
 
-    // Log the output for userspace writes
-    if let Ok(s) = core::str::from_utf8(buffer) {
-        log::info!("USERSPACE OUTPUT: {}", s.trim_end());
-    }
+    // Suppress the fd unused warning
+    let _ = fd;
 
     SyscallResult::Ok(bytes_written)
 }
 
 /// sys_read - Read from a file descriptor
 ///
-/// Supports stdin (returns 0) and pipe read ends.
+/// Supports stdin (with blocking), stdout/stderr (error), and pipe read ends.
 pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     use crate::ipc::FdKind;
 
-    log::debug!("sys_read: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+    // Use trace level for stdin reads to avoid log spam during interactive shell
+    if fd != 0 {
+        log::debug!("sys_read: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+    }
 
     // Validate buffer pointer and count
     if buf_ptr == 0 || count == 0 {
@@ -325,8 +331,49 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     match &fd_entry.kind {
         FdKind::StdIo(0) => {
-            // stdin - no data available (keyboard is async-only)
-            SyscallResult::Ok(0)
+            // stdin - read from kernel stdin buffer
+            // Drop the process manager lock before potentially blocking
+            drop(manager_guard);
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+
+            // Try non-blocking read first
+            match crate::ipc::stdin::read_bytes(&mut user_buf) {
+                Ok(n) => {
+                    if n > 0 {
+                        // Copy to userspace
+                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                            return SyscallResult::Err(14); // EFAULT
+                        }
+                    }
+                    // Only log non-zero reads to avoid spam
+                    if n > 0 {
+                        log::trace!("sys_read: Read {} bytes from stdin", n);
+                    }
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(11) => {
+                    // EAGAIN - no data available, need to block
+                    // Register this thread as waiting for stdin
+                    crate::ipc::stdin::register_blocked_reader(thread_id);
+
+                    // Block the current thread
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        sched.block_current();
+                    });
+
+                    // Trigger reschedule
+                    crate::task::scheduler::set_need_resched();
+
+                    // Return ERESTARTSYS to indicate syscall should be restarted
+                    // when the thread is woken up
+                    SyscallResult::Err(512) // ERESTARTSYS
+                }
+                Err(e) => {
+                    log::trace!("sys_read: Stdin read error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
         }
         FdKind::StdIo(_) => {
             // stdout/stderr - can't read

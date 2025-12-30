@@ -427,14 +427,32 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    // Add scancode to keyboard handler
+    // Process scancode immediately (bypass async keyboard_task)
+    // This is necessary because the async executor may not get CPU time
+    // when userspace processes are running, so keyboard input would never be processed.
+    if let Some(event) = crate::keyboard::process_scancode(scancode) {
+        if let Some(character) = event.character {
+            // Handle special key combinations
+            if event.is_ctrl_c() {
+                // TODO: Send SIGINT to foreground process
+            } else if event.is_ctrl_d() {
+                // TODO: Signal EOF on stdin
+            } else {
+                // Push character to stdin buffer using IRQ-safe version
+                // This uses try_lock to avoid deadlock with syscall handlers
+                crate::ipc::stdin::push_byte_from_irq(character as u8);
+            }
+        }
+    }
+
+    // Also add to async queue for keyboard_task (for when executor runs)
     crate::keyboard::add_scancode(scancode);
 
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }
-    
+
     // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
 }
@@ -452,6 +470,9 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
     // Check if data is available (bit 0 of LSR)
     while unsafe { lsr_port.read() } & 0x01 != 0 {
         let byte = unsafe { data_port.read() };
+        // Add to serial queue for async serial console processing
+        // Note: Serial input is kept separate from stdin (keyboard input)
+        // This follows proper Unix design where serial and keyboard are different devices
         crate::serial::add_serial_byte(byte);
     }
 

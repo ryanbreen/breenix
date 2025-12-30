@@ -633,6 +633,7 @@ impl ProcessManager {
     pub fn fork_process_with_parent_context(
         &mut self,
         parent_pid: ProcessId,
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         parent_context: crate::task::thread::CpuContext,
         #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))]
         mut child_page_table: Box<ProcessPageTable>,
@@ -1107,6 +1108,7 @@ impl ProcessManager {
 
         // Load the parent's ELF into the child (use parent's name, not hardcoded fork_test)
         // We need to save the parent name before the mutable borrow
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_binary_name = {
             let parent = self.processes.get(&parent_pid).ok_or("Parent process not found")?;
             parent.name.clone()

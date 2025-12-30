@@ -521,6 +521,37 @@ log::debug!("clock_gettime called");  # This changes timing!
 ./breenix-gdb-chat/scripts/gdb_session.sh stop
 ```
 
+## QEMU Process Cleanup - MANDATORY
+
+**Agents MUST clean up stray QEMU processes.** This is non-negotiable.
+
+QEMU processes frequently get orphaned during testing, debugging, or when agents are interrupted. These orphaned processes:
+- Hold locks on disk images, preventing new QEMU instances from starting
+- Consume system resources
+- Cause confusing errors like "Failed to get write lock"
+
+### Cleanup Requirements
+
+1. **Before handing control back to the user**: Always run QEMU cleanup
+2. **Before running any QEMU command**: Kill any existing QEMU processes first
+3. **When debugging fails or times out**: Clean up QEMU before reporting results
+
+### Cleanup Command
+
+```bash
+pkill -9 qemu-system-x86 2>/dev/null; killall -9 qemu-system-x86_64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
+```
+
+### When to Clean Up
+
+- After any `xtask boot-stages` or `xtask interactive` run
+- After GDB debugging sessions
+- When the user reports "cannot acquire lock" errors
+- Before starting any new QEMU-based test
+- When handing results back to the user after kernel work
+
+This is the agent's responsibility - do not wait for the user to ask.
+
 ## Work Tracking
 
 We use Beads (bd) instead of Markdown for issue tracking. Run `bd quickstart` to get started.

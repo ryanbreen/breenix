@@ -25,6 +25,7 @@ test_userspace = []
 test_all_exceptions = []
 external_test_bins = []
 vmnet = []  # Use vmnet network config (192.168.64.x) instead of SLIRP (10.0.2.x)
+interactive = []  # Boot into init_shell instead of running automated tests
 
 [dependencies]
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }
@@ -38,3 +39,4 @@ spin = "0.9.8"
 uart_16550 = "0.3.2"
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3.17", default-features = false, features = ["alloc"] }
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }

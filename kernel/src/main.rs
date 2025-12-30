@@ -430,9 +430,27 @@ extern "C" fn kernel_main_on_kernel_stack(_arg: *mut core::ffi::c_void) -> ! {
 
 /// Continue kernel initialization after setting up threading
 fn kernel_main_continue() -> ! {
+    // INTERACTIVE MODE: Load init_shell as the only userspace process
+    #[cfg(feature = "interactive")]
+    {
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            use alloc::string::String;
+            serial_println!("INTERACTIVE: Loading init_shell as PID 1");
+            let elf = userspace_test::get_test_binary("init_shell");
+            match process::creation::create_user_process(String::from("init"), &elf) {
+                Ok(pid) => {
+                    serial_println!("INTERACTIVE: init_shell running as PID {}", pid.as_u64());
+                }
+                Err(e) => {
+                    serial_println!("INTERACTIVE: Failed to create init: {}", e);
+                }
+            }
+        });
+    }
+
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
-    #[cfg(feature = "testing")]
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
@@ -580,7 +598,7 @@ fn kernel_main_continue() -> ! {
 
     // Run tests BEFORE enabling interrupts - they will create userspace processes
     // which will then run when the scheduler activates after interrupt enable
-    #[cfg(feature = "testing")]
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
         log::info!("=== Running kernel tests to create userspace processes ===");
 
@@ -787,7 +805,7 @@ fn kernel_main_continue() -> ! {
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done after interrupts are enabled but before other tests
-    #[cfg(feature = "testing")]
+    #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
         x86_64::instructions::interrupts::without_interrupts(|| {
             use alloc::string::String;
