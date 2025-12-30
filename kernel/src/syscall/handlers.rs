@@ -391,19 +391,40 @@ pub fn sys_get_time() -> SyscallResult {
 /// sys_fork - Basic fork implementation
 /// sys_fork with syscall frame - provides access to actual userspace context
 pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
-    // Store the userspace RSP for the child to inherit
-    let userspace_rsp = frame.rsp;
-    log::info!("sys_fork_with_frame: userspace RSP = {:#x}", userspace_rsp);
+    // Create a CpuContext from the syscall frame - this captures the ACTUAL register
+    // values at the time of the syscall, not the stale values from the last context switch
+    let parent_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
 
-    // Call fork with the userspace context
-    sys_fork_with_rsp(userspace_rsp)
+    log::info!(
+        "sys_fork_with_frame: userspace RSP = {:#x}, return RIP = {:#x}",
+        parent_context.rsp,
+        parent_context.rip
+    );
+
+    // Debug: log some callee-saved registers that might hold local variables
+    log::debug!(
+        "sys_fork_with_frame: rbx={:#x}, rbp={:#x}, r12={:#x}, r13={:#x}, r14={:#x}, r15={:#x}",
+        parent_context.rbx,
+        parent_context.rbp,
+        parent_context.r12,
+        parent_context.r13,
+        parent_context.r14,
+        parent_context.r15
+    );
+
+    // Call fork with the complete parent context
+    sys_fork_with_parent_context(parent_context)
 }
 
-/// sys_fork with explicit RSP - used by sys_fork_with_frame
-fn sys_fork_with_rsp(userspace_rsp: u64) -> SyscallResult {
+/// sys_fork with full parent context - captures all registers from syscall frame
+fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext) -> SyscallResult {
     // Disable interrupts for the entire fork operation to ensure atomicity
     x86_64::instructions::interrupts::without_interrupts(|| {
-        log::info!("sys_fork_with_rsp called with RSP {:#x}", userspace_rsp);
+        log::info!(
+            "sys_fork_with_parent_context called with RSP {:#x}, RIP {:#x}",
+            parent_context.rsp,
+            parent_context.rip
+        );
 
         // Get current thread ID from scheduler
         let scheduler_thread_id = crate::task::scheduler::current_thread_id();
@@ -464,12 +485,7 @@ fn sys_fork_with_rsp(userspace_rsp: u64) -> SyscallResult {
         // Now re-acquire the lock and complete the fork
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            let rsp_option = if userspace_rsp != 0 {
-                Some(userspace_rsp)
-            } else {
-                None
-            };
-            match manager.fork_process_with_page_table(parent_pid, rsp_option, child_page_table) {
+            match manager.fork_process_with_parent_context(parent_pid, parent_context, child_page_table) {
                 Ok(child_pid) => {
                     // Get the child's thread ID to add to scheduler
                     if let Some(child_process) = manager.get_process(child_pid) {
@@ -515,8 +531,11 @@ fn sys_fork_with_rsp(userspace_rsp: u64) -> SyscallResult {
 }
 
 pub fn sys_fork() -> SyscallResult {
-    // Call fork without userspace context (use calculated RSP)
-    sys_fork_with_rsp(0)
+    // DEPRECATED: This function should not be used - use sys_fork_with_frame instead
+    // to get the actual register values at syscall time.
+    log::error!("sys_fork() called without frame - this path is deprecated and broken!");
+    log::error!("The syscall handler should use sys_fork_with_frame() to capture registers correctly.");
+    SyscallResult::Err(22) // EINVAL - invalid argument
 }
 
 /// sys_exec - Replace the current process with a new program
@@ -707,4 +726,56 @@ pub fn sys_gettid() -> SyscallResult {
 
     log::error!("sys_gettid: No current thread");
     SyscallResult::Ok(0) // Return 0 as fallback
+}
+
+/// sys_dup2 - Duplicate a file descriptor to a specific number
+///
+/// dup2(old_fd, new_fd) creates a copy of old_fd using the file descriptor
+/// number specified in new_fd. If new_fd was previously open, it is silently
+/// closed before being reused.
+///
+/// Per POSIX: if old_fd == new_fd, dup2 just validates old_fd and returns it.
+/// This avoids a race condition where the reference count would temporarily
+/// go to zero.
+///
+/// Returns: new_fd on success, negative error code on failure
+pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
+    log::debug!("sys_dup2: old_fd={}, new_fd={}", old_fd, new_fd);
+
+    // Get current thread to find process
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_dup2: No current thread");
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    // Get mutable access to process manager
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_pid, p)) => p,
+            None => {
+                log::error!("sys_dup2: Thread {} not in any process", thread_id);
+                return SyscallResult::Err(9); // EBADF
+            }
+        },
+        None => {
+            log::error!("sys_dup2: No process manager");
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    // Call the fd_table's dup2 implementation
+    match process.fd_table.dup2(old_fd as i32, new_fd as i32) {
+        Ok(fd) => {
+            log::debug!("sys_dup2: Successfully duplicated fd {} to {}", old_fd, fd);
+            SyscallResult::Ok(fd as u64)
+        }
+        Err(e) => {
+            log::debug!("sys_dup2: Failed with error {}", e);
+            SyscallResult::Err(e as u64)
+        }
+    }
 }

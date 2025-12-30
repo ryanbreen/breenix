@@ -37,6 +37,7 @@ pub enum SyscallNumber {
     Sigprocmask = 14,   // Linux syscall number for rt_sigprocmask
     Sigreturn = 15,     // Linux syscall number for rt_sigreturn
     Pipe = 22,          // Linux syscall number for pipe
+    Dup2 = 33,          // Linux syscall number for dup2
     GetPid = 39,        // Linux syscall number for getpid
     Socket = 41,        // Linux syscall number for socket
     SendTo = 44,        // Linux syscall number for sendto
@@ -68,6 +69,7 @@ impl SyscallNumber {
             14 => Some(Self::Sigprocmask),
             15 => Some(Self::Sigreturn),
             22 => Some(Self::Pipe),
+            33 => Some(Self::Dup2),
             39 => Some(Self::GetPid),
             41 => Some(Self::Socket),
             44 => Some(Self::SendTo),

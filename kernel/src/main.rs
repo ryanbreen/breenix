@@ -622,6 +622,14 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: Pipe syscall functionality ===");
         test_exec::test_pipe();
 
+        // Test pipe + fork IPC
+        log::info!("=== IPC TEST: Pipe + fork concurrency ===");
+        test_exec::test_pipe_fork();
+
+        // Test concurrent pipe writes from multiple processes
+        log::info!("=== IPC TEST: Concurrent pipe writes ===");
+        test_exec::test_pipe_concurrent();
+
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");
         userspace_fault_tests::run_fault_tests();

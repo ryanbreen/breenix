@@ -3,7 +3,26 @@ use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, 
 use x86_64::VirtAddr;
 
 pub const HEAP_START: u64 = 0x_4444_4444_0000;
-pub const HEAP_SIZE: u64 = 1024 * 1024; // 1 MiB
+
+/// Heap size of 4 MiB.
+///
+/// This size was chosen to support concurrent process tests which require:
+/// - Multiple child processes (4+) running simultaneously after fork()
+/// - Each process needs: fd table (~6KB), pipe buffers (4KB each), ProcessInfo struct,
+///   Thread structs, page tables, and kernel stack allocations
+/// - Total per-process overhead is approximately 50-100KB depending on fd usage
+///
+/// IMPORTANT: We use a bump allocator which only reclaims memory when ALL allocations
+/// are freed. This means memory fragmentation is effectively permanent during a test run.
+/// The 4 MiB size provides sufficient headroom for:
+/// - Boot initialization allocations (~500KB)
+/// - Running 10+ concurrent processes with full fd tables
+/// - Pipe buffers for IPC testing
+/// - Safety margin for test variations
+///
+/// Reduced sizes (1-2 MiB) caused OOM during concurrent fork/pipe tests.
+/// Increased from 1 MiB based on empirical testing of pipe_concurrent_test scenarios.
+pub const HEAP_SIZE: u64 = 4 * 1024 * 1024;
 
 /// A simple bump allocator
 struct BumpAllocator {

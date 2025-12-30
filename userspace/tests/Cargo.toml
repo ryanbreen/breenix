@@ -78,6 +78,18 @@ path = "udp_socket_test.rs"
 name = "pipe_test"
 path = "pipe_test.rs"
 
+[[bin]]
+name = "pipe_fork_test"
+path = "pipe_fork_test.rs"
+
+[[bin]]
+name = "pipe_concurrent_test"
+path = "pipe_concurrent_test.rs"
+
+[[bin]]
+name = "pipe_refcount_test"
+path = "pipe_refcount_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
