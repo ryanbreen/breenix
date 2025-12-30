@@ -21,7 +21,7 @@ pub struct ProcessManagerGuard {
 
 impl Drop for ProcessManagerGuard {
     fn drop(&mut self) {
-        log::debug!("PROCESS_MANAGER lock released");
+        // Lock release logging removed - too verbose for production
     }
 }
 
@@ -54,9 +54,7 @@ pub fn init() {
 /// For operations that could be called while holding scheduler locks,
 /// use with_process_manager() instead.
 pub fn manager() -> ProcessManagerGuard {
-    log::debug!("Acquiring PROCESS_MANAGER lock");
     let guard = PROCESS_MANAGER.lock();
-    log::debug!("PROCESS_MANAGER lock acquired");
     ProcessManagerGuard { _guard: guard }
 }
 
@@ -67,12 +65,8 @@ where
     F: FnOnce(&mut ProcessManager) -> R,
 {
     x86_64::instructions::interrupts::without_interrupts(|| {
-        log::debug!("with_process_manager: Acquiring PROCESS_MANAGER lock (interrupts disabled)");
         let mut manager_lock = PROCESS_MANAGER.lock();
-        log::debug!("with_process_manager: PROCESS_MANAGER lock acquired");
-        let result = manager_lock.as_mut().map(f);
-        log::debug!("with_process_manager: Releasing PROCESS_MANAGER lock");
-        result
+        manager_lock.as_mut().map(f)
     })
 }
 
@@ -90,15 +84,9 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
 /// Get the current process ID
 #[allow(dead_code)]
 pub fn current_pid() -> Option<ProcessId> {
-    log::trace!("Getting current PID...");
-    log::debug!("current_pid: Acquiring PROCESS_MANAGER lock");
     let manager_lock = PROCESS_MANAGER.lock();
-    log::debug!("current_pid: PROCESS_MANAGER lock acquired");
     let manager = manager_lock.as_ref()?;
-    let pid = manager.current_pid();
-    log::trace!("Current PID: {:?}", pid);
-    log::debug!("current_pid: Releasing PROCESS_MANAGER lock");
-    pid
+    manager.current_pid()
 }
 
 /// Exit the current process

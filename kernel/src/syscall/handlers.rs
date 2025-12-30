@@ -280,11 +280,14 @@ fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
 
 /// sys_read - Read from a file descriptor
 ///
-/// Supports stdin (returns 0) and pipe read ends.
+/// Supports stdin (with blocking), stdout/stderr (error), and pipe read ends.
 pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     use crate::ipc::FdKind;
 
-    log::debug!("sys_read: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+    // Use trace level for stdin reads to avoid log spam during interactive shell
+    if fd != 0 {
+        log::debug!("sys_read: fd={}, buf_ptr={:#x}, count={}", fd, buf_ptr, count);
+    }
 
     // Validate buffer pointer and count
     if buf_ptr == 0 || count == 0 {
@@ -325,8 +328,49 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     match &fd_entry.kind {
         FdKind::StdIo(0) => {
-            // stdin - no data available (keyboard is async-only)
-            SyscallResult::Ok(0)
+            // stdin - read from kernel stdin buffer
+            // Drop the process manager lock before potentially blocking
+            drop(manager_guard);
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+
+            // Try non-blocking read first
+            match crate::ipc::stdin::read_bytes(&mut user_buf) {
+                Ok(n) => {
+                    if n > 0 {
+                        // Copy to userspace
+                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                            return SyscallResult::Err(14); // EFAULT
+                        }
+                    }
+                    // Only log non-zero reads to avoid spam
+                    if n > 0 {
+                        log::trace!("sys_read: Read {} bytes from stdin", n);
+                    }
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(11) => {
+                    // EAGAIN - no data available, need to block
+                    // Register this thread as waiting for stdin
+                    crate::ipc::stdin::register_blocked_reader(thread_id);
+
+                    // Block the current thread
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        sched.block_current();
+                    });
+
+                    // Trigger reschedule
+                    crate::task::scheduler::set_need_resched();
+
+                    // Return ERESTARTSYS to indicate syscall should be restarted
+                    // when the thread is woken up
+                    SyscallResult::Err(512) // ERESTARTSYS
+                }
+                Err(e) => {
+                    log::trace!("sys_read: Stdin read error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
         }
         FdKind::StdIo(_) => {
             // stdout/stderr - can't read

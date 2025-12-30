@@ -105,6 +105,8 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+E: Test exec system call directly
 /// - Ctrl+X: Test fork+exec pattern
 /// - Ctrl+H: Test shell-style fork+exec
+///
+/// Regular characters are pushed to the stdin buffer for userspace programs.
 pub async fn keyboard_task() {
     log::info!(
         "Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H for special actions)"
@@ -118,8 +120,10 @@ pub async fn keyboard_task() {
                 // Handle special key combinations
                 if event.is_ctrl_c() {
                     log::info!("Ctrl+C pressed - interrupt signal");
+                    // TODO: Send SIGINT to foreground process
                 } else if event.is_ctrl_d() {
                     log::info!("Ctrl+D pressed - end of input");
+                    // TODO: Signal EOF on stdin
                 } else if event.is_ctrl_s() {
                     log::info!("Ctrl+S pressed - suspend output");
                 } else if event.is_ctrl_t() {
@@ -153,8 +157,12 @@ pub async fn keyboard_task() {
                     crate::test_exec::test_shell_fork_exec();
                     log::info!("Shell fork+exec test scheduled. Press keys to continue...");
                 } else {
-                    // Display the typed character
-                    log::info!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);
+                    // Push character to stdin buffer for userspace programs
+                    // This will echo the character and wake any blocked readers
+                    crate::ipc::stdin::push_byte(character as u8);
+
+                    // Also log for debugging (can be removed later for cleaner output)
+                    log::debug!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);
                 }
             }
         }

@@ -12,6 +12,7 @@ test_page_fault = ["kernel/test_page_fault"]
 test_all_exceptions = ["kernel/test_all_exceptions"]
 external_test_bins = ["kernel/external_test_bins"]
 vmnet = ["kernel/vmnet"]
+interactive = ["kernel/interactive"]
 
 [[bin]]
 name = "qemu-uefi"

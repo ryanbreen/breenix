@@ -90,6 +90,14 @@ path = "pipe_concurrent_test.rs"
 name = "pipe_refcount_test"
 path = "pipe_refcount_test.rs"
 
+[[bin]]
+name = "stdin_test"
+path = "stdin_test.rs"
+
+[[bin]]
+name = "init_shell"
+path = "init_shell.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

@@ -8,8 +8,13 @@ use uart_16550::SerialPort;
 pub mod command;
 
 const COM1_PORT: u16 = 0x3F8;
+const COM2_PORT: u16 = 0x2F8;
 
 pub static SERIAL1: Mutex<SerialPort> = Mutex::new(unsafe { SerialPort::new(COM1_PORT) });
+
+/// COM2 (0x2F8) - Used exclusively for kernel log output.
+/// This separates kernel logs from user I/O (COM1), enabling interactive shell use.
+pub static SERIAL2: Mutex<SerialPort> = Mutex::new(unsafe { SerialPort::new(COM2_PORT) });
 
 // Serial input queue and waker (similar to keyboard)
 static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
@@ -18,6 +23,9 @@ static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
 pub fn init() {
     // Initialize the serial port for output only (no interrupts yet)
     SERIAL1.lock().init();
+
+    // Initialize COM2 for kernel log output
+    SERIAL2.lock().init();
 
     // Don't enable interrupts here - wait until after IDT is set up
 }
@@ -199,6 +207,44 @@ macro_rules! serial_print {
 macro_rules! serial_println {
     () => ($crate::serial_print!("\n"));
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
+}
+
+/// Print to the log serial port (COM2).
+/// This is used for kernel log output to separate it from user I/O on COM1.
+#[doc(hidden)]
+pub fn _log_print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    use x86_64::instructions::interrupts;
+
+    // CRITICAL: Check if interrupts are currently enabled BEFORE disabling
+    // We must NOT re-enable interrupts if they were disabled by syscall entry
+    let irq_enabled = interrupts::are_enabled();
+
+    // Disable interrupts while holding the lock
+    interrupts::disable();
+
+    SERIAL2
+        .lock()
+        .write_fmt(args)
+        .expect("Printing to log serial failed");
+
+    // Only re-enable if they were enabled before
+    if irq_enabled {
+        interrupts::enable();
+    }
+}
+
+/// Macros for writing to the log serial port (COM2).
+/// Use these for kernel debug/info output that should not appear on user console.
+#[macro_export]
+macro_rules! log_serial_print {
+    ($($arg:tt)*) => ($crate::serial::_log_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! log_serial_println {
+    () => ($crate::log_serial_print!("\n"));
+    ($($arg:tt)*) => ($crate::log_serial_print!("{}\n", format_args!($($arg)*)));
 }
 
 #[allow(dead_code)]

@@ -1,4 +1,4 @@
-use crate::serial_println;
+use crate::log_serial_println;
 use bootloader_x86_64_common::logger::LockedLogger;
 use conquer_once::spin::OnceCell;
 use core::fmt::{self, Write};
@@ -120,11 +120,11 @@ impl CombinedLogger {
         let mut state = self.state.lock();
         let buffer = self.buffer.lock();
 
-        // Flush buffered messages to serial
+        // Flush buffered messages to log serial (COM2)
         if buffer.position > 0 {
-            serial_println!("=== Buffered Boot Messages ===");
-            serial_println!("{}", buffer.contents());
-            serial_println!("=== End Buffered Messages ===");
+            log_serial_println!("=== Buffered Boot Messages ===");
+            log_serial_println!("{}", buffer.contents());
+            log_serial_println!("=== End Buffered Messages ===");
         }
 
         *state = LoggerState::SerialReady;
@@ -162,9 +162,9 @@ impl Log for CombinedLogger {
             let state = match self.state.try_lock() {
                 Some(state) => state,
                 None => {
-                    // If we can't acquire the lock, fall back to basic serial output
+                    // If we can't acquire the lock, fall back to basic log serial output (COM2)
                     // This prevents deadlocks when logging from interrupt handlers
-                    serial_println!("[INTR] {}: {}", target, args);
+                    log_serial_println!("[INTR] {}: {}", target, args);
                     return;
                 }
             };

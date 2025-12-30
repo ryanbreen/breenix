@@ -51,6 +51,8 @@ BINARIES=(
     "pipe_fork_test"
     "pipe_concurrent_test"
     "pipe_refcount_test"
+    "stdin_test"
+    "init_shell"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

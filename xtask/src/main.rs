@@ -22,6 +22,8 @@ enum Cmd {
     BootStages,
     /// Create test disk image containing all userspace test binaries.
     CreateTestDisk,
+    /// Boot Breenix interactively with init_shell (serial console attached).
+    Interactive,
 }
 
 fn main() -> Result<()> {
@@ -30,6 +32,7 @@ fn main() -> Result<()> {
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => boot_stages(),
         Cmd::CreateTestDisk => test_disk::create_test_disk(),
+        Cmd::Interactive => interactive(),
     }
 }
 
@@ -1096,5 +1099,59 @@ fn ring3_enosys() -> Result<()> {
                2. Userspace executes syscall(999) from Ring 3\n\
                3. Userspace validates return value == -38\n\
                4. Userspace prints 'ENOSYS OK'");
+    }
+}
+
+/// Boot Breenix interactively with init_shell and serial console attached.
+fn interactive() -> Result<()> {
+    println!("Building Breenix with interactive feature...");
+
+    // Build with interactive feature
+    let build_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "testing,external_test_bins,interactive",
+            "--bin",
+            "qemu-uefi",
+        ])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build: {}", e))?;
+
+    if !build_status.success() {
+        bail!("Build failed");
+    }
+
+    println!("Launching QEMU with serial console attached to terminal...");
+    println!("Press Ctrl+A, X to exit QEMU.");
+    println!();
+
+    // Run QEMU with serial attached to stdio for interactive use
+    // Set BREENIX_INTERACTIVE=1 to tell qemu-uefi runner to use -serial stdio
+    let run_status = Command::new("cargo")
+        .args(&[
+            "run",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "testing,external_test_bins,interactive",
+            "--bin",
+            "qemu-uefi",
+            "--",
+            "-serial",
+            "mon:stdio",
+        ])
+        .env("BREENIX_INTERACTIVE", "1")
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run QEMU: {}", e))?;
+
+    if run_status.success() {
+        Ok(())
+    } else {
+        bail!("QEMU exited with error");
     }
 }
