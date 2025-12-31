@@ -365,6 +365,9 @@ impl ProcessManager {
     /// Exit a process with the given exit code
     #[allow(dead_code)]
     pub fn exit_process(&mut self, pid: ProcessId, exit_code: i32) {
+        // Get parent PID before we borrow the process mutably
+        let parent_pid = self.processes.get(&pid).and_then(|p| p.parent);
+
         if let Some(process) = self.processes.get_mut(&pid) {
             log::info!(
                 "Process {} (PID {}) exiting with code {}",
@@ -386,8 +389,20 @@ impl ProcessManager {
             // TODO: Clean up process resources
             // - Unmap memory pages
             // - Close file descriptors
-            // - Signal waiting processes
             // - Reparent children to init
+        }
+
+        // Send SIGCHLD to the parent process (if any)
+        if let Some(parent_pid) = parent_pid {
+            if let Some(parent_process) = self.processes.get_mut(&parent_pid) {
+                use crate::signal::constants::SIGCHLD;
+                parent_process.signals.set_pending(SIGCHLD);
+                log::debug!(
+                    "Sent SIGCHLD to parent process {} for child {} exit",
+                    parent_pid.as_u64(),
+                    pid.as_u64()
+                );
+            }
         }
     }
 
@@ -985,6 +1000,14 @@ impl ProcessManager {
                 parent_pid.as_u64(),
                 child_pid.as_u64()
             );
+
+            // Inherit signal handlers from parent (but NOT pending signals per POSIX)
+            child_process.signals = parent.signals.fork();
+            log::debug!(
+                "fork: Inherited signal handlers from parent {} to child {}",
+                parent_pid.as_u64(),
+                child_pid.as_u64()
+            );
         } else {
             log::error!(
                 "fork: CRITICAL - Parent {} not found when cloning fd_table!",
@@ -1268,6 +1291,14 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
+        // Inherit signal handlers from parent (but NOT pending signals per POSIX)
+        child_process.signals = parent.signals.fork();
+        log::debug!(
+            "fork: Inherited signal handlers from parent {} to child {}",
+            parent_pid.as_u64(),
+            child_pid.as_u64()
+        );
+
         // Set the child thread as the main thread of the child process
         child_process.set_main_thread(child_thread);
 
@@ -1446,6 +1477,11 @@ impl ProcessManager {
         // Preserve the process ID and thread ID but replace everything else
         process.name = format!("exec_{}", pid.as_u64());
         process.entry_point = loaded_elf.entry_point;
+
+        // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
+        // SIG_IGN handlers are preserved
+        process.signals.exec_reset();
+        log::debug!("exec_process: Reset signal handlers for process {}", pid.as_u64());
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table);

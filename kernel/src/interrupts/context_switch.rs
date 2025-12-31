@@ -496,6 +496,11 @@ fn restore_userspace_thread_context(
                         // This is the correct point to deliver signals - after context is restored
                         // but before we actually return to userspace
                         if crate::signal::delivery::has_deliverable_signals(process) {
+                            log::debug!(
+                                "Signal delivery check: process {} (thread {}) has deliverable signals",
+                                pid.as_u64(),
+                                thread_id
+                            );
                             if crate::signal::delivery::deliver_pending_signals(
                                 process,
                                 interrupt_frame,

@@ -31,6 +31,7 @@ pub mod nr {
     pub const RECVFROM: u64 = 45;
     pub const BIND: u64 = 49;
     pub const EXEC: u64 = 59;        // Linux x86_64 execve
+    pub const WAIT4: u64 = 61;       // Linux x86_64 wait4/waitpid
     pub const KILL: u64 = 62;        // Linux x86_64 kill
     pub const GETTID: u64 = 186;
     pub const CLOCK_GETTIME: u64 = 228;

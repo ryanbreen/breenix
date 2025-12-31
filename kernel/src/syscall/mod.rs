@@ -44,6 +44,7 @@ pub enum SyscallNumber {
     RecvFrom = 45,      // Linux syscall number for recvfrom
     Bind = 49,          // Linux syscall number for bind
     Exec = 59,          // Linux syscall number for execve
+    Wait4 = 61,         // Linux syscall number for wait4/waitpid
     Kill = 62,          // Linux syscall number for kill
     GetTid = 186,       // Linux syscall number for gettid
     ClockGetTime = 228, // Linux syscall number for clock_gettime
@@ -76,6 +77,7 @@ impl SyscallNumber {
             45 => Some(Self::RecvFrom),
             49 => Some(Self::Bind),
             59 => Some(Self::Exec),
+            61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),

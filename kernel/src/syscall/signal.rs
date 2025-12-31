@@ -253,10 +253,12 @@ pub fn sys_sigaction(sig: i32, new_act: u64, old_act: u64, sigsetsize: u64) -> S
 
         process.signals.set_handler(sig, sanitized_action);
         log::debug!(
-            "Signal {} ({}) handler set to {:#x}",
+            "Signal {} ({}) handler set to {:#x} for process {} (thread {})",
             sig,
             signal_name(sig),
-            sanitized_action.handler
+            sanitized_action.handler,
+            process.id.as_u64(),
+            current_thread_id
         );
     }
 

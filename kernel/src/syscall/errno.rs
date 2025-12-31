@@ -5,6 +5,9 @@
 /// Bad file descriptor
 pub const EBADF: i32 = 9;
 
+/// No child processes
+pub const ECHILD: i32 = 10;
+
 /// Resource temporarily unavailable (would block)
 pub const EAGAIN: i32 = 11;
 
