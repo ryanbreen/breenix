@@ -70,7 +70,7 @@ pub extern "C" fn _start() -> ! {
 
             // Exec hello_time.elf in the child process
             io::print("CHILD: Executing hello_time.elf...\n");
-            let exec_result = process::exec("/userspace/tests/hello_time.elf", "");
+            let exec_result = process::exec(b"/userspace/tests/hello_time.elf\0");
 
             // If exec succeeds, this code should never run
             io::print("CHILD: ERROR - exec returned, this shouldn't happen!\n");
