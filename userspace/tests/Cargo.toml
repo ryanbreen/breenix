@@ -98,6 +98,30 @@ path = "stdin_test.rs"
 name = "init_shell"
 path = "init_shell.rs"
 
+[[bin]]
+name = "waitpid_test"
+path = "waitpid_test.rs"
+
+[[bin]]
+name = "signal_fork_test"
+path = "signal_fork_test.rs"
+
+[[bin]]
+name = "sigchld_test"
+path = "sigchld_test.rs"
+
+[[bin]]
+name = "wnohang_timing_test"
+path = "wnohang_timing_test.rs"
+
+[[bin]]
+name = "signal_exec_test"
+path = "signal_exec_test.rs"
+
+[[bin]]
+name = "signal_exec_check"
+path = "signal_exec_check.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

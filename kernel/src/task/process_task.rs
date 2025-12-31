@@ -25,10 +25,26 @@ impl ProcessScheduler {
                     thread_id,
                     exit_code
                 );
+
+                // Get parent PID before terminating (needed for SIGCHLD)
+                let parent_pid = process.parent;
+
                 process.terminate(exit_code);
 
+                // Send SIGCHLD to the parent process (if any)
+                if let Some(parent_pid) = parent_pid {
+                    if let Some(parent_process) = manager.get_process_mut(parent_pid) {
+                        use crate::signal::constants::SIGCHLD;
+                        parent_process.signals.set_pending(SIGCHLD);
+                        log::debug!(
+                            "Sent SIGCHLD to parent process {} for child {} exit",
+                            parent_pid.as_u64(),
+                            pid.as_u64()
+                        );
+                    }
+                }
+
                 // TODO: Clean up process resources
-                // TODO: Notify parent process
             }
         }
     }

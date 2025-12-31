@@ -1128,3 +1128,178 @@ pub fn test_pipe_concurrent() {
         }
     }
 }
+
+/// Test waitpid syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Waitpid test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates waitpid operations
+///   - Marker: "WAITPID_TEST_PASSED"
+///   - This PROVES waitpid correctly waits for child, returns correct PID, and status extraction works
+pub fn test_waitpid() {
+    log::info!("Testing waitpid syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let waitpid_test_elf_buf = crate::userspace_test::get_test_binary("waitpid_test");
+    #[cfg(feature = "testing")]
+    let waitpid_test_elf: &[u8] = &waitpid_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let waitpid_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("waitpid_test"),
+        waitpid_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created waitpid_test process with PID {:?}", pid);
+            log::info!("Waitpid test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (WAITPID_TEST_PASSED)");
+        }
+        Err(e) => {
+            log::error!("Failed to create waitpid_test process: {}", e);
+            log::error!("Waitpid test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test signal handler inheritance across fork
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Signal fork test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates signal inheritance
+///   - Marker: "SIGNAL_FORK_TEST_PASSED"
+///   - This PROVES signal handlers are correctly inherited by forked children
+pub fn test_signal_fork() {
+    log::info!("Testing signal handler inheritance across fork");
+
+    #[cfg(feature = "testing")]
+    let signal_fork_test_elf_buf = crate::userspace_test::get_test_binary("signal_fork_test");
+    #[cfg(feature = "testing")]
+    let signal_fork_test_elf: &[u8] = &signal_fork_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let signal_fork_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("signal_fork_test"),
+        signal_fork_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created signal_fork_test process with PID {:?}", pid);
+            log::info!("Signal fork test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (SIGNAL_FORK_TEST_PASSED)");
+        }
+        Err(e) => {
+            log::error!("Failed to create signal_fork_test process: {}", e);
+            log::error!("Signal fork test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test SIGCHLD delivery when child exits
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "SIGCHLD test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates SIGCHLD delivery
+///   - Marker: "SIGCHLD_TEST_PASSED"
+///   - This PROVES SIGCHLD is delivered to parent when child terminates
+pub fn test_sigchld() {
+    log::info!("Testing SIGCHLD delivery on child exit");
+
+    #[cfg(feature = "testing")]
+    let sigchld_test_elf_buf = crate::userspace_test::get_test_binary("sigchld_test");
+    #[cfg(feature = "testing")]
+    let sigchld_test_elf: &[u8] = &sigchld_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let sigchld_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("sigchld_test"),
+        sigchld_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created sigchld_test process with PID {:?}", pid);
+            log::info!("SIGCHLD test: process scheduled for execution.");
+            log::info!("    -> Userspace will print pass marker when handler is called");
+        }
+        Err(e) => {
+            log::error!("Failed to create sigchld_test process: {}", e);
+            log::error!("SIGCHLD test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test WNOHANG timing behavior
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "WNOHANG timing test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates WNOHANG timing
+///   - Marker: "WNOHANG_TIMING_TEST_PASSED"
+///   - This PROVES WNOHANG returns 0 when child still running, ECHILD when no children
+pub fn test_wnohang_timing() {
+    log::info!("Testing WNOHANG timing behavior");
+
+    #[cfg(feature = "testing")]
+    let wnohang_timing_test_elf_buf = crate::userspace_test::get_test_binary("wnohang_timing_test");
+    #[cfg(feature = "testing")]
+    let wnohang_timing_test_elf: &[u8] = &wnohang_timing_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let wnohang_timing_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("wnohang_timing_test"),
+        wnohang_timing_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created wnohang_timing_test process with PID {:?}", pid);
+            log::info!("WNOHANG timing test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (WNOHANG_TIMING_TEST_PASSED)");
+        }
+        Err(e) => {
+            log::error!("Failed to create wnohang_timing_test process: {}", e);
+            log::error!("WNOHANG timing test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test signal handler reset on exec
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Signal exec test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates signal reset on exec
+///   - Marker: "SIGNAL_EXEC_TEST_PASSED"
+///   - This PROVES signal handlers are reset to SIG_DFL after exec
+pub fn test_signal_exec() {
+    log::info!("Testing signal handler reset on exec");
+
+    #[cfg(feature = "testing")]
+    let signal_exec_test_elf_buf = crate::userspace_test::get_test_binary("signal_exec_test");
+    #[cfg(feature = "testing")]
+    let signal_exec_test_elf: &[u8] = &signal_exec_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let signal_exec_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("signal_exec_test"),
+        signal_exec_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created signal_exec_test process with PID {:?}", pid);
+            log::info!("Signal exec test: process scheduled for execution.");
+            log::info!("    -> Test will emit pass marker on success");
+        }
+        Err(e) => {
+            log::error!("Failed to create signal_exec_test process: {}", e);
+            log::error!("Signal exec test cannot run without valid userspace process");
+        }
+    }
+}

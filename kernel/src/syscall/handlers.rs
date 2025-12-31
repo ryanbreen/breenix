@@ -585,7 +585,216 @@ pub fn sys_fork() -> SyscallResult {
     SyscallResult::Err(22) // EINVAL - invalid argument
 }
 
-/// sys_exec - Replace the current process with a new program
+/// sys_exec_with_frame - Replace the current process with a new program
+///
+/// This is the proper implementation that modifies the syscall frame so that
+/// when the syscall returns, it jumps to the NEW program instead of returning
+/// to the old one.
+///
+/// Parameters:
+/// - frame: mutable reference to the syscall frame (to update RIP/RSP on success)
+/// - program_name_ptr: pointer to program name
+/// - elf_data_ptr: pointer to ELF data in memory (for embedded programs)
+///
+/// Returns: Never returns on success (frame is modified to jump to new program)
+/// Returns: Error code on failure
+pub fn sys_exec_with_frame(
+    frame: &mut super::handler::SyscallFrame,
+    program_name_ptr: u64,
+    elf_data_ptr: u64,
+) -> SyscallResult {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        log::info!(
+            "sys_exec_with_frame called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
+            program_name_ptr,
+            elf_data_ptr
+        );
+
+        // Get current process and thread
+        let current_thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("sys_exec: No current thread");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+
+        // Load the program by name from the test disk
+        let elf_data = if program_name_ptr != 0 {
+            // Read the program name from userspace
+            log::info!("sys_exec: Reading program name from userspace");
+
+            // Read up to 64 bytes for the program name (null-terminated)
+            let name_bytes = match copy_from_user(program_name_ptr, 64) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::error!("sys_exec: Failed to read program name: {}", e);
+                    return SyscallResult::Err(14); // EFAULT
+                }
+            };
+
+            // Debug: print first 32 bytes to see what we're reading
+            log::debug!(
+                "sys_exec: Raw bytes at {:#x}: {:02x?}",
+                program_name_ptr,
+                &name_bytes[..32.min(name_bytes.len())]
+            );
+
+            // Find the null terminator and extract the name
+            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+            log::debug!("sys_exec: Found null terminator at position {}", name_len);
+            let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
+                Ok(s) => s,
+                Err(_) => {
+                    log::error!("sys_exec: Invalid UTF-8 in program name");
+                    return SyscallResult::Err(22); // EINVAL
+                }
+            };
+
+            log::info!("sys_exec: Loading program '{}'", program_name);
+
+            #[cfg(feature = "testing")]
+            {
+                // Load the binary from the test disk by name
+                let elf_vec = crate::userspace_test::get_test_binary(program_name);
+                // Leak the vector to get a static slice (needed for exec_process)
+                let boxed_slice = elf_vec.into_boxed_slice();
+                Box::leak(boxed_slice) as &'static [u8]
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: Testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        } else if elf_data_ptr != 0 {
+            log::info!("sys_exec: Using ELF data from pointer {:#x}", elf_data_ptr);
+            log::error!("sys_exec: User memory access not implemented yet");
+            return SyscallResult::Err(22); // EINVAL
+        } else {
+            #[cfg(feature = "testing")]
+            {
+                log::info!("sys_exec: Using generated hello_world test program");
+                crate::userspace_test::get_test_binary_static("hello_world")
+            }
+            #[cfg(not(feature = "testing"))]
+            {
+                log::error!("sys_exec: No ELF data provided and testing feature not enabled");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+
+        #[cfg(feature = "testing")]
+        {
+            // Find current process
+            let current_pid = {
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                        pid
+                    } else {
+                        log::error!(
+                            "sys_exec: Thread {} not found in any process",
+                            current_thread_id
+                        );
+                        return SyscallResult::Err(3); // ESRCH
+                    }
+                } else {
+                    log::error!("sys_exec: Process manager not available");
+                    return SyscallResult::Err(12); // ENOMEM
+                }
+            };
+
+            log::info!(
+                "sys_exec: Replacing process {} (thread {}) with new program",
+                current_pid.as_u64(),
+                current_thread_id
+            );
+
+            // Replace the process's address space
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                match manager.exec_process(current_pid, elf_data) {
+                    Ok(new_entry_point) => {
+                        log::info!(
+                            "sys_exec: Successfully replaced process address space, entry point: {:#x}",
+                            new_entry_point
+                        );
+
+                        // CRITICAL FIX: Get the new stack pointer from the process
+                        // The exec_process function set up a new stack at USER_STACK_TOP
+                        const USER_STACK_TOP: u64 = 0x5555_5555_5000;
+                        let new_rsp = USER_STACK_TOP;
+
+                        // Modify the syscall frame so that when we return from syscall,
+                        // we jump to the NEW program instead of returning to the old one
+                        frame.rip = new_entry_point;
+                        frame.rsp = new_rsp;
+                        frame.rflags = 0x202; // IF=1 (interrupts enabled), bit 1=1 (reserved)
+
+                        // Clear all registers for security (new program shouldn't see old data)
+                        frame.rax = 0;
+                        frame.rbx = 0;
+                        frame.rcx = 0;
+                        frame.rdx = 0;
+                        frame.rsi = 0;
+                        frame.rdi = 0;
+                        frame.rbp = 0;
+                        frame.r8 = 0;
+                        frame.r9 = 0;
+                        frame.r10 = 0;
+                        frame.r11 = 0;
+                        frame.r12 = 0;
+                        frame.r13 = 0;
+                        frame.r14 = 0;
+                        frame.r15 = 0;
+
+                        // Set up CR3 for the new process page table
+                        if let Some(process) = manager.get_process(current_pid) {
+                            if let Some(ref page_table) = process.page_table {
+                                let new_cr3 = page_table.level_4_frame().start_address().as_u64();
+                                log::info!("sys_exec: Setting next_cr3 to {:#x}", new_cr3);
+                                unsafe {
+                                    crate::per_cpu::set_next_cr3(new_cr3);
+                                    // Also update saved_process_cr3
+                                    core::arch::asm!(
+                                        "mov gs:[80], {}",
+                                        in(reg) new_cr3,
+                                        options(nostack, preserves_flags)
+                                    );
+                                }
+                            }
+                        }
+
+                        log::info!(
+                            "sys_exec: Frame updated - RIP={:#x}, RSP={:#x}",
+                            frame.rip,
+                            frame.rsp
+                        );
+
+                        // exec() returns 0 on success (but caller never sees it because
+                        // we're jumping to a new program)
+                        SyscallResult::Ok(0)
+                    }
+                    Err(e) => {
+                        log::error!("sys_exec: Failed to exec process: {}", e);
+                        SyscallResult::Err(12) // ENOMEM
+                    }
+                }
+            } else {
+                log::error!("sys_exec: Process manager not available");
+                SyscallResult::Err(12) // ENOMEM
+            }
+        }
+
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = elf_data;
+            SyscallResult::Err(38) // ENOSYS
+        }
+    })
+}
+
+/// sys_exec - Replace the current process with a new program (deprecated)
 ///
 /// This implements the exec() family of system calls, which replace the current
 /// process's address space with a new program. The process ID remains the same,
@@ -597,6 +806,8 @@ pub fn sys_fork() -> SyscallResult {
 ///
 /// Returns: Never returns on success (process is replaced)
 /// Returns: Error code on failure
+///
+/// DEPRECATED: Use sys_exec_with_frame instead to properly update the syscall frame
 pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
     x86_64::instructions::interrupts::without_interrupts(|| {
         log::info!(
@@ -620,19 +831,40 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         // 2. Load the program from filesystem
         // 3. Validate permissions
 
-        // For testing purposes, we'll check the program name to select the right ELF
+        // Load the program by name from the test disk
         // In a real implementation, this would come from the filesystem
         let _elf_data = if program_name_ptr != 0 {
-            // Try to read the program name from userspace
-            // For now, we'll just use a simple check
-            log::info!("sys_exec: Program name requested, checking for known programs");
+            // Read the program name from userspace
+            log::info!("sys_exec: Reading program name from userspace");
 
-            // HACK: For now, we'll assume if program_name_ptr is provided,
-            // it's asking for hello_time.elf
+            // Read up to 64 bytes for the program name (null-terminated)
+            let name_bytes = match copy_from_user(program_name_ptr, 64) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::error!("sys_exec: Failed to read program name: {}", e);
+                    return SyscallResult::Err(14); // EFAULT
+                }
+            };
+
+            // Find the null terminator and extract the name
+            let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+            let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
+                Ok(s) => s,
+                Err(_) => {
+                    log::error!("sys_exec: Invalid UTF-8 in program name");
+                    return SyscallResult::Err(22); // EINVAL
+                }
+            };
+
+            log::info!("sys_exec: Loading program '{}'", program_name);
+
             #[cfg(feature = "testing")]
             {
-                log::info!("sys_exec: Using hello_time.elf for exec test");
-                crate::userspace_test::get_test_binary_static("hello_time")
+                // Load the binary from the test disk by name
+                let elf_vec = crate::userspace_test::get_test_binary(program_name);
+                // Leak the vector to get a static slice (needed for exec_process)
+                let boxed_slice = elf_vec.into_boxed_slice();
+                Box::leak(boxed_slice) as &'static [u8]
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -773,6 +1005,229 @@ pub fn sys_gettid() -> SyscallResult {
 
     log::error!("sys_gettid: No current thread");
     SyscallResult::Ok(0) // Return 0 as fallback
+}
+
+/// waitpid options constants
+pub const WNOHANG: u32 = 1;
+#[allow(dead_code)]
+pub const WUNTRACED: u32 = 2;
+
+/// sys_waitpid - Wait for a child process to change state
+///
+/// This implements the wait4/waitpid system call.
+///
+/// Arguments:
+/// - pid: PID to wait for
+///   - pid > 0: Wait for specific child with that PID
+///   - pid == -1: Wait for any child
+///   - pid == 0: Wait for any child in same process group (NOT IMPLEMENTED)
+///   - pid < -1: Wait for any child in process group |pid| (NOT IMPLEMENTED)
+/// - status_ptr: Pointer to store exit status (or 0/null to not store)
+/// - options: Flags (WNOHANG, WUNTRACED, etc.)
+///
+/// Returns:
+/// - On success: PID of terminated child
+/// - If WNOHANG and no child terminated: 0
+/// - On error: negative errno (ECHILD, EINVAL, EFAULT)
+pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
+    log::debug!("sys_waitpid: pid={}, status_ptr={:#x}, options={}", pid, status_ptr, options);
+
+    // Get current thread ID
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_waitpid: No current thread");
+            return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
+    };
+
+    // Find current process
+    let mut manager_guard = crate::process::manager();
+    let (current_pid, current_process) = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((pid, process)) => (pid, process),
+            None => {
+                log::error!("sys_waitpid: Thread {} not in any process", thread_id);
+                return SyscallResult::Err(super::errno::EINVAL as u64);
+            }
+        },
+        None => {
+            log::error!("sys_waitpid: No process manager");
+            return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
+    };
+
+    log::debug!("sys_waitpid: Current process PID={}, has {} children",
+                current_pid.as_u64(), current_process.children.len());
+
+    // Check for children
+    if current_process.children.is_empty() {
+        log::debug!("sys_waitpid: No children - returning ECHILD");
+        return SyscallResult::Err(super::errno::ECHILD as u64);
+    }
+
+    // Handle different pid values
+    match pid {
+        // pid > 0: Wait for specific child
+        p if p > 0 => {
+            let target_pid = crate::process::ProcessId::new(p as u64);
+
+            // Check if target is actually our child
+            if !current_process.children.contains(&target_pid) {
+                log::debug!("sys_waitpid: PID {} is not a child of {}", p, current_pid.as_u64());
+                return SyscallResult::Err(super::errno::ECHILD as u64);
+            }
+
+            // We need to drop the mutable borrow to check child state
+            let children_copy: Vec<_> = current_process.children.clone();
+            drop(manager_guard);
+
+            // Check if the specific child is already terminated
+            let child_terminated = {
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    if let Some(child) = manager.get_process(target_pid) {
+                        if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            Some((target_pid, exit_code))
+                        } else {
+                            None
+                        }
+                    } else {
+                        // Child doesn't exist in process table - shouldn't happen
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some((child_pid, exit_code)) = child_terminated {
+                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+            }
+
+            // Child exists but not terminated
+            if options & WNOHANG != 0 {
+                log::debug!("sys_waitpid: WNOHANG set, child {} not terminated", p);
+                return SyscallResult::Ok(0);
+            }
+
+            // Blocking wait - poll until child terminates
+            // This is a simple implementation that yields and retries
+            loop {
+                crate::task::scheduler::yield_current();
+
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    if let Some(child) = manager.get_process(target_pid) {
+                        if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                            drop(manager_guard);
+                            return complete_wait(target_pid, exit_code, status_ptr, &children_copy);
+                        }
+                    }
+                }
+            }
+        }
+
+        // pid == -1: Wait for any child
+        -1 => {
+            let children_copy: Vec<_> = current_process.children.clone();
+            drop(manager_guard);
+
+            // Check if any child is already terminated
+            let terminated_child = {
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    let mut result = None;
+                    for &child_pid in &children_copy {
+                        if let Some(child) = manager.get_process(child_pid) {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                                result = Some((child_pid, exit_code));
+                                break;
+                            }
+                        }
+                    }
+                    result
+                } else {
+                    None
+                }
+            };
+
+            if let Some((child_pid, exit_code)) = terminated_child {
+                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+            }
+
+            // No terminated children yet
+            if options & WNOHANG != 0 {
+                log::debug!("sys_waitpid: WNOHANG set, no children terminated");
+                return SyscallResult::Ok(0);
+            }
+
+            // Blocking wait - poll until any child terminates
+            loop {
+                crate::task::scheduler::yield_current();
+
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    for &child_pid in &children_copy {
+                        if let Some(child) = manager.get_process(child_pid) {
+                            if let crate::process::ProcessState::Terminated(exit_code) = child.state {
+                                drop(manager_guard);
+                                return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // pid == 0 or pid < -1: Process groups not implemented
+        _ => {
+            log::warn!("sys_waitpid: Process groups not implemented (pid={})", pid);
+            SyscallResult::Err(super::errno::ENOSYS as u64)
+        }
+    }
+}
+
+/// Helper function to complete a wait operation
+/// Writes the status and removes the child from parent's children list
+fn complete_wait(
+    child_pid: crate::process::ProcessId,
+    exit_code: i32,
+    status_ptr: u64,
+    _children: &[crate::process::ProcessId],
+) -> SyscallResult {
+    // Encode exit status in wstatus format (for WIFEXITED)
+    // Linux encodes normal exit as: (exit_code & 0xff) << 8
+    let wstatus: i32 = (exit_code & 0xff) << 8;
+
+    log::debug!("complete_wait: child {} exited with code {}, wstatus={:#x}",
+                child_pid.as_u64(), exit_code, wstatus);
+
+    // Write status to userspace if pointer is valid
+    if status_ptr != 0 {
+        if let Err(e) = copy_to_user(status_ptr, &wstatus as *const i32 as u64, core::mem::size_of::<i32>()) {
+            log::error!("complete_wait: Failed to write status: {}", e);
+            return SyscallResult::Err(super::errno::EFAULT as u64);
+        }
+    }
+
+    // Remove child from parent's children list
+    // Get current thread to find parent process
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_parent_pid, parent)) = manager.find_process_by_thread_mut(thread_id) {
+                parent.children.retain(|&id| id != child_pid);
+                log::debug!("complete_wait: Removed child {} from parent's children list",
+                           child_pid.as_u64());
+            }
+        }
+    }
+
+    // TODO: Actually remove/reap the child process from the process table
+    // For now, we leave it in the table but in Terminated state
+
+    SyscallResult::Ok(child_pid.as_u64())
 }
 
 /// sys_dup2 - Duplicate a file descriptor to a specific number

@@ -53,6 +53,12 @@ BINARIES=(
     "pipe_refcount_test"
     "stdin_test"
     "init_shell"
+    "waitpid_test"
+    "signal_fork_test"
+    "sigchld_test"
+    "wnohang_timing_test"
+    "signal_exec_test"
+    "signal_exec_check"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

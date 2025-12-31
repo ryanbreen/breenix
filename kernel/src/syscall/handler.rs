@@ -142,7 +142,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             let length = args.1;
             super::mmap::sys_munmap(addr, length)
         }
-        Some(SyscallNumber::Exec) => super::handlers::sys_exec(args.0, args.1),
+        Some(SyscallNumber::Exec) => super::handlers::sys_exec_with_frame(frame, args.0, args.1),
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
         Some(SyscallNumber::ClockGetTime) => {
@@ -160,7 +160,24 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Sigprocmask) => {
             super::signal::sys_sigprocmask(args.0 as i32, args.1, args.2, args.3)
         }
-        Some(SyscallNumber::Sigreturn) => super::signal::sys_sigreturn_with_frame(frame),
+        Some(SyscallNumber::Sigreturn) => {
+            // CRITICAL: sigreturn restores ALL registers including RAX from the signal frame.
+            // We must NOT overwrite RAX with the syscall return value after this call!
+            // Return early to skip the set_return_value() call below.
+            let result = super::signal::sys_sigreturn_with_frame(frame);
+            if let SyscallResult::Err(errno) = result {
+                // Only set return value on error - success case already has RAX set
+                frame.set_return_value((-(errno as i64)) as u64);
+            }
+            // Perform cleanup that normally happens after result handling
+            let kernel_stack_top = crate::per_cpu::kernel_stack_top();
+            if kernel_stack_top != 0 {
+                crate::gdt::set_tss_rsp0(VirtAddr::new(kernel_stack_top));
+            }
+            crate::irq_log::flush_local_try();
+            crate::per_cpu::preempt_enable();
+            return;
+        }
         Some(SyscallNumber::Socket) => {
             super::socket::sys_socket(args.0, args.1, args.2)
         }
@@ -176,6 +193,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Pipe) => super::pipe::sys_pipe(args.0),
         Some(SyscallNumber::Close) => super::pipe::sys_close(args.0 as i32),
         Some(SyscallNumber::Dup2) => super::handlers::sys_dup2(args.0, args.1),
+        Some(SyscallNumber::Wait4) => {
+            super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32)
+        }
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

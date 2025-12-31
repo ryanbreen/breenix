@@ -31,17 +31,23 @@ pub fn fork() -> i64 {
 /// Replace the current process image with a new program.
 ///
 /// Note: Currently only supports embedded binaries, not filesystem loading.
+/// IMPORTANT: path must be a null-terminated C string slice (ending with \0)
 ///
 /// # Arguments
-/// * `path` - Path to the program (for embedded binaries, this is the binary name)
-/// * `args` - Arguments string (currently unused)
+/// * `path` - Path to the program (must end with \0 byte). Use b"program_name\0"
 ///
 /// # Returns
 /// This function should not return on success. On error, returns negative errno.
+///
+/// # Safety
+/// The path MUST be a null-terminated byte slice. Rust &str is NOT null-terminated.
+/// Use: `exec(b"program_name\0")` instead of `exec("program_name")`
 #[inline]
-pub fn exec(path: &str, args: &str) -> i64 {
+pub fn exec(path: &[u8]) -> i64 {
+    // Verify path is null-terminated
+    debug_assert!(path.last() == Some(&0), "exec path must be null-terminated");
     unsafe {
-        raw::syscall2(nr::EXEC, path.as_ptr() as u64, args.as_ptr() as u64) as i64
+        raw::syscall2(nr::EXEC, path.as_ptr() as u64, 0) as i64
     }
 }
 
@@ -66,4 +72,60 @@ pub fn yield_now() {
     unsafe {
         raw::syscall0(nr::YIELD);
     }
+}
+
+/// waitpid options
+pub const WNOHANG: i32 = 1;
+#[allow(dead_code)]
+pub const WUNTRACED: i32 = 2;
+
+/// Wait for a child process to change state.
+///
+/// # Arguments
+/// * `pid` - Process ID to wait for:
+///   - `pid > 0`: Wait for specific child
+///   - `pid == -1`: Wait for any child
+///   - `pid == 0`: Wait for any child in same process group (not implemented)
+///   - `pid < -1`: Wait for any child in process group |pid| (not implemented)
+/// * `status` - Pointer to store exit status (can be null)
+/// * `options` - Options flags (e.g., WNOHANG)
+///
+/// # Returns
+/// * On success: PID of the terminated child
+/// * If WNOHANG and no child terminated: 0
+/// * On error: negative errno
+#[inline]
+pub fn waitpid(pid: i32, status: *mut i32, options: i32) -> i64 {
+    unsafe {
+        raw::syscall3(nr::WAIT4, pid as u64, status as u64, options as u64) as i64
+    }
+}
+
+/// Macros for extracting information from waitpid status
+///
+/// Check if child exited normally (via exit() or return from main)
+#[inline]
+pub fn wifexited(status: i32) -> bool {
+    // In Linux, normal exit is when low 7 bits are 0
+    (status & 0x7f) == 0
+}
+
+/// Get exit code from status (only valid if WIFEXITED is true)
+#[inline]
+pub fn wexitstatus(status: i32) -> i32 {
+    (status >> 8) & 0xff
+}
+
+/// Check if child was terminated by a signal
+#[inline]
+pub fn wifsignaled(status: i32) -> bool {
+    // Signaled if low 7 bits are non-zero and not 0x7f (stopped)
+    let sig = status & 0x7f;
+    sig != 0 && sig != 0x7f
+}
+
+/// Get signal number that terminated the child (only valid if WIFSIGNALED is true)
+#[inline]
+pub fn wtermsig(status: i32) -> i32 {
+    status & 0x7f
 }
