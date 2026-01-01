@@ -408,6 +408,15 @@ impl TtyDevice {
         }
     }
 
+    /// Unregister a thread from blocked readers
+    ///
+    /// Called when a thread successfully reads data or encounters an error,
+    /// after having previously registered as a blocked reader.
+    pub fn unregister_blocked_reader(thread_id: u64) {
+        let mut readers = BLOCKED_READERS.lock();
+        readers.retain(|&id| id != thread_id);
+    }
+
     /// Wake all blocked readers
     ///
     /// This is called when new input is available.
@@ -430,12 +439,19 @@ impl TtyDevice {
             let thread_ids: VecDeque<u64> = readers.drain(..).collect();
             drop(readers);
 
+            if thread_ids.is_empty() {
+                return;
+            }
+
             for thread_id in thread_ids {
                 // Wake without blocking - the with_scheduler closure runs synchronously
                 crate::task::scheduler::with_scheduler(|sched| {
                     sched.unblock(thread_id);
                 });
             }
+
+            // Trigger reschedule so the woken thread runs soon
+            crate::task::scheduler::set_need_resched();
         }
     }
 }
