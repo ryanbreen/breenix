@@ -83,6 +83,11 @@ impl StdinBuffer {
 
 /// Push a byte to the stdin buffer
 /// Called from keyboard task when a character is typed
+///
+/// Note: With TTY integration, keyboard input now goes through the TTY layer
+/// which handles echo, line editing, and signals. This function is kept for
+/// fallback when TTY is not initialized.
+#[allow(dead_code)]
 pub fn push_byte(byte: u8) {
     let mut buffer = STDIN_BUFFER.lock();
     if buffer.push_byte(byte) {
@@ -172,6 +177,10 @@ pub fn has_data() -> bool {
 }
 
 /// Register a thread as waiting for stdin input
+///
+/// Note: With TTY integration, blocked readers are now registered through
+/// TtyDevice::register_blocked_reader. This function is kept for fallback.
+#[allow(dead_code)]
 pub fn register_blocked_reader(thread_id: u64) {
     let mut blocked = BLOCKED_READERS.lock();
     if !blocked.contains(&thread_id) {
@@ -188,6 +197,10 @@ pub fn unregister_blocked_reader(thread_id: u64) {
 }
 
 /// Wake all threads blocked on stdin read
+///
+/// Note: With TTY integration, blocked readers are woken through
+/// TtyDevice::wake_blocked_readers. This function is kept for fallback.
+#[allow(dead_code)]
 fn wake_blocked_readers() {
     let readers: Vec<u64> = {
         let mut blocked = BLOCKED_READERS.lock();

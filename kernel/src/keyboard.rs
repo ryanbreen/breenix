@@ -93,10 +93,7 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 
 /// Async keyboard task that processes scancodes and displays typed characters
 ///
-/// Special key combinations:
-/// - Ctrl+C: Interrupt signal
-/// - Ctrl+D: End of input
-/// - Ctrl+S: Suspend output
+/// Special key combinations (handled only if TTY is not available):
 /// - Ctrl+T: Time debug information
 /// - Ctrl+M: Memory debug information
 /// - Ctrl+U: Run userspace test program
@@ -106,10 +103,17 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Ctrl+X: Test fork+exec pattern
 /// - Ctrl+H: Test shell-style fork+exec
 ///
-/// Regular characters are pushed to the stdin buffer for userspace programs.
+/// When TTY is active, the TTY layer handles:
+/// - Ctrl+C: SIGINT to foreground process
+/// - Ctrl+D: EOF on stdin
+/// - Ctrl+\\: SIGQUIT to foreground process
+/// - Ctrl+Z: SIGTSTP to foreground process
+/// - Line editing, echo, and signal generation
+///
+/// Regular characters are pushed to the TTY layer for processing.
 pub async fn keyboard_task() {
     log::info!(
-        "Keyboard ready! Type to see characters (Ctrl+C/D/S/T/M/U/P/F/E/X/H for special actions)"
+        "Keyboard ready! Type to see characters (Ctrl+T/M/U/P/F/E/X/H for special actions)"
     );
 
     let mut scancodes = ScancodeStream::new();
@@ -117,21 +121,11 @@ pub async fn keyboard_task() {
     while let Some(scancode) = scancodes.next().await {
         if let Some(event) = process_scancode(scancode) {
             if let Some(character) = event.character {
-                // Handle special key combinations
-                if event.is_ctrl_c() {
-                    log::info!("Ctrl+C pressed - interrupt signal");
-                    // TODO: Send SIGINT to foreground process
-                } else if event.is_ctrl_d() {
-                    log::info!("Ctrl+D pressed - end of input");
-                    // TODO: Signal EOF on stdin
-                } else if event.is_ctrl_s() {
-                    log::info!("Ctrl+S pressed - suspend output");
-                } else if event.is_ctrl_t() {
+                // Handle special key combinations that are NOT handled by TTY
+                // These are debug/test commands only available during development
+                if event.is_ctrl_t() {
                     log::info!("Ctrl+T pressed - showing time debug info");
                     crate::time::debug_time_info();
-                } else if event.is_ctrl_m() {
-                    log::info!("Ctrl+M pressed - showing memory debug info");
-                    crate::memory::debug_memory_info();
                 } else if event.is_ctrl_key('u') {
                     log::info!("Ctrl+U pressed - running userspace test");
                     crate::userspace_test::run_userspace_test();
@@ -157,9 +151,16 @@ pub async fn keyboard_task() {
                     crate::test_exec::test_shell_fork_exec();
                     log::info!("Shell fork+exec test scheduled. Press keys to continue...");
                 } else {
-                    // Push character to stdin buffer for userspace programs
-                    // This will echo the character and wake any blocked readers
-                    crate::ipc::stdin::push_byte(character as u8);
+                    // Route ALL input through the TTY layer
+                    // The TTY handles:
+                    // - Ctrl+C -> SIGINT
+                    // - Ctrl+D -> EOF
+                    // - Ctrl+\\ -> SIGQUIT
+                    // - Ctrl+Z -> SIGTSTP
+                    // - Line editing (backspace, etc.)
+                    // - Echo (if enabled)
+                    // - Blocking read wakeup
+                    crate::tty::push_char(character as u8);
 
                     // Also log for debugging (can be removed later for cleaner output)
                     log::debug!("Typed: '{}' (scancode: 0x{:02X})", character, scancode);

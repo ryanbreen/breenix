@@ -178,6 +178,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             crate::per_cpu::preempt_enable();
             return;
         }
+        Some(SyscallNumber::Ioctl) => {
+            super::ioctl::sys_ioctl(args.0, args.1, args.2)
+        }
         Some(SyscallNumber::Socket) => {
             super::socket::sys_socket(args.0, args.1, args.2)
         }

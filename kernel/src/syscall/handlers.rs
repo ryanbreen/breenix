@@ -348,14 +348,22 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     match &fd_entry.kind {
         FdKind::StdIo(0) => {
-            // stdin - read from kernel stdin buffer
+            // stdin - read from TTY layer (which provides line editing and echo)
             // Drop the process manager lock before potentially blocking
             drop(manager_guard);
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
-            // Try non-blocking read first
-            match crate::ipc::stdin::read_bytes(&mut user_buf) {
+            // Try reading from TTY - it provides processed input (canonical mode)
+            // Falls back to old stdin if TTY not initialized
+            let read_result = if let Some(tty) = crate::tty::console() {
+                tty.read(&mut user_buf)
+            } else {
+                // Fallback to direct stdin buffer if TTY not available
+                crate::ipc::stdin::read_bytes(&mut user_buf)
+            };
+
+            match read_result {
                 Ok(n) => {
                     if n > 0 {
                         // Copy to userspace
@@ -365,14 +373,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                     // Only log non-zero reads to avoid spam
                     if n > 0 {
-                        log::trace!("sys_read: Read {} bytes from stdin", n);
+                        log::trace!("sys_read: Read {} bytes from stdin/TTY", n);
                     }
                     SyscallResult::Ok(n as u64)
                 }
                 Err(11) => {
                     // EAGAIN - no data available, need to block
-                    // Register this thread as waiting for stdin
-                    crate::ipc::stdin::register_blocked_reader(thread_id);
+                    // Register this thread as waiting for TTY input
+                    crate::tty::driver::TtyDevice::register_blocked_reader(thread_id);
 
                     // Block the current thread
                     crate::task::scheduler::with_scheduler(|sched| {
@@ -387,7 +395,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     SyscallResult::Err(512) // ERESTARTSYS
                 }
                 Err(e) => {
-                    log::trace!("sys_read: Stdin read error: {}", e);
+                    log::trace!("sys_read: Stdin/TTY read error: {}", e);
                     SyscallResult::Err(e as u64)
                 }
             }
