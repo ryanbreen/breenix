@@ -1,0 +1,123 @@
+//! Poll implementation for monitoring file descriptors
+//!
+//! This module provides the poll() syscall implementation that allows
+//! monitoring multiple file descriptors for I/O readiness.
+
+use super::fd::{FdKind, FileDescriptor};
+
+/// Poll event flags (matching Linux definitions)
+pub mod events {
+    /// Data available to read
+    pub const POLLIN: i16 = 0x0001;
+    /// Write won't block
+    pub const POLLOUT: i16 = 0x0004;
+    /// Error condition (output only)
+    pub const POLLERR: i16 = 0x0008;
+    /// Hang up (output only)
+    pub const POLLHUP: i16 = 0x0010;
+    /// Invalid fd (output only)
+    pub const POLLNVAL: i16 = 0x0020;
+}
+
+/// pollfd structure matching Linux definition
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PollFd {
+    /// File descriptor to poll
+    pub fd: i32,
+    /// Events to poll for (input)
+    pub events: i16,
+    /// Events that occurred (output)
+    pub revents: i16,
+}
+
+/// Poll a single file descriptor for readiness
+///
+/// Returns the revents for this fd based on requested events
+pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
+    let mut revents: i16 = 0;
+
+    match &fd_entry.kind {
+        FdKind::StdIo(n) => {
+            match *n {
+                0 => {
+                    // stdin - check if data available
+                    if (events & events::POLLIN) != 0 {
+                        if super::stdin::has_data() {
+                            revents |= events::POLLIN;
+                        }
+                    }
+                }
+                1 | 2 => {
+                    // stdout/stderr - always writable
+                    if (events & events::POLLOUT) != 0 {
+                        revents |= events::POLLOUT;
+                    }
+                }
+                _ => {
+                    // Unknown stdio fd
+                }
+            }
+        }
+        FdKind::PipeRead(buffer) => {
+            let pipe = buffer.lock();
+
+            // Check for data available
+            if (events & events::POLLIN) != 0 {
+                if pipe.available() > 0 {
+                    revents |= events::POLLIN;
+                }
+            }
+
+            // Check for write end closed (HUP)
+            if !pipe.has_writers() {
+                revents |= events::POLLHUP;
+            }
+        }
+        FdKind::PipeWrite(buffer) => {
+            let pipe = buffer.lock();
+
+            // Check for space available
+            if (events & events::POLLOUT) != 0 {
+                if pipe.space() > 0 && pipe.has_readers() {
+                    revents |= events::POLLOUT;
+                }
+            }
+
+            // Check for read end closed (error condition for writers)
+            if !pipe.has_readers() {
+                revents |= events::POLLERR;
+            }
+        }
+        FdKind::UdpSocket(_socket) => {
+            // For UDP sockets: we don't implement poll properly yet
+            // Just mark as always writable for now
+            if (events & events::POLLOUT) != 0 {
+                revents |= events::POLLOUT;
+            }
+            // TODO: Check socket RX queue for POLLIN
+        }
+    }
+
+    revents
+}
+
+/// Check if a file descriptor is readable (POLLIN)
+/// Returns true if there is data available to read
+pub fn check_readable(fd_entry: &FileDescriptor) -> bool {
+    (poll_fd(fd_entry, events::POLLIN) & events::POLLIN) != 0
+}
+
+/// Check if a file descriptor is writable (POLLOUT)
+/// Returns true if writing would not block
+pub fn check_writable(fd_entry: &FileDescriptor) -> bool {
+    (poll_fd(fd_entry, events::POLLOUT) & events::POLLOUT) != 0
+}
+
+/// Check if a file descriptor has an exception condition (POLLERR, POLLHUP)
+/// Returns true if there is an error or hangup condition
+pub fn check_exception(fd_entry: &FileDescriptor) -> bool {
+    let revents = poll_fd(fd_entry, events::POLLIN | events::POLLOUT);
+    (revents & (events::POLLERR | events::POLLHUP)) != 0
+}
+

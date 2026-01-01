@@ -29,6 +29,7 @@ pub enum SyscallNumber {
     GetTime = 4,
     Fork = 5,
     Close = 6,          // Custom number (Linux close = 3, conflicts with our Yield)
+    Poll = 7,           // Linux syscall number for poll
     Mmap = 9,           // Linux syscall number for mmap
     Mprotect = 10,      // Linux syscall number for mprotect
     Munmap = 11,        // Linux syscall number for munmap
@@ -37,9 +38,11 @@ pub enum SyscallNumber {
     Sigprocmask = 14,   // Linux syscall number for rt_sigprocmask
     Sigreturn = 15,     // Linux syscall number for rt_sigreturn
     Pipe = 22,          // Linux syscall number for pipe
+    Select = 23,        // Linux syscall number for select
     Dup = 32,           // Linux syscall number for dup
     Dup2 = 33,          // Linux syscall number for dup2
     Pause = 34,         // Linux syscall number for pause
+    Fcntl = 72,         // Linux syscall number for fcntl
     GetPid = 39,        // Linux syscall number for getpid
     Socket = 41,        // Linux syscall number for socket
     SendTo = 44,        // Linux syscall number for sendto
@@ -50,6 +53,7 @@ pub enum SyscallNumber {
     Kill = 62,          // Linux syscall number for kill
     GetTid = 186,       // Linux syscall number for gettid
     ClockGetTime = 228, // Linux syscall number for clock_gettime
+    Pipe2 = 293,        // Linux syscall number for pipe2
 }
 
 #[allow(dead_code)]
@@ -64,6 +68,7 @@ impl SyscallNumber {
             4 => Some(Self::GetTime),
             5 => Some(Self::Fork),
             6 => Some(Self::Close),
+            7 => Some(Self::Poll),
             9 => Some(Self::Mmap),
             10 => Some(Self::Mprotect),
             11 => Some(Self::Munmap),
@@ -72,10 +77,12 @@ impl SyscallNumber {
             14 => Some(Self::Sigprocmask),
             15 => Some(Self::Sigreturn),
             22 => Some(Self::Pipe),
+            23 => Some(Self::Select),
             32 => Some(Self::Dup),
             33 => Some(Self::Dup2),
             34 => Some(Self::Pause),
             39 => Some(Self::GetPid),
+            72 => Some(Self::Fcntl),
             41 => Some(Self::Socket),
             44 => Some(Self::SendTo),
             45 => Some(Self::RecvFrom),
@@ -85,6 +92,7 @@ impl SyscallNumber {
             62 => Some(Self::Kill),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
+            293 => Some(Self::Pipe2),
             _ => None,
         }
     }

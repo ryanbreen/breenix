@@ -17,6 +17,7 @@ pub mod nr {
     pub const GET_TIME: u64 = 4;
     pub const FORK: u64 = 5;
     pub const CLOSE: u64 = 6;        // Custom number (not Linux standard)
+    pub const POLL: u64 = 7;          // Linux x86_64 poll
     pub const MMAP: u64 = 9;         // Linux x86_64 mmap
     pub const MPROTECT: u64 = 10;    // Linux x86_64 mprotect
     pub const MUNMAP: u64 = 11;      // Linux x86_64 munmap
@@ -25,10 +26,13 @@ pub mod nr {
     pub const SIGPROCMASK: u64 = 14; // Linux x86_64 rt_sigprocmask
     pub const SIGRETURN: u64 = 15;   // Linux x86_64 rt_sigreturn
     pub const PIPE: u64 = 22;        // Linux x86_64 pipe
+    pub const SELECT: u64 = 23;       // Linux x86_64 select
+    pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2
     pub const DUP: u64 = 32;          // Linux x86_64 dup
     pub const DUP2: u64 = 33;         // Linux x86_64 dup2
     pub const PAUSE: u64 = 34;        // Linux x86_64 pause
     pub const GETPID: u64 = 39;
+    pub const FCNTL: u64 = 72;        // Linux x86_64 fcntl
     pub const SOCKET: u64 = 41;
     pub const SENDTO: u64 = 44;
     pub const RECVFROM: u64 = 45;

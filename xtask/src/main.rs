@@ -564,6 +564,20 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "dup() syscall test failed - fd duplication, read/write on dup'd fd, or refcounting broken",
             check_hint: "Check kernel/src/syscall/io.rs:sys_dup() and fd table management",
         },
+        // Fcntl syscall test
+        BootStage {
+            name: "Fcntl syscall test passed",
+            marker: "FCNTL_TEST_PASSED",
+            failure_meaning: "fcntl() syscall test failed - F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD broken",
+            check_hint: "Check kernel/src/syscall/handlers.rs:sys_fcntl() and kernel/src/ipc/fd.rs",
+        },
+        // Pipe2 syscall test
+        BootStage {
+            name: "Pipe2 syscall test passed",
+            marker: "PIPE2_TEST_PASSED",
+            failure_meaning: "pipe2() syscall test failed - O_CLOEXEC/O_NONBLOCK flags not applied correctly",
+            check_hint: "Check kernel/src/syscall/pipe.rs:sys_pipe2() and kernel/src/ipc/fd.rs:alloc_with_entry()",
+        },
         // Signal exec reset test
         // Validates signal handlers are reset to SIG_DFL after exec
         BootStage {
@@ -592,6 +606,27 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "WNOHANG_TIMING_TEST_PASSED",
             failure_meaning: "WNOHANG timing test failed - WNOHANG not returning correct values for running/exited/no children",
             check_hint: "Check kernel/src/syscall/process.rs:sys_wait4() WNOHANG handling",
+        },
+        // Poll syscall test
+        BootStage {
+            name: "Poll syscall test passed",
+            marker: "POLL_TEST_PASSED",
+            failure_meaning: "poll() syscall test failed - polling fd readiness broken",
+            check_hint: "Check kernel/src/syscall/handlers.rs:sys_poll() and kernel/src/ipc/poll.rs",
+        },
+        // Select syscall test
+        BootStage {
+            name: "Select syscall test passed",
+            marker: "SELECT_TEST_PASSED",
+            failure_meaning: "select() syscall test failed - fd_set bitmap monitoring broken",
+            check_hint: "Check kernel/src/syscall/handlers.rs:sys_select() and kernel/src/ipc/poll.rs",
+        },
+        // O_NONBLOCK pipe test
+        BootStage {
+            name: "O_NONBLOCK pipe test passed",
+            marker: "NONBLOCK_TEST_PASSED",
+            failure_meaning: "O_NONBLOCK pipe test failed - non-blocking read/write on pipes not returning EAGAIN correctly",
+            check_hint: "Check kernel/src/syscall/handlers.rs:sys_read()/sys_write() O_NONBLOCK handling and kernel/src/ipc/pipe.rs",
         },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
