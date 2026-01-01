@@ -90,8 +90,9 @@ impl Scheduler {
             core::sync::atomic::AtomicU64::new(0);
         let count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-        // Log the first few scheduling decisions (use serial to avoid framebuffer on process CR3)
-        if count < 10 {
+        // Log all scheduling decisions after #30 to debug pause_test
+        let debug_log = count < 10 || count >= 30;
+        if debug_log {
             log_serial_println!(
                 "schedule() #{}: current={:?}, ready_queue={:?}",
                 count,
@@ -103,33 +104,44 @@ impl Scheduler {
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
-                // First check the state and update it
-                let (is_terminated, prev_state) =
+                // First check the state and determine what to do
+                let (is_terminated, is_blocked, prev_state) =
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
+                        // Check for any blocked state
+                        let was_blocked = current.state == ThreadState::Blocked
+                            || current.state == ThreadState::BlockedOnSignal
+                            || current.state == ThreadState::BlockedOnChildExit;
                         let prev = current.state;
-                        if !was_terminated {
+                        // Only set to Ready if not terminated AND not blocked
+                        if !was_terminated && !was_blocked {
                             current.set_ready();
                         }
-                        (was_terminated, prev)
+                        (was_terminated, was_blocked, prev)
                     } else {
-                        (true, ThreadState::Terminated)
+                        (true, false, ThreadState::Terminated)
                     };
 
                 // Then modify the ready queue
-                if !is_terminated {
+                if !is_terminated && !is_blocked {
                     self.ready_queue.push_back(current_id);
-                    if count < 10 {
+                    if debug_log {
                         log_serial_println!(
                             "Put thread {} back in ready queue, state was {:?}",
                             current_id,
                             prev_state
                         );
                     }
-                } else {
+                } else if is_terminated {
                     log_serial_println!(
                         "Thread {} is terminated, not putting back in ready queue",
                         current_id
+                    );
+                } else if is_blocked {
+                    log_serial_println!(
+                        "Thread {} is blocked ({:?}), not putting back in ready queue",
+                        current_id,
+                        prev_state
                     );
                 }
             }
@@ -142,7 +154,7 @@ impl Scheduler {
             self.idle_thread
         };
 
-        if count < 10 {
+        if debug_log {
             log_serial_println!(
                 "Next thread from queue: {}, ready_queue after pop: {:?}",
                 next_thread_id,
@@ -163,7 +175,7 @@ impl Scheduler {
             );
         } else if Some(next_thread_id) == self.current_thread {
             // No other threads ready, stay with current
-            if count < 10 {
+            if debug_log {
                 log_serial_println!(
                     "Staying with current thread {} (no other threads ready)",
                     next_thread_id
@@ -176,7 +188,7 @@ impl Scheduler {
         let old_thread_id = self.current_thread.unwrap_or(self.idle_thread);
         self.current_thread = Some(next_thread_id);
 
-        if count < 10 {
+        if debug_log {
             log_serial_println!(
                 "Switching from thread {} to thread {}",
                 old_thread_id,
@@ -215,10 +227,120 @@ impl Scheduler {
     #[allow(dead_code)]
     pub fn unblock(&mut self, thread_id: u64) {
         if let Some(thread) = self.get_thread_mut(thread_id) {
-            if thread.state == ThreadState::Blocked {
+            if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
                 if thread_id != self.idle_thread {
                     self.ready_queue.push_back(thread_id);
+                }
+            }
+        }
+    }
+
+    /// Block current thread until a signal is delivered
+    /// Used by the pause() syscall
+    ///
+    /// NOTE: This does NOT set current_thread to None because the thread
+    /// is still physically running the syscall. The schedule() function
+    /// will check the thread state and not put it back in ready queue.
+    pub fn block_current_for_signal(&mut self) {
+        if let Some(current_id) = self.current_thread {
+            if let Some(thread) = self.get_thread_mut(current_id) {
+                thread.state = ThreadState::BlockedOnSignal;
+                // CRITICAL: Mark that this thread is blocked inside a syscall.
+                // When the thread is resumed, we must NOT restore userspace context
+                // because that would return to the pre-syscall location instead of
+                // letting the syscall complete and return properly.
+                thread.blocked_in_syscall = true;
+                log_serial_println!("Thread {} blocked waiting for signal (blocked_in_syscall=true)", current_id);
+            }
+            // Remove from ready queue (shouldn't be there but make sure)
+            self.ready_queue.retain(|&id| id != current_id);
+            // NOTE: Do NOT clear current_thread here!
+            // The thread is still running (inside the syscall handler).
+            // schedule() will detect the Blocked state and not put it back in ready queue.
+        }
+    }
+
+    /// Unblock a thread that was waiting for a signal
+    /// Called when a signal is delivered to a blocked thread
+    pub fn unblock_for_signal(&mut self, thread_id: u64) {
+        log_serial_println!(
+            "unblock_for_signal: Checking thread {} (current={:?}, ready_queue={:?})",
+            thread_id,
+            self.current_thread,
+            self.ready_queue
+        );
+        if let Some(thread) = self.get_thread_mut(thread_id) {
+            log_serial_println!(
+                "unblock_for_signal: Thread {} state is {:?}, blocked_in_syscall={}",
+                thread_id,
+                thread.state,
+                thread.blocked_in_syscall
+            );
+            if thread.state == ThreadState::BlockedOnSignal {
+                thread.set_ready();
+                // NOTE: Do NOT clear blocked_in_syscall here!
+                // The thread needs to resume inside the syscall and complete it.
+                // blocked_in_syscall will be cleared when the syscall actually returns.
+                if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
+                    self.ready_queue.push_back(thread_id);
+                    log_serial_println!(
+                        "unblock_for_signal: Thread {} unblocked, added to ready_queue={:?}",
+                        thread_id,
+                        self.ready_queue
+                    );
+                } else {
+                    log_serial_println!(
+                        "unblock_for_signal: Thread {} already in queue or is idle",
+                        thread_id
+                    );
+                }
+            } else {
+                log_serial_println!(
+                    "unblock_for_signal: Thread {} not BlockedOnSignal, state={:?}",
+                    thread_id,
+                    thread.state
+                );
+            }
+        } else {
+            log_serial_println!("unblock_for_signal: Thread {} not found!", thread_id);
+        }
+    }
+
+    /// Block current thread until a child exits
+    /// Used by the waitpid() syscall
+    ///
+    /// NOTE: This does NOT set current_thread to None because the thread
+    /// is still physically running the syscall. The schedule() function
+    /// will check the thread state and not put it back in ready queue.
+    pub fn block_current_for_child_exit(&mut self) {
+        if let Some(current_id) = self.current_thread {
+            if let Some(thread) = self.get_thread_mut(current_id) {
+                thread.state = ThreadState::BlockedOnChildExit;
+                // CRITICAL: Mark that this thread is blocked inside a syscall.
+                // When the thread is resumed, we must NOT restore userspace context
+                // because that would return to the pre-syscall location instead of
+                // letting the syscall complete and return properly.
+                thread.blocked_in_syscall = true;
+                log_serial_println!("Thread {} blocked waiting for child exit (blocked_in_syscall=true)", current_id);
+            }
+            // Remove from ready queue (shouldn't be there but make sure)
+            self.ready_queue.retain(|&id| id != current_id);
+            // NOTE: Do NOT clear current_thread here!
+            // The thread is still running (inside the syscall handler).
+            // schedule() will detect the Blocked state and not put it back in ready queue.
+        }
+    }
+
+    /// Unblock a thread that was waiting for a child to exit
+    /// Called when a child process terminates
+    pub fn unblock_for_child_exit(&mut self, thread_id: u64) {
+        if let Some(thread) = self.get_thread_mut(thread_id) {
+            if thread.state == ThreadState::BlockedOnChildExit {
+                thread.set_ready();
+                if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
+                    self.ready_queue.push_back(thread_id);
+                    log_serial_println!("Thread {} unblocked by child exit", thread_id);
                 }
             }
         }

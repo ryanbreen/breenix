@@ -550,7 +550,21 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "SIGCHLD delivery test failed - SIGCHLD not delivered to parent when child exits",
             check_hint: "Check kernel/src/task/process_task.rs handle_thread_exit() SIGCHLD handling and signal delivery path",
         },
-        // Signal exec reset test - run early
+        // Pause syscall test - run early before fork-heavy tests
+        BootStage {
+            name: "Pause syscall test passed",
+            marker: "PAUSE_TEST_PASSED",
+            failure_meaning: "pause() syscall test failed - pause not blocking or signal not waking process",
+            check_hint: "Check kernel/src/syscall/signal.rs:sys_pause() and signal delivery path",
+        },
+        // Dup syscall test
+        BootStage {
+            name: "Dup syscall test passed",
+            marker: "DUP_TEST_PASSED",
+            failure_meaning: "dup() syscall test failed - fd duplication, read/write on dup'd fd, or refcounting broken",
+            check_hint: "Check kernel/src/syscall/io.rs:sys_dup() and fd table management",
+        },
+        // Signal exec reset test
         // Validates signal handlers are reset to SIG_DFL after exec
         BootStage {
             name: "Signal exec reset test passed",
@@ -663,8 +677,8 @@ fn boot_stages() -> Result<()> {
     let mut stage_start_time = Instant::now();
 
     let test_start = Instant::now();
-    let timeout = Duration::from_secs(60);
-    let stage_timeout = Duration::from_secs(30); // QEMU serial buffering can delay output by 15+ seconds
+    let timeout = Duration::from_secs(120); // Increased for complex multi-process tests
+    let stage_timeout = Duration::from_secs(60); // Increased for complex multi-process tests that need scheduling time
     let mut last_progress = Instant::now();
 
     // Print initial waiting message

@@ -149,6 +149,29 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                 crate::task::scheduler::set_need_resched();
             }
 
+            // Also wake up the thread if it's blocked on a signal (pause() syscall)
+            // We need the thread ID from the process's main thread
+            if let Some(ref thread) = process.main_thread {
+                let thread_id = thread.id;
+                log::info!(
+                    "kill: Found main_thread {} for process {}, will unblock if BlockedOnSignal",
+                    thread_id,
+                    target_pid.as_u64()
+                );
+                // Release the manager lock before acquiring the scheduler lock
+                // to avoid deadlock
+                drop(manager_guard);
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.unblock_for_signal(thread_id);
+                });
+                return SyscallResult::Ok(0);
+            } else {
+                log::warn!(
+                    "kill: Process {} has no main_thread - cannot unblock for signal",
+                    target_pid.as_u64()
+                );
+            }
+
             SyscallResult::Ok(0)
         } else {
             SyscallResult::Err(3) // ESRCH - No such process
@@ -360,6 +383,131 @@ pub fn sys_sigprocmask(how: i32, new_set: u64, old_set: u64, sigsetsize: u64) ->
 pub fn sys_sigreturn() -> SyscallResult {
     log::warn!("sys_sigreturn called without frame access - use sys_sigreturn_with_frame");
     SyscallResult::Err(38) // ENOSYS
+}
+
+/// pause() - Wait until a signal is delivered (legacy version without frame access)
+///
+/// This version is kept for backward compatibility but should not be used.
+/// Use sys_pause_with_frame() instead for proper signal delivery.
+#[allow(dead_code)]
+pub fn sys_pause() -> SyscallResult {
+    log::warn!("sys_pause called without frame access - signals may not work correctly");
+    // Fall through to basic pause implementation without signal handler support
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal();
+    });
+
+    let mut loop_count = 0u64;
+    loop {
+        crate::task::scheduler::yield_current();
+        x86_64::instructions::interrupts::enable_and_hlt();
+
+        loop_count += 1;
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
+            } else {
+                false
+            }
+        }).unwrap_or(false);
+
+        if !still_blocked {
+            break;
+        }
+    }
+
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+        }
+    });
+
+    SyscallResult::Err(4) // EINTR
+}
+
+/// pause() - Wait until a signal is delivered (with frame access)
+///
+/// pause() causes the calling process (or thread) to sleep until a signal
+/// is delivered that either terminates the process or causes the invocation
+/// of a signal-catching function.
+///
+/// This version takes the syscall frame so we can save the userspace context
+/// for proper signal handler delivery when the thread is woken.
+///
+/// # Returns
+/// * Always returns -EINTR (4) - pause() only returns when interrupted by a signal
+pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    log::info!("sys_pause_with_frame: Thread {} blocking until signal arrives", thread_id);
+
+    // CRITICAL: Save the userspace context BEFORE blocking.
+    // When a signal arrives, the context switch code will use this saved context
+    // to set up the signal handler frame (with RAX = -EINTR).
+    let userspace_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
+
+    // Save the userspace context to the thread for signal delivery
+    if let Some(mut manager_guard) = crate::process::try_manager() {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                if let Some(ref mut thread) = process.main_thread {
+                    thread.saved_userspace_context = Some(userspace_context);
+                    log::info!(
+                        "sys_pause_with_frame: Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}",
+                        thread_id,
+                        frame.rip,
+                        frame.rsp
+                    );
+                }
+            }
+        }
+    }
+
+    // Block the current thread until a signal arrives
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal();
+    });
+
+    log::info!("sys_pause_with_frame: Thread {} marked BlockedOnSignal, entering HLT loop", thread_id);
+
+    // HLT loop - wait for timer interrupt which will switch to another thread
+    let mut loop_count = 0u64;
+    loop {
+        crate::task::scheduler::yield_current();
+        x86_64::instructions::interrupts::enable_and_hlt();
+
+        loop_count += 1;
+        if loop_count % 100 == 0 {
+            log::info!("sys_pause_with_frame: Thread {} HLT loop iteration {}", thread_id, loop_count);
+        }
+
+        // Check if we were unblocked (thread state changed from BlockedOnSignal)
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
+            } else {
+                false
+            }
+        }).unwrap_or(false);
+
+        if !still_blocked {
+            log::info!("sys_pause_with_frame: Thread {} unblocked after {} HLT iterations", thread_id, loop_count);
+            break;
+        }
+    }
+
+    // CRITICAL: Clear the blocked_in_syscall flag and saved context now that the syscall is completing.
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.saved_userspace_context = None;
+            log::info!("sys_pause_with_frame: Thread {} cleared blocked_in_syscall flag", thread_id);
+        }
+    });
+
+    log::info!("sys_pause_with_frame: Thread {} returning -EINTR", thread_id);
+    SyscallResult::Err(4) // EINTR
 }
 
 /// Userspace address limit - addresses must be below this to be valid userspace

@@ -192,7 +192,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         }
         Some(SyscallNumber::Pipe) => super::pipe::sys_pipe(args.0),
         Some(SyscallNumber::Close) => super::pipe::sys_close(args.0 as i32),
+        Some(SyscallNumber::Dup) => super::handlers::sys_dup(args.0),
         Some(SyscallNumber::Dup2) => super::handlers::sys_dup2(args.0, args.1),
+        Some(SyscallNumber::Pause) => super::signal::sys_pause_with_frame(frame),
         Some(SyscallNumber::Wait4) => {
             super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32)
         }

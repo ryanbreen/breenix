@@ -25,6 +25,9 @@ pub mod nr {
     pub const SIGPROCMASK: u64 = 14; // Linux x86_64 rt_sigprocmask
     pub const SIGRETURN: u64 = 15;   // Linux x86_64 rt_sigreturn
     pub const PIPE: u64 = 22;        // Linux x86_64 pipe
+    pub const DUP: u64 = 32;          // Linux x86_64 dup
+    pub const DUP2: u64 = 33;         // Linux x86_64 dup2
+    pub const PAUSE: u64 = 34;        // Linux x86_64 pause
     pub const GETPID: u64 = 39;
     pub const SOCKET: u64 = 41;
     pub const SENDTO: u64 = 44;

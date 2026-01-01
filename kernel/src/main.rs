@@ -643,7 +643,16 @@ fn kernel_main_continue() -> ! {
         log::info!("=== SIGNAL TEST: SIGCHLD delivery on child exit ===");
         test_exec::test_sigchld();
 
-        // Test signal handler reset on exec - run early
+        // Test pause() syscall - run early before fork-heavy tests
+        // pause() needs child to send signal, so keep it before tests that create many children
+        log::info!("=== SIGNAL TEST: pause() syscall functionality ===");
+        test_exec::test_pause();
+
+        // Test dup() syscall
+        log::info!("=== IPC TEST: dup() syscall functionality ===");
+        test_exec::test_dup();
+
+        // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
         test_exec::test_signal_exec();
 

@@ -122,6 +122,14 @@ path = "signal_exec_test.rs"
 name = "signal_exec_check"
 path = "signal_exec_check.rs"
 
+[[bin]]
+name = "pause_test"
+path = "pause_test.rs"
+
+[[bin]]
+name = "dup_test"
+path = "dup_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

@@ -160,6 +160,11 @@ pub extern "C" fn check_need_resched_and_switch(
             );
         }
 
+        // Check if current thread is blocked in syscall (pause/waitpid)
+        let blocked_in_syscall = scheduler::with_thread_mut(old_thread_id, |thread| {
+            thread.blocked_in_syscall
+        }).unwrap_or(false);
+
         if from_userspace && !preempt_active {
             // Use the already-held guard to save context (prevents TOCTOU race)
             if let Some(ref mut guard) = process_manager_guard {
@@ -192,6 +197,32 @@ pub extern "C" fn check_need_resched_and_switch(
             }
             // Don't switch threads - we're in syscall return path with kernel registers
             return;
+        } else if !from_userspace && blocked_in_syscall {
+            // Thread is blocked inside a syscall (pause/waitpid) and was interrupted
+            // in kernel mode (in the HLT loop). Save the KERNEL context so we can
+            // resume the thread at the correct kernel location.
+            log::info!(
+                "Saving kernel context for thread {} blocked in syscall: RIP={:#x}, RSP={:#x}",
+                old_thread_id,
+                interrupt_frame.instruction_pointer.as_u64(),
+                interrupt_frame.stack_pointer.as_u64()
+            );
+            let save_succeeded = if let Some(ref mut guard) = process_manager_guard {
+                save_kernel_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard);
+                true
+            } else if let Some(mut guard) = crate::process::try_manager() {
+                save_kernel_context_with_guard(old_thread_id, saved_regs, interrupt_frame, &mut guard);
+                true
+            } else {
+                log::error!("Failed to acquire lock to save kernel context for thread {}", old_thread_id);
+                false
+            };
+
+            if !save_succeeded {
+                // Cannot save context - abort switch, try again later
+                scheduler::set_need_resched();
+                return;
+            }
         }
 
         // Switch to the new thread
@@ -263,6 +294,55 @@ fn save_current_thread_context_with_guard(
     false
 }
 
+/// Save kernel context for a thread blocked inside a syscall
+/// This saves the kernel-mode context (RIP in HLT loop, kernel RSP, CS=0x08)
+/// so the thread can be resumed at the correct kernel location.
+fn save_kernel_context_with_guard(
+    thread_id: u64,
+    saved_regs: &SavedRegisters,
+    interrupt_frame: &InterruptStackFrame,
+    manager_guard: &mut spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+) {
+    if let Some(ref mut manager) = **manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some(ref mut thread) = process.main_thread {
+                // Save kernel context - the thread is in kernel mode (HLT loop in pause/waitpid)
+                // Save registers from the interrupt frame (kernel mode state)
+                thread.context.rax = saved_regs.rax;
+                thread.context.rbx = saved_regs.rbx;
+                thread.context.rcx = saved_regs.rcx;
+                thread.context.rdx = saved_regs.rdx;
+                thread.context.rsi = saved_regs.rsi;
+                thread.context.rdi = saved_regs.rdi;
+                thread.context.rbp = saved_regs.rbp;
+                thread.context.r8 = saved_regs.r8;
+                thread.context.r9 = saved_regs.r9;
+                thread.context.r10 = saved_regs.r10;
+                thread.context.r11 = saved_regs.r11;
+                thread.context.r12 = saved_regs.r12;
+                thread.context.r13 = saved_regs.r13;
+                thread.context.r14 = saved_regs.r14;
+                thread.context.r15 = saved_regs.r15;
+
+                // From interrupt frame - this is the KERNEL location (HLT instruction)
+                thread.context.rip = interrupt_frame.instruction_pointer.as_u64();
+                thread.context.rsp = interrupt_frame.stack_pointer.as_u64();
+                thread.context.rflags = interrupt_frame.cpu_flags.bits();
+                thread.context.cs = interrupt_frame.code_segment.0 as u64;
+                thread.context.ss = interrupt_frame.stack_segment.0 as u64;
+
+                log::info!(
+                    "Saved kernel context for blocked thread {}: RIP={:#x} CS={:#x} RSP={:#x}",
+                    thread_id,
+                    thread.context.rip,
+                    thread.context.cs,
+                    thread.context.rsp
+                );
+            }
+        }
+    }
+}
+
 /// Switch to a different thread
 fn switch_to_thread(
     thread_id: u64,
@@ -301,12 +381,197 @@ fn switch_to_thread(
     let is_idle =
         scheduler::with_scheduler(|sched| thread_id == sched.idle_thread()).unwrap_or(false);
 
+    // Check if thread was blocked inside a syscall (pause/waitpid)
+    // If so, we must NOT restore userspace context - the thread needs to
+    // continue executing the syscall code and return through the normal path.
+    let blocked_in_syscall = scheduler::with_thread_mut(thread_id, |thread| {
+        thread.blocked_in_syscall
+    }).unwrap_or(false);
+
     if is_idle {
         // Set up to return to idle loop
         setup_idle_return(interrupt_frame);
     } else if is_kernel_thread {
         // Set up to return to kernel thread
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
+    } else if blocked_in_syscall {
+        // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
+        // We need to check if there are pending signals. If so, deliver them using
+        // the saved userspace context. Otherwise, resume at the kernel HLT loop.
+        log::info!(
+            "Thread {} resuming in syscall (blocked_in_syscall=true)",
+            thread_id
+        );
+
+        // Get the process page table and thread context
+        let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
+        if let Some(mut manager_guard) = guard_option {
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    // Check if there are pending signals to deliver
+                    let has_pending_signals = crate::signal::delivery::has_deliverable_signals(process);
+                    let has_saved_context = process.main_thread.as_ref()
+                        .map(|t| t.saved_userspace_context.is_some())
+                        .unwrap_or(false);
+
+                    if has_pending_signals && has_saved_context {
+                        // SIGNAL DELIVERY PATH: Use saved userspace context for signal delivery
+                        log::info!(
+                            "Thread {} has pending signals - delivering via saved userspace context",
+                            thread_id
+                        );
+
+                        if let Some(ref mut thread) = process.main_thread {
+                            if let Some(ref saved_ctx) = thread.saved_userspace_context {
+                                // Restore userspace registers from saved context
+                                // But set RAX = -EINTR for the interrupted syscall
+                                saved_regs.rax = (-4i64) as u64; // -EINTR
+                                saved_regs.rbx = saved_ctx.rbx;
+                                saved_regs.rcx = saved_ctx.rcx;
+                                saved_regs.rdx = saved_ctx.rdx;
+                                saved_regs.rsi = saved_ctx.rsi;
+                                saved_regs.rdi = saved_ctx.rdi;
+                                saved_regs.rbp = saved_ctx.rbp;
+                                saved_regs.r8 = saved_ctx.r8;
+                                saved_regs.r9 = saved_ctx.r9;
+                                saved_regs.r10 = saved_ctx.r10;
+                                saved_regs.r11 = saved_ctx.r11;
+                                saved_regs.r12 = saved_ctx.r12;
+                                saved_regs.r13 = saved_ctx.r13;
+                                saved_regs.r14 = saved_ctx.r14;
+                                saved_regs.r15 = saved_ctx.r15;
+
+                                // Restore interrupt frame with USERSPACE context
+                                unsafe {
+                                    interrupt_frame.as_mut().update(|frame| {
+                                        frame.instruction_pointer =
+                                            x86_64::VirtAddr::new(saved_ctx.rip);
+                                        frame.stack_pointer =
+                                            x86_64::VirtAddr::new(saved_ctx.rsp);
+                                        frame.cpu_flags =
+                                            x86_64::registers::rflags::RFlags::from_bits_truncate(
+                                                saved_ctx.rflags,
+                                            );
+                                        // Use userspace code/stack segments
+                                        frame.code_segment = crate::gdt::user_code_selector();
+                                        frame.stack_segment = crate::gdt::user_data_selector();
+                                    });
+                                }
+
+                                log::info!(
+                                    "Restored userspace context for signal delivery: RIP={:#x} RSP={:#x} RAX=-EINTR",
+                                    saved_ctx.rip,
+                                    saved_ctx.rsp
+                                );
+
+                                // Clear blocked_in_syscall and saved context
+                                thread.blocked_in_syscall = false;
+                                thread.saved_userspace_context = None;
+
+                                // Update TSS RSP0 for the thread's kernel stack
+                                if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                                    crate::gdt::set_kernel_stack(kernel_stack_top);
+                                }
+                            }
+                        }
+
+                        // Now deliver the signal (modifies interrupt_frame and saved_regs)
+                        if crate::signal::delivery::deliver_pending_signals(
+                            process,
+                            interrupt_frame,
+                            saved_regs,
+                        ) {
+                            log::info!("Signal delivered to thread {}", thread_id);
+                        }
+                    } else {
+                        // NO PENDING SIGNALS: Resume at kernel HLT loop
+                        if let Some(ref thread) = process.main_thread {
+                            // Restore kernel context
+                            saved_regs.rax = thread.context.rax;
+                            saved_regs.rbx = thread.context.rbx;
+                            saved_regs.rcx = thread.context.rcx;
+                            saved_regs.rdx = thread.context.rdx;
+                            saved_regs.rsi = thread.context.rsi;
+                            saved_regs.rdi = thread.context.rdi;
+                            saved_regs.rbp = thread.context.rbp;
+                            saved_regs.r8 = thread.context.r8;
+                            saved_regs.r9 = thread.context.r9;
+                            saved_regs.r10 = thread.context.r10;
+                            saved_regs.r11 = thread.context.r11;
+                            saved_regs.r12 = thread.context.r12;
+                            saved_regs.r13 = thread.context.r13;
+                            saved_regs.r14 = thread.context.r14;
+                            saved_regs.r15 = thread.context.r15;
+
+                            // Restore interrupt frame with KERNEL context
+                            unsafe {
+                                interrupt_frame.as_mut().update(|frame| {
+                                    frame.instruction_pointer =
+                                        x86_64::VirtAddr::new(thread.context.rip);
+                                    frame.stack_pointer =
+                                        x86_64::VirtAddr::new(thread.context.rsp);
+                                    frame.cpu_flags =
+                                        x86_64::registers::rflags::RFlags::from_bits_truncate(
+                                            thread.context.rflags,
+                                        );
+                                    // CRITICAL: Use kernel code segment (CS=0x08)
+                                    frame.code_segment = crate::gdt::kernel_code_selector();
+                                    frame.stack_segment = crate::gdt::kernel_data_selector();
+                                });
+                            }
+
+                            log::info!(
+                                "Restored kernel context for thread {}: RIP={:#x} RSP={:#x}",
+                                thread_id,
+                                thread.context.rip,
+                                thread.context.rsp
+                            );
+
+                            // Update TSS RSP0 for the thread's kernel stack
+                            if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                                crate::gdt::set_kernel_stack(kernel_stack_top);
+                            }
+                        }
+                    }
+
+                    // Set up CR3 for the process's page table
+                    if let Some(ref page_table) = process.page_table {
+                        let page_table_frame = page_table.level_4_frame();
+                        let cr3_value = page_table_frame.start_address().as_u64();
+
+                        unsafe {
+                            // Tell timer_entry.asm to switch CR3 before IRETQ
+                            crate::per_cpu::set_next_cr3(cr3_value);
+
+                            // Update saved_process_cr3 for future timer interrupts
+                            core::arch::asm!(
+                                "mov gs:[80], {}",
+                                in(reg) cr3_value,
+                                options(nostack, preserves_flags)
+                            );
+                        }
+                        log::trace!(
+                            "Set CR3 to {:#x} for thread {} (pid {})",
+                            cr3_value,
+                            thread_id,
+                            pid.as_u64()
+                        );
+                    }
+                }
+            }
+        } else {
+            // CRITICAL: Cannot acquire lock to restore kernel context
+            // This is a fatal error - we cannot switch to this thread without its context
+            log::error!(
+                "Failed to acquire lock to restore kernel context for thread {}. Context switch aborted.",
+                thread_id
+            );
+            // Re-set need_resched to try again later
+            scheduler::set_need_resched();
+            // Note: Scheduler state was already updated (current_thread, TSS.RSP0)
+            // but we must NOT return with broken interrupt frame
+            return;
+        }
     } else {
         // Restore userspace thread context
         // Pass the process_manager_guard to avoid double-lock
