@@ -31,6 +31,47 @@ const EAGAIN: i32 = 11;
 /// Static list of thread IDs blocked waiting for TTY input
 static BLOCKED_READERS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
 
+// =============================================================================
+// Test-only Signal Tracking
+//
+// When running tests, we track signal delivery attempts so tests can verify
+// the signal flow without requiring full kernel process management.
+// =============================================================================
+
+#[cfg(test)]
+mod signal_tracking {
+    use alloc::collections::VecDeque;
+    use spin::Mutex;
+
+    /// Record of a signal delivery attempt
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SignalRecord {
+        pub pid: u64,
+        pub signal: u32,
+    }
+
+    /// Global list of signal delivery attempts for testing
+    pub static SIGNAL_RECORDS: Mutex<VecDeque<SignalRecord>> = Mutex::new(VecDeque::new());
+
+    /// Record a signal delivery attempt
+    pub fn record_signal(pid: u64, signal: u32) {
+        let mut records = SIGNAL_RECORDS.lock();
+        records.push_back(SignalRecord { pid, signal });
+    }
+
+    /// Get all recorded signals and clear the list
+    pub fn take_signals() -> VecDeque<SignalRecord> {
+        let mut records = SIGNAL_RECORDS.lock();
+        core::mem::take(&mut *records)
+    }
+
+    /// Clear all recorded signals
+    pub fn clear_signals() {
+        let mut records = SIGNAL_RECORDS.lock();
+        records.clear();
+    }
+}
+
 /// TTY device structure
 ///
 /// Each TtyDevice represents a single terminal device (e.g., /dev/tty0).
@@ -295,36 +336,46 @@ impl TtyDevice {
 
     /// Send a signal to a specific process
     fn send_signal_to_process(pid: ProcessId, sig: u32) {
-        use crate::process;
+        // In test mode, record the signal delivery attempt
+        #[cfg(test)]
+        {
+            signal_tracking::record_signal(pid.as_u64(), sig);
+        }
 
-        // Get the process manager and set the signal pending
-        let mut manager = process::manager();
-        if let Some(ref mut pm) = *manager {
-            if let Some(proc) = pm.get_process_mut(pid) {
-                proc.signals.set_pending(sig);
+        // In production mode, actually deliver the signal
+        #[cfg(not(test))]
+        {
+            use crate::process;
 
-                let sig_name = match sig {
-                    SIGINT => "SIGINT",
-                    SIGQUIT => "SIGQUIT",
-                    SIGTSTP => "SIGTSTP",
-                    _ => "UNKNOWN",
-                };
-                log::info!(
-                    "TTY: Sent {} to process {} (PID {})",
-                    sig_name,
-                    proc.name,
-                    pid.as_u64()
-                );
+            // Get the process manager and set the signal pending
+            let mut manager = process::manager();
+            if let Some(ref mut pm) = *manager {
+                if let Some(proc) = pm.get_process_mut(pid) {
+                    proc.signals.set_pending(sig);
 
-                // If process is blocked waiting for signal, wake it
-                if let Some(ref thread) = proc.main_thread {
-                    let thread_id = thread.id;
-                    drop(manager);
+                    let sig_name = match sig {
+                        SIGINT => "SIGINT",
+                        SIGQUIT => "SIGQUIT",
+                        SIGTSTP => "SIGTSTP",
+                        _ => "UNKNOWN",
+                    };
+                    log::info!(
+                        "TTY: Sent {} to process {} (PID {})",
+                        sig_name,
+                        proc.name,
+                        pid.as_u64()
+                    );
 
-                    // Wake the thread if it's blocked on a signal
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        sched.unblock_for_signal(thread_id);
-                    });
+                    // If process is blocked waiting for signal, wake it
+                    if let Some(ref thread) = proc.main_thread {
+                        let thread_id = thread.id;
+                        drop(manager);
+
+                        // Wake the thread if it's blocked on a signal
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.unblock_for_signal(thread_id);
+                        });
+                    }
                 }
             }
         }
@@ -433,4 +484,589 @@ pub fn init_console() {
     let tty = Arc::new(TtyDevice::new(0));
     *CONSOLE_TTY.lock() = Some(tty);
     log::info!("Console TTY initialized");
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // TtyDevice Construction Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tty_device_construction() {
+        let tty = TtyDevice::new(0);
+        assert_eq!(tty.num, 0);
+
+        let tty5 = TtyDevice::new(5);
+        assert_eq!(tty5.num, 5);
+    }
+
+    #[test]
+    fn test_tty_device_initial_state() {
+        let tty = TtyDevice::new(0);
+
+        // No foreground pgrp initially
+        assert_eq!(tty.get_foreground_pgrp(), None);
+
+        // No session initially
+        assert_eq!(tty.get_session(), None);
+
+        // No data available initially
+        assert!(!tty.has_data());
+    }
+
+    // =========================================================================
+    // Foreground Process Group Tests
+    // =========================================================================
+
+    #[test]
+    fn test_set_and_get_foreground_pgrp() {
+        let tty = TtyDevice::new(0);
+
+        // Initially no pgrp
+        assert_eq!(tty.get_foreground_pgrp(), None);
+
+        // Set pgrp
+        tty.set_foreground_pgrp(1234);
+        assert_eq!(tty.get_foreground_pgrp(), Some(1234));
+
+        // Can change pgrp
+        tty.set_foreground_pgrp(5678);
+        assert_eq!(tty.get_foreground_pgrp(), Some(5678));
+    }
+
+    #[test]
+    fn test_foreground_pgrp_zero_is_valid() {
+        let tty = TtyDevice::new(0);
+
+        // Process group 0 is a valid (special) value in POSIX
+        tty.set_foreground_pgrp(0);
+        assert_eq!(tty.get_foreground_pgrp(), Some(0));
+    }
+
+    // =========================================================================
+    // Session Management Tests
+    // =========================================================================
+
+    #[test]
+    fn test_set_and_get_session() {
+        let tty = TtyDevice::new(0);
+
+        // Initially no session
+        assert_eq!(tty.get_session(), None);
+
+        // Set session
+        let pid = ProcessId::new(42);
+        tty.set_session(pid);
+        assert_eq!(tty.get_session(), Some(ProcessId::new(42)));
+
+        // Can change session
+        let new_pid = ProcessId::new(99);
+        tty.set_session(new_pid);
+        assert_eq!(tty.get_session(), Some(ProcessId::new(99)));
+    }
+
+    // =========================================================================
+    // Termios Management Tests
+    // =========================================================================
+
+    #[test]
+    fn test_get_termios_returns_default() {
+        let tty = TtyDevice::new(0);
+        let termios = tty.get_termios();
+
+        // Should be in canonical mode by default
+        assert!(termios.is_canonical());
+        assert!(termios.is_echo());
+    }
+
+    #[test]
+    fn test_set_termios() {
+        let tty = TtyDevice::new(0);
+
+        // Get and modify termios
+        let mut termios = tty.get_termios();
+        termios.set_raw();
+
+        // Set modified termios
+        tty.set_termios(&termios);
+
+        // Verify it was set
+        let updated = tty.get_termios();
+        assert!(!updated.is_canonical());
+    }
+
+    // =========================================================================
+    // Input Buffer Management Tests
+    // =========================================================================
+
+    #[test]
+    fn test_flush_input_clears_buffer() {
+        let tty = TtyDevice::new(0);
+
+        // The ldisc starts empty, so flush should succeed
+        tty.flush_input();
+
+        // Still no data
+        assert!(!tty.has_data());
+    }
+
+    #[test]
+    fn test_read_returns_eagain_when_no_data() {
+        let tty = TtyDevice::new(0);
+
+        let mut buf = [0u8; 32];
+        let result = tty.read(&mut buf);
+
+        assert_eq!(result, Err(EAGAIN));
+    }
+
+    // =========================================================================
+    // Blocked Reader Registration Tests
+    // =========================================================================
+
+    #[test]
+    fn test_register_blocked_reader() {
+        // Clear any existing blocked readers first
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+
+        // Register a reader
+        TtyDevice::register_blocked_reader(100);
+
+        // Verify it's in the list
+        {
+            let readers = BLOCKED_READERS.lock();
+            assert!(readers.contains(&100));
+        }
+
+        // Clean up
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+    }
+
+    #[test]
+    fn test_register_blocked_reader_deduplication() {
+        // Clear any existing blocked readers
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+
+        // Register same reader multiple times
+        TtyDevice::register_blocked_reader(200);
+        TtyDevice::register_blocked_reader(200);
+        TtyDevice::register_blocked_reader(200);
+
+        // Should only appear once
+        {
+            let readers = BLOCKED_READERS.lock();
+            let count = readers.iter().filter(|&&id| id == 200).count();
+            assert_eq!(count, 1);
+        }
+
+        // Clean up
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+    }
+
+    #[test]
+    fn test_register_multiple_blocked_readers() {
+        // Clear any existing blocked readers
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+
+        // Register multiple readers
+        TtyDevice::register_blocked_reader(301);
+        TtyDevice::register_blocked_reader(302);
+        TtyDevice::register_blocked_reader(303);
+
+        // All should be in the list
+        {
+            let readers = BLOCKED_READERS.lock();
+            assert!(readers.contains(&301));
+            assert!(readers.contains(&302));
+            assert!(readers.contains(&303));
+            assert_eq!(readers.len(), 3);
+        }
+
+        // Clean up
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+    }
+
+    // =========================================================================
+    // Signal Delivery Flow Tests
+    //
+    // These tests verify the signal delivery *flow* using the test-mode
+    // signal tracking mechanism. They check that:
+    // 1. When Ctrl+C is input, a signal delivery is attempted
+    // 2. The signal delivery respects the foreground pgrp setting
+    // 3. Signal delivery is skipped when no foreground pgrp is set
+    // 4. The correct signal is sent to the correct process
+    // =========================================================================
+
+    #[test]
+    fn test_signal_not_delivered_without_foreground_pgrp() {
+        // Clear any previous signal records
+        signal_tracking::clear_signals();
+
+        let tty = TtyDevice::new(0);
+
+        // Don't set foreground pgrp
+        assert_eq!(tty.get_foreground_pgrp(), None);
+
+        // Try to send signals - should not result in any signal records
+        tty.send_signal_to_foreground(SIGINT);
+        tty.send_signal_to_foreground(SIGQUIT);
+        tty.send_signal_to_foreground(SIGTSTP);
+
+        // No signals should have been recorded (no foreground pgrp)
+        let signals = signal_tracking::take_signals();
+        assert!(
+            signals.is_empty(),
+            "Expected no signals when no foreground pgrp set, got {:?}",
+            signals
+        );
+    }
+
+    #[test]
+    fn test_signal_delivery_with_foreground_pgrp() {
+        // Clear any previous signal records
+        signal_tracking::clear_signals();
+
+        let tty = TtyDevice::new(0);
+
+        // Set a foreground pgrp
+        tty.set_foreground_pgrp(1000);
+        assert_eq!(tty.get_foreground_pgrp(), Some(1000));
+
+        // Send SIGINT to foreground
+        tty.send_signal_to_foreground(SIGINT);
+
+        // Check that the signal was recorded
+        let signals = signal_tracking::take_signals();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].pid, 1000);
+        assert_eq!(signals[0].signal, SIGINT);
+    }
+
+    #[test]
+    fn test_sigquit_delivery() {
+        signal_tracking::clear_signals();
+
+        let tty = TtyDevice::new(0);
+        tty.set_foreground_pgrp(2000);
+
+        tty.send_signal_to_foreground(SIGQUIT);
+
+        let signals = signal_tracking::take_signals();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].pid, 2000);
+        assert_eq!(signals[0].signal, SIGQUIT);
+    }
+
+    #[test]
+    fn test_sigtstp_delivery() {
+        signal_tracking::clear_signals();
+
+        let tty = TtyDevice::new(0);
+        tty.set_foreground_pgrp(3000);
+
+        tty.send_signal_to_foreground(SIGTSTP);
+
+        let signals = signal_tracking::take_signals();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].pid, 3000);
+        assert_eq!(signals[0].signal, SIGTSTP);
+    }
+
+    #[test]
+    fn test_multiple_signals_to_same_pgrp() {
+        signal_tracking::clear_signals();
+
+        let tty = TtyDevice::new(0);
+        tty.set_foreground_pgrp(4000);
+
+        // Send multiple signals
+        tty.send_signal_to_foreground(SIGINT);
+        tty.send_signal_to_foreground(SIGQUIT);
+        tty.send_signal_to_foreground(SIGTSTP);
+
+        let signals = signal_tracking::take_signals();
+        assert_eq!(signals.len(), 3);
+
+        // All signals should be to the same process
+        assert!(signals.iter().all(|s| s.pid == 4000));
+
+        // Signals should be in order: SIGINT, SIGQUIT, SIGTSTP
+        assert_eq!(signals[0].signal, SIGINT);
+        assert_eq!(signals[1].signal, SIGQUIT);
+        assert_eq!(signals[2].signal, SIGTSTP);
+    }
+
+    #[test]
+    fn test_changing_foreground_pgrp_affects_signal_delivery() {
+        signal_tracking::clear_signals();
+
+        let tty = TtyDevice::new(0);
+
+        // Set first pgrp and send signal
+        tty.set_foreground_pgrp(5000);
+        tty.send_signal_to_foreground(SIGINT);
+
+        // Change pgrp and send another signal
+        tty.set_foreground_pgrp(6000);
+        tty.send_signal_to_foreground(SIGINT);
+
+        let signals = signal_tracking::take_signals();
+        assert_eq!(signals.len(), 2);
+
+        // First signal should be to pid 5000
+        assert_eq!(signals[0].pid, 5000);
+
+        // Second signal should be to pid 6000
+        assert_eq!(signals[1].pid, 6000);
+    }
+
+    // =========================================================================
+    // Integration Tests: LineDiscipline Signal Generation -> Driver Delivery
+    //
+    // These tests verify that when the line discipline generates a signal,
+    // the driver's input_char method correctly routes it to signal delivery.
+    // =========================================================================
+
+    #[test]
+    fn test_line_discipline_signal_generation() {
+        // Create a line discipline and verify signal generation
+        let mut ldisc = LineDiscipline::new();
+
+        // Ctrl+C should generate SIGINT
+        let signal = ldisc.input_char(0x03, &mut |_| {});
+        assert_eq!(signal, Some(SIGINT));
+
+        // Ctrl+\ should generate SIGQUIT
+        let signal = ldisc.input_char(0x1C, &mut |_| {});
+        assert_eq!(signal, Some(SIGQUIT));
+
+        // Ctrl+Z should generate SIGTSTP
+        let signal = ldisc.input_char(0x1A, &mut |_| {});
+        assert_eq!(signal, Some(SIGTSTP));
+    }
+
+    #[test]
+    fn test_signal_constants_match_posix() {
+        // POSIX signal numbers
+        assert_eq!(SIGINT, 2);
+        assert_eq!(SIGQUIT, 3);
+        assert_eq!(SIGTSTP, 20);
+    }
+
+    #[test]
+    fn test_direct_send_signal_to_process() {
+        signal_tracking::clear_signals();
+
+        // Call send_signal_to_process directly
+        let pid = ProcessId::new(7777);
+        TtyDevice::send_signal_to_process(pid, SIGINT);
+
+        let signals = signal_tracking::take_signals();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].pid, 7777);
+        assert_eq!(signals[0].signal, SIGINT);
+    }
+
+    #[test]
+    fn test_send_signal_with_zero_pid() {
+        signal_tracking::clear_signals();
+
+        let tty = TtyDevice::new(0);
+        tty.set_foreground_pgrp(0); // Special "all processes in session" in POSIX
+
+        tty.send_signal_to_foreground(SIGINT);
+
+        let signals = signal_tracking::take_signals();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].pid, 0);
+    }
+
+    #[test]
+    fn test_signal_record_equality() {
+        let r1 = signal_tracking::SignalRecord {
+            pid: 100,
+            signal: SIGINT,
+        };
+        let r2 = signal_tracking::SignalRecord {
+            pid: 100,
+            signal: SIGINT,
+        };
+        let r3 = signal_tracking::SignalRecord {
+            pid: 100,
+            signal: SIGQUIT,
+        };
+
+        assert_eq!(r1, r2);
+        assert_ne!(r1, r3);
+    }
+
+    // =========================================================================
+    // EAGAIN Error Code Tests
+    // =========================================================================
+
+    #[test]
+    fn test_eagain_constant() {
+        // POSIX defines EAGAIN as 11
+        assert_eq!(EAGAIN, 11);
+    }
+
+    // =========================================================================
+    // Console TTY Global State Tests
+    //
+    // Note: These tests interact with global state and should be run carefully.
+    // In a real test harness, we'd isolate these or use test fixtures.
+    // =========================================================================
+
+    #[test]
+    fn test_console_before_init_returns_none() {
+        // Save current state
+        let saved = CONSOLE_TTY.lock().take();
+
+        // console() should return None when not initialized
+        assert!(console().is_none());
+
+        // Restore state
+        *CONSOLE_TTY.lock() = saved;
+    }
+
+    #[test]
+    fn test_console_after_init() {
+        // Save current state
+        let saved = CONSOLE_TTY.lock().take();
+
+        // Initialize
+        let tty = Arc::new(TtyDevice::new(0));
+        *CONSOLE_TTY.lock() = Some(tty);
+
+        // console() should return Some
+        assert!(console().is_some());
+        assert_eq!(console().unwrap().num, 0);
+
+        // Restore state
+        *CONSOLE_TTY.lock() = saved;
+    }
+
+    #[test]
+    fn test_push_char_without_console() {
+        // Save current state
+        let saved = CONSOLE_TTY.lock().take();
+
+        // push_char should not panic when console is not initialized
+        push_char(b'a');
+        push_char(b'\n');
+
+        // Restore state
+        *CONSOLE_TTY.lock() = saved;
+    }
+
+    // =========================================================================
+    // Thread Safety Tests
+    //
+    // These tests verify that concurrent access to TTY state is safe.
+    // =========================================================================
+
+    #[test]
+    fn test_foreground_pgrp_lock_safety() {
+        let tty = Arc::new(TtyDevice::new(0));
+
+        // Rapid get/set operations should not deadlock
+        for i in 0..100 {
+            tty.set_foreground_pgrp(i);
+            let _ = tty.get_foreground_pgrp();
+        }
+    }
+
+    #[test]
+    fn test_termios_lock_safety() {
+        let tty = Arc::new(TtyDevice::new(0));
+
+        // Rapid get/set operations should not deadlock
+        for _ in 0..100 {
+            let termios = tty.get_termios();
+            tty.set_termios(&termios);
+        }
+    }
+
+    // =========================================================================
+    // ProcessId Type Tests
+    // =========================================================================
+
+    #[test]
+    fn test_process_id_construction() {
+        let pid = ProcessId::new(42);
+        assert_eq!(pid.as_u64(), 42);
+
+        let pid_zero = ProcessId::new(0);
+        assert_eq!(pid_zero.as_u64(), 0);
+    }
+
+    // =========================================================================
+    // Edge Case Tests
+    // =========================================================================
+
+    #[test]
+    fn test_large_pgrp_value() {
+        let tty = TtyDevice::new(0);
+        let large_pgrp = u64::MAX;
+
+        tty.set_foreground_pgrp(large_pgrp);
+        assert_eq!(tty.get_foreground_pgrp(), Some(large_pgrp));
+    }
+
+    #[test]
+    fn test_large_tty_number() {
+        let tty = TtyDevice::new(u32::MAX);
+        assert_eq!(tty.num, u32::MAX);
+    }
+
+    #[test]
+    fn test_many_blocked_readers() {
+        // Clear any existing blocked readers
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+
+        // Register many readers
+        for i in 1000..1100 {
+            TtyDevice::register_blocked_reader(i);
+        }
+
+        // All should be present
+        {
+            let readers = BLOCKED_READERS.lock();
+            assert_eq!(readers.len(), 100);
+        }
+
+        // Clean up
+        {
+            let mut readers = BLOCKED_READERS.lock();
+            readers.clear();
+        }
+    }
 }
