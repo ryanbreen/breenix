@@ -61,6 +61,11 @@ BINARIES=(
     "signal_exec_check"
     "pause_test"
     "dup_test"
+    "fcntl_test"
+    "pipe2_test"
+    "poll_test"
+    "select_test"
+    "nonblock_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

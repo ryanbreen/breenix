@@ -15,11 +15,36 @@ pub const STDIN: i32 = 0;
 pub const STDOUT: i32 = 1;
 pub const STDERR: i32 = 2;
 
-/// File descriptor flags
+/// File descriptor flags (for F_GETFD/F_SETFD)
 pub mod flags {
     /// Close-on-exec flag (used by fcntl F_SETFD)
-    #[allow(dead_code)]
     pub const FD_CLOEXEC: u32 = 1;
+}
+
+/// File status flags (for F_GETFL/F_SETFL and open/pipe2)
+pub mod status_flags {
+    /// Non-blocking I/O mode
+    pub const O_NONBLOCK: u32 = 0x800; // 2048
+    /// Append mode (writes always append)
+    pub const O_APPEND: u32 = 0x400; // 1024
+    /// Close-on-exec (used in open/pipe2, but stored as FD_CLOEXEC)
+    pub const O_CLOEXEC: u32 = 0x80000; // 524288
+}
+
+/// fcntl command constants
+pub mod fcntl_cmd {
+    /// Duplicate file descriptor
+    pub const F_DUPFD: i32 = 0;
+    /// Get file descriptor flags
+    pub const F_GETFD: i32 = 1;
+    /// Set file descriptor flags
+    pub const F_SETFD: i32 = 2;
+    /// Get file status flags
+    pub const F_GETFL: i32 = 3;
+    /// Set file status flags
+    pub const F_SETFL: i32 = 4;
+    /// Duplicate fd with close-on-exec set
+    pub const F_DUPFD_CLOEXEC: i32 = 1030;
 }
 
 /// Types of file descriptors
@@ -59,8 +84,10 @@ impl core::fmt::Debug for FdKind {
 pub struct FileDescriptor {
     /// What kind of file this descriptor refers to
     pub kind: FdKind,
-    /// Flags (FD_CLOEXEC, etc.)
+    /// File descriptor flags (FD_CLOEXEC) - per-fd, not inherited on dup
     pub flags: u32,
+    /// File status flags (O_NONBLOCK, O_APPEND) - per-fd for pipes
+    pub status_flags: u32,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -68,6 +95,7 @@ impl core::fmt::Debug for FileDescriptor {
         f.debug_struct("FileDescriptor")
             .field("kind", &self.kind)
             .field("flags", &self.flags)
+            .field("status_flags", &self.status_flags)
             .finish()
     }
 }
@@ -75,13 +103,20 @@ impl core::fmt::Debug for FileDescriptor {
 impl FileDescriptor {
     /// Create a new file descriptor
     pub fn new(kind: FdKind) -> Self {
-        FileDescriptor { kind, flags: 0 }
+        FileDescriptor {
+            kind,
+            flags: 0,
+            status_flags: 0,
+        }
     }
 
     /// Create with specific flags (used by pipe2, etc.)
-    #[allow(dead_code)]
-    pub fn with_flags(kind: FdKind, flags: u32) -> Self {
-        FileDescriptor { kind, flags }
+    pub fn with_flags(kind: FdKind, flags: u32, status_flags: u32) -> Self {
+        FileDescriptor {
+            kind,
+            flags,
+            status_flags,
+        }
     }
 }
 
@@ -153,6 +188,18 @@ impl FdTable {
         for i in start..MAX_FDS {
             if self.fds[i].is_none() {
                 self.fds[i] = Some(FileDescriptor::new(kind));
+                return Ok(i as i32);
+            }
+        }
+        Err(24) // EMFILE - too many open files
+    }
+
+    /// Allocate a new file descriptor with a pre-configured FileDescriptor entry
+    /// This allows setting flags at allocation time (used by pipe2)
+    pub fn alloc_with_entry(&mut self, entry: FileDescriptor) -> Result<i32, i32> {
+        for i in 0..MAX_FDS {
+            if self.fds[i].is_none() {
+                self.fds[i] = Some(entry);
                 return Ok(i as i32);
             }
         }
@@ -231,13 +278,25 @@ impl FdTable {
 
     /// Duplicate a file descriptor to the lowest available slot
     /// Used for dup() syscall
-    #[allow(dead_code)]
     pub fn dup(&mut self, old_fd: i32) -> Result<i32, i32> {
+        self.dup_at_least(old_fd, 0, false)
+    }
+
+    /// Duplicate a file descriptor to slot >= min_fd
+    /// Used for fcntl F_DUPFD and F_DUPFD_CLOEXEC
+    /// Note: POSIX says dup/F_DUPFD clear FD_CLOEXEC on the new fd
+    pub fn dup_at_least(&mut self, old_fd: i32, min_fd: i32, set_cloexec: bool) -> Result<i32, i32> {
         if old_fd < 0 || old_fd as usize >= MAX_FDS {
             return Err(9); // EBADF
         }
+        if min_fd < 0 || min_fd as usize >= MAX_FDS {
+            return Err(22); // EINVAL
+        }
 
-        let fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
+        let mut fd_entry = self.fds[old_fd as usize].clone().ok_or(9)?;
+
+        // POSIX: dup and F_DUPFD clear FD_CLOEXEC, F_DUPFD_CLOEXEC sets it
+        fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
 
         // Increment pipe reference counts for the duplicated fd
         match &fd_entry.kind {
@@ -246,8 +305,8 @@ impl FdTable {
             _ => {}
         }
 
-        // Find lowest available slot
-        for i in 0..MAX_FDS {
+        // Find lowest available slot >= min_fd
+        for i in (min_fd as usize)..MAX_FDS {
             if self.fds[i].is_none() {
                 self.fds[i] = Some(fd_entry);
                 return Ok(i as i32);
@@ -261,6 +320,31 @@ impl FdTable {
             _ => {}
         }
         Err(24) // EMFILE
+    }
+
+    /// Get file descriptor flags (for F_GETFD)
+    pub fn get_fd_flags(&self, fd: i32) -> Result<u32, i32> {
+        self.get(fd).map(|e| e.flags).ok_or(9) // EBADF
+    }
+
+    /// Set file descriptor flags (for F_SETFD)
+    pub fn set_fd_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
+        self.get_mut(fd).map(|e| e.flags = flags).ok_or(9) // EBADF
+    }
+
+    /// Get file status flags (for F_GETFL)
+    pub fn get_status_flags(&self, fd: i32) -> Result<u32, i32> {
+        self.get(fd).map(|e| e.status_flags).ok_or(9) // EBADF
+    }
+
+    /// Set file status flags (for F_SETFL)
+    /// Only modifies O_NONBLOCK and O_APPEND; other flags are ignored
+    pub fn set_status_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
+        let fd_entry = self.get_mut(fd).ok_or(9)?; // EBADF
+        // Only allow setting O_NONBLOCK and O_APPEND via F_SETFL
+        let settable = status_flags::O_NONBLOCK | status_flags::O_APPEND;
+        fd_entry.status_flags = (fd_entry.status_flags & !settable) | (flags & settable);
+        Ok(())
     }
 }
 

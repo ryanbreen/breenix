@@ -220,12 +220,29 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             SyscallResult::Err(9) // EBADF
         }
         FdKind::PipeWrite(pipe_buffer) => {
+            // Check O_NONBLOCK status flag
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+
             // Write to pipe
             let mut pipe = pipe_buffer.lock();
             match pipe.write(&buffer) {
                 Ok(n) => {
                     log::debug!("sys_write: Wrote {} bytes to pipe", n);
                     SyscallResult::Ok(n as u64)
+                }
+                Err(11) => {
+                    // EAGAIN - pipe buffer is full
+                    if is_nonblocking {
+                        // O_NONBLOCK set: return EAGAIN immediately
+                        log::debug!("sys_write: Pipe full, O_NONBLOCK set - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    } else {
+                        // O_NONBLOCK not set: should block, but blocking for pipes not implemented
+                        // For now, return EAGAIN (same as nonblocking behavior)
+                        // TODO: Implement blocking pipe writes
+                        log::debug!("sys_write: Pipe full, blocking not implemented - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    }
                 }
                 Err(e) => {
                     log::debug!("sys_write: Pipe write error: {}", e);
@@ -380,6 +397,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             SyscallResult::Err(9) // EBADF
         }
         FdKind::PipeRead(pipe_buffer) => {
+            // Check O_NONBLOCK status flag
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+
             // Read from pipe
             let mut user_buf = alloc::vec![0u8; count as usize];
             let mut pipe = pipe_buffer.lock();
@@ -393,6 +413,20 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                     log::debug!("sys_read: Read {} bytes from pipe", n);
                     SyscallResult::Ok(n as u64)
+                }
+                Err(11) => {
+                    // EAGAIN - pipe is empty but writers exist
+                    if is_nonblocking {
+                        // O_NONBLOCK set: return EAGAIN immediately
+                        log::debug!("sys_read: Pipe empty, O_NONBLOCK set - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    } else {
+                        // O_NONBLOCK not set: should block, but blocking for pipes not implemented
+                        // For now, return EAGAIN (same as nonblocking behavior)
+                        // TODO: Implement blocking pipe reads
+                        log::debug!("sys_read: Pipe empty, blocking not implemented - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    }
                 }
                 Err(e) => {
                     log::debug!("sys_read: Pipe read error: {}", e);
@@ -1361,4 +1395,408 @@ pub fn sys_dup(old_fd: u64) -> SyscallResult {
             SyscallResult::Err(e as u64)
         }
     }
+}
+
+/// fcntl - file control operations
+///
+/// Performs various operations on file descriptors:
+/// - F_DUPFD: Duplicate fd to lowest available >= arg
+/// - F_DUPFD_CLOEXEC: Same as F_DUPFD but sets FD_CLOEXEC
+/// - F_GETFD: Get fd flags (FD_CLOEXEC)
+/// - F_SETFD: Set fd flags
+/// - F_GETFL: Get file status flags (O_NONBLOCK, etc.)
+/// - F_SETFL: Set file status flags
+pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
+    use crate::ipc::fd::fcntl_cmd::*;
+
+    let fd = fd as i32;
+    let cmd = cmd as i32;
+    let arg = arg as i32;
+
+    log::debug!("sys_fcntl: fd={}, cmd={}, arg={}", fd, cmd, arg);
+
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_fcntl: No current thread!");
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    let manager_guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => {
+            log::error!("sys_fcntl: Failed to get process manager");
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    let _process = match manager_guard
+        .as_ref()
+        .and_then(|m| m.find_process_by_thread(thread_id))
+        .map(|(_, p)| p)
+    {
+        Some(p) => p,
+        None => {
+            log::error!("sys_fcntl: Failed to find process for thread {}", thread_id);
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    // Need to reborrow mutably for fd_table operations
+    drop(manager_guard);
+    let mut manager_guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => return SyscallResult::Err(9),
+    };
+    let process = match manager_guard
+        .as_mut()
+        .and_then(|m| m.find_process_by_thread_mut(thread_id))
+        .map(|(_, p)| p)
+    {
+        Some(p) => p,
+        None => return SyscallResult::Err(9),
+    };
+
+    match cmd {
+        F_DUPFD => {
+            match process.fd_table.dup_at_least(fd, arg, false) {
+                Ok(new_fd) => {
+                    log::debug!("sys_fcntl F_DUPFD: {} -> {}", fd, new_fd);
+                    SyscallResult::Ok(new_fd as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        F_DUPFD_CLOEXEC => {
+            match process.fd_table.dup_at_least(fd, arg, true) {
+                Ok(new_fd) => {
+                    log::debug!("sys_fcntl F_DUPFD_CLOEXEC: {} -> {}", fd, new_fd);
+                    SyscallResult::Ok(new_fd as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        F_GETFD => {
+            match process.fd_table.get_fd_flags(fd) {
+                Ok(flags) => {
+                    log::debug!("sys_fcntl F_GETFD: fd={} flags={}", fd, flags);
+                    SyscallResult::Ok(flags as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        F_SETFD => {
+            match process.fd_table.set_fd_flags(fd, arg as u32) {
+                Ok(()) => {
+                    log::debug!("sys_fcntl F_SETFD: fd={} flags={}", fd, arg);
+                    SyscallResult::Ok(0)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        F_GETFL => {
+            match process.fd_table.get_status_flags(fd) {
+                Ok(flags) => {
+                    log::debug!("sys_fcntl F_GETFL: fd={} flags={:#x}", fd, flags);
+                    SyscallResult::Ok(flags as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        F_SETFL => {
+            match process.fd_table.set_status_flags(fd, arg as u32) {
+                Ok(()) => {
+                    log::debug!("sys_fcntl F_SETFL: fd={} flags={:#x}", fd, arg);
+                    SyscallResult::Ok(0)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        _ => {
+            log::warn!("sys_fcntl: Unknown command {}", cmd);
+            SyscallResult::Err(22) // EINVAL
+        }
+    }
+}
+
+/// sys_poll - Poll file descriptors for I/O readiness
+///
+/// This implements the poll() syscall which monitors multiple file descriptors
+/// for I/O readiness.
+///
+/// Arguments:
+/// - fds_ptr: Pointer to array of pollfd structures
+/// - nfds: Number of file descriptors to poll
+/// - timeout: Timeout in milliseconds (-1 = infinite, 0 = non-blocking)
+///
+/// Returns:
+/// - On success: Number of fds with non-zero revents
+/// - On timeout: 0
+/// - On error: negative errno
+///
+/// Note: Currently only non-blocking poll (timeout=0) is fully supported.
+pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
+    use crate::ipc::poll::{self, events, PollFd};
+
+    log::debug!("sys_poll: fds_ptr={:#x}, nfds={}, timeout={}", fds_ptr, nfds, _timeout);
+
+    // Validate parameters
+    if fds_ptr == 0 && nfds > 0 {
+        return SyscallResult::Err(14); // EFAULT
+    }
+
+    if nfds > 256 {
+        return SyscallResult::Err(22); // EINVAL - too many fds
+    }
+
+    if nfds == 0 {
+        return SyscallResult::Ok(0);
+    }
+
+    // Get current process
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_poll: No current thread");
+            return SyscallResult::Err(22); // EINVAL
+        }
+    };
+
+    let manager_guard = crate::process::manager();
+    let process = match &*manager_guard {
+        Some(manager) => match manager.find_process_by_thread(thread_id) {
+            Some((_pid, p)) => p,
+            None => {
+                log::error!("sys_poll: Thread {} not in any process", thread_id);
+                return SyscallResult::Err(22); // EINVAL
+            }
+        },
+        None => {
+            log::error!("sys_poll: No process manager");
+            return SyscallResult::Err(22); // EINVAL
+        }
+    };
+
+    // Read pollfd array from userspace
+    let _pollfd_size = core::mem::size_of::<PollFd>();
+
+    // Allocate buffer for pollfds
+    let mut pollfds: Vec<PollFd> = Vec::with_capacity(nfds as usize);
+
+    // Copy from userspace
+    unsafe {
+        let src = fds_ptr as *const PollFd;
+        for i in 0..nfds as usize {
+            pollfds.push(core::ptr::read(src.add(i)));
+        }
+    }
+
+    // Poll each fd
+    let mut ready_count: u64 = 0;
+
+    for pollfd in pollfds.iter_mut() {
+        // Clear revents
+        pollfd.revents = 0;
+
+        // Check if fd is valid
+        if pollfd.fd < 0 {
+            // Negative fd - skip it (per POSIX, ignore negative fds)
+            continue;
+        }
+
+        // Check if fd exists
+        let fd_entry = match process.fd_table.get(pollfd.fd) {
+            Some(entry) => entry,
+            None => {
+                // Invalid fd - set POLLNVAL
+                pollfd.revents = events::POLLNVAL;
+                ready_count += 1;
+                continue;
+            }
+        };
+
+        // Poll this fd
+        pollfd.revents = poll::poll_fd(fd_entry, pollfd.events);
+
+        if pollfd.revents != 0 {
+            ready_count += 1;
+        }
+    }
+
+    // Write updated pollfds back to userspace
+    unsafe {
+        let dst = fds_ptr as *mut PollFd;
+        for (i, pollfd) in pollfds.iter().enumerate() {
+            core::ptr::write(dst.add(i), *pollfd);
+        }
+    }
+
+    log::debug!("sys_poll: {} fds ready", ready_count);
+    SyscallResult::Ok(ready_count)
+}
+
+/// sys_select - Synchronous I/O multiplexing
+///
+/// This implements the select() syscall which monitors multiple file descriptors
+/// for I/O readiness using fd_set bitmaps.
+///
+/// Arguments:
+/// - nfds: Highest-numbered file descriptor + 1
+/// - readfds_ptr: Pointer to fd_set (u64 bitmap) for read fds (may be NULL)
+/// - writefds_ptr: Pointer to fd_set (u64 bitmap) for write fds (may be NULL)
+/// - exceptfds_ptr: Pointer to fd_set (u64 bitmap) for exception fds (may be NULL)
+/// - timeout_ptr: Pointer to timeval structure (0 or NULL for non-blocking)
+///
+/// Returns:
+/// - On success: Number of fds with events
+/// - On timeout: 0
+/// - On error: negative errno
+///
+/// Note: Currently only non-blocking select (timeout=0 or NULL) is supported.
+/// fd_set is a u64 bitmap supporting fds 0-63.
+pub fn sys_select(
+    nfds: i32,
+    readfds_ptr: u64,
+    writefds_ptr: u64,
+    exceptfds_ptr: u64,
+    _timeout_ptr: u64,
+) -> SyscallResult {
+    use crate::ipc::poll;
+
+    log::debug!(
+        "sys_select: nfds={}, readfds={:#x}, writefds={:#x}, exceptfds={:#x}, timeout={:#x}",
+        nfds, readfds_ptr, writefds_ptr, exceptfds_ptr, _timeout_ptr
+    );
+
+    // Validate nfds - must be non-negative and <= 64 (we only support u64 bitmaps)
+    if nfds < 0 {
+        log::debug!("sys_select: Invalid nfds {}", nfds);
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+
+    if nfds > 64 {
+        log::debug!("sys_select: nfds {} exceeds max 64", nfds);
+        return SyscallResult::Err(super::errno::EINVAL as u64);
+    }
+
+    // If nfds is 0, nothing to do
+    if nfds == 0 {
+        return SyscallResult::Ok(0);
+    }
+
+    // Get current process
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_select: No current thread");
+            return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
+    };
+
+    let manager_guard = crate::process::manager();
+    let process = match &*manager_guard {
+        Some(manager) => match manager.find_process_by_thread(thread_id) {
+            Some((_pid, p)) => p,
+            None => {
+                log::error!("sys_select: Thread {} not in any process", thread_id);
+                return SyscallResult::Err(super::errno::EINVAL as u64);
+            }
+        },
+        None => {
+            log::error!("sys_select: No process manager");
+            return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
+    };
+
+    // Read fd_set bitmaps from userspace (only if pointer is non-NULL)
+    let readfds: u64 = if readfds_ptr != 0 {
+        unsafe { *(readfds_ptr as *const u64) }
+    } else {
+        0
+    };
+
+    let writefds: u64 = if writefds_ptr != 0 {
+        unsafe { *(writefds_ptr as *const u64) }
+    } else {
+        0
+    };
+
+    let exceptfds: u64 = if exceptfds_ptr != 0 {
+        unsafe { *(exceptfds_ptr as *const u64) }
+    } else {
+        0
+    };
+
+    log::debug!(
+        "sys_select: read={:#x}, write={:#x}, except={:#x}",
+        readfds, writefds, exceptfds
+    );
+
+    // Track ready fds
+    let mut ready_count: u64 = 0;
+    let mut result_readfds: u64 = 0;
+    let mut result_writefds: u64 = 0;
+    let mut result_exceptfds: u64 = 0;
+
+    // Check each fd up to nfds
+    for fd in 0..nfds {
+        let fd_bit = 1u64 << fd;
+
+        // Check if this fd is in any of the sets
+        let in_readfds = (readfds & fd_bit) != 0;
+        let in_writefds = (writefds & fd_bit) != 0;
+        let in_exceptfds = (exceptfds & fd_bit) != 0;
+
+        // Skip if fd is not in any set
+        if !in_readfds && !in_writefds && !in_exceptfds {
+            continue;
+        }
+
+        // Look up the file descriptor
+        let fd_entry = match process.fd_table.get(fd) {
+            Some(entry) => entry,
+            None => {
+                // Invalid fd - return EBADF
+                log::debug!("sys_select: Bad fd {}", fd);
+                return SyscallResult::Err(super::errno::EBADF as u64);
+            }
+        };
+
+        // Check readability
+        if in_readfds && poll::check_readable(fd_entry) {
+            result_readfds |= fd_bit;
+            ready_count += 1;
+        }
+
+        // Check writability
+        if in_writefds && poll::check_writable(fd_entry) {
+            result_writefds |= fd_bit;
+            ready_count += 1;
+        }
+
+        // Check exception
+        if in_exceptfds && poll::check_exception(fd_entry) {
+            result_exceptfds |= fd_bit;
+            ready_count += 1;
+        }
+    }
+
+    // Write results back to userspace (only if pointer is non-NULL)
+    if readfds_ptr != 0 {
+        unsafe { *(readfds_ptr as *mut u64) = result_readfds; }
+    }
+    if writefds_ptr != 0 {
+        unsafe { *(writefds_ptr as *mut u64) = result_writefds; }
+    }
+    if exceptfds_ptr != 0 {
+        unsafe { *(exceptfds_ptr as *mut u64) = result_exceptfds; }
+    }
+
+    log::debug!(
+        "sys_select: {} fds ready (read={:#x}, write={:#x}, except={:#x})",
+        ready_count, result_readfds, result_writefds, result_exceptfds
+    );
+
+    SyscallResult::Ok(ready_count)
 }

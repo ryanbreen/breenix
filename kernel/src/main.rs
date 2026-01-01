@@ -652,6 +652,26 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: dup() syscall functionality ===");
         test_exec::test_dup();
 
+        // Test fcntl() syscall
+        log::info!("=== IPC TEST: fcntl() syscall functionality ===");
+        test_exec::test_fcntl();
+
+        // Test pipe2() syscall
+        log::info!("=== IPC TEST: pipe2() syscall functionality ===");
+        test_exec::test_pipe2();
+
+        // Test poll() syscall
+        log::info!("=== IPC TEST: poll() syscall functionality ===");
+        test_exec::test_poll();
+
+        // Test select() syscall
+        log::info!("=== IPC TEST: select() syscall functionality ===");
+        test_exec::test_select();
+
+        // Test O_NONBLOCK pipe behavior
+        log::info!("=== IPC TEST: O_NONBLOCK pipe behavior ===");
+        test_exec::test_nonblock();
+
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
         test_exec::test_signal_exec();

@@ -190,10 +190,16 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::RecvFrom) => {
             super::socket::sys_recvfrom(args.0, args.1, args.2, args.3, args.4, args.5)
         }
+        Some(SyscallNumber::Poll) => super::handlers::sys_poll(args.0, args.1, args.2 as i32),
+        Some(SyscallNumber::Select) => {
+            super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4)
+        }
         Some(SyscallNumber::Pipe) => super::pipe::sys_pipe(args.0),
+        Some(SyscallNumber::Pipe2) => super::pipe::sys_pipe2(args.0, args.1),
         Some(SyscallNumber::Close) => super::pipe::sys_close(args.0 as i32),
         Some(SyscallNumber::Dup) => super::handlers::sys_dup(args.0),
         Some(SyscallNumber::Dup2) => super::handlers::sys_dup2(args.0, args.1),
+        Some(SyscallNumber::Fcntl) => super::handlers::sys_fcntl(args.0, args.1, args.2),
         Some(SyscallNumber::Pause) => super::signal::sys_pause_with_frame(frame),
         Some(SyscallNumber::Wait4) => {
             super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32)

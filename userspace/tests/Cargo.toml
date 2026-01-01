@@ -130,6 +130,26 @@ path = "pause_test.rs"
 name = "dup_test"
 path = "dup_test.rs"
 
+[[bin]]
+name = "fcntl_test"
+path = "fcntl_test.rs"
+
+[[bin]]
+name = "pipe2_test"
+path = "pipe2_test.rs"
+
+[[bin]]
+name = "poll_test"
+path = "poll_test.rs"
+
+[[bin]]
+name = "select_test"
+path = "select_test.rs"
+
+[[bin]]
+name = "nonblock_test"
+path = "nonblock_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

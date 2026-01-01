@@ -1373,3 +1373,178 @@ pub fn test_dup() {
         }
     }
 }
+
+/// Test fcntl() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Fcntl test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates fcntl behavior
+///   - Marker: "FCNTL_TEST_PASSED"
+///   - This PROVES fcntl F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD all work
+pub fn test_fcntl() {
+    log::info!("Testing fcntl() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let fcntl_test_elf_buf = crate::userspace_test::get_test_binary("fcntl_test");
+    #[cfg(feature = "testing")]
+    let fcntl_test_elf: &[u8] = &fcntl_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fcntl_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fcntl_test"),
+        fcntl_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fcntl_test process with PID {:?}", pid);
+            log::info!("Fcntl test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FCNTL_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fcntl_test process: {}", e);
+            log::error!("Fcntl test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test pipe2() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Pipe2 test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates pipe2 behavior
+///   - Marker: "PIPE2_TEST_PASSED"
+///   - This PROVES pipe2 with O_CLOEXEC/O_NONBLOCK flags works correctly
+pub fn test_pipe2() {
+    log::info!("Testing pipe2() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let pipe2_test_elf_buf = crate::userspace_test::get_test_binary("pipe2_test");
+    #[cfg(feature = "testing")]
+    let pipe2_test_elf: &[u8] = &pipe2_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let pipe2_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("pipe2_test"),
+        pipe2_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created pipe2_test process with PID {:?}", pid);
+            log::info!("Pipe2 test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit PIPE2_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create pipe2_test process: {}", e);
+            log::error!("Pipe2 test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test poll() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Poll test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates poll behavior
+///   - Marker: "POLL_TEST_PASSED"
+///   - This PROVES poll correctly monitors fds for I/O readiness
+pub fn test_poll() {
+    log::info!("Testing poll() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let poll_test_elf_buf = crate::userspace_test::get_test_binary("poll_test");
+    #[cfg(feature = "testing")]
+    let poll_test_elf: &[u8] = &poll_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let poll_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("poll_test"),
+        poll_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created poll_test process with PID {:?}", pid);
+            log::info!("Poll test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit POLL_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create poll_test process: {}", e);
+            log::error!("Poll test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test select() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Select test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates select behavior
+///   - Marker: "SELECT_TEST_PASSED"
+///   - This PROVES select correctly monitors fds for I/O readiness using fd_set bitmaps
+pub fn test_select() {
+    log::info!("Testing select() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let select_test_elf_buf = crate::userspace_test::get_test_binary("select_test");
+    #[cfg(feature = "testing")]
+    let select_test_elf: &[u8] = &select_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let select_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("select_test"),
+        select_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created select_test process with PID {:?}", pid);
+            log::info!("Select test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit SELECT_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create select_test process: {}", e);
+            log::error!("Select test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test O_NONBLOCK pipe behavior
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Nonblock test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates non-blocking pipe I/O
+///   - Marker: "NONBLOCK_TEST_PASSED"
+///   - This PROVES O_NONBLOCK correctly causes read/write on empty/full pipes to return EAGAIN
+pub fn test_nonblock() {
+    log::info!("Testing O_NONBLOCK pipe behavior");
+
+    #[cfg(feature = "testing")]
+    let nonblock_test_elf_buf = crate::userspace_test::get_test_binary("nonblock_test");
+    #[cfg(feature = "testing")]
+    let nonblock_test_elf: &[u8] = &nonblock_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let nonblock_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("nonblock_test"),
+        nonblock_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created nonblock_test process with PID {:?}", pid);
+            log::info!("Nonblock test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit NONBLOCK_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create nonblock_test process: {}", e);
+            log::error!("Nonblock test cannot run without valid userspace process");
+        }
+    }
+}
