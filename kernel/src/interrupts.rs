@@ -432,14 +432,21 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // when userspace processes are running, so keyboard input would never be processed.
     if let Some(event) = crate::keyboard::process_scancode(scancode) {
         if let Some(character) = event.character {
-            // Handle special key combinations
-            if event.is_ctrl_c() {
-                // TODO: Send SIGINT to foreground process
-            } else if event.is_ctrl_d() {
-                // TODO: Signal EOF on stdin
-            } else {
-                // Push character to stdin buffer using IRQ-safe version
-                // This uses try_lock to avoid deadlock with syscall handlers
+            // Route ALL input through the TTY layer using the non-blocking variant.
+            // The TTY handles:
+            // - Ctrl+C -> SIGINT
+            // - Ctrl+D -> EOF
+            // - Ctrl+\\ -> SIGQUIT
+            // - Ctrl+Z -> SIGTSTP
+            // - Line editing (backspace, etc.)
+            // - Echo (if enabled)
+            // - Blocking read wakeup
+            //
+            // We use push_char_nonblock which uses try_lock to avoid deadlock
+            // with syscall handlers that may hold the TTY lock.
+            if !crate::tty::push_char_nonblock(character as u8) {
+                // TTY lock was busy, fall back to old stdin buffer
+                // This ensures we don't drop characters
                 crate::ipc::stdin::push_byte_from_irq(character as u8);
             }
         }
