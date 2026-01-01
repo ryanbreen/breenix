@@ -1111,11 +1111,21 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Ok(0);
             }
 
-            // Blocking wait - poll until child terminates
-            // This is a simple implementation that yields and retries
-            loop {
-                crate::task::scheduler::yield_current();
+            // Blocking wait - block until child terminates
+            // Mark thread as blocked then enter HLT loop. The timer interrupt will
+            // see that current thread is blocked and switch to another thread.
+            // When the child exits, unblock_for_child_exit() puts us back in ready queue.
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_child_exit();
+            });
 
+            loop {
+                // Yield and halt - timer interrupt will switch to another thread
+                // since current thread is blocked
+                crate::task::scheduler::yield_current();
+                x86_64::instructions::interrupts::enable_and_hlt();
+
+                // After being rescheduled, check if child terminated
                 let manager_guard = crate::process::manager();
                 if let Some(ref manager) = *manager_guard {
                     if let Some(child) = manager.get_process(target_pid) {
@@ -1125,6 +1135,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         }
                     }
                 }
+                // If not terminated yet (spurious wakeup), continue waiting
             }
         }
 
@@ -1162,10 +1173,21 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Ok(0);
             }
 
-            // Blocking wait - poll until any child terminates
-            loop {
-                crate::task::scheduler::yield_current();
+            // Blocking wait - block until any child terminates
+            // Mark thread as blocked then enter HLT loop. The timer interrupt will
+            // see that current thread is blocked and switch to another thread.
+            // When a child exits, unblock_for_child_exit() puts us back in ready queue.
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current_for_child_exit();
+            });
 
+            loop {
+                // Yield and halt - timer interrupt will switch to another thread
+                // since current thread is blocked
+                crate::task::scheduler::yield_current();
+                x86_64::instructions::interrupts::enable_and_hlt();
+
+                // After being rescheduled, check if any child terminated
                 let manager_guard = crate::process::manager();
                 if let Some(ref manager) = *manager_guard {
                     for &child_pid in &children_copy {
@@ -1177,6 +1199,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         }
                     }
                 }
+                // If no child terminated yet (spurious wakeup), continue waiting
             }
         }
 
@@ -1223,6 +1246,17 @@ fn complete_wait(
             }
         }
     }
+
+    // CRITICAL: Clear the blocked_in_syscall flag now that the syscall is completing.
+    // This ensures future context switches will restore userspace context normally.
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            if thread.blocked_in_syscall {
+                thread.blocked_in_syscall = false;
+                log::debug!("complete_wait: Cleared blocked_in_syscall flag for thread {}", thread.id);
+            }
+        }
+    });
 
     // TODO: Actually remove/reap the child process from the process table
     // For now, we leave it in the table but in Terminated state
@@ -1277,6 +1311,53 @@ pub fn sys_dup2(old_fd: u64, new_fd: u64) -> SyscallResult {
         }
         Err(e) => {
             log::debug!("sys_dup2: Failed with error {}", e);
+            SyscallResult::Err(e as u64)
+        }
+    }
+}
+
+/// sys_dup - Duplicate a file descriptor
+///
+/// dup(old_fd) creates a copy of old_fd using the lowest-numbered unused
+/// file descriptor.
+///
+/// Returns: new fd on success, negative error code on failure
+pub fn sys_dup(old_fd: u64) -> SyscallResult {
+    log::debug!("sys_dup: old_fd={}", old_fd);
+
+    // Get current thread to find process
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_dup: No current thread");
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    // Get mutable access to process manager
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_pid, p)) => p,
+            None => {
+                log::error!("sys_dup: Thread {} not in any process", thread_id);
+                return SyscallResult::Err(9); // EBADF
+            }
+        },
+        None => {
+            log::error!("sys_dup: No process manager");
+            return SyscallResult::Err(9); // EBADF
+        }
+    };
+
+    // Call the fd_table's dup implementation
+    match process.fd_table.dup(old_fd as i32) {
+        Ok(fd) => {
+            log::debug!("sys_dup: Successfully duplicated fd {} to {}", old_fd, fd);
+            SyscallResult::Ok(fd as u64)
+        }
+        Err(e) => {
+            log::debug!("sys_dup: Failed with error {}", e);
             SyscallResult::Err(e as u64)
         }
     }

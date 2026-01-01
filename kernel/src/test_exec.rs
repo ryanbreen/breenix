@@ -1303,3 +1303,73 @@ pub fn test_signal_exec() {
         }
     }
 }
+
+/// Test pause() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Pause test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates pause behavior
+///   - Marker: "PAUSE_TEST_PASSED"
+///   - This PROVES pause() blocks until signal delivered, and signal handler executes
+pub fn test_pause() {
+    log::info!("Testing pause() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let pause_test_elf_buf = crate::userspace_test::get_test_binary("pause_test");
+    #[cfg(feature = "testing")]
+    let pause_test_elf: &[u8] = &pause_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let pause_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("pause_test"),
+        pause_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created pause_test process with PID {:?}", pid);
+            log::info!("Pause test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit PAUSE_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create pause_test process: {}", e);
+            log::error!("Pause test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test dup() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Dup test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates dup behavior
+///   - Marker: "DUP_TEST_PASSED"
+///   - This PROVES dup() creates working duplicate fd that survives original fd close
+pub fn test_dup() {
+    log::info!("Testing dup() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let dup_test_elf_buf = crate::userspace_test::get_test_binary("dup_test");
+    #[cfg(feature = "testing")]
+    let dup_test_elf: &[u8] = &dup_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let dup_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("dup_test"),
+        dup_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created dup_test process with PID {:?}", pid);
+            log::info!("Dup test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit DUP_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create dup_test process: {}", e);
+            log::error!("Dup test cannot run without valid userspace process");
+        }
+    }
+}

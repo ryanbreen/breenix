@@ -116,3 +116,37 @@ pub fn close(file: Fd) -> i64 {
 pub fn pipe(pipefd: &mut [i32; 2]) -> i64 {
     unsafe { raw::syscall1(nr::PIPE, pipefd.as_mut_ptr() as u64) as i64 }
 }
+
+/// Duplicate a file descriptor.
+///
+/// Creates a copy of the file descriptor `old_fd`, using the lowest-numbered
+/// unused file descriptor for the new descriptor.
+///
+/// # Arguments
+/// * `old_fd` - File descriptor to duplicate
+///
+/// # Returns
+/// New file descriptor on success, negative errno on error.
+#[inline]
+pub fn dup(old_fd: Fd) -> i64 {
+    unsafe { raw::syscall1(nr::DUP, old_fd) as i64 }
+}
+
+/// Duplicate a file descriptor to a specific number.
+///
+/// Creates a copy of the file descriptor `old_fd`, using `new_fd` for the new
+/// descriptor. If `new_fd` was previously open, it is silently closed before
+/// being reused.
+///
+/// Per POSIX: if old_fd == new_fd, dup2 just validates old_fd and returns it.
+///
+/// # Arguments
+/// * `old_fd` - File descriptor to duplicate
+/// * `new_fd` - Target file descriptor number
+///
+/// # Returns
+/// `new_fd` on success, negative errno on error.
+#[inline]
+pub fn dup2(old_fd: Fd, new_fd: Fd) -> i64 {
+    unsafe { raw::syscall2(nr::DUP2, old_fd, new_fd) as i64 }
+}

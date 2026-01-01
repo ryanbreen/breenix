@@ -59,6 +59,8 @@ BINARIES=(
     "wnohang_timing_test"
     "signal_exec_test"
     "signal_exec_check"
+    "pause_test"
+    "dup_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

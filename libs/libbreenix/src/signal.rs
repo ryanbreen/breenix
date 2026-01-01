@@ -233,6 +233,30 @@ pub unsafe fn sigreturn() -> ! {
     }
 }
 
+/// pause() - Wait until a signal is delivered
+///
+/// Causes the calling process to sleep until a signal is delivered that
+/// either terminates the process or causes a signal handler to be called.
+///
+/// # Returns
+/// * Always returns -EINTR (interrupted by signal)
+///
+/// # Example
+/// ```ignore
+/// // Set up signal handler for SIGUSR1
+/// extern "C" fn handler(_sig: i32) {
+///     // Handle signal
+/// }
+/// let action = Sigaction::new(handler);
+/// sigaction(SIGUSR1, Some(&action), None)?;
+///
+/// // Wait for a signal
+/// pause();  // Will return when SIGUSR1 is received
+/// ```
+pub fn pause() -> i64 {
+    unsafe { raw::syscall0(crate::syscall::nr::PAUSE) as i64 }
+}
+
 /// Convert signal number to bitmask
 #[inline]
 pub const fn sigmask(sig: i32) -> u64 {

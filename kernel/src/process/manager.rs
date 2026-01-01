@@ -328,6 +328,8 @@ impl ProcessManager {
             entry_point: None,
             privilege: crate::task::thread::ThreadPrivilege::User,
             has_started: false,
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
         };
 
         Ok(thread)
@@ -1242,6 +1244,8 @@ impl ProcessManager {
             // instead of the first-run path which zeros all registers.
             // The child should resume from the same context as the parent.
             has_started: true,
+            blocked_in_syscall: false, // Forked child is not blocked in syscall
+            saved_userspace_context: None, // Child starts fresh
         };
 
         // CRITICAL: Use the userspace RSP if provided (from syscall frame)

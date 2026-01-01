@@ -1181,10 +1181,29 @@ pub fn can_schedule(saved_cs: u64) -> bool {
     // Also allow scheduling if we're in exception cleanup context
     let in_exception_cleanup = in_exception_cleanup_context();
 
+    // Check if current thread is blocked or terminated
+    // When a thread blocks, it enters an HLT loop waiting for an interrupt.
+    // When a thread terminates, it sets need_resched and expects immediate switch.
+    // The timer interrupt should be able to switch to another thread.
+    let current_thread_blocked_or_terminated = crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(current) = sched.current_thread_mut() {
+            current.state == crate::task::thread::ThreadState::BlockedOnSignal
+                || current.state == crate::task::thread::ThreadState::BlockedOnChildExit
+                || current.state == crate::task::thread::ThreadState::Blocked
+                || current.state == crate::task::thread::ThreadState::Terminated
+        } else {
+            false
+        }
+    }).unwrap_or(false);
+
     // CRITICAL: When in exception cleanup context, allow scheduling regardless of PREEMPT_ACTIVE.
     // The exception handler has explicitly requested a reschedule after terminating a process.
     // Without this, PREEMPT_ACTIVE (bit 28) blocks scheduling even though we need to recover.
+    //
+    // Also allow scheduling when the current thread is blocked or terminated - blocking syscalls
+    // use HLT to wait for interrupts, and terminated threads need immediate switch.
     let result = in_exception_cleanup
+                 || current_thread_blocked_or_terminated
                  || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel));
 
     // Note: Debug logging removed from hot path - use GDB if debugging is needed

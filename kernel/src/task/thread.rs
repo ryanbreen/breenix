@@ -24,6 +24,10 @@ pub enum ThreadState {
     /// Thread is blocked waiting for something
     #[allow(dead_code)]
     Blocked,
+    /// Thread is blocked waiting for a signal (pause syscall)
+    BlockedOnSignal,
+    /// Thread is blocked waiting for a child to exit (waitpid syscall)
+    BlockedOnChildExit,
     /// Thread has terminated
     Terminated,
 }
@@ -184,9 +188,20 @@ pub struct Thread {
 
     /// Privilege level
     pub privilege: ThreadPrivilege,
-    
+
     /// Has this thread ever run? (false for brand new threads)
     pub has_started: bool,
+
+    /// Is the thread blocked inside a syscall? (for pause/waitpid)
+    /// When true, the thread should resume in kernel mode, not userspace.
+    /// This prevents the scheduler from restoring stale userspace context.
+    pub blocked_in_syscall: bool,
+
+    /// Saved userspace context when blocked in syscall (for signal delivery)
+    /// When a thread blocks in a syscall (pause/waitpid), we save the pre-syscall
+    /// userspace context here. If a signal arrives while blocked, we use this
+    /// context to deliver the signal handler (with RAX = -EINTR).
+    pub saved_userspace_context: Option<CpuContext>,
 }
 
 impl Clone for Thread {
@@ -206,6 +221,8 @@ impl Clone for Thread {
             entry_point: self.entry_point, // fn pointers can be copied
             privilege: self.privilege,
             has_started: self.has_started,
+            blocked_in_syscall: self.blocked_in_syscall,
+            saved_userspace_context: self.saved_userspace_context.clone(),
         }
     }
 }
@@ -255,6 +272,8 @@ impl Thread {
             entry_point: None, // Kernel threads use direct entry
             privilege: ThreadPrivilege::Kernel,
             has_started: false, // New thread hasn't run yet
+            blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_userspace_context: None,
         })
     }
 
@@ -292,6 +311,8 @@ impl Thread {
             entry_point: Some(entry_point),
             privilege,
             has_started: false, // New thread hasn't run yet
+            blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_userspace_context: None,
         }
     }
 
@@ -341,6 +362,8 @@ impl Thread {
             entry_point: None, // Userspace threads don't have kernel entry points
             privilege: ThreadPrivilege::User,
             has_started: false, // New thread hasn't run yet
+            blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_userspace_context: None,
         }
     }
 
@@ -410,6 +433,8 @@ impl Thread {
             entry_point: Some(entry_point),
             privilege,
             has_started: false, // New thread hasn't run yet
+            blocked_in_syscall: false, // New thread is not blocked in syscall
+            saved_userspace_context: None,
         }
     }
 }

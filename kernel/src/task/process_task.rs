@@ -31,16 +31,27 @@ impl ProcessScheduler {
 
                 process.terminate(exit_code);
 
-                // Send SIGCHLD to the parent process (if any)
+                // Send SIGCHLD to the parent process and wake it if blocked on waitpid
                 if let Some(parent_pid) = parent_pid {
                     if let Some(parent_process) = manager.get_process_mut(parent_pid) {
                         use crate::signal::constants::SIGCHLD;
                         parent_process.signals.set_pending(SIGCHLD);
+
+                        // Get parent's main thread ID to wake it if blocked on waitpid
+                        let parent_thread_id = parent_process.main_thread.as_ref().map(|t| t.id);
+
                         log::debug!(
                             "Sent SIGCHLD to parent process {} for child {} exit",
                             parent_pid.as_u64(),
                             pid.as_u64()
                         );
+
+                        // Wake up the parent thread if it's blocked on waitpid
+                        if let Some(parent_tid) = parent_thread_id {
+                            scheduler::with_scheduler(|sched| {
+                                sched.unblock_for_child_exit(parent_tid);
+                            });
+                        }
                     }
                 }
 
