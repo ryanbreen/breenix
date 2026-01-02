@@ -106,14 +106,19 @@ pub fn push_byte(byte: u8) {
 
 /// Push a byte to stdin from interrupt context (uses try_lock to avoid deadlock)
 /// Returns true if the byte was pushed, false if locks couldn't be acquired
-///
-/// Note: This function does NOT echo the character. Echo is handled by the TTY
-/// layer (via push_char_nonblock) which processes termios settings for proper
-/// echo behavior including control character display as ^X.
 pub fn push_byte_from_irq(byte: u8) -> bool {
     // Try to acquire the buffer lock - don't block in interrupt context
     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
         if buffer.push_byte(byte) {
+            // Echo character to serial output (COM1)
+            crate::serial::write_byte(byte);
+
+            // In interactive mode, also echo to framebuffer so user sees their input
+            #[cfg(feature = "interactive")]
+            {
+                crate::logger::write_char_to_framebuffer(byte);
+            }
+
             drop(buffer);
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
