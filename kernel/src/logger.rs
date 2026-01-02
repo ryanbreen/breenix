@@ -70,6 +70,8 @@ pub struct ShellFrameBuffer {
     x_pos: usize,
     /// Current y position (in pixels)
     y_pos: usize,
+    /// Whether the cursor is currently visible (for blinking)
+    cursor_visible: bool,
 }
 
 #[cfg(feature = "interactive")]
@@ -93,6 +95,7 @@ impl ShellFrameBuffer {
             info,
             x_pos: BORDER_PADDING,
             y_pos: BORDER_PADDING,
+            cursor_visible: true,
         };
         fb.clear();
         fb
@@ -161,6 +164,9 @@ impl ShellFrameBuffer {
 
     /// Write a single character to the framebuffer
     pub fn write_char(&mut self, c: char) {
+        // Hide cursor before writing
+        self.draw_cursor(false);
+
         match c {
             '\n' => self.newline(),
             '\r' => self.carriage_return(),
@@ -187,6 +193,10 @@ impl ShellFrameBuffer {
                 self.write_rendered_char(get_char_raster(c));
             }
         }
+
+        // Show cursor after writing and reset blink state
+        self.cursor_visible = true;
+        self.draw_cursor(true);
     }
 
     /// Write a rendered character to the framebuffer
@@ -230,6 +240,69 @@ impl ShellFrameBuffer {
         for c in s.chars() {
             self.write_char(c);
         }
+    }
+
+    /// Draw the cursor at the current position
+    ///
+    /// The cursor is rendered as an underscore character at the current position.
+    fn draw_cursor(&mut self, visible: bool) {
+        let intensity = if visible { 255 } else { 0 };
+
+        // Draw an underscore-style cursor at the current position
+        // The cursor is drawn at the bottom of the character cell
+        let cursor_height = 2; // 2 pixels tall
+        let cursor_y = self.y_pos + shell_font::CHAR_RASTER_HEIGHT.val() - cursor_height;
+
+        for dy in 0..cursor_height {
+            for dx in 0..shell_font::CHAR_RASTER_WIDTH {
+                self.write_pixel(self.x_pos + dx, cursor_y + dy, intensity);
+            }
+        }
+    }
+
+    /// Toggle the cursor visibility (for blinking effect)
+    ///
+    /// This should be called from the timer interrupt at ~500ms intervals.
+    pub fn toggle_cursor(&mut self) {
+        // Hide the current cursor
+        self.draw_cursor(false);
+
+        // Toggle visibility state
+        self.cursor_visible = !self.cursor_visible;
+
+        // Draw cursor in new state
+        self.draw_cursor(self.cursor_visible);
+    }
+
+    /// Show the cursor (if it was hidden)
+    ///
+    /// Part of public cursor API for future TTY control sequences.
+    #[allow(dead_code)]
+    pub fn show_cursor(&mut self) {
+        if !self.cursor_visible {
+            self.cursor_visible = true;
+            self.draw_cursor(true);
+        }
+    }
+
+    /// Hide the cursor
+    ///
+    /// Part of public cursor API for future TTY control sequences.
+    #[allow(dead_code)]
+    pub fn hide_cursor(&mut self) {
+        if self.cursor_visible {
+            self.draw_cursor(false);
+            self.cursor_visible = false;
+        }
+    }
+
+    /// Ensure cursor is visible and reset blink timer
+    ///
+    /// Part of public cursor API for future shell integration.
+    #[allow(dead_code)]
+    pub fn reset_cursor_blink(&mut self) {
+        self.cursor_visible = true;
+        self.draw_cursor(true);
     }
 }
 
@@ -567,6 +640,19 @@ pub fn write_char_to_framebuffer(byte: u8) {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {
             guard.write_char(byte as char);
+        }
+    }
+}
+
+/// Toggle cursor visibility for blinking effect (called from timer interrupt)
+///
+/// This is called from the timer interrupt at ~500ms intervals to create
+/// a blinking cursor effect. Uses try_lock to avoid blocking in interrupt context.
+#[cfg(feature = "interactive")]
+pub fn toggle_cursor_blink() {
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        if let Some(mut guard) = fb.try_lock() {
+            guard.toggle_cursor();
         }
     }
 }

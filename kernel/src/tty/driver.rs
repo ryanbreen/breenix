@@ -277,8 +277,19 @@ impl TtyDevice {
         let termios = self.ldisc.lock().termios().clone();
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
             crate::serial::write_byte(b'\r');
+            // Also write CR to framebuffer in interactive mode
+            #[cfg(feature = "interactive")]
+            {
+                crate::logger::write_char_to_framebuffer(b'\r');
+            }
         }
         crate::serial::write_byte(c);
+
+        // Also echo to framebuffer in interactive mode so user sees their input
+        #[cfg(feature = "interactive")]
+        {
+            crate::logger::write_char_to_framebuffer(c);
+        }
     }
 
     /// Write a character to the terminal output (non-blocking)
