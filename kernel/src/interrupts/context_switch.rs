@@ -395,10 +395,6 @@ fn switch_to_thread(
         // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
         // We need to check if there are pending signals. If so, deliver them using
         // the saved userspace context. Otherwise, resume at the kernel HLT loop.
-        log::info!(
-            "Thread {} resuming in syscall (blocked_in_syscall=true)",
-            thread_id
-        );
 
         // Get the process page table and thread context
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
@@ -598,9 +594,16 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
         });
 
-        // FIXED: Switch back to kernel page table when running kernel threads
-        // This ensures kernel threads run with kernel page tables
-        crate::memory::process_memory::switch_to_kernel_page_table();
+        // NOTE: We do NOT switch page tables here. The userspace process page table
+        // already has all kernel mappings (code, stacks, etc.) so we can run
+        // kernel code (idle loop) with it.
+
+        // CRITICAL FIX: Clear PREEMPT_ACTIVE when switching to idle!
+        // PREEMPT_ACTIVE (bit 28) is set during syscall return to protect register
+        // restoration. When we switch to the idle thread, we MUST clear it - otherwise
+        // can_schedule() will return false and block all future scheduling attempts,
+        // leaving the system stuck in the idle loop unable to switch to ready threads.
+        crate::per_cpu::clear_preempt_active();
     }
     log::trace!("Set up return to idle loop");
 }

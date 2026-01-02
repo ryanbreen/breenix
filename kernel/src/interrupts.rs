@@ -432,25 +432,30 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // when userspace processes are running, so keyboard input would never be processed.
     if let Some(event) = crate::keyboard::process_scancode(scancode) {
         if let Some(character) = event.character {
-            // Push character to stdin buffer for userspace reads.
-            // This is the primary path - characters go directly to stdin buffer
-            // where they are immediately available to sys_read.
-            //
-            // The stdin::push_byte_from_irq function handles:
-            // - Adding to the ring buffer
-            // - Echo to serial port (for debugging)
-            // - Echo to framebuffer (in interactive mode, so user sees input)
-            // - Waking blocked readers
-            //
-            // Note: TTY layer integration is optional and used for advanced
-            // features like line editing and signals. For basic keyboard input,
-            // we always use the stdin buffer path.
-            crate::ipc::stdin::push_byte_from_irq(character as u8);
+            let c = character as u8;
 
-            // Also route through TTY for signal handling (Ctrl+C, etc.)
-            // The TTY processes signals but we don't use it for data flow.
+            // Route through TTY for line discipline processing (echo, signals, line editing)
+            // TTY handles echoing, backspace visual feedback, and signal generation.
             // Result is intentionally ignored - we don't care if TTY lock was busy.
-            let _ = crate::tty::driver::push_char_nonblock(character as u8);
+            let _ = crate::tty::driver::push_char_nonblock(c);
+
+            // Only push to stdin if NOT a TTY control character.
+            // TTY handles these exclusively to avoid double-processing:
+            // - Backspace (0x08) and DEL (0x7F): TTY handles erase + echo
+            // - Signal chars: Ctrl+C (0x03), Ctrl+D (0x04), Ctrl+Z (0x1A),
+            //                 Ctrl+\ (0x1C), Ctrl+U (0x15)
+            // For line-edited input, TTY's cooked queue should be the source,
+            // but for now we let printable chars and newlines go to stdin directly.
+            let is_tty_control = c == 0x08
+                || c == 0x7F
+                || c == 0x03
+                || c == 0x04
+                || c == 0x1A
+                || c == 0x1C
+                || c == 0x15;
+            if !is_tty_control {
+                crate::ipc::stdin::push_byte_from_irq(c);
+            }
         }
     }
 

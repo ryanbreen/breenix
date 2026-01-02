@@ -34,6 +34,15 @@ mod shell_font {
     pub const BACKUP_CHAR: char = '?';
 }
 
+/// ANSI escape sequence parser state
+#[cfg(feature = "interactive")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AnsiState {
+    Normal,
+    Escape, // Saw ESC (0x1B)
+    Csi,    // Saw ESC[
+}
+
 /// Additional vertical space between lines
 #[cfg(feature = "interactive")]
 const LINE_SPACING: usize = 2;
@@ -72,6 +81,12 @@ pub struct ShellFrameBuffer {
     y_pos: usize,
     /// Whether the cursor is currently visible (for blinking)
     cursor_visible: bool,
+    /// ANSI escape sequence parser state
+    ansi_state: AnsiState,
+    /// ANSI escape sequence parameters
+    ansi_params: [u8; 16],
+    /// Current ANSI parameter index
+    ansi_param_idx: usize,
 }
 
 #[cfg(feature = "interactive")]
@@ -96,6 +111,9 @@ impl ShellFrameBuffer {
             x_pos: BORDER_PADDING,
             y_pos: BORDER_PADDING,
             cursor_visible: true,
+            ansi_state: AnsiState::Normal,
+            ansi_params: [0; 16],
+            ansi_param_idx: 0,
         };
         fb.clear();
         fb
@@ -162,23 +180,76 @@ impl ShellFrameBuffer {
         self.y_pos = self.y_pos.saturating_sub(line_height);
     }
 
-    /// Write a single character to the framebuffer
+    /// Write a single character to the framebuffer (with ANSI escape sequence parsing)
     pub fn write_char(&mut self, c: char) {
+        let byte = c as u8;
+
+        match self.ansi_state {
+            AnsiState::Normal => {
+                if byte == 0x1B {
+                    // ESC character - start escape sequence
+                    self.ansi_state = AnsiState::Escape;
+                    return;
+                }
+                self.write_char_normal(byte);
+            }
+            AnsiState::Escape => {
+                if byte == b'[' {
+                    // CSI sequence (ESC[)
+                    self.ansi_state = AnsiState::Csi;
+                    self.ansi_param_idx = 0;
+                    self.ansi_params = [0; 16];
+                    return;
+                }
+                // Not a CSI sequence, output both and return to normal
+                self.ansi_state = AnsiState::Normal;
+                self.write_char_normal(0x1B);
+                self.write_char_normal(byte);
+            }
+            AnsiState::Csi => {
+                if byte >= b'0' && byte <= b'9' {
+                    // Accumulate parameter digit
+                    if self.ansi_param_idx < 16 {
+                        self.ansi_params[self.ansi_param_idx] = self
+                            .ansi_params[self.ansi_param_idx]
+                            .saturating_mul(10)
+                            .saturating_add(byte - b'0');
+                    }
+                    return;
+                }
+                if byte == b';' {
+                    // Next parameter
+                    self.ansi_param_idx = (self.ansi_param_idx + 1).min(15);
+                    return;
+                }
+                // Command byte - execute and return to normal
+                self.ansi_state = AnsiState::Normal;
+                self.execute_csi(byte);
+            }
+        }
+    }
+
+    /// Write a normal character (not part of escape sequence)
+    fn write_char_normal(&mut self, byte: u8) {
         // Hide cursor before writing
         self.draw_cursor(false);
 
-        match c {
-            '\n' => self.newline(),
-            '\r' => self.carriage_return(),
-            '\x08' => {
+        match byte {
+            b'\n' => self.newline(),
+            b'\r' => self.carriage_return(),
+            0x08 => {
                 // Backspace: move cursor back and clear the character
                 if self.x_pos > BORDER_PADDING {
-                    self.x_pos = self.x_pos.saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
+                    self.x_pos =
+                        self.x_pos
+                            .saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
                     // Clear the character by writing a space
                     let raster = get_char_raster(' ');
                     self.write_rendered_char(raster);
                     // Move back again since write_rendered_char advances x_pos
-                    self.x_pos = self.x_pos.saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
+                    self.x_pos =
+                        self.x_pos
+                            .saturating_sub(shell_font::CHAR_RASTER_WIDTH + LETTER_SPACING);
                 }
             }
             c => {
@@ -190,13 +261,63 @@ impl ShellFrameBuffer {
                 if new_ypos >= self.height() {
                     self.scroll();
                 }
-                self.write_rendered_char(get_char_raster(c));
+                self.write_rendered_char(get_char_raster(c as char));
             }
         }
 
         // Show cursor after writing and reset blink state
         self.cursor_visible = true;
         self.draw_cursor(true);
+    }
+
+    /// Execute a CSI (Control Sequence Introducer) command
+    fn execute_csi(&mut self, cmd: u8) {
+        let param1 = self.ansi_params[0] as usize;
+
+        match cmd {
+            b'J' => {
+                // Erase in Display
+                match param1 {
+                    2 => self.clear_screen(), // Clear entire screen
+                    _ => {}                   // Ignore other modes for now
+                }
+            }
+            b'H' => {
+                // Cursor Position - move to home (or specified position)
+                self.x_pos = BORDER_PADDING;
+                self.y_pos = BORDER_PADDING;
+            }
+            b'K' => {
+                // Erase in Line - clear to end of line
+                self.clear_to_eol();
+            }
+            _ => {
+                // Unknown command - ignore
+            }
+        }
+    }
+
+    /// Clear the entire screen and reset cursor to home
+    fn clear_screen(&mut self) {
+        // Fill entire framebuffer with background color (black)
+        for y in 0..self.height() {
+            for x in 0..self.width() {
+                self.write_pixel(x, y, 0x00);
+            }
+        }
+        // Reset cursor position
+        self.x_pos = BORDER_PADDING;
+        self.y_pos = BORDER_PADDING;
+    }
+
+    /// Clear from cursor to end of line
+    fn clear_to_eol(&mut self) {
+        let char_height = shell_font::CHAR_RASTER_HEIGHT.val();
+        for y in self.y_pos..(self.y_pos + char_height) {
+            for x in self.x_pos..self.width() {
+                self.write_pixel(x, y, 0x00);
+            }
+        }
     }
 
     /// Write a rendered character to the framebuffer

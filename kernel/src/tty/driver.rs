@@ -150,6 +150,19 @@ impl TtyDevice {
     /// Used by keyboard interrupt handler when TTY is routed from interrupt context.
     #[allow(dead_code)]
     pub fn input_char_nonblock(&self, c: u8) -> bool {
+        // Auto-set foreground process group if not set
+        // This allows signals to work even if shell doesn't call tcsetpgrp
+        if self
+            .foreground_pgrp
+            .try_lock()
+            .map(|g| g.is_none())
+            .unwrap_or(false)
+        {
+            if let Some(current_pid) = crate::process::current_pid() {
+                self.set_foreground_pgrp(current_pid.as_u64());
+            }
+        }
+
         let mut ldisc = match self.ldisc.try_lock() {
             Some(guard) => guard,
             None => return false,

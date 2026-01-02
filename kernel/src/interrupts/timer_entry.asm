@@ -114,7 +114,7 @@ timer_interrupt_entry:
     mov rdi, rsp              ; Pass pointer to saved registers
     lea rsi, [rsp + 15*8]     ; Pass pointer to interrupt frame
     call check_need_resched_and_switch
-    
+
     ; CRITICAL: Disable interrupts before restoring registers
     ; This prevents race condition where another interrupt fires while registers
     ; are being restored, potentially corrupting them

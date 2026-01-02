@@ -152,8 +152,11 @@ impl LineDiscipline {
     /// - Line editing characters (ERASE, KILL, WERASE) are interpreted
     /// - Lines are completed on newline or EOF
     fn process_canonical(&mut self, c: u8, echo_fn: &mut dyn FnMut(u8)) {
-        // Handle ERASE (backspace/DEL)
-        if c == self.termios.erase_char() {
+        // Handle ERASE - accept both configured erase_char (typically DEL 0x7F) AND
+        // backspace (0x08). Keyboards typically send 0x08 for the backspace key,
+        // but POSIX termios defaults VERASE to DEL. Accepting both ensures backspace
+        // works out of the box regardless of keyboard mapping.
+        if c == self.termios.erase_char() || c == 0x08 {
             self.handle_erase(echo_fn);
             return;
         }
