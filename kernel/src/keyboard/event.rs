@@ -14,17 +14,20 @@ impl KeyEvent {
         }
     }
 
-    /// Check if this is Ctrl+C
+    /// Check if this is Ctrl+C (SIGINT - now handled by TTY layer)
+    #[allow(dead_code)]
     pub fn is_ctrl_c(&self) -> bool {
         self.ctrl && self.character == Some('c')
     }
 
-    /// Check if this is Ctrl+D
+    /// Check if this is Ctrl+D (EOF - now handled by TTY layer)
+    #[allow(dead_code)]
     pub fn is_ctrl_d(&self) -> bool {
         self.ctrl && self.character == Some('d')
     }
 
-    /// Check if this is Ctrl+S
+    /// Check if this is Ctrl+S (suspend output - handled by TTY)
+    #[allow(dead_code)]
     pub fn is_ctrl_s(&self) -> bool {
         self.ctrl && self.character == Some('s')
     }
@@ -34,7 +37,8 @@ impl KeyEvent {
         self.ctrl && self.character == Some('t')
     }
 
-    /// Check if this is Ctrl+M (memory debug)
+    /// Check if this is Ctrl+M (memory debug - now routed through TTY as regular input)
+    #[allow(dead_code)]
     pub fn is_ctrl_m(&self) -> bool {
         self.ctrl && self.character == Some('m')
     }

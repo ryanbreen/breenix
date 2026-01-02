@@ -210,6 +210,13 @@ syscall_entry:
     ; We're currently in user GS mode, but next_cr3 is in kernel GS
     swapgs
 
+    ; CRITICAL FIX: Clear PREEMPT_ACTIVE now that registers are restored!
+    ; PREEMPT_ACTIVE (bit 28) was set at line 139 to protect register restoration.
+    ; Now that registers are restored and we're about to return to userspace, clear it.
+    ; Without this, PREEMPT_ACTIVE persists into subsequent timer interrupts, blocking
+    ; scheduling from the idle loop when the process later blocks on a syscall.
+    and dword [gs:32], 0xEFFFFFFF    ; Clear bit 28 (PREEMPT_ACTIVE)
+
     ; Read next_cr3 from per-CPU data (GS:64)
     mov rax, qword [gs:64]
 

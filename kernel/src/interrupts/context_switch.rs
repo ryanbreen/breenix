@@ -41,6 +41,37 @@ pub extern "C" fn check_need_resched_and_switch(
     // only when switching away.
     let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
 
+    // CRITICAL FIX: Check PREEMPT_ACTIVE early, BEFORE calling schedule().
+    // PREEMPT_ACTIVE (bit 28) is set in syscall/entry.asm during syscall return
+    // to protect the register restoration sequence. If set, we're in the middle
+    // of returning from a syscall and must NOT attempt a context switch.
+    //
+    // Previously, this check happened AFTER schedule() was called, which mutated
+    // the scheduler's current_thread state. Then the early return left the
+    // scheduler thinking idle (thread 0) was running when actually the userspace
+    // thread was still active. This caused the entire scheduler to become stuck.
+    //
+    // The fix: Check preempt_active BEFORE schedule() to avoid state corruption.
+    let preempt_count = crate::per_cpu::preempt_count();
+    let preempt_active = (preempt_count & 0x10000000) != 0; // Bit 28
+
+    if from_userspace && preempt_active {
+        // We're in syscall return path - the registers in saved_regs are KERNEL values!
+        // Do NOT attempt a context switch. Re-set need_resched for next opportunity.
+        static EARLY_PREEMPT_ACTIVE_COUNT: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(0);
+        let count = EARLY_PREEMPT_ACTIVE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if count < 10 {
+            log::info!(
+                "check_need_resched_and_switch: PREEMPT_ACTIVE set (count={:#x}), deferring context switch",
+                preempt_count
+            );
+        }
+        // Don't clear need_resched - it will be checked on the next timer interrupt
+        // after the syscall return completes
+        return;
+    }
+
     // Check if reschedule is needed
     if !scheduler::check_and_clear_need_resched() {
         // No reschedule needed, just return
@@ -137,35 +168,16 @@ pub extern "C" fn check_need_resched_and_switch(
         // CRITICAL: If save fails, we MUST NOT switch contexts!
         // Switching without saving would cause the process to return to stale RIP (entry point)
         //
-        // CRITICAL FIX for RDI corruption bug:
-        // Don't save context if we interrupted syscall return path.
-        // The interrupt frame has CS=0x33 when returning to userspace, but if we
-        // interrupted during syscall exit (after preempt_enable but before IRETQ),
-        // the saved_regs contain KERNEL values, not userspace!
-        //
-        // We detect syscall return by checking preempt_count bit 28 (PREEMPT_ACTIVE).
-        // The syscall return path (entry.asm) sets this bit before restoring registers.
-        // Linux uses 0x10000000 for PREEMPT_ACTIVE (bit 28).
-        let preempt_count = crate::per_cpu::preempt_count();
-        let preempt_active = (preempt_count & 0x10000000) != 0;  // Bit 28
-
-        // DEBUG: Log preempt_count check for first few instances
-        static PREEMPT_CHECK_LOG: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0);
-        let check_count = PREEMPT_CHECK_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if check_count < 10 {
-            log::debug!(
-                "Context switch check: from_userspace={}, preempt_count={:#x}, preempt_active={}, rdi={:#x}",
-                from_userspace, preempt_count, preempt_active, saved_regs.rdi
-            );
-        }
+        // NOTE: PREEMPT_ACTIVE check was moved earlier in this function (before schedule() call)
+        // to prevent scheduler state corruption. If we reach here from userspace, we know
+        // preempt_active is false (otherwise we would have returned early).
 
         // Check if current thread is blocked in syscall (pause/waitpid)
         let blocked_in_syscall = scheduler::with_thread_mut(old_thread_id, |thread| {
             thread.blocked_in_syscall
         }).unwrap_or(false);
 
-        if from_userspace && !preempt_active {
+        if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
             if let Some(ref mut guard) = process_manager_guard {
                 if !save_current_thread_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard) {
@@ -182,21 +194,6 @@ pub extern "C" fn check_need_resched_and_switch(
                 log::error!("BUG: from_userspace=true but no process_manager_guard");
                 return;
             }
-        } else if from_userspace && preempt_active {
-            // We're in syscall return path - don't save context!
-            // The registers in saved_regs are kernel values from syscall handler!
-            static SYSCALL_INTERRUPT_LOG: core::sync::atomic::AtomicU64 =
-                core::sync::atomic::AtomicU64::new(0);
-            let count = SYSCALL_INTERRUPT_LOG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if count < 10 {
-                log::info!(
-                    "Timer interrupt during syscall return (PREEMPT_ACTIVE set, rdi={:#x}), \
-                     skipping context save to prevent register corruption",
-                    saved_regs.rdi
-                );
-            }
-            // Don't switch threads - we're in syscall return path with kernel registers
-            return;
         } else if !from_userspace && blocked_in_syscall {
             // Thread is blocked inside a syscall (pause/waitpid) and was interrupted
             // in kernel mode (in the HLT loop). Save the KERNEL context so we can
@@ -398,10 +395,6 @@ fn switch_to_thread(
         // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
         // We need to check if there are pending signals. If so, deliver them using
         // the saved userspace context. Otherwise, resume at the kernel HLT loop.
-        log::info!(
-            "Thread {} resuming in syscall (blocked_in_syscall=true)",
-            thread_id
-        );
 
         // Get the process page table and thread context
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
@@ -586,7 +579,11 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             frame.code_segment = crate::gdt::kernel_code_selector();
             frame.stack_segment = crate::gdt::kernel_data_selector();
             frame.instruction_pointer = x86_64::VirtAddr::new(idle_loop as *const () as u64);
-            frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+            // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
+            // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
+            // Without bit 1, IRETQ behavior is undefined per Intel spec.
+            let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+            *flags_ptr = 0x202;
 
             // CRITICAL: Must set kernel stack pointer when returning to idle!
             // The idle thread runs in kernel mode and needs a kernel stack.
@@ -597,9 +594,16 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
         });
 
-        // FIXED: Switch back to kernel page table when running kernel threads
-        // This ensures kernel threads run with kernel page tables
-        crate::memory::process_memory::switch_to_kernel_page_table();
+        // NOTE: We do NOT switch page tables here. The userspace process page table
+        // already has all kernel mappings (code, stacks, etc.) so we can run
+        // kernel code (idle loop) with it.
+
+        // CRITICAL FIX: Clear PREEMPT_ACTIVE when switching to idle!
+        // PREEMPT_ACTIVE (bit 28) is set during syscall return to protect register
+        // restoration. When we switch to the idle thread, we MUST clear it - otherwise
+        // can_schedule() will return false and block all future scheduling attempts,
+        // leaving the system stuck in the idle loop unable to switch to ready threads.
+        crate::per_cpu::clear_preempt_active();
     }
     log::trace!("Set up return to idle loop");
 }
@@ -916,7 +920,11 @@ pub fn idle_loop() -> ! {
     loop {
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
-        x86_64::instructions::hlt();
+        // CRITICAL: Use enable_and_hlt() instead of just hlt()
+        // This atomically enables interrupts and halts, preventing race conditions
+        // where interrupts might be disabled when we enter this loop.
+        // Without this, if interrupts are disabled, HLT would hang forever.
+        x86_64::instructions::interrupts::enable_and_hlt();
     }
 }
 

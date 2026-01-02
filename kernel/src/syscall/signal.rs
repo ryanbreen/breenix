@@ -393,18 +393,18 @@ pub fn sys_sigreturn() -> SyscallResult {
 pub fn sys_pause() -> SyscallResult {
     log::warn!("sys_pause called without frame access - signals may not work correctly");
     // Fall through to basic pause implementation without signal handler support
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    let _thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
 
     crate::task::scheduler::with_scheduler(|sched| {
         sched.block_current_for_signal();
     });
 
-    let mut loop_count = 0u64;
+    let mut _loop_count = 0u64;
     loop {
         crate::task::scheduler::yield_current();
         x86_64::instructions::interrupts::enable_and_hlt();
 
-        loop_count += 1;
+        _loop_count += 1;
         let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
             if let Some(thread) = sched.current_thread_mut() {
                 thread.state == crate::task::thread::ThreadState::BlockedOnSignal

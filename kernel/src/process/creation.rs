@@ -72,6 +72,16 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
                         crate::serial_println!("create_user_process: scheduler::spawn completed");
 
+                        // Set this process as the foreground process group for the console TTY
+                        // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
+                        if let Some(tty) = crate::tty::console() {
+                            tty.set_foreground_pgrp(pid.as_u64());
+                            log::debug!(
+                                "create_user_process: Set PID {} as foreground pgrp for TTY",
+                                pid.as_u64()
+                            );
+                        }
+
                         // REMOVED: set_next_cr3() call - CR3 switching happens during scheduling,
                         // not during process creation. The context_switch.rs::setup_first_userspace_entry()
                         // function handles CR3 switching when the thread is actually scheduled to run.

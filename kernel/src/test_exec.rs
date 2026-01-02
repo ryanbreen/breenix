@@ -1548,3 +1548,38 @@ pub fn test_nonblock() {
         }
     }
 }
+
+/// Test TTY layer functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "TTY test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates TTY operations
+///   - Marker: "TTY_TEST_PASSED"
+///   - This PROVES isatty, tcgetattr, tcsetattr, and raw/cooked mode switching all work
+pub fn test_tty() {
+    log::info!("Testing TTY layer functionality");
+
+    #[cfg(feature = "testing")]
+    let tty_test_elf_buf = crate::userspace_test::get_test_binary("tty_test");
+    #[cfg(feature = "testing")]
+    let tty_test_elf: &[u8] = &tty_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let tty_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("tty_test"),
+        tty_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created tty_test process with PID {:?}", pid);
+            log::info!("TTY test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit TTY_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create tty_test process: {}", e);
+            log::error!("TTY test cannot run without valid userspace process");
+        }
+    }
+}

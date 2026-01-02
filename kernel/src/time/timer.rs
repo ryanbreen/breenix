@@ -15,6 +15,15 @@ const PIT_CHANNEL0_PORT: u16 = 0x40;
 /// Global monotonic tick counter (1 tick == 1 ms at 1000 Hz).
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
+/// Counter for cursor blink timing (toggles every ~100 ticks = 500ms at 200Hz)
+/// Only used when interactive feature is enabled.
+#[cfg(feature = "interactive")]
+static CURSOR_BLINK_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Cursor blink interval in ticks (100 ticks * 5ms = 500ms at 200Hz)
+#[cfg(feature = "interactive")]
+const CURSOR_BLINK_INTERVAL: u64 = 100;
+
 /// Program the PIT to generate periodic interrupts at `PIT_HZ`.
 pub fn init() {
     let divisor: u16 = (PIT_INPUT_FREQ_HZ / PIT_HZ) as u16;
@@ -36,12 +45,22 @@ pub fn init() {
     super::rtc::init();
 }
 
-/// Invoked from the CPU-side interrupt stub every 1 ms (at 1000 Hz).
+/// Invoked from the CPU-side interrupt stub every 5 ms (at 200 Hz).
 #[inline]
 pub fn timer_interrupt() {
     TICKS.fetch_add(1, Ordering::Relaxed);
-    // If the scheduler needs a tick hook, call it here.
-    // crate::sched::timer_tick();
+
+    // Cursor blink handling for interactive mode
+    // This is kept minimal - just an atomic increment and comparison
+    #[cfg(feature = "interactive")]
+    {
+        let count = CURSOR_BLINK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if count >= CURSOR_BLINK_INTERVAL {
+            CURSOR_BLINK_COUNTER.store(0, Ordering::Relaxed);
+            // Toggle cursor - uses try_lock so won't block
+            crate::logger::toggle_cursor_blink();
+        }
+    }
 }
 
 /// Raw tick counter.

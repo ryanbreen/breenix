@@ -53,6 +53,7 @@ pub mod test_exec;
 mod time;
 mod time_test;
 mod tls;
+mod tty;
 mod userspace_test;
 mod userspace_fault_tests;
 mod preempt_count_test;
@@ -236,6 +237,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize keyboard queue
     keyboard::init();
     log::info!("Keyboard queue initialized");
+
+    // Initialize TTY subsystem
+    tty::init();
 
     // Initialize PIC BEFORE timer so interrupts can be delivered
     log::info!("Initializing PIC...");
@@ -671,6 +675,10 @@ fn kernel_main_continue() -> ! {
         // Test O_NONBLOCK pipe behavior
         log::info!("=== IPC TEST: O_NONBLOCK pipe behavior ===");
         test_exec::test_nonblock();
+
+        // Test TTY layer functionality
+        log::info!("=== TTY TEST: TTY layer functionality ===");
+        test_exec::test_tty();
 
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");

@@ -6,13 +6,24 @@
 //! 3. Reads a line of input (blocking read from stdin)
 //! 4. Parses and executes simple commands
 //! 5. Loops forever
+//!
+//! Features for testing TTY line discipline:
+//! - "raw" command: switches to raw mode and shows keypresses
+//! - "cooked" command: switches back to canonical mode
+//! - Ctrl+C handling: shows ^C and gives new prompt
+//! - Line editing: backspace works in canonical mode
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicBool, Ordering};
 use libbreenix::io::{print, println, read, write};
 use libbreenix::process::yield_now;
+use libbreenix::signal::{sigaction, Sigaction, SIGINT};
+use libbreenix::termios::{
+    cfmakeraw, lflag, oflag, tcgetattr, tcsetattr, Termios, TCSANOW,
+};
 use libbreenix::time::now_monotonic;
 use libbreenix::types::fd::{STDIN, STDOUT};
 use libbreenix::Timespec;
@@ -23,6 +34,17 @@ static mut LINE_LEN: usize = 0;
 
 // EAGAIN error code
 const EAGAIN: i64 = 11;
+
+// Global flag to track SIGINT received
+static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+// Saved termios for restoration
+static mut SAVED_TERMIOS: Option<Termios> = None;
+
+/// SIGINT handler - just sets a flag
+extern "C" fn sigint_handler(_sig: i32) {
+    SIGINT_RECEIVED.store(true, Ordering::SeqCst);
+}
 
 /// Print a single character
 fn print_char(c: u8) {
@@ -53,11 +75,19 @@ fn print_num(mut n: u64) {
 }
 
 /// Read a line from stdin, handling backspace and yielding on EAGAIN
-fn read_line() -> &'static str {
+/// Returns None if interrupted by SIGINT (Ctrl+C)
+fn read_line() -> Option<&'static str> {
     unsafe {
         LINE_LEN = 0;
 
         loop {
+            // Check for SIGINT (Ctrl+C)
+            if SIGINT_RECEIVED.swap(false, Ordering::SeqCst) {
+                print("^C\n");
+                LINE_LEN = 0;
+                return None; // Signal that we got interrupted
+            }
+
             let mut c = [0u8; 1];
             let n = read(STDIN, &mut c);
 
@@ -68,7 +98,7 @@ fn read_line() -> &'static str {
             }
 
             if n < 0 {
-                // Other error - yield and retry
+                // Other error (possibly EINTR from signal) - yield and retry
                 yield_now();
                 continue;
             }
@@ -79,7 +109,7 @@ fn read_line() -> &'static str {
             if ch == b'\n' || ch == b'\r' {
                 println("");
                 LINE_BUF[LINE_LEN] = 0;
-                return core::str::from_utf8(&LINE_BUF[..LINE_LEN]).unwrap_or("");
+                return Some(core::str::from_utf8(&LINE_BUF[..LINE_LEN]).unwrap_or(""));
             }
 
             // Handle backspace (ASCII DEL or BS)
@@ -137,8 +167,15 @@ fn cmd_help() {
     println("  echo   - Echo text back to the terminal");
     println("  ps     - List processes (placeholder)");
     println("  uptime - Show time since boot");
-    println("  clear  - Clear the screen");
+    println("  clear  - Clear the screen (ANSI escape sequence)");
+    println("  raw    - Switch to raw mode and show keypresses");
+    println("  cooked - Switch back to canonical (cooked) mode");
     println("  exit   - Attempt to exit (init cannot exit)");
+    println("");
+    println("TTY testing:");
+    println("  - Ctrl+C shows ^C and gives new prompt");
+    println("  - Backspace works for line editing");
+    println("  - In raw mode, each keypress is shown immediately");
 }
 
 /// Handle the "echo" command
@@ -189,16 +226,162 @@ fn cmd_uptime() {
 
 /// Handle the "clear" command
 fn cmd_clear() {
-    // Print 25 newlines to "clear" the screen
-    for _ in 0..25 {
-        println("");
-    }
+    // Use ANSI escape sequences to clear screen and move cursor to home
+    // ESC[2J - Clear entire screen
+    // ESC[H  - Move cursor to home position (1,1)
+    print("\x1b[2J\x1b[H");
 }
 
 /// Handle the "exit" command
 fn cmd_exit() {
     println("Cannot exit init!");
     println("The init process must run forever.");
+}
+
+/// Print a byte in hexadecimal
+fn print_hex_byte(b: u8) {
+    let high = b >> 4;
+    let low = b & 0x0F;
+    let high_char = if high < 10 {
+        b'0' + high
+    } else {
+        b'a' + (high - 10)
+    };
+    let low_char = if low < 10 { b'0' + low } else { b'a' + (low - 10) };
+    print_char(high_char);
+    print_char(low_char);
+}
+
+/// Handle the "raw" command - switch to raw mode and show keypresses
+fn cmd_raw() {
+    println("Switching to raw mode...");
+    println("Press keys to see their codes. Press 'q' to exit raw mode.");
+    println("");
+
+    // Get current terminal settings
+    let mut termios = Termios::default();
+    if tcgetattr(0, &mut termios).is_err() {
+        println("Error: Could not get terminal attributes");
+        return;
+    }
+
+    // Save original settings for restoration
+    let original_termios = termios;
+    unsafe {
+        SAVED_TERMIOS = Some(original_termios);
+    }
+
+    // Switch to raw mode
+    cfmakeraw(&mut termios);
+
+    // Keep output processing enabled so newlines work correctly
+    termios.c_oflag |= oflag::OPOST | oflag::ONLCR;
+
+    if tcsetattr(0, TCSANOW, &termios).is_err() {
+        println("Error: Could not set raw mode");
+        return;
+    }
+
+    println("Raw mode enabled. Type keys:");
+    println("");
+
+    // Read and display keypresses until 'q' is pressed
+    loop {
+        let mut c = [0u8; 1];
+        let n = read(STDIN, &mut c);
+
+        if n == -EAGAIN || n == 0 {
+            yield_now();
+            continue;
+        }
+
+        if n < 0 {
+            yield_now();
+            continue;
+        }
+
+        let ch = c[0];
+
+        // Display the keypress
+        print("Key: ");
+
+        // Show printable representation or control code name
+        if ch >= 0x20 && ch < 0x7f {
+            print("'");
+            print_char(ch);
+            print("' ");
+        } else if ch == 0x1b {
+            print("ESC ");
+        } else if ch < 0x20 {
+            print("^");
+            print_char(b'@' + ch);
+            print(" ");
+        } else if ch == 0x7f {
+            print("DEL ");
+        } else {
+            print("    ");
+        }
+
+        print("(0x");
+        print_hex_byte(ch);
+        print(", ");
+        print_num(ch as u64);
+        println(")");
+
+        // Exit on 'q'
+        if ch == b'q' || ch == b'Q' {
+            println("");
+            println("Exiting raw mode...");
+            break;
+        }
+    }
+
+    // Restore original terminal settings
+    if tcsetattr(0, TCSANOW, &original_termios).is_err() {
+        println("Warning: Could not restore terminal settings");
+    }
+
+    println("Back to canonical mode.");
+}
+
+/// Handle the "cooked" command - switch back to canonical mode
+fn cmd_cooked() {
+    println("Switching to canonical (cooked) mode...");
+
+    // Check if we have saved settings
+    let restored = unsafe {
+        if let Some(ref original) = SAVED_TERMIOS {
+            if tcsetattr(0, TCSANOW, original).is_ok() {
+                true
+            } else {
+                false
+            }
+        } else {
+            // No saved settings, set up default canonical mode
+            let mut termios = Termios::default();
+            if tcgetattr(0, &mut termios).is_err() {
+                println("Error: Could not get terminal attributes");
+                return;
+            }
+
+            // Enable canonical mode, echo, and signals
+            termios.c_lflag |= lflag::ICANON | lflag::ECHO | lflag::ECHOE | lflag::ISIG;
+            termios.c_oflag |= oflag::OPOST | oflag::ONLCR;
+
+            if tcsetattr(0, TCSANOW, &termios).is_ok() {
+                true
+            } else {
+                false
+            }
+        }
+    };
+
+    if restored {
+        println("Canonical mode enabled.");
+        println("Line editing and signals are now active.");
+    } else {
+        println("Error: Could not set canonical mode");
+    }
 }
 
 /// Handle an unknown command
@@ -231,6 +414,10 @@ fn handle_command(line: &str) {
         cmd_uptime();
     } else if line == "clear" {
         cmd_clear();
+    } else if line == "raw" {
+        cmd_raw();
+    } else if line == "cooked" {
+        cmd_cooked();
     } else if line == "exit" || line == "quit" {
         cmd_exit();
     } else {
@@ -256,15 +443,31 @@ fn print_banner() {
     println("");
 }
 
+/// Set up signal handlers
+fn setup_signal_handlers() {
+    // Set up SIGINT handler for Ctrl+C
+    let action = Sigaction::new(sigint_handler);
+    if sigaction(SIGINT, Some(&action), None).is_err() {
+        println("Warning: Could not set up SIGINT handler");
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    // Set up signal handlers before anything else
+    setup_signal_handlers();
+
     print_banner();
 
     // Main REPL loop
     loop {
         print("breenix> ");
-        let line = read_line();
-        handle_command(line);
+
+        // read_line returns None if interrupted by Ctrl+C
+        if let Some(line) = read_line() {
+            handle_command(line);
+        }
+        // If None (interrupted), just continue to print new prompt
     }
 }
 

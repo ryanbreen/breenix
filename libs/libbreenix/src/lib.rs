@@ -44,6 +44,7 @@ pub mod process;
 pub mod signal;
 pub mod socket;
 pub mod syscall;
+pub mod termios;
 pub mod time;
 pub mod types;
 

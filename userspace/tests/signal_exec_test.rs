@@ -135,13 +135,11 @@ pub extern "C" fn _start() -> ! {
             // The program name must be null-terminated for the kernel to read it correctly
             // Rust &str is NOT null-terminated, so we use a static C string
             static PROGRAM_NAME: &[u8] = b"signal_exec_check\0";
-            let exec_result = unsafe {
-                libbreenix::syscall::raw::syscall2(
-                    libbreenix::syscall::nr::EXEC,
-                    PROGRAM_NAME.as_ptr() as u64,
-                    0,
-                ) as i64
-            };
+            let exec_result = libbreenix::syscall::raw::syscall2(
+                libbreenix::syscall::nr::EXEC,
+                PROGRAM_NAME.as_ptr() as u64,
+                0,
+            ) as i64;
 
             // If exec returns, it failed
             io::print("[CHILD] exec() returned (should not happen on success): ");

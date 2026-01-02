@@ -9,6 +9,7 @@ pub(crate) mod dispatcher;
 pub mod errno;
 pub mod handler;
 pub mod handlers;
+pub mod ioctl;
 pub mod memory;
 pub mod mmap;
 pub mod pipe;
@@ -37,6 +38,7 @@ pub enum SyscallNumber {
     Sigaction = 13,     // Linux syscall number for rt_sigaction
     Sigprocmask = 14,   // Linux syscall number for rt_sigprocmask
     Sigreturn = 15,     // Linux syscall number for rt_sigreturn
+    Ioctl = 16,         // Linux syscall number for ioctl
     Pipe = 22,          // Linux syscall number for pipe
     Select = 23,        // Linux syscall number for select
     Dup = 32,           // Linux syscall number for dup
@@ -76,6 +78,7 @@ impl SyscallNumber {
             13 => Some(Self::Sigaction),
             14 => Some(Self::Sigprocmask),
             15 => Some(Self::Sigreturn),
+            16 => Some(Self::Ioctl),
             22 => Some(Self::Pipe),
             23 => Some(Self::Select),
             32 => Some(Self::Dup),

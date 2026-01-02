@@ -628,6 +628,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "O_NONBLOCK pipe test failed - non-blocking read/write on pipes not returning EAGAIN correctly",
             check_hint: "Check kernel/src/syscall/handlers.rs:sys_read()/sys_write() O_NONBLOCK handling and kernel/src/ipc/pipe.rs",
         },
+        // TTY layer test
+        BootStage {
+            name: "TTY layer test passed",
+            marker: "TTY_TEST_PASSED",
+            failure_meaning: "TTY layer test failed - isatty, tcgetattr, tcsetattr, or raw/cooked mode switching broken",
+            check_hint: "Check kernel/src/tty/ module, kernel/src/syscall/ioctl.rs, and libs/libbreenix/src/termios.rs",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

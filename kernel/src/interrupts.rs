@@ -432,15 +432,29 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // when userspace processes are running, so keyboard input would never be processed.
     if let Some(event) = crate::keyboard::process_scancode(scancode) {
         if let Some(character) = event.character {
-            // Handle special key combinations
-            if event.is_ctrl_c() {
-                // TODO: Send SIGINT to foreground process
-            } else if event.is_ctrl_d() {
-                // TODO: Signal EOF on stdin
-            } else {
-                // Push character to stdin buffer using IRQ-safe version
-                // This uses try_lock to avoid deadlock with syscall handlers
-                crate::ipc::stdin::push_byte_from_irq(character as u8);
+            let c = character as u8;
+
+            // Route through TTY for line discipline processing (echo, signals, line editing)
+            // TTY handles echoing, backspace visual feedback, and signal generation.
+            // Result is intentionally ignored - we don't care if TTY lock was busy.
+            let _ = crate::tty::driver::push_char_nonblock(c);
+
+            // Only push to stdin if NOT a TTY control character.
+            // TTY handles these exclusively to avoid double-processing:
+            // - Backspace (0x08) and DEL (0x7F): TTY handles erase + echo
+            // - Signal chars: Ctrl+C (0x03), Ctrl+D (0x04), Ctrl+Z (0x1A),
+            //                 Ctrl+\ (0x1C), Ctrl+U (0x15)
+            // For line-edited input, TTY's cooked queue should be the source,
+            // but for now we let printable chars and newlines go to stdin directly.
+            let is_tty_control = c == 0x08
+                || c == 0x7F
+                || c == 0x03
+                || c == 0x04
+                || c == 0x1A
+                || c == 0x1C
+                || c == 0x15;
+            if !is_tty_control {
+                crate::ipc::stdin::push_byte_from_irq(c);
             }
         }
     }
@@ -852,7 +866,10 @@ extern "x86-interrupt" fn page_fault_handler(
                     frame.instruction_pointer = x86_64::VirtAddr::new(
                         context_switch::idle_loop as *const () as u64
                     );
-                    frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+                    // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
+                    // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
+                    let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+                    *flags_ptr = 0x202;
 
                     // Set up kernel stack - use current RSP with some headroom
                     let current_rsp: u64;
@@ -1117,7 +1134,10 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                 frame.instruction_pointer = x86_64::VirtAddr::new(
                     context_switch::idle_loop as *const () as u64
                 );
-                frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+                // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
+                // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
+                let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+                *flags_ptr = 0x202;
 
                 // Set up kernel stack - use current RSP with some headroom
                 let current_rsp: u64;

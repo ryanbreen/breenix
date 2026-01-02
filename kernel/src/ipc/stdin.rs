@@ -83,6 +83,11 @@ impl StdinBuffer {
 
 /// Push a byte to the stdin buffer
 /// Called from keyboard task when a character is typed
+///
+/// Note: With TTY integration, keyboard input now goes through the TTY layer
+/// which handles echo, line editing, and signals. This function is kept for
+/// fallback when TTY is not initialized.
+#[allow(dead_code)]
 pub fn push_byte(byte: u8) {
     let mut buffer = STDIN_BUFFER.lock();
     if buffer.push_byte(byte) {
@@ -101,19 +106,13 @@ pub fn push_byte(byte: u8) {
 
 /// Push a byte to stdin from interrupt context (uses try_lock to avoid deadlock)
 /// Returns true if the byte was pushed, false if locks couldn't be acquired
+///
+/// Note: This function does NOT echo. Echo is handled by the TTY layer
+/// which respects termios settings (ECHO flag).
 pub fn push_byte_from_irq(byte: u8) -> bool {
     // Try to acquire the buffer lock - don't block in interrupt context
     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
         if buffer.push_byte(byte) {
-            // Echo character to serial output (COM1)
-            crate::serial::write_byte(byte);
-
-            // In interactive mode, also echo to framebuffer so user sees their input
-            #[cfg(feature = "interactive")]
-            {
-                crate::logger::write_char_to_framebuffer(byte);
-            }
-
             drop(buffer);
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
@@ -172,6 +171,9 @@ pub fn has_data() -> bool {
 }
 
 /// Register a thread as waiting for stdin input
+///
+/// Used by sys_read when blocking on stdin. When data becomes available
+/// via push_byte_from_irq, the blocked readers are woken.
 pub fn register_blocked_reader(thread_id: u64) {
     let mut blocked = BLOCKED_READERS.lock();
     if !blocked.contains(&thread_id) {
@@ -181,13 +183,16 @@ pub fn register_blocked_reader(thread_id: u64) {
 }
 
 /// Unregister a thread from waiting for stdin (e.g., on signal or timeout)
-#[allow(dead_code)]
 pub fn unregister_blocked_reader(thread_id: u64) {
     let mut blocked = BLOCKED_READERS.lock();
     blocked.retain(|&id| id != thread_id);
 }
 
 /// Wake all threads blocked on stdin read
+///
+/// Note: With TTY integration, blocked readers are woken through
+/// TtyDevice::wake_blocked_readers. This function is kept for fallback.
+#[allow(dead_code)]
 fn wake_blocked_readers() {
     let readers: Vec<u64> = {
         let mut blocked = BLOCKED_READERS.lock();

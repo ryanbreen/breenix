@@ -348,15 +348,35 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     match &fd_entry.kind {
         FdKind::StdIo(0) => {
-            // stdin - read from kernel stdin buffer
+            // stdin - read from stdin ring buffer
+            //
+            // Keyboard input goes to the stdin buffer via keyboard interrupt handler.
+            // The TTY layer is used for terminal control (signals, echo) but not for
+            // data transport. This allows character-at-a-time reads to work properly.
+            //
             // Drop the process manager lock before potentially blocking
             drop(manager_guard);
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
-            // Try non-blocking read first
-            match crate::ipc::stdin::read_bytes(&mut user_buf) {
+            // Read from stdin ring buffer
+            // To avoid a race condition where data arrives between checking and blocking:
+            // 1. Register as blocked reader FIRST
+            // 2. Then check for data
+            // 3. If data available, unregister and read
+            // 4. If no data, block
+            //
+            // This ensures that if data arrives after our check, we'll be woken up.
+            crate::ipc::stdin::register_blocked_reader(thread_id);
+
+            // Read from stdin buffer
+            let read_result = crate::ipc::stdin::read_bytes(&mut user_buf);
+
+            match read_result {
                 Ok(n) => {
+                    // Data was available - unregister from blocked readers
+                    crate::ipc::stdin::unregister_blocked_reader(thread_id);
+
                     if n > 0 {
                         // Copy to userspace
                         if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
@@ -371,8 +391,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
                 Err(11) => {
                     // EAGAIN - no data available, need to block
-                    // Register this thread as waiting for stdin
-                    crate::ipc::stdin::register_blocked_reader(thread_id);
+                    // We're already registered as blocked reader, so just block
 
                     // Block the current thread
                     crate::task::scheduler::with_scheduler(|sched| {
@@ -387,6 +406,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     SyscallResult::Err(512) // ERESTARTSYS
                 }
                 Err(e) => {
+                    // Error - unregister from blocked readers
+                    crate::ipc::stdin::unregister_blocked_reader(thread_id);
                     log::trace!("sys_read: Stdin read error: {}", e);
                     SyscallResult::Err(e as u64)
                 }
