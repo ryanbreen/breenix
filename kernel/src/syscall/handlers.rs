@@ -348,12 +348,18 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
     match &fd_entry.kind {
         FdKind::StdIo(0) => {
-            // stdin - read from TTY layer (which provides line editing and echo)
+            // stdin - read from stdin ring buffer
+            //
+            // Keyboard input goes to the stdin buffer via keyboard interrupt handler.
+            // The TTY layer is used for terminal control (signals, echo) but not for
+            // data transport. This allows character-at-a-time reads to work properly.
+            //
             // Drop the process manager lock before potentially blocking
             drop(manager_guard);
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
+            // Read from stdin ring buffer
             // To avoid a race condition where data arrives between checking and blocking:
             // 1. Register as blocked reader FIRST
             // 2. Then check for data
@@ -361,21 +367,15 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // 4. If no data, block
             //
             // This ensures that if data arrives after our check, we'll be woken up.
-            crate::tty::driver::TtyDevice::register_blocked_reader(thread_id);
+            crate::ipc::stdin::register_blocked_reader(thread_id);
 
-            // Try reading from TTY - it provides processed input (canonical mode)
-            // Falls back to old stdin if TTY not initialized
-            let read_result = if let Some(tty) = crate::tty::console() {
-                tty.read(&mut user_buf)
-            } else {
-                // Fallback to direct stdin buffer if TTY not available
-                crate::ipc::stdin::read_bytes(&mut user_buf)
-            };
+            // Read from stdin buffer
+            let read_result = crate::ipc::stdin::read_bytes(&mut user_buf);
 
             match read_result {
                 Ok(n) => {
                     // Data was available - unregister from blocked readers
-                    crate::tty::driver::TtyDevice::unregister_blocked_reader(thread_id);
+                    crate::ipc::stdin::unregister_blocked_reader(thread_id);
 
                     if n > 0 {
                         // Copy to userspace
@@ -385,7 +385,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                     // Only log non-zero reads to avoid spam
                     if n > 0 {
-                        log::trace!("sys_read: Read {} bytes from stdin/TTY", n);
+                        log::trace!("sys_read: Read {} bytes from stdin", n);
                     }
                     SyscallResult::Ok(n as u64)
                 }
@@ -407,8 +407,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
                 Err(e) => {
                     // Error - unregister from blocked readers
-                    crate::tty::driver::TtyDevice::unregister_blocked_reader(thread_id);
-                    log::trace!("sys_read: Stdin/TTY read error: {}", e);
+                    crate::ipc::stdin::unregister_blocked_reader(thread_id);
+                    log::trace!("sys_read: Stdin read error: {}", e);
                     SyscallResult::Err(e as u64)
                 }
             }

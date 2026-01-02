@@ -26,6 +26,10 @@ use crate::process::ProcessId;
 use crate::signal::constants::{SIGINT, SIGQUIT, SIGTSTP};
 
 /// POSIX error codes
+/// Used by TtyDevice::read() for the line discipline read path.
+/// Currently unused because keyboard input bypasses TTY (uses stdin directly).
+/// Will be used when termios ioctls are fully implemented.
+#[allow(dead_code)]
 const EAGAIN: i32 = 11;
 
 /// Static list of thread IDs blocked waiting for TTY input
@@ -178,12 +182,16 @@ impl TtyDevice {
     /// In canonical mode, this returns complete lines.
     /// In raw mode, this returns individual characters.
     ///
+    /// Currently unused because keyboard input bypasses TTY (uses stdin directly).
+    /// Will be used when termios ioctls are fully implemented and shell uses TTY raw mode.
+    ///
     /// # Arguments
     /// * `buf` - Buffer to read data into
     ///
     /// # Returns
     /// * `Ok(n)` - Number of bytes read (0 indicates EOF in canonical mode)
     /// * `Err(EAGAIN)` - No data available (for non-blocking reads)
+    #[allow(dead_code)]
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, i32> {
         let mut ldisc = self.ldisc.lock();
 
@@ -277,7 +285,6 @@ impl TtyDevice {
     ///
     /// This version avoids blocking and is safe for interrupt context.
     /// Used by input_char_nonblock for echo in interrupt context.
-    #[allow(dead_code)]
     pub fn output_char_nonblock(&self, c: u8) {
         // Try to get termios settings without blocking
         if let Some(ldisc) = self.ldisc.try_lock() {
@@ -286,9 +293,20 @@ impl TtyDevice {
 
             if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
                 crate::serial::write_byte(b'\r');
+                // Also write CR to framebuffer in interactive mode
+                #[cfg(feature = "interactive")]
+                {
+                    crate::logger::write_char_to_framebuffer(b'\r');
+                }
             }
         }
         crate::serial::write_byte(c);
+
+        // Also echo to framebuffer in interactive mode so user sees their input
+        #[cfg(feature = "interactive")]
+        {
+            crate::logger::write_char_to_framebuffer(c);
+        }
     }
 
     /// Send a signal to the foreground process group
@@ -401,6 +419,10 @@ impl TtyDevice {
     /// Register a thread as blocked waiting for TTY input
     ///
     /// The thread will be woken when input becomes available.
+    ///
+    /// Currently unused because keyboard input bypasses TTY (uses stdin directly).
+    /// Will be used when termios ioctls are fully implemented.
+    #[allow(dead_code)]
     pub fn register_blocked_reader(thread_id: u64) {
         let mut readers = BLOCKED_READERS.lock();
         if !readers.contains(&thread_id) {
@@ -412,6 +434,10 @@ impl TtyDevice {
     ///
     /// Called when a thread successfully reads data or encounters an error,
     /// after having previously registered as a blocked reader.
+    ///
+    /// Currently unused because keyboard input bypasses TTY (uses stdin directly).
+    /// Will be used when termios ioctls are fully implemented.
+    #[allow(dead_code)]
     pub fn unregister_blocked_reader(thread_id: u64) {
         let mut readers = BLOCKED_READERS.lock();
         readers.retain(|&id| id != thread_id);

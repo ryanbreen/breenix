@@ -106,19 +106,14 @@ pub fn push_byte(byte: u8) {
 
 /// Push a byte to stdin from interrupt context (uses try_lock to avoid deadlock)
 /// Returns true if the byte was pushed, false if locks couldn't be acquired
+///
+/// Note: This function does NOT echo the character. Echo is handled by the TTY
+/// layer (via push_char_nonblock) which processes termios settings for proper
+/// echo behavior including control character display as ^X.
 pub fn push_byte_from_irq(byte: u8) -> bool {
     // Try to acquire the buffer lock - don't block in interrupt context
     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
         if buffer.push_byte(byte) {
-            // Echo character to serial output (COM1)
-            crate::serial::write_byte(byte);
-
-            // In interactive mode, also echo to framebuffer so user sees their input
-            #[cfg(feature = "interactive")]
-            {
-                crate::logger::write_char_to_framebuffer(byte);
-            }
-
             drop(buffer);
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
@@ -178,9 +173,8 @@ pub fn has_data() -> bool {
 
 /// Register a thread as waiting for stdin input
 ///
-/// Note: With TTY integration, blocked readers are now registered through
-/// TtyDevice::register_blocked_reader. This function is kept for fallback.
-#[allow(dead_code)]
+/// Used by sys_read when blocking on stdin. When data becomes available
+/// via push_byte_from_irq, the blocked readers are woken.
 pub fn register_blocked_reader(thread_id: u64) {
     let mut blocked = BLOCKED_READERS.lock();
     if !blocked.contains(&thread_id) {
@@ -190,7 +184,6 @@ pub fn register_blocked_reader(thread_id: u64) {
 }
 
 /// Unregister a thread from waiting for stdin (e.g., on signal or timeout)
-#[allow(dead_code)]
 pub fn unregister_blocked_reader(thread_id: u64) {
     let mut blocked = BLOCKED_READERS.lock();
     blocked.retain(|&id| id != thread_id);

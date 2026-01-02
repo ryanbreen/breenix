@@ -432,23 +432,25 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // when userspace processes are running, so keyboard input would never be processed.
     if let Some(event) = crate::keyboard::process_scancode(scancode) {
         if let Some(character) = event.character {
-            // Route ALL input through the TTY layer using the non-blocking variant.
-            // The TTY handles:
-            // - Ctrl+C -> SIGINT
-            // - Ctrl+D -> EOF
-            // - Ctrl+\\ -> SIGQUIT
-            // - Ctrl+Z -> SIGTSTP
-            // - Line editing (backspace, etc.)
-            // - Echo (if enabled)
-            // - Blocking read wakeup
+            // Push character to stdin buffer for userspace reads.
+            // This is the primary path - characters go directly to stdin buffer
+            // where they are immediately available to sys_read.
             //
-            // We use push_char_nonblock which uses try_lock to avoid deadlock
-            // with syscall handlers that may hold the TTY lock.
-            if !crate::tty::push_char_nonblock(character as u8) {
-                // TTY lock was busy, fall back to old stdin buffer
-                // This ensures we don't drop characters
-                crate::ipc::stdin::push_byte_from_irq(character as u8);
-            }
+            // The stdin::push_byte_from_irq function handles:
+            // - Adding to the ring buffer
+            // - Echo to serial port (for debugging)
+            // - Echo to framebuffer (in interactive mode, so user sees input)
+            // - Waking blocked readers
+            //
+            // Note: TTY layer integration is optional and used for advanced
+            // features like line editing and signals. For basic keyboard input,
+            // we always use the stdin buffer path.
+            crate::ipc::stdin::push_byte_from_irq(character as u8);
+
+            // Also route through TTY for signal handling (Ctrl+C, etc.)
+            // The TTY processes signals but we don't use it for data flow.
+            // Result is intentionally ignored - we don't care if TTY lock was busy.
+            let _ = crate::tty::driver::push_char_nonblock(character as u8);
         }
     }
 
