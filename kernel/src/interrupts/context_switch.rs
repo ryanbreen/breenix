@@ -586,7 +586,11 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             frame.code_segment = crate::gdt::kernel_code_selector();
             frame.stack_segment = crate::gdt::kernel_data_selector();
             frame.instruction_pointer = x86_64::VirtAddr::new(idle_loop as *const () as u64);
-            frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+            // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
+            // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
+            // Without bit 1, IRETQ behavior is undefined per Intel spec.
+            let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+            *flags_ptr = 0x202;
 
             // CRITICAL: Must set kernel stack pointer when returning to idle!
             // The idle thread runs in kernel mode and needs a kernel stack.
@@ -916,7 +920,11 @@ pub fn idle_loop() -> ! {
     loop {
         // Try to flush any pending IRQ logs while idle
         crate::irq_log::flush_local_try();
-        x86_64::instructions::hlt();
+        // CRITICAL: Use enable_and_hlt() instead of just hlt()
+        // This atomically enables interrupts and halts, preventing race conditions
+        // where interrupts might be disabled when we enter this loop.
+        // Without this, if interrupts are disabled, HLT would hang forever.
+        x86_64::instructions::interrupts::enable_and_hlt();
     }
 }
 

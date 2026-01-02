@@ -861,7 +861,10 @@ extern "x86-interrupt" fn page_fault_handler(
                     frame.instruction_pointer = x86_64::VirtAddr::new(
                         context_switch::idle_loop as *const () as u64
                     );
-                    frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+                    // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
+                    // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
+                    let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+                    *flags_ptr = 0x202;
 
                     // Set up kernel stack - use current RSP with some headroom
                     let current_rsp: u64;
@@ -1126,7 +1129,10 @@ extern "x86-interrupt" fn general_protection_fault_handler(
                 frame.instruction_pointer = x86_64::VirtAddr::new(
                     context_switch::idle_loop as *const () as u64
                 );
-                frame.cpu_flags = x86_64::registers::rflags::RFlags::INTERRUPT_FLAG;
+                // CRITICAL: Set both INTERRUPT_FLAG (bit 9) AND reserved bit 1 (always required)
+                // 0x202 = INTERRUPT_FLAG (0x200) | reserved bit 1 (0x002)
+                let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
+                *flags_ptr = 0x202;
 
                 // Set up kernel stack - use current RSP with some headroom
                 let current_rsp: u64;
