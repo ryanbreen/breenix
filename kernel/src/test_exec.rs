@@ -1618,3 +1618,76 @@ pub fn test_file_read() {
         }
     }
 }
+
+/// Test getdents64 syscall for directory listing
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Getdents test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates getdents64 syscall on ext2 filesystem
+///   - Marker: "GETDENTS_TEST_PASSED"
+///   - This PROVES open with O_DIRECTORY, getdents64, and directory parsing work
+pub fn test_getdents() {
+    log::info!("Testing getdents64 syscall for directory listing");
+
+    #[cfg(feature = "testing")]
+    let getdents_test_elf_buf = crate::userspace_test::get_test_binary("getdents_test");
+    #[cfg(feature = "testing")]
+    let getdents_test_elf: &[u8] = &getdents_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let getdents_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("getdents_test"),
+        getdents_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created getdents_test process with PID {:?}", pid);
+            log::info!("Getdents test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit GETDENTS_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create getdents_test process: {}", e);
+            log::error!("Getdents test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test lseek syscall including SEEK_END
+///
+/// This test validates lseek with all three whence values:
+/// - SEEK_SET: Seek to absolute position
+/// - SEEK_CUR: Seek relative to current position
+/// - SEEK_END: Seek relative to end of file
+///
+/// What this proves:
+///   - lseek syscall correctly handles all whence values
+///   - SEEK_END correctly uses file size from ext2 inode
+///   - Negative offsets with SEEK_END work correctly
+///   - Invalid seeks (resulting in negative position) return EINVAL
+pub fn test_lseek() {
+    log::info!("Testing lseek syscall (SEEK_SET, SEEK_CUR, SEEK_END)");
+
+    #[cfg(feature = "testing")]
+    let lseek_test_elf_buf = crate::userspace_test::get_test_binary("lseek_test");
+    #[cfg(feature = "testing")]
+    let lseek_test_elf: &[u8] = &lseek_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let lseek_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("lseek_test"),
+        lseek_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created lseek_test process with PID {:?}", pid);
+            log::info!("Lseek test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit LSEEK_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create lseek_test process: {}", e);
+            log::error!("Lseek test cannot run without valid userspace process");
+        }
+    }
+}

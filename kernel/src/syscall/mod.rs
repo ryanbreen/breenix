@@ -62,6 +62,7 @@ pub enum SyscallNumber {
     Open = 257,         // Breenix: new filesystem syscall
     Lseek = 258,        // Breenix: new filesystem syscall
     Fstat = 259,        // Breenix: new filesystem syscall
+    Getdents64 = 260,   // Breenix: directory listing syscall
     Pipe2 = 293,        // Linux syscall number for pipe2
 }
 
@@ -105,6 +106,7 @@ impl SyscallNumber {
             257 => Some(Self::Open),
             258 => Some(Self::Lseek),
             259 => Some(Self::Fstat),
+            260 => Some(Self::Getdents64),
             293 => Some(Self::Pipe2),
             _ => None,
         }

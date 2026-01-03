@@ -57,6 +57,14 @@ pub struct RegularFile {
     pub flags: u32,
 }
 
+/// Directory file descriptor (for getdents)
+#[derive(Clone, Debug)]
+pub struct DirectoryFile {
+    pub inode_num: u64,
+    pub mount_id: usize,
+    pub position: u64,  // Current offset in directory entries
+}
+
 /// Types of file descriptors
 ///
 /// This unified enum supports all fd types in Breenix:
@@ -80,6 +88,8 @@ pub enum FdKind {
     /// Regular file descriptor
     #[allow(dead_code)] // Will be constructed when open() is fully implemented
     RegularFile(Arc<Mutex<RegularFile>>),
+    /// Directory file descriptor (for getdents)
+    Directory(Arc<Mutex<DirectoryFile>>),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -90,6 +100,7 @@ impl core::fmt::Debug for FdKind {
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
             FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
             FdKind::RegularFile(_) => write!(f, "RegularFile"),
+            FdKind::Directory(_) => write!(f, "Directory"),
         }
     }
 }
@@ -395,6 +406,10 @@ impl Drop for FdTable {
                     FdKind::RegularFile(_) => {
                         // Regular file cleanup handled by Arc refcount
                         log::debug!("FdTable::drop() - releasing regular file fd {}", i);
+                    }
+                    FdKind::Directory(_) => {
+                        // Directory cleanup handled by Arc refcount
+                        log::debug!("FdTable::drop() - releasing directory fd {}", i);
                     }
                 }
             }

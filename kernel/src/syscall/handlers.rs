@@ -264,6 +264,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_write: Regular file I/O not implemented yet");
             SyscallResult::Err(95) // EOPNOTSUPP
         }
+        FdKind::Directory(_) => {
+            // Cannot write to a directory
+            log::error!("sys_write: Cannot write to directory");
+            SyscallResult::Err(21) // EISDIR
+        }
     }
 }
 
@@ -526,6 +531,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             log::debug!("sys_read: Read {} bytes from regular file (inode {})", bytes_read, inode_num);
             SyscallResult::Ok(bytes_read as u64)
+        }
+        FdKind::Directory(_) => {
+            // Cannot read from directory with read() - must use getdents
+            log::debug!("sys_read: Cannot read from directory, use getdents instead");
+            SyscallResult::Err(super::errno::EISDIR as u64)
         }
     }
 }

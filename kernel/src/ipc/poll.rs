@@ -106,6 +106,12 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLOUT;
             }
         }
+        FdKind::Directory(_dir) => {
+            // Directories are always "readable" for getdents purposes
+            if (events & events::POLLIN) != 0 {
+                revents |= events::POLLIN;
+            }
+        }
     }
 
     revents

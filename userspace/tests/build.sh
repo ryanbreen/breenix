@@ -68,6 +68,8 @@ BINARIES=(
     "nonblock_test"
     "tty_test"
     "file_read_test"
+    "getdents_test"
+    "lseek_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

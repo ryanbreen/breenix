@@ -166,6 +166,10 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Regular file cleanup handled by Arc refcount
                     log::debug!("sys_close: Closed regular file fd={}", fd);
                 }
+                FdKind::Directory(_) => {
+                    // Directory cleanup handled by Arc refcount
+                    log::debug!("sys_close: Closed directory fd={}", fd);
+                }
             }
             SyscallResult::Ok(0)
         }

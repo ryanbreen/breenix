@@ -46,6 +46,7 @@ pub mod nr {
     pub const OPEN: u64 = 257;        // Breenix: new filesystem syscall
     pub const LSEEK: u64 = 258;       // Breenix: new filesystem syscall
     pub const FSTAT: u64 = 259;       // Breenix: new filesystem syscall
+    pub const GETDENTS64: u64 = 260;  // Breenix: directory listing syscall
     pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2
 }
 

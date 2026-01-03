@@ -692,6 +692,14 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: ext2 file read functionality ===");
         test_exec::test_file_read();
 
+        // Test getdents64 syscall for directory listing
+        log::info!("=== FS TEST: getdents64 directory listing ===");
+        test_exec::test_getdents();
+
+        // Test lseek syscall including SEEK_END
+        log::info!("=== FS TEST: lseek (SEEK_SET, SEEK_CUR, SEEK_END) ===");
+        test_exec::test_lseek();
+
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
         test_exec::test_signal_exec();

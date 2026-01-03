@@ -1,6 +1,6 @@
 //! Filesystem-related syscalls
 //!
-//! Implements: open, lseek, fstat
+//! Implements: open, lseek, fstat, getdents64
 
 use crate::ipc::fd::FdKind;
 use super::SyscallResult;
@@ -20,6 +20,56 @@ pub const O_EXCL: u32 = 0x80;
 pub const O_TRUNC: u32 = 0x200;
 #[allow(dead_code)] // Will be used when open() is fully implemented
 pub const O_APPEND: u32 = 0x400;
+/// O_DIRECTORY - must be a directory
+pub const O_DIRECTORY: u32 = 0x10000;
+
+/// Linux dirent64 structure for getdents64 syscall
+///
+/// This is a variable-length structure. The d_name field is actually
+/// variable-length and null-terminated. d_reclen is the total size
+/// of the structure including padding for 8-byte alignment.
+///
+/// Note: We don't instantiate this struct directly; instead we write
+/// the fields manually to user memory due to the variable-length d_name.
+#[repr(C)]
+#[allow(dead_code)] // Documentation struct - we write fields manually
+pub struct LinuxDirent64 {
+    /// Inode number
+    pub d_ino: u64,
+    /// Offset to next dirent (used as position cookie)
+    pub d_off: i64,
+    /// Length of this dirent (including d_name and padding)
+    pub d_reclen: u16,
+    /// File type (DT_*)
+    pub d_type: u8,
+    // d_name follows immediately after d_type (variable length, null-terminated)
+}
+
+/// Size of the fixed part of LinuxDirent64 (before d_name)
+const DIRENT64_HEADER_SIZE: usize = 19; // 8 + 8 + 2 + 1 = 19 bytes
+
+// File type constants for d_type field (Linux values)
+/// Unknown file type
+pub const DT_UNKNOWN: u8 = 0;
+/// FIFO (named pipe)
+#[allow(dead_code)] // Part of dirent API
+pub const DT_FIFO: u8 = 1;
+/// Character device
+#[allow(dead_code)] // Part of dirent API
+pub const DT_CHR: u8 = 2;
+/// Directory
+pub const DT_DIR: u8 = 4;
+/// Block device
+#[allow(dead_code)] // Part of dirent API
+pub const DT_BLK: u8 = 6;
+/// Regular file
+pub const DT_REG: u8 = 8;
+/// Symbolic link
+#[allow(dead_code)] // Part of dirent API
+pub const DT_LNK: u8 = 10;
+/// Socket
+#[allow(dead_code)] // Part of dirent API
+pub const DT_SOCK: u8 = 12;
 
 /// Seek whence values
 pub const SEEK_SET: i32 = 0;
@@ -89,20 +139,20 @@ impl Stat {
     }
 }
 
-/// sys_open - Open a file
+/// sys_open - Open a file or directory
 ///
 /// # Arguments
 /// * `pathname` - Path to the file (userspace pointer)
-/// * `flags` - Open flags (O_RDONLY, O_WRONLY, O_RDWR, etc.)
+/// * `flags` - Open flags (O_RDONLY, O_WRONLY, O_RDWR, O_DIRECTORY, etc.)
 /// * `mode` - File creation mode (if O_CREAT)
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
 pub fn sys_open(pathname: u64, flags: u32, _mode: u32) -> SyscallResult {
-    use super::errno::{EACCES, EISDIR, EMFILE, ENOENT};
+    use super::errno::{EACCES, EISDIR, EMFILE, ENOENT, ENOTDIR};
     use super::userptr::copy_cstr_from_user;
     use crate::fs::ext2::{self, FileType as Ext2FileType};
-    use crate::ipc::fd::RegularFile;
+    use crate::ipc::fd::{DirectoryFile, RegularFile};
     use alloc::sync::Arc;
     use spin::Mutex;
 
@@ -133,7 +183,7 @@ pub fn sys_open(pathname: u64, flags: u32, _mode: u32) -> SyscallResult {
             if e.contains("not found") {
                 return SyscallResult::Err(ENOENT as u64);
             } else if e.contains("Not a directory") {
-                return SyscallResult::Err(20); // ENOTDIR
+                return SyscallResult::Err(ENOTDIR as u64);
             } else {
                 return SyscallResult::Err(5); // EIO
             }
@@ -149,67 +199,119 @@ pub fn sys_open(pathname: u64, flags: u32, _mode: u32) -> SyscallResult {
         }
     };
 
-    // Check if it's a directory (can't open directories with O_RDONLY/O_WRONLY/O_RDWR for read/write)
-    // Note: O_RDONLY with O_DIRECTORY is allowed for reading directory entries
     let file_type = inode.file_type();
-    if matches!(file_type, Ext2FileType::Directory) {
-        // For now, we don't support opening directories
-        // (would need O_DIRECTORY flag and getdents syscall)
-        log::debug!("sys_open: {} is a directory", path);
-        return SyscallResult::Err(EISDIR as u64);
-    }
-
-    // Check if it's a regular file
-    if !matches!(file_type, Ext2FileType::Regular) {
-        log::debug!("sys_open: {} is not a regular file (type: {:?})", path, file_type);
-        return SyscallResult::Err(EACCES as u64);
-    }
-
-    // Create RegularFile structure
-    let regular_file = RegularFile {
-        inode_num: inode_num as u64,
-        mount_id: fs.mount_id,
-        position: 0,
-        flags,
-    };
+    let is_directory = matches!(file_type, Ext2FileType::Directory);
+    let wants_directory = (flags & O_DIRECTORY) != 0;
+    let mount_id = fs.mount_id;
 
     // Drop the filesystem lock before acquiring process lock
     drop(fs_guard);
 
-    // Get current process and allocate fd
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            log::error!("sys_open: No current thread");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
+    // Handle directory vs file cases
+    if is_directory {
+        if wants_directory || (flags & 0x3) == O_RDONLY {
+            // O_DIRECTORY flag is set, or opening with O_RDONLY - allow for getdents
+            // Create DirectoryFile structure
+            let dir_file = DirectoryFile {
+                inode_num: inode_num as u64,
+                mount_id,
+                position: 0,
+            };
 
-    let mut manager_guard = crate::process::manager();
-    let process = match &mut *manager_guard {
-        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-            Some((_, p)) => p,
+            // Get current process and allocate fd
+            let thread_id = match crate::task::scheduler::current_thread_id() {
+                Some(id) => id,
+                None => {
+                    log::error!("sys_open: No current thread");
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            };
+
+            let mut manager_guard = crate::process::manager();
+            let process = match &mut *manager_guard {
+                Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                    Some((_, p)) => p,
+                    None => {
+                        log::error!("sys_open: Process not found for thread {}", thread_id);
+                        return SyscallResult::Err(3); // ESRCH
+                    }
+                },
+                None => {
+                    log::error!("sys_open: Process manager not initialized");
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            };
+
+            // Allocate file descriptor for directory
+            let fd_kind = FdKind::Directory(Arc::new(Mutex::new(dir_file)));
+            match process.fd_table.alloc(fd_kind) {
+                Ok(fd) => {
+                    log::info!("sys_open: opened directory {} as fd {} (inode {})", path, fd, inode_num);
+                    SyscallResult::Ok(fd as u64)
+                }
+                Err(_) => {
+                    log::error!("sys_open: too many open files");
+                    SyscallResult::Err(EMFILE as u64)
+                }
+            }
+        } else {
+            // Trying to open directory for writing or similar
+            log::debug!("sys_open: {} is a directory (cannot write)", path);
+            return SyscallResult::Err(EISDIR as u64);
+        }
+    } else if wants_directory {
+        // O_DIRECTORY was specified but path is not a directory
+        log::debug!("sys_open: {} is not a directory (O_DIRECTORY specified)", path);
+        return SyscallResult::Err(ENOTDIR as u64);
+    } else if !matches!(file_type, Ext2FileType::Regular) {
+        // Not a regular file and not a directory
+        log::debug!("sys_open: {} is not a regular file (type: {:?})", path, file_type);
+        return SyscallResult::Err(EACCES as u64);
+    } else {
+        // Regular file
+        // Create RegularFile structure
+        let regular_file = RegularFile {
+            inode_num: inode_num as u64,
+            mount_id,
+            position: 0,
+            flags,
+        };
+
+        // Get current process and allocate fd
+        let thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
             None => {
-                log::error!("sys_open: Process not found for thread {}", thread_id);
+                log::error!("sys_open: No current thread");
                 return SyscallResult::Err(3); // ESRCH
             }
-        },
-        None => {
-            log::error!("sys_open: Process manager not initialized");
-            return SyscallResult::Err(3); // ESRCH
-        }
-    };
+        };
 
-    // Allocate file descriptor
-    let fd_kind = FdKind::RegularFile(Arc::new(Mutex::new(regular_file)));
-    match process.fd_table.alloc(fd_kind) {
-        Ok(fd) => {
-            log::info!("sys_open: opened {} as fd {} (inode {})", path, fd, inode_num);
-            SyscallResult::Ok(fd as u64)
-        }
-        Err(_) => {
-            log::error!("sys_open: too many open files");
-            SyscallResult::Err(EMFILE as u64)
+        let mut manager_guard = crate::process::manager();
+        let process = match &mut *manager_guard {
+            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                Some((_, p)) => p,
+                None => {
+                    log::error!("sys_open: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
+            None => {
+                log::error!("sys_open: Process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        // Allocate file descriptor
+        let fd_kind = FdKind::RegularFile(Arc::new(Mutex::new(regular_file)));
+        match process.fd_table.alloc(fd_kind) {
+            Ok(fd) => {
+                log::info!("sys_open: opened {} as fd {} (inode {})", path, fd, inode_num);
+                SyscallResult::Ok(fd as u64)
+            }
+            Err(_) => {
+                log::error!("sys_open: too many open files");
+                SyscallResult::Err(EMFILE as u64)
+            }
         }
     }
 }
@@ -259,13 +361,28 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
                 SEEK_SET => offset as u64,
                 SEEK_CUR => (file.position as i64 + offset) as u64,
                 SEEK_END => {
-                    // Would need file size from inode
-                    return SyscallResult::Err(22); // EINVAL for now
+                    // Get file size from ext2 inode
+                    let file_size = match get_ext2_file_size(file.inode_num) {
+                        Some(size) => size as i64,
+                        None => {
+                            log::error!("sys_lseek: cannot get file size for inode {}", file.inode_num);
+                            return SyscallResult::Err(5); // EIO - filesystem not available
+                        }
+                    };
+                    let new_position = file_size + offset;
+                    if new_position < 0 {
+                        return SyscallResult::Err(22); // EINVAL - negative position
+                    }
+                    new_position as u64
                 }
                 _ => return SyscallResult::Err(22), // EINVAL
             };
             file.position = new_pos;
             SyscallResult::Ok(new_pos)
+        }
+        FdKind::Directory(_) => {
+            // Directories are not seekable with lseek - use getdents position instead
+            SyscallResult::Err(21) // EISDIR
         }
         _ => SyscallResult::Err(29), // ESPIPE - not seekable
     }
@@ -367,6 +484,26 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 stat.st_blocks = inode_stat.blocks;
             }
         }
+        FdKind::Directory(dir) => {
+            let dir_guard = dir.lock();
+            stat.st_dev = dir_guard.mount_id as u64;
+            stat.st_ino = dir_guard.inode_num;
+            stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x (default)
+            stat.st_nlink = 2; // . and ..
+
+            // Try to load inode metadata from ext2 filesystem
+            if let Some(inode_stat) = load_ext2_inode_stat(dir_guard.inode_num) {
+                stat.st_mode = inode_stat.mode;
+                stat.st_uid = inode_stat.uid;
+                stat.st_gid = inode_stat.gid;
+                stat.st_size = inode_stat.size;
+                stat.st_nlink = inode_stat.nlink;
+                stat.st_atime = inode_stat.atime;
+                stat.st_mtime = inode_stat.mtime;
+                stat.st_ctime = inode_stat.ctime;
+                stat.st_blocks = inode_stat.blocks;
+            }
+        }
     }
 
     // Copy stat structure to userspace
@@ -430,4 +567,224 @@ fn load_ext2_inode_stat(inode_num: u64) -> Option<InodeStat> {
         ctime: ctime as i64,
         blocks: blocks as i64,
     })
+}
+
+/// Get file size from ext2 inode
+///
+/// Returns None if the ext2 filesystem is not available or inode cannot be read.
+fn get_ext2_file_size(inode_num: u64) -> Option<u64> {
+    use crate::fs::ext2;
+
+    // Get the mounted root filesystem
+    let fs_guard = ext2::root_fs();
+    let fs = fs_guard.as_ref()?;
+
+    // Read the inode using the cached filesystem
+    let inode = fs.read_inode(inode_num as u32).ok()?;
+
+    Some(inode.size())
+}
+
+/// Convert ext2 file type to Linux dirent d_type
+fn ext2_file_type_to_dt(ext2_type: u8) -> u8 {
+    use crate::fs::ext2::dir;
+    match ext2_type {
+        dir::EXT2_FT_REG_FILE => DT_REG,
+        dir::EXT2_FT_DIR => DT_DIR,
+        dir::EXT2_FT_CHRDEV => DT_CHR,
+        dir::EXT2_FT_BLKDEV => DT_BLK,
+        dir::EXT2_FT_FIFO => DT_FIFO,
+        dir::EXT2_FT_SOCK => DT_SOCK,
+        dir::EXT2_FT_SYMLINK => DT_LNK,
+        _ => DT_UNKNOWN,
+    }
+}
+
+/// Align a value up to the nearest multiple of 8
+fn align_up_8(value: usize) -> usize {
+    (value + 7) & !7
+}
+
+/// sys_getdents64 - Get directory entries
+///
+/// Reads directory entries into a buffer in Linux dirent64 format.
+///
+/// # Arguments
+/// * `fd` - File descriptor for an open directory
+/// * `dirp` - Pointer to user buffer for directory entries
+/// * `count` - Size of the buffer in bytes
+///
+/// # Returns
+/// * On success: Number of bytes written to the buffer
+/// * On success with no more entries: 0
+/// * On error: Negative errno
+pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
+    use super::errno::{EBADF, EFAULT, EINVAL, EIO, ENOTDIR};
+    use crate::fs::ext2::{self, dir::DirReader};
+
+    log::debug!("sys_getdents64: fd={}, dirp={:#x}, count={}", fd, dirp, count);
+
+    // Validate buffer pointer
+    if dirp == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Validate count
+    if count == 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Get current process and find the fd
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_getdents64: No current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_, p)) => p,
+            None => {
+                log::error!("sys_getdents64: Process not found for thread {}", thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        },
+        None => {
+            log::error!("sys_getdents64: Process manager not initialized");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    // Get fd entry
+    let fd_entry = match process.fd_table.get(fd) {
+        Some(entry) => entry,
+        None => return SyscallResult::Err(EBADF as u64),
+    };
+
+    // Must be a directory fd
+    let dir_file = match &fd_entry.kind {
+        FdKind::Directory(dir) => dir.clone(),
+        _ => return SyscallResult::Err(ENOTDIR as u64),
+    };
+
+    // Get directory info
+    let dir_guard = dir_file.lock();
+    let inode_num = dir_guard.inode_num;
+    let start_position = dir_guard.position;
+    drop(dir_guard);
+
+    // Drop process manager lock before acquiring filesystem lock
+    drop(manager_guard);
+
+    // Read directory data from ext2
+    let fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_ref() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_getdents64: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Read the directory inode
+    let inode = match fs.read_inode(inode_num as u32) {
+        Ok(ino) => ino,
+        Err(_) => {
+            log::error!("sys_getdents64: failed to read inode {}", inode_num);
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Read directory data
+    let dir_data = match fs.read_directory(&inode) {
+        Ok(data) => data,
+        Err(e) => {
+            log::error!("sys_getdents64: failed to read directory: {}", e);
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    drop(fs_guard);
+
+    // Parse directory entries and write to user buffer
+    let buffer = dirp as *mut u8;
+    let buffer_size = count as usize;
+    let mut bytes_written = 0usize;
+    let mut entry_index = 0usize;
+    let mut new_position = start_position;
+
+    for entry in DirReader::new(&dir_data) {
+        // Skip entries before our current position
+        // Position is stored as entry index for simplicity
+        if (entry_index as u64) < start_position {
+            entry_index += 1;
+            continue;
+        }
+
+        let name_len = entry.name.len();
+        // d_reclen = header + name + null terminator, aligned to 8 bytes
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
+
+        // Check if this entry fits in remaining buffer
+        if bytes_written + reclen > buffer_size {
+            // No more room - stop here
+            break;
+        }
+
+        // Write entry to user buffer
+        // SAFETY: We've validated the buffer pointer and size
+        unsafe {
+            let entry_ptr = buffer.add(bytes_written);
+
+            // Write d_ino (u64) at offset 0
+            let d_ino_ptr = entry_ptr as *mut u64;
+            core::ptr::write_unaligned(d_ino_ptr, entry.inode as u64);
+
+            // Write d_off (i64) at offset 8 - offset to NEXT entry (entry_index + 1)
+            let d_off_ptr = entry_ptr.add(8) as *mut i64;
+            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+
+            // Write d_reclen (u16) at offset 16
+            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
+            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
+
+            // Write d_type (u8) at offset 18
+            let d_type_ptr = entry_ptr.add(18);
+            *d_type_ptr = ext2_file_type_to_dt(entry.file_type);
+
+            // Write d_name (variable length, null-terminated) at offset 19
+            let d_name_ptr = entry_ptr.add(19);
+            core::ptr::copy_nonoverlapping(entry.name.as_ptr(), d_name_ptr, name_len);
+            // Null terminator
+            *d_name_ptr.add(name_len) = 0;
+
+            // Zero-fill padding to maintain alignment
+            let padding_start = 19 + name_len + 1;
+            for i in padding_start..reclen {
+                *entry_ptr.add(i) = 0;
+            }
+        }
+
+        bytes_written += reclen;
+        entry_index += 1;
+        new_position = entry_index as u64;
+    }
+
+    // Update directory position
+    let mut manager_guard = crate::process::manager();
+    if let Some(manager) = &mut *manager_guard {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some(fd_entry) = process.fd_table.get(fd) {
+                if let FdKind::Directory(dir) = &fd_entry.kind {
+                    dir.lock().position = new_position;
+                }
+            }
+        }
+    }
+
+    log::debug!("sys_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
+    SyscallResult::Ok(bytes_written as u64)
 }

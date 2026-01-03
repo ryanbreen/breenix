@@ -646,6 +646,20 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "ext2 file read test failed - open, read, fstat, or close syscalls on ext2 filesystem broken",
             check_hint: "Check kernel/src/fs/ext2/ module, kernel/src/syscall/fs.rs, and ext2.img disk attachment",
         },
+        // ext2 getdents test (directory listing)
+        BootStage {
+            name: "Getdents test passed",
+            marker: "GETDENTS_TEST_PASSED",
+            failure_meaning: "getdents64 syscall failed - directory listing on ext2 filesystem broken",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_getdents64(), O_DIRECTORY handling, and ext2 directory parsing",
+        },
+        // lseek test (SEEK_SET, SEEK_CUR, SEEK_END)
+        BootStage {
+            name: "Lseek test passed",
+            marker: "LSEEK_TEST_PASSED",
+            failure_meaning: "lseek syscall failed - SEEK_SET, SEEK_CUR, or SEEK_END broken",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_lseek(), especially SEEK_END with get_ext2_file_size()",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]
