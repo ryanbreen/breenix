@@ -158,6 +158,14 @@ path = "tty_test.rs"
 name = "file_read_test"
 path = "file_read_test.rs"
 
+[[bin]]
+name = "getdents_test"
+path = "getdents_test.rs"
+
+[[bin]]
+name = "lseek_test"
+path = "lseek_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

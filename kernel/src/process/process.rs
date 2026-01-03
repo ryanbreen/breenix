@@ -204,6 +204,10 @@ impl Process {
                         // Regular file cleanup handled by Arc refcount
                         log::debug!("Process::close_all_fds() - released regular file fd {}", fd);
                     }
+                    FdKind::Directory(_) => {
+                        // Directory cleanup handled by Arc refcount
+                        log::debug!("Process::close_all_fds() - released directory fd {}", fd);
+                    }
                 }
             }
         }
