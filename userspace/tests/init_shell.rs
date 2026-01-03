@@ -18,8 +18,8 @@
 
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
-use libbreenix::io::{print, println, read, write};
-use libbreenix::process::yield_now;
+use libbreenix::io::{close, dup2, pipe, print, println, read, write};
+use libbreenix::process::{exec, fork, waitpid, wexitstatus, wifexited, yield_now};
 use libbreenix::signal::{sigaction, Sigaction, SIGINT};
 use libbreenix::termios::{
     cfmakeraw, lflag, oflag, tcgetattr, tcsetattr, Termios, TCSANOW,
@@ -27,6 +27,478 @@ use libbreenix::termios::{
 use libbreenix::time::now_monotonic;
 use libbreenix::types::fd::{STDIN, STDOUT};
 use libbreenix::Timespec;
+
+// ============================================================================
+// Program Registry - Lookup table for external commands
+// ============================================================================
+
+/// An entry in the program registry representing an external command
+/// that can be executed via fork+exec.
+#[derive(Clone, Copy)]
+pub struct ProgramEntry {
+    /// The command name as typed by the user (e.g., "hello")
+    pub name: &'static str,
+    /// The null-terminated binary name for exec (e.g., b"hello_world\0")
+    /// This must match the binary name in the test disk.
+    pub binary_name: &'static [u8],
+    /// Brief description for help text
+    pub description: &'static str,
+}
+
+/// Static registry of all known external programs.
+/// These are programs built in userspace/tests/ and loaded from the test disk.
+static PROGRAM_REGISTRY: &[ProgramEntry] = &[
+    ProgramEntry {
+        name: "hello",
+        binary_name: b"hello_world\0",
+        description: "Print hello world message",
+    },
+    ProgramEntry {
+        name: "hello_world",
+        binary_name: b"hello_world\0",
+        description: "Print hello world message",
+    },
+    ProgramEntry {
+        name: "counter",
+        binary_name: b"counter\0",
+        description: "Count from 0 to 9",
+    },
+    ProgramEntry {
+        name: "spinner",
+        binary_name: b"spinner\0",
+        description: "Display spinning animation",
+    },
+    ProgramEntry {
+        name: "hello_time",
+        binary_name: b"hello_time\0",
+        description: "Print hello with timestamp",
+    },
+    ProgramEntry {
+        name: "fork_test",
+        binary_name: b"fork_test\0",
+        description: "Test fork syscall",
+    },
+    ProgramEntry {
+        name: "pipe_test",
+        binary_name: b"pipe_test\0",
+        description: "Test pipe syscall",
+    },
+    ProgramEntry {
+        name: "signal_test",
+        binary_name: b"signal_test\0",
+        description: "Test signal handling",
+    },
+];
+
+/// Find a program in the registry by command name.
+///
+/// Returns Some(ProgramEntry) if found, None otherwise.
+pub fn find_program(name: &str) -> Option<&'static ProgramEntry> {
+    for entry in PROGRAM_REGISTRY {
+        if entry.name == name {
+            return Some(entry);
+        }
+    }
+    None
+}
+
+/// Try to execute an external command via fork+exec.
+///
+/// Arguments:
+/// - `cmd_name`: The command name to execute
+/// - `_args`: Arguments (currently unused)
+/// - `background`: If true, don't wait for the child process
+///
+/// Returns:
+/// - Ok(exit_code) if the program was found and executed (0 for background)
+/// - Err(()) if the program was not found in the registry
+pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Result<i32, ()> {
+    let entry = find_program(cmd_name).ok_or(())?;
+
+    if !background {
+        print("Running: ");
+        println(entry.name);
+    }
+
+    // Fork a child process
+    let pid = fork();
+
+    if pid < 0 {
+        // Fork failed
+        print("Error: fork failed with code ");
+        print_num((-pid) as u64);
+        println("");
+        return Ok(-1);
+    }
+
+    if pid == 0 {
+        // Child process - exec the program
+        let result = exec(entry.binary_name);
+
+        // If exec returns, it failed
+        print("Error: exec failed with code ");
+        print_num((-result) as u64);
+        println("");
+
+        // Exit the child with error code
+        libbreenix::process::exit(1);
+    }
+
+    // Parent process
+    if background {
+        // Background execution - don't wait, just print job notification
+        let job_id = get_next_job_id();
+        print_job_notification(job_id, pid);
+        return Ok(0);
+    }
+
+    // Foreground execution - wait for child to complete
+    let mut status: i32 = 0;
+    let wait_result = waitpid(pid as i32, &mut status as *mut i32, 0);
+
+    if wait_result < 0 {
+        print("Error: waitpid failed with code ");
+        print_num((-wait_result) as u64);
+        println("");
+        return Ok(-1);
+    }
+
+    // Extract and return exit code
+    if wifexited(status) {
+        let exit_code = wexitstatus(status);
+        if exit_code != 0 {
+            print("Process exited with code: ");
+            print_num(exit_code as u64);
+            println("");
+        }
+        Ok(exit_code)
+    } else {
+        println("Process terminated abnormally");
+        Ok(-1)
+    }
+}
+
+/// List all available external programs (for help command)
+pub fn list_external_programs() {
+    println("External programs:");
+    for entry in PROGRAM_REGISTRY {
+        print("  ");
+        print(entry.name);
+        // Pad to align descriptions
+        let padding = 12 - entry.name.len();
+        for _ in 0..padding {
+            print(" ");
+        }
+        print("- ");
+        println(entry.description);
+    }
+}
+
+// ============================================================================
+// Pipeline Support - Parse and execute cmd1 | cmd2 | cmd3
+// ============================================================================
+
+/// Maximum number of commands in a pipeline
+const MAX_PIPELINE_COMMANDS: usize = 8;
+
+/// A parsed command in a pipeline
+#[derive(Clone, Copy)]
+struct PipelineCommand<'a> {
+    /// The command name (first word)
+    name: &'a str,
+    /// The full command string including arguments
+    full: &'a str,
+}
+
+/// Check if the input contains a pipe character
+fn contains_pipe(s: &str) -> bool {
+    for c in s.as_bytes() {
+        if *c == b'|' {
+            return true;
+        }
+    }
+    false
+}
+
+/// Trim leading and trailing whitespace from a string
+fn trim(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    // Trim leading whitespace
+    while start < end && (bytes[start] == b' ' || bytes[start] == b'\t') {
+        start += 1;
+    }
+
+    // Trim trailing whitespace
+    while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t' || bytes[end - 1] == 0)
+    {
+        end -= 1;
+    }
+
+    core::str::from_utf8(&bytes[start..end]).unwrap_or("")
+}
+
+// ============================================================================
+// Background Process Support - cmd &
+// ============================================================================
+
+/// Check if a command should be run in the background (ends with &)
+fn is_background_command(input: &str) -> bool {
+    let trimmed = trim(input);
+    trimmed.ends_with('&')
+}
+
+/// Strip the background operator from a command
+fn strip_background_operator(input: &str) -> &str {
+    let trimmed = trim(input);
+    if trimmed.ends_with('&') {
+        trim(&trimmed[..trimmed.len() - 1])
+    } else {
+        trimmed
+    }
+}
+
+/// Get the next job ID and increment the counter
+fn get_next_job_id() -> usize {
+    unsafe {
+        let job_id = NEXT_JOB_ID;
+        NEXT_JOB_ID += 1;
+        job_id
+    }
+}
+
+/// Print a background job notification
+fn print_job_notification(job_id: usize, pid: i64) {
+    print("[");
+    print_num(job_id as u64);
+    print("] ");
+    print_num(pid as u64);
+    println("");
+}
+
+/// Split a string by pipe character, returning up to MAX_PIPELINE_COMMANDS segments.
+/// Each segment is trimmed of whitespace.
+/// Returns the number of commands found.
+fn split_pipeline<'a>(
+    input: &'a str,
+    commands: &mut [PipelineCommand<'a>; MAX_PIPELINE_COMMANDS],
+) -> usize {
+    let bytes = input.as_bytes();
+    let mut count = 0;
+    let mut start = 0;
+
+    for (i, &c) in bytes.iter().enumerate() {
+        if c == b'|' {
+            if count < MAX_PIPELINE_COMMANDS {
+                let segment = trim(&input[start..i]);
+                if !segment.is_empty() {
+                    // Extract command name (first word)
+                    let name_end = segment
+                        .as_bytes()
+                        .iter()
+                        .position(|&ch| ch == b' ')
+                        .unwrap_or(segment.len());
+                    commands[count] = PipelineCommand {
+                        name: &segment[..name_end],
+                        full: segment,
+                    };
+                    count += 1;
+                }
+            }
+            start = i + 1;
+        }
+    }
+
+    // Handle the last segment after the final pipe (or entire string if no pipe)
+    if count < MAX_PIPELINE_COMMANDS && start < bytes.len() {
+        let segment = trim(&input[start..]);
+        if !segment.is_empty() {
+            let name_end = segment
+                .as_bytes()
+                .iter()
+                .position(|&ch| ch == b' ')
+                .unwrap_or(segment.len());
+            commands[count] = PipelineCommand {
+                name: &segment[..name_end],
+                full: segment,
+            };
+            count += 1;
+        }
+    }
+
+    count
+}
+
+/// Execute a single command in a pipeline context.
+/// This handles built-in commands that can participate in pipelines (like echo).
+/// For external commands, it calls exec.
+///
+/// This function never returns - it either execs or exits.
+fn execute_pipeline_command(cmd: &PipelineCommand) -> ! {
+    // Handle built-in commands that can participate in pipelines
+    if cmd.name == "echo" {
+        // Extract args after "echo "
+        let args = if cmd.full.len() > 5 {
+            trim(&cmd.full[5..])
+        } else {
+            ""
+        };
+        println(args);
+        libbreenix::process::exit(0);
+    }
+
+    // Try external command
+    if let Some(entry) = find_program(cmd.name) {
+        let result = exec(entry.binary_name);
+        // If exec returns, it failed
+        print("exec failed: ");
+        print_num((-result) as u64);
+        println("");
+        libbreenix::process::exit(1);
+    }
+
+    // Command not found
+    print("command not found: ");
+    println(cmd.name);
+    libbreenix::process::exit(127)
+}
+
+/// Execute a pipeline of commands.
+///
+/// For a pipeline like: cmd1 | cmd2 | cmd3
+///
+/// This creates:
+/// - pipe1 between cmd1 and cmd2
+/// - pipe2 between cmd2 and cmd3
+///
+/// Each command is forked as a child process:
+/// - cmd1: stdout -> pipe1[write]
+/// - cmd2: stdin <- pipe1[read], stdout -> pipe2[write]
+/// - cmd3: stdin <- pipe2[read]
+///
+/// Returns true if pipeline was executed (even with errors), false if no valid commands.
+fn execute_pipeline(input: &str) -> bool {
+    let mut commands: [PipelineCommand; MAX_PIPELINE_COMMANDS] = [PipelineCommand {
+        name: "",
+        full: "",
+    }; MAX_PIPELINE_COMMANDS];
+
+    let cmd_count = split_pipeline(input, &mut commands);
+
+    if cmd_count == 0 {
+        return false;
+    }
+
+    // Single command - no pipeline needed, fall back to normal handling
+    if cmd_count == 1 {
+        return false;
+    }
+
+    // Verify all commands exist before starting pipeline
+    for i in 0..cmd_count {
+        let cmd = &commands[i];
+        if cmd.name != "echo" && find_program(cmd.name).is_none() {
+            print("command not found: ");
+            println(cmd.name);
+            return true; // Return true since we handled the error
+        }
+    }
+
+    // Store PIDs of all child processes
+    let mut child_pids: [i64; MAX_PIPELINE_COMMANDS] = [0; MAX_PIPELINE_COMMANDS];
+
+    // Store the read end of the previous pipe (-1 means no previous pipe)
+    let mut prev_read_fd: i32 = -1;
+
+    for i in 0..cmd_count {
+        let is_last = i == cmd_count - 1;
+
+        // Create pipe for this stage (except for the last command)
+        let mut pipefd: [i32; 2] = [-1, -1];
+        if !is_last {
+            let ret = pipe(&mut pipefd);
+            if ret < 0 {
+                print("pipe failed: ");
+                print_num((-ret) as u64);
+                println("");
+                // Clean up previous pipe if exists
+                if prev_read_fd >= 0 {
+                    close(prev_read_fd as u64);
+                }
+                return true;
+            }
+        }
+
+        // Fork child for this command
+        let pid = fork();
+
+        if pid < 0 {
+            print("fork failed: ");
+            print_num((-pid) as u64);
+            println("");
+            // Clean up pipes
+            if prev_read_fd >= 0 {
+                close(prev_read_fd as u64);
+            }
+            if !is_last {
+                close(pipefd[0] as u64);
+                close(pipefd[1] as u64);
+            }
+            return true;
+        }
+
+        if pid == 0 {
+            // ========== CHILD PROCESS ==========
+
+            // Set up stdin from previous pipe (if not first command)
+            if prev_read_fd >= 0 {
+                // Redirect stdin to read from previous pipe
+                dup2(prev_read_fd as u64, STDIN);
+                close(prev_read_fd as u64);
+            }
+
+            // Set up stdout to current pipe (if not last command)
+            if !is_last {
+                // Redirect stdout to write end of current pipe
+                dup2(pipefd[1] as u64, STDOUT);
+                close(pipefd[0] as u64); // Close read end in child
+                close(pipefd[1] as u64); // Close write end after dup
+            }
+
+            // Execute the command (never returns)
+            execute_pipeline_command(&commands[i]);
+        }
+
+        // ========== PARENT PROCESS ==========
+
+        // Store child PID
+        child_pids[i] = pid;
+
+        // Close the previous read fd (child has it now)
+        if prev_read_fd >= 0 {
+            close(prev_read_fd as u64);
+        }
+
+        // Close write end of current pipe (child has it)
+        // Save read end for next iteration
+        if !is_last {
+            close(pipefd[1] as u64);
+            prev_read_fd = pipefd[0];
+        }
+    }
+
+    // Wait for all children to complete
+    for i in 0..cmd_count {
+        if child_pids[i] > 0 {
+            let mut status: i32 = 0;
+            waitpid(child_pids[i] as i32, &mut status as *mut i32, 0);
+        }
+    }
+
+    true
+}
 
 // Line buffer for reading input
 static mut LINE_BUF: [u8; 256] = [0; 256];
@@ -40,6 +512,9 @@ static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 // Saved termios for restoration
 static mut SAVED_TERMIOS: Option<Termios> = None;
+
+// Background job tracking
+static mut NEXT_JOB_ID: usize = 1;
 
 /// SIGINT handler - just sets a flag
 extern "C" fn sigint_handler(_sig: i32) {
@@ -132,37 +607,9 @@ fn read_line() -> Option<&'static str> {
     }
 }
 
-/// Trim leading and trailing whitespace from a string
-fn trim(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    let mut start = 0;
-    let mut end = bytes.len();
-
-    // Trim leading whitespace
-    while start < end && (bytes[start] == b' ' || bytes[start] == b'\t') {
-        start += 1;
-    }
-
-    // Trim trailing whitespace
-    while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t' || bytes[end - 1] == 0)
-    {
-        end -= 1;
-    }
-
-    core::str::from_utf8(&bytes[start..end]).unwrap_or("")
-}
-
-/// Check if a string starts with a prefix
-fn starts_with(s: &str, prefix: &str) -> bool {
-    if s.len() < prefix.len() {
-        return false;
-    }
-    s.as_bytes()[..prefix.len()] == *prefix.as_bytes()
-}
-
 /// Handle the "help" command
 fn cmd_help() {
-    println("Available commands:");
+    println("Built-in commands:");
     println("  help   - Show this help message");
     println("  echo   - Echo text back to the terminal");
     println("  ps     - List processes (placeholder)");
@@ -170,7 +617,18 @@ fn cmd_help() {
     println("  clear  - Clear the screen (ANSI escape sequence)");
     println("  raw    - Switch to raw mode and show keypresses");
     println("  cooked - Switch back to canonical (cooked) mode");
+    println("  progs  - List available external programs");
     println("  exit   - Attempt to exit (init cannot exit)");
+    println("");
+    list_external_programs();
+    println("");
+    println("Pipes:");
+    println("  cmd1 | cmd2      - Pipe output of cmd1 to input of cmd2");
+    println("  echo hello | cat - Example: pipe echo output (not yet useful)");
+    println("");
+    println("Background execution:");
+    println("  command &        - Run command in background");
+    println("  hello &          - Example: run hello_world in background");
     println("");
     println("TTY testing:");
     println("  - Ctrl+C shows ^C and gives new prompt");
@@ -399,36 +857,66 @@ fn handle_command(line: &str) {
         return;
     }
 
-    // Match commands
-    if line == "help" {
-        cmd_help();
-    } else if line == "echo" {
-        cmd_echo("");
-    } else if starts_with(line, "echo ") {
-        // Get everything after "echo "
-        let args = &line[5..];
-        cmd_echo(args);
-    } else if line == "ps" {
-        cmd_ps();
-    } else if line == "uptime" {
-        cmd_uptime();
-    } else if line == "clear" {
-        cmd_clear();
-    } else if line == "raw" {
-        cmd_raw();
-    } else if line == "cooked" {
-        cmd_cooked();
-    } else if line == "exit" || line == "quit" {
-        cmd_exit();
+    // Check for background operator (&) first
+    let background = is_background_command(line);
+    let line = if background {
+        strip_background_operator(line)
     } else {
-        // Extract the first word as the command name
-        let cmd_end = line
-            .as_bytes()
-            .iter()
-            .position(|&c| c == b' ')
-            .unwrap_or(line.len());
-        let cmd = &line[..cmd_end];
-        cmd_unknown(cmd);
+        line
+    };
+
+    // Check for pipeline (contains '|' with 2+ commands)
+    // Note: Background pipelines are not yet supported
+    if contains_pipe(line) {
+        if background {
+            println("Background pipelines not yet supported");
+            return;
+        }
+        if execute_pipeline(line) {
+            return;
+        }
+        // Fall through to normal handling if pipeline fails validation
+    }
+
+    // Extract command name and arguments
+    let cmd_end = line
+        .as_bytes()
+        .iter()
+        .position(|&c| c == b' ')
+        .unwrap_or(line.len());
+    let cmd = &line[..cmd_end];
+    let args = if cmd_end < line.len() {
+        trim(&line[cmd_end + 1..])
+    } else {
+        ""
+    };
+
+    // Built-in commands cannot run in background
+    if background {
+        // Only external commands can run in background
+        if try_execute_external(cmd, args, true).is_err() {
+            cmd_unknown(cmd);
+        }
+        return;
+    }
+
+    // Match built-in commands first (foreground only)
+    match cmd {
+        "help" => cmd_help(),
+        "echo" => cmd_echo(args),
+        "ps" => cmd_ps(),
+        "uptime" => cmd_uptime(),
+        "clear" => cmd_clear(),
+        "raw" => cmd_raw(),
+        "cooked" => cmd_cooked(),
+        "progs" => list_external_programs(),
+        "exit" | "quit" => cmd_exit(),
+        _ => {
+            // Try to execute as an external command
+            if try_execute_external(cmd, args, false).is_err() {
+                cmd_unknown(cmd);
+            }
+        }
     }
 }
 
