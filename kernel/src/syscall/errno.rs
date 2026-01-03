@@ -2,6 +2,16 @@
 //!
 //! Standard error codes returned by system calls.
 
+/// No such file or directory
+pub const ENOENT: i32 = 2;
+
+/// No such process
+#[allow(dead_code)] // Part of POSIX errno API
+pub const ESRCH: i32 = 3;
+
+/// I/O error
+pub const EIO: i32 = 5;
+
 /// Bad file descriptor
 pub const EBADF: i32 = 9;
 
@@ -15,11 +25,28 @@ pub const EAGAIN: i32 = 11;
 #[allow(dead_code)]
 pub const ENOMEM: i32 = 12;
 
+/// Permission denied
+pub const EACCES: i32 = 13;
+
 /// Bad address
 pub const EFAULT: i32 = 14;
 
+/// Not a directory
+#[allow(dead_code)] // Part of POSIX errno API
+pub const ENOTDIR: i32 = 20;
+
+/// Is a directory
+pub const EISDIR: i32 = 21;
+
 /// Invalid argument
 pub const EINVAL: i32 = 22;
+
+/// Too many open files
+pub const EMFILE: i32 = 24;
+
+/// File name too long
+#[allow(dead_code)] // Part of POSIX errno API
+pub const ENAMETOOLONG: i32 = 36;
 
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]

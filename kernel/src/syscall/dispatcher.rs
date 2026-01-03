@@ -64,5 +64,8 @@ pub fn dispatch_syscall(
         SyscallNumber::Fcntl => handlers::sys_fcntl(arg1, arg2, arg3),
         SyscallNumber::Pause => super::signal::sys_pause(),
         SyscallNumber::Wait4 => handlers::sys_waitpid(arg1 as i64, arg2, arg3 as u32),
+        SyscallNumber::Open => super::fs::sys_open(arg1, arg2 as u32, arg3 as u32),
+        SyscallNumber::Fstat => super::fs::sys_fstat(arg1 as i32, arg2),
+        SyscallNumber::Lseek => super::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32),
     }
 }

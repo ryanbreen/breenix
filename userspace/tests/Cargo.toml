@@ -154,6 +154,10 @@ path = "nonblock_test.rs"
 name = "tty_test"
 path = "tty_test.rs"
 
+[[bin]]
+name = "file_read_test"
+path = "file_read_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

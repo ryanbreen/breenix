@@ -47,12 +47,23 @@ pub mod fcntl_cmd {
     pub const F_DUPFD_CLOEXEC: i32 = 1030;
 }
 
+/// Regular file descriptor
+#[derive(Clone, Debug)]
+#[allow(dead_code)] // Fields will be used when open/read/write are fully implemented
+pub struct RegularFile {
+    pub inode_num: u64,
+    pub mount_id: usize,
+    pub position: u64,
+    pub flags: u32,
+}
+
 /// Types of file descriptors
 ///
 /// This unified enum supports all fd types in Breenix:
 /// - Standard I/O (stdin/stdout/stderr)
 /// - Pipes (read and write ends)
 /// - UDP sockets (with future support for TCP, files, etc.)
+/// - Regular files (filesystem files)
 ///
 /// Note: Sockets use Arc<Mutex<>> like pipes because they need to be shared
 /// and cannot be cloned (they contain unique socket handles and rx queues).
@@ -66,6 +77,9 @@ pub enum FdKind {
     PipeWrite(Arc<Mutex<super::pipe::PipeBuffer>>),
     /// UDP socket (wrapped in Arc<Mutex<>> for sharing and dup/fork)
     UdpSocket(Arc<Mutex<crate::socket::udp::UdpSocket>>),
+    /// Regular file descriptor
+    #[allow(dead_code)] // Will be constructed when open() is fully implemented
+    RegularFile(Arc<Mutex<RegularFile>>),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -75,6 +89,7 @@ impl core::fmt::Debug for FdKind {
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
             FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
+            FdKind::RegularFile(_) => write!(f, "RegularFile"),
         }
     }
 }
@@ -376,6 +391,10 @@ impl Drop for FdTable {
                     }
                     FdKind::StdIo(_) => {
                         // StdIo doesn't need cleanup
+                    }
+                    FdKind::RegularFile(_) => {
+                        // Regular file cleanup handled by Arc refcount
+                        log::debug!("FdTable::drop() - releasing regular file fd {}", i);
                     }
                 }
             }

@@ -22,8 +22,10 @@ build/
 # Debug files
 rust-os-gdb
 
-# Ignore the libs directory
-libs/
+# Ignore most of libs directory (except libbreenix which we maintain)
+libs/*
+!libs/libbreenix/
+!libs/libbreenix/**
 
 # Log files
 *.log
@@ -55,6 +57,7 @@ coverage/
 # QEMU/emulator files
 *.qcow2
 *.img
+!testdata/ext2.img
 ovmf/
 
 **/target/*

@@ -1583,3 +1583,38 @@ pub fn test_tty() {
         }
     }
 }
+
+/// Test ext2 file read functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "File read test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates file reading from ext2
+///   - Marker: "FILE_READ_TEST_PASSED"
+///   - This PROVES open, read, fstat, and close syscalls work on ext2 filesystem
+pub fn test_file_read() {
+    log::info!("Testing ext2 file read functionality");
+
+    #[cfg(feature = "testing")]
+    let file_read_test_elf_buf = crate::userspace_test::get_test_binary("file_read_test");
+    #[cfg(feature = "testing")]
+    let file_read_test_elf: &[u8] = &file_read_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let file_read_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("file_read_test"),
+        file_read_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created file_read_test process with PID {:?}", pid);
+            log::info!("File read test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FILE_READ_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create file_read_test process: {}", e);
+            log::error!("File read test cannot run without valid userspace process");
+        }
+    }
+}

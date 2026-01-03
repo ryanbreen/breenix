@@ -200,6 +200,10 @@ impl Process {
                     FdKind::StdIo(_) => {
                         // StdIo doesn't need cleanup
                     }
+                    FdKind::RegularFile(_) => {
+                        // Regular file cleanup handled by Arc refcount
+                        log::debug!("Process::close_all_fds() - released regular file fd {}", fd);
+                    }
                 }
             }
         }
