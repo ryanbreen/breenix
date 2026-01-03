@@ -162,6 +162,10 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // to remain bound until all references are closed.
                     log::debug!("sys_close: Closed UDP socket fd={}", fd);
                 }
+                FdKind::RegularFile(_) => {
+                    // Regular file cleanup handled by Arc refcount
+                    log::debug!("sys_close: Closed regular file fd={}", fd);
+                }
             }
             SyscallResult::Ok(0)
         }

@@ -67,6 +67,7 @@ BINARIES=(
     "select_test"
     "nonblock_test"
     "tty_test"
+    "file_read_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."
@@ -116,6 +117,7 @@ echo ""
 echo "These binaries use libbreenix for syscalls:"
 echo "  - libbreenix::process (exit, fork, exec, getpid, gettid, yield)"
 echo "  - libbreenix::io (read, write, print, println, close, pipe)"
+echo "  - libbreenix::fs (open, read, fstat, lseek, close)"
 echo "  - libbreenix::time (clock_gettime)"
 echo "  - libbreenix::memory (brk, sbrk)"
 echo "  - libbreenix::signal (kill, sigaction, sigprocmask)"

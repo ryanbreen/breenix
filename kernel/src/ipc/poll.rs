@@ -97,6 +97,15 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             }
             // TODO: Check socket RX queue for POLLIN
         }
+        FdKind::RegularFile(_file) => {
+            // Regular files are always readable/writable (for now)
+            if (events & events::POLLIN) != 0 {
+                revents |= events::POLLIN;
+            }
+            if (events & events::POLLOUT) != 0 {
+                revents |= events::POLLOUT;
+            }
+        }
     }
 
     revents

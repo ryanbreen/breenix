@@ -26,9 +26,11 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 #[macro_use]
 mod macros;
 mod clock_gettime_test;
+mod block;
 mod drivers;
 mod elf;
 mod framebuffer;
+mod fs;
 mod gdt;
 mod net;
 #[cfg(feature = "testing")]
@@ -180,6 +182,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Initialize network stack (after E1000 driver is ready)
     net::init();
+
+    // Initialize ext2 root filesystem (after VirtIO block device is ready)
+    match crate::fs::ext2::init_root_fs() {
+        Ok(()) => log::info!("ext2 root filesystem mounted"),
+        Err(e) => log::warn!("Failed to mount ext2 root: {:?}", e),
+    }
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
@@ -679,6 +687,10 @@ fn kernel_main_continue() -> ! {
         // Test TTY layer functionality
         log::info!("=== TTY TEST: TTY layer functionality ===");
         test_exec::test_tty();
+
+        // Test ext2 file read functionality
+        log::info!("=== FS TEST: ext2 file read functionality ===");
+        test_exec::test_file_read();
 
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");

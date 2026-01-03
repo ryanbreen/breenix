@@ -38,6 +38,7 @@ pub use syscall::raw;
 pub use types::*;
 
 pub mod errno;
+pub mod fs;
 pub mod io;
 pub mod memory;
 pub mod process;

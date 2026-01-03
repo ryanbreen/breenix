@@ -40,7 +40,7 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 }
 
 /// Global process manager
-static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
+pub(crate) static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
 /// Initialize the process management system
 pub fn init() {

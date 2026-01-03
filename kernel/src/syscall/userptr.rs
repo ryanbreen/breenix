@@ -137,6 +137,91 @@ pub fn to_syscall_result(result: Result<(), u64>) -> SyscallResult {
     }
 }
 
+/// Maximum path length for copy_cstr_from_user
+const MAX_PATH_LEN: usize = 4096;
+
+/// Validate a user buffer with explicit length
+///
+/// # Arguments
+/// * `ptr` - Start of the buffer
+/// * `len` - Length of the buffer in bytes
+///
+/// # Returns
+/// * `Ok(())` if the buffer is valid
+/// * `Err(14)` (EFAULT) if the buffer is invalid
+#[allow(dead_code)] // Part of userspace pointer validation API
+pub fn validate_user_buffer(ptr: *const u8, len: usize) -> Result<(), u64> {
+    let addr = ptr as u64;
+
+    // Check for null pointer
+    if ptr.is_null() {
+        return Err(14); // EFAULT
+    }
+
+    // Check address is in userspace range
+    if addr >= USER_SPACE_END {
+        return Err(14); // EFAULT
+    }
+
+    // Check for overflow and that end address is still in userspace
+    if addr.checked_add(len as u64).map_or(true, |end| end > USER_SPACE_END) {
+        return Err(14); // EFAULT
+    }
+
+    Ok(())
+}
+
+/// Copy a C-style null-terminated string from userspace
+///
+/// Reads bytes from userspace until a null terminator is found or
+/// MAX_PATH_LEN is reached. Returns the string as a Rust String.
+///
+/// # Arguments
+/// * `ptr` - Pointer to the start of the string in userspace
+///
+/// # Returns
+/// * `Ok(String)` containing the copied string (without null terminator)
+/// * `Err(14)` (EFAULT) if the pointer is invalid
+/// * `Err(36)` (ENAMETOOLONG) if the string exceeds MAX_PATH_LEN
+///
+/// # Safety
+/// This function validates each byte's address before reading.
+pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    // Validate that the starting address is in userspace
+    if ptr == 0 {
+        return Err(14); // EFAULT - null pointer
+    }
+    if ptr >= USER_SPACE_END {
+        return Err(14); // EFAULT - kernel address
+    }
+
+    let mut bytes = Vec::with_capacity(256);
+
+    for offset in 0..MAX_PATH_LEN {
+        let byte_addr = match ptr.checked_add(offset as u64) {
+            Some(addr) if addr < USER_SPACE_END => addr,
+            _ => return Err(14), // EFAULT - overflow or kernel address
+        };
+
+        // Read the byte
+        // SAFETY: We validated that byte_addr is in userspace range
+        let byte = unsafe { core::ptr::read_volatile(byte_addr as *const u8) };
+
+        if byte == 0 {
+            // Found null terminator
+            return String::from_utf8(bytes).map_err(|_| 22); // EINVAL for invalid UTF-8
+        }
+
+        bytes.push(byte);
+    }
+
+    // String too long
+    Err(36) // ENAMETOOLONG
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

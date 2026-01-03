@@ -9,6 +9,7 @@ use std::{
 use anyhow::{bail, Result};
 use structopt::StructOpt;
 
+mod ext2_disk;
 mod test_disk;
 
 /// Simple developer utility tasks.
@@ -22,6 +23,8 @@ enum Cmd {
     BootStages,
     /// Create test disk image containing all userspace test binaries.
     CreateTestDisk,
+    /// Create ext2 filesystem image for testing the ext2 driver.
+    CreateExt2Disk,
     /// Boot Breenix interactively with init_shell (serial console attached).
     Interactive,
 }
@@ -32,6 +35,7 @@ fn main() -> Result<()> {
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => boot_stages(),
         Cmd::CreateTestDisk => test_disk::create_test_disk(),
+        Cmd::CreateExt2Disk => ext2_disk::create_ext2_disk(),
         Cmd::Interactive => interactive(),
     }
 }
@@ -634,6 +638,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "TTY_TEST_PASSED",
             failure_meaning: "TTY layer test failed - isatty, tcgetattr, tcsetattr, or raw/cooked mode switching broken",
             check_hint: "Check kernel/src/tty/ module, kernel/src/syscall/ioctl.rs, and libs/libbreenix/src/termios.rs",
+        },
+        // ext2 file read test
+        BootStage {
+            name: "File read test passed",
+            marker: "FILE_READ_TEST_PASSED",
+            failure_meaning: "ext2 file read test failed - open, read, fstat, or close syscalls on ext2 filesystem broken",
+            check_hint: "Check kernel/src/fs/ext2/ module, kernel/src/syscall/fs.rs, and ext2.img disk attachment",
         },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.

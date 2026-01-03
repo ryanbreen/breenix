@@ -104,7 +104,9 @@ fn main() {
             println!("cargo:rerun-if-changed={}/clock_gettime_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/udp_socket_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/tty_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/file_read_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
+            println!("cargo:rerun-if-changed={}/fs.rs", libbreenix_dir.to_str().unwrap());
         }
     } else {
         println!("cargo:warning=Userspace test directory not found at {:?}", userspace_test_dir);

@@ -259,6 +259,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_write: Cannot write to UDP socket, use sendto instead");
             SyscallResult::Err(95) // EOPNOTSUPP
         }
+        FdKind::RegularFile(_) => {
+            // Regular files not implemented yet
+            log::error!("sys_write: Regular file I/O not implemented yet");
+            SyscallResult::Err(95) // EOPNOTSUPP
+        }
     }
 }
 
@@ -463,6 +468,64 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't read from UDP socket - must use recvfrom
             log::error!("sys_read: Cannot read from UDP socket, use recvfrom instead");
             SyscallResult::Err(95) // EOPNOTSUPP
+        }
+        FdKind::RegularFile(file_ref) => {
+            // Read from ext2 regular file
+            //
+            // Get file info under the lock, then drop lock before filesystem operations
+            let (inode_num, position) = {
+                let file = file_ref.lock();
+                (file.inode_num, file.position)
+            };
+
+            // Access the mounted ext2 filesystem
+            let root_fs = crate::fs::ext2::root_fs();
+            let fs = match root_fs.as_ref() {
+                Some(fs) => fs,
+                None => {
+                    log::error!("sys_read: ext2 filesystem not mounted");
+                    return SyscallResult::Err(super::errno::ENOSYS as u64);
+                }
+            };
+
+            // Read the inode
+            let inode = match fs.read_inode(inode_num as u32) {
+                Ok(inode) => inode,
+                Err(e) => {
+                    log::error!("sys_read: Failed to read inode {}: {}", inode_num, e);
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
+            };
+
+            // Read the file data
+            let data = match fs.read_file_range(&inode, position, count as usize) {
+                Ok(data) => data,
+                Err(e) => {
+                    log::error!("sys_read: Failed to read file data: {}", e);
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
+            };
+
+            // Drop the filesystem lock before copying to userspace
+            drop(root_fs);
+
+            let bytes_read = data.len();
+
+            // Copy data to userspace
+            if bytes_read > 0 {
+                if copy_to_user(buf_ptr, data.as_ptr() as u64, bytes_read).is_err() {
+                    return SyscallResult::Err(14); // EFAULT
+                }
+            }
+
+            // Update file position
+            {
+                let mut file = file_ref.lock();
+                file.position += bytes_read as u64;
+            }
+
+            log::debug!("sys_read: Read {} bytes from regular file (inode {})", bytes_read, inode_num);
+            SyscallResult::Ok(bytes_read as u64)
         }
     }
 }

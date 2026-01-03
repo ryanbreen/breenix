@@ -2,10 +2,35 @@
 #![cfg_attr(test, no_main)]
 #![feature(custom_test_frameworks)]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
 pub mod serial;
+pub mod drivers;
+pub mod memory;
+pub mod gdt;
+pub mod interrupts;
+pub mod per_cpu;
+pub mod process;
+pub mod task;
+pub mod signal;
+pub mod tls;
+pub mod elf;
+pub mod ipc;
+pub mod keyboard;
+pub mod tty;
+pub mod irq_log;
+pub mod userspace_test;
+pub mod syscall;
+pub mod socket;
+pub mod test_exec;
+pub mod time;
+pub mod net;
+pub mod block;
+pub mod fs;
 
 #[cfg(test)]
 use bootloader_api::{entry_point, BootInfo};
