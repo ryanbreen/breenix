@@ -127,6 +127,65 @@ pub fn isatty(fd: i32) -> bool {
     tcgetattr(fd, &mut termios).is_ok()
 }
 
+/// Get the foreground process group ID of a terminal
+///
+/// Returns the process group ID of the foreground process group
+/// associated with the terminal referred to by fd.
+///
+/// # Arguments
+/// * `fd` - File descriptor referring to a terminal
+///
+/// # Returns
+/// * On success: the foreground process group ID (positive)
+/// * On error: negative errno
+pub fn tcgetpgrp(fd: i32) -> i32 {
+    let mut pgrp: i32 = 0;
+    let ret = unsafe {
+        raw::syscall3(
+            SYS_IOCTL,
+            fd as u64,
+            request::TIOCGPGRP,
+            &mut pgrp as *mut i32 as u64,
+        )
+    };
+
+    if (ret as i64) < 0 {
+        -(-(ret as i64)) as i32 // Return negative errno
+    } else {
+        pgrp
+    }
+}
+
+/// Set the foreground process group ID of a terminal
+///
+/// Sets the foreground process group ID of the terminal referred to by fd
+/// to the specified process group ID.
+///
+/// # Arguments
+/// * `fd` - File descriptor referring to a terminal
+/// * `pgrp` - Process group ID to set as foreground
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(errno)` on failure
+pub fn tcsetpgrp(fd: i32, pgrp: i32) -> Result<(), i32> {
+    let pgrp_val = pgrp;
+    let ret = unsafe {
+        raw::syscall3(
+            SYS_IOCTL,
+            fd as u64,
+            request::TIOCSPGRP,
+            &pgrp_val as *const i32 as u64,
+        )
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
 /// Make raw mode termios settings
 pub fn cfmakeraw(termios: &mut Termios) {
     termios.c_iflag &= !(iflag::ICRNL | iflag::IXON);

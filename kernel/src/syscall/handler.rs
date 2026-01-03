@@ -119,9 +119,6 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Exit) => super::handlers::sys_exit(args.0 as i32),
         Some(SyscallNumber::Write) => super::handlers::sys_write(args.0, args.1, args.2),
         Some(SyscallNumber::Read) => super::handlers::sys_read(args.0, args.1, args.2),
-        Some(SyscallNumber::Open) => super::fs::sys_open(args.0, args.1 as u32, args.2 as u32),
-        Some(SyscallNumber::Lseek) => super::fs::sys_lseek(args.0 as i32, args.1 as i64, args.2 as i32),
-        Some(SyscallNumber::Fstat) => super::fs::sys_fstat(args.0 as i32, args.1),
         Some(SyscallNumber::Yield) => super::handlers::sys_yield(),
         Some(SyscallNumber::GetTime) => super::handlers::sys_get_time(),
         Some(SyscallNumber::Fork) => super::handlers::sys_fork_with_frame(frame),
@@ -210,16 +207,12 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Wait4) => {
             super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32)
         }
-        Some(SyscallNumber::Getdents64) => {
-            super::fs::sys_getdents64(args.0 as i32, args.1, args.2)
+        Some(SyscallNumber::SetPgid) => {
+            super::session::sys_setpgid(args.0 as i32, args.1 as i32)
         }
-        Some(SyscallNumber::Unlink) => super::fs::sys_unlink(args.0),
-        Some(SyscallNumber::Rename) => super::fs::sys_rename(args.0, args.1),
-        Some(SyscallNumber::Mkdir) => super::fs::sys_mkdir(args.0, args.1 as u32),
-        Some(SyscallNumber::Rmdir) => super::fs::sys_rmdir(args.0),
-        Some(SyscallNumber::Link) => super::fs::sys_link(args.0, args.1),
-        Some(SyscallNumber::Symlink) => super::fs::sys_symlink(args.0, args.1),
-        Some(SyscallNumber::Readlink) => super::fs::sys_readlink(args.0, args.1, args.2),
+        Some(SyscallNumber::SetSid) => super::session::sys_setsid(),
+        Some(SyscallNumber::GetPgid) => super::session::sys_getpgid(args.0 as i32),
+        Some(SyscallNumber::GetSid) => super::session::sys_getsid(args.0 as i32),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

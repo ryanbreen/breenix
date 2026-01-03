@@ -348,15 +348,13 @@ fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
     }
 
     // In non-interactive mode, write to serial port (for CI/testing)
+    // NOTE: We write directly to serial to preserve control characters like \r
+    // for spinner animations. The log::info! macro was removed because it adds
+    // newlines which defeat carriage return behavior.
     #[cfg(not(feature = "interactive"))]
     {
         for &byte in buffer {
             crate::serial::write_byte(byte);
-        }
-
-        // Log the output for userspace writes
-        if let Ok(s) = core::str::from_utf8(buffer) {
-            log::info!("USERSPACE OUTPUT: {}", s.trim_end());
         }
     }
 
@@ -908,7 +906,8 @@ pub fn sys_exec_with_frame(
 
                         // CRITICAL FIX: Get the new stack pointer from the process
                         // The exec_process function set up a new stack at USER_STACK_TOP
-                        const USER_STACK_TOP: u64 = 0x5555_5555_5000;
+                        // NOTE: Must match the value used in exec_process() in manager.rs
+                        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
                         let new_rsp = USER_STACK_TOP;
 
                         // Modify the syscall frame so that when we return from syscall,

@@ -135,8 +135,27 @@ impl TtyDevice {
             self.send_signal_to_foreground(sig);
         }
 
-        // Wake any blocked readers if data is now available
+        // Transfer data from line discipline to stdin buffer when available
+        // This bridges the TTY layer (which handles line editing, echo, signals)
+        // with the stdin buffer (which userspace reads via read() syscall)
         if ldisc.has_data() {
+            let mut buf = [0u8; 256];
+            loop {
+                match ldisc.read(&mut buf) {
+                    Ok(0) => break, // No more data
+                    Ok(n) => {
+                        // Push each byte to stdin (no echo - TTY already handled that)
+                        for &byte in &buf[..n] {
+                            crate::ipc::stdin::push_byte_from_irq(byte);
+                        }
+                    }
+                    Err(super::line_discipline::EOF_MARKER) => {
+                        // EOF on empty line - don't push anything, read() will return 0
+                        break;
+                    }
+                    Err(_) => break, // Other error, stop reading
+                }
+            }
             drop(ldisc); // Release lock before waking
             Self::wake_blocked_readers();
         }
@@ -173,7 +192,29 @@ impl TtyDevice {
             self.output_char_nonblock(echo_c);
         });
 
+        // Transfer data from line discipline to stdin buffer when available
+        // This bridges the TTY layer (which handles line editing, echo, signals)
+        // with the stdin buffer (which userspace reads via read() syscall)
         let has_data = ldisc.has_data();
+        if has_data {
+            let mut buf = [0u8; 256];
+            loop {
+                match ldisc.read(&mut buf) {
+                    Ok(0) => break, // No more data
+                    Ok(n) => {
+                        // Push each byte to stdin (no echo - TTY already handled that)
+                        for &byte in &buf[..n] {
+                            crate::ipc::stdin::push_byte_from_irq(byte);
+                        }
+                    }
+                    Err(super::line_discipline::EOF_MARKER) => {
+                        // EOF on empty line - don't push anything, read() will return 0
+                        break;
+                    }
+                    Err(_) => break, // Other error, stop reading
+                }
+            }
+        }
         drop(ldisc);
 
         // Send signal if generated (non-blocking)

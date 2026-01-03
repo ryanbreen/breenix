@@ -69,37 +69,41 @@ pub extern "C" fn _start() -> ! {
     
     // Spin for 20 iterations
     for i in 0..20 {
-        write_str("Spinner: ");
-        
+        // Use carriage return to go back to start of line, then print frame
+        // This creates the spinning animation effect on a single line
+        write_str("\rSpinner: ");
+
         // Print spinner character
         let ch = spinner_chars[i % 4];
         let ch_bytes = [ch as u8];
         let ch_str = core::str::from_utf8(&ch_bytes).unwrap();
         write_str(ch_str);
-        write_str("\n");
-        
+
         // Yield to allow other processes to run
         unsafe {
             syscall0(SYS_YIELD);
         }
-        
+
         // Do some busy work to simulate computation
         let mut sum = 0u64;
         for j in 0..50000 {
             sum = sum.wrapping_add(j);
         }
-        
+
         // Prevent optimization
         if sum == 0 {
             write_str("Unexpected!\n");
         }
     }
+
+    // Final newline after spinner animation completes
+    write_str("\n");
     
     write_str("Spinner process finished!\n");
-    
-    // Exit cleanly with code 20
+
+    // Exit cleanly with code 0
     unsafe {
-        syscall1(SYS_EXIT, 20);
+        syscall1(SYS_EXIT, 0);
     }
     
     // Should never reach here

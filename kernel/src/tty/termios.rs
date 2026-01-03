@@ -262,6 +262,20 @@ impl Termios {
         (self.c_lflag & ICANON) != 0
     }
 
+    /// Set or clear canonical (line) mode
+    ///
+    /// When enabled, input is line-buffered and line editing characters
+    /// (ERASE, KILL, etc.) are interpreted. When disabled (raw mode),
+    /// characters are passed through immediately without buffering.
+    #[inline]
+    pub fn set_canonical(&mut self, enable: bool) {
+        if enable {
+            self.c_lflag |= ICANON;
+        } else {
+            self.c_lflag &= !ICANON;
+        }
+    }
+
     /// Check if echo is enabled
     ///
     /// When echo is enabled, input characters are echoed back to the terminal.
@@ -541,5 +555,56 @@ mod tests {
         assert_eq!(termios.kill_char(), termios.c_cc[VKILL]);
         assert_eq!(termios.vmin(), termios.c_cc[VMIN]);
         assert_eq!(termios.vtime(), termios.c_cc[VTIME]);
+    }
+
+    #[test]
+    fn test_set_canonical_enable() {
+        let mut termios = Termios::default();
+
+        // Start in canonical mode
+        assert!(termios.is_canonical());
+
+        // Disable canonical mode
+        termios.set_canonical(false);
+        assert!(!termios.is_canonical());
+        assert_eq!(termios.c_lflag & ICANON, 0);
+
+        // Re-enable canonical mode
+        termios.set_canonical(true);
+        assert!(termios.is_canonical());
+        assert_ne!(termios.c_lflag & ICANON, 0);
+    }
+
+    #[test]
+    fn test_set_canonical_preserves_other_flags() {
+        let mut termios = Termios::default();
+        let original_lflag = termios.c_lflag;
+
+        // Disable canonical mode
+        termios.set_canonical(false);
+
+        // Other flags should be preserved
+        assert_eq!(termios.c_lflag | ICANON, original_lflag);
+
+        // Re-enable canonical mode
+        termios.set_canonical(true);
+
+        // Should be back to original
+        assert_eq!(termios.c_lflag, original_lflag);
+    }
+
+    #[test]
+    fn test_set_canonical_idempotent() {
+        let mut termios = Termios::default();
+
+        // Multiple calls to set_canonical(true) should be idempotent
+        termios.set_canonical(true);
+        termios.set_canonical(true);
+        assert!(termios.is_canonical());
+
+        // Multiple calls to set_canonical(false) should be idempotent
+        termios.set_canonical(false);
+        termios.set_canonical(false);
+        assert!(!termios.is_canonical());
     }
 }

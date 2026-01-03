@@ -7,22 +7,19 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 pub(crate) mod dispatcher;
 pub mod errno;
-pub mod fs;
 pub mod handler;
 pub mod handlers;
 pub mod ioctl;
 pub mod memory;
 pub mod mmap;
 pub mod pipe;
+pub mod session;
 pub mod signal;
 pub mod socket;
 pub mod time;
 pub mod userptr;
 
-/// System call numbers (Breenix conventions)
-///
-/// Note: We use custom numbers for basic syscalls (0-6) that differ from Linux.
-/// Higher numbered syscalls (7+) generally follow Linux x86_64 conventions where practical.
+/// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 #[allow(dead_code)]
@@ -48,6 +45,7 @@ pub enum SyscallNumber {
     Dup = 32,           // Linux syscall number for dup
     Dup2 = 33,          // Linux syscall number for dup2
     Pause = 34,         // Linux syscall number for pause
+    Fcntl = 72,         // Linux syscall number for fcntl
     GetPid = 39,        // Linux syscall number for getpid
     Socket = 41,        // Linux syscall number for socket
     SendTo = 44,        // Linux syscall number for sendto
@@ -56,20 +54,12 @@ pub enum SyscallNumber {
     Exec = 59,          // Linux syscall number for execve
     Wait4 = 61,         // Linux syscall number for wait4/waitpid
     Kill = 62,          // Linux syscall number for kill
-    Fcntl = 72,         // Linux syscall number for fcntl
+    SetPgid = 109,      // Linux syscall number for setpgid
+    SetSid = 112,       // Linux syscall number for setsid
+    GetPgid = 121,      // Linux syscall number for getpgid
+    GetSid = 124,       // Linux syscall number for getsid
     GetTid = 186,       // Linux syscall number for gettid
     ClockGetTime = 228, // Linux syscall number for clock_gettime
-    Open = 257,         // Breenix: new filesystem syscall
-    Lseek = 258,        // Breenix: new filesystem syscall
-    Fstat = 259,        // Breenix: new filesystem syscall
-    Getdents64 = 260,   // Breenix: directory listing syscall
-    Unlink = 87,        // Linux syscall number for unlink
-    Rename = 82,        // Linux syscall number for rename
-    Mkdir = 83,         // Linux syscall number for mkdir
-    Rmdir = 84,         // Linux syscall number for rmdir
-    Link = 86,          // Linux syscall number for link (hard links)
-    Symlink = 88,       // Linux syscall number for symlink
-    Readlink = 89,      // Linux syscall number for readlink
     Pipe2 = 293,        // Linux syscall number for pipe2
 }
 
@@ -100,6 +90,7 @@ impl SyscallNumber {
             33 => Some(Self::Dup2),
             34 => Some(Self::Pause),
             39 => Some(Self::GetPid),
+            72 => Some(Self::Fcntl),
             41 => Some(Self::Socket),
             44 => Some(Self::SendTo),
             45 => Some(Self::RecvFrom),
@@ -107,20 +98,12 @@ impl SyscallNumber {
             59 => Some(Self::Exec),
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
-            72 => Some(Self::Fcntl),
-            87 => Some(Self::Unlink),
-            82 => Some(Self::Rename),
-            83 => Some(Self::Mkdir),
-            84 => Some(Self::Rmdir),
-            86 => Some(Self::Link),
-            88 => Some(Self::Symlink),
-            89 => Some(Self::Readlink),
+            109 => Some(Self::SetPgid),
+            112 => Some(Self::SetSid),
+            121 => Some(Self::GetPgid),
+            124 => Some(Self::GetSid),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
-            257 => Some(Self::Open),
-            258 => Some(Self::Lseek),
-            259 => Some(Self::Fstat),
-            260 => Some(Self::Getdents64),
             293 => Some(Self::Pipe2),
             _ => None,
         }

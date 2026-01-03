@@ -1584,364 +1584,72 @@ pub fn test_tty() {
     }
 }
 
-/// Test ext2 file read functionality
+/// Test job control infrastructure
 ///
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (Checkpoint): Process creation
-///   - Marker: "File read test: process scheduled for execution"
+///   - Marker: "Job control test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
-/// - Stage 2 (Boot stage): Validates file reading from ext2
-///   - Marker: "FILE_READ_TEST_PASSED"
-///   - This PROVES open, read, fstat, and close syscalls work on ext2 filesystem
-pub fn test_file_read() {
-    log::info!("Testing ext2 file read functionality");
+/// - Stage 2 (Boot stage): Validates job control infrastructure
+///   - Marker: "JOB_CONTROL_TEST_PASSED"
+///   - This PROVES setpgid, getpgrp, SIGCONT, WUNTRACED, and tcgetpgrp all work
+pub fn test_job_control() {
+    log::info!("Testing job control infrastructure");
 
     #[cfg(feature = "testing")]
-    let file_read_test_elf_buf = crate::userspace_test::get_test_binary("file_read_test");
+    let job_control_test_elf_buf = crate::userspace_test::get_test_binary("job_control_test");
     #[cfg(feature = "testing")]
-    let file_read_test_elf: &[u8] = &file_read_test_elf_buf;
+    let job_control_test_elf: &[u8] = &job_control_test_elf_buf;
     #[cfg(not(feature = "testing"))]
-    let file_read_test_elf = &create_hello_world_elf();
+    let job_control_test_elf = &create_hello_world_elf();
 
     match crate::process::creation::create_user_process(
-        String::from("file_read_test"),
-        file_read_test_elf,
+        String::from("job_control_test"),
+        job_control_test_elf,
     ) {
         Ok(pid) => {
-            log::info!("Created file_read_test process with PID {:?}", pid);
-            log::info!("File read test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FILE_READ_TEST_PASSED marker if successful");
+            log::info!("Created job_control_test process with PID {:?}", pid);
+            log::info!("Job control test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit JOB_CONTROL_TEST_PASSED marker if successful");
         }
         Err(e) => {
-            log::error!("Failed to create file_read_test process: {}", e);
-            log::error!("File read test cannot run without valid userspace process");
+            log::error!("Failed to create job_control_test process: {}", e);
+            log::error!("Job control test cannot run without valid userspace process");
         }
     }
 }
 
-/// Test getdents64 syscall for directory listing
+/// Test session and process group syscalls
 ///
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (Checkpoint): Process creation
-///   - Marker: "Getdents test: process scheduled for execution"
+///   - Marker: "Session test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
-/// - Stage 2 (Boot stage): Validates getdents64 syscall on ext2 filesystem
-///   - Marker: "GETDENTS_TEST_PASSED"
-///   - This PROVES open with O_DIRECTORY, getdents64, and directory parsing work
-pub fn test_getdents() {
-    log::info!("Testing getdents64 syscall for directory listing");
+/// - Stage 2 (Boot stage): Validates session/pgid operations
+///   - Marker: "SESSION_TEST_PASSED"
+///   - This PROVES getpgid, setpgid, getpgrp, getsid, setsid all work correctly
+pub fn test_session() {
+    log::info!("Testing session and process group syscalls");
 
     #[cfg(feature = "testing")]
-    let getdents_test_elf_buf = crate::userspace_test::get_test_binary("getdents_test");
+    let session_test_elf_buf = crate::userspace_test::get_test_binary("session_test");
     #[cfg(feature = "testing")]
-    let getdents_test_elf: &[u8] = &getdents_test_elf_buf;
+    let session_test_elf: &[u8] = &session_test_elf_buf;
     #[cfg(not(feature = "testing"))]
-    let getdents_test_elf = &create_hello_world_elf();
+    let session_test_elf = &create_hello_world_elf();
 
     match crate::process::creation::create_user_process(
-        String::from("getdents_test"),
-        getdents_test_elf,
+        String::from("session_test"),
+        session_test_elf,
     ) {
         Ok(pid) => {
-            log::info!("Created getdents_test process with PID {:?}", pid);
-            log::info!("Getdents test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit GETDENTS_TEST_PASSED marker if successful");
+            log::info!("Created session_test process with PID {:?}", pid);
+            log::info!("Session test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit SESSION_TEST_PASSED marker if successful");
         }
         Err(e) => {
-            log::error!("Failed to create getdents_test process: {}", e);
-            log::error!("Getdents test cannot run without valid userspace process");
+            log::error!("Failed to create session_test process: {}", e);
+            log::error!("Session test cannot run without valid userspace process");
         }
     }
 }
-
-/// Test lseek syscall including SEEK_END
-///
-/// This test validates lseek with all three whence values:
-/// - SEEK_SET: Seek to absolute position
-/// - SEEK_CUR: Seek relative to current position
-/// - SEEK_END: Seek relative to end of file
-///
-/// What this proves:
-///   - lseek syscall correctly handles all whence values
-///   - SEEK_END correctly uses file size from ext2 inode
-///   - Negative offsets with SEEK_END work correctly
-///   - Invalid seeks (resulting in negative position) return EINVAL
-pub fn test_lseek() {
-    log::info!("Testing lseek syscall (SEEK_SET, SEEK_CUR, SEEK_END)");
-
-    #[cfg(feature = "testing")]
-    let lseek_test_elf_buf = crate::userspace_test::get_test_binary("lseek_test");
-    #[cfg(feature = "testing")]
-    let lseek_test_elf: &[u8] = &lseek_test_elf_buf;
-    #[cfg(not(feature = "testing"))]
-    let lseek_test_elf = &create_hello_world_elf();
-
-    match crate::process::creation::create_user_process(
-        String::from("lseek_test"),
-        lseek_test_elf,
-    ) {
-        Ok(pid) => {
-            log::info!("Created lseek_test process with PID {:?}", pid);
-            log::info!("Lseek test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit LSEEK_TEST_PASSED marker if successful");
-        }
-        Err(e) => {
-            log::error!("Failed to create lseek_test process: {}", e);
-            log::error!("Lseek test cannot run without valid userspace process");
-        }
-    }
-}
-
-/// Test filesystem write operations (write, O_CREAT, O_TRUNC, O_APPEND, unlink)
-///
-/// This test validates write operations on the ext2 filesystem:
-/// - Writing to existing files
-/// - Creating new files with O_CREAT
-/// - Exclusive creation with O_EXCL
-/// - Truncating files with O_TRUNC
-/// - Append mode with O_APPEND
-/// - File deletion with unlink
-///
-/// What this proves:
-///   - sys_write works for regular files on ext2
-///   - O_CREAT correctly creates new files
-///   - O_TRUNC truncates existing files
-///   - O_APPEND appends to files
-///   - unlink removes files from the filesystem
-pub fn test_fs_write() {
-    log::info!("Testing filesystem write operations (write, O_CREAT, O_TRUNC, O_APPEND, unlink)");
-
-    #[cfg(feature = "testing")]
-    let fs_write_test_elf_buf = crate::userspace_test::get_test_binary("fs_write_test");
-    #[cfg(feature = "testing")]
-    let fs_write_test_elf: &[u8] = &fs_write_test_elf_buf;
-    #[cfg(not(feature = "testing"))]
-    let fs_write_test_elf = &create_hello_world_elf();
-
-    match crate::process::creation::create_user_process(
-        String::from("fs_write_test"),
-        fs_write_test_elf,
-    ) {
-        Ok(pid) => {
-            log::info!("Created fs_write_test process with PID {:?}", pid);
-            log::info!("Filesystem write test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_WRITE_TEST_PASSED marker if successful");
-        }
-        Err(e) => {
-            log::error!("Failed to create fs_write_test process: {}", e);
-            log::error!("Filesystem write test cannot run without valid userspace process");
-        }
-    }
-}
-
-/// Test filesystem rename operations on ext2
-///
-/// Tests:
-/// - Basic rename within same directory
-/// - Rename to replace existing file
-/// - Error case: rename non-existent file (ENOENT)
-/// - Content preserved after rename
-/// - Cross-directory rename (root -> /test)
-/// - Error: rename file over directory (EISDIR)
-/// - Error: unlink non-existent file (ENOENT)
-///
-/// What this proves:
-///   - sys_rename works for regular files on ext2
-///   - Rename correctly removes old entry and creates new entry
-///   - Rename atomically replaces existing files
-///   - Cross-directory rename works correctly
-///   - Proper ENOENT/EISDIR handling
-pub fn test_fs_rename() {
-    log::info!("Testing filesystem rename operations");
-
-    #[cfg(feature = "testing")]
-    let fs_rename_test_elf_buf = crate::userspace_test::get_test_binary("fs_rename_test");
-    #[cfg(feature = "testing")]
-    let fs_rename_test_elf: &[u8] = &fs_rename_test_elf_buf;
-    #[cfg(not(feature = "testing"))]
-    let fs_rename_test_elf = &create_hello_world_elf();
-
-    match crate::process::creation::create_user_process(
-        String::from("fs_rename_test"),
-        fs_rename_test_elf,
-    ) {
-        Ok(pid) => {
-            log::info!("Created fs_rename_test process with PID {:?}", pid);
-            log::info!("Filesystem rename test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_RENAME_TEST_PASSED marker if successful");
-        }
-        Err(e) => {
-            log::error!("Failed to create fs_rename_test process: {}", e);
-            log::error!("Filesystem rename test cannot run without valid userspace process");
-        }
-    }
-}
-
-/// Test large file operations on ext2 (indirect blocks)
-///
-/// Tests writing and reading files larger than 12KB (or 48KB with 4KB blocks)
-/// which requires single indirect block support in the ext2 implementation.
-///
-/// With 1KB blocks (common in our test ext2.img):
-/// - Direct blocks: 12 blocks * 1KB = 12KB
-/// - Writing 50KB requires 50 blocks = 12 direct + 38 indirect
-///
-/// What this proves:
-///   - Indirect block allocation works correctly
-///   - Large file writes don't corrupt data
-///   - Sequential and random reads from indirect blocks work
-///   - File size tracking is correct for large files
-pub fn test_fs_large_file() {
-    log::info!("Testing large file operations (indirect blocks)");
-
-    #[cfg(feature = "testing")]
-    let fs_large_file_test_elf_buf = crate::userspace_test::get_test_binary("fs_large_file_test");
-    #[cfg(feature = "testing")]
-    let fs_large_file_test_elf: &[u8] = &fs_large_file_test_elf_buf;
-    #[cfg(not(feature = "testing"))]
-    let fs_large_file_test_elf = &create_hello_world_elf();
-
-    match crate::process::creation::create_user_process(
-        String::from("fs_large_file_test"),
-        fs_large_file_test_elf,
-    ) {
-        Ok(pid) => {
-            log::info!("Created fs_large_file_test process with PID {:?}", pid);
-            log::info!("Large file test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_LARGE_FILE_TEST_PASSED marker if successful");
-        }
-        Err(e) => {
-            log::error!("Failed to create fs_large_file_test process: {}", e);
-            log::error!("Large file test cannot run without valid userspace process");
-        }
-    }
-}
-
-/// Test filesystem directory operations (mkdir, rmdir)
-///
-/// Tests:
-/// - Creating directories with mkdir
-/// - Removing empty directories with rmdir
-/// - Verifying directory entries (.  and ..)
-/// - Error case: rmdir on non-empty directory (ENOTEMPTY)
-/// - Error case: rmdir on non-directory (ENOTDIR)
-/// - Error case: mkdir on existing path (EEXIST)
-///
-/// What this proves:
-///   - sys_mkdir works for creating directories on ext2
-///   - sys_rmdir works for removing directories on ext2
-///   - Directory entries are properly initialized with . and ..
-///   - Proper error handling for edge cases
-pub fn test_fs_directory() {
-    log::info!("Testing filesystem directory operations (mkdir, rmdir)");
-
-    #[cfg(feature = "testing")]
-    let fs_directory_test_elf_buf = crate::userspace_test::get_test_binary("fs_directory_test");
-    #[cfg(feature = "testing")]
-    let fs_directory_test_elf: &[u8] = &fs_directory_test_elf_buf;
-    #[cfg(not(feature = "testing"))]
-    let fs_directory_test_elf = &create_hello_world_elf();
-
-    match crate::process::creation::create_user_process(
-        String::from("fs_directory_test"),
-        fs_directory_test_elf,
-    ) {
-        Ok(pid) => {
-            log::info!("Created fs_directory_test process with PID {:?}", pid);
-            log::info!("Directory test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_DIRECTORY_TEST_PASSED marker if successful");
-        }
-        Err(e) => {
-            log::error!("Failed to create fs_directory_test process: {}", e);
-            log::error!("Directory test cannot run without valid userspace process");
-        }
-    }
-}
-
-/// Test filesystem link operations (link, symlink, readlink)
-///
-/// Tests:
-/// - Creating hard links with link()
-/// - Creating symbolic links with symlink()
-/// - Reading symbolic link targets with readlink()
-/// - Verifying hard link count on inodes
-/// - Error case: link to non-existent file (ENOENT)
-/// - Error case: symlink to existing path (EEXIST)
-/// - Unlinking and verifying link count decreases
-///
-/// What this proves:
-///   - sys_link works for creating hard links on ext2
-///   - sys_symlink works for creating symbolic links on ext2
-///   - sys_readlink correctly reads symlink targets
-///   - Link counts are properly tracked in inodes
-///   - Proper error handling for edge cases
-pub fn test_fs_link() {
-    log::info!("Testing filesystem link operations (link, symlink, readlink)");
-
-    #[cfg(feature = "testing")]
-    let fs_link_test_elf_buf = crate::userspace_test::get_test_binary("fs_link_test");
-    #[cfg(feature = "testing")]
-    let fs_link_test_elf: &[u8] = &fs_link_test_elf_buf;
-    #[cfg(not(feature = "testing"))]
-    let fs_link_test_elf = &create_hello_world_elf();
-
-    match crate::process::creation::create_user_process(
-        String::from("fs_link_test"),
-        fs_link_test_elf,
-    ) {
-        Ok(pid) => {
-            log::info!("Created fs_link_test process with PID {:?}", pid);
-            log::info!("Link test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit FS_LINK_TEST_PASSED marker if successful");
-        }
-        Err(e) => {
-            log::error!("Failed to create fs_link_test process: {}", e);
-            log::error!("Link test cannot run without valid userspace process");
-        }
-    }
-}
-
-/// Test Rust std library support via hello_std_real
-///
-/// This test runs a userspace program that uses the REAL Rust standard library:
-/// - println! macro (uses write syscall)
-/// - Vec and heap allocation (uses mmap/brk)
-/// - std::process::exit
-///
-/// TWO-STAGE VALIDATION PATTERN:
-/// - Stage 1 (Checkpoint): Process creation
-///   - Marker: "hello_std_real test: process scheduled for execution"
-///   - This is a CHECKPOINT confirming process creation succeeded
-/// - Stage 2 (Boot stage): Validates std functionality
-///   - Marker: "RUST_STD_PRINTLN_WORKS"
-///   - This PROVES println! macro works with std
-/// - Stage 3 (Boot stage): Validates Vec allocation
-///   - Marker: "RUST_STD_VEC_WORKS"
-///   - This PROVES heap allocation and Vec work with std
-pub fn test_hello_std_real() {
-    log::info!("Testing Rust std library support (hello_std_real)");
-
-    #[cfg(feature = "testing")]
-    let hello_std_real_elf_buf = crate::userspace_test::get_test_binary("hello_std_real");
-    #[cfg(feature = "testing")]
-    let hello_std_real_elf: &[u8] = &hello_std_real_elf_buf;
-    #[cfg(not(feature = "testing"))]
-    let hello_std_real_elf = &create_hello_world_elf();
-
-    match crate::process::creation::create_user_process(
-        String::from("hello_std_real"),
-        hello_std_real_elf,
-    ) {
-        Ok(pid) => {
-            log::info!("Created hello_std_real process with PID {:?}", pid);
-            log::info!("hello_std_real test: process scheduled for execution.");
-            // Note: The test will emit markers for println! and Vec validation
-            // Do NOT print the exact marker strings here - that would cause false positives!
-        }
-        Err(e) => {
-            log::error!("Failed to create hello_std_real process: {}", e);
-            log::error!("hello_std_real test cannot run without valid userspace process");
-        }
-    }
-}
-

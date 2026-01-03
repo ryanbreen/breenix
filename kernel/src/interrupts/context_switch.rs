@@ -468,6 +468,29 @@ fn switch_to_thread(
                             }
                         }
 
+                        // CRITICAL: Switch to process CR3 BEFORE delivering signal
+                        // Signal delivery writes to user stack memory, which requires
+                        // the process's page table to be active (not the kernel CR3).
+                        // Without this, we get a page fault when trying to write the
+                        // signal frame to user memory.
+                        if let Some(ref page_table) = process.page_table {
+                            let page_table_frame = page_table.level_4_frame();
+                            let cr3_value = page_table_frame.start_address().as_u64();
+                            unsafe {
+                                use x86_64::registers::control::{Cr3, Cr3Flags};
+                                use x86_64::structures::paging::PhysFrame;
+                                use x86_64::PhysAddr;
+                                Cr3::write(
+                                    PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                    Cr3Flags::empty(),
+                                );
+                            }
+                            log::debug!(
+                                "Switched to process CR3 {:#x} for signal delivery (blocked-in-syscall path)",
+                                cr3_value
+                            );
+                        }
+
                         // Now deliver the signal (modifies interrupt_frame and saved_regs)
                         if crate::signal::delivery::deliver_pending_signals(
                             process,
@@ -770,6 +793,30 @@ fn restore_userspace_thread_context(
                                 pid.as_u64(),
                                 thread_id
                             );
+
+                            // CRITICAL: Switch to process CR3 BEFORE delivering signal
+                            // Signal delivery writes to user stack memory, which requires
+                            // the process's page table to be active (not the kernel CR3).
+                            // Without this, we get a page fault when trying to write the
+                            // signal frame to user memory.
+                            if let Some(ref page_table) = process.page_table {
+                                let page_table_frame = page_table.level_4_frame();
+                                let cr3_value = page_table_frame.start_address().as_u64();
+                                unsafe {
+                                    use x86_64::registers::control::{Cr3, Cr3Flags};
+                                    use x86_64::structures::paging::PhysFrame;
+                                    use x86_64::PhysAddr;
+                                    Cr3::write(
+                                        PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                        Cr3Flags::empty(),
+                                    );
+                                }
+                                log::debug!(
+                                    "Switched to process CR3 {:#x} for signal delivery",
+                                    cr3_value
+                                );
+                            }
+
                             if crate::signal::delivery::deliver_pending_signals(
                                 process,
                                 interrupt_frame,

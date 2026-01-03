@@ -45,6 +45,15 @@ pub struct Process {
     #[allow(dead_code)]
     pub id: ProcessId,
 
+    /// Process group ID (for job control)
+    /// By default, a process's pgid equals its pid when created
+    pub pgid: ProcessId,
+
+    /// Session ID (for session management)
+    /// A session is a collection of process groups, typically associated with
+    /// a controlling terminal. Initially set to pid on process creation.
+    pub sid: ProcessId,
+
     /// Process name (for debugging)
     pub name: String,
 
@@ -117,6 +126,10 @@ impl Process {
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
         Process {
             id,
+            // By default, a process's pgid equals its pid (process is its own group leader)
+            pgid: id,
+            // By default, a process's sid equals its pid (process is its own session leader)
+            sid: id,
             name,
             state: ProcessState::Creating,
             entry_point,

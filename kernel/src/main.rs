@@ -26,11 +26,9 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 #[macro_use]
 mod macros;
 mod clock_gettime_test;
-mod block;
 mod drivers;
 mod elf;
 mod framebuffer;
-mod fs;
 mod gdt;
 mod net;
 #[cfg(feature = "testing")]
@@ -182,12 +180,6 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Initialize network stack (after E1000 driver is ready)
     net::init();
-
-    // Initialize ext2 root filesystem (after VirtIO block device is ready)
-    match crate::fs::ext2::init_root_fs() {
-        Ok(()) => log::info!("ext2 root filesystem mounted"),
-        Err(e) => log::warn!("Failed to mount ext2 root: {:?}", e),
-    }
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
@@ -449,7 +441,7 @@ fn kernel_main_continue() -> ! {
             use alloc::string::String;
             serial_println!("INTERACTIVE: Loading init_shell as PID 1");
             let elf = userspace_test::get_test_binary("init_shell");
-            match process::creation::create_user_process(String::from("init"), &elf) {
+            match process::creation::create_user_process(String::from("init_shell"), &elf) {
                 Ok(pid) => {
                     serial_println!("INTERACTIVE: init_shell running as PID {}", pid.as_u64());
                 }
@@ -688,41 +680,9 @@ fn kernel_main_continue() -> ! {
         log::info!("=== TTY TEST: TTY layer functionality ===");
         test_exec::test_tty();
 
-        // Test ext2 file read functionality
-        log::info!("=== FS TEST: ext2 file read functionality ===");
-        test_exec::test_file_read();
-
-        // Test getdents64 syscall for directory listing
-        log::info!("=== FS TEST: getdents64 directory listing ===");
-        test_exec::test_getdents();
-
-        // Test lseek syscall including SEEK_END
-        log::info!("=== FS TEST: lseek (SEEK_SET, SEEK_CUR, SEEK_END) ===");
-        test_exec::test_lseek();
-
-        // Test filesystem write operations
-        log::info!("=== FS TEST: filesystem write (write, O_CREAT, O_TRUNC, O_APPEND, unlink) ===");
-        test_exec::test_fs_write();
-
-        // Test filesystem rename operations
-        log::info!("=== FS TEST: filesystem rename (rename, atomicity, error handling) ===");
-        test_exec::test_fs_rename();
-
-        // Test large file operations (indirect blocks)
-        log::info!("=== FS TEST: large file (50KB, indirect blocks) ===");
-        test_exec::test_fs_large_file();
-
-        // Test directory operations (mkdir, rmdir)
-        log::info!("=== FS TEST: directory ops (mkdir, rmdir) ===");
-        test_exec::test_fs_directory();
-
-        // Test link operations (link, symlink, readlink)
-        log::info!("=== FS TEST: link ops (link, symlink, readlink) ===");
-        test_exec::test_fs_link();
-
-        // Test Rust std library support (hello_std_real)
-        log::info!("=== STD TEST: Rust std library (println!, Vec) ===");
-        test_exec::test_hello_std_real();
+        // Test session and process group syscalls
+        log::info!("=== SESSION TEST: Session and process group syscalls ===");
+        test_exec::test_session();
 
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");

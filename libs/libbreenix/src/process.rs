@@ -129,3 +129,104 @@ pub fn wifsignaled(status: i32) -> bool {
 pub fn wtermsig(status: i32) -> i32 {
     status & 0x7f
 }
+
+/// Check if child was stopped by a signal (job control)
+#[inline]
+pub fn wifstopped(status: i32) -> bool {
+    // Stopped if low 8 bits are 0x7f
+    (status & 0xff) == 0x7f
+}
+
+/// Get signal number that stopped the child (only valid if WIFSTOPPED is true)
+#[inline]
+pub fn wstopsig(status: i32) -> i32 {
+    (status >> 8) & 0xff
+}
+
+/// Set the process group ID for a process.
+///
+/// # Arguments
+/// * `pid` - Process ID to set the group for:
+///   - `pid == 0`: Use the current process's PID
+///   - `pid > 0`: Set the group for the specified process
+/// * `pgid` - New process group ID:
+///   - `pgid == 0`: Use the PID of the target process as the new PGID
+///   - `pgid > 0`: Use the specified PGID
+///
+/// # Returns
+/// * On success: 0
+/// * On error: negative errno
+#[inline]
+pub fn setpgid(pid: i32, pgid: i32) -> i32 {
+    unsafe { raw::syscall2(nr::SETPGID, pid as u64, pgid as u64) as i32 }
+}
+
+/// Get the process group ID for a process.
+///
+/// # Arguments
+/// * `pid` - Process ID to query:
+///   - `pid == 0`: Get the PGID of the current process
+///   - `pid > 0`: Get the PGID of the specified process
+///
+/// # Returns
+/// * On success: the process group ID (positive)
+/// * On error: negative errno
+#[inline]
+pub fn getpgid(pid: i32) -> i32 {
+    unsafe { raw::syscall1(nr::GETPGID, pid as u64) as i32 }
+}
+
+/// Set the calling process as a new process group leader.
+///
+/// This is equivalent to `setpgid(0, 0)`, which sets the current process's
+/// PGID to its own PID, making it a process group leader.
+///
+/// # Returns
+/// * On success: 0
+/// * On error: negative errno
+#[inline]
+pub fn setpgrp() -> i32 {
+    setpgid(0, 0)
+}
+
+/// Get the process group ID of the calling process.
+///
+/// This is equivalent to `getpgid(0)`.
+///
+/// # Returns
+/// * On success: the process group ID (positive)
+/// * On error: negative errno
+#[inline]
+pub fn getpgrp() -> i32 {
+    getpgid(0)
+}
+
+/// Create a new session and set the calling process as the session leader.
+///
+/// The calling process becomes:
+/// - The session leader of a new session
+/// - The process group leader of a new process group
+/// - Detached from any controlling terminal
+///
+/// # Returns
+/// * On success: the new session ID (which equals the calling process's PID)
+/// * On error: negative errno (typically EPERM if already a process group leader)
+#[inline]
+pub fn setsid() -> i32 {
+    unsafe { raw::syscall0(nr::SETSID) as i32 }
+}
+
+/// Get the session ID of a process.
+///
+/// # Arguments
+/// * `pid` - Process ID to query:
+///   - `pid == 0`: Get the SID of the current process
+///   - `pid > 0`: Get the SID of the specified process
+///
+/// # Returns
+/// * On success: the session ID (positive)
+/// * On error: negative errno (typically ESRCH if process not found)
+#[inline]
+pub fn getsid(pid: i32) -> i32 {
+    unsafe { raw::syscall1(nr::GETSID, pid as u64) as i32 }
+}

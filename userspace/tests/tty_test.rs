@@ -14,7 +14,7 @@ use core::panic::PanicInfo;
 use libbreenix::io;
 use libbreenix::process;
 use libbreenix::termios::{
-    cc, cfmakeraw, isatty, lflag, tcgetattr, tcsetattr, Termios, TCSANOW,
+    cc, cfmakeraw, isatty, lflag, tcgetattr, tcgetpgrp, tcsetattr, tcsetpgrp, Termios, TCSANOW,
 };
 
 /// Write a test status message
@@ -296,6 +296,88 @@ pub extern "C" fn _start() -> ! {
     }
 
     pass("TCGETS/TCSETS round-trip complete");
+
+    // ==========================================================================
+    // Phase 6: Test tcgetpgrp()/tcsetpgrp() for terminal control
+    // ==========================================================================
+    write_str("\nPhase 6: Testing tcgetpgrp()/tcsetpgrp()...\n");
+
+    // Get our own PID to use as a process group
+    let my_pid = process::getpid() as i32;
+    write_str("  Our PID: ");
+    write_hex(my_pid as u32);
+    write_str("\n");
+
+    // Get current foreground process group
+    let initial_pgrp = tcgetpgrp(0);
+    write_str("  Initial foreground pgrp: ");
+    if initial_pgrp >= 0 {
+        write_hex(initial_pgrp as u32);
+        write_str("\n");
+        pass("tcgetpgrp(0) succeeded");
+    } else {
+        write_str("(error)\n");
+        // Not a fatal error - pgrp might not be set initially
+        write_str("  Note: No foreground pgrp set initially (this is OK)\n");
+    }
+
+    // Set our process as the foreground process group
+    match tcsetpgrp(0, my_pid as i32) {
+        Ok(()) => {
+            pass("tcsetpgrp(0, our_pid) succeeded");
+        }
+        Err(e) => {
+            write_str("  tcsetpgrp returned error: ");
+            write_hex(e as u32);
+            write_str("\n");
+            fail("tcsetpgrp should succeed with our PID");
+        }
+    }
+
+    // Verify it was set
+    let set_pgrp = tcgetpgrp(0);
+    write_str("  After tcsetpgrp: foreground pgrp = ");
+    write_hex(set_pgrp as u32);
+    write_str("\n");
+
+    if set_pgrp == my_pid as i32 {
+        pass("tcgetpgrp returns the value we set");
+    } else {
+        write_str("  Expected: ");
+        write_hex(my_pid as u32);
+        write_str(", got: ");
+        write_hex(set_pgrp as u32);
+        write_str("\n");
+        fail("tcgetpgrp should return the pgrp we set");
+    }
+
+    // Test setting a different process group (simulating job control)
+    let test_pgrp = 12345;
+    match tcsetpgrp(0, test_pgrp) {
+        Ok(()) => {
+            pass("tcsetpgrp(0, 12345) succeeded");
+        }
+        Err(e) => {
+            write_str("  tcsetpgrp returned error: ");
+            write_hex(e as u32);
+            write_str("\n");
+            fail("tcsetpgrp should succeed with arbitrary pgrp");
+        }
+    }
+
+    // Verify the arbitrary pgrp was set
+    let verify_pgrp = tcgetpgrp(0);
+    if verify_pgrp == test_pgrp {
+        pass("tcgetpgrp returns arbitrary pgrp value");
+    } else {
+        fail("tcgetpgrp should return the arbitrary pgrp we set");
+    }
+
+    // Restore our process as foreground
+    if tcsetpgrp(0, my_pid as i32).is_err() {
+        fail("tcsetpgrp failed to restore our pgrp");
+    }
+    pass("Restored our process as foreground pgrp");
 
     // ==========================================================================
     // All tests passed

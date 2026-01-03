@@ -155,36 +155,24 @@ name = "tty_test"
 path = "tty_test.rs"
 
 [[bin]]
-name = "file_read_test"
-path = "file_read_test.rs"
+name = "job_control_test"
+path = "job_control_test.rs"
 
 [[bin]]
-name = "getdents_test"
-path = "getdents_test.rs"
+name = "sigchld_job_test"
+path = "sigchld_job_test.rs"
 
 [[bin]]
-name = "lseek_test"
-path = "lseek_test.rs"
+name = "session_test"
+path = "session_test.rs"
 
 [[bin]]
-name = "fs_write_test"
-path = "fs_write_test.rs"
+name = "pipeline_test"
+path = "pipeline_test.rs"
 
 [[bin]]
-name = "fs_rename_test"
-path = "fs_rename_test.rs"
-
-[[bin]]
-name = "fs_large_file_test"
-path = "fs_large_file_test.rs"
-
-[[bin]]
-name = "fs_directory_test"
-path = "fs_directory_test.rs"
-
-[[bin]]
-name = "fs_link_test"
-path = "fs_link_test.rs"
+name = "job_table_test"
+path = "job_table_test.rs"
 
 [profile.release]
 panic = "abort"
