@@ -144,7 +144,7 @@ pub fn test_fork_exec() {
                     let hello_time_elf = &create_minimal_elf_no_bss();
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(child_pid, hello_time_elf)
+                        manager.exec_process(child_pid, hello_time_elf, Some("hello_time"))
                     }) {
                         Some(Ok(entry_point)) => {
                             log::info!("✓ exec succeeded! Child process {} now running hello_time at {:#x}", 
@@ -212,7 +212,7 @@ pub fn test_exec_directly() {
 
             // Use with_process_manager to properly disable interrupts
             match crate::process::with_process_manager(|manager| {
-                manager.exec_process(pid, hello_time_elf)
+                manager.exec_process(pid, hello_time_elf, Some("hello_time"))
             }) {
                 Some(Ok(entry_point)) => {
                     log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);
@@ -264,7 +264,7 @@ pub fn test_exec_real_userspace() {
                 // Now exec hello_time.elf into this process
                 log::info!("Executing hello_time.elf into process {}", pid.as_u64());
                 match crate::process::with_process_manager(|manager| {
-                    manager.exec_process(pid, hello_time_elf)
+                    manager.exec_process(pid, hello_time_elf, Some("hello_time"))
                 }) {
                     Some(Ok(entry_point)) => {
                         log::info!("✓ Real userspace exec succeeded! Entry: {:#x}", entry_point);
@@ -339,7 +339,7 @@ pub fn test_exec_minimal() {
             // Use with_process_manager to properly disable interrupts
             log::info!("Attempting exec with hello_time.elf...");
             match crate::process::with_process_manager(|manager| {
-                manager.exec_process(pid, hello_time_elf)
+                manager.exec_process(pid, hello_time_elf, Some("hello_time"))
             }) {
                 Some(Ok(entry_point)) => {
                     log::info!("✓ Minimal exec test passed! Entry: {:#x}", entry_point);
@@ -409,7 +409,7 @@ pub fn test_shell_fork_exec() {
                     });
 
                     match crate::process::with_process_manager(|manager| {
-                        manager.exec_process(child_pid, command_elf)
+                        manager.exec_process(child_pid, command_elf, Some("hello_time"))
                     }) {
                         Some(Ok(entry_point)) => {
                             log::info!(
@@ -554,7 +554,7 @@ pub fn test_exec_without_scheduling() {
 
         log::info!("Calling exec to load target program...");
 
-        match crate::process::with_process_manager(|manager| manager.exec_process(pid, target_elf))
+        match crate::process::with_process_manager(|manager| manager.exec_process(pid, target_elf, Some("hello_time")))
         {
             Some(Ok(entry_point)) => {
                 log::info!("✓ exec succeeded! New entry point: {:#x}", entry_point);

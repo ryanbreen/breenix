@@ -389,7 +389,7 @@ fn get_boot_stages() -> Vec<BootStage> {
         // NEW STAGES: Verify actual userspace output, not just process creation
         BootStage {
             name: "Userspace hello printed",
-            marker: "USERSPACE OUTPUT: Hello from userspace",
+            marker: "Hello from userspace",
             failure_meaning: "hello_time.elf did not print output",
             check_hint: "Check if hello_time.elf actually executed and printed to stdout",
         },
@@ -738,83 +738,96 @@ fn boot_stages() -> Result<()> {
     }
 
     while test_start.elapsed() < timeout {
+        // Read both kernel log output (COM2) and userspace output (COM1)
+        // Userspace stdout goes through TTY which writes to COM1
+        // Kernel logs go to COM2
+        let mut combined_contents = String::new();
+
         if let Ok(mut file) = fs::File::open(serial_output_file) {
-            // Use read_to_end + from_utf8_lossy to handle binary bytes in output
             let mut contents_bytes = Vec::new();
             if file.read_to_end(&mut contents_bytes).is_ok() {
-                let contents = String::from_utf8_lossy(&contents_bytes);
-                // Only process if content has changed
-                if contents.len() > last_content_len {
-                    last_content_len = contents.len();
+                combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+            }
+        }
 
-                    // Check each unchecked stage
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            // Check if marker is found (support regex-like patterns with |)
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| contents.contains(m))
-                            } else {
-                                contents.contains(stage.marker)
-                            };
+        if let Ok(mut file) = fs::File::open(user_output_file) {
+            let mut contents_bytes = Vec::new();
+            if file.read_to_end(&mut contents_bytes).is_ok() {
+                combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+            }
+        }
 
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                                last_progress = Instant::now();
+        // Only process if content has changed
+        if combined_contents.len() > last_content_len {
+            last_content_len = combined_contents.len();
+            let contents = &combined_contents;
 
-                                // Record timing for this stage
-                                let duration = stage_start_time.elapsed();
-                                stage_timings[i] = Some(StageTiming { duration });
-                                stage_start_time = Instant::now();
+            // Check each unchecked stage
+            for (i, stage) in stages.iter().enumerate() {
+                if !checked_stages[i] {
+                    // Check if marker is found (support regex-like patterns with |)
+                    let found = if stage.marker.contains('|') {
+                        stage.marker.split('|').any(|m| contents.contains(m))
+                    } else {
+                        contents.contains(stage.marker)
+                    };
 
-                                // Format timing string
-                                let time_str = if duration.as_secs() >= 1 {
-                                    format!("{:.2}s", duration.as_secs_f64())
-                                } else {
-                                    format!("{}ms", duration.as_millis())
-                                };
+                    if found {
+                        checked_stages[i] = true;
+                        stages_passed += 1;
+                        last_progress = Instant::now();
 
-                                // Print result for this stage with timing
-                                // Clear current line and print result
-                                print!("\r[{}/{}] {}... ", i + 1, total_stages, stage.name);
-                                // Pad to clear previous content
-                                for _ in 0..(50 - stage.name.len().min(50)) {
-                                    print!(" ");
-                                }
-                                println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
+                        // Record timing for this stage
+                        let duration = stage_start_time.elapsed();
+                        stage_timings[i] = Some(StageTiming { duration });
+                        stage_start_time = Instant::now();
 
-                                // Print next stage we're waiting for
-                                if i + 1 < total_stages {
-                                    if let Some(next_stage) = stages.get(i + 1) {
-                                        print!("[{}/{}] {}...", i + 2, total_stages, next_stage.name);
-                                        use std::io::Write;
-                                        let _ = std::io::stdout().flush();
-                                    }
-                                }
+                        // Format timing string
+                        let time_str = if duration.as_secs() >= 1 {
+                            format!("{:.2}s", duration.as_secs_f64())
+                        } else {
+                            format!("{}ms", duration.as_millis())
+                        };
+
+                        // Print result for this stage with timing
+                        // Clear current line and print result
+                        print!("\r[{}/{}] {}... ", i + 1, total_stages, stage.name);
+                        // Pad to clear previous content
+                        for _ in 0..(50 - stage.name.len().min(50)) {
+                            print!(" ");
+                        }
+                        println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
+
+                        // Print next stage we're waiting for
+                        if i + 1 < total_stages {
+                            if let Some(next_stage) = stages.get(i + 1) {
+                                print!("[{}/{}] {}...", i + 2, total_stages, next_stage.name);
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
                             }
                         }
-                    }
-
-                    // Check for kernel panic
-                    if contents.contains("KERNEL PANIC") {
-                        println!("\r                                                              ");
-                        println!("\nKERNEL PANIC detected!\n");
-
-                        // Find the panic message
-                        for line in contents.lines() {
-                            if line.contains("KERNEL PANIC") {
-                                println!("  {}", line);
-                            }
-                        }
-
-                        break;
-                    }
-
-                    // All stages passed?
-                    if stages_passed == total_stages {
-                        break;
                     }
                 }
+            }
+
+            // Check for kernel panic
+            if contents.contains("KERNEL PANIC") {
+                println!("\r                                                              ");
+                println!("\nKERNEL PANIC detected!\n");
+
+                // Find the panic message
+                for line in contents.lines() {
+                    if line.contains("KERNEL PANIC") {
+                        println!("  {}", line);
+                    }
+                }
+
+                break;
+            }
+
+            // All stages passed?
+            if stages_passed == total_stages {
+                break;
             }
         }
 
@@ -829,49 +842,59 @@ fn boot_stages() -> Result<()> {
             // Wait 2 seconds for QEMU to flush and terminate gracefully
             thread::sleep(Duration::from_secs(2));
 
-            // Check file one last time after buffers flush
+            // Check both files one last time after buffers flush
+            let mut combined_contents = String::new();
             if let Ok(mut file) = fs::File::open(serial_output_file) {
-                // Use read_to_end + from_utf8_lossy to handle binary bytes in output
                 let mut contents_bytes = Vec::new();
                 if file.read_to_end(&mut contents_bytes).is_ok() {
-                    let contents = String::from_utf8_lossy(&contents_bytes);
-                    // Check all remaining stages
-                    let mut any_found = false;
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| contents.contains(m))
+                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+                }
+            }
+            if let Ok(mut file) = fs::File::open(user_output_file) {
+                let mut contents_bytes = Vec::new();
+                if file.read_to_end(&mut contents_bytes).is_ok() {
+                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+                }
+            }
+
+            if !combined_contents.is_empty() {
+                let contents = &combined_contents;
+                // Check all remaining stages
+                let mut any_found = false;
+                for (i, stage) in stages.iter().enumerate() {
+                    if !checked_stages[i] {
+                        let found = if stage.marker.contains('|') {
+                            stage.marker.split('|').any(|m| contents.contains(m))
+                        } else {
+                            contents.contains(stage.marker)
+                        };
+
+                        if found {
+                            checked_stages[i] = true;
+                            stages_passed += 1;
+                            any_found = true;
+
+                            // Record timing for this stage
+                            let duration = stage_start_time.elapsed();
+                            stage_timings[i] = Some(StageTiming { duration });
+                            stage_start_time = Instant::now();
+
+                            let time_str = if duration.as_secs() >= 1 {
+                                format!("{:.2}s", duration.as_secs_f64())
                             } else {
-                                contents.contains(stage.marker)
+                                format!("{}ms", duration.as_millis())
                             };
 
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                                any_found = true;
-
-                                // Record timing for this stage
-                                let duration = stage_start_time.elapsed();
-                                stage_timings[i] = Some(StageTiming { duration });
-                                stage_start_time = Instant::now();
-
-                                let time_str = if duration.as_secs() >= 1 {
-                                    format!("{:.2}s", duration.as_secs_f64())
-                                } else {
-                                    format!("{}ms", duration.as_millis())
-                                };
-
-                                println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
-                            }
+                            println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
                         }
                     }
+                }
 
-                    if any_found {
-                        last_progress = Instant::now();
-                        // Continue checking if we found something
-                        if stages_passed < total_stages {
-                            continue;
-                        }
+                if any_found {
+                    last_progress = Instant::now();
+                    // Continue checking if we found something
+                    if stages_passed < total_stages {
+                        continue;
                     }
                 }
             }
@@ -909,26 +932,36 @@ fn boot_stages() -> Result<()> {
     let _ = child.kill();
     let _ = child.wait();
 
-    // Final scan of output file after QEMU terminates
+    // Final scan of output files after QEMU terminates
     // This catches markers that were printed but not yet processed due to timing
     thread::sleep(Duration::from_millis(100)); // Let filesystem sync
+    let mut combined_contents = String::new();
     if let Ok(mut file) = fs::File::open(serial_output_file) {
         let mut contents_bytes = Vec::new();
         if file.read_to_end(&mut contents_bytes).is_ok() {
-            let contents = String::from_utf8_lossy(&contents_bytes);
-            for (i, stage) in stages.iter().enumerate() {
-                if !checked_stages[i] {
-                    let found = if stage.marker.contains('|') {
-                        stage.marker.split('|').any(|m| contents.contains(m))
-                    } else {
-                        contents.contains(stage.marker)
-                    };
+            combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+        }
+    }
+    if let Ok(mut file) = fs::File::open(user_output_file) {
+        let mut contents_bytes = Vec::new();
+        if file.read_to_end(&mut contents_bytes).is_ok() {
+            combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+        }
+    }
+    if !combined_contents.is_empty() {
+        let contents = &combined_contents;
+        for (i, stage) in stages.iter().enumerate() {
+            if !checked_stages[i] {
+                let found = if stage.marker.contains('|') {
+                    stage.marker.split('|').any(|m| contents.contains(m))
+                } else {
+                    contents.contains(stage.marker)
+                };
 
-                    if found {
-                        checked_stages[i] = true;
-                        stages_passed += 1;
-                        println!("[{}/{}] {}... PASS (found in final scan)", i + 1, total_stages, stage.name);
-                    }
+                if found {
+                    checked_stages[i] = true;
+                    stages_passed += 1;
+                    println!("[{}/{}] {}... PASS (found in final scan)", i + 1, total_stages, stage.name);
                 }
             }
         }

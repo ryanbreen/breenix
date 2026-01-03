@@ -346,6 +346,46 @@ impl TtyDevice {
         }
     }
 
+    /// Write a buffer of bytes to the terminal output
+    ///
+    /// This is the optimized path for bulk output - it acquires the termios
+    /// settings once and processes all bytes with those settings. This avoids
+    /// the lock acquire/release overhead per character that output_char() has.
+    ///
+    /// # Arguments
+    /// * `buf` - Buffer of bytes to write
+    pub fn write_bytes(&self, buf: &[u8]) {
+        // Get termios settings once for the entire buffer
+        let termios = self.ldisc.lock().termios().clone();
+
+        // Process each byte with the cached termios settings
+        for &c in buf {
+            self.output_byte_with_termios(c, &termios);
+        }
+    }
+
+    /// Write a single byte using pre-fetched termios settings
+    ///
+    /// This is the inner loop for write_bytes - no locking is done here,
+    /// the caller must provide the termios settings.
+    #[inline]
+    fn output_byte_with_termios(&self, c: u8, termios: &Termios) {
+        // Handle NL -> CR-NL translation if OPOST and ONLCR are set
+        if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
+            crate::serial::write_byte(b'\r');
+            #[cfg(feature = "interactive")]
+            {
+                crate::logger::write_char_to_framebuffer(b'\r');
+            }
+        }
+        crate::serial::write_byte(c);
+
+        #[cfg(feature = "interactive")]
+        {
+            crate::logger::write_char_to_framebuffer(c);
+        }
+    }
+
     /// Write a character to the terminal output (non-blocking)
     ///
     /// This version avoids blocking and is safe for interrupt context.
@@ -564,6 +604,34 @@ pub fn console() -> Option<Arc<TtyDevice>> {
 pub fn push_char(c: u8) {
     if let Some(tty) = console() {
         tty.input_char(c);
+    }
+}
+
+/// Write output through TTY processing
+///
+/// This is the POSIX-correct way to write to stdout/stderr.
+/// The TTY layer handles output processing (OPOST, ONLCR, etc.).
+///
+/// This function uses the optimized `write_bytes` path which acquires
+/// the termios settings once for the entire buffer, avoiding lock
+/// acquire/release overhead per character.
+///
+/// # Arguments
+/// * `buf` - Buffer of bytes to write
+///
+/// # Returns
+/// Number of bytes written
+pub fn write_output(buf: &[u8]) -> usize {
+    if let Some(tty) = console() {
+        // Use the optimized batched write that locks termios once
+        tty.write_bytes(buf);
+        buf.len()
+    } else {
+        // Fallback: write directly to serial if TTY not initialized
+        for &c in buf {
+            crate::serial::write_byte(c);
+        }
+        buf.len()
     }
 }
 

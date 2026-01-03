@@ -21,7 +21,7 @@ pub use line_discipline::LineDiscipline;
 // Re-export driver functions for external use
 // Allow unused - these are public API re-exports for keyboard interrupt integration
 #[allow(unused_imports)]
-pub use driver::{console, push_char, push_char_nonblock, TtyDevice};
+pub use driver::{console, push_char, push_char_nonblock, write_output, TtyDevice};
 
 /// Initialize the TTY subsystem
 ///

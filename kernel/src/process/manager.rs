@@ -1359,7 +1359,11 @@ impl ProcessManager {
     /// This implements the exec() family of system calls. Unlike fork(), which creates
     /// a new process, exec() replaces the current process's address space with a new
     /// program while keeping the same PID.
-    pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8]) -> Result<u64, &'static str> {
+    ///
+    /// The `program_name` parameter is optional - if provided, it updates the process name
+    /// to match the new program. This is critical because fork() uses the process name to
+    /// reload the binary from disk.
+    pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8], program_name: Option<&str>) -> Result<u64, &'static str> {
         log::info!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
@@ -1509,8 +1513,13 @@ impl ProcessManager {
         );
 
         // Update the process with new program data
-        // Preserve the process ID and thread ID but replace everything else
-        process.name = format!("exec_{}", pid.as_u64());
+        // Update the process name to match the new program if provided
+        // CRITICAL: The process name must match a binary on the test disk because
+        // fork() uses the process name to reload the binary.
+        if let Some(name) = program_name {
+            process.name = String::from(name);
+            log::info!("exec_process: Updated process name to '{}'", name);
+        }
         process.entry_point = loaded_elf.entry_point;
 
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,

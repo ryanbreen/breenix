@@ -330,38 +330,25 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     }
 }
 
-/// Helper function to write to stdio (serial port)
+/// Helper function to write to stdio through TTY layer
+///
+/// This is the POSIX-correct way to write stdout/stderr. All output goes through
+/// the TTY layer which handles:
+/// - OPOST output processing
+/// - ONLCR (NL -> CR-NL conversion when enabled)
+/// - Carriage return handling (\r moves to start of line without newline)
 fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
-    let bytes_written = buffer.len() as u64;
-
-    // In interactive mode, write to framebuffer so user can see shell output in QEMU window
-    #[cfg(feature = "interactive")]
-    {
-        if let Ok(s) = core::str::from_utf8(buffer) {
-            // Write to framebuffer for QEMU display
-            crate::logger::write_to_framebuffer(s);
-        }
-        // Also write to COM1 for debugging (serial console)
-        for &byte in buffer {
-            crate::serial::write_byte(byte);
-        }
-    }
-
-    // In non-interactive mode, write to serial port (for CI/testing)
-    // NOTE: We write directly to serial to preserve control characters like \r
-    // for spinner animations. The log::info! macro was removed because it adds
-    // newlines which defeat carriage return behavior.
-    #[cfg(not(feature = "interactive"))]
-    {
-        for &byte in buffer {
-            crate::serial::write_byte(byte);
-        }
-    }
-
     // Suppress the fd unused warning
     let _ = fd;
 
-    SyscallResult::Ok(bytes_written)
+    // Route all stdout/stderr writes through the TTY layer for POSIX-compliant
+    // output processing. The TTY layer handles:
+    // - OPOST flag processing
+    // - ONLCR (newline -> carriage return + newline conversion)
+    // - Direct output of control characters like \r
+    let bytes_written = crate::tty::write_output(buffer);
+
+    SyscallResult::Ok(bytes_written as u64)
 }
 
 /// sys_read - Read from a file descriptor
@@ -804,7 +791,8 @@ pub fn sys_exec_with_frame(
         };
 
         // Load the program by name from the test disk
-        let elf_data = if program_name_ptr != 0 {
+        // We need both the ELF data and the program name for exec_process
+        let (elf_data, exec_program_name): (&'static [u8], Option<&'static str>) = if program_name_ptr != 0 {
             // Read the program name from userspace
             log::info!("sys_exec: Reading program name from userspace");
 
@@ -843,7 +831,11 @@ pub fn sys_exec_with_frame(
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
                 // Leak the vector to get a static slice (needed for exec_process)
                 let boxed_slice = elf_vec.into_boxed_slice();
-                Box::leak(boxed_slice) as &'static [u8]
+                let elf_data = Box::leak(boxed_slice) as &'static [u8];
+                // Also leak the program name so we can pass it to exec_process
+                let name_string = alloc::string::String::from(program_name);
+                let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+                (elf_data, Some(leaked_name))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -858,7 +850,7 @@ pub fn sys_exec_with_frame(
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using generated hello_world test program");
-                crate::userspace_test::get_test_binary_static("hello_world")
+                (crate::userspace_test::get_test_binary_static("hello_world"), Some("hello_world"))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -897,7 +889,7 @@ pub fn sys_exec_with_frame(
             // Replace the process's address space
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, elf_data) {
+                match manager.exec_process(current_pid, elf_data, exec_program_name) {
                     Ok(new_entry_point) => {
                         log::info!(
                             "sys_exec: Successfully replaced process address space, entry point: {:#x}",
@@ -1018,7 +1010,8 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 
         // Load the program by name from the test disk
         // In a real implementation, this would come from the filesystem
-        let _elf_data = if program_name_ptr != 0 {
+        // We need both the ELF data and the program name for exec_process
+        let (_elf_data, _exec_program_name): (&'static [u8], Option<&'static str>) = if program_name_ptr != 0 {
             // Read the program name from userspace
             log::info!("sys_exec: Reading program name from userspace");
 
@@ -1049,7 +1042,11 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
                 // Leak the vector to get a static slice (needed for exec_process)
                 let boxed_slice = elf_vec.into_boxed_slice();
-                Box::leak(boxed_slice) as &'static [u8]
+                let elf_data = Box::leak(boxed_slice) as &'static [u8];
+                // Also leak the program name so we can pass it to exec_process
+                let name_string = alloc::string::String::from(program_name);
+                let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+                (elf_data, Some(leaked_name))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -1067,7 +1064,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using generated hello_world test program");
-                crate::userspace_test::get_test_binary_static("hello_world")
+                (crate::userspace_test::get_test_binary_static("hello_world"), Some("hello_world"))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -1106,7 +1103,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         // Replace the process's address space
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            match manager.exec_process(current_pid, _elf_data) {
+            match manager.exec_process(current_pid, _elf_data, _exec_program_name) {
                 Ok(new_entry_point) => {
                     log::info!(
                         "sys_exec: Successfully replaced process address space, entry point: {:#x}",
