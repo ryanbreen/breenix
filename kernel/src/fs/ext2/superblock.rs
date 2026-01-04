@@ -241,6 +241,23 @@ impl Ext2Superblock {
             }
         }
     }
+
+    /// Decrement free block count
+    ///
+    /// Call this after allocating a block and before writing the superblock.
+    pub fn decrement_free_blocks(&mut self) {
+        let current = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_blocks_count))
+        };
+        if current > 0 {
+            unsafe {
+                core::ptr::write_unaligned(
+                    core::ptr::addr_of_mut!(self.s_free_blocks_count),
+                    current - 1,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

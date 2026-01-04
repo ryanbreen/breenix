@@ -933,3 +933,73 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
         }
     }
 }
+
+/// sys_rename - Rename/move a file or directory
+///
+/// Renames oldpath to newpath. If newpath already exists, it will be atomically
+/// replaced (if it's a file) or the operation will fail (if it's a directory).
+///
+/// # Arguments
+/// * `oldpath` - Current path (userspace pointer to null-terminated string)
+/// * `newpath` - New path (userspace pointer to null-terminated string)
+///
+/// # Returns
+/// 0 on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - oldpath does not exist
+/// * EISDIR - newpath is a directory but oldpath is not
+/// * ENOTDIR - Component in path is not a directory
+/// * EEXIST/ENOTEMPTY - newpath is a non-empty directory
+/// * EIO - I/O error
+pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
+    use super::errno::{EACCES, EIO, EISDIR, ENOENT};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Copy paths from userspace
+    let old = match copy_cstr_from_user(oldpath) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let new = match copy_cstr_from_user(newpath) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_rename: old={:?}, new={:?}", old, new);
+
+    // Get the root filesystem (with mutable access)
+    let mut fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_mut() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_rename: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Perform the rename operation
+    match fs.rename_file(&old, &new) {
+        Ok(()) => {
+            log::info!("sys_rename: successfully renamed {} to {}", old, new);
+            SyscallResult::Ok(0)
+        }
+        Err(e) => {
+            log::debug!("sys_rename: failed: {}", e);
+            // Map error to appropriate errno
+            let errno = if e.contains("not found") || e.contains("not exist") {
+                ENOENT
+            } else if e.contains("is a directory") {
+                EISDIR
+            } else if e.contains("Not a directory") {
+                super::errno::ENOTDIR
+            } else if e.contains("permission") || e.contains("Cannot") {
+                EACCES
+            } else {
+                EIO
+            };
+            SyscallResult::Err(errno as u64)
+        }
+    }
+}

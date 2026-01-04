@@ -64,6 +64,9 @@ pub enum SyscallNumber {
     Fstat = 259,        // Breenix: new filesystem syscall
     Getdents64 = 260,   // Breenix: directory listing syscall
     Unlink = 87,        // Linux syscall number for unlink
+    Rename = 82,        // Linux syscall number for rename
+    Mkdir = 83,         // Linux syscall number for mkdir
+    Rmdir = 84,         // Linux syscall number for rmdir
     Pipe2 = 293,        // Linux syscall number for pipe2
 }
 
@@ -103,6 +106,9 @@ impl SyscallNumber {
             62 => Some(Self::Kill),
             72 => Some(Self::Fcntl),
             87 => Some(Self::Unlink),
+            82 => Some(Self::Rename),
+            83 => Some(Self::Mkdir),
+            84 => Some(Self::Rmdir),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
             257 => Some(Self::Open),

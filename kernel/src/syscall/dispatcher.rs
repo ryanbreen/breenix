@@ -69,5 +69,14 @@ pub fn dispatch_syscall(
         SyscallNumber::Lseek => super::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32),
         SyscallNumber::Getdents64 => super::fs::sys_getdents64(arg1 as i32, arg2, arg3),
         SyscallNumber::Unlink => super::fs::sys_unlink(arg1),
+        SyscallNumber::Rename => super::fs::sys_rename(arg1, arg2),
+        SyscallNumber::Mkdir => {
+            log::warn!("mkdir not yet implemented");
+            SyscallResult::Err(38)
+        }
+        SyscallNumber::Rmdir => {
+            log::warn!("rmdir not yet implemented");
+            SyscallResult::Err(38)
+        }
     }
 }

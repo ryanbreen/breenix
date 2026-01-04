@@ -292,8 +292,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
 
             // Access the mounted ext2 filesystem
-            let root_fs = crate::fs::ext2::root_fs();
-            let fs = match root_fs.as_ref() {
+            let mut root_fs = crate::fs::ext2::root_fs();
+            let fs = match root_fs.as_mut() {
                 Some(fs) => fs,
                 None => {
                     log::error!("sys_write: ext2 filesystem not mounted");

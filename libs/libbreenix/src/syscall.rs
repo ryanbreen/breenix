@@ -48,6 +48,9 @@ pub mod nr {
     pub const FSTAT: u64 = 259;       // Breenix: new filesystem syscall
     pub const GETDENTS64: u64 = 260;  // Breenix: directory listing syscall
     pub const UNLINK: u64 = 87;       // Linux x86_64 unlink
+    pub const RENAME: u64 = 82;       // Linux x86_64 rename
+    pub const MKDIR: u64 = 83;        // Linux x86_64 mkdir
+    pub const RMDIR: u64 = 84;        // Linux x86_64 rmdir
     pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2
 }
 

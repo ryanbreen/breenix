@@ -423,6 +423,84 @@ fn write_dir_entry(
     }
 }
 
+/// Check if a directory is empty (contains only "." and ".." entries)
+///
+/// # Arguments
+/// * `dir_data` - Directory data buffer
+///
+/// # Returns
+/// * `true` - Directory is empty (only . and ..)
+/// * `false` - Directory has other entries
+pub fn is_directory_empty(dir_data: &[u8]) -> bool {
+    for entry in DirReader::new(dir_data) {
+        // Skip "." and ".." entries
+        if entry.name == "." || entry.name == ".." {
+            continue;
+        }
+        // Found a non-dot entry
+        return false;
+    }
+    // Only found . and .. (or no entries at all)
+    true
+}
+
+/// Update a directory entry's inode number (for updating ".." when moving directories)
+///
+/// Finds the entry with the given name and updates its inode number.
+///
+/// # Arguments
+/// * `dir_data` - Mutable directory data buffer
+/// * `name` - Name of the entry to update
+/// * `new_inode` - New inode number
+///
+/// # Returns
+/// * `Ok(())` - Entry was updated
+/// * `Err(msg)` - Entry not found or other error
+pub fn update_directory_entry(dir_data: &mut [u8], name: &str, new_inode: u32) -> Result<(), &'static str> {
+    let mut offset = 0usize;
+
+    while offset < dir_data.len() {
+        // Ensure we have at least enough bytes for the header
+        if offset + MIN_DIR_ENTRY_SIZE > dir_data.len() {
+            break;
+        }
+
+        // Read existing entry header
+        let entry_inode = u32::from_le_bytes([
+            dir_data[offset],
+            dir_data[offset + 1],
+            dir_data[offset + 2],
+            dir_data[offset + 3],
+        ]);
+        let rec_len = u16::from_le_bytes([
+            dir_data[offset + 4],
+            dir_data[offset + 5],
+        ]) as usize;
+        let entry_name_len = dir_data[offset + 6] as usize;
+
+        if rec_len == 0 || rec_len < MIN_DIR_ENTRY_SIZE {
+            return Err("Corrupt directory entry");
+        }
+
+        // Check if this is the entry we're looking for
+        if entry_inode != 0 && entry_name_len == name.len() {
+            let entry_name_offset = offset + MIN_DIR_ENTRY_SIZE;
+            if entry_name_offset + entry_name_len <= dir_data.len() {
+                let entry_name = &dir_data[entry_name_offset..entry_name_offset + entry_name_len];
+                if entry_name == name.as_bytes() {
+                    // Found it - update the inode number
+                    dir_data[offset..offset + 4].copy_from_slice(&new_inode.to_le_bytes());
+                    return Ok(());
+                }
+            }
+        }
+
+        offset += rec_len;
+    }
+
+    Err("Entry not found")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

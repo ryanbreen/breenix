@@ -156,7 +156,7 @@ impl Ext2Fs {
     /// * `Ok(bytes_written)` - Number of bytes written
     /// * `Err(msg)` - Error message if write failed
     pub fn write_file_range(
-        &self,
+        &mut self,
         inode_num: u32,
         offset: u64,
         data: &[u8],
@@ -174,7 +174,7 @@ impl Ext2Fs {
         }
 
         // Write the data
-        write_file_range(self.device.as_ref(), &mut inode, &self.superblock, offset, data)
+        write_file_range(self.device.as_ref(), &mut inode, &self.superblock, &mut self.block_groups, offset, data)
             .map_err(|_| "Failed to write file data")?;
 
         // Write the modified inode back to disk
@@ -238,8 +238,20 @@ impl Ext2Fs {
         // Add directory entry
         add_directory_entry(&mut dir_data, new_inode_num, name, EXT2_FT_REG_FILE)?;
 
+        // Update parent directory timestamps (mtime and ctime)
+        let mut parent_inode_mut = parent_inode;
+        parent_inode_mut.update_timestamps(false, true, true);
+
         // Write the modified directory data back
         self.write_directory_data(parent_inode_num, &dir_data)?;
+
+        // Write the updated parent directory inode
+        parent_inode_mut.write_to(
+            self.device.as_ref(),
+            parent_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write parent inode")?;
 
         // Update superblock with new free inode count
         self.superblock.decrement_free_inodes();
@@ -285,8 +297,8 @@ impl Ext2Fs {
         // Clear all block pointers
         inode.i_block = [0; 15];
 
-        // Update modification time
-        inode.i_mtime = crate::time::current_unix_time() as u32;
+        // Update modification and change timestamps
+        inode.update_timestamps(false, true, true);
 
         // Write the modified inode back
         inode.write_to(
@@ -353,8 +365,20 @@ impl Ext2Fs {
         // Remove the directory entry
         remove_entry(&mut dir_data, filename)?;
 
+        // Update parent directory timestamps (mtime and ctime)
+        let mut parent_inode_mut = parent_inode;
+        parent_inode_mut.update_timestamps(false, true, true);
+
         // Write the modified directory data back
         self.write_directory_data(parent_inode_num, &dir_data)?;
+
+        // Write the updated parent directory inode
+        parent_inode_mut.write_to(
+            self.device.as_ref(),
+            parent_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write parent inode")?;
 
         // Decrement the inode link count (may free the inode if it reaches 0)
         decrement_inode_links(
@@ -368,9 +392,168 @@ impl Ext2Fs {
         Ok(())
     }
 
-    /// Write directory data back to disk
+    /// Rename/move a file or directory
     ///
-    /// Helper function to write modified directory contents back to the directory's data blocks.
+    /// Renames or moves a file/directory from oldpath to newpath.
+    /// If newpath exists and is a file, it is replaced. If newpath is a directory,
+    /// the operation fails.
+    ///
+    /// # Arguments
+    /// * `oldpath` - Current absolute path
+    /// * `newpath` - New absolute path
+    ///
+    /// # Returns
+    /// * `Ok(())` - Rename was successful
+    /// * `Err(msg)` - Error message
+    pub fn rename_file(&mut self, oldpath: &str, newpath: &str) -> Result<(), &'static str> {
+        // Both paths must be absolute
+        if !oldpath.starts_with('/') || !newpath.starts_with('/') {
+            return Err("Paths must be absolute");
+        }
+
+        // Cannot rename . or ..
+        if oldpath.ends_with("/.") || oldpath.ends_with("/..") {
+            return Err("Cannot rename . or ..");
+        }
+
+        // Split both paths into parent and filename
+        let (old_parent_path, old_filename) = match oldpath.rfind('/') {
+            Some(0) => ("/", &oldpath[1..]),
+            Some(idx) => (&oldpath[..idx], &oldpath[idx + 1..]),
+            None => return Err("Invalid oldpath"),
+        };
+
+        let (new_parent_path, new_filename) = match newpath.rfind('/') {
+            Some(0) => ("/", &newpath[1..]),
+            Some(idx) => (&newpath[..idx], &newpath[idx + 1..]),
+            None => return Err("Invalid newpath"),
+        };
+
+        // Validate filenames
+        if old_filename.is_empty() || new_filename.is_empty() {
+            return Err("Invalid filename");
+        }
+        if old_filename == "." || old_filename == ".." || new_filename == "." || new_filename == ".." {
+            return Err("Cannot rename . or ..");
+        }
+
+        // Resolve source file/directory
+        let source_inode_num = self.resolve_path(oldpath)?;
+        let source_inode = self.read_inode(source_inode_num)?;
+        let source_is_dir = source_inode.is_dir();
+        let source_file_type = if source_is_dir { EXT2_FT_DIR } else { EXT2_FT_REG_FILE };
+
+        // Resolve parent directories
+        let old_parent_num = self.resolve_path(old_parent_path)?;
+        let new_parent_num = self.resolve_path(new_parent_path)?;
+
+        let old_parent_inode = self.read_inode(old_parent_num)?;
+        let new_parent_inode = self.read_inode(new_parent_num)?;
+
+        if !old_parent_inode.is_dir() || !new_parent_inode.is_dir() {
+            return Err("Parent is not a directory");
+        }
+
+        // Check if destination exists
+        let dest_exists = self.resolve_path(newpath).is_ok();
+
+        if dest_exists {
+            // Destination exists - check if we can replace it
+            let dest_inode_num = self.resolve_path(newpath)?;
+            let dest_inode = self.read_inode(dest_inode_num)?;
+
+            if dest_inode.is_dir() {
+                if !source_is_dir {
+                    // Cannot replace directory with non-directory
+                    return Err("Destination is a directory");
+                } else {
+                    // For directory rename, destination must be empty
+                    // (we don't support this yet - would need to check if directory is empty)
+                    return Err("Destination directory exists");
+                }
+            } else if source_is_dir {
+                // Cannot replace file with directory
+                return Err("Destination is a file but source is a directory");
+            }
+
+            // Destination is a file and source is a file - we'll replace it
+            // First, unlink the destination
+            self.unlink_file(newpath)?;
+        }
+
+        // Now perform the rename
+        // Read both parent directories
+        let mut old_parent_data = self.read_directory(&old_parent_inode)?;
+        let mut new_parent_data = if old_parent_num == new_parent_num {
+            // Same directory - use the same data buffer
+            old_parent_data.clone()
+        } else {
+            self.read_directory(&new_parent_inode)?
+        };
+
+        // Remove entry from old parent
+        remove_entry(&mut old_parent_data, old_filename)?;
+
+        // Add entry to new parent
+        if old_parent_num == new_parent_num {
+            // Same directory - work with the modified buffer
+            add_directory_entry(&mut old_parent_data, source_inode_num, new_filename, source_file_type)?;
+
+            // Update parent directory timestamps
+            let mut parent_inode_mut = old_parent_inode;
+            parent_inode_mut.update_timestamps(false, true, true);
+
+            // Write back once
+            self.write_directory_data(old_parent_num, &old_parent_data)?;
+
+            // Write the updated parent directory inode
+            parent_inode_mut.write_to(
+                self.device.as_ref(),
+                old_parent_num,
+                &self.superblock,
+                &self.block_groups,
+            ).map_err(|_| "Failed to write parent inode")?;
+        } else {
+            // Different directories
+            add_directory_entry(&mut new_parent_data, source_inode_num, new_filename, source_file_type)?;
+
+            // Update timestamps for both parent directories
+            let mut old_parent_mut = old_parent_inode;
+            let mut new_parent_mut = new_parent_inode;
+            old_parent_mut.update_timestamps(false, true, true);
+            new_parent_mut.update_timestamps(false, true, true);
+
+            // Write both directories back
+            self.write_directory_data(old_parent_num, &old_parent_data)?;
+            self.write_directory_data(new_parent_num, &new_parent_data)?;
+
+            // Write the updated parent directory inodes
+            old_parent_mut.write_to(
+                self.device.as_ref(),
+                old_parent_num,
+                &self.superblock,
+                &self.block_groups,
+            ).map_err(|_| "Failed to write old parent inode")?;
+
+            new_parent_mut.write_to(
+                self.device.as_ref(),
+                new_parent_num,
+                &self.superblock,
+                &self.block_groups,
+            ).map_err(|_| "Failed to write new parent inode")?;
+
+            // If moving a directory, update its ".." entry to point to new parent
+            if source_is_dir {
+                let mut source_dir_data = self.read_directory(&source_inode)?;
+                // Find and update the ".." entry
+                update_directory_entry(&mut source_dir_data, "..", new_parent_num)?;
+                self.write_directory_data(source_inode_num, &source_dir_data)?;
+            }
+        }
+
+        log::debug!("ext2: renamed {} to {}", oldpath, newpath);
+        Ok(())
+    }
     fn write_directory_data(&self, dir_inode_num: u32, data: &[u8]) -> Result<(), &'static str> {
         // Read the directory inode
         let inode = self.read_inode(dir_inode_num)?;

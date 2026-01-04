@@ -219,6 +219,38 @@ impl Ext2Inode {
         let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.i_mode)) };
         mode & EXT2_S_PERM_MASK
     }
+
+    /// Update timestamps on the inode
+    ///
+    /// # Arguments
+    /// * `update_atime` - Update access time
+    /// * `update_mtime` - Update modification time
+    /// * `update_ctime` - Update change time
+    ///
+    /// # Example
+    /// ```
+    /// // After writing to a file
+    /// inode.update_timestamps(false, true, true);
+    ///
+    /// // After reading from a file
+    /// inode.update_timestamps(true, false, false);
+    ///
+    /// // After changing inode metadata (chmod, chown, etc.)
+    /// inode.update_timestamps(false, false, true);
+    /// ```
+    pub fn update_timestamps(&mut self, update_atime: bool, update_mtime: bool, update_ctime: bool) {
+        let now = crate::time::current_unix_time() as u32;
+
+        if update_atime {
+            self.i_atime = now;
+        }
+        if update_mtime {
+            self.i_mtime = now;
+        }
+        if update_ctime {
+            self.i_ctime = now;
+        }
+    }
 }
 
 /// Root directory inode number
@@ -422,6 +454,38 @@ impl Ext2Inode {
             i_flags: 0,
             i_osd1: 0,
             i_block: [0; 15],  // No blocks allocated
+            i_generation: 0,
+            i_file_acl: 0,
+            i_dir_acl: 0,
+            i_faddr: 0,
+            i_osd2: [0; 12],
+        }
+    }
+
+    /// Create a new directory inode
+    ///
+    /// Initializes all fields for a new directory with the given mode.
+    /// The directory starts with link count 2 (self via "." and parent via entry).
+    ///
+    /// # Arguments
+    /// * `mode` - Directory permissions (e.g., 0o755) - directory type bits are added automatically
+    pub fn new_directory(mode: u16) -> Self {
+        let now = crate::time::current_unix_time() as u32;
+
+        Self {
+            i_mode: EXT2_S_IFDIR | (mode & 0o777),
+            i_uid: 0,          // root for now
+            i_size: 0,         // Will be set when directory data is written
+            i_atime: now,
+            i_ctime: now,
+            i_mtime: now,
+            i_dtime: 0,
+            i_gid: 0,          // root for now
+            i_links_count: 2,  // Self via "." and parent via directory entry
+            i_blocks: 0,       // Will be set when blocks are allocated
+            i_flags: 0,
+            i_osd1: 0,
+            i_block: [0; 15],  // No blocks allocated yet
             i_generation: 0,
             i_file_acl: 0,
             i_dir_acl: 0,

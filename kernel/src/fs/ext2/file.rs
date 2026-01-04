@@ -267,6 +267,7 @@ fn read_indirect_block<B: BlockDevice>(
 /// * `device` - The block device to read/write
 /// * `inode` - The inode to modify (mutable)
 /// * `superblock` - The superblock (for block size calculation)
+/// * `block_groups` - Mutable reference to block group descriptors (for block allocation)
 /// * `logical_block` - Logical block index within the file (0-based)
 /// * `physical_block` - Physical block number on disk to set
 ///
@@ -277,6 +278,7 @@ pub fn set_block_num<B: BlockDevice>(
     device: &B,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
     logical_block: u32,
     physical_block: u32,
 ) -> Result<(), BlockError> {
@@ -299,14 +301,20 @@ pub fn set_block_num<B: BlockDevice>(
     // Single indirect block (12)
     if logical_block < direct_count + single_indirect_count {
         // Get or allocate single indirect block
-        let single_indirect_ptr = unsafe {
+        let mut single_indirect_ptr = unsafe {
             core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[SINGLE_INDIRECT]))
         };
 
         if single_indirect_ptr == 0 {
-            // Need to allocate an indirect block - for now, return an error
-            // A full implementation would allocate a new block here
-            return Err(BlockError::IoError);
+            // Allocate a new indirect block
+            single_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
+                .map_err(|_| BlockError::IoError)?;
+
+            // Update the inode's indirect block pointer
+            unsafe {
+                let block_ptr = core::ptr::addr_of_mut!(inode.i_block[SINGLE_INDIRECT]);
+                core::ptr::write_unaligned(block_ptr, single_indirect_ptr);
+            }
         }
 
         let index_in_indirect = logical_block - direct_count;
@@ -329,6 +337,7 @@ pub fn set_block_num<B: BlockDevice>(
 /// * `device` - The block device to write to
 /// * `inode` - The inode to write to (will be modified)
 /// * `superblock` - The superblock (for block size calculation)
+/// * `block_groups` - Mutable reference to block group descriptors (for block allocation)
 /// * `data` - Data to write
 ///
 /// # Returns
@@ -338,9 +347,10 @@ pub fn write_file<B: BlockDevice>(
     device: &B,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
     data: &[u8],
 ) -> Result<(), BlockError> {
-    write_file_range(device, inode, superblock, 0, data)
+    write_file_range(device, inode, superblock, block_groups, 0, data)
 }
 
 /// Write a portion of a file (for seek + write operations)
@@ -349,6 +359,7 @@ pub fn write_file<B: BlockDevice>(
 /// * `device` - The block device to write to
 /// * `inode` - The inode to write to (will be modified)
 /// * `superblock` - The superblock (for block size calculation)
+/// * `block_groups` - Mutable reference to block group descriptors (for block allocation)
 /// * `offset` - Starting byte offset within the file
 /// * `data` - Data to write
 ///
@@ -359,6 +370,7 @@ pub fn write_file_range<B: BlockDevice>(
     device: &B,
     inode: &mut Ext2Inode,
     superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
     offset: u64,
     data: &[u8],
 ) -> Result<(), BlockError> {
@@ -376,14 +388,26 @@ pub fn write_file_range<B: BlockDevice>(
     let mut block_buf = vec![0u8; block_size];
 
     for logical_block in start_block..end_block {
-        // Get physical block number
+        // Get physical block number, allocating if necessary
         let physical_block = match get_block_num(device, inode, superblock, logical_block)? {
             Some(block_num) => block_num,
             None => {
-                // Sparse hole or no block allocated - need to allocate
-                // For now, we don't support writing to sparse files or extending
-                // A full implementation would allocate a new block here
-                return Err(BlockError::IoError);
+                // Sparse hole or no block allocated - allocate a new block
+                let new_block = super::block_group::allocate_block(device, superblock, block_groups)
+                    .map_err(|_| BlockError::IoError)?;
+
+                // Set the block pointer in the inode
+                set_block_num(device, inode, superblock, block_groups, logical_block, new_block)?;
+
+                // Update i_blocks count (in 512-byte sectors)
+                let sectors_per_block = (block_size / 512) as u32;
+                unsafe {
+                    let blocks_ptr = core::ptr::addr_of_mut!(inode.i_blocks);
+                    let current_blocks = core::ptr::read_unaligned(blocks_ptr);
+                    core::ptr::write_unaligned(blocks_ptr, current_blocks + sectors_per_block);
+                }
+
+                new_block
             }
         };
 
@@ -426,6 +450,9 @@ pub fn write_file_range<B: BlockDevice>(
         // For files > 4GB, we'd also need to update i_dir_acl
         // but that's not common for typical use
     }
+
+    // Update modification and change timestamps
+    inode.update_timestamps(false, true, true);
 
     Ok(())
 }
