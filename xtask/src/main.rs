@@ -667,6 +667,20 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "filesystem write operations failed - write, create, truncate, append, or unlink broken",
             check_hint: "Check kernel/src/syscall/fs.rs sys_open O_CREAT/O_TRUNC, handlers.rs sys_write for RegularFile, and fs.rs sys_unlink",
         },
+        // Filesystem rename test (rename, cross-directory, error handling)
+        BootStage {
+            name: "Filesystem rename test passed",
+            marker: "FS_RENAME_TEST_PASSED",
+            failure_meaning: "filesystem rename operations failed - basic rename, cross-directory rename, or error handling broken",
+            check_hint: "Check kernel/src/fs/ext2/mod.rs rename(), kernel/src/syscall/fs.rs sys_rename()",
+        },
+        // Filesystem large file test (50KB, indirect blocks)
+        BootStage {
+            name: "Large file test passed (indirect blocks)",
+            marker: "FS_LARGE_FILE_TEST_PASSED",
+            failure_meaning: "large file operations failed - indirect block allocation or read/write broken",
+            check_hint: "Check kernel/src/fs/ext2/file.rs set_block_num(), write_file_range() for indirect block handling",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

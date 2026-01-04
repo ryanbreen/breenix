@@ -4,6 +4,7 @@
 //! file type detection, permissions handling, and inode reading from block devices.
 
 use crate::block::{BlockDevice, BlockError};
+use crate::fs::ext2::file::{read_ext2_block, write_ext2_block};
 
 /// File type constants (from i_mode upper bits)
 pub const EXT2_S_IFSOCK: u16 = 0xC000; // Socket
@@ -124,35 +125,63 @@ impl Ext2Inode {
         let inode_index = inode_num - 1;
 
         // Calculate which block group contains this inode
-        let inodes_per_group = superblock.s_inodes_per_group;
+        // Safety: superblock is a packed struct, need unaligned read
+        let inodes_per_group = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inodes_per_group))
+        };
         let block_group = (inode_index / inodes_per_group) as usize;
         let local_index = inode_index % inodes_per_group;
 
         // Get the inode table starting block for this block group
-        let inode_table_block = block_groups[block_group].bg_inode_table;
+        // Safety: block_groups is a packed struct, need unaligned read
+        let inode_table_block = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(block_groups[block_group].bg_inode_table))
+        };
 
         // Calculate byte offset within the inode table
-        let inode_size = if superblock.s_rev_level == 0 {
+        // Safety: superblock is a packed struct, need unaligned read
+        let s_rev_level = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_rev_level))
+        };
+        let inode_size = if s_rev_level == 0 {
             128 // Original ext2 revision uses 128-byte inodes
         } else {
-            superblock.s_inode_size as u32
+            let s_inode_size = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inode_size))
+            };
+            s_inode_size as u32
         };
         let byte_offset = local_index * inode_size;
 
-        // Calculate which block and offset within that block
-        let block_size = 1024u32 << superblock.s_log_block_size;
-        let block_offset = byte_offset / block_size;
-        let offset_in_block = (byte_offset % block_size) as usize;
+        // Calculate which ext2 block and offset within that block
+        let s_log_block_size = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_log_block_size))
+        };
+        let ext2_block_size = 1024u32 << s_log_block_size;
+        let ext2_block_offset = byte_offset / ext2_block_size;
+        let offset_in_ext2_block = (byte_offset % ext2_block_size) as usize;
 
-        // Read the block containing the inode
-        let target_block = inode_table_block + block_offset;
+        // Calculate the ext2 block number containing the inode
+        let target_ext2_block = inode_table_block + ext2_block_offset;
+
+        // Convert ext2 block to device blocks
+        // Device uses 512-byte sectors, ext2 uses ext2_block_size (typically 1024+)
+        let device_block_size = device.block_size();
+        let device_blocks_per_ext2_block = ext2_block_size as usize / device_block_size;
+        let start_device_block = (target_ext2_block as usize) * device_blocks_per_ext2_block;
+
+        // Read all device blocks that make up this ext2 block
         let mut block_buf = [0u8; 4096]; // Support up to 4KB block size
-        let read_size = core::cmp::min(block_size as usize, 4096);
-        device.read_block(target_block as u64, &mut block_buf[..read_size])?;
+        for i in 0..device_blocks_per_ext2_block {
+            device.read_block(
+                (start_device_block + i) as u64,
+                &mut block_buf[i * device_block_size..(i + 1) * device_block_size],
+            )?;
+        }
 
         // Extract the inode from the block buffer
         // We only read the first 128 bytes regardless of actual inode_size
-        let inode_bytes = &block_buf[offset_in_block..offset_in_block + 128];
+        let inode_bytes = &block_buf[offset_in_ext2_block..offset_in_ext2_block + 128];
 
         // Safety: We're casting a byte slice to a packed struct
         // This is safe because:
@@ -339,7 +368,7 @@ fn free_inode_bitmap<B: BlockDevice>(
         core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap))
     };
     let mut bitmap_buf = alloc::vec![0u8; block_size];
-    device.read_block(bitmap_block as u64, &mut bitmap_buf)
+    read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf)
         .map_err(|_| "Failed to read inode bitmap")?;
 
     // Clear the bit for this inode
@@ -351,7 +380,7 @@ fn free_inode_bitmap<B: BlockDevice>(
     }
 
     // Write the updated bitmap back
-    device.write_block(bitmap_block as u64, &bitmap_buf)
+    write_ext2_block(device, bitmap_block, block_size, &bitmap_buf)
         .map_err(|_| "Failed to write inode bitmap")?;
 
     // Update the free inode count
@@ -389,31 +418,58 @@ impl Ext2Inode {
         let inode_index = inode_num - 1;
 
         // Calculate which block group contains this inode
-        let inodes_per_group = superblock.s_inodes_per_group;
+        // Safety: superblock is a packed struct, need unaligned read
+        let inodes_per_group = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inodes_per_group))
+        };
         let block_group = (inode_index / inodes_per_group) as usize;
         let local_index = inode_index % inodes_per_group;
 
         // Get the inode table starting block for this block group
-        let inode_table_block = block_groups[block_group].bg_inode_table;
+        // Safety: block_groups is a packed struct, need unaligned read
+        let inode_table_block = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(block_groups[block_group].bg_inode_table))
+        };
 
         // Calculate byte offset within the inode table
-        let inode_size = if superblock.s_rev_level == 0 {
+        // Safety: superblock is a packed struct, need unaligned read
+        let s_rev_level = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_rev_level))
+        };
+        let inode_size = if s_rev_level == 0 {
             128 // Original ext2 revision uses 128-byte inodes
         } else {
-            superblock.s_inode_size as u32
+            let s_inode_size = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_inode_size))
+            };
+            s_inode_size as u32
         };
         let byte_offset = local_index * inode_size;
 
         // Calculate which block and offset within that block
-        let block_size = 1024u32 << superblock.s_log_block_size;
-        let block_offset = byte_offset / block_size;
-        let offset_in_block = (byte_offset % block_size) as usize;
+        let s_log_block_size = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(superblock.s_log_block_size))
+        };
+        let ext2_block_size = 1024u32 << s_log_block_size;
+        let ext2_block_offset = byte_offset / ext2_block_size;
+        let offset_in_ext2_block = (byte_offset % ext2_block_size) as usize;
 
-        // Read the block containing the inode
-        let target_block = inode_table_block + block_offset;
+        // Calculate the ext2 block number containing the inode
+        let target_ext2_block = inode_table_block + ext2_block_offset;
+
+        // Convert ext2 block to device blocks
+        let device_block_size = device.block_size();
+        let device_blocks_per_ext2_block = ext2_block_size as usize / device_block_size;
+        let start_device_block = (target_ext2_block as usize) * device_blocks_per_ext2_block;
+
+        // Read all device blocks that make up this ext2 block
         let mut block_buf = [0u8; 4096]; // Support up to 4KB block size
-        let read_size = core::cmp::min(block_size as usize, 4096);
-        device.read_block(target_block as u64, &mut block_buf[..read_size])?;
+        for i in 0..device_blocks_per_ext2_block {
+            device.read_block(
+                (start_device_block + i) as u64,
+                &mut block_buf[i * device_block_size..(i + 1) * device_block_size],
+            )?;
+        }
 
         // Write the inode structure into the buffer
         // Safety: We're writing the first 128 bytes of the inode structure
@@ -423,10 +479,15 @@ impl Ext2Inode {
                 128,
             )
         };
-        block_buf[offset_in_block..offset_in_block + 128].copy_from_slice(inode_bytes);
+        block_buf[offset_in_ext2_block..offset_in_ext2_block + 128].copy_from_slice(inode_bytes);
 
-        // Write the block back to the device
-        device.write_block(target_block as u64, &block_buf[..read_size])?;
+        // Write all device blocks back
+        for i in 0..device_blocks_per_ext2_block {
+            device.write_block(
+                (start_device_block + i) as u64,
+                &block_buf[i * device_block_size..(i + 1) * device_block_size],
+            )?;
+        }
 
         Ok(())
     }
@@ -539,7 +600,7 @@ pub fn allocate_inode<B: BlockDevice>(
             core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap))
         };
         let mut bitmap_buf = alloc::vec![0u8; block_size];
-        device.read_block(bitmap_block as u64, &mut bitmap_buf)
+        read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf)
             .map_err(|_| "Failed to read inode bitmap")?;
 
         // Search for a free inode in this group
@@ -565,7 +626,7 @@ pub fn allocate_inode<B: BlockDevice>(
                 bitmap_buf[byte_index] |= 1 << bit_index;
 
                 // Write the updated bitmap back to disk
-                device.write_block(bitmap_block as u64, &bitmap_buf)
+                write_ext2_block(device, bitmap_block, block_size, &bitmap_buf)
                     .map_err(|_| "Failed to write inode bitmap")?;
 
                 // Update the free inode count in the block group descriptor

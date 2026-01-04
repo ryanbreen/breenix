@@ -170,6 +170,14 @@ path = "lseek_test.rs"
 name = "fs_write_test"
 path = "fs_write_test.rs"
 
+[[bin]]
+name = "fs_rename_test"
+path = "fs_rename_test.rs"
+
+[[bin]]
+name = "fs_large_file_test"
+path = "fs_large_file_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

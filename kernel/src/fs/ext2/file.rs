@@ -8,6 +8,68 @@ use crate::fs::ext2::{Ext2Inode, Ext2Superblock};
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// Read an ext2 block using device block numbers
+///
+/// ext2 uses block numbers that refer to ext2_block_size chunks (e.g., 1024 bytes),
+/// but the device uses 512-byte sectors. This function reads multiple device
+/// sectors to fill one ext2 block.
+///
+/// # Arguments
+/// * `device` - The block device to read from
+/// * `ext2_block_num` - The ext2 block number to read
+/// * `ext2_block_size` - Size of an ext2 block in bytes (e.g., 1024)
+/// * `buf` - Buffer to read into (must be at least ext2_block_size bytes)
+pub fn read_ext2_block<B: BlockDevice>(
+    device: &B,
+    ext2_block_num: u32,
+    ext2_block_size: usize,
+    buf: &mut [u8],
+) -> Result<(), BlockError> {
+    let device_block_size = device.block_size();
+    let device_blocks_per_ext2_block = ext2_block_size / device_block_size;
+    let start_device_block = (ext2_block_num as usize) * device_blocks_per_ext2_block;
+
+    for i in 0..device_blocks_per_ext2_block {
+        device.read_block(
+            (start_device_block + i) as u64,
+            &mut buf[i * device_block_size..(i + 1) * device_block_size],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Write an ext2 block using device block numbers
+///
+/// ext2 uses block numbers that refer to ext2_block_size chunks (e.g., 1024 bytes),
+/// but the device uses 512-byte sectors. This function writes multiple device
+/// sectors from one ext2 block buffer.
+///
+/// # Arguments
+/// * `device` - The block device to write to
+/// * `ext2_block_num` - The ext2 block number to write
+/// * `ext2_block_size` - Size of an ext2 block in bytes (e.g., 1024)
+/// * `buf` - Buffer to write from (must be at least ext2_block_size bytes)
+pub fn write_ext2_block<B: BlockDevice>(
+    device: &B,
+    ext2_block_num: u32,
+    ext2_block_size: usize,
+    buf: &[u8],
+) -> Result<(), BlockError> {
+    let device_block_size = device.block_size();
+    let device_blocks_per_ext2_block = ext2_block_size / device_block_size;
+    let start_device_block = (ext2_block_num as usize) * device_blocks_per_ext2_block;
+
+    for i in 0..device_blocks_per_ext2_block {
+        device.write_block(
+            (start_device_block + i) as u64,
+            &buf[i * device_block_size..(i + 1) * device_block_size],
+        )?;
+    }
+
+    Ok(())
+}
+
 /// Number of direct block pointers in the inode
 const DIRECT_BLOCKS: u32 = 12;
 
@@ -195,7 +257,7 @@ pub fn read_file_range<B: BlockDevice>(
 
         // Read block or fill with zeros for sparse holes
         if let Some(block_num) = physical_block {
-            device.read_block(block_num as u64, &mut block_buf)?;
+            read_ext2_block(device, block_num, block_size, &mut block_buf)?;
         } else {
             // Sparse hole - fill with zeros
             block_buf.fill(0);
@@ -238,7 +300,7 @@ fn read_indirect_block<B: BlockDevice>(
     block_size: usize,
 ) -> Result<Vec<u32>, BlockError> {
     let mut block_buf = vec![0u8; block_size];
-    device.read_block(block_num as u64, &mut block_buf)?;
+    read_ext2_block(device, block_num, block_size, &mut block_buf)?;
 
     // Parse as array of little-endian u32 pointers
     let num_pointers = block_size / 4;
@@ -427,7 +489,7 @@ pub fn write_file_range<B: BlockDevice>(
 
         // Read-modify-write if we're not writing a full block
         if start_in_block != 0 || end_in_block != block_size {
-            device.read_block(physical_block as u64, &mut block_buf)?;
+            read_ext2_block(device, physical_block, block_size, &mut block_buf)?;
         }
 
         // Copy data into block buffer
@@ -436,7 +498,7 @@ pub fn write_file_range<B: BlockDevice>(
         data_pos += bytes_to_write;
 
         // Write the block back
-        device.write_block(physical_block as u64, &block_buf)?;
+        write_ext2_block(device, physical_block, block_size, &block_buf)?;
     }
 
     // Update inode size if we extended the file
@@ -486,7 +548,7 @@ fn write_indirect_block<B: BlockDevice>(
         block_buf[offset..offset + 4].copy_from_slice(&bytes);
     }
 
-    device.write_block(block_num as u64, &block_buf)?;
+    write_ext2_block(device, block_num, block_size, &block_buf)?;
     Ok(())
 }
 

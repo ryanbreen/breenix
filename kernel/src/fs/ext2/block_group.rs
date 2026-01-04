@@ -5,6 +5,7 @@
 
 use crate::block::{BlockDevice, BlockError};
 use crate::fs::ext2::Ext2Superblock;
+use crate::fs::ext2::file::{read_ext2_block, write_ext2_block};
 use alloc::vec::Vec;
 use core::mem;
 
@@ -208,7 +209,7 @@ pub fn allocate_block<B: BlockDevice>(
             core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap))
         };
         let mut bitmap_buf = alloc::vec![0u8; block_size];
-        device.read_block(bitmap_block as u64, &mut bitmap_buf)
+        read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf)
             .map_err(|_| "Failed to read block bitmap")?;
 
         // Search for a free block in this group
@@ -229,7 +230,7 @@ pub fn allocate_block<B: BlockDevice>(
                 bitmap_buf[byte_index] |= 1 << bit_index;
 
                 // Write the updated bitmap back to disk
-                device.write_block(bitmap_block as u64, &bitmap_buf)
+                write_ext2_block(device, bitmap_block, block_size, &bitmap_buf)
                     .map_err(|_| "Failed to write block bitmap")?;
 
                 // Update the free block count in the block group descriptor
@@ -243,7 +244,7 @@ pub fn allocate_block<B: BlockDevice>(
 
                 // Zero out the newly allocated block
                 let zero_buf = alloc::vec![0u8; block_size];
-                device.write_block(global_block as u64, &zero_buf)
+                write_ext2_block(device, global_block, block_size, &zero_buf)
                     .map_err(|_| "Failed to zero allocated block")?;
 
                 return Ok(global_block);
@@ -292,7 +293,7 @@ pub fn free_block<B: BlockDevice>(
         core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap))
     };
     let mut bitmap_buf = alloc::vec![0u8; block_size];
-    device.read_block(bitmap_block as u64, &mut bitmap_buf)
+    read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf)
         .map_err(|_| "Failed to read block bitmap")?;
 
     // Clear the bit for this block
@@ -304,7 +305,7 @@ pub fn free_block<B: BlockDevice>(
     }
 
     // Write the updated bitmap back
-    device.write_block(bitmap_block as u64, &bitmap_buf)
+    write_ext2_block(device, bitmap_block, block_size, &bitmap_buf)
         .map_err(|_| "Failed to write block bitmap")?;
 
     // Update the free block count
