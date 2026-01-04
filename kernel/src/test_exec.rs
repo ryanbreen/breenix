@@ -1900,3 +1900,38 @@ pub fn test_fs_link() {
         }
     }
 }
+
+/// Test breenix_std Stage 1 functionality (println!, Vec, String, Box)
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Hello std test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates breenix_std APIs work
+///   - Marker: "HELLO_STD_COMPLETE"
+///   - This PROVES println!, Vec, String, Box, and format! all work with breenix_std
+pub fn test_hello_std() {
+    log::info!("Testing breenix_std Stage 1 (println!, Vec, String, Box)");
+
+    #[cfg(feature = "testing")]
+    let hello_std_elf_buf = crate::userspace_test::get_test_binary("hello_std");
+    #[cfg(feature = "testing")]
+    let hello_std_elf: &[u8] = &hello_std_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let hello_std_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("hello_std"),
+        hello_std_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created hello_std process with PID {:?}", pid);
+            log::info!("Hello std test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit HELLO_STD_COMPLETE marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create hello_std process: {}", e);
+            log::error!("Hello std test cannot run without valid userspace process");
+        }
+    }
+}
