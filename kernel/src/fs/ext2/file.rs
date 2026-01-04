@@ -258,6 +258,238 @@ fn read_indirect_block<B: BlockDevice>(
     Ok(pointers)
 }
 
+/// Set a specific data block number for a file
+///
+/// Given a logical block index, sets the physical block number on disk.
+/// This function allocates indirect blocks as needed.
+///
+/// # Arguments
+/// * `device` - The block device to read/write
+/// * `inode` - The inode to modify (mutable)
+/// * `superblock` - The superblock (for block size calculation)
+/// * `block_groups` - Mutable reference to block group descriptors (for block allocation)
+/// * `logical_block` - Logical block index within the file (0-based)
+/// * `physical_block` - Physical block number on disk to set
+///
+/// # Returns
+/// * `Ok(())` - Block pointer set successfully
+/// * `Err(BlockError)` - I/O error or allocation failure
+pub fn set_block_num<B: BlockDevice>(
+    device: &B,
+    inode: &mut Ext2Inode,
+    superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    logical_block: u32,
+    physical_block: u32,
+) -> Result<(), BlockError> {
+    let block_size = superblock.block_size();
+    let ptrs_per_block = (block_size / 4) as u32;
+
+    // Direct blocks (0-11)
+    if logical_block < DIRECT_BLOCKS {
+        // Safety: Writing to packed struct requires unaligned access
+        unsafe {
+            let block_ptr = core::ptr::addr_of_mut!(inode.i_block[logical_block as usize]);
+            core::ptr::write_unaligned(block_ptr, physical_block);
+        }
+        return Ok(());
+    }
+
+    let direct_count = DIRECT_BLOCKS;
+    let single_indirect_count = ptrs_per_block;
+
+    // Single indirect block (12)
+    if logical_block < direct_count + single_indirect_count {
+        // Get or allocate single indirect block
+        let mut single_indirect_ptr = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[SINGLE_INDIRECT]))
+        };
+
+        if single_indirect_ptr == 0 {
+            // Allocate a new indirect block
+            single_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
+                .map_err(|_| BlockError::IoError)?;
+
+            // Update the inode's indirect block pointer
+            unsafe {
+                let block_ptr = core::ptr::addr_of_mut!(inode.i_block[SINGLE_INDIRECT]);
+                core::ptr::write_unaligned(block_ptr, single_indirect_ptr);
+            }
+        }
+
+        let index_in_indirect = logical_block - direct_count;
+
+        // Read the indirect block, modify it, write it back
+        let mut indirect_blocks = read_indirect_block(device, single_indirect_ptr, block_size)?;
+        indirect_blocks[index_in_indirect as usize] = physical_block;
+        write_indirect_block(device, single_indirect_ptr, block_size, &indirect_blocks)?;
+
+        return Ok(());
+    }
+
+    // Double and triple indirect not implemented for writes yet
+    Err(BlockError::IoError)
+}
+
+/// Write the entire contents to a file
+///
+/// # Arguments
+/// * `device` - The block device to write to
+/// * `inode` - The inode to write to (will be modified)
+/// * `superblock` - The superblock (for block size calculation)
+/// * `block_groups` - Mutable reference to block group descriptors (for block allocation)
+/// * `data` - Data to write
+///
+/// # Returns
+/// * `Ok(())` - Write successful
+/// * `Err(BlockError)` - I/O error
+pub fn write_file<B: BlockDevice>(
+    device: &B,
+    inode: &mut Ext2Inode,
+    superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    data: &[u8],
+) -> Result<(), BlockError> {
+    write_file_range(device, inode, superblock, block_groups, 0, data)
+}
+
+/// Write a portion of a file (for seek + write operations)
+///
+/// # Arguments
+/// * `device` - The block device to write to
+/// * `inode` - The inode to write to (will be modified)
+/// * `superblock` - The superblock (for block size calculation)
+/// * `block_groups` - Mutable reference to block group descriptors (for block allocation)
+/// * `offset` - Starting byte offset within the file
+/// * `data` - Data to write
+///
+/// # Returns
+/// * `Ok(())` - Write successful
+/// * `Err(BlockError)` - I/O error
+pub fn write_file_range<B: BlockDevice>(
+    device: &B,
+    inode: &mut Ext2Inode,
+    superblock: &Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    offset: u64,
+    data: &[u8],
+) -> Result<(), BlockError> {
+    if data.is_empty() {
+        return Ok(());
+    }
+
+    let block_size = superblock.block_size();
+    let start_block = (offset / block_size as u64) as u32;
+    let offset_in_first_block = (offset % block_size as u64) as usize;
+    let end_offset = offset + data.len() as u64;
+    let end_block = ((end_offset + block_size as u64 - 1) / block_size as u64) as u32;
+
+    let mut data_pos = 0usize;
+    let mut block_buf = vec![0u8; block_size];
+
+    for logical_block in start_block..end_block {
+        // Get physical block number, allocating if necessary
+        let physical_block = match get_block_num(device, inode, superblock, logical_block)? {
+            Some(block_num) => block_num,
+            None => {
+                // Sparse hole or no block allocated - allocate a new block
+                let new_block = super::block_group::allocate_block(device, superblock, block_groups)
+                    .map_err(|_| BlockError::IoError)?;
+
+                // Set the block pointer in the inode
+                set_block_num(device, inode, superblock, block_groups, logical_block, new_block)?;
+
+                // Update i_blocks count (in 512-byte sectors)
+                let sectors_per_block = (block_size / 512) as u32;
+                unsafe {
+                    let blocks_ptr = core::ptr::addr_of_mut!(inode.i_blocks);
+                    let current_blocks = core::ptr::read_unaligned(blocks_ptr);
+                    core::ptr::write_unaligned(blocks_ptr, current_blocks + sectors_per_block);
+                }
+
+                new_block
+            }
+        };
+
+        // Calculate which bytes in this block to write
+        let block_offset = logical_block as u64 * block_size as u64;
+        let start_in_block = if block_offset < offset {
+            offset_in_first_block
+        } else {
+            0
+        };
+        let end_in_block = if block_offset + block_size as u64 > end_offset {
+            (end_offset - block_offset) as usize
+        } else {
+            block_size
+        };
+        let bytes_to_write = end_in_block - start_in_block;
+
+        // Read-modify-write if we're not writing a full block
+        if start_in_block != 0 || end_in_block != block_size {
+            device.read_block(physical_block as u64, &mut block_buf)?;
+        }
+
+        // Copy data into block buffer
+        block_buf[start_in_block..end_in_block]
+            .copy_from_slice(&data[data_pos..data_pos + bytes_to_write]);
+        data_pos += bytes_to_write;
+
+        // Write the block back
+        device.write_block(physical_block as u64, &block_buf)?;
+    }
+
+    // Update inode size if we extended the file
+    let current_size = inode.size();
+    if end_offset > current_size {
+        // Update i_size (lower 32 bits)
+        unsafe {
+            let size_ptr = core::ptr::addr_of_mut!(inode.i_size);
+            core::ptr::write_unaligned(size_ptr, end_offset as u32);
+        }
+        // For files > 4GB, we'd also need to update i_dir_acl
+        // but that's not common for typical use
+    }
+
+    // Update modification and change timestamps
+    inode.update_timestamps(false, true, true);
+
+    Ok(())
+}
+
+/// Helper to write block pointers to an indirect block
+///
+/// Writes an array of u32 block pointers (little-endian) to a block.
+///
+/// # Arguments
+/// * `device` - The block device to write to
+/// * `block_num` - Physical block number of the indirect block
+/// * `block_size` - Filesystem block size
+/// * `pointers` - Array of block pointers to write
+///
+/// # Returns
+/// * `Ok(())` - Write successful
+/// * `Err(BlockError)` - I/O error
+fn write_indirect_block<B: BlockDevice>(
+    device: &B,
+    block_num: u32,
+    block_size: usize,
+    pointers: &[u32],
+) -> Result<(), BlockError> {
+    let mut block_buf = vec![0u8; block_size];
+    let num_pointers = core::cmp::min(pointers.len(), block_size / 4);
+
+    // Serialize pointers to little-endian bytes
+    for i in 0..num_pointers {
+        let offset = i * 4;
+        let bytes = pointers[i].to_le_bytes();
+        block_buf[offset..offset + 4].copy_from_slice(&bytes);
+    }
+
+    device.write_block(block_num as u64, &block_buf)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

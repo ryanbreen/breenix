@@ -174,6 +174,90 @@ impl Ext2Superblock {
 
         Some(superblock)
     }
+
+    /// Write superblock to block device (at byte offset 1024)
+    ///
+    /// # Arguments
+    /// * `device` - The block device to write to
+    ///
+    /// # Returns
+    /// * `Ok(())` - Successfully wrote superblock
+    /// * `Err(BlockError)` - I/O error during write
+    pub fn write_to<B: BlockDevice>(&self, device: &B) -> Result<(), BlockError> {
+        let device_block_size = device.block_size();
+        let superblock_size = mem::size_of::<Ext2Superblock>();
+
+        // Calculate which device blocks contain the superblock
+        let start_block = SUPERBLOCK_OFFSET / device_block_size;
+        let offset_in_block = SUPERBLOCK_OFFSET % device_block_size;
+
+        // We need to read-modify-write the blocks containing the superblock
+        let bytes_needed = offset_in_block + superblock_size;
+        let blocks_needed = (bytes_needed + device_block_size - 1) / device_block_size;
+
+        // Read existing blocks first
+        let mut buffer = [0u8; 4096];
+        for i in 0..blocks_needed {
+            device.read_block(
+                (start_block + i) as u64,
+                &mut buffer[i * device_block_size..(i + 1) * device_block_size],
+            )?;
+        }
+
+        // Copy superblock into the buffer
+        // Safety: We're writing the packed superblock structure as raw bytes
+        let sb_bytes = unsafe {
+            core::slice::from_raw_parts(
+                self as *const Ext2Superblock as *const u8,
+                superblock_size,
+            )
+        };
+        buffer[offset_in_block..offset_in_block + superblock_size].copy_from_slice(sb_bytes);
+
+        // Write the blocks back
+        for i in 0..blocks_needed {
+            device.write_block(
+                (start_block + i) as u64,
+                &buffer[i * device_block_size..(i + 1) * device_block_size],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Decrement the free inode count
+    ///
+    /// Call this after allocating an inode and before writing the superblock.
+    pub fn decrement_free_inodes(&mut self) {
+        let current = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_inodes_count))
+        };
+        if current > 0 {
+            unsafe {
+                core::ptr::write_unaligned(
+                    core::ptr::addr_of_mut!(self.s_free_inodes_count),
+                    current - 1,
+                );
+            }
+        }
+    }
+
+    /// Decrement free block count
+    ///
+    /// Call this after allocating a block and before writing the superblock.
+    pub fn decrement_free_blocks(&mut self) {
+        let current = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_blocks_count))
+        };
+        if current > 0 {
+            unsafe {
+                core::ptr::write_unaligned(
+                    core::ptr::addr_of_mut!(self.s_free_blocks_count),
+                    current - 1,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

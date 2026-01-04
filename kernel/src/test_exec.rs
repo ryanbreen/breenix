@@ -1691,3 +1691,45 @@ pub fn test_lseek() {
         }
     }
 }
+
+/// Test filesystem write operations (write, O_CREAT, O_TRUNC, O_APPEND, unlink)
+///
+/// This test validates write operations on the ext2 filesystem:
+/// - Writing to existing files
+/// - Creating new files with O_CREAT
+/// - Exclusive creation with O_EXCL
+/// - Truncating files with O_TRUNC
+/// - Append mode with O_APPEND
+/// - File deletion with unlink
+///
+/// What this proves:
+///   - sys_write works for regular files on ext2
+///   - O_CREAT correctly creates new files
+///   - O_TRUNC truncates existing files
+///   - O_APPEND appends to files
+///   - unlink removes files from the filesystem
+pub fn test_fs_write() {
+    log::info!("Testing filesystem write operations (write, O_CREAT, O_TRUNC, O_APPEND, unlink)");
+
+    #[cfg(feature = "testing")]
+    let fs_write_test_elf_buf = crate::userspace_test::get_test_binary("fs_write_test");
+    #[cfg(feature = "testing")]
+    let fs_write_test_elf: &[u8] = &fs_write_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_write_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_write_test"),
+        fs_write_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_write_test process with PID {:?}", pid);
+            log::info!("Filesystem write test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_WRITE_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_write_test process: {}", e);
+            log::error!("Filesystem write test cannot run without valid userspace process");
+        }
+    }
+}

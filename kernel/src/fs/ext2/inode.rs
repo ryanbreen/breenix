@@ -219,6 +219,38 @@ impl Ext2Inode {
         let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.i_mode)) };
         mode & EXT2_S_PERM_MASK
     }
+
+    /// Update timestamps on the inode
+    ///
+    /// # Arguments
+    /// * `update_atime` - Update access time
+    /// * `update_mtime` - Update modification time
+    /// * `update_ctime` - Update change time
+    ///
+    /// # Example
+    /// ```
+    /// // After writing to a file
+    /// inode.update_timestamps(false, true, true);
+    ///
+    /// // After reading from a file
+    /// inode.update_timestamps(true, false, false);
+    ///
+    /// // After changing inode metadata (chmod, chown, etc.)
+    /// inode.update_timestamps(false, false, true);
+    /// ```
+    pub fn update_timestamps(&mut self, update_atime: bool, update_mtime: bool, update_ctime: bool) {
+        let now = crate::time::current_unix_time() as u32;
+
+        if update_atime {
+            self.i_atime = now;
+        }
+        if update_mtime {
+            self.i_mtime = now;
+        }
+        if update_ctime {
+            self.i_ctime = now;
+        }
+    }
 }
 
 /// Root directory inode number
@@ -226,6 +258,332 @@ pub const EXT2_ROOT_INO: u32 = 2;
 
 /// Bad blocks inode
 pub const EXT2_BAD_INO: u32 = 1;
+
+/// First non-reserved inode (ext2 uses 11 for rev 0, s_first_ino for rev 1+)
+pub const EXT2_FIRST_INO: u32 = 11;
+
+/// Decrement inode link count and optionally free the inode if it reaches 0
+///
+/// This function:
+/// 1. Reads the inode from disk
+/// 2. Decrements the link count
+/// 3. If link count reaches 0, marks inode as deleted and frees its resources
+/// 4. Writes the updated inode back to disk
+///
+/// # Arguments
+/// * `device` - The block device
+/// * `inode_num` - The inode number to decrement
+/// * `superblock` - The ext2 superblock
+/// * `block_groups` - Mutable reference to block group descriptors
+///
+/// # Returns
+/// * `Ok(new_link_count)` - The new link count after decrement
+/// * `Err(msg)` - Error message
+pub fn decrement_inode_links<B: BlockDevice>(
+    device: &B,
+    inode_num: u32,
+    superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+) -> Result<u16, &'static str> {
+    // Read the inode
+    let mut inode = Ext2Inode::read_from(device, inode_num, superblock, block_groups)
+        .map_err(|_| "Failed to read inode")?;
+
+    // Decrement the link count
+    let current_links = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
+    let new_links = current_links.saturating_sub(1);
+    inode.i_links_count = new_links;
+
+    // If link count reached 0, mark as deleted and free resources
+    if new_links == 0 {
+        // Set deletion time
+        let deletion_time = crate::time::current_unix_time() as u32;
+        inode.i_dtime = deletion_time;
+
+        // Free the inode in the bitmap
+        free_inode_bitmap(device, inode_num, superblock, block_groups)?;
+
+        // Note: We don't free data blocks here for simplicity
+        // A full implementation would iterate through i_block[] and free all data blocks
+    }
+
+    // Write the updated inode back
+    inode.write_to(device, inode_num, superblock, block_groups)
+        .map_err(|_| "Failed to write inode")?;
+
+    Ok(new_links)
+}
+
+/// Free an inode in the inode bitmap
+///
+/// Marks the inode as free in the inode bitmap and updates the
+/// free inode count in the block group descriptor.
+fn free_inode_bitmap<B: BlockDevice>(
+    device: &B,
+    inode_num: u32,
+    superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+) -> Result<(), &'static str> {
+    let block_size = superblock.block_size();
+    let inodes_per_group = superblock.s_inodes_per_group;
+
+    // Calculate which block group contains this inode
+    let inode_index = inode_num - 1;
+    let bg_index = (inode_index / inodes_per_group) as usize;
+    let local_index = inode_index % inodes_per_group;
+
+    let bg = &mut block_groups[bg_index];
+
+    // Read the inode bitmap block
+    let bitmap_block = unsafe {
+        core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap))
+    };
+    let mut bitmap_buf = alloc::vec![0u8; block_size];
+    device.read_block(bitmap_block as u64, &mut bitmap_buf)
+        .map_err(|_| "Failed to read inode bitmap")?;
+
+    // Clear the bit for this inode
+    let byte_index = (local_index / 8) as usize;
+    let bit_index = (local_index % 8) as u8;
+
+    if byte_index < bitmap_buf.len() {
+        bitmap_buf[byte_index] &= !(1 << bit_index);
+    }
+
+    // Write the updated bitmap back
+    device.write_block(bitmap_block as u64, &bitmap_buf)
+        .map_err(|_| "Failed to write inode bitmap")?;
+
+    // Update the free inode count
+    let free_inodes = unsafe {
+        core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_inodes_count))
+    };
+    unsafe {
+        core::ptr::write_unaligned(
+            core::ptr::addr_of_mut!(bg.bg_free_inodes_count),
+            free_inodes + 1,
+        );
+    }
+
+    Ok(())
+}
+
+impl Ext2Inode {
+    /// Write an inode to the device
+    ///
+    /// Writes the inode structure to the correct location in the inode table.
+    ///
+    /// # Arguments
+    /// * `device` - The block device to write to
+    /// * `inode_num` - The inode number (1-indexed)
+    /// * `superblock` - The ext2 superblock
+    /// * `block_groups` - Array of block group descriptors
+    pub fn write_to<B: BlockDevice>(
+        &self,
+        device: &B,
+        inode_num: u32,
+        superblock: &super::Ext2Superblock,
+        block_groups: &[super::Ext2BlockGroupDesc],
+    ) -> Result<(), BlockError> {
+        // Inode numbers are 1-indexed, array indices are 0-indexed
+        let inode_index = inode_num - 1;
+
+        // Calculate which block group contains this inode
+        let inodes_per_group = superblock.s_inodes_per_group;
+        let block_group = (inode_index / inodes_per_group) as usize;
+        let local_index = inode_index % inodes_per_group;
+
+        // Get the inode table starting block for this block group
+        let inode_table_block = block_groups[block_group].bg_inode_table;
+
+        // Calculate byte offset within the inode table
+        let inode_size = if superblock.s_rev_level == 0 {
+            128 // Original ext2 revision uses 128-byte inodes
+        } else {
+            superblock.s_inode_size as u32
+        };
+        let byte_offset = local_index * inode_size;
+
+        // Calculate which block and offset within that block
+        let block_size = 1024u32 << superblock.s_log_block_size;
+        let block_offset = byte_offset / block_size;
+        let offset_in_block = (byte_offset % block_size) as usize;
+
+        // Read the block containing the inode
+        let target_block = inode_table_block + block_offset;
+        let mut block_buf = [0u8; 4096]; // Support up to 4KB block size
+        let read_size = core::cmp::min(block_size as usize, 4096);
+        device.read_block(target_block as u64, &mut block_buf[..read_size])?;
+
+        // Write the inode structure into the buffer
+        // Safety: We're writing the first 128 bytes of the inode structure
+        let inode_bytes = unsafe {
+            core::slice::from_raw_parts(
+                self as *const Ext2Inode as *const u8,
+                128,
+            )
+        };
+        block_buf[offset_in_block..offset_in_block + 128].copy_from_slice(inode_bytes);
+
+        // Write the block back to the device
+        device.write_block(target_block as u64, &block_buf[..read_size])?;
+
+        Ok(())
+    }
+
+    /// Create a new empty regular file inode
+    ///
+    /// Initializes all fields for a new regular file with the given mode.
+    ///
+    /// # Arguments
+    /// * `mode` - File mode (permissions) - file type bits are added automatically
+    pub fn new_regular_file(mode: u16) -> Self {
+        let now = crate::time::current_unix_time() as u32;
+
+        Self {
+            i_mode: EXT2_S_IFREG | (mode & 0o777),
+            i_uid: 0,          // root for now
+            i_size: 0,
+            i_atime: now,
+            i_ctime: now,
+            i_mtime: now,
+            i_dtime: 0,
+            i_gid: 0,          // root for now
+            i_links_count: 1,  // One link from the directory entry
+            i_blocks: 0,       // No data blocks allocated yet
+            i_flags: 0,
+            i_osd1: 0,
+            i_block: [0; 15],  // No blocks allocated
+            i_generation: 0,
+            i_file_acl: 0,
+            i_dir_acl: 0,
+            i_faddr: 0,
+            i_osd2: [0; 12],
+        }
+    }
+
+    /// Create a new directory inode
+    ///
+    /// Initializes all fields for a new directory with the given mode.
+    /// The directory starts with link count 2 (self via "." and parent via entry).
+    ///
+    /// # Arguments
+    /// * `mode` - Directory permissions (e.g., 0o755) - directory type bits are added automatically
+    pub fn new_directory(mode: u16) -> Self {
+        let now = crate::time::current_unix_time() as u32;
+
+        Self {
+            i_mode: EXT2_S_IFDIR | (mode & 0o777),
+            i_uid: 0,          // root for now
+            i_size: 0,         // Will be set when directory data is written
+            i_atime: now,
+            i_ctime: now,
+            i_mtime: now,
+            i_dtime: 0,
+            i_gid: 0,          // root for now
+            i_links_count: 2,  // Self via "." and parent via directory entry
+            i_blocks: 0,       // Will be set when blocks are allocated
+            i_flags: 0,
+            i_osd1: 0,
+            i_block: [0; 15],  // No blocks allocated yet
+            i_generation: 0,
+            i_file_acl: 0,
+            i_dir_acl: 0,
+            i_faddr: 0,
+            i_osd2: [0; 12],
+        }
+    }
+}
+
+/// Allocate a new inode from the filesystem
+///
+/// Searches the inode bitmaps to find a free inode, marks it as used,
+/// and returns the inode number.
+///
+/// # Arguments
+/// * `device` - The block device
+/// * `superblock` - The ext2 superblock
+/// * `block_groups` - Mutable reference to block group descriptors (to update free count)
+///
+/// # Returns
+/// * `Ok(inode_num)` - The allocated inode number (1-indexed)
+/// * `Err(msg)` - Error if no free inodes available or I/O error
+pub fn allocate_inode<B: BlockDevice>(
+    device: &B,
+    superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+) -> Result<u32, &'static str> {
+    let block_size = superblock.block_size();
+    let inodes_per_group = superblock.s_inodes_per_group;
+
+    // Determine the first inode we can allocate
+    let first_ino = if superblock.s_rev_level == 0 {
+        EXT2_FIRST_INO
+    } else {
+        superblock.s_first_ino
+    };
+
+    // Search each block group for a free inode
+    for (bg_index, bg) in block_groups.iter_mut().enumerate() {
+        // Read free inodes count safely from packed struct
+        let free_inodes = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_free_inodes_count))
+        };
+
+        if free_inodes == 0 {
+            continue; // No free inodes in this group
+        }
+
+        // Read the inode bitmap block
+        let bitmap_block = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_inode_bitmap))
+        };
+        let mut bitmap_buf = alloc::vec![0u8; block_size];
+        device.read_block(bitmap_block as u64, &mut bitmap_buf)
+            .map_err(|_| "Failed to read inode bitmap")?;
+
+        // Search for a free inode in this group
+        for local_inode in 0..inodes_per_group {
+            // Calculate the global inode number (1-indexed)
+            let global_inode = bg_index as u32 * inodes_per_group + local_inode + 1;
+
+            // Skip reserved inodes
+            if global_inode < first_ino {
+                continue;
+            }
+
+            // Check if this inode is free (bit = 0)
+            let byte_index = (local_inode / 8) as usize;
+            let bit_index = (local_inode % 8) as u8;
+
+            if byte_index >= bitmap_buf.len() {
+                break; // Bitmap doesn't cover this inode
+            }
+
+            if (bitmap_buf[byte_index] & (1 << bit_index)) == 0 {
+                // Found a free inode - mark it as used
+                bitmap_buf[byte_index] |= 1 << bit_index;
+
+                // Write the updated bitmap back to disk
+                device.write_block(bitmap_block as u64, &bitmap_buf)
+                    .map_err(|_| "Failed to write inode bitmap")?;
+
+                // Update the free inode count in the block group descriptor
+                // Safety: Writing to packed struct
+                unsafe {
+                    core::ptr::write_unaligned(
+                        core::ptr::addr_of_mut!(bg.bg_free_inodes_count),
+                        free_inodes - 1,
+                    );
+                }
+
+                return Ok(global_inode);
+            }
+        }
+    }
+
+    Err("No free inodes available")
+}
 
 #[cfg(test)]
 mod tests {

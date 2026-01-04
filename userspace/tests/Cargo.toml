@@ -166,6 +166,10 @@ path = "getdents_test.rs"
 name = "lseek_test"
 path = "lseek_test.rs"
 
+[[bin]]
+name = "fs_write_test"
+path = "fs_write_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

@@ -44,6 +44,12 @@ pub const EINVAL: i32 = 22;
 /// Too many open files
 pub const EMFILE: i32 = 24;
 
+/// File exists (O_CREAT + O_EXCL)
+pub const EEXIST: i32 = 17;
+
+/// No space left on device
+pub const ENOSPC: i32 = 28;
+
 /// File name too long
 #[allow(dead_code)] // Part of POSIX errno API
 pub const ENAMETOOLONG: i32 = 36;

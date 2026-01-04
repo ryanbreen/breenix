@@ -220,6 +220,34 @@ pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<u64, Errno> {
     Errno::from_syscall(ret)
 }
 
+/// Write to a file descriptor.
+///
+/// # Arguments
+/// * `fd` - File descriptor to write to
+/// * `buf` - Buffer containing data to write
+///
+/// # Returns
+/// Number of bytes written on success, Errno on failure.
+///
+/// # Example
+/// ```ignore
+/// let fd = open_with_mode("/newfile.txt\0", O_WRONLY | O_CREAT, 0o644)?;
+/// let n = write(fd, b"Hello, world!")?;
+/// close(fd);
+/// ```
+#[inline]
+pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
+    let ret = unsafe {
+        raw::syscall3(
+            nr::WRITE,
+            fd,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+        ) as i64
+    };
+    Errno::from_syscall(ret).map(|n| n as usize)
+}
+
 // Directory entry file type constants (d_type values)
 /// Unknown file type
 pub const DT_UNKNOWN: u8 = 0;
@@ -326,6 +354,35 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
     Errno::from_syscall(ret).map(|n| n as usize)
 }
 
+/// Unlink (delete) a file.
+///
+/// Removes the directory entry for the specified pathname. If this was
+/// the last link to the file and no processes have it open, the file
+/// is deleted.
+///
+/// # Arguments
+/// * `path` - Path to the file (null-terminated string)
+///
+/// # Returns
+/// * `Ok(())` - File was successfully unlinked
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - File does not exist
+/// * `EISDIR` - Path refers to a directory (use rmdir instead)
+/// * `EACCES` - Permission denied
+/// * `EIO` - I/O error
+///
+/// # Example
+/// ```ignore
+/// unlink("/tmp/myfile.txt\0")?;
+/// ```
+#[inline]
+pub fn unlink(path: &str) -> Result<(), Errno> {
+    let ret = unsafe { raw::syscall1(nr::UNLINK, path.as_ptr() as u64) as i64 };
+    Errno::from_syscall(ret).map(|_| ())
+}
+
 /// Iterator over directory entries in a getdents64 buffer.
 pub struct DirentIter<'a> {
     buf: &'a [u8],
@@ -371,4 +428,93 @@ impl<'a> Iterator for DirentIter<'a> {
         self.offset += reclen;
         Some(entry)
     }
+}
+
+/// Create a new directory.
+///
+/// Creates a new directory with the specified permissions.
+///
+/// # Arguments
+/// * `path` - Path to the directory (null-terminated string)
+/// * `mode` - Directory permissions (e.g., 0o755)
+///
+/// # Returns
+/// * `Ok(())` - Directory was successfully created
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - Parent directory does not exist
+/// * `EEXIST` - Directory already exists
+/// * `ENOTDIR` - A component in the path is not a directory
+/// * `ENOSPC` - No space left on device
+///
+/// # Example
+/// ```ignore
+/// mkdir("/tmp/newdir\0", 0o755)?;
+/// ```
+#[inline]
+pub fn mkdir(path: &str, mode: u32) -> Result<(), Errno> {
+    let ret = unsafe { raw::syscall2(nr::MKDIR, path.as_ptr() as u64, mode as u64) as i64 };
+    Errno::from_syscall(ret).map(|_| ())
+}
+
+/// Remove an empty directory.
+///
+/// Removes the specified directory. The directory must be empty
+/// (contain only "." and ".." entries).
+///
+/// # Arguments
+/// * `path` - Path to the directory (null-terminated string)
+///
+/// # Returns
+/// * `Ok(())` - Directory was successfully removed
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - Directory does not exist
+/// * `ENOTDIR` - Path is not a directory
+/// * `ENOTEMPTY` - Directory is not empty
+/// * `EBUSY` - Directory is being used (e.g., is current directory)
+///
+/// # Example
+/// ```ignore
+/// rmdir("/tmp/olddir\0")?;
+/// ```
+#[inline]
+pub fn rmdir(path: &str) -> Result<(), Errno> {
+    let ret = unsafe { raw::syscall1(nr::RMDIR, path.as_ptr() as u64) as i64 };
+    Errno::from_syscall(ret).map(|_| ())
+}
+
+/// Rename a file or directory.
+///
+/// Renames oldpath to newpath. If newpath already exists, it will be
+/// atomically replaced (if it's a file). Works for both files and
+/// directories, including cross-directory moves.
+///
+/// # Arguments
+/// * `oldpath` - Current path (null-terminated string)
+/// * `newpath` - New path (null-terminated string)
+///
+/// # Returns
+/// * `Ok(())` - File/directory was successfully renamed
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - oldpath does not exist
+/// * `EISDIR` - newpath is a directory but oldpath is not
+/// * `ENOTDIR` - A component in path is not a directory
+/// * `EEXIST` - newpath is a non-empty directory
+/// * `EIO` - I/O error
+///
+/// # Example
+/// ```ignore
+/// rename("/tmp/oldname.txt\0", "/tmp/newname.txt\0")?;
+/// ```
+#[inline]
+pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Errno> {
+    let ret = unsafe {
+        raw::syscall2(nr::RENAME, oldpath.as_ptr() as u64, newpath.as_ptr() as u64) as i64
+    };
+    Errno::from_syscall(ret).map(|_| ())
 }
