@@ -176,16 +176,22 @@ fn main() {
         eprintln!("[qemu-uefi] Test disk: {} ({} bytes) [virtio-blk device index 1]", test_disk_path.display(), disk_size);
 
         // Attach ext2 filesystem disk (third VirtIO device, index 2)
-        // This file is committed to the repo in testdata/
-        let ext2_disk_path = project_root.join("testdata/ext2.img");
-        if ext2_disk_path.exists() {
+        // Copy pristine image from testdata/ to target/ so tests can write without modifying the source
+        let ext2_source_path = project_root.join("testdata/ext2.img");
+        let ext2_disk_path = project_root.join("target/ext2.img");
+        if ext2_source_path.exists() {
+            // Always copy fresh from source to ensure clean state
+            if let Err(e) = fs::copy(&ext2_source_path, &ext2_disk_path) {
+                eprintln!("[qemu-uefi] Warning: failed to copy ext2.img to target/: {}", e);
+            }
             let ext2_size = fs::metadata(&ext2_disk_path).map(|m| m.len()).unwrap_or(0);
             qemu.args([
                 "-drive",
                 &format!("if=none,id=ext2disk,format=raw,file={}", ext2_disk_path.display()),
                 "-device", "virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off",
             ]);
-            eprintln!("[qemu-uefi] Ext2 disk: {} ({} bytes) [virtio-blk device index 2]", ext2_disk_path.display(), ext2_size);
+            eprintln!("[qemu-uefi] Ext2 disk: {} -> {} ({} bytes) [virtio-blk device index 2]",
+                ext2_source_path.display(), ext2_disk_path.display(), ext2_size);
         } else {
             eprintln!("[qemu-uefi] Ext2 disk: not found (build with: cargo run -p xtask -- create-ext2-disk)");
         }

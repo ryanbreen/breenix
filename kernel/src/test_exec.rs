@@ -1733,3 +1733,86 @@ pub fn test_fs_write() {
         }
     }
 }
+
+/// Test filesystem rename operations on ext2
+///
+/// Tests:
+/// - Basic rename within same directory
+/// - Rename to replace existing file
+/// - Error case: rename non-existent file (ENOENT)
+/// - Content preserved after rename
+/// - Cross-directory rename (root -> /test)
+/// - Error: rename file over directory (EISDIR)
+/// - Error: unlink non-existent file (ENOENT)
+///
+/// What this proves:
+///   - sys_rename works for regular files on ext2
+///   - Rename correctly removes old entry and creates new entry
+///   - Rename atomically replaces existing files
+///   - Cross-directory rename works correctly
+///   - Proper ENOENT/EISDIR handling
+pub fn test_fs_rename() {
+    log::info!("Testing filesystem rename operations");
+
+    #[cfg(feature = "testing")]
+    let fs_rename_test_elf_buf = crate::userspace_test::get_test_binary("fs_rename_test");
+    #[cfg(feature = "testing")]
+    let fs_rename_test_elf: &[u8] = &fs_rename_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_rename_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_rename_test"),
+        fs_rename_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_rename_test process with PID {:?}", pid);
+            log::info!("Filesystem rename test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_RENAME_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_rename_test process: {}", e);
+            log::error!("Filesystem rename test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test large file operations on ext2 (indirect blocks)
+///
+/// Tests writing and reading files larger than 12KB (or 48KB with 4KB blocks)
+/// which requires single indirect block support in the ext2 implementation.
+///
+/// With 1KB blocks (common in our test ext2.img):
+/// - Direct blocks: 12 blocks * 1KB = 12KB
+/// - Writing 50KB requires 50 blocks = 12 direct + 38 indirect
+///
+/// What this proves:
+///   - Indirect block allocation works correctly
+///   - Large file writes don't corrupt data
+///   - Sequential and random reads from indirect blocks work
+///   - File size tracking is correct for large files
+pub fn test_fs_large_file() {
+    log::info!("Testing large file operations (indirect blocks)");
+
+    #[cfg(feature = "testing")]
+    let fs_large_file_test_elf_buf = crate::userspace_test::get_test_binary("fs_large_file_test");
+    #[cfg(feature = "testing")]
+    let fs_large_file_test_elf: &[u8] = &fs_large_file_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_large_file_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_large_file_test"),
+        fs_large_file_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_large_file_test process with PID {:?}", pid);
+            log::info!("Large file test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_LARGE_FILE_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_large_file_test process: {}", e);
+            log::error!("Large file test cannot run without valid userspace process");
+        }
+    }
+}

@@ -16,7 +16,6 @@ pub use inode::*;
 pub use file::*;
 
 use crate::block::virtio::VirtioBlockWrapper;
-use crate::block::BlockDevice;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -111,6 +110,12 @@ impl Ext2Fs {
 
             // Make sure it's a directory
             if !current_inode.is_dir() {
+                // Debug: log the inode info
+                let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(current_inode.i_mode)) };
+                log::error!(
+                    "resolve_path: inode {} has mode=0x{:04x} (type={:?}), expected directory",
+                    current_inode_num, mode, current_inode.file_type()
+                );
                 return Err("Not a directory in path");
             }
 
@@ -437,6 +442,12 @@ impl Ext2Fs {
             return Err("Cannot rename . or ..");
         }
 
+        // If old and new paths are the same, it's a no-op - just return success
+        if oldpath == newpath {
+            log::debug!("ext2: rename {} to same path (no-op)", oldpath);
+            return Ok(());
+        }
+
         // Resolve source file/directory
         let source_inode_num = self.resolve_path(oldpath)?;
         let source_inode = self.read_inode(source_inode_num)?;
@@ -588,8 +599,8 @@ impl Ext2Fs {
             let mut block_buf = alloc::vec![0u8; block_size];
             block_buf[..bytes_to_write].copy_from_slice(&data[offset..offset + bytes_to_write]);
 
-            // Write the block
-            self.device.write_block(block_num as u64, &block_buf)
+            // Write the block using ext2-to-device block conversion
+            file::write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf)
                 .map_err(|_| "Failed to write directory block")?;
 
             offset += bytes_to_write;
@@ -604,13 +615,19 @@ static ROOT_EXT2: Mutex<Option<Ext2Fs>> = Mutex::new(None);
 
 /// Initialize the root ext2 filesystem
 ///
-/// Mounts the primary VirtIO block device as the root filesystem.
+/// Mounts the ext2 disk (VirtIO block device index 2) as the root filesystem.
+/// Device layout:
+///   - Device 0: UEFI boot disk
+///   - Device 1: Test binaries disk
+///   - Device 2: ext2 filesystem disk (testdata/ext2.img)
+///
 /// This should be called during kernel initialization after VirtIO
 /// block device initialization.
 pub fn init_root_fs() -> Result<(), &'static str> {
-    // Get the primary VirtIO block device
-    let device = VirtioBlockWrapper::primary()
-        .ok_or("No VirtIO block device available")?;
+    // Get the ext2 disk (device index 2)
+    // Device 0 is the UEFI boot disk, device 1 is the test binaries disk
+    let device = VirtioBlockWrapper::new(2)
+        .ok_or("No ext2 block device available (expected at device index 2)")?;
     let device = Arc::new(device);
 
     // Register with VFS mount system
