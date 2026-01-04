@@ -50,6 +50,16 @@ pub fn get_real_time_ns() -> (i64, i64) {
     (total_secs as i64, mono_nanos as i64)
 }
 
+/// Get the current Unix timestamp in seconds
+///
+/// Returns the number of seconds since the Unix epoch (1970-01-01 00:00:00 UTC).
+/// This is useful for filesystem timestamps and other time-sensitive operations.
+pub fn current_unix_time() -> i64 {
+    let boot_time = rtc::get_boot_wall_time();
+    let (mono_secs, _mono_nanos) = get_monotonic_time_ns();
+    (boot_time + mono_secs) as i64
+}
+
 /// Display comprehensive time debug information
 pub fn debug_time_info() {
     log::info!("=== Time Debug Information ===");

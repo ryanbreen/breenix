@@ -6,19 +6,15 @@ use crate::ipc::fd::FdKind;
 use super::SyscallResult;
 
 /// Open flags (POSIX compatible)
-#[allow(dead_code)] // Will be used when open() is fully implemented
 pub const O_RDONLY: u32 = 0;
-#[allow(dead_code)] // Will be used when open() is fully implemented
+#[allow(dead_code)] // Part of POSIX open() API
 pub const O_WRONLY: u32 = 1;
-#[allow(dead_code)] // Will be used when open() is fully implemented
+#[allow(dead_code)] // Part of POSIX open() API
 pub const O_RDWR: u32 = 2;
-#[allow(dead_code)] // Will be used when open() is fully implemented
 pub const O_CREAT: u32 = 0x40;
-#[allow(dead_code)] // Will be used when open() is fully implemented
 pub const O_EXCL: u32 = 0x80;
-#[allow(dead_code)] // Will be used when open() is fully implemented
 pub const O_TRUNC: u32 = 0x200;
-#[allow(dead_code)] // Will be used when open() is fully implemented
+#[allow(dead_code)] // Part of POSIX open() API
 pub const O_APPEND: u32 = 0x400;
 /// O_DIRECTORY - must be a directory
 pub const O_DIRECTORY: u32 = 0x10000;
@@ -148,8 +144,8 @@ impl Stat {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-pub fn sys_open(pathname: u64, flags: u32, _mode: u32) -> SyscallResult {
-    use super::errno::{EACCES, EISDIR, EMFILE, ENOENT, ENOTDIR};
+pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
+    use super::errno::{EACCES, EEXIST, EISDIR, EMFILE, ENOENT, ENOSPC, ENOTDIR};
     use super::userptr::copy_cstr_from_user;
     use crate::fs::ext2::{self, FileType as Ext2FileType};
     use crate::ipc::fd::{DirectoryFile, RegularFile};
@@ -162,11 +158,17 @@ pub fn sys_open(pathname: u64, flags: u32, _mode: u32) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
 
-    log::debug!("sys_open: path={:?}, flags={:#x}", path, flags);
+    log::debug!("sys_open: path={:?}, flags={:#x}, mode={:#o}", path, flags, mode);
 
-    // Check if ext2 root filesystem is mounted
-    let fs_guard = ext2::root_fs();
-    let fs = match fs_guard.as_ref() {
+    // Parse flags
+    let want_creat = (flags & O_CREAT) != 0;
+    let want_excl = (flags & O_EXCL) != 0;
+    let want_trunc = (flags & O_TRUNC) != 0;
+    let wants_directory = (flags & O_DIRECTORY) != 0;
+
+    // Get the mutable filesystem guard since we might need to create files
+    let mut fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_mut() {
         Some(fs) => fs,
         None => {
             log::error!("sys_open: ext2 root filesystem not mounted");
@@ -174,18 +176,88 @@ pub fn sys_open(pathname: u64, flags: u32, _mode: u32) -> SyscallResult {
         }
     };
 
-    // Resolve the path to an inode number
-    let inode_num = match fs.resolve_path(&path) {
-        Ok(ino) => ino,
+    // Try to resolve the path to an inode number
+    let resolve_result = fs.resolve_path(&path);
+
+    // Handle O_CREAT flag
+    let (inode_num, file_created) = match resolve_result {
+        Ok(ino) => {
+            // File exists
+            if want_creat && want_excl {
+                // O_CREAT | O_EXCL - fail if file exists
+                log::debug!("sys_open: file exists and O_EXCL set");
+                return SyscallResult::Err(EEXIST as u64);
+            }
+            (ino, false)
+        }
         Err(e) => {
-            // Map error to appropriate errno
-            log::debug!("sys_open: path resolution failed: {}", e);
-            if e.contains("not found") {
-                return SyscallResult::Err(ENOENT as u64);
-            } else if e.contains("Not a directory") {
-                return SyscallResult::Err(ENOTDIR as u64);
+            if e.contains("not found") && want_creat {
+                // File doesn't exist and O_CREAT is set - create it
+                log::debug!("sys_open: creating new file {}", path);
+
+                // Parse parent directory and filename
+                let (parent_path, filename) = match path.rfind('/') {
+                    Some(0) => ("/", &path[1..]), // File in root directory
+                    Some(idx) => (&path[..idx], &path[idx + 1..]),
+                    None => {
+                        log::error!("sys_open: invalid path format");
+                        return SyscallResult::Err(ENOENT as u64);
+                    }
+                };
+
+                // Validate filename
+                if filename.is_empty() {
+                    log::error!("sys_open: empty filename");
+                    return SyscallResult::Err(ENOENT as u64);
+                }
+
+                // Resolve parent directory
+                let parent_inode = match fs.resolve_path(parent_path) {
+                    Ok(ino) => ino,
+                    Err(_) => {
+                        log::error!("sys_open: parent directory not found: {}", parent_path);
+                        return SyscallResult::Err(ENOENT as u64);
+                    }
+                };
+
+                // Verify parent is a directory
+                let parent = match fs.read_inode(parent_inode) {
+                    Ok(ino) => ino,
+                    Err(_) => {
+                        log::error!("sys_open: failed to read parent inode");
+                        return SyscallResult::Err(5); // EIO
+                    }
+                };
+                if !parent.is_dir() {
+                    return SyscallResult::Err(ENOTDIR as u64);
+                }
+
+                // Create the file with the given mode
+                // Default mode is 0o644 if mode is 0
+                let file_mode = if mode == 0 { 0o644 } else { (mode & 0o777) as u16 };
+                match fs.create_file(parent_inode, filename, file_mode) {
+                    Ok(new_inode) => {
+                        log::info!("sys_open: created file {} with inode {}", path, new_inode);
+                        (new_inode, true)
+                    }
+                    Err(e) => {
+                        log::error!("sys_open: failed to create file: {}", e);
+                        if e.contains("No free inodes") || e.contains("No space") {
+                            return SyscallResult::Err(ENOSPC as u64);
+                        }
+                        return SyscallResult::Err(5); // EIO
+                    }
+                }
             } else {
-                return SyscallResult::Err(5); // EIO
+                // File doesn't exist and O_CREAT not set, or other error
+                log::debug!("sys_open: path resolution failed: {}", e);
+                if e.contains("not found") {
+                    return SyscallResult::Err(ENOENT as u64);
+                } else if e.contains("Not a directory") {
+                    return SyscallResult::Err(ENOTDIR as u64);
+                } else {
+                    return SyscallResult::Err(5); // EIO
+                }
             }
         }
     };
@@ -201,7 +273,18 @@ pub fn sys_open(pathname: u64, flags: u32, _mode: u32) -> SyscallResult {
 
     let file_type = inode.file_type();
     let is_directory = matches!(file_type, Ext2FileType::Directory);
-    let wants_directory = (flags & O_DIRECTORY) != 0;
+    let is_regular = matches!(file_type, Ext2FileType::Regular);
+
+    // Handle O_TRUNC for regular files
+    if want_trunc && is_regular && !file_created {
+        // Only truncate if file existed (not just created)
+        log::debug!("sys_open: truncating file inode {}", inode_num);
+        if let Err(e) = fs.truncate_file(inode_num) {
+            log::error!("sys_open: failed to truncate file: {}", e);
+            return SyscallResult::Err(5); // EIO
+        }
+    }
+
     let mount_id = fs.mount_id;
 
     // Drop the filesystem lock before acquiring process lock
@@ -787,4 +870,66 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 
     log::debug!("sys_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
     SyscallResult::Ok(bytes_written as u64)
+}
+
+/// sys_unlink - Delete a file
+///
+/// Removes a directory entry for the specified pathname. If this is the
+/// last link to the file and no processes have it open, the file is deleted.
+///
+/// # Arguments
+/// * `pathname` - Path to the file (userspace pointer to null-terminated string)
+///
+/// # Returns
+/// 0 on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - File does not exist
+/// * EISDIR - pathname refers to a directory
+/// * EACCES - Permission denied
+/// * EIO - I/O error
+pub fn sys_unlink(pathname: u64) -> SyscallResult {
+    use super::errno::{EACCES, EIO, EISDIR, ENOENT};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Copy path from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_unlink: path={:?}", path);
+
+    // Get the root filesystem (with mutable access)
+    let mut fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_mut() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_unlink: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Perform the unlink operation
+    match fs.unlink_file(&path) {
+        Ok(()) => {
+            log::info!("sys_unlink: successfully unlinked {}", path);
+            SyscallResult::Ok(0)
+        }
+        Err(e) => {
+            log::debug!("sys_unlink: failed: {}", e);
+            // Map error to appropriate errno
+            let errno = if e.contains("not found") || e.contains("not exist") {
+                ENOENT
+            } else if e.contains("directory") {
+                EISDIR
+            } else if e.contains("permission") || e.contains("Cannot") {
+                EACCES
+            } else {
+                EIO
+            };
+            SyscallResult::Err(errno as u64)
+        }
+    }
 }

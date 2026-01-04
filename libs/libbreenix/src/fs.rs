@@ -220,6 +220,34 @@ pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<u64, Errno> {
     Errno::from_syscall(ret)
 }
 
+/// Write to a file descriptor.
+///
+/// # Arguments
+/// * `fd` - File descriptor to write to
+/// * `buf` - Buffer containing data to write
+///
+/// # Returns
+/// Number of bytes written on success, Errno on failure.
+///
+/// # Example
+/// ```ignore
+/// let fd = open_with_mode("/newfile.txt\0", O_WRONLY | O_CREAT, 0o644)?;
+/// let n = write(fd, b"Hello, world!")?;
+/// close(fd);
+/// ```
+#[inline]
+pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
+    let ret = unsafe {
+        raw::syscall3(
+            nr::WRITE,
+            fd,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+        ) as i64
+    };
+    Errno::from_syscall(ret).map(|n| n as usize)
+}
+
 // Directory entry file type constants (d_type values)
 /// Unknown file type
 pub const DT_UNKNOWN: u8 = 0;
@@ -324,6 +352,35 @@ pub fn getdents64(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
         ) as i64
     };
     Errno::from_syscall(ret).map(|n| n as usize)
+}
+
+/// Unlink (delete) a file.
+///
+/// Removes the directory entry for the specified pathname. If this was
+/// the last link to the file and no processes have it open, the file
+/// is deleted.
+///
+/// # Arguments
+/// * `path` - Path to the file (null-terminated string)
+///
+/// # Returns
+/// * `Ok(())` - File was successfully unlinked
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - File does not exist
+/// * `EISDIR` - Path refers to a directory (use rmdir instead)
+/// * `EACCES` - Permission denied
+/// * `EIO` - I/O error
+///
+/// # Example
+/// ```ignore
+/// unlink("/tmp/myfile.txt\0")?;
+/// ```
+#[inline]
+pub fn unlink(path: &str) -> Result<(), Errno> {
+    let ret = unsafe { raw::syscall1(nr::UNLINK, path.as_ptr() as u64) as i64 };
+    Errno::from_syscall(ret).map(|_| ())
 }
 
 /// Iterator over directory entries in a getdents64 buffer.

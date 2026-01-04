@@ -63,6 +63,7 @@ pub enum SyscallNumber {
     Lseek = 258,        // Breenix: new filesystem syscall
     Fstat = 259,        // Breenix: new filesystem syscall
     Getdents64 = 260,   // Breenix: directory listing syscall
+    Unlink = 87,        // Linux syscall number for unlink
     Pipe2 = 293,        // Linux syscall number for pipe2
 }
 
@@ -101,6 +102,7 @@ impl SyscallNumber {
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
             72 => Some(Self::Fcntl),
+            87 => Some(Self::Unlink),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
             257 => Some(Self::Open),

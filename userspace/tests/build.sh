@@ -70,6 +70,7 @@ BINARIES=(
     "file_read_test"
     "getdents_test"
     "lseek_test"
+    "fs_write_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

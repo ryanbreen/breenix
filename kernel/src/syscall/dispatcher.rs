@@ -68,5 +68,6 @@ pub fn dispatch_syscall(
         SyscallNumber::Fstat => super::fs::sys_fstat(arg1 as i32, arg2),
         SyscallNumber::Lseek => super::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32),
         SyscallNumber::Getdents64 => super::fs::sys_getdents64(arg1 as i32, arg2, arg3),
+        SyscallNumber::Unlink => super::fs::sys_unlink(arg1),
     }
 }

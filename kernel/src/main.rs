@@ -700,6 +700,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: lseek (SEEK_SET, SEEK_CUR, SEEK_END) ===");
         test_exec::test_lseek();
 
+        // Test filesystem write operations
+        log::info!("=== FS TEST: filesystem write (write, O_CREAT, O_TRUNC, O_APPEND, unlink) ===");
+        test_exec::test_fs_write();
+
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
         test_exec::test_signal_exec();

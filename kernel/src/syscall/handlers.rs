@@ -259,10 +259,68 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_write: Cannot write to UDP socket, use sendto instead");
             SyscallResult::Err(95) // EOPNOTSUPP
         }
-        FdKind::RegularFile(_) => {
-            // Regular files not implemented yet
-            log::error!("sys_write: Regular file I/O not implemented yet");
-            SyscallResult::Err(95) // EOPNOTSUPP
+        FdKind::RegularFile(file_ref) => {
+            // Write to ext2 regular file
+            //
+            // Get file info under the lock, then drop lock before filesystem operations
+            let (inode_num, position, flags) = {
+                let file = file_ref.lock();
+                (file.inode_num, file.position, file.flags)
+            };
+
+            // Handle O_APPEND flag - seek to end before writing
+            let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                // Get file size from filesystem
+                let root_fs = crate::fs::ext2::root_fs();
+                let fs = match root_fs.as_ref() {
+                    Some(fs) => fs,
+                    None => {
+                        log::error!("sys_write: ext2 filesystem not mounted");
+                        return SyscallResult::Err(super::errno::ENOSYS as u64);
+                    }
+                };
+                let inode = match fs.read_inode(inode_num as u32) {
+                    Ok(inode) => inode,
+                    Err(e) => {
+                        log::error!("sys_write: Failed to read inode {}: {}", inode_num, e);
+                        return SyscallResult::Err(super::errno::EIO as u64);
+                    }
+                };
+                inode.size()
+            } else {
+                position
+            };
+
+            // Access the mounted ext2 filesystem
+            let root_fs = crate::fs::ext2::root_fs();
+            let fs = match root_fs.as_ref() {
+                Some(fs) => fs,
+                None => {
+                    log::error!("sys_write: ext2 filesystem not mounted");
+                    return SyscallResult::Err(super::errno::ENOSYS as u64);
+                }
+            };
+
+            // Write the data
+            let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
+                Ok(n) => n,
+                Err(e) => {
+                    log::error!("sys_write: Failed to write file data: {}", e);
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
+            };
+
+            // Drop the filesystem lock before updating file position
+            drop(root_fs);
+
+            // Update file position
+            {
+                let mut file = file_ref.lock();
+                file.position = write_offset + bytes_written as u64;
+            }
+
+            log::debug!("sys_write: Wrote {} bytes to regular file (inode {})", bytes_written, inode_num);
+            SyscallResult::Ok(bytes_written as u64)
         }
         FdKind::Directory(_) => {
             // Cannot write to a directory

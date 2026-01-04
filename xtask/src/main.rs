@@ -660,6 +660,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "lseek syscall failed - SEEK_SET, SEEK_CUR, or SEEK_END broken",
             check_hint: "Check kernel/src/syscall/fs.rs sys_lseek(), especially SEEK_END with get_ext2_file_size()",
         },
+        // Filesystem write test (write, O_CREAT, O_TRUNC, O_APPEND, unlink)
+        BootStage {
+            name: "Filesystem write test passed",
+            marker: "FS_WRITE_TEST_PASSED",
+            failure_meaning: "filesystem write operations failed - write, create, truncate, append, or unlink broken",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_open O_CREAT/O_TRUNC, handlers.rs sys_write for RegularFile, and fs.rs sys_unlink",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

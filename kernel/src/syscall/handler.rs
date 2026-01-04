@@ -213,6 +213,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Getdents64) => {
             super::fs::sys_getdents64(args.0 as i32, args.1, args.2)
         }
+        Some(SyscallNumber::Unlink) => super::fs::sys_unlink(args.0),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

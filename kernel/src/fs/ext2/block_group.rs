@@ -101,4 +101,72 @@ impl Ext2BlockGroupDesc {
         
         Ok(descriptors)
     }
+
+    /// Write all block group descriptors to device
+    ///
+    /// Writes the block group descriptor table back to disk after modifications.
+    ///
+    /// # Arguments
+    /// * `device` - The block device to write to
+    /// * `superblock` - The filesystem superblock (for calculating BGDT location)
+    /// * `descriptors` - The block group descriptors to write
+    ///
+    /// # Returns
+    /// * `Ok(())` - Successfully wrote all block group descriptors
+    /// * `Err(BlockError)` - I/O error during write
+    pub fn write_table<B: BlockDevice>(
+        device: &B,
+        superblock: &Ext2Superblock,
+        descriptors: &[Self],
+    ) -> Result<(), BlockError> {
+        let block_size = superblock.block_size();
+        let descriptor_size = mem::size_of::<Ext2BlockGroupDesc>();
+
+        // Calculate which ext2 block contains the BGDT
+        let bgdt_block = if block_size == 1024 {
+            2
+        } else {
+            1
+        };
+
+        // Calculate how many ext2 blocks we need
+        let bytes_needed = descriptors.len() * descriptor_size;
+        let ext2_blocks_needed = (bytes_needed + block_size - 1) / block_size;
+
+        // Build the buffer with all descriptors
+        let device_block_size = device.block_size();
+        let mut buffer = alloc::vec![0u8; ext2_blocks_needed * block_size];
+
+        for (i, desc) in descriptors.iter().enumerate() {
+            let offset = i * descriptor_size;
+
+            // SAFETY: Writing packed struct as raw bytes
+            let desc_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    desc as *const Ext2BlockGroupDesc as *const u8,
+                    descriptor_size,
+                )
+            };
+            buffer[offset..offset + descriptor_size].copy_from_slice(desc_bytes);
+        }
+
+        // Write the buffer back to device
+        for i in 0..ext2_blocks_needed {
+            let ext2_block_num = bgdt_block + i;
+
+            // Convert ext2 block to device block(s)
+            let device_blocks_per_ext2_block = block_size / device_block_size;
+            let start_device_block = ext2_block_num * device_blocks_per_ext2_block;
+
+            for j in 0..device_blocks_per_ext2_block {
+                device.write_block(
+                    (start_device_block + j) as u64,
+                    &buffer[(i * block_size + j * device_block_size)
+                        ..(i * block_size + (j + 1) * device_block_size)],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
 }
