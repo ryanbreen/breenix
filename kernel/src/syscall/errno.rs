@@ -2,6 +2,9 @@
 //!
 //! Standard error codes returned by system calls.
 
+/// Operation not permitted
+pub const EPERM: i32 = 1;
+
 /// No such file or directory
 pub const ENOENT: i32 = 2;
 
@@ -44,6 +47,9 @@ pub const EINVAL: i32 = 22;
 /// Too many open files
 pub const EMFILE: i32 = 24;
 
+/// Device or resource busy
+pub const EBUSY: i32 = 16;
+
 /// File exists (O_CREAT + O_EXCL)
 pub const EEXIST: i32 = 17;
 
@@ -53,6 +59,9 @@ pub const ENOSPC: i32 = 28;
 /// File name too long
 #[allow(dead_code)] // Part of POSIX errno API
 pub const ENAMETOOLONG: i32 = 36;
+
+/// Directory not empty
+pub const ENOTEMPTY: i32 = 39;
 
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]

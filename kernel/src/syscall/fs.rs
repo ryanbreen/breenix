@@ -1003,3 +1003,388 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
         }
     }
 }
+
+/// sys_rmdir - Remove an empty directory
+///
+/// Removes the directory specified by pathname if it is empty
+/// (contains only "." and ".." entries).
+///
+/// # Arguments
+/// * `pathname` - Path to the directory (userspace pointer to null-terminated string)
+///
+/// # Returns
+/// 0 on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - Directory does not exist
+/// * ENOTDIR - pathname is not a directory
+/// * ENOTEMPTY - Directory is not empty
+/// * EBUSY - Directory is in use (e.g., mount point or current directory)
+/// * EINVAL - pathname is "." or ends with "/."
+/// * EIO - I/O error
+pub fn sys_rmdir(pathname: u64) -> SyscallResult {
+    use super::errno::{EACCES, EINVAL, EIO, ENOENT, ENOTEMPTY, ENOTDIR};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Copy path from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_rmdir: path={:?}", path);
+
+    // Check for invalid paths like "." or ending with "/."
+    if path == "." || path.ends_with("/.") {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Get the root filesystem (with mutable access)
+    let mut fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_mut() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_rmdir: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Perform the rmdir operation
+    match fs.remove_directory(&path) {
+        Ok(()) => {
+            log::info!("sys_rmdir: successfully removed directory {}", path);
+            SyscallResult::Ok(0)
+        }
+        Err(e) => {
+            log::debug!("sys_rmdir: failed: {}", e);
+            // Map error to appropriate errno
+            let errno = if e.contains("not found") || e.contains("not exist") {
+                ENOENT
+            } else if e.contains("Not a directory") || e.contains("not a directory") {
+                ENOTDIR
+            } else if e.contains("not empty") || e.contains("Directory not empty") {
+                ENOTEMPTY
+            } else if e.contains("root directory") {
+                // Cannot remove root directory - treat as busy
+                super::errno::EBUSY
+            } else if e.contains("permission") || e.contains("Cannot") {
+                EACCES
+            } else if e.contains("Invalid") {
+                EINVAL
+            } else {
+                EIO
+            };
+            SyscallResult::Err(errno as u64)
+        }
+    }
+}
+
+/// sys_link - Create a hard link to a file
+///
+/// Creates a new hard link pointing to an existing file. Both paths
+/// must be on the same filesystem. Hard links to directories are not allowed.
+///
+/// # Arguments
+/// * `oldpath` - Path to the existing file (userspace pointer to null-terminated string)
+/// * `newpath` - Path for the new link (userspace pointer to null-terminated string)
+///
+/// # Returns
+/// 0 on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - oldpath does not exist
+/// * EEXIST - newpath already exists
+/// * EPERM - oldpath is a directory
+/// * ENOTDIR - A component in path is not a directory
+/// * ENOSPC - No space in target directory
+/// * EIO - I/O error
+pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
+    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOTDIR, EPERM};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Copy paths from userspace
+    let old = match copy_cstr_from_user(oldpath) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let new = match copy_cstr_from_user(newpath) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_link: oldpath={:?}, newpath={:?}", old, new);
+
+    // Get the root filesystem (with mutable access)
+    let mut fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_mut() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_link: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Perform the hard link operation
+    match fs.create_hard_link(&old, &new) {
+        Ok(()) => {
+            log::info!("sys_link: successfully created hard link {} -> {}", new, old);
+            SyscallResult::Ok(0)
+        }
+        Err(e) => {
+            log::debug!("sys_link: failed: {}", e);
+            // Map error to appropriate errno
+            let errno = if e.contains("not found") || e.contains("not exist") {
+                ENOENT
+            } else if e.contains("already exists") || e.contains("Destination already exists") {
+                EEXIST
+            } else if e.contains("directory") && e.contains("hard link") {
+                EPERM // Cannot create hard link to directory
+            } else if e.contains("Not a directory") {
+                ENOTDIR
+            } else if e.contains("permission") || e.contains("Cannot") {
+                EACCES
+            } else if e.contains("No space") {
+                super::errno::ENOSPC
+            } else {
+                EIO
+            };
+            SyscallResult::Err(errno as u64)
+        }
+    }
+}
+
+/// sys_mkdir - Create a directory
+///
+/// Creates a new directory with the specified pathname and mode.
+///
+/// # Arguments
+/// * `pathname` - Path for the new directory (userspace pointer to null-terminated string)
+/// * `mode` - Directory permission bits (e.g., 0o755)
+///
+/// # Returns
+/// 0 on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - Parent directory does not exist
+/// * EEXIST - Directory already exists
+/// * ENOTDIR - Component in path is not a directory
+/// * ENOSPC - No space for new directory
+/// * EIO - I/O error
+pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
+    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOSPC, ENOTDIR};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Copy path from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_mkdir: path={:?}, mode={:#o}", path, mode);
+
+    // Get the root filesystem (with mutable access)
+    let mut fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_mut() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_mkdir: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Create the directory
+    // Default mode is 0o755 if mode is 0 (common convention)
+    let dir_mode = if mode == 0 { 0o755 } else { (mode & 0o777) as u16 };
+    match fs.create_directory(&path, dir_mode) {
+        Ok(inode_num) => {
+            log::info!("sys_mkdir: successfully created directory {} (inode {})", path, inode_num);
+            SyscallResult::Ok(0)
+        }
+        Err(e) => {
+            log::debug!("sys_mkdir: failed: {}", e);
+            // Map error to appropriate errno
+            let errno = if e.contains("not found") || e.contains("not exist") || e.contains("Path component not found") {
+                ENOENT
+            } else if e.contains("already exists") || e.contains("Directory already exists") {
+                EEXIST
+            } else if e.contains("Not a directory") || e.contains("not a directory") {
+                ENOTDIR
+            } else if e.contains("permission") || e.contains("Cannot") {
+                EACCES
+            } else if e.contains("No space") || e.contains("No free") {
+                ENOSPC
+            } else {
+                EIO
+            };
+            SyscallResult::Err(errno as u64)
+        }
+    }
+}
+
+/// sys_symlink - Create a symbolic link
+///
+/// Creates a new symbolic link at linkpath pointing to target.
+/// Unlike hard links, symbolic links can reference directories and
+/// can cross filesystem boundaries (though in our case we only have ext2).
+///
+/// # Arguments
+/// * `target` - The target path the symlink will point to (userspace pointer)
+/// * `linkpath` - Path where the symlink will be created (userspace pointer)
+///
+/// # Returns
+/// 0 on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - A component of linkpath's parent directory does not exist
+/// * EEXIST - linkpath already exists
+/// * ENOTDIR - A component of the path is not a directory
+/// * ENOSPC - No space to create the symlink
+/// * EIO - I/O error
+pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
+    use super::errno::{EACCES, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOTDIR};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Copy paths from userspace
+    let target_str = match copy_cstr_from_user(target) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    let linkpath_str = match copy_cstr_from_user(linkpath) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_symlink: target={:?}, linkpath={:?}", target_str, linkpath_str);
+
+    // Validate target is not empty
+    if target_str.is_empty() {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Get the root filesystem (with mutable access)
+    let mut fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_mut() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_symlink: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Create the symbolic link
+    match fs.create_symlink(&target_str, &linkpath_str) {
+        Ok(()) => {
+            log::info!("sys_symlink: successfully created symlink {} -> {}", linkpath_str, target_str);
+            SyscallResult::Ok(0)
+        }
+        Err(e) => {
+            log::debug!("sys_symlink: failed: {}", e);
+            // Map error to appropriate errno
+            let errno = if e.contains("not found") || e.contains("not exist") || e.contains("Path component not found") {
+                ENOENT
+            } else if e.contains("already exists") || e.contains("File already exists") {
+                EEXIST
+            } else if e.contains("Not a directory") || e.contains("not a directory") {
+                ENOTDIR
+            } else if e.contains("permission") || e.contains("Cannot") {
+                EACCES
+            } else if e.contains("No space") || e.contains("No free") {
+                ENOSPC
+            } else if e.contains("empty") || e.contains("Invalid") {
+                EINVAL
+            } else {
+                EIO
+            };
+            SyscallResult::Err(errno as u64)
+        }
+    }
+}
+
+/// sys_readlink - Read the target of a symbolic link
+///
+/// Reads the contents of the symbolic link (i.e., the path it points to)
+/// and writes it to the provided buffer. The result is NOT null-terminated.
+///
+/// # Arguments
+/// * `pathname` - Path to the symbolic link (userspace pointer)
+/// * `buf` - Buffer to store the symlink target (userspace pointer)
+/// * `bufsize` - Size of the buffer
+///
+/// # Returns
+/// Number of bytes placed in buf on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - The symlink does not exist
+/// * EINVAL - pathname is not a symbolic link
+/// * EFAULT - Invalid buffer pointer
+/// * EIO - I/O error
+pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
+    use super::errno::{EFAULT, EINVAL, EIO, ENOENT};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Validate buffer pointer
+    if buf == 0 || bufsize == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Copy path from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_readlink: pathname={:?}, bufsize={}", path, bufsize);
+
+    // Get the root filesystem
+    let fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_ref() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_readlink: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Resolve path to inode number (don't follow the symlink itself)
+    let inode_num = match fs.resolve_path(&path) {
+        Ok(ino) => ino,
+        Err(e) => {
+            log::debug!("sys_readlink: path resolution failed: {}", e);
+            return SyscallResult::Err(ENOENT as u64);
+        }
+    };
+
+    // Read the symlink target
+    let target = match fs.read_symlink(inode_num) {
+        Ok(t) => t,
+        Err(e) => {
+            log::debug!("sys_readlink: failed to read symlink: {}", e);
+            let errno = if e.contains("Not a symbolic link") {
+                EINVAL
+            } else if e.contains("not found") {
+                ENOENT
+            } else {
+                EIO
+            };
+            return SyscallResult::Err(errno as u64);
+        }
+    };
+
+    // Calculate how many bytes to copy (capped by buffer size)
+    let target_bytes = target.as_bytes();
+    let bytes_to_copy = core::cmp::min(target_bytes.len(), bufsize as usize);
+
+    // Copy to user buffer (NOT null-terminated, per readlink semantics)
+    let user_buf = buf as *mut u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(target_bytes.as_ptr(), user_buf, bytes_to_copy);
+    }
+
+    log::debug!("sys_readlink: returning {} bytes: {:?}", bytes_to_copy, &target[..bytes_to_copy]);
+    SyscallResult::Ok(bytes_to_copy as u64)
+}

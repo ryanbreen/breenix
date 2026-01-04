@@ -389,8 +389,109 @@ pub fn set_block_num<B: BlockDevice>(
         return Ok(());
     }
 
-    // Double and triple indirect not implemented for writes yet
-    Err(BlockError::IoError)
+    let double_indirect_count = ptrs_per_block * ptrs_per_block;
+
+    // Double indirect block (13)
+    if logical_block < direct_count + single_indirect_count + double_indirect_count {
+        // Get or allocate double indirect block
+        let mut double_indirect_ptr = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[DOUBLE_INDIRECT]))
+        };
+
+        if double_indirect_ptr == 0 {
+            // Allocate a new double indirect block
+            double_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
+                .map_err(|_| BlockError::IoError)?;
+
+            // Update the inode's double indirect block pointer
+            unsafe {
+                let block_ptr = core::ptr::addr_of_mut!(inode.i_block[DOUBLE_INDIRECT]);
+                core::ptr::write_unaligned(block_ptr, double_indirect_ptr);
+            }
+        }
+
+        let index_in_double = logical_block - direct_count - single_indirect_count;
+        let first_level_index = (index_in_double / ptrs_per_block) as usize;
+        let second_level_index = (index_in_double % ptrs_per_block) as usize;
+
+        // Read the first-level indirect block (contains pointers to second-level blocks)
+        let mut first_level_blocks = read_indirect_block(device, double_indirect_ptr, block_size)?;
+
+        // Get or allocate second-level indirect block
+        let mut second_level_ptr = first_level_blocks[first_level_index];
+        if second_level_ptr == 0 {
+            // Allocate a new second-level indirect block
+            second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
+                .map_err(|_| BlockError::IoError)?;
+
+            // Update the first-level block with the new pointer
+            first_level_blocks[first_level_index] = second_level_ptr;
+            write_indirect_block(device, double_indirect_ptr, block_size, &first_level_blocks)?;
+        }
+
+        // Read the second-level indirect block, modify it, write it back
+        let mut second_level_blocks = read_indirect_block(device, second_level_ptr, block_size)?;
+        second_level_blocks[second_level_index] = physical_block;
+        write_indirect_block(device, second_level_ptr, block_size, &second_level_blocks)?;
+
+        return Ok(());
+    }
+
+    // Triple indirect block (14)
+    // Get or allocate triple indirect block
+    let mut triple_indirect_ptr = unsafe {
+        core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block[TRIPLE_INDIRECT]))
+    };
+
+    if triple_indirect_ptr == 0 {
+        // Allocate a new triple indirect block
+        triple_indirect_ptr = super::block_group::allocate_block(device, superblock, block_groups)
+            .map_err(|_| BlockError::IoError)?;
+
+        // Update the inode's triple indirect block pointer
+        unsafe {
+            let block_ptr = core::ptr::addr_of_mut!(inode.i_block[TRIPLE_INDIRECT]);
+            core::ptr::write_unaligned(block_ptr, triple_indirect_ptr);
+        }
+    }
+
+    let index_in_triple = logical_block - direct_count - single_indirect_count - double_indirect_count;
+    let first_level_index = (index_in_triple / (ptrs_per_block * ptrs_per_block)) as usize;
+    let second_level_index = ((index_in_triple / ptrs_per_block) % ptrs_per_block) as usize;
+    let third_level_index = (index_in_triple % ptrs_per_block) as usize;
+
+    // Read the first-level indirect block
+    let mut first_level_blocks = read_indirect_block(device, triple_indirect_ptr, block_size)?;
+
+    // Get or allocate second-level indirect block
+    let mut second_level_ptr = first_level_blocks[first_level_index];
+    if second_level_ptr == 0 {
+        second_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
+            .map_err(|_| BlockError::IoError)?;
+
+        first_level_blocks[first_level_index] = second_level_ptr;
+        write_indirect_block(device, triple_indirect_ptr, block_size, &first_level_blocks)?;
+    }
+
+    // Read the second-level indirect block
+    let mut second_level_blocks = read_indirect_block(device, second_level_ptr, block_size)?;
+
+    // Get or allocate third-level indirect block
+    let mut third_level_ptr = second_level_blocks[second_level_index];
+    if third_level_ptr == 0 {
+        third_level_ptr = super::block_group::allocate_block(device, superblock, block_groups)
+            .map_err(|_| BlockError::IoError)?;
+
+        second_level_blocks[second_level_index] = third_level_ptr;
+        write_indirect_block(device, second_level_ptr, block_size, &second_level_blocks)?;
+    }
+
+    // Read the third-level indirect block, modify it, write it back
+    let mut third_level_blocks = read_indirect_block(device, third_level_ptr, block_size)?;
+    third_level_blocks[third_level_index] = physical_block;
+    write_indirect_block(device, third_level_ptr, block_size, &third_level_blocks)?;
+
+    Ok(())
 }
 
 /// Write the entire contents to a file

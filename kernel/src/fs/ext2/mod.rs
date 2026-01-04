@@ -367,6 +367,24 @@ impl Ext2Fs {
             return Err("Cannot unlink directory (use rmdir)");
         }
 
+        // Get the link count to determine if we'll be freeing the inode
+        let link_count = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_links_count))
+        };
+
+        // Calculate how many blocks this file uses (if we're about to free it)
+        // i_blocks is in 512-byte sectors, so divide by (block_size / 512)
+        let blocks_to_free = if link_count == 1 {
+            let block_size = self.superblock.block_size();
+            let sectors_per_block = (block_size / 512) as u32;
+            let i_blocks = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_blocks))
+            };
+            i_blocks / sectors_per_block
+        } else {
+            0
+        };
+
         // Remove the directory entry
         remove_entry(&mut dir_data, filename)?;
 
@@ -385,13 +403,35 @@ impl Ext2Fs {
             &self.block_groups,
         ).map_err(|_| "Failed to write parent inode")?;
 
-        // Decrement the inode link count (may free the inode if it reaches 0)
-        decrement_inode_links(
+        // Decrement the inode link count (may free the inode and blocks if it reaches 0)
+        let new_links = decrement_inode_links(
             self.device.as_ref(),
             target_inode_num,
             &self.superblock,
             &mut self.block_groups,
         )?;
+
+        // If the inode was freed, update the superblock's free counts
+        if new_links == 0 {
+            // Update superblock free inode count
+            self.superblock.increment_free_inodes();
+
+            // Update superblock free block count
+            if blocks_to_free > 0 {
+                self.superblock.increment_free_blocks(blocks_to_free);
+            }
+
+            // Write the updated superblock
+            self.superblock.write_to(self.device.as_ref())
+                .map_err(|_| "Failed to write superblock")?;
+
+            // Write updated block group descriptors
+            Ext2BlockGroupDesc::write_table(
+                self.device.as_ref(),
+                &self.superblock,
+                &self.block_groups,
+            ).map_err(|_| "Failed to write block group descriptors")?;
+        }
 
         log::debug!("ext2: unlinked {} (inode {})", path, target_inode_num);
         Ok(())
@@ -565,6 +605,609 @@ impl Ext2Fs {
         log::debug!("ext2: renamed {} to {}", oldpath, newpath);
         Ok(())
     }
+
+    /// Create a new directory in the filesystem
+    ///
+    /// Creates a new directory with the specified name in the parent directory.
+    /// The new directory will have "." and ".." entries initialized.
+    ///
+    /// # Arguments
+    /// * `path` - Absolute path for the new directory
+    /// * `mode` - Directory permission bits (e.g., 0o755)
+    ///
+    /// # Returns
+    /// * `Ok(inode_num)` - The inode number of the newly created directory
+    /// * `Err(msg)` - Error message if creation failed
+    pub fn create_directory(&mut self, path: &str, mode: u16) -> Result<u32, &'static str> {
+        // Must be an absolute path
+        if !path.starts_with('/') {
+            return Err("Path must be absolute");
+        }
+
+        // Split path into parent directory and new directory name
+        let (parent_path, dirname) = match path.rfind('/') {
+            Some(0) => ("/", &path[1..]), // Directory in root
+            Some(idx) => (&path[..idx], &path[idx + 1..]),
+            None => return Err("Invalid path"),
+        };
+
+        // Validate name
+        if dirname.is_empty() || dirname.len() > 255 {
+            return Err("Invalid directory name length");
+        }
+        if dirname.contains('/') || dirname == "." || dirname == ".." {
+            return Err("Invalid directory name");
+        }
+
+        // Resolve parent directory
+        let parent_inode_num = self.resolve_path(parent_path)?;
+        let parent_inode = self.read_inode(parent_inode_num)?;
+
+        if !parent_inode.is_dir() {
+            return Err("Parent is not a directory");
+        }
+
+        // Read the parent directory data
+        let mut parent_dir_data = self.read_directory(&parent_inode)?;
+
+        // Check if the directory already exists
+        if find_entry(&parent_dir_data, dirname).is_some() {
+            return Err("Directory already exists");
+        }
+
+        // Allocate a new inode for the directory
+        let new_inode_num = allocate_inode(
+            self.device.as_ref(),
+            &self.superblock,
+            &mut self.block_groups,
+        )?;
+
+        // Allocate a data block for the new directory's contents (. and .. entries)
+        let new_block = allocate_block(
+            self.device.as_ref(),
+            &self.superblock,
+            &mut self.block_groups,
+        )?;
+
+        // Create the new directory inode
+        let mut new_inode = Ext2Inode::new_directory(mode);
+
+        // Set the data block pointer
+        new_inode.i_block[0] = new_block;
+
+        // Set size to one block (for . and .. entries)
+        let block_size = self.superblock.block_size();
+        new_inode.i_size = block_size as u32;
+
+        // Set block count (in 512-byte sectors)
+        new_inode.i_blocks = (block_size / 512) as u32;
+
+        // Initialize directory contents with "." and ".." entries
+        let mut dir_data = alloc::vec![0u8; block_size];
+
+        // Write "." entry (points to self)
+        // inode (4) + rec_len (2) + name_len (1) + file_type (1) + name (1) = 9, aligned to 12
+        let dot_rec_len = 12u16;
+        dir_data[0..4].copy_from_slice(&new_inode_num.to_le_bytes()); // inode
+        dir_data[4..6].copy_from_slice(&dot_rec_len.to_le_bytes()); // rec_len
+        dir_data[6] = 1; // name_len
+        dir_data[7] = EXT2_FT_DIR; // file_type
+        dir_data[8] = b'.'; // name
+
+        // Write ".." entry (points to parent)
+        // This entry takes up the rest of the block
+        let dotdot_offset = 12usize;
+        let dotdot_rec_len = (block_size - 12) as u16;
+        dir_data[dotdot_offset..dotdot_offset + 4].copy_from_slice(&parent_inode_num.to_le_bytes()); // inode
+        dir_data[dotdot_offset + 4..dotdot_offset + 6].copy_from_slice(&dotdot_rec_len.to_le_bytes()); // rec_len
+        dir_data[dotdot_offset + 6] = 2; // name_len
+        dir_data[dotdot_offset + 7] = EXT2_FT_DIR; // file_type
+        dir_data[dotdot_offset + 8] = b'.'; // name[0]
+        dir_data[dotdot_offset + 9] = b'.'; // name[1]
+
+        // Write the directory data block
+        file::write_ext2_block(self.device.as_ref(), new_block, block_size, &dir_data)
+            .map_err(|_| "Failed to write directory data block")?;
+
+        // Write the new inode to disk
+        new_inode.write_to(
+            self.device.as_ref(),
+            new_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write new directory inode")?;
+
+        // Add directory entry to parent directory
+        add_directory_entry(&mut parent_dir_data, new_inode_num, dirname, EXT2_FT_DIR)?;
+
+        // Increment parent's link count (for the ".." entry in the new directory)
+        let mut parent_inode_mut = parent_inode;
+        let current_links = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(parent_inode_mut.i_links_count))
+        };
+        parent_inode_mut.i_links_count = current_links + 1;
+
+        // Update parent directory timestamps
+        parent_inode_mut.update_timestamps(false, true, true);
+
+        // Write the modified parent directory data back
+        self.write_directory_data(parent_inode_num, &parent_dir_data)?;
+
+        // Write the updated parent directory inode
+        parent_inode_mut.write_to(
+            self.device.as_ref(),
+            parent_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write parent inode")?;
+
+        // Update superblock with new free inode and block counts
+        self.superblock.decrement_free_inodes();
+        self.superblock.decrement_free_blocks();
+        self.superblock.write_to(self.device.as_ref())
+            .map_err(|_| "Failed to write superblock")?;
+
+        // Update block group used directories count
+        let inodes_per_group = self.superblock.s_inodes_per_group;
+        let bg_index = ((new_inode_num - 1) / inodes_per_group) as usize;
+        if bg_index < self.block_groups.len() {
+            let bg = &mut self.block_groups[bg_index];
+            let used_dirs = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_used_dirs_count))
+            };
+            unsafe {
+                core::ptr::write_unaligned(
+                    core::ptr::addr_of_mut!(bg.bg_used_dirs_count),
+                    used_dirs + 1,
+                );
+            }
+        }
+
+        // Write updated block group descriptors
+        Ext2BlockGroupDesc::write_table(
+            self.device.as_ref(),
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write block group descriptors")?;
+
+        log::debug!("ext2: created directory '{}' with inode {}", path, new_inode_num);
+        Ok(new_inode_num)
+    }
+
+    /// Remove an empty directory from the filesystem
+    ///
+    /// This removes the directory if it is empty (contains only "." and "..").
+    /// The directory's inode is freed and the entry is removed from the parent.
+    ///
+    /// # Arguments
+    /// * `path` - Absolute path to the directory to remove
+    ///
+    /// # Returns
+    /// * `Ok(())` - Directory was successfully removed
+    /// * `Err(msg)` - Error message
+    ///
+    /// # Errors
+    /// * "Path must be absolute" - Path doesn't start with "/"
+    /// * "Cannot remove root directory" - Tried to remove "/"
+    /// * "Not a directory" - Path refers to a non-directory
+    /// * "Directory not empty" - Directory contains entries other than "." and ".."
+    /// * "Path component not found" - Part of the path doesn't exist
+    pub fn remove_directory(&mut self, path: &str) -> Result<(), &'static str> {
+        // Must start with "/"
+        if !path.starts_with('/') {
+            return Err("Path must be absolute");
+        }
+
+        // Cannot remove root directory
+        if path == "/" {
+            return Err("Cannot remove root directory");
+        }
+
+        // Split path into parent directory and directory name
+        let (parent_path, dir_name) = match path.rfind('/') {
+            Some(0) => ("/", &path[1..]), // Directory in root
+            Some(idx) => (&path[..idx], &path[idx + 1..]),
+            None => return Err("Invalid path"),
+        };
+
+        // Directory name cannot be empty or special
+        if dir_name.is_empty() || dir_name == "." || dir_name == ".." {
+            return Err("Invalid directory name");
+        }
+
+        // Resolve the target directory
+        let target_inode_num = self.resolve_path(path)?;
+        let target_inode = self.read_inode(target_inode_num)?;
+
+        // Verify it's a directory
+        if !target_inode.is_dir() {
+            return Err("Not a directory");
+        }
+
+        // Read directory contents and check if empty
+        let dir_data = self.read_directory(&target_inode)?;
+        if !is_directory_empty(&dir_data) {
+            return Err("Directory not empty");
+        }
+
+        // Resolve parent directory
+        let parent_inode_num = self.resolve_path(parent_path)?;
+        let parent_inode = self.read_inode(parent_inode_num)?;
+
+        if !parent_inode.is_dir() {
+            return Err("Parent is not a directory");
+        }
+
+        // Read the parent directory data
+        let mut parent_dir_data = self.read_directory(&parent_inode)?;
+
+        // Remove the directory entry from parent
+        remove_entry(&mut parent_dir_data, dir_name)?;
+
+        // Update parent directory timestamps (mtime and ctime)
+        let mut parent_inode_mut = parent_inode;
+        parent_inode_mut.update_timestamps(false, true, true);
+
+        // Decrement parent's link count (for the ".." entry that pointed to it)
+        let parent_links = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(parent_inode_mut.i_links_count))
+        };
+        parent_inode_mut.i_links_count = parent_links.saturating_sub(1);
+
+        // Write the modified parent directory data back
+        self.write_directory_data(parent_inode_num, &parent_dir_data)?;
+
+        // Write the updated parent directory inode
+        parent_inode_mut.write_to(
+            self.device.as_ref(),
+            parent_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write parent inode")?;
+
+        // Free the directory's data blocks
+        let i_block = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(target_inode.i_block))
+        };
+        for block_num in i_block.iter().take(12) {
+            if *block_num != 0 {
+                free_block(
+                    self.device.as_ref(),
+                    *block_num,
+                    &self.superblock,
+                    &mut self.block_groups,
+                )?;
+            }
+        }
+
+        // Decrement the directory's inode link count (which frees the inode)
+        decrement_inode_links(
+            self.device.as_ref(),
+            target_inode_num,
+            &self.superblock,
+            &mut self.block_groups,
+        )?;
+
+        // Update superblock with new free inode/block counts
+        self.superblock.increment_free_inodes();
+        self.superblock.write_to(self.device.as_ref())
+            .map_err(|_| "Failed to write superblock")?;
+
+        // Write updated block group descriptors
+        Ext2BlockGroupDesc::write_table(
+            self.device.as_ref(),
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write block group descriptors")?;
+
+        log::debug!("ext2: removed directory '{}' (inode {})", path, target_inode_num);
+        Ok(())
+    }
+
+    /// Create a hard link to an existing file
+    ///
+    /// Creates a new directory entry pointing to an existing inode,
+    /// incrementing the inode's link count.
+    ///
+    /// # Arguments
+    /// * `oldpath` - Absolute path to the existing file
+    /// * `newpath` - Absolute path for the new link
+    ///
+    /// # Returns
+    /// * `Ok(())` - Hard link was created successfully
+    /// * `Err(msg)` - Error message
+    ///
+    /// # Errors
+    /// * Path not absolute
+    /// * Source file not found
+    /// * Source is a directory (hard links to directories not allowed)
+    /// * Destination already exists
+    /// * Destination parent directory not found
+    /// * No space in destination directory
+    pub fn create_hard_link(&mut self, oldpath: &str, newpath: &str) -> Result<(), &'static str> {
+        // Both paths must be absolute
+        if !oldpath.starts_with('/') || !newpath.starts_with('/') {
+            return Err("Paths must be absolute");
+        }
+
+        // Resolve the source path to get the inode
+        let source_inode_num = self.resolve_path(oldpath)?;
+        let source_inode = self.read_inode(source_inode_num)?;
+
+        // Hard links to directories are not allowed (prevents cycles in filesystem)
+        if source_inode.is_dir() {
+            return Err("Cannot create hard link to directory");
+        }
+
+        // Parse newpath to get parent directory and new name
+        let (new_parent_path, new_filename) = match newpath.rfind('/') {
+            Some(0) => ("/", &newpath[1..]), // File in root directory
+            Some(idx) => (&newpath[..idx], &newpath[idx + 1..]),
+            None => return Err("Invalid newpath"),
+        };
+
+        // Validate the new filename
+        if new_filename.is_empty() || new_filename.len() > 255 {
+            return Err("Invalid filename length");
+        }
+        if new_filename.contains('/') || new_filename == "." || new_filename == ".." {
+            return Err("Invalid filename");
+        }
+
+        // Resolve the parent directory for the new link
+        let new_parent_inode_num = self.resolve_path(new_parent_path)?;
+        let new_parent_inode = self.read_inode(new_parent_inode_num)?;
+
+        if !new_parent_inode.is_dir() {
+            return Err("Parent is not a directory");
+        }
+
+        // Check if the destination already exists
+        if self.resolve_path(newpath).is_ok() {
+            return Err("Destination already exists");
+        }
+
+        // Read the parent directory data
+        let mut dir_data = self.read_directory(&new_parent_inode)?;
+
+        // Add a new directory entry pointing to the source inode
+        add_directory_entry(&mut dir_data, source_inode_num, new_filename, EXT2_FT_REG_FILE)?;
+
+        // Update parent directory timestamps
+        let mut parent_inode_mut = new_parent_inode;
+        parent_inode_mut.update_timestamps(false, true, true);
+
+        // Write the modified directory data back
+        self.write_directory_data(new_parent_inode_num, &dir_data)?;
+
+        // Write the updated parent directory inode
+        parent_inode_mut.write_to(
+            self.device.as_ref(),
+            new_parent_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write parent inode")?;
+
+        // Increment the source inode's link count
+        increment_inode_links(
+            self.device.as_ref(),
+            source_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        )?;
+
+        log::debug!(
+            "ext2: created hard link {} -> {} (inode {})",
+            newpath, oldpath, source_inode_num
+        );
+        Ok(())
+    }
+
+    /// Create a symbolic link
+    ///
+    /// Creates a new symbolic link at `linkpath` pointing to `target`.
+    /// For short targets (<= 60 bytes), the target is stored inline in the inode
+    /// (fast symlink). For longer targets, a data block is allocated.
+    ///
+    /// # Arguments
+    /// * `target` - The target path the symlink points to
+    /// * `linkpath` - Absolute path where the symlink will be created
+    ///
+    /// # Returns
+    /// * `Ok(())` - Symlink was created successfully
+    /// * `Err(msg)` - Error message
+    pub fn create_symlink(&mut self, target: &str, linkpath: &str) -> Result<(), &'static str> {
+        // linkpath must be absolute
+        if !linkpath.starts_with('/') {
+            return Err("Path must be absolute");
+        }
+
+        // Split linkpath into parent directory and link name
+        let (parent_path, link_name) = match linkpath.rfind('/') {
+            Some(0) => ("/", &linkpath[1..]), // Link in root directory
+            Some(idx) => (&linkpath[..idx], &linkpath[idx + 1..]),
+            None => return Err("Invalid path"),
+        };
+
+        // Validate the link name
+        if link_name.is_empty() || link_name.len() > 255 {
+            return Err("Invalid filename length");
+        }
+        if link_name.contains('/') || link_name == "." || link_name == ".." {
+            return Err("Invalid filename");
+        }
+
+        // Verify target is not empty
+        if target.is_empty() {
+            return Err("Symlink target cannot be empty");
+        }
+
+        // Resolve parent directory
+        let parent_inode_num = self.resolve_path(parent_path)?;
+        let parent_inode = self.read_inode(parent_inode_num)?;
+
+        if !parent_inode.is_dir() {
+            return Err("Parent is not a directory");
+        }
+
+        // Check if the link already exists
+        if self.resolve_path(linkpath).is_ok() {
+            return Err("File already exists");
+        }
+
+        // Allocate a new inode
+        let new_inode_num = allocate_inode(
+            self.device.as_ref(),
+            &self.superblock,
+            &mut self.block_groups,
+        )?;
+
+        // Create the new symlink inode
+        let mut new_inode = Ext2Inode::new_symlink(target);
+
+        // If target is > 60 bytes, we need to allocate a data block
+        if target.len() > 60 {
+            // Allocate a block for the target
+            let block_num = allocate_block(
+                self.device.as_ref(),
+                &self.superblock,
+                &mut self.block_groups,
+            )?;
+
+            // Write the target to the block
+            let block_size = self.superblock.block_size();
+            let mut block_buf = alloc::vec![0u8; block_size];
+            let target_bytes = target.as_bytes();
+            block_buf[..target_bytes.len()].copy_from_slice(target_bytes);
+
+            write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf)
+                .map_err(|_| "Failed to write symlink target block")?;
+
+            // Update inode to point to this block
+            new_inode.i_block[0] = block_num;
+            // i_blocks is in 512-byte sectors
+            new_inode.i_blocks = (block_size / 512) as u32;
+        }
+
+        // Write the new inode to disk
+        new_inode.write_to(
+            self.device.as_ref(),
+            new_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write symlink inode")?;
+
+        // Add directory entry with EXT2_FT_SYMLINK type
+        let mut dir_data = self.read_directory(&parent_inode)?;
+        add_directory_entry(&mut dir_data, new_inode_num, link_name, EXT2_FT_SYMLINK)?;
+
+        // Update parent directory timestamps
+        let mut parent_inode_mut = parent_inode;
+        parent_inode_mut.update_timestamps(false, true, true);
+
+        // Write the modified directory data back
+        self.write_directory_data(parent_inode_num, &dir_data)?;
+
+        // Write the updated parent directory inode
+        parent_inode_mut.write_to(
+            self.device.as_ref(),
+            parent_inode_num,
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write parent inode")?;
+
+        // Update superblock with new free inode count
+        self.superblock.decrement_free_inodes();
+        self.superblock.write_to(self.device.as_ref())
+            .map_err(|_| "Failed to write superblock")?;
+
+        // Write updated block group descriptors
+        Ext2BlockGroupDesc::write_table(
+            self.device.as_ref(),
+            &self.superblock,
+            &self.block_groups,
+        ).map_err(|_| "Failed to write block group descriptors")?;
+
+        log::debug!("ext2: created symlink '{}' -> '{}'", linkpath, target);
+        Ok(())
+    }
+
+    /// Read the target of a symbolic link
+    ///
+    /// # Arguments
+    /// * `inode_num` - The inode number of the symbolic link
+    ///
+    /// # Returns
+    /// * `Ok(String)` - The target path the symlink points to
+    /// * `Err(msg)` - Error if not a symlink or read error
+    pub fn read_symlink(&self, inode_num: u32) -> Result<alloc::string::String, &'static str> {
+        use alloc::string::String;
+
+        // Read the inode
+        let inode = self.read_inode(inode_num)?;
+
+        // Verify it's a symlink
+        if !inode.is_symlink() {
+            return Err("Not a symbolic link");
+        }
+
+        // Get the target length from i_size
+        let target_len = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_size))
+        } as usize;
+
+        if target_len == 0 {
+            return Err("Empty symlink target");
+        }
+
+        // Check if this is a fast symlink (target stored in i_block)
+        // Fast symlinks have i_blocks == 0 (no data blocks allocated)
+        let i_blocks = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_blocks))
+        };
+
+        if i_blocks == 0 && target_len <= 60 {
+            // Fast symlink: target is stored in the i_block array
+            let i_block = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
+            };
+
+            // Convert the i_block array to bytes
+            let block_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    i_block.as_ptr() as *const u8,
+                    60,
+                )
+            };
+
+            // Extract the target string
+            let target_bytes = &block_bytes[..target_len];
+            String::from_utf8(target_bytes.to_vec())
+                .map_err(|_| "Invalid UTF-8 in symlink target")
+        } else {
+            // Regular symlink: target is stored in a data block
+            let i_block = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
+            };
+
+            let block_num = i_block[0];
+            if block_num == 0 {
+                return Err("Symlink has no data block");
+            }
+
+            // Read the data block
+            let block_size = self.superblock.block_size();
+            let mut block_buf = alloc::vec![0u8; block_size];
+            read_ext2_block(self.device.as_ref(), block_num, block_size, &mut block_buf)
+                .map_err(|_| "Failed to read symlink data block")?;
+
+            // Extract the target string
+            let target_bytes = &block_buf[..target_len];
+            String::from_utf8(target_bytes.to_vec())
+                .map_err(|_| "Invalid UTF-8 in symlink target")
+        }
+    }
+
     fn write_directory_data(&self, dir_inode_num: u32, data: &[u8]) -> Result<(), &'static str> {
         // Read the directory inode
         let inode = self.read_inode(dir_inode_num)?;

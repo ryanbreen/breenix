@@ -51,6 +51,9 @@ pub mod nr {
     pub const RENAME: u64 = 82;       // Linux x86_64 rename
     pub const MKDIR: u64 = 83;        // Linux x86_64 mkdir
     pub const RMDIR: u64 = 84;        // Linux x86_64 rmdir
+    pub const LINK: u64 = 86;         // Linux x86_64 link (hard links)
+    pub const SYMLINK: u64 = 88;      // Linux x86_64 symlink
+    pub const READLINK: u64 = 89;     // Linux x86_64 readlink
     pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2
 }
 

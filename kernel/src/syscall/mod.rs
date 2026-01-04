@@ -67,6 +67,9 @@ pub enum SyscallNumber {
     Rename = 82,        // Linux syscall number for rename
     Mkdir = 83,         // Linux syscall number for mkdir
     Rmdir = 84,         // Linux syscall number for rmdir
+    Link = 86,          // Linux syscall number for link (hard links)
+    Symlink = 88,       // Linux syscall number for symlink
+    Readlink = 89,      // Linux syscall number for readlink
     Pipe2 = 293,        // Linux syscall number for pipe2
 }
 
@@ -109,6 +112,9 @@ impl SyscallNumber {
             82 => Some(Self::Rename),
             83 => Some(Self::Mkdir),
             84 => Some(Self::Rmdir),
+            86 => Some(Self::Link),
+            88 => Some(Self::Symlink),
+            89 => Some(Self::Readlink),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
             257 => Some(Self::Open),

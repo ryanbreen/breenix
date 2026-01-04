@@ -70,13 +70,10 @@ pub fn dispatch_syscall(
         SyscallNumber::Getdents64 => super::fs::sys_getdents64(arg1 as i32, arg2, arg3),
         SyscallNumber::Unlink => super::fs::sys_unlink(arg1),
         SyscallNumber::Rename => super::fs::sys_rename(arg1, arg2),
-        SyscallNumber::Mkdir => {
-            log::warn!("mkdir not yet implemented");
-            SyscallResult::Err(38)
-        }
-        SyscallNumber::Rmdir => {
-            log::warn!("rmdir not yet implemented");
-            SyscallResult::Err(38)
-        }
+        SyscallNumber::Mkdir => super::fs::sys_mkdir(arg1, arg2 as u32),
+        SyscallNumber::Rmdir => super::fs::sys_rmdir(arg1),
+        SyscallNumber::Link => super::fs::sys_link(arg1, arg2),
+        SyscallNumber::Symlink => super::fs::sys_symlink(arg1, arg2),
+        SyscallNumber::Readlink => super::fs::sys_readlink(arg1, arg2, arg3),
     }
 }

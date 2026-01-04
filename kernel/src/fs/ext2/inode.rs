@@ -4,6 +4,7 @@
 //! file type detection, permissions handling, and inode reading from block devices.
 
 use crate::block::{BlockDevice, BlockError};
+use crate::fs::ext2::block_group::free_block;
 use crate::fs::ext2::file::{read_ext2_block, write_ext2_block};
 
 /// File type constants (from i_mode upper bits)
@@ -329,12 +330,57 @@ pub fn decrement_inode_links<B: BlockDevice>(
         let deletion_time = crate::time::current_unix_time() as u32;
         inode.i_dtime = deletion_time;
 
+        // Free all data blocks associated with this inode
+        let blocks_freed = free_inode_blocks(device, superblock, block_groups, &inode)?;
+        if blocks_freed > 0 {
+            log::debug!("ext2: freed {} blocks for inode {}", blocks_freed, inode_num);
+        }
+
         // Free the inode in the bitmap
         free_inode_bitmap(device, inode_num, superblock, block_groups)?;
-
-        // Note: We don't free data blocks here for simplicity
-        // A full implementation would iterate through i_block[] and free all data blocks
     }
+
+    // Write the updated inode back
+    inode.write_to(device, inode_num, superblock, block_groups)
+        .map_err(|_| "Failed to write inode")?;
+
+    Ok(new_links)
+}
+
+/// Increment inode link count
+///
+/// This function:
+/// 1. Reads the inode from disk
+/// 2. Increments the link count
+/// 3. Updates the ctime (change time)
+/// 4. Writes the updated inode back to disk
+///
+/// # Arguments
+/// * `device` - The block device
+/// * `inode_num` - The inode number to increment
+/// * `superblock` - The ext2 superblock
+/// * `block_groups` - Reference to block group descriptors
+///
+/// # Returns
+/// * `Ok(new_link_count)` - The new link count after increment
+/// * `Err(msg)` - Error message
+pub fn increment_inode_links<B: BlockDevice>(
+    device: &B,
+    inode_num: u32,
+    superblock: &super::Ext2Superblock,
+    block_groups: &[super::Ext2BlockGroupDesc],
+) -> Result<u16, &'static str> {
+    // Read the inode
+    let mut inode = Ext2Inode::read_from(device, inode_num, superblock, block_groups)
+        .map_err(|_| "Failed to read inode")?;
+
+    // Increment the link count (saturating to prevent overflow)
+    let current_links = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
+    let new_links = current_links.saturating_add(1);
+    inode.i_links_count = new_links;
+
+    // Update ctime (metadata change time)
+    inode.update_timestamps(false, false, true);
 
     // Write the updated inode back
     inode.write_to(device, inode_num, superblock, block_groups)
@@ -395,6 +441,185 @@ fn free_inode_bitmap<B: BlockDevice>(
     }
 
     Ok(())
+}
+
+/// Free all data blocks associated with an inode
+///
+/// This function iterates through all block pointers (direct, single indirect,
+/// double indirect, and triple indirect) and frees each allocated block.
+///
+/// # Arguments
+/// * `device` - The block device
+/// * `superblock` - The ext2 superblock
+/// * `block_groups` - Mutable reference to block group descriptors
+/// * `inode` - The inode whose blocks should be freed
+///
+/// # Returns
+/// * `Ok(blocks_freed)` - Number of blocks freed
+/// * `Err(msg)` - Error message if operation failed
+fn free_inode_blocks<B: BlockDevice>(
+    device: &B,
+    superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    inode: &Ext2Inode,
+) -> Result<u32, &'static str> {
+    let block_size = superblock.block_size();
+    let ptrs_per_block = block_size / 4; // Number of 32-bit block pointers per block
+    let mut blocks_freed = 0u32;
+
+    // Read the i_block array safely from the packed struct
+    let i_block = unsafe {
+        core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_block))
+    };
+
+    // 1. Free direct blocks (i_block[0-11])
+    for i in 0..12 {
+        let block_num = i_block[i];
+        if block_num != 0 {
+            free_block(device, block_num, superblock, block_groups)?;
+            blocks_freed += 1;
+        }
+    }
+
+    // 2. Free single indirect block (i_block[12])
+    let single_indirect = i_block[12];
+    if single_indirect != 0 {
+        blocks_freed += free_indirect_block(device, superblock, block_groups, single_indirect, block_size)?;
+        // Free the indirect block itself
+        free_block(device, single_indirect, superblock, block_groups)?;
+        blocks_freed += 1;
+    }
+
+    // 3. Free double indirect block (i_block[13])
+    let double_indirect = i_block[13];
+    if double_indirect != 0 {
+        blocks_freed += free_double_indirect_block(device, superblock, block_groups, double_indirect, block_size, ptrs_per_block)?;
+        // Free the double indirect block itself
+        free_block(device, double_indirect, superblock, block_groups)?;
+        blocks_freed += 1;
+    }
+
+    // 4. Free triple indirect block (i_block[14])
+    let triple_indirect = i_block[14];
+    if triple_indirect != 0 {
+        blocks_freed += free_triple_indirect_block(device, superblock, block_groups, triple_indirect, block_size, ptrs_per_block)?;
+        // Free the triple indirect block itself
+        free_block(device, triple_indirect, superblock, block_groups)?;
+        blocks_freed += 1;
+    }
+
+    Ok(blocks_freed)
+}
+
+/// Free all data blocks referenced by a single indirect block
+fn free_indirect_block<B: BlockDevice>(
+    device: &B,
+    superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    indirect_block: u32,
+    block_size: usize,
+) -> Result<u32, &'static str> {
+    let mut blocks_freed = 0u32;
+
+    // Read the indirect block
+    let mut buf = alloc::vec![0u8; block_size];
+    read_ext2_block(device, indirect_block, block_size, &mut buf)
+        .map_err(|_| "Failed to read indirect block")?;
+
+    // Parse block pointers and free each non-zero block
+    let num_pointers = block_size / 4;
+    for i in 0..num_pointers {
+        let offset = i * 4;
+        let block_num = u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]);
+
+        if block_num != 0 {
+            free_block(device, block_num, superblock, block_groups)?;
+            blocks_freed += 1;
+        }
+    }
+
+    Ok(blocks_freed)
+}
+
+/// Free all data blocks referenced by a double indirect block
+fn free_double_indirect_block<B: BlockDevice>(
+    device: &B,
+    superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    double_indirect_block: u32,
+    block_size: usize,
+    ptrs_per_block: usize,
+) -> Result<u32, &'static str> {
+    let mut blocks_freed = 0u32;
+
+    // Read the double indirect block (contains pointers to single indirect blocks)
+    let mut buf = alloc::vec![0u8; block_size];
+    read_ext2_block(device, double_indirect_block, block_size, &mut buf)
+        .map_err(|_| "Failed to read double indirect block")?;
+
+    // For each first-level pointer
+    for i in 0..ptrs_per_block {
+        let offset = i * 4;
+        let first_level_ptr = u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]);
+
+        if first_level_ptr != 0 {
+            // Free all data blocks referenced by this single indirect block
+            blocks_freed += free_indirect_block(device, superblock, block_groups, first_level_ptr, block_size)?;
+            // Free the single indirect block itself
+            free_block(device, first_level_ptr, superblock, block_groups)?;
+            blocks_freed += 1;
+        }
+    }
+
+    Ok(blocks_freed)
+}
+
+/// Free all data blocks referenced by a triple indirect block
+fn free_triple_indirect_block<B: BlockDevice>(
+    device: &B,
+    superblock: &super::Ext2Superblock,
+    block_groups: &mut [super::Ext2BlockGroupDesc],
+    triple_indirect_block: u32,
+    block_size: usize,
+    ptrs_per_block: usize,
+) -> Result<u32, &'static str> {
+    let mut blocks_freed = 0u32;
+
+    // Read the triple indirect block (contains pointers to double indirect blocks)
+    let mut buf = alloc::vec![0u8; block_size];
+    read_ext2_block(device, triple_indirect_block, block_size, &mut buf)
+        .map_err(|_| "Failed to read triple indirect block")?;
+
+    // For each first-level pointer
+    for i in 0..ptrs_per_block {
+        let offset = i * 4;
+        let first_level_ptr = u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]);
+
+        if first_level_ptr != 0 {
+            // Free all blocks referenced by this double indirect block
+            blocks_freed += free_double_indirect_block(device, superblock, block_groups, first_level_ptr, block_size, ptrs_per_block)?;
+            // Free the double indirect block itself
+            free_block(device, first_level_ptr, superblock, block_groups)?;
+            blocks_freed += 1;
+        }
+    }
+
+    Ok(blocks_freed)
 }
 
 impl Ext2Inode {
@@ -521,6 +746,61 @@ impl Ext2Inode {
             i_faddr: 0,
             i_osd2: [0; 12],
         }
+    }
+
+    /// Create a new symbolic link inode
+    ///
+    /// Initializes all fields for a new symbolic link. The target path can be stored
+    /// either inline in i_block (fast symlink, for paths <= 60 bytes) or in a data
+    /// block (for longer paths).
+    ///
+    /// # Arguments
+    /// * `target` - The symlink target path
+    ///
+    /// # Returns
+    /// A new inode configured as a symbolic link
+    pub fn new_symlink(target: &str) -> Self {
+        let now = crate::time::current_unix_time() as u32;
+        let target_len = target.len();
+
+        let mut inode = Self {
+            i_mode: EXT2_S_IFLNK | 0o777, // Symlinks typically have full permissions
+            i_uid: 0,                      // root for now
+            i_size: target_len as u32,     // Size is the length of the target path
+            i_atime: now,
+            i_ctime: now,
+            i_mtime: now,
+            i_dtime: 0,
+            i_gid: 0,                      // root for now
+            i_links_count: 1,              // One link from the directory entry
+            i_blocks: 0,                   // Updated if using data block
+            i_flags: 0,
+            i_osd1: 0,
+            i_block: [0; 15],              // Will store target if fast symlink
+            i_generation: 0,
+            i_file_acl: 0,
+            i_dir_acl: 0,
+            i_faddr: 0,
+            i_osd2: [0; 12],
+        };
+
+        // Fast symlink: store target in i_block array if it fits (up to 60 bytes)
+        // i_block is 15 * 4 = 60 bytes
+        if target_len <= 60 {
+            let target_bytes = target.as_bytes();
+            // Safety: We're writing bytes into the i_block array which is u32[15]
+            // We treat it as a byte array of 60 bytes
+            // Use addr_of_mut! to get a raw pointer without creating a reference to packed field
+            let block_ptr = core::ptr::addr_of_mut!(inode.i_block) as *mut u8;
+            let block_bytes = unsafe {
+                core::slice::from_raw_parts_mut(block_ptr, 60)
+            };
+            block_bytes[..target_len].copy_from_slice(target_bytes);
+            // i_blocks stays 0 for fast symlinks (no data blocks used)
+        }
+        // For longer targets, the caller must allocate a data block and store the target there
+
+        inode
     }
 
     /// Create a new directory inode
