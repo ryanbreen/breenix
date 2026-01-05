@@ -94,6 +94,21 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
             // Exit code for signal termination is typically 128 + signal number
             // But we use negative signal number to indicate signal death
             process.terminate(-(sig as i32));
+
+            // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
+            // The process.terminate() call above marks process.main_thread, but
+            // the scheduler has its own copy of threads in its threads vector.
+            // Without this, the scheduler would keep scheduling the terminated thread!
+            if let Some(ref thread) = process.main_thread {
+                let thread_id = thread.id();
+                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                    sched_thread.set_terminated();
+                    log::info!(
+                        "Signal delivery: marked scheduler thread {} as Terminated",
+                        thread_id
+                    );
+                });
+            }
             true
         }
         SignalDefaultAction::CoreDump => {
@@ -106,6 +121,18 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
             // Core dump not implemented, just terminate
             // The 0x80 flag indicates core dump
             process.terminate(-((sig as i32) | 0x80));
+
+            // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
+            if let Some(ref thread) = process.main_thread {
+                let thread_id = thread.id();
+                crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                    sched_thread.set_terminated();
+                    log::info!(
+                        "Signal delivery: marked scheduler thread {} as Terminated (core dump)",
+                        thread_id
+                    );
+                });
+            }
             true
         }
         SignalDefaultAction::Stop => {

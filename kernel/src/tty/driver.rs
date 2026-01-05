@@ -187,7 +187,7 @@ impl TtyDevice {
             None => return false,
         };
 
-        // Process the character
+        // Process the character through line discipline (echo, signals, line editing)
         let signal = ldisc.input_char(c, &mut |echo_c| {
             self.output_char_nonblock(echo_c);
         });
@@ -448,12 +448,31 @@ impl TtyDevice {
     fn send_signal_to_foreground_nonblock(&self, sig: u32) {
         let pgrp = match self.foreground_pgrp.try_lock() {
             Some(guard) => *guard,
-            None => return,
+            None => {
+                crate::serial_println!(
+                    "TTY{}: Cannot send signal {} - foreground_pgrp lock busy",
+                    self.num,
+                    sig
+                );
+                return;
+            }
         };
 
         if let Some(pgrp) = pgrp {
+            crate::serial_println!(
+                "TTY{}: Sending signal {} to foreground pgrp {}",
+                self.num,
+                sig,
+                pgrp
+            );
             let pid = ProcessId::new(pgrp);
             Self::send_signal_to_process_nonblock(pid, sig);
+        } else {
+            crate::serial_println!(
+                "TTY{}: Cannot send signal {} - no foreground pgrp set",
+                self.num,
+                sig
+            );
         }
     }
 
@@ -511,13 +530,51 @@ impl TtyDevice {
     fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) {
         use crate::process;
 
+        let sig_name = match sig {
+            SIGINT => "SIGINT",
+            SIGQUIT => "SIGQUIT",
+            SIGTSTP => "SIGTSTP",
+            _ => "UNKNOWN",
+        };
+
         // Try to get the process manager without blocking
         if let Some(mut manager) = process::try_manager() {
             if let Some(ref mut pm) = *manager {
                 if let Some(proc) = pm.get_process_mut(pid) {
                     proc.signals.set_pending(sig);
+                    crate::serial_println!(
+                        "TTY: Sent {} to process {} (PID {}) [nonblock]",
+                        sig_name,
+                        proc.name,
+                        pid.as_u64()
+                    );
+
+                    // CRITICAL: Wake the thread if it's blocked waiting for a signal
+                    // Without this, a process blocked on pause() or a blocking syscall
+                    // won't receive the signal until it happens to be scheduled.
+                    if let Some(ref thread) = proc.main_thread {
+                        let thread_id = thread.id;
+                        drop(manager);
+
+                        // Wake the thread if it's blocked on a signal
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.unblock_for_signal(thread_id);
+                        });
+                    }
+                } else {
+                    crate::serial_println!(
+                        "TTY: Failed to send {} - no process with PID {}",
+                        sig_name,
+                        pid.as_u64()
+                    );
                 }
             }
+        } else {
+            crate::serial_println!(
+                "TTY: Failed to send {} to PID {} - manager lock busy",
+                sig_name,
+                pid.as_u64()
+            );
         }
     }
 

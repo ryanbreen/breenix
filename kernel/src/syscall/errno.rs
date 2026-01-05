@@ -2,9 +2,18 @@
 //!
 //! Standard error codes returned by system calls.
 
+/// Operation not permitted
+pub const EPERM: i32 = 1;
+
+/// No such file or directory
+pub const ENOENT: i32 = 2;
+
 /// No such process
 #[allow(dead_code)]
 pub const ESRCH: i32 = 3;
+
+/// I/O error
+pub const EIO: i32 = 5;
 
 /// Bad file descriptor
 pub const EBADF: i32 = 9;
@@ -19,15 +28,39 @@ pub const EAGAIN: i32 = 11;
 #[allow(dead_code)]
 pub const ENOMEM: i32 = 12;
 
+/// Permission denied
+pub const EACCES: i32 = 13;
+
 /// Bad address
 pub const EFAULT: i32 = 14;
+
+/// Device or resource busy
+pub const EBUSY: i32 = 16;
+
+/// File exists
+pub const EEXIST: i32 = 17;
+
+/// Not a directory
+pub const ENOTDIR: i32 = 20;
+
+/// Is a directory
+pub const EISDIR: i32 = 21;
 
 /// Invalid argument
 pub const EINVAL: i32 = 22;
 
+/// Too many open files
+pub const EMFILE: i32 = 24;
+
+/// No space left on device
+pub const ENOSPC: i32 = 28;
+
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]
 pub const ENOSYS: i32 = 38;
+
+/// Directory not empty
+pub const ENOTEMPTY: i32 = 39;
 
 /// Not a socket
 pub const ENOTSOCK: i32 = 88;

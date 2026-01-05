@@ -427,24 +427,48 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    // Process scancode immediately (bypass async keyboard_task)
+    // Process scancode immediately in the interrupt handler.
     // This is necessary because the async executor may not get CPU time
     // when userspace processes are running, so keyboard input would never be processed.
+    //
+    // IMPORTANT: We do NOT add scancodes to the async queue anymore.
+    // Previously, both the interrupt handler AND the async keyboard_task would
+    // call process_scancode() on the same scancodes. This caused modifier state
+    // corruption: by the time the async task processed a key press, the Ctrl key
+    // might have been released (processed by a later interrupt), causing Ctrl+C
+    // to produce 'c' instead of 0x03.
+    //
+    // The fix: Only process scancodes in ONE place - the interrupt handler.
+    // All keyboard input now goes through TTY for proper signal handling.
     if let Some(event) = crate::keyboard::process_scancode(scancode) {
         if let Some(character) = event.character {
             let c = character as u8;
 
-            // Route through TTY for line discipline processing (echo, signals, line editing)
-            // TTY handles echoing, backspace visual feedback, and signal generation.
-            // When a complete line is ready (canonical mode) or immediately (raw mode),
-            // TTY transfers data from its internal queue to stdin via push_byte_from_irq().
-            // Result is intentionally ignored - we don't care if TTY lock was busy.
+            // Route ALL keyboard input through TTY line discipline.
+            // This is the ONLY path for keyboard input to reach userspace.
+            //
+            // The TTY line discipline handles:
+            // - Echo (character display to terminal)
+            // - Signal generation (Ctrl+C -> SIGINT, Ctrl+\ -> SIGQUIT, etc.)
+            // - Line editing (backspace, kill line, word erase, etc.)
+            // - Canonical mode buffering (accumulate until newline, then send to stdin)
+            // - Raw mode passthrough (send each character immediately to stdin)
+            //
+            // IMPORTANT: We do NOT push directly to stdin here. The TTY line discipline
+            // is responsible for transferring data to stdin when appropriate:
+            // - In canonical mode: complete line transferred after newline
+            // - In raw mode: each character transferred immediately
+            //
+            // If TTY lock is busy, the character is dropped. This is acceptable because
+            // keyboard input during heavy TTY usage is rare and can be retried by the user.
             let _ = crate::tty::driver::push_char_nonblock(c);
         }
     }
 
-    // Also add to async queue for keyboard_task (for when executor runs)
-    crate::keyboard::add_scancode(scancode);
+    // NOTE: We intentionally do NOT call crate::keyboard::add_scancode(scancode) here.
+    // The async keyboard_task used to process these scancodes, but that caused
+    // duplicate processing and modifier state corruption. All keyboard processing
+    // now happens in this interrupt handler.
 
     unsafe {
         PICS.lock()

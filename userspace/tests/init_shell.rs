@@ -16,12 +16,13 @@
 #![no_std]
 #![no_main]
 
+use core::cell::UnsafeCell;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 use libbreenix::io::{close, dup2, pipe, print, println, read, write};
 use libbreenix::process::{
-    exec, fork, getpgrp, waitpid, wexitstatus, wifexited, wifsignaled, wifstopped, yield_now,
-    WNOHANG, WUNTRACED,
+    exec, fork, getpgrp, setpgid, waitpid, wexitstatus, wifexited, wifsignaled, wifstopped,
+    yield_now, WNOHANG, WUNTRACED,
 };
 use libbreenix::signal::{kill, sigaction, Sigaction, SIGCHLD, SIGCONT, SIGINT};
 use libbreenix::termios::{
@@ -207,64 +208,92 @@ impl JobTable {
     }
 }
 
+/// A wrapper type that allows an `UnsafeCell` to be shared between threads.
+///
+/// # Safety
+/// This is safe because our shell is single-threaded. The shell main loop is
+/// the only code that accesses the job table, and signal handlers only set
+/// atomic flags (they don't access the job table directly).
+#[repr(transparent)]
+struct SyncJobTable(UnsafeCell<JobTable>);
+
+// SAFETY: The shell is single-threaded, so no concurrent access occurs.
+unsafe impl Sync for SyncJobTable {}
+
+impl SyncJobTable {
+    const fn new(value: JobTable) -> Self {
+        SyncJobTable(UnsafeCell::new(value))
+    }
+
+    fn get(&self) -> *mut JobTable {
+        self.0.get()
+    }
+}
+
 // Global job table instance
-static mut JOB_TABLE: JobTable = JobTable::new();
+static JOB_TABLE: SyncJobTable = SyncJobTable::new(JobTable::new());
+
+/// Get a mutable reference to the job table
+///
+/// # Safety
+/// This is safe in single-threaded userspace code. The shell main loop
+/// is the only accessor of the job table.
+#[inline]
+fn job_table() -> &'static mut JobTable {
+    // SAFETY: Single-threaded userspace - no concurrent access
+    unsafe { &mut *JOB_TABLE.get() }
+}
 
 /// Add a job to the job table
 ///
 /// Returns the job ID, or 0 if the table is full
 fn add_job(pid: i32, command: &str) -> u32 {
     // Use pid as pgid by default (job's own process group)
-    unsafe { JOB_TABLE.add(pid, pid, command) }
+    job_table().add(pid, pid, command)
 }
 
 /// Get a job by its job ID
 #[allow(dead_code)] // Public API - will be used by fg/bg commands
 fn get_job(id: u32) -> Option<&'static Job> {
-    unsafe { JOB_TABLE.find_by_id(id) }
+    job_table().find_by_id(id)
 }
 
 /// Get a mutable reference to a job by its job ID
 #[allow(dead_code)] // Public API - will be used by fg/bg commands
 fn get_job_mut(id: u32) -> Option<&'static mut Job> {
-    unsafe { JOB_TABLE.find_by_id_mut(id) }
+    job_table().find_by_id_mut(id)
 }
 
 /// Update the status of a job by PID
 #[allow(dead_code)] // Public API - will be used by SIGCHLD handler
 fn update_job_status(pid: i32, status: JobStatus) {
-    unsafe { JOB_TABLE.update_status(pid, status) }
+    job_table().update_status(pid, status)
 }
 
 /// Remove a job from the table
 #[allow(dead_code)] // Public API - will be used after job completion
 fn remove_job(id: u32) {
-    unsafe { JOB_TABLE.remove(id) }
+    job_table().remove(id)
 }
 
 /// List all jobs to stdout (for "jobs" command)
 fn list_jobs() {
-    unsafe {
-        for job in JOB_TABLE.iter() {
-            let status_str = match job.status {
-                JobStatus::Running => "Running",
-                JobStatus::Stopped => "Stopped",
-                JobStatus::Done => "Done",
-            };
-            let current_marker = if job.id == JOB_TABLE.current {
-                "+"
-            } else {
-                "-"
-            };
-            print("[");
-            print_num(job.id as u64);
-            print("]");
-            print(current_marker);
-            print("  ");
-            print(status_str);
-            print("\t\t");
-            println(job.command_str());
-        }
+    let table = job_table();
+    for job in table.iter() {
+        let status_str = match job.status {
+            JobStatus::Running => "Running",
+            JobStatus::Stopped => "Stopped",
+            JobStatus::Done => "Done",
+        };
+        let current_marker = if job.id == table.current { "+" } else { "-" };
+        print("[");
+        print_num(job.id as u64);
+        print("]");
+        print(current_marker);
+        print("  ");
+        print(status_str);
+        print("\t\t");
+        println(job.command_str());
     }
 }
 
@@ -272,7 +301,7 @@ fn list_jobs() {
 ///
 /// Returns 0 if no jobs exist
 fn get_current_job_id() -> u32 {
-    unsafe { JOB_TABLE.current }
+    job_table().current
 }
 
 /// Parse a job specification string into a job ID
@@ -322,34 +351,32 @@ fn builtin_bg(arg: &str) {
         return;
     }
 
-    unsafe {
-        if let Some(job) = JOB_TABLE.find_by_id_mut(job_id) {
-            if job.status != JobStatus::Stopped {
-                print("bg: job ");
-                print_num(job_id as u64);
-                println(" is not stopped");
-                return;
-            }
-
-            // Send SIGCONT to resume the job in background
-            // Use negative pgid to signal the entire process group
-            let _ = kill(-(job.pgid), SIGCONT);
-            job.status = JobStatus::Running;
-
-            // Print job notification
-            print("[");
+    if let Some(job) = job_table().find_by_id_mut(job_id) {
+        if job.status != JobStatus::Stopped {
+            print("bg: job ");
             print_num(job_id as u64);
-            print("] ");
-            print(job.command_str());
-            println(" &");
+            println(" is not stopped");
+            return;
+        }
+
+        // Send SIGCONT to resume the job in background
+        // Use negative pgid to signal the entire process group
+        let _ = kill(-(job.pgid), SIGCONT);
+        job.status = JobStatus::Running;
+
+        // Print job notification
+        print("[");
+        print_num(job_id as u64);
+        print("] ");
+        print(job.command_str());
+        println(" &");
+    } else {
+        print("bg: ");
+        if arg.is_empty() {
+            println("no current job");
         } else {
-            print("bg: ");
-            if arg.is_empty() {
-                println("no current job");
-            } else {
-                print(arg);
-                println(": no such job");
-            }
+            print(arg);
+            println(": no such job");
         }
     }
 }
@@ -366,80 +393,79 @@ fn builtin_fg(arg: &str) {
         return;
     }
 
-    unsafe {
-        // First check if the job exists and get its info
-        let (pid, pgid, was_stopped, cmd) = {
-            if let Some(job) = JOB_TABLE.find_by_id_mut(job_id) {
-                let was_stopped = job.status == JobStatus::Stopped;
+    // First check if the job exists and get its info
+    let (pid, pgid, was_stopped, cmd) = {
+        let table = job_table();
+        if let Some(job) = table.find_by_id_mut(job_id) {
+            let was_stopped = job.status == JobStatus::Stopped;
 
-                // Get command string for display (copy to avoid borrow issues)
-                let mut cmd_buf = [0u8; JOB_COMMAND_MAX];
-                let cmd_len = job.command_len;
-                cmd_buf[..cmd_len].copy_from_slice(&job.command[..cmd_len]);
+            // Get command string for display (copy to avoid borrow issues)
+            let mut cmd_buf = [0u8; JOB_COMMAND_MAX];
+            let cmd_len = job.command_len;
+            cmd_buf[..cmd_len].copy_from_slice(&job.command[..cmd_len]);
 
-                (job.pid, job.pgid, was_stopped, (cmd_buf, cmd_len))
+            (job.pid, job.pgid, was_stopped, (cmd_buf, cmd_len))
+        } else {
+            print("fg: ");
+            if arg.is_empty() {
+                println("no current job");
             } else {
-                print("fg: ");
-                if arg.is_empty() {
-                    println("no current job");
-                } else {
-                    print(arg);
-                    println(": no such job");
-                }
-                return;
+                print(arg);
+                println(": no such job");
             }
-        };
-
-        // Print notification
-        print("[");
-        print_num(job_id as u64);
-        print("] ");
-        if let Ok(cmd_str) = core::str::from_utf8(&cmd.0[..cmd.1]) {
-            println(cmd_str);
+            return;
         }
+    };
 
-        // Give terminal to the job's process group
-        let _ = tcsetpgrp(0, pgid);
+    // Print notification
+    print("[");
+    print_num(job_id as u64);
+    print("] ");
+    if let Ok(cmd_str) = core::str::from_utf8(&cmd.0[..cmd.1]) {
+        println(cmd_str);
+    }
 
-        // If job was stopped, send SIGCONT to resume it
-        if was_stopped {
-            let _ = kill(-pgid, SIGCONT);
-            // Update status
-            if let Some(job) = JOB_TABLE.find_by_id_mut(job_id) {
-                job.status = JobStatus::Running;
+    // Give terminal to the job's process group
+    let _ = tcsetpgrp(0, pgid);
+
+    // If job was stopped, send SIGCONT to resume it
+    if was_stopped {
+        let _ = kill(-pgid, SIGCONT);
+        // Update status
+        if let Some(job) = job_table().find_by_id_mut(job_id) {
+            job.status = JobStatus::Running;
+        }
+    }
+
+    // Wait for the job (with WUNTRACED to catch if it stops again)
+    let mut status: i32 = 0;
+    let wait_result = waitpid(pid, &mut status as *mut i32, WUNTRACED);
+
+    // Take terminal back
+    let shell_pgrp = getpgrp();
+    let _ = tcsetpgrp(0, shell_pgrp);
+
+    // Update job status based on result
+    if wait_result > 0 {
+        if wifstopped(status) {
+            // Job was stopped again (e.g., Ctrl+Z)
+            if let Some(job) = job_table().find_by_id_mut(job_id) {
+                job.status = JobStatus::Stopped;
             }
-        }
-
-        // Wait for the job (with WUNTRACED to catch if it stops again)
-        let mut status: i32 = 0;
-        let wait_result = waitpid(pid, &mut status as *mut i32, WUNTRACED);
-
-        // Take terminal back
-        let shell_pgrp = getpgrp();
-        let _ = tcsetpgrp(0, shell_pgrp);
-
-        // Update job status based on result
-        if wait_result > 0 {
-            if wifstopped(status) {
-                // Job was stopped again (e.g., Ctrl+Z)
-                if let Some(job) = JOB_TABLE.find_by_id_mut(job_id) {
-                    job.status = JobStatus::Stopped;
-                }
-                println("");
-                print("[");
-                print_num(job_id as u64);
-                print("]+  Stopped\t\t");
-                if let Ok(cmd_str) = core::str::from_utf8(&cmd.0[..cmd.1]) {
-                    println(cmd_str);
-                }
-            } else {
-                // Job completed - remove from table
-                JOB_TABLE.remove(job_id);
+            println("");
+            print("[");
+            print_num(job_id as u64);
+            print("]+  Stopped\t\t");
+            if let Ok(cmd_str) = core::str::from_utf8(&cmd.0[..cmd.1]) {
+                println(cmd_str);
             }
         } else {
-            // Wait failed - remove job from table anyway
-            JOB_TABLE.remove(job_id);
+            // Job completed - remove from table
+            job_table().remove(job_id);
         }
+    } else {
+        // Wait failed - remove job from table anyway
+        job_table().remove(job_id);
     }
 }
 
@@ -547,7 +573,14 @@ pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Re
     }
 
     if pid == 0 {
-        // Child process - exec the program
+        // Child process
+        // CRITICAL: Put ourselves in our own process group BEFORE exec.
+        // This is required for proper job control - signals sent to the foreground
+        // process group will only go to us, not the shell.
+        // setpgid(0, 0) means: set my (pid=0=self) process group to my own PID (pgid=0=self).
+        let _ = setpgid(0, 0);
+
+        // Now exec the program
         let result = exec(entry.binary_name);
 
         // If exec returns, it failed
@@ -560,6 +593,13 @@ pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Re
     }
 
     // Parent process
+    // CRITICAL: Also set the child's process group from parent side.
+    // This is the POSIX-standard way to avoid race conditions:
+    // - If parent runs first, parent sets child's pgrp
+    // - If child runs first, child sets its own pgrp
+    // Either way, the child ends up in the right process group before signals arrive.
+    let _ = setpgid(pid as i32, pid as i32);
+
     if background {
         // Background execution - add to job table and print notification
         let job_id = add_job(pid as i32, cmd_name);
@@ -567,9 +607,18 @@ pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Re
         return Ok(0);
     }
 
-    // Foreground execution - wait for child to complete
+    // Foreground execution - give terminal to child, then wait for completion
+    // CRITICAL: This is what makes Ctrl+C go to the child instead of the shell.
+    // Without this, SIGINT from Ctrl+C would kill the shell instead of the child.
+    let shell_pgrp = getpgrp();
+    let child_pgrp = pid as i32; // Child's process group = child's PID (after setpgid)
+    let _ = tcsetpgrp(STDIN as i32, child_pgrp);
+
     let mut status: i32 = 0;
-    let wait_result = waitpid(pid as i32, &mut status as *mut i32, 0);
+    let wait_result = waitpid(pid as i32, &mut status as *mut i32, WUNTRACED);
+
+    // Take terminal back from child
+    let _ = tcsetpgrp(STDIN as i32, shell_pgrp);
 
     if wait_result < 0 {
         print("Error: waitpid failed with code ");
@@ -578,7 +627,7 @@ pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Re
         return Ok(-1);
     }
 
-    // Extract and return exit code
+    // Handle child status
     if wifexited(status) {
         let exit_code = wexitstatus(status);
         if exit_code != 0 {
@@ -587,6 +636,30 @@ pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Re
             println("");
         }
         Ok(exit_code)
+    } else if wifsignaled(status) {
+        // Child was killed by a signal (e.g., SIGINT from Ctrl+C)
+        // Print newline to move past any partial output
+        println("");
+        Ok(-1)
+    } else if wifstopped(status) {
+        // Child was stopped by a signal (e.g., SIGTSTP from Ctrl+Z)
+        // Add to job table as a stopped job
+        let job_id = add_job(pid as i32, cmd_name);
+        // Find the job and mark it as stopped
+        let jt = job_table();
+        if let Some(slot) = jt.jobs.iter_mut().find(|j| {
+            j.as_ref().map(|job| job.id == job_id).unwrap_or(false)
+        }) {
+            if let Some(ref mut job) = slot {
+                job.status = JobStatus::Stopped;
+            }
+        }
+        println("");
+        print("[");
+        print_num(job_id as u64);
+        print("]+ Stopped                 ");
+        println(cmd_name);
+        Ok(0)
     } else {
         println("Process terminated abnormally");
         Ok(-1)
@@ -815,6 +888,9 @@ fn execute_pipeline(input: &str) -> bool {
     // Store PIDs of all child processes
     let mut child_pids: [i64; MAX_PIPELINE_COMMANDS] = [0; MAX_PIPELINE_COMMANDS];
 
+    // Process group for the entire pipeline (set to first child's PID)
+    let mut pipeline_pgrp: i32 = 0;
+
     // Store the read end of the previous pipe (-1 means no previous pipe)
     let mut prev_read_fd: i32 = -1;
 
@@ -858,6 +934,13 @@ fn execute_pipeline(input: &str) -> bool {
         if pid == 0 {
             // ========== CHILD PROCESS ==========
 
+            // Put all pipeline processes in the same process group.
+            // First process creates the group (setpgid(0, 0)), subsequent
+            // processes join it (setpgid(0, pgrp)).
+            // Note: In child, pipeline_pgrp is 0 for first process (hasn't been set yet).
+            // The child must call setpgid before any I/O to ensure proper signal handling.
+            let _ = setpgid(0, pipeline_pgrp);
+
             // Set up stdin from previous pipe (if not first command)
             if prev_read_fd >= 0 {
                 // Redirect stdin to read from previous pipe
@@ -882,6 +965,14 @@ fn execute_pipeline(input: &str) -> bool {
         // Store child PID
         child_pids[i] = pid;
 
+        // Set up process group for the pipeline
+        // First child becomes the process group leader
+        if i == 0 {
+            pipeline_pgrp = pid as i32;
+        }
+        // Put child in the pipeline's process group (from parent side too, to avoid race)
+        let _ = setpgid(pid as i32, pipeline_pgrp);
+
         // Close the previous read fd (child has it now)
         if prev_read_fd >= 0 {
             close(prev_read_fd as u64);
@@ -895,6 +986,12 @@ fn execute_pipeline(input: &str) -> bool {
         }
     }
 
+    // Give terminal to the pipeline's process group
+    let shell_pgrp = getpgrp();
+    if pipeline_pgrp > 0 {
+        let _ = tcsetpgrp(STDIN as i32, pipeline_pgrp);
+    }
+
     // Wait for all children to complete
     for i in 0..cmd_count {
         if child_pids[i] > 0 {
@@ -902,6 +999,9 @@ fn execute_pipeline(input: &str) -> bool {
             waitpid(child_pids[i] as i32, &mut status as *mut i32, 0);
         }
     }
+
+    // Take terminal back from pipeline
+    let _ = tcsetpgrp(STDIN as i32, shell_pgrp);
 
     true
 }
@@ -969,32 +1069,30 @@ fn check_children() {
 /// This is called before printing the prompt to notify the user
 /// of any background jobs that have finished.
 fn report_done_jobs() {
-    unsafe {
-        // Collect done jobs to report and remove
-        // We need to do this in two passes to avoid borrowing issues
-        let mut to_remove: [u32; MAX_JOBS] = [0; MAX_JOBS];
-        let mut remove_count = 0;
+    // Collect done jobs to report and remove
+    // We need to do this in two passes to avoid borrowing issues
+    let mut to_remove: [u32; MAX_JOBS] = [0; MAX_JOBS];
+    let mut remove_count = 0;
 
-        for job in JOB_TABLE.iter() {
-            if job.status == JobStatus::Done {
-                // Print completion notification
-                print("[");
-                print_num(job.id as u64);
-                print("]+  Done                    ");
-                println(job.command_str());
+    for job in job_table().iter() {
+        if job.status == JobStatus::Done {
+            // Print completion notification
+            print("[");
+            print_num(job.id as u64);
+            print("]+  Done                    ");
+            println(job.command_str());
 
-                // Mark for removal
-                if remove_count < MAX_JOBS {
-                    to_remove[remove_count] = job.id;
-                    remove_count += 1;
-                }
+            // Mark for removal
+            if remove_count < MAX_JOBS {
+                to_remove[remove_count] = job.id;
+                remove_count += 1;
             }
         }
+    }
 
-        // Remove done jobs from the table
-        for i in 0..remove_count {
-            JOB_TABLE.remove(to_remove[i]);
-        }
+    // Remove done jobs from the table
+    for i in 0..remove_count {
+        job_table().remove(to_remove[i]);
     }
 }
 

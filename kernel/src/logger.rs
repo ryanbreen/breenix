@@ -747,6 +747,7 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
 /// This writes directly to the SHELL_FRAMEBUFFER, bypassing the logging system.
 /// Shell output appears on the QEMU window without log prefixes.
 #[cfg(feature = "interactive")]
+#[allow(dead_code)] // Public API - available for shell output bypass
 pub fn write_to_framebuffer(s: &str) {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {

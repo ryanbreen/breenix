@@ -90,26 +90,53 @@ pub extern "C" fn _start() -> ! {
 
             // Small delay to let child start
             io::print("  PARENT: Waiting for child to start...\n");
-            for _ in 0..5 {
+            for i in 0..5 {
+                io::print("  PARENT: yield ");
+                print_number("", i as u64);
                 process::yield_now();
             }
+            io::print("  PARENT: Done waiting, about to send signal\n");
 
             // Send SIGTERM to child
             io::print("  PARENT: Sending SIGTERM to child\n");
             match signal::kill(child_pid as i32, signal::SIGTERM) {
                 Ok(()) => {
-                    io::print("  PARENT: kill() succeeded\n");
-                    io::print("SIGNAL_KILL_TEST_PASSED\n");
+                    io::print("  PARENT: kill() syscall succeeded\n");
                 }
                 Err(e) => {
                     io::print("  PARENT: kill() failed with error ");
                     print_number("", e as u64);
+                    process::exit(1);
                 }
             }
 
-            // Wait a bit to ensure child was killed
-            for _ in 0..10 {
-                process::yield_now();
+            // Wait for child to actually terminate using waitpid
+            io::print("  PARENT: Waiting for child to terminate...\n");
+            let mut status: i32 = 0;
+            let result = process::waitpid(child_pid as i32, &mut status, 0);
+
+            if result == child_pid {
+                // Check if child was terminated by signal
+                // WIFSIGNALED: (status & 0x7f) != 0
+                // WTERMSIG: status & 0x7f
+                let termsig = status & 0x7f;
+                if termsig == signal::SIGTERM as i32 {
+                    io::print("  PARENT: Child terminated by SIGTERM!\n");
+                    io::print("SIGNAL_KILL_TEST_PASSED\n");
+                } else if termsig != 0 {
+                    io::print("  PARENT: Child terminated by wrong signal: ");
+                    print_number("", termsig as u64);
+                    process::exit(2);
+                } else {
+                    // Child exited normally (WIFEXITED)
+                    io::print("  PARENT: Child exited normally (not by signal), exit code: ");
+                    print_number("", ((status >> 8) & 0xff) as u64);
+                    process::exit(3);
+                }
+            } else {
+                io::print("  PARENT: waitpid returned unexpected value: ");
+                print_number("", result as u64);
+                process::exit(4);
             }
 
             io::print("  PARENT: Test complete, exiting\n");

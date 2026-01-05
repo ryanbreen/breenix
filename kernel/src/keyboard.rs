@@ -41,6 +41,11 @@ pub fn init() {
 }
 
 /// Called by the keyboard interrupt handler
+///
+/// NOTE: This function is currently unused because all keyboard processing
+/// now happens directly in the interrupt handler. See the interrupt handler
+/// comments for details on why this changed.
+#[allow(dead_code)]
 pub(crate) fn add_scancode(scancode: u8) {
     stream::add_scancode(scancode);
 }

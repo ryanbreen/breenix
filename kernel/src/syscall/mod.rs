@@ -7,6 +7,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 pub(crate) mod dispatcher;
 pub mod errno;
+pub mod fs;
 pub mod handler;
 pub mod handlers;
 pub mod ioctl;

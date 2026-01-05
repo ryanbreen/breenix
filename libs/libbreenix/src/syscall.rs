@@ -25,6 +25,7 @@ pub mod nr {
     pub const SIGACTION: u64 = 13;   // Linux x86_64 rt_sigaction
     pub const SIGPROCMASK: u64 = 14; // Linux x86_64 rt_sigprocmask
     pub const SIGRETURN: u64 = 15;   // Linux x86_64 rt_sigreturn
+    pub const IOCTL: u64 = 16;       // Linux x86_64 ioctl
     pub const PIPE: u64 = 22;        // Linux x86_64 pipe
     pub const SELECT: u64 = 23;       // Linux x86_64 select
     pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2
@@ -44,8 +45,19 @@ pub mod nr {
     pub const SETSID: u64 = 112;     // Linux x86_64 setsid
     pub const GETPGID: u64 = 121;    // Linux x86_64 getpgid
     pub const GETSID: u64 = 124;     // Linux x86_64 getsid
+    pub const RENAME: u64 = 82;       // Linux x86_64 rename
+    pub const MKDIR: u64 = 83;        // Linux x86_64 mkdir
+    pub const RMDIR: u64 = 84;        // Linux x86_64 rmdir
+    pub const LINK: u64 = 86;         // Linux x86_64 link (hard links)
+    pub const UNLINK: u64 = 87;       // Linux x86_64 unlink
+    pub const SYMLINK: u64 = 88;      // Linux x86_64 symlink
+    pub const READLINK: u64 = 89;     // Linux x86_64 readlink
     pub const GETTID: u64 = 186;
     pub const CLOCK_GETTIME: u64 = 228;
+    pub const OPEN: u64 = 257;        // Breenix: filesystem open syscall
+    pub const LSEEK: u64 = 258;       // Breenix: filesystem lseek syscall
+    pub const FSTAT: u64 = 259;       // Breenix: filesystem fstat syscall
+    pub const GETDENTS64: u64 = 260;  // Breenix: directory listing syscall
 }
 
 /// Raw syscall functions - use higher-level wrappers when possible

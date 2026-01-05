@@ -183,11 +183,12 @@ pub fn run_fault_tests() {
         Err(e) => log::error!("  Failed to create CLI test process: {}", e),
     }
     
-    // Wait a bit for the fault to occur
-    for _ in 0..10_000_000 {
+    // Brief pause to allow scheduler to pick up the process
+    // (Reduced from 10M to 100K to avoid boot stage timeouts)
+    for _ in 0..100_000 {
         core::hint::spin_loop();
     }
-    
+
     // Test 2: HLT instruction
     log::info!("\n2. Testing HLT instruction (should cause #GP)...");
     let hlt_elf = create_hlt_test_elf();
@@ -199,11 +200,11 @@ pub fn run_fault_tests() {
         Err(e) => log::error!("  Failed to create HLT test process: {}", e),
     }
     
-    // Wait a bit for the fault to occur
-    for _ in 0..10_000_000 {
+    // Brief pause to allow scheduler to pick up the process
+    for _ in 0..100_000 {
         core::hint::spin_loop();
     }
-    
+
     // Test 3: CR3 write
     log::info!("\n3. Testing CR3 write (should cause #GP)...");
     let cr3_elf = create_cr3_write_test_elf();
@@ -215,11 +216,11 @@ pub fn run_fault_tests() {
         Err(e) => log::error!("  Failed to create CR3 test process: {}", e),
     }
     
-    // Wait a bit for the fault to occur
-    for _ in 0..10_000_000 {
+    // Brief pause to allow scheduler to pick up the process
+    for _ in 0..100_000 {
         core::hint::spin_loop();
     }
-    
+
     // Test 4: Unmapped memory access
     log::info!("\n4. Testing unmapped memory access (should cause #PF with U=1)...");
     let unmapped_elf = create_unmapped_access_test_elf();

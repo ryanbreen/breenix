@@ -1199,6 +1199,41 @@ pub fn test_signal_fork() {
     }
 }
 
+/// Test SIGTERM delivery with default handler (kill test)
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Signal kill test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates SIGTERM delivery terminates child
+///   - Marker: "SIGNAL_KILL_TEST_PASSED"
+///   - This PROVES SIGTERM is delivered and child is terminated
+pub fn test_signal_kill() {
+    log::info!("Testing SIGTERM delivery with default handler");
+
+    #[cfg(feature = "testing")]
+    let signal_test_elf_buf = crate::userspace_test::get_test_binary("signal_test");
+    #[cfg(feature = "testing")]
+    let signal_test_elf: &[u8] = &signal_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let signal_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("signal_test"),
+        signal_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created signal_test process with PID {:?}", pid);
+            log::info!("Signal kill test: process scheduled for execution.");
+            log::info!("    -> Userspace will print pass marker when child terminated by SIGTERM");
+        }
+        Err(e) => {
+            log::error!("Failed to create signal_test process: {}", e);
+            log::error!("Signal kill test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test SIGCHLD delivery when child exits
 ///
 /// TWO-STAGE VALIDATION PATTERN:
@@ -1650,6 +1685,295 @@ pub fn test_session() {
         Err(e) => {
             log::error!("Failed to create session_test process: {}", e);
             log::error!("Session test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test ext2 file read functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "File read test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates file reading from ext2
+///   - Marker: "FILE_READ_TEST_PASSED"
+///   - This PROVES open, read, fstat, and close syscalls work on ext2 filesystem
+pub fn test_file_read() {
+    log::info!("Testing ext2 file read functionality");
+
+    #[cfg(feature = "testing")]
+    let file_read_test_elf_buf = crate::userspace_test::get_test_binary("file_read_test");
+    #[cfg(feature = "testing")]
+    let file_read_test_elf: &[u8] = &file_read_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let file_read_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("file_read_test"),
+        file_read_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created file_read_test process with PID {:?}", pid);
+            log::info!("File read test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FILE_READ_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create file_read_test process: {}", e);
+            log::error!("File read test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test Ctrl-C (SIGINT) signal delivery
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Ctrl-C test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates SIGINT delivery and wstatus encoding
+///   - Marker: "CTRL_C_TEST_PASSED"
+///   - This PROVES:
+///     1. Parent can fork a child process
+///     2. SIGINT can be sent to child via kill()
+///     3. Child is terminated by the signal (default SIGINT action)
+///     4. waitpid() correctly reports WIFSIGNALED with WTERMSIG == SIGINT
+pub fn test_ctrl_c() {
+    log::info!("Testing Ctrl-C (SIGINT) signal delivery");
+
+    #[cfg(feature = "testing")]
+    let ctrl_c_test_elf_buf = crate::userspace_test::get_test_binary("ctrl_c_test");
+    #[cfg(feature = "testing")]
+    let ctrl_c_test_elf: &[u8] = &ctrl_c_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let ctrl_c_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("ctrl_c_test"),
+        ctrl_c_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created ctrl_c_test process with PID {:?}", pid);
+            log::info!("Ctrl-C test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit CTRL_C_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create ctrl_c_test process: {}", e);
+            log::error!("Ctrl-C test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test getdents64 syscall for directory listing
+pub fn test_getdents() {
+    log::info!("Testing getdents64 syscall for directory listing");
+
+    #[cfg(feature = "testing")]
+    let getdents_test_elf_buf = crate::userspace_test::get_test_binary("getdents_test");
+    #[cfg(feature = "testing")]
+    let getdents_test_elf: &[u8] = &getdents_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let getdents_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("getdents_test"),
+        getdents_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created getdents_test process with PID {:?}", pid);
+            log::info!("Getdents test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit GETDENTS_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create getdents_test process: {}", e);
+            log::error!("Getdents test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test lseek syscall including SEEK_END
+pub fn test_lseek() {
+    log::info!("Testing lseek syscall (SEEK_SET, SEEK_CUR, SEEK_END)");
+
+    #[cfg(feature = "testing")]
+    let lseek_test_elf_buf = crate::userspace_test::get_test_binary("lseek_test");
+    #[cfg(feature = "testing")]
+    let lseek_test_elf: &[u8] = &lseek_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let lseek_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("lseek_test"),
+        lseek_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created lseek_test process with PID {:?}", pid);
+            log::info!("Lseek test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit LSEEK_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create lseek_test process: {}", e);
+            log::error!("Lseek test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test filesystem write operations (write, O_CREAT, O_TRUNC, O_APPEND, unlink)
+pub fn test_fs_write() {
+    log::info!("Testing filesystem write operations (write, O_CREAT, O_TRUNC, O_APPEND, unlink)");
+
+    #[cfg(feature = "testing")]
+    let fs_write_test_elf_buf = crate::userspace_test::get_test_binary("fs_write_test");
+    #[cfg(feature = "testing")]
+    let fs_write_test_elf: &[u8] = &fs_write_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_write_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_write_test"),
+        fs_write_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_write_test process with PID {:?}", pid);
+            log::info!("Filesystem write test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_WRITE_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_write_test process: {}", e);
+            log::error!("Filesystem write test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test filesystem rename operations on ext2
+pub fn test_fs_rename() {
+    log::info!("Testing filesystem rename operations");
+
+    #[cfg(feature = "testing")]
+    let fs_rename_test_elf_buf = crate::userspace_test::get_test_binary("fs_rename_test");
+    #[cfg(feature = "testing")]
+    let fs_rename_test_elf: &[u8] = &fs_rename_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_rename_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_rename_test"),
+        fs_rename_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_rename_test process with PID {:?}", pid);
+            log::info!("Filesystem rename test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_RENAME_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_rename_test process: {}", e);
+            log::error!("Filesystem rename test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test large file operations on ext2 (indirect blocks)
+pub fn test_fs_large_file() {
+    log::info!("Testing large file operations (indirect blocks)");
+
+    #[cfg(feature = "testing")]
+    let fs_large_file_test_elf_buf = crate::userspace_test::get_test_binary("fs_large_file_test");
+    #[cfg(feature = "testing")]
+    let fs_large_file_test_elf: &[u8] = &fs_large_file_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_large_file_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_large_file_test"),
+        fs_large_file_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_large_file_test process with PID {:?}", pid);
+            log::info!("Large file test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_LARGE_FILE_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_large_file_test process: {}", e);
+            log::error!("Large file test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test filesystem directory operations (mkdir, rmdir)
+pub fn test_fs_directory() {
+    log::info!("Testing filesystem directory operations (mkdir, rmdir)");
+
+    #[cfg(feature = "testing")]
+    let fs_directory_test_elf_buf = crate::userspace_test::get_test_binary("fs_directory_test");
+    #[cfg(feature = "testing")]
+    let fs_directory_test_elf: &[u8] = &fs_directory_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_directory_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_directory_test"),
+        fs_directory_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_directory_test process with PID {:?}", pid);
+            log::info!("Directory test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_DIRECTORY_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_directory_test process: {}", e);
+            log::error!("Directory test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test filesystem link operations (link, symlink, readlink)
+pub fn test_fs_link() {
+    log::info!("Testing filesystem link operations (link, symlink, readlink)");
+
+    #[cfg(feature = "testing")]
+    let fs_link_test_elf_buf = crate::userspace_test::get_test_binary("fs_link_test");
+    #[cfg(feature = "testing")]
+    let fs_link_test_elf: &[u8] = &fs_link_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_link_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_link_test"),
+        fs_link_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_link_test process with PID {:?}", pid);
+            log::info!("Link test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_LINK_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_link_test process: {}", e);
+            log::error!("Link test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test Rust std library support via hello_std_real
+pub fn test_hello_std_real() {
+    log::info!("Testing Rust std library support (hello_std_real)");
+
+    #[cfg(feature = "testing")]
+    let hello_std_real_elf_buf = crate::userspace_test::get_test_binary("hello_std_real");
+    #[cfg(feature = "testing")]
+    let hello_std_real_elf: &[u8] = &hello_std_real_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let hello_std_real_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("hello_std_real"),
+        hello_std_real_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created hello_std_real process with PID {:?}", pid);
+            log::info!("hello_std_real test: process scheduled for execution.");
+        }
+        Err(e) => {
+            log::error!("Failed to create hello_std_real process: {}", e);
+            log::error!("hello_std_real test cannot run without valid userspace process");
         }
     }
 }

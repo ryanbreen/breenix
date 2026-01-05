@@ -26,9 +26,11 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 #[macro_use]
 mod macros;
 mod clock_gettime_test;
+mod block;
 mod drivers;
 mod elf;
 mod framebuffer;
+mod fs;
 mod gdt;
 mod net;
 #[cfg(feature = "testing")]
@@ -180,6 +182,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
     // Initialize network stack (after E1000 driver is ready)
     net::init();
+
+    // Initialize ext2 root filesystem (after VirtIO block device is ready)
+    match crate::fs::ext2::init_root_fs() {
+        Ok(()) => log::info!("ext2 root filesystem mounted"),
+        Err(e) => log::warn!("Failed to mount ext2 root: {:?}", e),
+    }
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
@@ -643,6 +651,10 @@ fn kernel_main_continue() -> ! {
         // The core pipe functionality is validated by test_pipe() above.
         // These complex multi-process tests cause timing-related timeouts.
 
+        // Test SIGTERM delivery with default handler (kill test)
+        log::info!("=== SIGNAL TEST: SIGTERM delivery with default handler ===");
+        test_exec::test_signal_kill();
+
         // Test SIGCHLD delivery when child exits - run early to give time for child to execute
         log::info!("=== SIGNAL TEST: SIGCHLD delivery on child exit ===");
         test_exec::test_sigchld();
@@ -684,6 +696,46 @@ fn kernel_main_continue() -> ! {
         log::info!("=== SESSION TEST: Session and process group syscalls ===");
         test_exec::test_session();
 
+        // Test ext2 file read functionality
+        log::info!("=== FS TEST: ext2 file read functionality ===");
+        test_exec::test_file_read();
+
+        // Test Ctrl-C (SIGINT) signal delivery
+        log::info!("=== SIGNAL TEST: Ctrl-C (SIGINT) signal delivery ===");
+        test_exec::test_ctrl_c();
+
+        // Test getdents64 syscall for directory listing
+        log::info!("=== FS TEST: getdents64 directory listing ===");
+        test_exec::test_getdents();
+
+        // Test lseek syscall
+        log::info!("=== FS TEST: lseek syscall ===");
+        test_exec::test_lseek();
+
+        // Test filesystem write operations
+        log::info!("=== FS TEST: filesystem write operations ===");
+        test_exec::test_fs_write();
+
+        // Test filesystem rename operations
+        log::info!("=== FS TEST: filesystem rename operations ===");
+        test_exec::test_fs_rename();
+
+        // Test large file operations (indirect blocks)
+        log::info!("=== FS TEST: large file operations ===");
+        test_exec::test_fs_large_file();
+
+        // Test filesystem directory operations
+        log::info!("=== FS TEST: directory operations ===");
+        test_exec::test_fs_directory();
+
+        // Test filesystem link operations
+        log::info!("=== FS TEST: link operations ===");
+        test_exec::test_fs_link();
+
+        // Test Rust std library support
+        log::info!("=== STD TEST: Rust std library support ===");
+        test_exec::test_hello_std_real();
+
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
         test_exec::test_signal_exec();
@@ -703,7 +755,7 @@ fn kernel_main_continue() -> ! {
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");
         userspace_fault_tests::run_fault_tests();
-        log::info!("Fault tests scheduled.");
+        log::info!("Fault tests scheduled");
     }
 
     // NOTE: Premature success markers removed - tests must verify actual execution

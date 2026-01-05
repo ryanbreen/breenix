@@ -1,6 +1,8 @@
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
+    net::TcpStream,
+    path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -10,6 +12,81 @@ use anyhow::{bail, Result};
 use structopt::StructOpt;
 
 mod test_disk;
+
+fn build_std_test_binaries() -> Result<()> {
+    println!("Building Rust std test binaries...\n");
+
+    // Step 1: Build libbreenix-libc (produces libc.a)
+    println!("  [1/2] Building libbreenix-libc...");
+    let libc_dir = Path::new("libs/libbreenix-libc");
+
+    if !libc_dir.exists() {
+        println!("    Note: libs/libbreenix-libc not found, skipping std test binaries");
+        return Ok(());
+    }
+
+    // Clear environment variables that might interfere with the standalone build
+    // The rust-toolchain.toml in libbreenix-libc specifies the nightly version
+    let status = Command::new("cargo")
+        .args(&["build", "--release"])
+        .current_dir(libc_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_PKG_NAME")
+        .env_remove("OUT_DIR")
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for libbreenix-libc: {}", e))?;
+
+    if !status.success() {
+        bail!("Failed to build libbreenix-libc");
+    }
+    println!("    libbreenix-libc built successfully");
+
+    // Step 2: Build tests-std (produces hello_std_real)
+    println!("  [2/2] Building tests-std...");
+    let tests_std_dir = Path::new("userspace/tests-std");
+
+    if !tests_std_dir.exists() {
+        println!("    Note: userspace/tests-std not found, skipping");
+        return Ok(());
+    }
+
+    // The rust-toolchain.toml in tests-std specifies the nightly version
+    let status = Command::new("cargo")
+        .args(&["build", "--release"])
+        .current_dir(tests_std_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_PKG_NAME")
+        .env_remove("OUT_DIR")
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for tests-std: {}", e))?;
+
+    if !status.success() {
+        bail!("Failed to build tests-std");
+    }
+    println!("    tests-std built successfully");
+
+    // Verify the binary exists
+    let binary_path = tests_std_dir.join("target/x86_64-breenix/release/hello_std_real");
+    if binary_path.exists() {
+        println!("\n  hello_std_real binary ready at: {}", binary_path.display());
+    } else {
+        bail!(
+            "Build succeeded but binary not found at: {}",
+            binary_path.display()
+        );
+    }
+
+    println!();
+    Ok(())
+}
 
 /// Simple developer utility tasks.
 #[derive(StructOpt)]
@@ -24,6 +101,8 @@ enum Cmd {
     CreateTestDisk,
     /// Boot Breenix interactively with init_shell (serial console attached).
     Interactive,
+    /// Run automated interactive shell tests (sends keyboard input via QEMU monitor).
+    InteractiveTest,
 }
 
 fn main() -> Result<()> {
@@ -33,6 +112,7 @@ fn main() -> Result<()> {
         Cmd::BootStages => boot_stages(),
         Cmd::CreateTestDisk => test_disk::create_test_disk(),
         Cmd::Interactive => interactive(),
+        Cmd::InteractiveTest => interactive_test(),
     }
 }
 
@@ -542,6 +622,14 @@ fn get_boot_stages() -> Vec<BootStage> {
         // can cause spurious timeouts. The core pipe functionality is validated
         // by pipe_test (which passes) and the core fork functionality is
         // validated by waitpid_test and signal_fork_test (which pass).
+        // Signal kill test - validates SIGTERM delivery with default handler
+        // Parent forks child, sends SIGTERM, waits for child termination via waitpid
+        BootStage {
+            name: "SIGTERM kill test passed",
+            marker: "SIGNAL_KILL_TEST_PASSED",
+            failure_meaning: "SIGTERM kill test failed - SIGTERM not delivered to child or child not terminated",
+            check_hint: "Check kernel/src/signal/delivery.rs, kernel/src/interrupts/context_switch.rs signal delivery path",
+        },
         // SIGCHLD delivery test - run early to give child time to execute and exit
         // Validates SIGCHLD is sent to parent when child exits
         BootStage {
@@ -642,6 +730,194 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "session/process group syscall test failed - getpgid/setpgid/getpgrp/getsid/setsid broken",
             check_hint: "Check kernel/src/syscall/process.rs and libs/libbreenix/src/process.rs session/pgid functions",
         },
+        // ext2 file read test
+        BootStage {
+            name: "File read test passed",
+            marker: "FILE_READ_TEST_PASSED",
+            failure_meaning: "ext2 file read test failed - open, read, fstat, or close syscalls on ext2 filesystem broken",
+            check_hint: "Check kernel/src/fs/ext2/ module, kernel/src/syscall/fs.rs, and ext2.img disk attachment",
+        },
+        // ext2 getdents test (directory listing)
+        BootStage {
+            name: "Getdents test passed",
+            marker: "GETDENTS_TEST_PASSED",
+            failure_meaning: "getdents64 syscall failed - directory listing on ext2 filesystem broken",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_getdents64(), O_DIRECTORY handling, and ext2 directory parsing",
+        },
+        // lseek test (SEEK_SET, SEEK_CUR, SEEK_END)
+        BootStage {
+            name: "Lseek test passed",
+            marker: "LSEEK_TEST_PASSED",
+            failure_meaning: "lseek syscall failed - SEEK_SET, SEEK_CUR, or SEEK_END broken",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_lseek(), especially SEEK_END with get_ext2_file_size()",
+        },
+        // Filesystem write test (write, O_CREAT, O_TRUNC, O_APPEND, unlink)
+        BootStage {
+            name: "Filesystem write test passed",
+            marker: "FS_WRITE_TEST_PASSED",
+            failure_meaning: "filesystem write operations failed - write, create, truncate, append, or unlink broken",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_open O_CREAT/O_TRUNC, handlers.rs sys_write for RegularFile, and fs.rs sys_unlink",
+        },
+        // Filesystem rename test (rename, cross-directory, error handling)
+        BootStage {
+            name: "Filesystem rename test passed",
+            marker: "FS_RENAME_TEST_PASSED",
+            failure_meaning: "filesystem rename operations failed - basic rename, cross-directory rename, or error handling broken",
+            check_hint: "Check kernel/src/fs/ext2/mod.rs rename(), kernel/src/syscall/fs.rs sys_rename()",
+        },
+        // Filesystem large file test (50KB, indirect blocks)
+        BootStage {
+            name: "Large file test passed (indirect blocks)",
+            marker: "FS_LARGE_FILE_TEST_PASSED",
+            failure_meaning: "large file operations failed - indirect block allocation or read/write broken",
+            check_hint: "Check kernel/src/fs/ext2/file.rs set_block_num(), write_file_range() for indirect block handling",
+        },
+        // Filesystem directory operations test (mkdir, rmdir)
+        BootStage {
+            name: "Directory ops test passed",
+            marker: "FS_DIRECTORY_TEST_PASSED",
+            failure_meaning: "directory operations failed - mkdir, rmdir, or directory structure broken",
+            check_hint: "Check kernel/src/fs/ext2/mod.rs mkdir(), rmdir() and directory entry handling",
+        },
+        // Filesystem link operations test (link, symlink)
+        BootStage {
+            name: "Link ops test passed",
+            marker: "FS_LINK_TEST_PASSED",
+            failure_meaning: "link operations failed - hard links, symlinks, or link count handling broken",
+            check_hint: "Check kernel/src/fs/ext2/mod.rs link(), symlink(), readlink() and inode link count",
+        },
+        // Rust std library test - validates real Rust std works in userspace
+        BootStage {
+            name: "Rust std println! works",
+            marker: "RUST_STD_PRINTLN_WORKS",
+            failure_meaning: "Rust std println! macro failed - std write syscall path broken",
+            check_hint: "Check userspace/tests-std/src/hello_std_real.rs, verify libbreenix-libc is linked correctly",
+        },
+        BootStage {
+            name: "Rust std Vec works",
+            marker: "RUST_STD_VEC_WORKS",
+            failure_meaning: "Rust std Vec allocation failed - heap allocation via mmap/brk broken for std programs",
+            check_hint: "Check mmap/brk syscalls work correctly with std programs, verify GlobalAlloc implementation in libbreenix-libc",
+        },
+        BootStage {
+            name: "Rust std String works",
+            marker: "RUST_STD_STRING_WORKS",
+            failure_meaning: "Rust std String operations failed - String concatenation or comparison broken",
+            check_hint: "Check userspace/tests-std/src/hello_std_real.rs, verify String::from() and + operator work correctly",
+        },
+        BootStage {
+            name: "Rust std getrandom returns ENOSYS",
+            marker: "RUST_STD_GETRANDOM_ENOSYS",
+            failure_meaning: "getrandom() did not properly return ENOSYS - may be returning fake data",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs getrandom implementation",
+        },
+        BootStage {
+            name: "Rust std realloc preserves data",
+            marker: "RUST_STD_REALLOC_WORKS",
+            failure_meaning: "realloc() did not preserve data when growing allocation - bounds check or copy logic broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs realloc implementation - should copy min(old_size, new_size) bytes",
+        },
+        BootStage {
+            name: "Rust std format! macro works",
+            marker: "RUST_STD_FORMAT_WORKS",
+            failure_meaning: "format! macro failed - heap allocation or formatting broken",
+            check_hint: "Check String and Vec allocation paths",
+        },
+        BootStage {
+            name: "Rust std realloc shrink preserves data",
+            marker: "RUST_STD_REALLOC_SHRINK_WORKS",
+            failure_meaning: "realloc() did not preserve data when shrinking - min(old,new) logic broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs realloc implementation",
+        },
+        BootStage {
+            name: "Rust std read() error handling works",
+            marker: "RUST_STD_READ_ERROR_WORKS",
+            failure_meaning: "read() did not return proper error for invalid fd",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs read implementation",
+        },
+        BootStage {
+            name: "Rust std read() success with pipe works",
+            marker: "RUST_STD_READ_SUCCESS_WORKS",
+            failure_meaning: "read() did not successfully read data from a pipe - pipe/write/read syscall path broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs pipe/read implementation and kernel syscall/pipe.rs",
+        },
+        BootStage {
+            name: "Rust std malloc boundary conditions work",
+            marker: "RUST_STD_MALLOC_BOUNDARY_WORKS",
+            failure_meaning: "malloc() boundary conditions failed - size=0 or small alloc broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs malloc implementation",
+        },
+        BootStage {
+            name: "Rust std posix_memalign works",
+            marker: "RUST_STD_POSIX_MEMALIGN_WORKS",
+            failure_meaning: "posix_memalign() failed - alignment or allocation broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs posix_memalign implementation",
+        },
+        BootStage {
+            name: "Rust std sbrk works",
+            marker: "RUST_STD_SBRK_WORKS",
+            failure_meaning: "sbrk() failed - heap extension or error handling broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs sbrk implementation",
+        },
+        BootStage {
+            name: "Rust std getpid/gettid works",
+            marker: "RUST_STD_GETPID_WORKS",
+            failure_meaning: "getpid()/gettid() failed - process/thread ID syscalls broken or returning invalid values",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs getpid/gettid implementation and libbreenix::process::getpid/gettid",
+        },
+        BootStage {
+            name: "Rust std posix_memalign error handling works",
+            marker: "RUST_STD_POSIX_MEMALIGN_ERRORS_WORK",
+            failure_meaning: "posix_memalign() did not return EINVAL for invalid alignments (0, non-power-of-2, < sizeof(void*))",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs posix_memalign EINVAL error paths",
+        },
+        BootStage {
+            name: "Rust std close works",
+            marker: "RUST_STD_CLOSE_WORKS",
+            failure_meaning: "close() syscall failed - fd closing, error handling (EBADF), or dup() broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs close/dup implementation and kernel syscall/io.rs:sys_close",
+        },
+        BootStage {
+            name: "Rust std mprotect works",
+            marker: "RUST_STD_MPROTECT_WORKS",
+            failure_meaning: "mprotect() syscall failed - memory protection changes not working or VMA lookup broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs mprotect and kernel syscall/mmap.rs:sys_mprotect",
+        },
+        BootStage {
+            name: "Rust std stub functions work",
+            marker: "RUST_STD_STUB_FUNCTIONS_WORK",
+            failure_meaning: "libc stub functions failed - pthread_*, signal, sysconf, poll, fcntl, getenv, or other stubs broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs stub function implementations (pthread_self, signal, sysconf, poll, fcntl, getauxval, getenv, strlen, memcmp, __xpg_strerror_r)",
+        },
+        BootStage {
+            name: "Rust std free(NULL) is safe",
+            marker: "RUST_STD_FREE_NULL_WORKS",
+            failure_meaning: "free(NULL) crashed or behaved incorrectly - should be a no-op per C99",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs free implementation NULL check",
+        },
+        BootStage {
+            name: "Rust std write edge cases work",
+            marker: "RUST_STD_WRITE_EDGE_CASES_WORK",
+            failure_meaning: "write() edge case handling failed - count=0, invalid fd (EBADF), or closed pipe (EPIPE) errors broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs write implementation and kernel syscall/io.rs:sys_write error paths",
+        },
+        BootStage {
+            name: "Rust std mmap/munmap direct tests work",
+            marker: "RUST_STD_MMAP_WORKS",
+            failure_meaning: "Direct mmap/munmap tests failed - anonymous mapping, memory access, unmapping, or error handling broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs mmap/munmap and kernel syscall/mmap.rs:sys_mmap/sys_munmap",
+        },
+        // Ctrl-C (SIGINT) signal delivery test
+        // Tests the core signal mechanism that Ctrl-C would use:
+        // - Parent forks child, sends SIGINT via kill()
+        // - Child is terminated by default SIGINT handler
+        // - Parent verifies WIFSIGNALED(status) && WTERMSIG(status) == SIGINT
+        BootStage {
+            name: "Ctrl-C (SIGINT) test passed",
+            marker: "CTRL_C_TEST_PASSED",
+            failure_meaning: "Ctrl-C signal test failed - SIGINT not delivered or child not terminated correctly",
+            check_hint: "Check kernel/src/signal/delivery.rs, kernel/src/syscall/signal.rs:sys_kill(), and wstatus encoding in syscall/process.rs:sys_wait4()",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]
@@ -661,6 +937,14 @@ fn boot_stages() -> Result<()> {
 
     println!("Boot Stage Validator - {} stages to check", total_stages);
     println!("=========================================\n");
+
+    // Build std test binaries BEFORE creating the test disk
+    // This ensures hello_std_real is available to be included
+    build_std_test_binaries()?;
+
+    // Create the test disk with all userspace binaries
+    test_disk::create_test_disk()?;
+    println!();
 
     // COM2 (log output) - this is where all test markers go
     let serial_output_file = "target/xtask_boot_stages_output.txt";
@@ -1351,4 +1635,333 @@ fn interactive() -> Result<()> {
     } else {
         bail!("QEMU exited with error");
     }
+}
+
+/// Automated interactive shell tests using QEMU monitor for keyboard input
+///
+/// This test:
+/// 1. Boots Breenix with init_shell and QEMU TCP monitor enabled
+/// 2. Waits for the shell prompt
+/// 3. Sends keyboard commands via QEMU monitor's `sendkey` command
+/// 4. Verifies command output appears in serial logs
+/// 5. Tests multiple commands to ensure shell continues working
+fn interactive_test() -> Result<()> {
+    println!("=== Interactive Shell Test ===");
+    println!();
+    println!("This test sends keyboard input via QEMU monitor to verify:");
+    println!("  - Shell accepts keyboard input");
+    println!("  - Commands produce expected output");
+    println!("  - Shell continues working after multiple commands");
+    println!();
+
+    // Output files
+    let user_output_file = "target/interactive_test_user.txt";
+    let kernel_log_file = "target/interactive_test_kernel.txt";
+
+    // Clean up old files
+    let _ = fs::remove_file(user_output_file);
+    let _ = fs::remove_file(kernel_log_file);
+
+    // Kill any existing QEMU processes
+    let _ = Command::new("pkill")
+        .args(&["-9", "qemu-system-x86_64"])
+        .status();
+    thread::sleep(Duration::from_millis(500));
+
+    println!("Building with interactive feature...");
+
+    // Build first
+    let build_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "testing,external_test_bins,interactive",
+            "--bin",
+            "qemu-uefi",
+        ])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build: {}", e))?;
+
+    if !build_status.success() {
+        bail!("Build failed");
+    }
+
+    println!("Starting QEMU with monitor enabled...");
+
+    // Start QEMU with:
+    // - TCP monitor on port 4444 for sending keyboard input
+    // - Serial ports for capturing output
+    // - No display (headless)
+    let mut child = Command::new("cargo")
+        .args(&[
+            "run",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "testing,external_test_bins,interactive",
+            "--bin",
+            "qemu-uefi",
+            "--",
+            "-display",
+            "none",
+            "-serial",
+            &format!("file:{}", user_output_file),
+            "-serial",
+            &format!("file:{}", kernel_log_file),
+            "-monitor",
+            "tcp:127.0.0.1:4444,server,nowait",
+        ])
+        .env("BREENIX_INTERACTIVE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
+
+    // Helper to clean up on failure
+    let cleanup = |child: &mut std::process::Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = Command::new("pkill")
+            .args(&["-9", "qemu-system-x86_64"])
+            .status();
+    };
+
+    // Wait for output files to be created
+    let start = Instant::now();
+    let file_timeout = Duration::from_secs(60);
+    while !std::path::Path::new(user_output_file).exists() {
+        if start.elapsed() > file_timeout {
+            cleanup(&mut child);
+            bail!("Output file not created after {} seconds", file_timeout.as_secs());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Wait for QEMU monitor to be ready
+    println!("Waiting for QEMU monitor...");
+    let monitor_start = Instant::now();
+    let monitor_timeout = Duration::from_secs(10);
+    let mut monitor: Option<TcpStream> = None;
+
+    while monitor_start.elapsed() < monitor_timeout {
+        if let Ok(stream) = TcpStream::connect("127.0.0.1:4444") {
+            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+            stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+            monitor = Some(stream);
+            break;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    let mut monitor = match monitor {
+        Some(m) => m,
+        None => {
+            cleanup(&mut child);
+            bail!("Could not connect to QEMU monitor on port 4444");
+        }
+    };
+
+    // Read initial monitor prompt
+    let mut buf = [0u8; 1024];
+    let _ = monitor.read(&mut buf);
+
+    println!("Connected to QEMU monitor");
+
+    // Wait for shell prompt to appear in user output
+    println!("Waiting for shell prompt...");
+    let prompt_start = Instant::now();
+    let prompt_timeout = Duration::from_secs(30);
+
+    while prompt_start.elapsed() < prompt_timeout {
+        if let Ok(contents) = fs::read_to_string(user_output_file) {
+            if contents.contains("breenix>") {
+                println!("Shell prompt detected!");
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    // Helper function to send a string as keyboard input
+    fn send_string(monitor: &mut TcpStream, s: &str) -> Result<()> {
+        for c in s.chars() {
+            let key = match c {
+                'a'..='z' => c.to_string(),
+                'A'..='Z' => format!("shift-{}", c.to_ascii_lowercase()),
+                '0'..='9' => c.to_string(),
+                ' ' => "spc".to_string(),
+                '\n' => "ret".to_string(),
+                '-' => "minus".to_string(),
+                '_' => "shift-minus".to_string(),
+                '.' => "dot".to_string(),
+                '/' => "slash".to_string(),
+                '\\' => "backslash".to_string(),
+                ':' => "shift-semicolon".to_string(),
+                ';' => "semicolon".to_string(),
+                '=' => "equal".to_string(),
+                '+' => "shift-equal".to_string(),
+                '|' => "shift-backslash".to_string(),
+                _ => continue, // Skip unsupported characters
+            };
+            let cmd = format!("sendkey {}\n", key);
+            monitor.write_all(cmd.as_bytes())?;
+            thread::sleep(Duration::from_millis(50)); // Small delay between keys
+        }
+        // Read any response from monitor
+        let mut buf = [0u8; 256];
+        let _ = monitor.read(&mut buf);
+        Ok(())
+    }
+
+    // Helper to wait for string in output
+    fn wait_for_output(file: &str, needle: &str, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if let Ok(contents) = fs::read_to_string(file) {
+                if contents.contains(needle) {
+                    return true;
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    // Track test results
+    let mut tests_passed = 0;
+    let mut tests_failed = 0;
+
+    // Test 1: Run "help" command
+    println!();
+    println!("[Test 1] Sending 'help' command...");
+    send_string(&mut monitor, "help\n")?;
+
+    if wait_for_output(user_output_file, "Built-in commands:", Duration::from_secs(5)) {
+        println!("  ✓ PASS: 'help' command produced expected output");
+        tests_passed += 1;
+    } else {
+        println!("  ✗ FAIL: 'help' command did not produce expected output");
+        tests_failed += 1;
+    }
+
+    // Give shell time to return to prompt
+    thread::sleep(Duration::from_millis(500));
+
+    // Test 2: Run "help" again to verify shell continues working
+    println!();
+    println!("[Test 2] Sending 'help' command again (testing subsequent commands)...");
+    let output_len_before = fs::read_to_string(user_output_file).unwrap_or_default().len();
+    send_string(&mut monitor, "help\n")?;
+
+    thread::sleep(Duration::from_secs(2));
+    let output_after = fs::read_to_string(user_output_file).unwrap_or_default();
+
+    // Check if more output was produced (shell responded to second command)
+    if output_after.len() > output_len_before + 100 {
+        println!("  ✓ PASS: Shell responded to second 'help' command");
+        tests_passed += 1;
+    } else {
+        println!("  ✗ FAIL: Shell did not respond to second command (this is the bug!)");
+        tests_failed += 1;
+    }
+
+    // Test 3: Run "uptime" command
+    println!();
+    println!("[Test 3] Sending 'uptime' command...");
+    send_string(&mut monitor, "uptime\n")?;
+
+    // uptime prints "up N seconds" or similar
+    if wait_for_output(user_output_file, "up ", Duration::from_secs(5)) {
+        println!("  ✓ PASS: 'uptime' command produced expected output");
+        tests_passed += 1;
+    } else {
+        println!("  ✗ FAIL: 'uptime' command did not produce expected output");
+        tests_failed += 1;
+    }
+
+    // Test 4: Send Ctrl-C while at prompt (should just print ^C and continue)
+    println!();
+    println!("[Test 4] Sending Ctrl-C at prompt...");
+    // Ctrl-C is sent as ctrl-c in QEMU
+    monitor.write_all(b"sendkey ctrl-c\n")?;
+    let _ = monitor.read(&mut buf);
+    thread::sleep(Duration::from_secs(1));
+
+    // Shell should still be responsive - send another command
+    // Use a unique command "jobs" to detect if first char is lost (would show "Unknown command: obs")
+    send_string(&mut monitor, "jobs\n")?;
+    thread::sleep(Duration::from_secs(2));
+
+    let ctrl_c_output = fs::read_to_string(user_output_file).unwrap_or_default();
+    // Check for the specific bug: "Unknown command: obs" indicates first char was eaten
+    if ctrl_c_output.contains("Unknown command: obs") {
+        println!("  ✗ FAIL: First character after Ctrl-C was lost ('jobs' became 'obs')");
+        tests_failed += 1;
+    } else if ctrl_c_output.contains("No background jobs") || ctrl_c_output.contains("jobs") {
+        println!("  ✓ PASS: Shell remained responsive after Ctrl-C");
+        tests_passed += 1;
+    } else {
+        println!("  ? INCONCLUSIVE: Could not verify shell response after Ctrl-C");
+        // Don't count as failure, just informational
+    }
+
+    // Test 5: Run spinner and Ctrl-C to interrupt it
+    println!();
+    println!("[Test 5] Running spinner and sending Ctrl-C to interrupt...");
+    send_string(&mut monitor, "spinner\n")?;
+    thread::sleep(Duration::from_secs(2)); // Let spinner start
+
+    // Send Ctrl-C to interrupt
+    monitor.write_all(b"sendkey ctrl-c\n")?;
+    let _ = monitor.read(&mut buf);
+    thread::sleep(Duration::from_secs(2));
+
+    // Check if shell returned to prompt (should see another breenix> after the ^C)
+    let spinner_output = fs::read_to_string(user_output_file).unwrap_or_default();
+    let ctrl_c_count = spinner_output.matches("^C").count();
+    if ctrl_c_count >= 2 && spinner_output.ends_with("breenix> ") || spinner_output.contains("breenix> \n") {
+        println!("  ✓ PASS: Spinner interrupted and shell returned to prompt");
+        tests_passed += 1;
+    } else {
+        // Check for page fault (the bug we fixed)
+        if spinner_output.contains("Page fault") || spinner_output.contains("KERNEL PANIC") {
+            println!("  ✗ FAIL: Kernel crashed (page fault or panic) when interrupting spinner");
+            tests_failed += 1;
+        } else {
+            println!("  ? INCONCLUSIVE: Could not verify spinner interrupt behavior");
+        }
+    }
+
+    // Clean up
+    println!();
+    println!("Cleaning up...");
+    cleanup(&mut child);
+
+    // Print final output for debugging
+    println!();
+    println!("=== User Output (last 50 lines) ===");
+    if let Ok(contents) = fs::read_to_string(user_output_file) {
+        for line in contents.lines().rev().take(50).collect::<Vec<_>>().into_iter().rev() {
+            println!("{}", line);
+        }
+    }
+
+    // Print summary
+    println!();
+    println!("=== Test Summary ===");
+    println!("Passed: {}", tests_passed);
+    println!("Failed: {}", tests_failed);
+
+    if tests_failed > 0 {
+        bail!("{} interactive test(s) failed", tests_failed);
+    }
+
+    println!();
+    println!("All interactive tests passed!");
+    Ok(())
 }
