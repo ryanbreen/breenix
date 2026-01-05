@@ -19,6 +19,10 @@ rustflags = [
     # Use our linker script to place the binary at 0x40000000
     # This avoids conflicts with kernel page table mappings
     "-C", "link-arg=-T../../userspace/tests-std/linker.ld",
+    # Tell linker these libraries are not needed - our libc.a provides everything
+    "-C", "link-arg=--allow-multiple-definition",
+    # Provide stub libraries in case std tries to link them
+    "-L", "native=../../libs/libbreenix-libc/stublibs",
 ]
 
 # Override libc with our local version that has Linux x86_64 definitions
