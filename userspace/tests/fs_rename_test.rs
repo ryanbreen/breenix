@@ -391,8 +391,9 @@ pub extern "C" fn _start() -> ! {
                 if matches!(e, Errno::EISDIR) {
                     libbreenix::io::print("  Correctly returned EISDIR\n");
                 } else {
-                    // Some systems return ENOTDIR or other errors, accept any failure
-                    libbreenix::io::print("  Rename correctly failed (error code differs from EISDIR)\n");
+                    // POSIX requires EISDIR when renaming a file to an existing directory
+                    libbreenix::io::print("FAILED: Expected EISDIR but got different error\n");
+                    exit(1);
                 }
             }
         }

@@ -62,6 +62,17 @@ struct VirtioBlkReq {
 /// Sector size in bytes
 pub const SECTOR_SIZE: usize = 512;
 
+/// Cached DMA buffers for I/O operations
+/// These are allocated once and reused to prevent frame exhaustion
+struct DmaBuffers {
+    /// Header buffer (physical, virtual)
+    header: (u64, u64),
+    /// Data buffer (physical, virtual)
+    data: (u64, u64),
+    /// Status buffer (physical, virtual)
+    status: (u64, u64),
+}
+
 /// VirtIO block device driver
 pub struct VirtioBlockDevice {
     /// VirtIO device abstraction
@@ -72,6 +83,8 @@ pub struct VirtioBlockDevice {
     capacity: u64,
     /// Number of completed operations (for stats)
     ops_completed: AtomicU64,
+    /// Cached DMA buffers (protected by queue mutex)
+    dma_buffers: DmaBuffers,
 }
 
 impl VirtioBlockDevice {
@@ -151,13 +164,26 @@ impl VirtioBlockDevice {
         // Device is ready
         device.driver_ok();
 
-        log::info!("VirtIO block: Device initialization complete");
+        // Pre-allocate DMA buffers for I/O operations
+        // These are reused for all read/write operations to prevent frame exhaustion
+        let header_buf = Self::alloc_dma_buffer(16)?;
+        let data_buf = Self::alloc_dma_buffer(SECTOR_SIZE)?;
+        let status_buf = Self::alloc_dma_buffer(1)?;
+
+        let dma_buffers = DmaBuffers {
+            header: header_buf,
+            data: data_buf,
+            status: status_buf,
+        };
+
+        log::info!("VirtIO block: Device initialization complete (with cached DMA buffers)");
 
         Ok(VirtioBlockDevice {
             device,
             queue: Mutex::new(queue),
             capacity,
             ops_completed: AtomicU64::new(0),
+            dma_buffers,
         })
     }
 
@@ -240,10 +266,10 @@ impl VirtioBlockDevice {
             return Err("Sector out of range");
         }
 
-        // Allocate DMA buffers
-        let (header_phys, header_virt) = Self::alloc_dma_buffer(16)?;
-        let (data_phys, data_virt) = Self::alloc_dma_buffer(SECTOR_SIZE)?;
-        let (status_phys, status_virt) = Self::alloc_dma_buffer(1)?;
+        // Use cached DMA buffers (allocated once during device init)
+        let (header_phys, header_virt) = self.dma_buffers.header;
+        let (data_phys, data_virt) = self.dma_buffers.data;
+        let (status_phys, status_virt) = self.dma_buffers.status;
 
         // Set up request header using volatile writes
         // The device will read this memory via DMA
@@ -324,10 +350,10 @@ impl VirtioBlockDevice {
             return Err("Sector out of range");
         }
 
-        // Allocate DMA buffers
-        let (header_phys, header_virt) = Self::alloc_dma_buffer(16)?;
-        let (data_phys, data_virt) = Self::alloc_dma_buffer(SECTOR_SIZE)?;
-        let (status_phys, status_virt) = Self::alloc_dma_buffer(1)?;
+        // Use cached DMA buffers (allocated once during device init)
+        let (header_phys, header_virt) = self.dma_buffers.header;
+        let (data_phys, data_virt) = self.dma_buffers.data;
+        let (status_phys, status_virt) = self.dma_buffers.status;
 
         // Set up request header
         unsafe {

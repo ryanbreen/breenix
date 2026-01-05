@@ -681,6 +681,20 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "large file operations failed - indirect block allocation or read/write broken",
             check_hint: "Check kernel/src/fs/ext2/file.rs set_block_num(), write_file_range() for indirect block handling",
         },
+        // Filesystem directory operations test (mkdir, rmdir)
+        BootStage {
+            name: "Directory ops test passed",
+            marker: "FS_DIRECTORY_TEST_PASSED",
+            failure_meaning: "directory operations failed - mkdir, rmdir, or directory structure broken",
+            check_hint: "Check kernel/src/fs/ext2/mod.rs mkdir(), rmdir() and directory entry handling",
+        },
+        // Filesystem link operations test (link, symlink)
+        BootStage {
+            name: "Link ops test passed",
+            marker: "FS_LINK_TEST_PASSED",
+            failure_meaning: "link operations failed - hard links, symlinks, or link count handling broken",
+            check_hint: "Check kernel/src/fs/ext2/mod.rs link(), symlink(), readlink() and inode link count",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

@@ -1816,3 +1816,87 @@ pub fn test_fs_large_file() {
         }
     }
 }
+
+/// Test filesystem directory operations (mkdir, rmdir)
+///
+/// Tests:
+/// - Creating directories with mkdir
+/// - Removing empty directories with rmdir
+/// - Verifying directory entries (.  and ..)
+/// - Error case: rmdir on non-empty directory (ENOTEMPTY)
+/// - Error case: rmdir on non-directory (ENOTDIR)
+/// - Error case: mkdir on existing path (EEXIST)
+///
+/// What this proves:
+///   - sys_mkdir works for creating directories on ext2
+///   - sys_rmdir works for removing directories on ext2
+///   - Directory entries are properly initialized with . and ..
+///   - Proper error handling for edge cases
+pub fn test_fs_directory() {
+    log::info!("Testing filesystem directory operations (mkdir, rmdir)");
+
+    #[cfg(feature = "testing")]
+    let fs_directory_test_elf_buf = crate::userspace_test::get_test_binary("fs_directory_test");
+    #[cfg(feature = "testing")]
+    let fs_directory_test_elf: &[u8] = &fs_directory_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_directory_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_directory_test"),
+        fs_directory_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_directory_test process with PID {:?}", pid);
+            log::info!("Directory test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_DIRECTORY_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_directory_test process: {}", e);
+            log::error!("Directory test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test filesystem link operations (link, symlink, readlink)
+///
+/// Tests:
+/// - Creating hard links with link()
+/// - Creating symbolic links with symlink()
+/// - Reading symbolic link targets with readlink()
+/// - Verifying hard link count on inodes
+/// - Error case: link to non-existent file (ENOENT)
+/// - Error case: symlink to existing path (EEXIST)
+/// - Unlinking and verifying link count decreases
+///
+/// What this proves:
+///   - sys_link works for creating hard links on ext2
+///   - sys_symlink works for creating symbolic links on ext2
+///   - sys_readlink correctly reads symlink targets
+///   - Link counts are properly tracked in inodes
+///   - Proper error handling for edge cases
+pub fn test_fs_link() {
+    log::info!("Testing filesystem link operations (link, symlink, readlink)");
+
+    #[cfg(feature = "testing")]
+    let fs_link_test_elf_buf = crate::userspace_test::get_test_binary("fs_link_test");
+    #[cfg(feature = "testing")]
+    let fs_link_test_elf: &[u8] = &fs_link_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_link_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_link_test"),
+        fs_link_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_link_test process with PID {:?}", pid);
+            log::info!("Link test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FS_LINK_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_link_test process: {}", e);
+            log::error!("Link test cannot run without valid userspace process");
+        }
+    }
+}

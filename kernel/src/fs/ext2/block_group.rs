@@ -205,11 +205,12 @@ pub fn allocate_block<B: BlockDevice>(
         }
 
         // Read the block bitmap block
+        // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
         let bitmap_block = unsafe {
             core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap))
         };
-        let mut bitmap_buf = alloc::vec![0u8; block_size];
-        read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf)
+        let mut bitmap_buf = [0u8; 4096]; // Max block size
+        read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf[..block_size])
             .map_err(|_| "Failed to read block bitmap")?;
 
         // Search for a free block in this group
@@ -221,7 +222,7 @@ pub fn allocate_block<B: BlockDevice>(
             let byte_index = (local_block / 8) as usize;
             let bit_index = (local_block % 8) as u8;
 
-            if byte_index >= bitmap_buf.len() {
+            if byte_index >= block_size {
                 break; // Bitmap doesn't cover this block
             }
 
@@ -230,7 +231,7 @@ pub fn allocate_block<B: BlockDevice>(
                 bitmap_buf[byte_index] |= 1 << bit_index;
 
                 // Write the updated bitmap back to disk
-                write_ext2_block(device, bitmap_block, block_size, &bitmap_buf)
+                write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
                     .map_err(|_| "Failed to write block bitmap")?;
 
                 // Update the free block count in the block group descriptor
@@ -243,8 +244,8 @@ pub fn allocate_block<B: BlockDevice>(
                 }
 
                 // Zero out the newly allocated block
-                let zero_buf = alloc::vec![0u8; block_size];
-                write_ext2_block(device, global_block, block_size, &zero_buf)
+                let zero_buf = [0u8; 4096]; // Max block size
+                write_ext2_block(device, global_block, block_size, &zero_buf[..block_size])
                     .map_err(|_| "Failed to zero allocated block")?;
 
                 return Ok(global_block);
@@ -289,23 +290,24 @@ pub fn free_block<B: BlockDevice>(
     let bg = &mut block_groups[bg_index];
 
     // Read the block bitmap block
+    // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
     let bitmap_block = unsafe {
         core::ptr::read_unaligned(core::ptr::addr_of!(bg.bg_block_bitmap))
     };
-    let mut bitmap_buf = alloc::vec![0u8; block_size];
-    read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf)
+    let mut bitmap_buf = [0u8; 4096]; // Max block size
+    read_ext2_block(device, bitmap_block, block_size, &mut bitmap_buf[..block_size])
         .map_err(|_| "Failed to read block bitmap")?;
 
     // Clear the bit for this block
     let byte_index = (local_block / 8) as usize;
     let bit_index = (local_block % 8) as u8;
 
-    if byte_index < bitmap_buf.len() {
+    if byte_index < block_size {
         bitmap_buf[byte_index] &= !(1 << bit_index);
     }
 
     // Write the updated bitmap back
-    write_ext2_block(device, bitmap_block, block_size, &bitmap_buf)
+    write_ext2_block(device, bitmap_block, block_size, &bitmap_buf[..block_size])
         .map_err(|_| "Failed to write block bitmap")?;
 
     // Update the free block count

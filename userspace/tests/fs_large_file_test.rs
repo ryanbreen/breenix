@@ -3,17 +3,33 @@
 //! Tests writing and reading files larger than what single indirect blocks can handle,
 //! which requires double indirect block support in the ext2 implementation.
 //!
-//! With 1KB blocks:
+//! # Block Addressing Coverage
+//!
+//! With 1KB blocks (used in our 4MB test ext2.img):
 //! - Direct: 12 blocks = 12KB
 //! - Single indirect: 256 blocks = 256KB (268KB total)
-//! - Double indirect needed for files > 268KB
+//! - Double indirect: 256*256 = 65,536 blocks = 64MB (64MB + 268KB total)
+//! - Triple indirect: 256^3 = 16,777,216 blocks = 16GB (would require > 64MB file)
 //!
-//! With 4KB blocks:
-//! - Direct: 12 blocks = 48KB
-//! - Single indirect: 1024 blocks = 4MB (~4.1MB total)
-//! - Double indirect needed for files > 4.1MB
+//! # Test Coverage
 //!
-//! This test writes 5MB which exercises double indirect blocks with 4KB block size
+//! This test writes 512KB which exercises double indirect blocks with 1KB block size
+//! while fitting within the 4MB test filesystem.
+//!
+//! # Limitation: Triple Indirect Blocks Untested
+//!
+//! Triple indirect block support exists in the implementation (see
+//! `kernel/src/fs/ext2/file.rs` - both `get_block_num` and `set_block_num` have
+//! complete triple indirect logic), but **cannot be tested** with the current 4MB
+//! test filesystem. Testing triple indirect blocks would require:
+//!
+//! - A filesystem image > 64MB (to create files that exceed double indirect capacity)
+//! - For 1KB blocks: file size > 64MB + 268KB to enter triple indirect territory
+//! - For 4KB blocks: file size > 4GB + ~4MB to need triple indirect blocks
+//!
+//! The triple indirect code paths are therefore untested in the current test suite.
+//! If larger filesystem testing becomes necessary, consider creating a larger test
+//! image or using a loopback device
 
 #![no_std]
 #![no_main]
@@ -81,17 +97,17 @@ pub extern "C" fn _start() -> ! {
     println("Large file test (double indirect blocks) starting...");
 
     // We need to write a file larger than what single indirect blocks can handle.
-    // With 4KB blocks, single indirect covers up to ~4.1MB.
-    // Writing 5MB (5 * 1024 * 1024 bytes) exercises double indirect blocks.
-    const FILE_SIZE: usize = 5 * 1024 * 1024; // 5MB - requires double indirect blocks
-    const WRITE_CHUNK: usize = 4096; // Write 4KB at a time (common block size)
+    // With 1KB blocks (used in our test ext2.img), single indirect covers 268KB.
+    // Writing 512KB exercises double indirect blocks while fitting in 4MB filesystem.
+    const FILE_SIZE: usize = 512 * 1024; // 512KB - requires double indirect blocks with 1KB blocks
+    const WRITE_CHUNK: usize = 1024; // Write 1KB at a time (matches our block size)
 
     // ============================================
     // Test 1: Write large file with pattern data
     // ============================================
     libbreenix::io::print("\nTest 1: Writing ");
     print_num(FILE_SIZE / 1024);
-    libbreenix::io::print("KB (5MB) - requires double indirect blocks\n");
+    libbreenix::io::print("KB - requires double indirect blocks\n");
 
     let fd = match open_with_mode("/large_test.bin\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
         Ok(fd) => fd,
@@ -138,8 +154,8 @@ pub extern "C" fn _start() -> ! {
             }
         }
 
-        // Progress indicator every 512KB
-        if total_written % (512 * 1024) == 0 && total_written > 0 {
+        // Progress indicator every 128KB
+        if total_written % (128 * 1024) == 0 && total_written > 0 {
             libbreenix::io::print("  Written ");
             print_num(total_written / 1024);
             libbreenix::io::print("KB...\n");
@@ -204,8 +220,8 @@ pub extern "C" fn _start() -> ! {
             }
         }
 
-        // Progress indicator every 512KB
-        if total_read % (512 * 1024) == 0 && total_read > 0 {
+        // Progress indicator every 128KB
+        if total_read % (128 * 1024) == 0 && total_read > 0 {
             libbreenix::io::print("  Verified ");
             print_num(total_read / 1024);
             libbreenix::io::print("KB...\n");
@@ -231,14 +247,15 @@ pub extern "C" fn _start() -> ! {
     };
 
     // Test positions: direct, single indirect, and double indirect blocks
-    // With 4KB blocks: direct=0-47KB, single indirect=48KB-4.1MB, double indirect=4.1MB+
+    // With 1KB blocks: direct=0-12KB, single indirect=12KB-268KB, double indirect=268KB+
+    // File size is 512KB, so we test positions within that range
     let test_positions: [usize; 6] = [
         0,                   // Start of file (direct block 0)
-        32 * 1024,           // 32KB - direct block area
-        512 * 1024,          // 512KB - single indirect area
-        2 * 1024 * 1024,     // 2MB - deep in single indirect
-        4 * 1024 * 1024 + 100 * 1024, // 4.1MB - double indirect area
-        5 * 1024 * 1024 - 4096, // Near end of 5MB file
+        8 * 1024,            // 8KB - mid direct blocks (block 8 of 12)
+        48 * 1024,           // 48KB - deep in single indirect area
+        100 * 1024,          // 100KB - still in single indirect
+        300 * 1024,          // 300KB - double indirect area (starts at 268KB)
+        512 * 1024 - 128,    // Near end of 512KB file
     ];
 
     for &pos in &test_positions {

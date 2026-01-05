@@ -22,7 +22,12 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 ///
 /// Reduced sizes (1-2 MiB) caused OOM during concurrent fork/pipe tests.
 /// Increased from 1 MiB based on empirical testing of pipe_concurrent_test scenarios.
-pub const HEAP_SIZE: u64 = 4 * 1024 * 1024;
+/// Increased from 4 MiB to 32 MiB to accommodate ext2 filesystem operations which
+/// allocate Vec buffers that aren't freed by the bump allocator.
+/// The test suite runs 43+ processes, each needing kernel stacks (64KB), page tables,
+/// file descriptor tables, etc. The bump allocator never reclaims until ALL allocations
+/// are freed, so memory accumulates across the entire test run.
+pub const HEAP_SIZE: u64 = 32 * 1024 * 1024;
 
 /// A simple bump allocator
 struct BumpAllocator {

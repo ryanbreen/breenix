@@ -712,6 +712,14 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: large file (50KB, indirect blocks) ===");
         test_exec::test_fs_large_file();
 
+        // Test directory operations (mkdir, rmdir)
+        log::info!("=== FS TEST: directory ops (mkdir, rmdir) ===");
+        test_exec::test_fs_directory();
+
+        // Test link operations (link, symlink, readlink)
+        log::info!("=== FS TEST: link ops (link, symlink, readlink) ===");
+        test_exec::test_fs_link();
+
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
         test_exec::test_signal_exec();

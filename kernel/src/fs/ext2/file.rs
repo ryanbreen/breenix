@@ -5,7 +5,6 @@
 
 use crate::block::{BlockDevice, BlockError};
 use crate::fs::ext2::{Ext2Inode, Ext2Superblock};
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// Read an ext2 block using device block numbers
@@ -249,7 +248,8 @@ pub fn read_file_range<B: BlockDevice>(
     let end_block = ((end_offset + block_size as u64 - 1) / block_size as u64) as u32;
 
     let mut result = Vec::with_capacity(actual_length);
-    let mut block_buf = vec![0u8; block_size];
+    // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
+    let mut block_buf = [0u8; 4096]; // Max block size
 
     for logical_block in start_block..end_block {
         // Get physical block number (or None for sparse holes)
@@ -257,10 +257,10 @@ pub fn read_file_range<B: BlockDevice>(
 
         // Read block or fill with zeros for sparse holes
         if let Some(block_num) = physical_block {
-            read_ext2_block(device, block_num, block_size, &mut block_buf)?;
+            read_ext2_block(device, block_num, block_size, &mut block_buf[..block_size])?;
         } else {
             // Sparse hole - fill with zeros
-            block_buf.fill(0);
+            block_buf[..block_size].fill(0);
         }
 
         // Calculate which bytes from this block to copy
@@ -299,8 +299,9 @@ fn read_indirect_block<B: BlockDevice>(
     block_num: u32,
     block_size: usize,
 ) -> Result<Vec<u32>, BlockError> {
-    let mut block_buf = vec![0u8; block_size];
-    read_ext2_block(device, block_num, block_size, &mut block_buf)?;
+    // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
+    let mut block_buf = [0u8; 4096]; // Max block size
+    read_ext2_block(device, block_num, block_size, &mut block_buf[..block_size])?;
 
     // Parse as array of little-endian u32 pointers
     let num_pointers = block_size / 4;
@@ -548,7 +549,8 @@ pub fn write_file_range<B: BlockDevice>(
     let end_block = ((end_offset + block_size as u64 - 1) / block_size as u64) as u32;
 
     let mut data_pos = 0usize;
-    let mut block_buf = vec![0u8; block_size];
+    // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
+    let mut block_buf = [0u8; 4096]; // Max block size
 
     for logical_block in start_block..end_block {
         // Get physical block number, allocating if necessary
@@ -590,7 +592,7 @@ pub fn write_file_range<B: BlockDevice>(
 
         // Read-modify-write if we're not writing a full block
         if start_in_block != 0 || end_in_block != block_size {
-            read_ext2_block(device, physical_block, block_size, &mut block_buf)?;
+            read_ext2_block(device, physical_block, block_size, &mut block_buf[..block_size])?;
         }
 
         // Copy data into block buffer
@@ -599,7 +601,7 @@ pub fn write_file_range<B: BlockDevice>(
         data_pos += bytes_to_write;
 
         // Write the block back
-        write_ext2_block(device, physical_block, block_size, &block_buf)?;
+        write_ext2_block(device, physical_block, block_size, &block_buf[..block_size])?;
     }
 
     // Update inode size if we extended the file
@@ -639,7 +641,8 @@ fn write_indirect_block<B: BlockDevice>(
     block_size: usize,
     pointers: &[u32],
 ) -> Result<(), BlockError> {
-    let mut block_buf = vec![0u8; block_size];
+    // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
+    let mut block_buf = [0u8; 4096]; // Max block size
     let num_pointers = core::cmp::min(pointers.len(), block_size / 4);
 
     // Serialize pointers to little-endian bytes
@@ -649,7 +652,7 @@ fn write_indirect_block<B: BlockDevice>(
         block_buf[offset..offset + 4].copy_from_slice(&bytes);
     }
 
-    write_ext2_block(device, block_num, block_size, &block_buf)?;
+    write_ext2_block(device, block_num, block_size, &block_buf[..block_size])?;
     Ok(())
 }
 

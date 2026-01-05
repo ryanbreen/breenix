@@ -216,19 +216,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Unlink) => super::fs::sys_unlink(args.0),
         Some(SyscallNumber::Rename) => super::fs::sys_rename(args.0, args.1),
         Some(SyscallNumber::Mkdir) => super::fs::sys_mkdir(args.0, args.1 as u32),
-        Some(SyscallNumber::Rmdir) => {
-            log::warn!("rmdir not yet implemented");
-            SyscallResult::Err(super::ErrorCode::NoSys as u64)
-        }
+        Some(SyscallNumber::Rmdir) => super::fs::sys_rmdir(args.0),
         Some(SyscallNumber::Link) => super::fs::sys_link(args.0, args.1),
-        Some(SyscallNumber::Symlink) => {
-            log::warn!("symlink not yet implemented");
-            SyscallResult::Err(super::ErrorCode::NoSys as u64)
-        }
-        Some(SyscallNumber::Readlink) => {
-            log::warn!("readlink not yet implemented");
-            SyscallResult::Err(super::ErrorCode::NoSys as u64)
-        }
+        Some(SyscallNumber::Symlink) => super::fs::sys_symlink(args.0, args.1),
+        Some(SyscallNumber::Readlink) => super::fs::sys_readlink(args.0, args.1, args.2),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

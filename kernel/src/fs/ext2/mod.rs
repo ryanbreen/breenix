@@ -683,7 +683,8 @@ impl Ext2Fs {
         new_inode.i_blocks = (block_size / 512) as u32;
 
         // Initialize directory contents with "." and ".." entries
-        let mut dir_data = alloc::vec![0u8; block_size];
+        // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
+        let mut dir_data = [0u8; 4096]; // Max block size
 
         // Write "." entry (points to self)
         // inode (4) + rec_len (2) + name_len (1) + file_type (1) + name (1) = 9, aligned to 12
@@ -706,7 +707,7 @@ impl Ext2Fs {
         dir_data[dotdot_offset + 9] = b'.'; // name[1]
 
         // Write the directory data block
-        file::write_ext2_block(self.device.as_ref(), new_block, block_size, &dir_data)
+        file::write_ext2_block(self.device.as_ref(), new_block, block_size, &dir_data[..block_size])
             .map_err(|_| "Failed to write directory data block")?;
 
         // Write the new inode to disk
@@ -1075,12 +1076,13 @@ impl Ext2Fs {
             )?;
 
             // Write the target to the block
+            // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
             let block_size = self.superblock.block_size();
-            let mut block_buf = alloc::vec![0u8; block_size];
+            let mut block_buf = [0u8; 4096]; // Max block size
             let target_bytes = target.as_bytes();
             block_buf[..target_bytes.len()].copy_from_slice(target_bytes);
 
-            write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf)
+            write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf[..block_size])
                 .map_err(|_| "Failed to write symlink target block")?;
 
             // Update inode to point to this block
@@ -1196,9 +1198,10 @@ impl Ext2Fs {
             }
 
             // Read the data block
+            // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
             let block_size = self.superblock.block_size();
-            let mut block_buf = alloc::vec![0u8; block_size];
-            read_ext2_block(self.device.as_ref(), block_num, block_size, &mut block_buf)
+            let mut block_buf = [0u8; 4096]; // Max block size
+            read_ext2_block(self.device.as_ref(), block_num, block_size, &mut block_buf[..block_size])
                 .map_err(|_| "Failed to read symlink data block")?;
 
             // Extract the target string
@@ -1239,11 +1242,12 @@ impl Ext2Fs {
             let bytes_to_write = core::cmp::min(block_size, data.len() - offset);
 
             // Prepare block buffer
-            let mut block_buf = alloc::vec![0u8; block_size];
+            // Use stack-based buffer to avoid heap allocation (bump allocator doesn't reclaim)
+            let mut block_buf = [0u8; 4096]; // Max block size
             block_buf[..bytes_to_write].copy_from_slice(&data[offset..offset + bytes_to_write]);
 
             // Write the block using ext2-to-device block conversion
-            file::write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf)
+            file::write_ext2_block(self.device.as_ref(), block_num, block_size, &block_buf[..block_size])
                 .map_err(|_| "Failed to write directory block")?;
 
             offset += bytes_to_write;
