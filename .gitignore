@@ -28,6 +28,10 @@ libs/*
 !libs/libbreenix/**
 !libs/breenix_std/
 !libs/breenix_std/**
+!libs/libbreenix-libc/
+!libs/libbreenix-libc/**
+!libs/libc/
+!libs/libc/**
 
 # Log files
 *.log

@@ -1,0 +1,33 @@
+[package]
+name = "ctest-test"
+version = "0.1.0"
+authors = ["Alex Crichton <alex@alexcrichton.com>"]
+publish = false
+edition = "2021"
+
+[build-dependencies]
+ctest = { path = "../ctest" }
+cc = "1.2"
+
+[dev-dependencies]
+ctest = { path = "../ctest" }
+
+[dependencies]
+libc = { path = ".." }
+
+[[bin]]
+name = "t1"
+test = false
+
+[[bin]]
+name = "t2"
+test = false
+
+# FIXME(msrv): These should be moved to the root Cargo.toml as `[workspace.lints.*]`
+#              once MSRV is above 1.64 and replaced with `[lints] workspace=true`
+
+[lints.rust]
+# FIXME(cleanup): make ident usage consistent in each file
+unused_qualifications = "allow"
+
+[lints.clippy]
