@@ -110,9 +110,10 @@ pub fn create_test_disk() -> Result<()> {
     println!("Creating test disk image...");
 
     let userspace_dir = Path::new("userspace/tests");
+    let userspace_std_dir = Path::new("userspace/tests-std/target/x86_64-breenix/release");
     let output_path = Path::new("target/test_binaries.img");
 
-    // Find all .elf files
+    // Find all .elf files from userspace/tests/
     let mut binaries = Vec::new();
 
     if !userspace_dir.exists() {
@@ -130,6 +131,32 @@ pub fn create_test_disk() -> Result<()> {
                 file.read_to_end(&mut data)?;
 
                 binaries.push((name.to_string(), data));
+            }
+        }
+    }
+
+    // Also include binaries from userspace/tests-std (Rust std tests)
+    // These are ELF binaries without the .elf extension, built with cargo
+    if userspace_std_dir.exists() {
+        // List of known std test binaries to include
+        let std_binaries = ["hello_std_real"];
+
+        for bin_name in std_binaries {
+            let bin_path = userspace_std_dir.join(bin_name);
+            if bin_path.exists() {
+                let mut file = File::open(&bin_path)?;
+                let mut data = Vec::new();
+                file.read_to_end(&mut data)?;
+
+                // Verify it's an ELF file
+                if data.len() >= 4 && &data[0..4] == b"\x7fELF" {
+                    println!("  Including std test: {} ({} bytes)", bin_name, data.len());
+                    binaries.push((bin_name.to_string(), data));
+                } else {
+                    println!("  Warning: {} is not an ELF file, skipping", bin_name);
+                }
+            } else {
+                println!("  Note: std test binary {} not found (build with: cd userspace/tests-std && cargo build --release)", bin_name);
             }
         }
     }

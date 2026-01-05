@@ -55,6 +55,10 @@ jobs:
           cd userspace/tests
           ./build.sh
 
+      - name: Pre-build kernel to avoid timeout during QEMU wait
+        run: |
+          cargo build --release -p breenix --features testing,external_test_bins --bin qemu-uefi
+
       - name: Run boot-stages test
         run: cargo run -p xtask -- boot-stages
 

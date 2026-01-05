@@ -32,6 +32,14 @@ pub const USERSPACE_BASE: u64 = 0x40000000;          // 1GB - avoids kernel conf
 /// can be loaded. The stack lives in a separate, higher region.
 pub const USERSPACE_CODE_DATA_END: u64 = 0x80000000;
 
+/// Start of mmap allocation region (below stack)
+/// This is where anonymous mmap allocations (used by Rust's Vec/Box) are placed.
+/// The region grows downward from MMAP_REGION_END toward MMAP_REGION_START.
+pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
+
+/// End of mmap allocation region (gap before stack)
+pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
+
 /// User stack allocation region start (high canonical space)
 /// User stacks are allocated in this high canonical range for better compatibility
 /// with different QEMU configurations and to avoid conflicts with code/data region
@@ -247,13 +255,27 @@ pub fn is_user_stack_address(addr: u64) -> bool {
     addr >= USER_STACK_REGION_START && addr < USER_STACK_REGION_END
 }
 
+/// Check if an address is in userspace mmap region
+///
+/// The mmap region is where anonymous memory mappings (used by Vec, Box, etc.)
+/// are placed. It spans from MMAP_REGION_START to MMAP_REGION_END.
+#[inline]
+pub fn is_user_mmap_address(addr: u64) -> bool {
+    addr >= MMAP_REGION_START && addr < MMAP_REGION_END
+}
+
 /// Check if an address is in ANY valid userspace region
 ///
-/// This validates that an address falls within either the code/data region or
-/// the stack region. Any other address is considered invalid for userspace access.
+/// This validates that an address falls within either the code/data region,
+/// the mmap region, or the stack region. Any other address is considered
+/// invalid for userspace access.
+///
+/// Note: This only checks that the address is in a valid region - it does NOT
+/// verify that the specific page is mapped. Accessing an unmapped address in
+/// a valid region will cause a page fault, which is the correct behavior.
 #[inline]
 pub fn is_valid_user_address(addr: u64) -> bool {
-    is_user_code_data_address(addr) || is_user_stack_address(addr)
+    is_user_code_data_address(addr) || is_user_mmap_address(addr) || is_user_stack_address(addr)
 }
 
 // === Compile-time Layout Assertions ===
@@ -261,6 +283,11 @@ pub fn is_valid_user_address(addr: u64) -> bool {
 /// Verify that user regions don't overlap
 /// This compile-time check ensures our memory layout is consistent
 const _: () = assert!(
-    USERSPACE_CODE_DATA_END <= USER_STACK_REGION_START,
-    "User code/data region overlaps with stack region!"
+    USERSPACE_CODE_DATA_END <= MMAP_REGION_START,
+    "User code/data region overlaps with mmap region!"
+);
+
+const _: () = assert!(
+    MMAP_REGION_END <= USER_STACK_REGION_START,
+    "Mmap region overlaps with stack region!"
 );

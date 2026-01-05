@@ -1,0 +1,20 @@
+[package]
+name = "libbreenix-libc"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ryan Breen <rbreen@cimpress.com>"]
+description = "C ABI wrappers for libbreenix - enables Rust std support"
+license = "MIT"
+
+# This is a standalone library, not part of the kernel workspace
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+name = "c"  # Produces libc.a
+
+[features]
+default = []
+
+[dependencies]
+libbreenix = { path = "../libbreenix" }

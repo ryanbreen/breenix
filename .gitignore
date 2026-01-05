@@ -22,10 +22,16 @@ build/
 # Debug files
 rust-os-gdb
 
-# Ignore most of libs directory (except libbreenix which we maintain)
+# Ignore most of libs directory (except libraries we maintain)
 libs/*
 !libs/libbreenix/
 !libs/libbreenix/**
+!libs/breenix_std/
+!libs/breenix_std/**
+!libs/libbreenix-libc/
+!libs/libbreenix-libc/**
+!libs/libc/
+!libs/libc/**
 
 # Log files
 *.log

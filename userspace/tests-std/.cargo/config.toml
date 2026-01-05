@@ -1,0 +1,31 @@
+# Cargo configuration for building with real Rust std on Breenix
+#
+# This configuration enables -Z build-std to compile the standard library
+# for our custom target, and links against libbreenix-libc (libc.a).
+
+[build]
+target = "../../x86_64-breenix.json"
+
+[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-breenix]
+linker = "rust-lld"
+rustflags = [
+    # Note: -nostartfiles is not supported by LLD's GNU flavor
+    # We handle this by not having startfiles anyway
+    "-L", "native=../../libs/libbreenix-libc/target/x86_64-breenix/release",
+    # Use our linker script to place the binary at 0x40000000
+    # This avoids conflicts with kernel page table mappings
+    "-C", "link-arg=-T../../userspace/tests-std/linker.ld",
+    # Tell linker these libraries are not needed - our libc.a provides everything
+    "-C", "link-arg=--allow-multiple-definition",
+    # Provide stub libraries in case std tries to link them
+    "-L", "native=../../libs/libbreenix-libc/stublibs",
+]
+
+# Override libc with our local version that has Linux x86_64 definitions
+# Needed because our custom target spec isn't automatically recognized
+[patch.crates-io]
+libc = { path = "../../libs/libc" }

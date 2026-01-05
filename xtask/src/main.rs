@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::Read,
+    path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -11,6 +12,90 @@ use structopt::StructOpt;
 
 mod ext2_disk;
 mod test_disk;
+
+/// Build userspace test binaries that use the real Rust standard library.
+///
+/// This must be called BEFORE create_test_disk() because the test disk
+/// needs to include the compiled binaries.
+///
+/// Build order:
+/// 1. libs/libbreenix-libc - produces libc.a for std programs to link against
+/// 2. userspace/tests-std - builds hello_std_real using -Z build-std
+fn build_std_test_binaries() -> Result<()> {
+    println!("Building Rust std test binaries...\n");
+
+    // Step 1: Build libbreenix-libc (produces libc.a)
+    println!("  [1/2] Building libbreenix-libc...");
+    let libc_dir = Path::new("libs/libbreenix-libc");
+
+    if !libc_dir.exists() {
+        println!("    Note: libs/libbreenix-libc not found, skipping std test binaries");
+        return Ok(());
+    }
+
+    // Clear environment variables that might interfere with the standalone build
+    // The rust-toolchain.toml in libbreenix-libc specifies the nightly version
+    let status = Command::new("cargo")
+        .args(&["build", "--release"])
+        .current_dir(libc_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_PKG_NAME")
+        .env_remove("OUT_DIR")
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for libbreenix-libc: {}", e))?;
+
+    if !status.success() {
+        bail!("Failed to build libbreenix-libc");
+    }
+    println!("    libbreenix-libc built successfully");
+
+    // Step 2: Build tests-std (produces hello_std_real)
+    println!("  [2/2] Building tests-std...");
+    let tests_std_dir = Path::new("userspace/tests-std");
+
+    if !tests_std_dir.exists() {
+        println!("    Note: userspace/tests-std not found, skipping");
+        return Ok(());
+    }
+
+    // The rust-toolchain.toml in tests-std specifies the nightly version
+    let status = Command::new("cargo")
+        .args(&["build", "--release"])
+        .current_dir(tests_std_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_PKG_NAME")
+        .env_remove("OUT_DIR")
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for tests-std: {}", e))?;
+
+    if !status.success() {
+        bail!("Failed to build tests-std");
+    }
+    println!("    tests-std built successfully");
+
+    // Verify the binary exists
+    let binary_path = tests_std_dir.join("target/x86_64-breenix/release/hello_std_real");
+    if binary_path.exists() {
+        println!("\n  hello_std_real binary ready at: {}", binary_path.display());
+    } else {
+        bail!(
+            "Build succeeded but binary not found at: {}",
+            binary_path.display()
+        );
+    }
+
+    println!();
+    Ok(()
+    )
+}
 
 /// Simple developer utility tasks.
 #[derive(StructOpt)]
@@ -695,8 +780,127 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "link operations failed - hard links, symlinks, or link count handling broken",
             check_hint: "Check kernel/src/fs/ext2/mod.rs link(), symlink(), readlink() and inode link count",
         },
-        // NOTE: ENOSYS syscall verification requires external_test_bins feature
-        // which is not enabled by default. Add back when external binaries are integrated.
+        // Rust std library test - validates real Rust std works in userspace
+        BootStage {
+            name: "Rust std println! works",
+            marker: "RUST_STD_PRINTLN_WORKS",
+            failure_meaning: "Rust std println! macro failed - std write syscall path broken",
+            check_hint: "Check userspace/tests-std/src/hello_std_real.rs, verify libbreenix-libc is linked correctly",
+        },
+        BootStage {
+            name: "Rust std Vec works",
+            marker: "RUST_STD_VEC_WORKS",
+            failure_meaning: "Rust std Vec allocation failed - heap allocation via mmap/brk broken for std programs",
+            check_hint: "Check mmap/brk syscalls work correctly with std programs, verify GlobalAlloc implementation in libbreenix-libc",
+        },
+        BootStage {
+            name: "Rust std String works",
+            marker: "RUST_STD_STRING_WORKS",
+            failure_meaning: "Rust std String operations failed - String concatenation or comparison broken",
+            check_hint: "Check userspace/tests-std/src/hello_std_real.rs, verify String::from() and + operator work correctly",
+        },
+        BootStage {
+            name: "Rust std getrandom returns ENOSYS",
+            marker: "RUST_STD_GETRANDOM_ENOSYS",
+            failure_meaning: "getrandom() did not properly return ENOSYS - may be returning fake data",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs getrandom implementation",
+        },
+        BootStage {
+            name: "Rust std realloc preserves data",
+            marker: "RUST_STD_REALLOC_WORKS",
+            failure_meaning: "realloc() did not preserve data when growing allocation - bounds check or copy logic broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs realloc implementation - should copy min(old_size, new_size) bytes",
+        },
+        BootStage {
+            name: "Rust std format! macro works",
+            marker: "RUST_STD_FORMAT_WORKS",
+            failure_meaning: "format! macro failed - heap allocation or formatting broken",
+            check_hint: "Check String and Vec allocation paths",
+        },
+        BootStage {
+            name: "Rust std realloc shrink preserves data",
+            marker: "RUST_STD_REALLOC_SHRINK_WORKS",
+            failure_meaning: "realloc() did not preserve data when shrinking - min(old,new) logic broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs realloc implementation",
+        },
+        BootStage {
+            name: "Rust std read() error handling works",
+            marker: "RUST_STD_READ_ERROR_WORKS",
+            failure_meaning: "read() did not return proper error for invalid fd",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs read implementation",
+        },
+        BootStage {
+            name: "Rust std read() success with pipe works",
+            marker: "RUST_STD_READ_SUCCESS_WORKS",
+            failure_meaning: "read() did not successfully read data from a pipe - pipe/write/read syscall path broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs pipe/read implementation and kernel syscall/pipe.rs",
+        },
+        BootStage {
+            name: "Rust std malloc boundary conditions work",
+            marker: "RUST_STD_MALLOC_BOUNDARY_WORKS",
+            failure_meaning: "malloc() boundary conditions failed - size=0 or small alloc broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs malloc implementation",
+        },
+        BootStage {
+            name: "Rust std posix_memalign works",
+            marker: "RUST_STD_POSIX_MEMALIGN_WORKS",
+            failure_meaning: "posix_memalign() failed - alignment or allocation broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs posix_memalign implementation",
+        },
+        BootStage {
+            name: "Rust std sbrk works",
+            marker: "RUST_STD_SBRK_WORKS",
+            failure_meaning: "sbrk() failed - heap extension or error handling broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs sbrk implementation",
+        },
+        BootStage {
+            name: "Rust std getpid/gettid works",
+            marker: "RUST_STD_GETPID_WORKS",
+            failure_meaning: "getpid()/gettid() failed - process/thread ID syscalls broken or returning invalid values",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs getpid/gettid implementation and libbreenix::process::getpid/gettid",
+        },
+        BootStage {
+            name: "Rust std posix_memalign error handling works",
+            marker: "RUST_STD_POSIX_MEMALIGN_ERRORS_WORK",
+            failure_meaning: "posix_memalign() did not return EINVAL for invalid alignments (0, non-power-of-2, < sizeof(void*))",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs posix_memalign EINVAL error paths",
+        },
+        BootStage {
+            name: "Rust std close works",
+            marker: "RUST_STD_CLOSE_WORKS",
+            failure_meaning: "close() syscall failed - fd closing, error handling (EBADF), or dup() broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs close/dup implementation and kernel syscall/io.rs:sys_close",
+        },
+        BootStage {
+            name: "Rust std mprotect works",
+            marker: "RUST_STD_MPROTECT_WORKS",
+            failure_meaning: "mprotect() syscall failed - memory protection changes not working or VMA lookup broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs mprotect and kernel syscall/mmap.rs:sys_mprotect",
+        },
+        BootStage {
+            name: "Rust std stub functions work",
+            marker: "RUST_STD_STUB_FUNCTIONS_WORK",
+            failure_meaning: "libc stub functions failed - pthread_*, signal, sysconf, poll, fcntl, getenv, or other stubs broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs stub function implementations (pthread_self, signal, sysconf, poll, fcntl, getauxval, getenv, strlen, memcmp, __xpg_strerror_r)",
+        },
+        BootStage {
+            name: "Rust std free(NULL) is safe",
+            marker: "RUST_STD_FREE_NULL_WORKS",
+            failure_meaning: "free(NULL) crashed or behaved incorrectly - should be a no-op per C99",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs free implementation NULL check",
+        },
+        BootStage {
+            name: "Rust std write edge cases work",
+            marker: "RUST_STD_WRITE_EDGE_CASES_WORK",
+            failure_meaning: "write() edge case handling failed - count=0, invalid fd (EBADF), or closed pipe (EPIPE) errors broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs write implementation and kernel syscall/io.rs:sys_write error paths",
+        },
+        BootStage {
+            name: "Rust std mmap/munmap direct tests work",
+            marker: "RUST_STD_MMAP_WORKS",
+            failure_meaning: "Direct mmap/munmap tests failed - anonymous mapping, memory access, unmapping, or error handling broken",
+            check_hint: "Check libs/libbreenix-libc/src/lib.rs mmap/munmap and kernel syscall/mmap.rs:sys_mmap/sys_munmap",
+        },
     ]
 }
 
@@ -714,6 +918,14 @@ fn boot_stages() -> Result<()> {
 
     println!("Boot Stage Validator - {} stages to check", total_stages);
     println!("=========================================\n");
+
+    // Build std test binaries BEFORE creating the test disk
+    // This ensures hello_std_real is available to be included
+    build_std_test_binaries()?;
+
+    // Create the test disk with all userspace binaries
+    test_disk::create_test_disk()?;
+    println!();
 
     // COM2 (log output) - this is where all test markers go
     let serial_output_file = "target/xtask_boot_stages_output.txt";

@@ -1,0 +1,27 @@
+[package]
+name = "tests-std"
+version = "0.1.0"
+edition = "2021"
+description = "Test programs using the real Rust standard library"
+
+# This crate builds with -Z build-std to use the real Rust standard library
+# It links against libbreenix-libc (libc.a) for system calls
+
+[dependencies]
+# No dependencies - we use pure std!
+
+[[bin]]
+name = "hello_std_real"
+path = "src/hello_std_real.rs"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "z"
+
+[workspace]
+
+# Override libc with our local version that has Linux x86_64 definitions
+# Needed because our custom target spec isn't automatically recognized
+[patch.crates-io]
+libc = { path = "../../libs/libc" }
