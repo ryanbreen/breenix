@@ -34,8 +34,9 @@ fn build_std_test_binaries() -> Result<()> {
     }
 
     // Clear environment variables that might interfere with the standalone build
+    // The rust-toolchain.toml in libbreenix-libc specifies the nightly version
     let status = Command::new("cargo")
-        .args(&["+nightly", "build", "--release"])
+        .args(&["build", "--release"])
         .current_dir(libc_dir)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
@@ -61,8 +62,9 @@ fn build_std_test_binaries() -> Result<()> {
         return Ok(());
     }
 
+    // The rust-toolchain.toml in tests-std specifies the nightly version
     let status = Command::new("cargo")
-        .args(&["+nightly", "build", "--release"])
+        .args(&["build", "--release"])
         .current_dir(tests_std_dir)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
