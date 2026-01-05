@@ -105,15 +105,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}/udp_socket_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/tty_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/file_read_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/hello_std.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
-
-            // Also track breenix_std changes
-            let breenix_std_dir = repo_root.join("libs/breenix_std/src");
-            println!("cargo:rerun-if-changed={}/lib.rs", breenix_std_dir.to_str().unwrap());
-            println!("cargo:rerun-if-changed={}/io.rs", breenix_std_dir.to_str().unwrap());
-            println!("cargo:rerun-if-changed={}/alloc_impl.rs", breenix_std_dir.to_str().unwrap());
-            println!("cargo:rerun-if-changed={}/panic.rs", breenix_std_dir.to_str().unwrap());
             println!("cargo:rerun-if-changed={}/fs.rs", libbreenix_dir.to_str().unwrap());
         }
     } else {

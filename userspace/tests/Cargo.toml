@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 libbreenix = { path = "../../libs/libbreenix" }
-breenix_std = { path = "../../libs/breenix_std" }
 
 [[bin]]
 name = "hello_time"
@@ -186,10 +185,6 @@ path = "fs_directory_test.rs"
 [[bin]]
 name = "fs_link_test"
 path = "fs_link_test.rs"
-
-[[bin]]
-name = "hello_std"
-path = "hello_std.rs"
 
 [profile.release]
 panic = "abort"

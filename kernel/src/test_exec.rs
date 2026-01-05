@@ -1901,37 +1901,47 @@ pub fn test_fs_link() {
     }
 }
 
-/// Test breenix_std Stage 1 functionality (println!, Vec, String, Box)
+/// Test Rust std library support via hello_std_real
+///
+/// This test runs a userspace program that uses the REAL Rust standard library:
+/// - println! macro (uses write syscall)
+/// - Vec and heap allocation (uses mmap/brk)
+/// - std::process::exit
 ///
 /// TWO-STAGE VALIDATION PATTERN:
 /// - Stage 1 (Checkpoint): Process creation
-///   - Marker: "Hello std test: process scheduled for execution"
+///   - Marker: "hello_std_real test: process scheduled for execution"
 ///   - This is a CHECKPOINT confirming process creation succeeded
-/// - Stage 2 (Boot stage): Validates breenix_std APIs work
-///   - Marker: "HELLO_STD_COMPLETE"
-///   - This PROVES println!, Vec, String, Box, and format! all work with breenix_std
-pub fn test_hello_std() {
-    log::info!("Testing breenix_std Stage 1 (println!, Vec, String, Box)");
+/// - Stage 2 (Boot stage): Validates std functionality
+///   - Marker: "RUST_STD_PRINTLN_WORKS"
+///   - This PROVES println! macro works with std
+/// - Stage 3 (Boot stage): Validates Vec allocation
+///   - Marker: "RUST_STD_VEC_WORKS"
+///   - This PROVES heap allocation and Vec work with std
+pub fn test_hello_std_real() {
+    log::info!("Testing Rust std library support (hello_std_real)");
 
     #[cfg(feature = "testing")]
-    let hello_std_elf_buf = crate::userspace_test::get_test_binary("hello_std");
+    let hello_std_real_elf_buf = crate::userspace_test::get_test_binary("hello_std_real");
     #[cfg(feature = "testing")]
-    let hello_std_elf: &[u8] = &hello_std_elf_buf;
+    let hello_std_real_elf: &[u8] = &hello_std_real_elf_buf;
     #[cfg(not(feature = "testing"))]
-    let hello_std_elf = &create_hello_world_elf();
+    let hello_std_real_elf = &create_hello_world_elf();
 
     match crate::process::creation::create_user_process(
-        String::from("hello_std"),
-        hello_std_elf,
+        String::from("hello_std_real"),
+        hello_std_real_elf,
     ) {
         Ok(pid) => {
-            log::info!("Created hello_std process with PID {:?}", pid);
-            log::info!("Hello std test: process scheduled for execution.");
-            log::info!("    -> Userspace will emit HELLO_STD_COMPLETE marker if successful");
+            log::info!("Created hello_std_real process with PID {:?}", pid);
+            log::info!("hello_std_real test: process scheduled for execution.");
+            // Note: The test will emit markers for println! and Vec validation
+            // Do NOT print the exact marker strings here - that would cause false positives!
         }
         Err(e) => {
-            log::error!("Failed to create hello_std process: {}", e);
-            log::error!("Hello std test cannot run without valid userspace process");
+            log::error!("Failed to create hello_std_real process: {}", e);
+            log::error!("hello_std_real test cannot run without valid userspace process");
         }
     }
 }
+
