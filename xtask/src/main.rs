@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::Read,
+    path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -11,6 +12,88 @@ use structopt::StructOpt;
 
 mod ext2_disk;
 mod test_disk;
+
+/// Build userspace test binaries that use the real Rust standard library.
+///
+/// This must be called BEFORE create_test_disk() because the test disk
+/// needs to include the compiled binaries.
+///
+/// Build order:
+/// 1. libs/libbreenix-libc - produces libc.a for std programs to link against
+/// 2. userspace/tests-std - builds hello_std_real using -Z build-std
+fn build_std_test_binaries() -> Result<()> {
+    println!("Building Rust std test binaries...\n");
+
+    // Step 1: Build libbreenix-libc (produces libc.a)
+    println!("  [1/2] Building libbreenix-libc...");
+    let libc_dir = Path::new("libs/libbreenix-libc");
+
+    if !libc_dir.exists() {
+        println!("    Note: libs/libbreenix-libc not found, skipping std test binaries");
+        return Ok(());
+    }
+
+    // Clear environment variables that might interfere with the standalone build
+    let status = Command::new("cargo")
+        .args(&["+nightly", "build", "--release"])
+        .current_dir(libc_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_PKG_NAME")
+        .env_remove("OUT_DIR")
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for libbreenix-libc: {}", e))?;
+
+    if !status.success() {
+        bail!("Failed to build libbreenix-libc");
+    }
+    println!("    libbreenix-libc built successfully");
+
+    // Step 2: Build tests-std (produces hello_std_real)
+    println!("  [2/2] Building tests-std...");
+    let tests_std_dir = Path::new("userspace/tests-std");
+
+    if !tests_std_dir.exists() {
+        println!("    Note: userspace/tests-std not found, skipping");
+        return Ok(());
+    }
+
+    let status = Command::new("cargo")
+        .args(&["+nightly", "build", "--release"])
+        .current_dir(tests_std_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_PKG_NAME")
+        .env_remove("OUT_DIR")
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for tests-std: {}", e))?;
+
+    if !status.success() {
+        bail!("Failed to build tests-std");
+    }
+    println!("    tests-std built successfully");
+
+    // Verify the binary exists
+    let binary_path = tests_std_dir.join("target/x86_64-breenix/release/hello_std_real");
+    if binary_path.exists() {
+        println!("\n  hello_std_real binary ready at: {}", binary_path.display());
+    } else {
+        bail!(
+            "Build succeeded but binary not found at: {}",
+            binary_path.display()
+        );
+    }
+
+    println!();
+    Ok(()
+    )
+}
 
 /// Simple developer utility tasks.
 #[derive(StructOpt)]
@@ -833,6 +916,14 @@ fn boot_stages() -> Result<()> {
 
     println!("Boot Stage Validator - {} stages to check", total_stages);
     println!("=========================================\n");
+
+    // Build std test binaries BEFORE creating the test disk
+    // This ensures hello_std_real is available to be included
+    build_std_test_binaries()?;
+
+    // Create the test disk with all userspace binaries
+    test_disk::create_test_disk()?;
+    println!();
 
     // COM2 (log output) - this is where all test markers go
     let serial_output_file = "target/xtask_boot_stages_output.txt";
