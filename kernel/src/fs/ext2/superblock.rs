@@ -258,6 +258,36 @@ impl Ext2Superblock {
             }
         }
     }
+
+    /// Increment the free inode count
+    ///
+    /// Call this after freeing an inode and before writing the superblock.
+    pub fn increment_free_inodes(&mut self) {
+        let current = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_inodes_count))
+        };
+        unsafe {
+            core::ptr::write_unaligned(
+                core::ptr::addr_of_mut!(self.s_free_inodes_count),
+                current + 1,
+            );
+        }
+    }
+
+    /// Increment free block count by a specified amount
+    ///
+    /// Call this after freeing blocks and before writing the superblock.
+    pub fn increment_free_blocks(&mut self, count: u32) {
+        let current = unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!(self.s_free_blocks_count))
+        };
+        unsafe {
+            core::ptr::write_unaligned(
+                core::ptr::addr_of_mut!(self.s_free_blocks_count),
+                current + count,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

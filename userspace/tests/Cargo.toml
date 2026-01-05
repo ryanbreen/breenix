@@ -178,6 +178,14 @@ path = "fs_rename_test.rs"
 name = "fs_large_file_test"
 path = "fs_large_file_test.rs"
 
+[[bin]]
+name = "fs_directory_test"
+path = "fs_directory_test.rs"
+
+[[bin]]
+name = "fs_link_test"
+path = "fs_link_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

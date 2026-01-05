@@ -73,6 +73,8 @@ BINARIES=(
     "fs_write_test"
     "fs_rename_test"
     "fs_large_file_test"
+    "fs_directory_test"
+    "fs_link_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

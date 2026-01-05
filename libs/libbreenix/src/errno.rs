@@ -72,6 +72,8 @@ pub enum Errno {
     EPIPE = 32,
     /// Function not implemented
     ENOSYS = 38,
+    /// Directory not empty
+    ENOTEMPTY = 39,
 }
 
 impl Errno {
@@ -122,6 +124,7 @@ impl Errno {
             31 => Errno::EMLINK,
             32 => Errno::EPIPE,
             38 => Errno::ENOSYS,
+            39 => Errno::ENOTEMPTY,
             _ => Errno::EINVAL, // Unknown error
         }
     }

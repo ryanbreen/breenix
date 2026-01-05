@@ -518,3 +518,118 @@ pub fn rename(oldpath: &str, newpath: &str) -> Result<(), Errno> {
     };
     Errno::from_syscall(ret).map(|_| ())
 }
+
+/// Create a hard link to a file.
+///
+/// Creates a new hard link (directory entry) pointing to an existing file.
+/// Both paths must be on the same filesystem. Hard links to directories
+/// are not allowed.
+///
+/// # Arguments
+/// * `oldpath` - Path to the existing file (null-terminated string)
+/// * `newpath` - Path for the new link (null-terminated string)
+///
+/// # Returns
+/// * `Ok(())` - Hard link was successfully created
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - oldpath does not exist
+/// * `EEXIST` - newpath already exists
+/// * `EPERM` - oldpath is a directory
+/// * `ENOTDIR` - A component in path is not a directory
+/// * `ENOSPC` - No space in target directory
+/// * `EIO` - I/O error
+///
+/// # Example
+/// ```ignore
+/// // Create a hard link to an existing file
+/// link("/original.txt\0", "/link_to_original.txt\0")?;
+/// // Both paths now refer to the same file (same inode)
+/// ```
+#[inline]
+pub fn link(oldpath: &str, newpath: &str) -> Result<(), Errno> {
+    let ret = unsafe {
+        raw::syscall2(nr::LINK, oldpath.as_ptr() as u64, newpath.as_ptr() as u64) as i64
+    };
+    Errno::from_syscall(ret).map(|_| ())
+}
+
+/// Create a symbolic link.
+///
+/// Creates a new symbolic link at linkpath pointing to target.
+/// Unlike hard links, symbolic links can reference directories
+/// and paths that don't exist yet.
+///
+/// # Arguments
+/// * `target` - Path the symlink will point to (null-terminated string)
+/// * `linkpath` - Path where the symlink will be created (null-terminated string)
+///
+/// # Returns
+/// * `Ok(())` - Symbolic link was successfully created
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - A component of linkpath's parent directory does not exist
+/// * `EEXIST` - linkpath already exists
+/// * `ENOTDIR` - A component in the path is not a directory
+/// * `ENOSPC` - No space to create the symlink
+/// * `EIO` - I/O error
+///
+/// # Example
+/// ```ignore
+/// // Create a symlink to an existing file
+/// symlink("/etc/passwd\0", "/tmp/passwd_link\0")?;
+///
+/// // Symlinks can point to paths that don't exist
+/// symlink("/nonexistent/path\0", "/tmp/broken_link\0")?;
+/// ```
+#[inline]
+pub fn symlink(target: &str, linkpath: &str) -> Result<(), Errno> {
+    let ret = unsafe {
+        raw::syscall2(nr::SYMLINK, target.as_ptr() as u64, linkpath.as_ptr() as u64) as i64
+    };
+    Errno::from_syscall(ret).map(|_| ())
+}
+
+/// Read the target of a symbolic link.
+///
+/// Reads the contents of the symbolic link (the path it points to)
+/// and writes it to the provided buffer. The result is NOT null-terminated.
+///
+/// # Arguments
+/// * `pathname` - Path to the symbolic link (null-terminated string)
+/// * `buf` - Buffer to store the symlink target
+///
+/// # Returns
+/// * `Ok(bytes_read)` - Number of bytes written to the buffer
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `ENOENT` - The symlink does not exist
+/// * `EINVAL` - pathname is not a symbolic link
+/// * `EFAULT` - Invalid buffer pointer
+/// * `EIO` - I/O error
+///
+/// # Note
+/// The buffer is NOT null-terminated. The returned length tells you
+/// exactly how many bytes of the target were written.
+///
+/// # Example
+/// ```ignore
+/// let mut buf = [0u8; 256];
+/// let len = readlink("/tmp/mylink\0", &mut buf)?;
+/// let target = core::str::from_utf8(&buf[..len])?;
+/// ```
+#[inline]
+pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Errno> {
+    let ret = unsafe {
+        raw::syscall3(
+            nr::READLINK,
+            pathname.as_ptr() as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        ) as i64
+    };
+    Errno::from_syscall(ret).map(|n| n as usize)
+}
