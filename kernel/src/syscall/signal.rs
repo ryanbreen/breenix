@@ -471,6 +471,12 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
 
     log::info!("sys_pause_with_frame: Thread {} marked BlockedOnSignal, entering HLT loop", thread_id);
 
+    // CRITICAL: Re-enable preemption before entering blocking loop!
+    // The syscall handler called preempt_disable() at entry, but we need to allow
+    // timer interrupts to schedule other threads while we're blocked.
+    // Without this, can_schedule() returns false and no context switches happen.
+    crate::per_cpu::preempt_enable();
+
     // HLT loop - wait for timer interrupt which will switch to another thread
     let mut loop_count = 0u64;
     loop {
@@ -505,6 +511,9 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
             log::info!("sys_pause_with_frame: Thread {} cleared blocked_in_syscall flag", thread_id);
         }
     });
+
+    // Re-disable preemption before returning to balance syscall exit's preempt_enable()
+    crate::per_cpu::preempt_disable();
 
     log::info!("sys_pause_with_frame: Thread {} returning -EINTR", thread_id);
     SyscallResult::Err(4) // EINTR

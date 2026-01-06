@@ -31,6 +31,8 @@ pub mod time;
 pub mod net;
 pub mod block;
 pub mod fs;
+pub mod logger;
+pub mod framebuffer;
 
 #[cfg(test)]
 use bootloader_api::{entry_point, BootInfo};

@@ -449,7 +449,7 @@ fn kernel_main_continue() -> ! {
             use alloc::string::String;
             serial_println!("INTERACTIVE: Loading init_shell as PID 1");
             let elf = userspace_test::get_test_binary("init_shell");
-            match process::creation::create_user_process(String::from("init"), &elf) {
+            match process::creation::create_user_process(String::from("init_shell"), &elf) {
                 Ok(pid) => {
                     serial_println!("INTERACTIVE: init_shell running as PID {}", pid.as_u64());
                 }
@@ -651,6 +651,10 @@ fn kernel_main_continue() -> ! {
         // The core pipe functionality is validated by test_pipe() above.
         // These complex multi-process tests cause timing-related timeouts.
 
+        // Test SIGTERM delivery with default handler (kill test)
+        log::info!("=== SIGNAL TEST: SIGTERM delivery with default handler ===");
+        test_exec::test_signal_kill();
+
         // Test SIGCHLD delivery when child exits - run early to give time for child to execute
         log::info!("=== SIGNAL TEST: SIGCHLD delivery on child exit ===");
         test_exec::test_sigchld();
@@ -688,40 +692,48 @@ fn kernel_main_continue() -> ! {
         log::info!("=== TTY TEST: TTY layer functionality ===");
         test_exec::test_tty();
 
+        // Test session and process group syscalls
+        log::info!("=== SESSION TEST: Session and process group syscalls ===");
+        test_exec::test_session();
+
         // Test ext2 file read functionality
         log::info!("=== FS TEST: ext2 file read functionality ===");
         test_exec::test_file_read();
+
+        // Test Ctrl-C (SIGINT) signal delivery
+        log::info!("=== SIGNAL TEST: Ctrl-C (SIGINT) signal delivery ===");
+        test_exec::test_ctrl_c();
 
         // Test getdents64 syscall for directory listing
         log::info!("=== FS TEST: getdents64 directory listing ===");
         test_exec::test_getdents();
 
-        // Test lseek syscall including SEEK_END
-        log::info!("=== FS TEST: lseek (SEEK_SET, SEEK_CUR, SEEK_END) ===");
+        // Test lseek syscall
+        log::info!("=== FS TEST: lseek syscall ===");
         test_exec::test_lseek();
 
         // Test filesystem write operations
-        log::info!("=== FS TEST: filesystem write (write, O_CREAT, O_TRUNC, O_APPEND, unlink) ===");
+        log::info!("=== FS TEST: filesystem write operations ===");
         test_exec::test_fs_write();
 
         // Test filesystem rename operations
-        log::info!("=== FS TEST: filesystem rename (rename, atomicity, error handling) ===");
+        log::info!("=== FS TEST: filesystem rename operations ===");
         test_exec::test_fs_rename();
 
         // Test large file operations (indirect blocks)
-        log::info!("=== FS TEST: large file (50KB, indirect blocks) ===");
+        log::info!("=== FS TEST: large file operations ===");
         test_exec::test_fs_large_file();
 
-        // Test directory operations (mkdir, rmdir)
-        log::info!("=== FS TEST: directory ops (mkdir, rmdir) ===");
+        // Test filesystem directory operations
+        log::info!("=== FS TEST: directory operations ===");
         test_exec::test_fs_directory();
 
-        // Test link operations (link, symlink, readlink)
-        log::info!("=== FS TEST: link ops (link, symlink, readlink) ===");
+        // Test filesystem link operations
+        log::info!("=== FS TEST: link operations ===");
         test_exec::test_fs_link();
 
-        // Test Rust std library support (hello_std_real)
-        log::info!("=== STD TEST: Rust std library (println!, Vec) ===");
+        // Test Rust std library support
+        log::info!("=== STD TEST: Rust std library support ===");
         test_exec::test_hello_std_real();
 
         // Test signal handler reset on exec
@@ -743,7 +755,7 @@ fn kernel_main_continue() -> ! {
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");
         userspace_fault_tests::run_fault_tests();
-        log::info!("Fault tests scheduled.");
+        log::info!("Fault tests scheduled");
     }
 
     // NOTE: Premature success markers removed - tests must verify actual execution

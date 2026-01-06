@@ -45,6 +45,15 @@ pub struct Process {
     #[allow(dead_code)]
     pub id: ProcessId,
 
+    /// Process group ID (for job control)
+    /// By default, a process's pgid equals its pid when created
+    pub pgid: ProcessId,
+
+    /// Session ID (for session management)
+    /// A session is a collection of process groups, typically associated with
+    /// a controlling terminal. Initially set to pid on process creation.
+    pub sid: ProcessId,
+
     /// Process name (for debugging)
     pub name: String,
 
@@ -117,6 +126,10 @@ impl Process {
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
         Process {
             id,
+            // By default, a process's pgid equals its pid (process is its own group leader)
+            pgid: id,
+            // By default, a process's sid equals its pid (process is its own session leader)
+            sid: id,
             name,
             state: ProcessState::Creating,
             entry_point,
@@ -163,6 +176,8 @@ impl Process {
     ///
     /// This sets the process state to Terminated and closes all file descriptors
     /// to properly release resources (e.g., decrement pipe reader/writer counts).
+    /// CRITICAL: Also marks the main thread as Terminated so the scheduler
+    /// doesn't keep scheduling this thread after process termination.
     pub fn terminate(&mut self, exit_code: i32) {
         // Close all file descriptors before setting state to Terminated
         // This ensures pipe counts are properly decremented so readers get EOF
@@ -170,6 +185,21 @@ impl Process {
 
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
+
+        // CRITICAL FIX: Mark the main thread as terminated so the scheduler
+        // doesn't keep putting it back in the ready queue. The scheduler checks
+        // thread state (not process state) when deciding whether to re-queue a thread.
+        // Without this, a process terminated by signal would have its thread keep
+        // getting scheduled forever in an infinite loop.
+        if let Some(ref mut thread) = self.main_thread {
+            thread.set_terminated();
+            log::info!(
+                "Process {} terminated (exit_code={}), marked thread {} as Terminated",
+                self.id.as_u64(),
+                exit_code,
+                thread.id()
+            );
+        }
     }
 
     /// Close all file descriptors in this process

@@ -19,6 +19,12 @@ pub(crate) fn init_queue() {
 /// Called by the keyboard interrupt handler
 ///
 /// Must not block or allocate.
+///
+/// NOTE: This function is currently unused because all keyboard processing
+/// now happens directly in the interrupt handler to avoid modifier state
+/// corruption. The async keyboard_task is kept for potential future use
+/// (e.g., debug commands that can't run in interrupt context).
+#[allow(dead_code)]
 pub(crate) fn add_scancode(scancode: u8) {
     if let Ok(queue) = SCANCODE_QUEUE.try_get() {
         if let Err(_) = queue.push(scancode) {

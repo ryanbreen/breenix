@@ -224,13 +224,13 @@ impl Scheduler {
     }
 
     /// Unblock a thread by ID
-    #[allow(dead_code)]
     pub fn unblock(&mut self, thread_id: u64) {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
-                if thread_id != self.idle_thread {
+                if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
                     self.ready_queue.push_back(thread_id);
+                    log_serial_println!("unblock({}): Added to ready_queue", thread_id);
                 }
             }
         }

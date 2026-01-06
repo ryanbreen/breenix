@@ -325,45 +325,30 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::Directory(_) => {
             // Cannot write to a directory
             log::error!("sys_write: Cannot write to directory");
-            SyscallResult::Err(21) // EISDIR
+            SyscallResult::Err(super::errno::EISDIR as u64)
         }
     }
 }
 
-/// Helper function to write to stdio (serial port)
+/// Helper function to write to stdio through TTY layer
+///
+/// This is the POSIX-correct way to write stdout/stderr. All output goes through
+/// the TTY layer which handles:
+/// - OPOST output processing
+/// - ONLCR (NL -> CR-NL conversion when enabled)
+/// - Carriage return handling (\r moves to start of line without newline)
 fn write_to_stdio(fd: u64, buffer: &[u8]) -> SyscallResult {
-    let bytes_written = buffer.len() as u64;
-
-    // In interactive mode, write to framebuffer so user can see shell output in QEMU window
-    #[cfg(feature = "interactive")]
-    {
-        if let Ok(s) = core::str::from_utf8(buffer) {
-            // Write to framebuffer for QEMU display
-            crate::logger::write_to_framebuffer(s);
-        }
-        // Also write to COM1 for debugging (serial console)
-        for &byte in buffer {
-            crate::serial::write_byte(byte);
-        }
-    }
-
-    // In non-interactive mode, write to serial port (for CI/testing)
-    #[cfg(not(feature = "interactive"))]
-    {
-        for &byte in buffer {
-            crate::serial::write_byte(byte);
-        }
-
-        // Log the output for userspace writes
-        if let Ok(s) = core::str::from_utf8(buffer) {
-            log::info!("USERSPACE OUTPUT: {}", s.trim_end());
-        }
-    }
-
     // Suppress the fd unused warning
     let _ = fd;
 
-    SyscallResult::Ok(bytes_written)
+    // Route all stdout/stderr writes through the TTY layer for POSIX-compliant
+    // output processing. The TTY layer handles:
+    // - OPOST flag processing
+    // - ONLCR (newline -> carriage return + newline conversion)
+    // - Direct output of control characters like \r
+    let bytes_written = crate::tty::write_output(buffer);
+
+    SyscallResult::Ok(bytes_written as u64)
 }
 
 /// sys_read - Read from a file descriptor
@@ -427,57 +412,99 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
-            // Read from stdin ring buffer
-            // To avoid a race condition where data arrives between checking and blocking:
-            // 1. Register as blocked reader FIRST
-            // 2. Then check for data
-            // 3. If data available, unregister and read
-            // 4. If no data, block
-            //
-            // This ensures that if data arrives after our check, we'll be woken up.
-            crate::ipc::stdin::register_blocked_reader(thread_id);
+            // Blocking read loop: keep trying until we get data or an error
+            // Similar to pause() implementation - block, HLT loop, check for data
+            loop {
+                // Register as blocked reader FIRST to avoid race condition
+                // where data arrives between checking and blocking
+                crate::ipc::stdin::register_blocked_reader(thread_id);
 
-            // Read from stdin buffer
-            let read_result = crate::ipc::stdin::read_bytes(&mut user_buf);
+                // Read from stdin buffer
+                let read_result = crate::ipc::stdin::read_bytes(&mut user_buf);
 
-            match read_result {
-                Ok(n) => {
-                    // Data was available - unregister from blocked readers
-                    crate::ipc::stdin::unregister_blocked_reader(thread_id);
+                match read_result {
+                    Ok(n) => {
+                        // Data was available - unregister from blocked readers
+                        crate::ipc::stdin::unregister_blocked_reader(thread_id);
 
-                    if n > 0 {
-                        // Copy to userspace
-                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                            return SyscallResult::Err(14); // EFAULT
+                        if n > 0 {
+                            // Copy to userspace
+                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                                return SyscallResult::Err(14); // EFAULT
+                            }
+                            log::trace!("sys_read: Read {} bytes from stdin", n);
                         }
+                        return SyscallResult::Ok(n as u64);
                     }
-                    // Only log non-zero reads to avoid spam
-                    if n > 0 {
-                        log::trace!("sys_read: Read {} bytes from stdin", n);
+                    Err(11) => {
+                        // EAGAIN - no data available, need to block and wait
+                        // We're already registered as blocked reader
+
+                        // Block the current thread AND set blocked_in_syscall flag.
+                        // CRITICAL: Setting blocked_in_syscall is essential because:
+                        // 1. The thread will enter a kernel-mode HLT loop below
+                        // 2. If a context switch happens while in HLT, the scheduler sees
+                        //    from_userspace=false (kernel mode) but blocked_in_syscall tells
+                        //    it to save/restore kernel context, not userspace context
+                        // 3. Without this flag, no context is saved when switching away,
+                        //    and stale userspace context is restored when switching back,
+                        //    causing RIP corruption (kernel address in userspace CS)
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.block_current();
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = true;
+                                log::trace!("sys_read: Thread {} blocked on stdin (blocked_in_syscall=true)", thread.id);
+                            }
+                        });
+
+                        log::trace!("sys_read: Thread {} blocking on stdin", thread_id);
+
+                        // CRITICAL: Re-enable preemption before entering blocking loop!
+                        // The syscall handler called preempt_disable() at entry, but we need
+                        // to allow timer interrupts to schedule other threads while we're blocked.
+                        crate::per_cpu::preempt_enable();
+
+                        // HLT loop - wait for timer interrupt which will switch to another thread
+                        // When keyboard data arrives, the interrupt handler will unblock us
+                        loop {
+                            crate::task::scheduler::yield_current();
+                            x86_64::instructions::interrupts::enable_and_hlt();
+
+                            // Check if we were unblocked (thread state changed from Blocked)
+                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.state == crate::task::thread::ThreadState::Blocked
+                                } else {
+                                    false
+                                }
+                            }).unwrap_or(false);
+
+                            if !still_blocked {
+                                log::trace!("sys_read: Thread {} unblocked from stdin wait", thread_id);
+                                break;
+                            }
+                        }
+
+                        // Re-disable preemption before continuing to balance syscall's preempt_disable
+                        crate::per_cpu::preempt_disable();
+
+                        // Clear blocked_in_syscall now that we're resuming normal syscall execution
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                log::trace!("sys_read: Thread {} cleared blocked_in_syscall", thread.id);
+                            }
+                        });
+
+                        // Loop back to try reading again - we should have data now
+                        continue;
                     }
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(11) => {
-                    // EAGAIN - no data available, need to block
-                    // We're already registered as blocked reader, so just block
-
-                    // Block the current thread
-                    crate::task::scheduler::with_scheduler(|sched| {
-                        sched.block_current();
-                    });
-
-                    // Trigger reschedule
-                    crate::task::scheduler::set_need_resched();
-
-                    // Return ERESTARTSYS to indicate syscall should be restarted
-                    // when the thread is woken up
-                    SyscallResult::Err(512) // ERESTARTSYS
-                }
-                Err(e) => {
-                    // Error - unregister from blocked readers
-                    crate::ipc::stdin::unregister_blocked_reader(thread_id);
-                    log::trace!("sys_read: Stdin read error: {}", e);
-                    SyscallResult::Err(e as u64)
+                    Err(e) => {
+                        // Error - unregister from blocked readers
+                        crate::ipc::stdin::unregister_blocked_reader(thread_id);
+                        log::trace!("sys_read: Stdin read error: {}", e);
+                        return SyscallResult::Err(e as u64);
+                    }
                 }
             }
         }
@@ -806,7 +833,8 @@ pub fn sys_exec_with_frame(
         };
 
         // Load the program by name from the test disk
-        let elf_data = if program_name_ptr != 0 {
+        // We need both the ELF data and the program name for exec_process
+        let (elf_data, exec_program_name): (&'static [u8], Option<&'static str>) = if program_name_ptr != 0 {
             // Read the program name from userspace
             log::info!("sys_exec: Reading program name from userspace");
 
@@ -845,7 +873,11 @@ pub fn sys_exec_with_frame(
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
                 // Leak the vector to get a static slice (needed for exec_process)
                 let boxed_slice = elf_vec.into_boxed_slice();
-                Box::leak(boxed_slice) as &'static [u8]
+                let elf_data = Box::leak(boxed_slice) as &'static [u8];
+                // Also leak the program name so we can pass it to exec_process
+                let name_string = alloc::string::String::from(program_name);
+                let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+                (elf_data, Some(leaked_name))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -860,7 +892,7 @@ pub fn sys_exec_with_frame(
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using generated hello_world test program");
-                crate::userspace_test::get_test_binary_static("hello_world")
+                (crate::userspace_test::get_test_binary_static("hello_world"), Some("hello_world"))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -899,7 +931,7 @@ pub fn sys_exec_with_frame(
             // Replace the process's address space
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, elf_data) {
+                match manager.exec_process(current_pid, elf_data, exec_program_name) {
                     Ok(new_entry_point) => {
                         log::info!(
                             "sys_exec: Successfully replaced process address space, entry point: {:#x}",
@@ -908,7 +940,8 @@ pub fn sys_exec_with_frame(
 
                         // CRITICAL FIX: Get the new stack pointer from the process
                         // The exec_process function set up a new stack at USER_STACK_TOP
-                        const USER_STACK_TOP: u64 = 0x5555_5555_5000;
+                        // NOTE: Must match the value used in exec_process() in manager.rs
+                        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
                         let new_rsp = USER_STACK_TOP;
 
                         // Modify the syscall frame so that when we return from syscall,
@@ -1019,7 +1052,8 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 
         // Load the program by name from the test disk
         // In a real implementation, this would come from the filesystem
-        let _elf_data = if program_name_ptr != 0 {
+        // We need both the ELF data and the program name for exec_process
+        let (_elf_data, _exec_program_name): (&'static [u8], Option<&'static str>) = if program_name_ptr != 0 {
             // Read the program name from userspace
             log::info!("sys_exec: Reading program name from userspace");
 
@@ -1050,7 +1084,11 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
                 // Leak the vector to get a static slice (needed for exec_process)
                 let boxed_slice = elf_vec.into_boxed_slice();
-                Box::leak(boxed_slice) as &'static [u8]
+                let elf_data = Box::leak(boxed_slice) as &'static [u8];
+                // Also leak the program name so we can pass it to exec_process
+                let name_string = alloc::string::String::from(program_name);
+                let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+                (elf_data, Some(leaked_name))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -1068,7 +1106,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             #[cfg(feature = "testing")]
             {
                 log::info!("sys_exec: Using generated hello_world test program");
-                crate::userspace_test::get_test_binary_static("hello_world")
+                (crate::userspace_test::get_test_binary_static("hello_world"), Some("hello_world"))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -1107,7 +1145,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         // Replace the process's address space
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            match manager.exec_process(current_pid, _elf_data) {
+            match manager.exec_process(current_pid, _elf_data, _exec_program_name) {
                 Ok(new_entry_point) => {
                     log::info!(
                         "sys_exec: Successfully replaced process address space, entry point: {:#x}",
@@ -1305,6 +1343,12 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 sched.block_current_for_child_exit();
             });
 
+            // Enable preemption before entering HLT loop so scheduler can switch threads.
+            // The syscall handler called preempt_disable() at entry, so we balance it here
+            // to allow context switches while blocked. We must re-disable before returning
+            // to match the preempt_enable() at syscall exit.
+            crate::per_cpu::preempt_enable();
+
             loop {
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
@@ -1317,6 +1361,8 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                     if let Some(child) = manager.get_process(target_pid) {
                         if let crate::process::ProcessState::Terminated(exit_code) = child.state {
                             drop(manager_guard);
+                            // Re-disable preemption before returning to balance syscall exit's preempt_enable()
+                            crate::per_cpu::preempt_disable();
                             return complete_wait(target_pid, exit_code, status_ptr, &children_copy);
                         }
                     }
@@ -1367,6 +1413,12 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 sched.block_current_for_child_exit();
             });
 
+            // Enable preemption before entering HLT loop so scheduler can switch threads.
+            // The syscall handler called preempt_disable() at entry, so we balance it here
+            // to allow context switches while blocked. We must re-disable before returning
+            // to match the preempt_enable() at syscall exit.
+            crate::per_cpu::preempt_enable();
+
             loop {
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
@@ -1380,6 +1432,8 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                         if let Some(child) = manager.get_process(child_pid) {
                             if let crate::process::ProcessState::Terminated(exit_code) = child.state {
                                 drop(manager_guard);
+                                // Re-disable preemption before returning to balance syscall exit's preempt_enable()
+                                crate::per_cpu::preempt_disable();
                                 return complete_wait(child_pid, exit_code, status_ptr, &children_copy);
                             }
                         }
@@ -1405,12 +1459,32 @@ fn complete_wait(
     status_ptr: u64,
     _children: &[crate::process::ProcessId],
 ) -> SyscallResult {
-    // Encode exit status in wstatus format (for WIFEXITED)
-    // Linux encodes normal exit as: (exit_code & 0xff) << 8
-    let wstatus: i32 = (exit_code & 0xff) << 8;
+    // Encode exit status in wstatus format.
+    // The wstatus encoding distinguishes between:
+    // - Normal exit (WIFEXITED): lower 7 bits are 0, exit code in bits 8-15
+    // - Signal termination (WIFSIGNALED): lower 7 bits are signal number, bit 7 is core dump flag
+    //
+    // In our implementation:
+    // - Negative exit codes indicate signal termination: exit_code = -(signal_number)
+    // - Positive/zero exit codes indicate normal exit
+    let wstatus: i32 = if exit_code < 0 {
+        // Signal termination
+        // Extract signal number from negative exit code
+        let signal_number = (-exit_code) as i32;
+        // Check for core dump flag (0x80 in signal number indicates core dump)
+        let core_dump = (signal_number & 0x80) != 0;
+        let sig = signal_number & 0x7f;
+        // Encode: lower 7 bits = signal, bit 7 = core dump
+        sig | (if core_dump { 0x80 } else { 0 })
+    } else {
+        // Normal exit
+        // Linux encodes normal exit as: (exit_code & 0xff) << 8
+        (exit_code & 0xff) << 8
+    };
 
-    log::debug!("complete_wait: child {} exited with code {}, wstatus={:#x}",
-                child_pid.as_u64(), exit_code, wstatus);
+    log::debug!("complete_wait: child {} exited with code {}, wstatus={:#x}{}",
+                child_pid.as_u64(), exit_code, wstatus,
+                if exit_code < 0 { " (signal termination)" } else { " (normal exit)" });
 
     // Write status to userspace if pointer is valid
     if status_ptr != 0 {

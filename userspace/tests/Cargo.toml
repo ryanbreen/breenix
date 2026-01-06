@@ -155,8 +155,32 @@ name = "tty_test"
 path = "tty_test.rs"
 
 [[bin]]
+name = "job_control_test"
+path = "job_control_test.rs"
+
+[[bin]]
+name = "sigchld_job_test"
+path = "sigchld_job_test.rs"
+
+[[bin]]
+name = "session_test"
+path = "session_test.rs"
+
+[[bin]]
+name = "pipeline_test"
+path = "pipeline_test.rs"
+
+[[bin]]
+name = "job_table_test"
+path = "job_table_test.rs"
+
+[[bin]]
 name = "file_read_test"
 path = "file_read_test.rs"
+
+[[bin]]
+name = "ctrl_c_test"
+path = "ctrl_c_test.rs"
 
 [[bin]]
 name = "getdents_test"

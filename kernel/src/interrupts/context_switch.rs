@@ -74,11 +74,12 @@ pub extern "C" fn check_need_resched_and_switch(
 
     // Check if reschedule is needed
     if !scheduler::check_and_clear_need_resched() {
-        // No reschedule needed, just return
+        // No reschedule needed, but check for pending signals before returning to userspace
+        if from_userspace {
+            check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
+        }
         return;
     }
-
-    // log::debug!("check_need_resched_and_switch: Need resched is true, proceeding...");
 
     // Count reschedule attempts (for diagnostics if needed)
     static RESCHED_LOG_COUNTER: core::sync::atomic::AtomicU64 =
@@ -125,7 +126,13 @@ pub extern "C" fn check_need_resched_and_switch(
         // CRITICAL: Clear exception cleanup context even when no switch happens.
         // Otherwise the flag stays set forever, causing unexpected scheduling later.
         crate::per_cpu::clear_exception_cleanup_context();
-        // Early return if no scheduling decision
+        // CRITICAL: Even though no context switch happens, we MUST check for signals!
+        // This case occurs when the current thread is the only ready thread (e.g., after
+        // yield_now() when no other threads are runnable). Without this check, signals
+        // queued for the current process (like SIGTERM from kill()) would never be delivered.
+        if from_userspace {
+            check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
+        }
         return;
     }
     if let Some((old_thread_id, new_thread_id)) = schedule_result {
@@ -133,7 +140,10 @@ pub extern "C" fn check_need_resched_and_switch(
         crate::per_cpu::clear_exception_cleanup_context();
 
         if old_thread_id == new_thread_id {
-            // Same thread continues running
+            // Same thread continues running, but check for pending signals
+            if from_userspace {
+                check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
+            }
             return;
         }
 
@@ -468,6 +478,29 @@ fn switch_to_thread(
                             }
                         }
 
+                        // CRITICAL: Switch to process CR3 BEFORE delivering signal
+                        // Signal delivery writes to user stack memory, which requires
+                        // the process's page table to be active (not the kernel CR3).
+                        // Without this, we get a page fault when trying to write the
+                        // signal frame to user memory.
+                        if let Some(ref page_table) = process.page_table {
+                            let page_table_frame = page_table.level_4_frame();
+                            let cr3_value = page_table_frame.start_address().as_u64();
+                            unsafe {
+                                use x86_64::registers::control::{Cr3, Cr3Flags};
+                                use x86_64::structures::paging::PhysFrame;
+                                use x86_64::PhysAddr;
+                                Cr3::write(
+                                    PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                    Cr3Flags::empty(),
+                                );
+                            }
+                            log::debug!(
+                                "Switched to process CR3 {:#x} for signal delivery (blocked-in-syscall path)",
+                                cr3_value
+                            );
+                        }
+
                         // Now deliver the signal (modifies interrupt_frame and saved_regs)
                         if crate::signal::delivery::deliver_pending_signals(
                             process,
@@ -524,6 +557,29 @@ fn switch_to_thread(
                             if let Some(kernel_stack_top) = thread.kernel_stack_top {
                                 crate::gdt::set_kernel_stack(kernel_stack_top);
                             }
+                        }
+
+                        // CRITICAL: Switch CR3 IMMEDIATELY when returning to kernel mode!
+                        // The kernel code (e.g., waitpid HLT loop) will access userspace memory
+                        // (like the wstatus pointer). Without switching CR3 here, we'd be using
+                        // the previous process's page tables and get a page fault.
+                        if let Some(ref page_table) = process.page_table {
+                            let page_table_frame = page_table.level_4_frame();
+                            let cr3_value = page_table_frame.start_address().as_u64();
+                            unsafe {
+                                use x86_64::registers::control::{Cr3, Cr3Flags};
+                                use x86_64::structures::paging::PhysFrame;
+                                use x86_64::PhysAddr;
+                                Cr3::write(
+                                    PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                    Cr3Flags::empty(),
+                                );
+                            }
+                            log::debug!(
+                                "Switched to process CR3 {:#x} for blocked-in-syscall kernel return (thread {})",
+                                cr3_value,
+                                thread_id
+                            );
                         }
                     }
 
@@ -706,6 +762,10 @@ fn restore_userspace_thread_context(
     // The guard is passed from check_need_resched_and_switch to avoid double-lock deadlock.
     // If we're called from elsewhere without a guard, try_manager() as fallback.
     let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
+
+    // Track if signal termination happened (for parent notification after borrow ends)
+    let mut signal_termination_info: Option<(crate::process::ProcessId, crate::process::ProcessId)> = None;
+
     if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
             if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
@@ -770,18 +830,75 @@ fn restore_userspace_thread_context(
                                 pid.as_u64(),
                                 thread_id
                             );
+
+                            // CRITICAL: Switch to process CR3 BEFORE delivering signal
+                            // Signal delivery writes to user stack memory, which requires
+                            // the process's page table to be active (not the kernel CR3).
+                            // Without this, we get a page fault when trying to write the
+                            // signal frame to user memory.
+                            if let Some(ref page_table) = process.page_table {
+                                let page_table_frame = page_table.level_4_frame();
+                                let cr3_value = page_table_frame.start_address().as_u64();
+                                unsafe {
+                                    use x86_64::registers::control::{Cr3, Cr3Flags};
+                                    use x86_64::structures::paging::PhysFrame;
+                                    use x86_64::PhysAddr;
+                                    Cr3::write(
+                                        PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                        Cr3Flags::empty(),
+                                    );
+                                }
+                                log::debug!(
+                                    "Switched to process CR3 {:#x} for signal delivery",
+                                    cr3_value
+                                );
+                            }
+
+                            // Save parent info BEFORE delivering signal, in case the signal
+                            // terminates the process and we need to notify parent
+                            let child_pid = pid;
+                            let parent_pid = process.parent;
+
                             if crate::signal::delivery::deliver_pending_signals(
                                 process,
                                 interrupt_frame,
                                 saved_regs,
                             ) {
                                 // Signal was delivered and frame was modified
-                                // If process was terminated, trigger reschedule
+                                // If process was terminated, save info for parent notification
                                 if process.is_terminated() {
                                     crate::task::scheduler::set_need_resched();
+                                    // Save for later parent notification
+                                    if let Some(ppid) = parent_pid {
+                                        signal_termination_info = Some((child_pid, ppid));
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // Now process borrow has ended - notify parent if signal terminated a child
+            if let Some((child_pid, parent_pid)) = signal_termination_info {
+                if let Some(parent_process) = manager.get_process_mut(parent_pid) {
+                    use crate::signal::constants::SIGCHLD;
+                    parent_process.signals.set_pending(SIGCHLD);
+
+                    // Get parent's main thread ID to wake it if blocked on waitpid
+                    let parent_thread_id = parent_process.main_thread.as_ref().map(|t| t.id());
+
+                    log::info!(
+                        "Signal termination: sent SIGCHLD to parent {} for child {} exit",
+                        parent_pid.as_u64(),
+                        child_pid.as_u64()
+                    );
+
+                    // Wake up the parent thread if it's blocked on waitpid
+                    if let Some(parent_tid) = parent_thread_id {
+                        scheduler::with_scheduler(|sched| {
+                            sched.unblock_for_child_exit(parent_tid);
+                        });
                     }
                 }
             }
@@ -913,6 +1030,104 @@ fn setup_first_userspace_entry(
     }
 
     log::info!("First userspace entry setup complete for thread {}", thread_id);
+}
+
+/// Check and deliver pending signals for the current thread
+///
+/// Called when returning to userspace without a context switch (same thread continues).
+/// This ensures signals are delivered promptly even when the same thread keeps running.
+fn check_and_deliver_signals_for_current_thread(
+    saved_regs: &mut SavedRegisters,
+    interrupt_frame: &mut InterruptStackFrame,
+) {
+    // Get current thread ID
+    let current_thread_id = match scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return,
+    };
+
+    // Thread 0 is the idle thread - it doesn't have a process with signals
+    if current_thread_id == 0 {
+        return;
+    }
+
+    // Try to acquire process manager lock
+    let mut manager_guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => return, // Lock held, skip signal check this time
+    };
+
+    // Track if signal termination happened (for parent notification after borrow ends)
+    let mut signal_termination_info: Option<(crate::process::ProcessId, crate::process::ProcessId)> = None;
+
+    if let Some(ref mut manager) = *manager_guard {
+        // Find the process for this thread
+        if let Some((pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+            // Note: Debug logging removed from hot path - use GDB if debugging is needed
+            if crate::signal::delivery::has_deliverable_signals(process) {
+                // Switch to process's page table for signal delivery
+                if let Some(ref page_table) = process.page_table {
+                    let page_table_frame = page_table.level_4_frame();
+                    let cr3_value = page_table_frame.start_address().as_u64();
+                    unsafe {
+                        use x86_64::registers::control::{Cr3, Cr3Flags};
+                        use x86_64::structures::paging::PhysFrame;
+                        use x86_64::PhysAddr;
+                        Cr3::write(
+                            PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                            Cr3Flags::empty(),
+                        );
+                    }
+                }
+
+                // Save parent info BEFORE delivering signal, in case the signal
+                // terminates the process and we need to notify parent
+                let child_pid = pid;
+                let parent_pid = process.parent;
+
+                // Deliver signals
+                if crate::signal::delivery::deliver_pending_signals(
+                    process,
+                    interrupt_frame,
+                    saved_regs,
+                ) {
+                    // Signal was delivered (may have terminated process)
+                    if process.is_terminated() {
+                        crate::task::scheduler::set_need_resched();
+                        // Save for later parent notification (after borrow ends)
+                        if let Some(ppid) = parent_pid {
+                            signal_termination_info = Some((child_pid, ppid));
+                        }
+                    }
+                }
+            }
+        }
+        // process borrow has ended here
+
+        // Notify parent if signal terminated a child
+        if let Some((child_pid, parent_pid)) = signal_termination_info {
+            if let Some(parent_process) = manager.get_process_mut(parent_pid) {
+                use crate::signal::constants::SIGCHLD;
+                parent_process.signals.set_pending(SIGCHLD);
+
+                // Get parent's main thread ID to wake it if blocked on waitpid
+                let parent_thread_id = parent_process.main_thread.as_ref().map(|t| t.id());
+
+                log::info!(
+                    "Signal termination (no-switch path): sent SIGCHLD to parent {} for child {} exit",
+                    parent_pid.as_u64(),
+                    child_pid.as_u64()
+                );
+
+                // Wake up the parent thread if it's blocked on waitpid
+                if let Some(parent_tid) = parent_thread_id {
+                    scheduler::with_scheduler(|sched| {
+                        sched.unblock_for_child_exit(parent_tid);
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Simple idle loop - made pub for exception handlers that need to jump to idle

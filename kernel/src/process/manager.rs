@@ -562,7 +562,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_thread_info) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -577,6 +577,8 @@ impl ProcessManager {
             (
                 parent.name.clone(),
                 parent.entry_point,
+                parent.pgid,
+                parent.sid,
                 _parent_thread.clone(),
             )
         };
@@ -597,6 +599,9 @@ impl ProcessManager {
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
         child_process.parent = Some(parent_pid);
+        // POSIX: Child inherits parent's process group and session
+        child_process.pgid = parent_pgid;
+        child_process.sid = parent_sid;
 
         // Load the same program into the child page table
         // Use the parent's name to load the correct binary (not hardcoded fork_test)
@@ -657,7 +662,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_thread_info) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -672,6 +677,8 @@ impl ProcessManager {
             (
                 parent.name.clone(),
                 parent.entry_point,
+                parent.pgid,
+                parent.sid,
                 _parent_thread.clone(),
             )
         };
@@ -692,6 +699,9 @@ impl ProcessManager {
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
         child_process.parent = Some(parent_pid);
+        // POSIX: Child inherits parent's process group and session
+        child_process.pgid = parent_pgid;
+        child_process.sid = parent_sid;
 
         // Load the same program into the child page table
         #[cfg(feature = "testing")]
@@ -1071,9 +1081,16 @@ impl ProcessManager {
         // Create child process name
         let child_name = format!("{}_child_{}", parent.name, child_pid.as_u64());
 
+        // Capture parent's pgid and sid before borrowing page_table
+        let parent_pgid = parent.pgid;
+        let parent_sid = parent.sid;
+
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
         child_process.parent = Some(parent_pid);
+        // POSIX: Child inherits parent's process group and session
+        child_process.pgid = parent_pgid;
+        child_process.sid = parent_sid;
 
         // Create a new page table for the child process
         let parent_page_table = parent
@@ -1342,7 +1359,11 @@ impl ProcessManager {
     /// This implements the exec() family of system calls. Unlike fork(), which creates
     /// a new process, exec() replaces the current process's address space with a new
     /// program while keeping the same PID.
-    pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8]) -> Result<u64, &'static str> {
+    ///
+    /// The `program_name` parameter is optional - if provided, it updates the process name
+    /// to match the new program. This is critical because fork() uses the process name to
+    /// reload the binary from disk.
+    pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8], program_name: Option<&str>) -> Result<u64, &'static str> {
         log::info!(
             "exec_process: Replacing process {} with new program",
             pid.as_u64()
@@ -1414,6 +1435,19 @@ impl ProcessManager {
             log::warn!("Failed to unmap old user data pages: {}", e);
         }
 
+        // CRITICAL: Unmap the stack region before mapping new stack pages
+        // The stack is at 0x7FFF_FF00_0000 - 0x7FFF_FF01_0000 (PML4 entry 255)
+        // This region may have inherited mappings from the parent process
+        {
+            const STACK_SIZE: usize = 64 * 1024; // 64KB stack
+            const STACK_TOP: u64 = 0x7FFF_FF01_0000;
+            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(STACK_TOP);
+            if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
+                log::warn!("Failed to unmap old stack pages: {}", e);
+            }
+        }
+
         log::info!("exec_process: Cleared potential user mappings from new page table");
 
         // Load the ELF binary into the new page table
@@ -1429,7 +1463,8 @@ impl ProcessManager {
         // We need to manually allocate stack pages and map them into the new page table,
         // not the current kernel page table
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        const USER_STACK_TOP: u64 = 0x5555_5555_5000;
+        // Use address in valid USER_STACK_REGION (0x7FFF_FF00_0000 - 0x8000_0000_0000)
+        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
 
         // Calculate stack range
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
@@ -1478,8 +1513,13 @@ impl ProcessManager {
         );
 
         // Update the process with new program data
-        // Preserve the process ID and thread ID but replace everything else
-        process.name = format!("exec_{}", pid.as_u64());
+        // Update the process name to match the new program if provided
+        // CRITICAL: The process name must match a binary on the test disk because
+        // fork() uses the process name to reload the binary.
+        if let Some(name) = program_name {
+            process.name = String::from(name);
+            log::info!("exec_process: Updated process name to '{}'", name);
+        }
         process.entry_point = loaded_elf.entry_point;
 
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,

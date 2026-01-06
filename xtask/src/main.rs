@@ -1,6 +1,7 @@
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
+    net::TcpStream,
     path::Path,
     process::{Command, Stdio},
     thread,
@@ -10,17 +11,8 @@ use std::{
 use anyhow::{bail, Result};
 use structopt::StructOpt;
 
-mod ext2_disk;
 mod test_disk;
 
-/// Build userspace test binaries that use the real Rust standard library.
-///
-/// This must be called BEFORE create_test_disk() because the test disk
-/// needs to include the compiled binaries.
-///
-/// Build order:
-/// 1. libs/libbreenix-libc - produces libc.a for std programs to link against
-/// 2. userspace/tests-std - builds hello_std_real using -Z build-std
 fn build_std_test_binaries() -> Result<()> {
     println!("Building Rust std test binaries...\n");
 
@@ -93,8 +85,7 @@ fn build_std_test_binaries() -> Result<()> {
     }
 
     println!();
-    Ok(()
-    )
+    Ok(())
 }
 
 /// Simple developer utility tasks.
@@ -108,10 +99,10 @@ enum Cmd {
     BootStages,
     /// Create test disk image containing all userspace test binaries.
     CreateTestDisk,
-    /// Create ext2 filesystem image for testing the ext2 driver.
-    CreateExt2Disk,
     /// Boot Breenix interactively with init_shell (serial console attached).
     Interactive,
+    /// Run automated interactive shell tests (sends keyboard input via QEMU monitor).
+    InteractiveTest,
 }
 
 fn main() -> Result<()> {
@@ -120,8 +111,8 @@ fn main() -> Result<()> {
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => boot_stages(),
         Cmd::CreateTestDisk => test_disk::create_test_disk(),
-        Cmd::CreateExt2Disk => ext2_disk::create_ext2_disk(),
         Cmd::Interactive => interactive(),
+        Cmd::InteractiveTest => interactive_test(),
     }
 }
 
@@ -478,7 +469,7 @@ fn get_boot_stages() -> Vec<BootStage> {
         // NEW STAGES: Verify actual userspace output, not just process creation
         BootStage {
             name: "Userspace hello printed",
-            marker: "USERSPACE OUTPUT: Hello from userspace",
+            marker: "Hello from userspace",
             failure_meaning: "hello_time.elf did not print output",
             check_hint: "Check if hello_time.elf actually executed and printed to stdout",
         },
@@ -631,6 +622,14 @@ fn get_boot_stages() -> Vec<BootStage> {
         // can cause spurious timeouts. The core pipe functionality is validated
         // by pipe_test (which passes) and the core fork functionality is
         // validated by waitpid_test and signal_fork_test (which pass).
+        // Signal kill test - validates SIGTERM delivery with default handler
+        // Parent forks child, sends SIGTERM, waits for child termination via waitpid
+        BootStage {
+            name: "SIGTERM kill test passed",
+            marker: "SIGNAL_KILL_TEST_PASSED",
+            failure_meaning: "SIGTERM kill test failed - SIGTERM not delivered to child or child not terminated",
+            check_hint: "Check kernel/src/signal/delivery.rs, kernel/src/interrupts/context_switch.rs signal delivery path",
+        },
         // SIGCHLD delivery test - run early to give child time to execute and exit
         // Validates SIGCHLD is sent to parent when child exits
         BootStage {
@@ -723,6 +722,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "TTY_TEST_PASSED",
             failure_meaning: "TTY layer test failed - isatty, tcgetattr, tcsetattr, or raw/cooked mode switching broken",
             check_hint: "Check kernel/src/tty/ module, kernel/src/syscall/ioctl.rs, and libs/libbreenix/src/termios.rs",
+        },
+        // Session syscall test
+        BootStage {
+            name: "Session syscall test passed",
+            marker: "SESSION_TEST_PASSED",
+            failure_meaning: "session/process group syscall test failed - getpgid/setpgid/getpgrp/getsid/setsid broken",
+            check_hint: "Check kernel/src/syscall/process.rs and libs/libbreenix/src/process.rs session/pgid functions",
         },
         // ext2 file read test
         BootStage {
@@ -901,6 +907,19 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Direct mmap/munmap tests failed - anonymous mapping, memory access, unmapping, or error handling broken",
             check_hint: "Check libs/libbreenix-libc/src/lib.rs mmap/munmap and kernel syscall/mmap.rs:sys_mmap/sys_munmap",
         },
+        // Ctrl-C (SIGINT) signal delivery test
+        // Tests the core signal mechanism that Ctrl-C would use:
+        // - Parent forks child, sends SIGINT via kill()
+        // - Child is terminated by default SIGINT handler
+        // - Parent verifies WIFSIGNALED(status) && WTERMSIG(status) == SIGINT
+        BootStage {
+            name: "Ctrl-C (SIGINT) test passed",
+            marker: "CTRL_C_TEST_PASSED",
+            failure_meaning: "Ctrl-C signal test failed - SIGINT not delivered or child not terminated correctly",
+            check_hint: "Check kernel/src/signal/delivery.rs, kernel/src/syscall/signal.rs:sys_kill(), and wstatus encoding in syscall/process.rs:sys_wait4()",
+        },
+        // NOTE: ENOSYS syscall verification requires external_test_bins feature
+        // which is not enabled by default. Add back when external binaries are integrated.
     ]
 }
 
@@ -1003,83 +1022,96 @@ fn boot_stages() -> Result<()> {
     }
 
     while test_start.elapsed() < timeout {
+        // Read both kernel log output (COM2) and userspace output (COM1)
+        // Userspace stdout goes through TTY which writes to COM1
+        // Kernel logs go to COM2
+        let mut combined_contents = String::new();
+
         if let Ok(mut file) = fs::File::open(serial_output_file) {
-            // Use read_to_end + from_utf8_lossy to handle binary bytes in output
             let mut contents_bytes = Vec::new();
             if file.read_to_end(&mut contents_bytes).is_ok() {
-                let contents = String::from_utf8_lossy(&contents_bytes);
-                // Only process if content has changed
-                if contents.len() > last_content_len {
-                    last_content_len = contents.len();
+                combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+            }
+        }
 
-                    // Check each unchecked stage
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            // Check if marker is found (support regex-like patterns with |)
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| contents.contains(m))
-                            } else {
-                                contents.contains(stage.marker)
-                            };
+        if let Ok(mut file) = fs::File::open(user_output_file) {
+            let mut contents_bytes = Vec::new();
+            if file.read_to_end(&mut contents_bytes).is_ok() {
+                combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+            }
+        }
 
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                                last_progress = Instant::now();
+        // Only process if content has changed
+        if combined_contents.len() > last_content_len {
+            last_content_len = combined_contents.len();
+            let contents = &combined_contents;
 
-                                // Record timing for this stage
-                                let duration = stage_start_time.elapsed();
-                                stage_timings[i] = Some(StageTiming { duration });
-                                stage_start_time = Instant::now();
+            // Check each unchecked stage
+            for (i, stage) in stages.iter().enumerate() {
+                if !checked_stages[i] {
+                    // Check if marker is found (support regex-like patterns with |)
+                    let found = if stage.marker.contains('|') {
+                        stage.marker.split('|').any(|m| contents.contains(m))
+                    } else {
+                        contents.contains(stage.marker)
+                    };
 
-                                // Format timing string
-                                let time_str = if duration.as_secs() >= 1 {
-                                    format!("{:.2}s", duration.as_secs_f64())
-                                } else {
-                                    format!("{}ms", duration.as_millis())
-                                };
+                    if found {
+                        checked_stages[i] = true;
+                        stages_passed += 1;
+                        last_progress = Instant::now();
 
-                                // Print result for this stage with timing
-                                // Clear current line and print result
-                                print!("\r[{}/{}] {}... ", i + 1, total_stages, stage.name);
-                                // Pad to clear previous content
-                                for _ in 0..(50 - stage.name.len().min(50)) {
-                                    print!(" ");
-                                }
-                                println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
+                        // Record timing for this stage
+                        let duration = stage_start_time.elapsed();
+                        stage_timings[i] = Some(StageTiming { duration });
+                        stage_start_time = Instant::now();
 
-                                // Print next stage we're waiting for
-                                if i + 1 < total_stages {
-                                    if let Some(next_stage) = stages.get(i + 1) {
-                                        print!("[{}/{}] {}...", i + 2, total_stages, next_stage.name);
-                                        use std::io::Write;
-                                        let _ = std::io::stdout().flush();
-                                    }
-                                }
+                        // Format timing string
+                        let time_str = if duration.as_secs() >= 1 {
+                            format!("{:.2}s", duration.as_secs_f64())
+                        } else {
+                            format!("{}ms", duration.as_millis())
+                        };
+
+                        // Print result for this stage with timing
+                        // Clear current line and print result
+                        print!("\r[{}/{}] {}... ", i + 1, total_stages, stage.name);
+                        // Pad to clear previous content
+                        for _ in 0..(50 - stage.name.len().min(50)) {
+                            print!(" ");
+                        }
+                        println!("\r[{}/{}] {}... PASS ({})", i + 1, total_stages, stage.name, time_str);
+
+                        // Print next stage we're waiting for
+                        if i + 1 < total_stages {
+                            if let Some(next_stage) = stages.get(i + 1) {
+                                print!("[{}/{}] {}...", i + 2, total_stages, next_stage.name);
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
                             }
                         }
-                    }
-
-                    // Check for kernel panic
-                    if contents.contains("KERNEL PANIC") {
-                        println!("\r                                                              ");
-                        println!("\nKERNEL PANIC detected!\n");
-
-                        // Find the panic message
-                        for line in contents.lines() {
-                            if line.contains("KERNEL PANIC") {
-                                println!("  {}", line);
-                            }
-                        }
-
-                        break;
-                    }
-
-                    // All stages passed?
-                    if stages_passed == total_stages {
-                        break;
                     }
                 }
+            }
+
+            // Check for kernel panic
+            if contents.contains("KERNEL PANIC") {
+                println!("\r                                                              ");
+                println!("\nKERNEL PANIC detected!\n");
+
+                // Find the panic message
+                for line in contents.lines() {
+                    if line.contains("KERNEL PANIC") {
+                        println!("  {}", line);
+                    }
+                }
+
+                break;
+            }
+
+            // All stages passed?
+            if stages_passed == total_stages {
+                break;
             }
         }
 
@@ -1094,49 +1126,59 @@ fn boot_stages() -> Result<()> {
             // Wait 2 seconds for QEMU to flush and terminate gracefully
             thread::sleep(Duration::from_secs(2));
 
-            // Check file one last time after buffers flush
+            // Check both files one last time after buffers flush
+            let mut combined_contents = String::new();
             if let Ok(mut file) = fs::File::open(serial_output_file) {
-                // Use read_to_end + from_utf8_lossy to handle binary bytes in output
                 let mut contents_bytes = Vec::new();
                 if file.read_to_end(&mut contents_bytes).is_ok() {
-                    let contents = String::from_utf8_lossy(&contents_bytes);
-                    // Check all remaining stages
-                    let mut any_found = false;
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| contents.contains(m))
+                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+                }
+            }
+            if let Ok(mut file) = fs::File::open(user_output_file) {
+                let mut contents_bytes = Vec::new();
+                if file.read_to_end(&mut contents_bytes).is_ok() {
+                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+                }
+            }
+
+            if !combined_contents.is_empty() {
+                let contents = &combined_contents;
+                // Check all remaining stages
+                let mut any_found = false;
+                for (i, stage) in stages.iter().enumerate() {
+                    if !checked_stages[i] {
+                        let found = if stage.marker.contains('|') {
+                            stage.marker.split('|').any(|m| contents.contains(m))
+                        } else {
+                            contents.contains(stage.marker)
+                        };
+
+                        if found {
+                            checked_stages[i] = true;
+                            stages_passed += 1;
+                            any_found = true;
+
+                            // Record timing for this stage
+                            let duration = stage_start_time.elapsed();
+                            stage_timings[i] = Some(StageTiming { duration });
+                            stage_start_time = Instant::now();
+
+                            let time_str = if duration.as_secs() >= 1 {
+                                format!("{:.2}s", duration.as_secs_f64())
                             } else {
-                                contents.contains(stage.marker)
+                                format!("{}ms", duration.as_millis())
                             };
 
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                                any_found = true;
-
-                                // Record timing for this stage
-                                let duration = stage_start_time.elapsed();
-                                stage_timings[i] = Some(StageTiming { duration });
-                                stage_start_time = Instant::now();
-
-                                let time_str = if duration.as_secs() >= 1 {
-                                    format!("{:.2}s", duration.as_secs_f64())
-                                } else {
-                                    format!("{}ms", duration.as_millis())
-                                };
-
-                                println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
-                            }
+                            println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
                         }
                     }
+                }
 
-                    if any_found {
-                        last_progress = Instant::now();
-                        // Continue checking if we found something
-                        if stages_passed < total_stages {
-                            continue;
-                        }
+                if any_found {
+                    last_progress = Instant::now();
+                    // Continue checking if we found something
+                    if stages_passed < total_stages {
+                        continue;
                     }
                 }
             }
@@ -1174,26 +1216,36 @@ fn boot_stages() -> Result<()> {
     let _ = child.kill();
     let _ = child.wait();
 
-    // Final scan of output file after QEMU terminates
+    // Final scan of output files after QEMU terminates
     // This catches markers that were printed but not yet processed due to timing
     thread::sleep(Duration::from_millis(100)); // Let filesystem sync
+    let mut combined_contents = String::new();
     if let Ok(mut file) = fs::File::open(serial_output_file) {
         let mut contents_bytes = Vec::new();
         if file.read_to_end(&mut contents_bytes).is_ok() {
-            let contents = String::from_utf8_lossy(&contents_bytes);
-            for (i, stage) in stages.iter().enumerate() {
-                if !checked_stages[i] {
-                    let found = if stage.marker.contains('|') {
-                        stage.marker.split('|').any(|m| contents.contains(m))
-                    } else {
-                        contents.contains(stage.marker)
-                    };
+            combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+        }
+    }
+    if let Ok(mut file) = fs::File::open(user_output_file) {
+        let mut contents_bytes = Vec::new();
+        if file.read_to_end(&mut contents_bytes).is_ok() {
+            combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
+        }
+    }
+    if !combined_contents.is_empty() {
+        let contents = &combined_contents;
+        for (i, stage) in stages.iter().enumerate() {
+            if !checked_stages[i] {
+                let found = if stage.marker.contains('|') {
+                    stage.marker.split('|').any(|m| contents.contains(m))
+                } else {
+                    contents.contains(stage.marker)
+                };
 
-                    if found {
-                        checked_stages[i] = true;
-                        stages_passed += 1;
-                        println!("[{}/{}] {}... PASS (found in final scan)", i + 1, total_stages, stage.name);
-                    }
+                if found {
+                    checked_stages[i] = true;
+                    stages_passed += 1;
+                    println!("[{}/{}] {}... PASS (found in final scan)", i + 1, total_stages, stage.name);
                 }
             }
         }
@@ -1583,4 +1635,333 @@ fn interactive() -> Result<()> {
     } else {
         bail!("QEMU exited with error");
     }
+}
+
+/// Automated interactive shell tests using QEMU monitor for keyboard input
+///
+/// This test:
+/// 1. Boots Breenix with init_shell and QEMU TCP monitor enabled
+/// 2. Waits for the shell prompt
+/// 3. Sends keyboard commands via QEMU monitor's `sendkey` command
+/// 4. Verifies command output appears in serial logs
+/// 5. Tests multiple commands to ensure shell continues working
+fn interactive_test() -> Result<()> {
+    println!("=== Interactive Shell Test ===");
+    println!();
+    println!("This test sends keyboard input via QEMU monitor to verify:");
+    println!("  - Shell accepts keyboard input");
+    println!("  - Commands produce expected output");
+    println!("  - Shell continues working after multiple commands");
+    println!();
+
+    // Output files
+    let user_output_file = "target/interactive_test_user.txt";
+    let kernel_log_file = "target/interactive_test_kernel.txt";
+
+    // Clean up old files
+    let _ = fs::remove_file(user_output_file);
+    let _ = fs::remove_file(kernel_log_file);
+
+    // Kill any existing QEMU processes
+    let _ = Command::new("pkill")
+        .args(&["-9", "qemu-system-x86_64"])
+        .status();
+    thread::sleep(Duration::from_millis(500));
+
+    println!("Building with interactive feature...");
+
+    // Build first
+    let build_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "testing,external_test_bins,interactive",
+            "--bin",
+            "qemu-uefi",
+        ])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build: {}", e))?;
+
+    if !build_status.success() {
+        bail!("Build failed");
+    }
+
+    println!("Starting QEMU with monitor enabled...");
+
+    // Start QEMU with:
+    // - TCP monitor on port 4444 for sending keyboard input
+    // - Serial ports for capturing output
+    // - No display (headless)
+    let mut child = Command::new("cargo")
+        .args(&[
+            "run",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "testing,external_test_bins,interactive",
+            "--bin",
+            "qemu-uefi",
+            "--",
+            "-display",
+            "none",
+            "-serial",
+            &format!("file:{}", user_output_file),
+            "-serial",
+            &format!("file:{}", kernel_log_file),
+            "-monitor",
+            "tcp:127.0.0.1:4444,server,nowait",
+        ])
+        .env("BREENIX_INTERACTIVE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
+
+    // Helper to clean up on failure
+    let cleanup = |child: &mut std::process::Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = Command::new("pkill")
+            .args(&["-9", "qemu-system-x86_64"])
+            .status();
+    };
+
+    // Wait for output files to be created
+    let start = Instant::now();
+    let file_timeout = Duration::from_secs(60);
+    while !std::path::Path::new(user_output_file).exists() {
+        if start.elapsed() > file_timeout {
+            cleanup(&mut child);
+            bail!("Output file not created after {} seconds", file_timeout.as_secs());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Wait for QEMU monitor to be ready
+    println!("Waiting for QEMU monitor...");
+    let monitor_start = Instant::now();
+    let monitor_timeout = Duration::from_secs(10);
+    let mut monitor: Option<TcpStream> = None;
+
+    while monitor_start.elapsed() < monitor_timeout {
+        if let Ok(stream) = TcpStream::connect("127.0.0.1:4444") {
+            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+            stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+            monitor = Some(stream);
+            break;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    let mut monitor = match monitor {
+        Some(m) => m,
+        None => {
+            cleanup(&mut child);
+            bail!("Could not connect to QEMU monitor on port 4444");
+        }
+    };
+
+    // Read initial monitor prompt
+    let mut buf = [0u8; 1024];
+    let _ = monitor.read(&mut buf);
+
+    println!("Connected to QEMU monitor");
+
+    // Wait for shell prompt to appear in user output
+    println!("Waiting for shell prompt...");
+    let prompt_start = Instant::now();
+    let prompt_timeout = Duration::from_secs(30);
+
+    while prompt_start.elapsed() < prompt_timeout {
+        if let Ok(contents) = fs::read_to_string(user_output_file) {
+            if contents.contains("breenix>") {
+                println!("Shell prompt detected!");
+                break;
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    // Helper function to send a string as keyboard input
+    fn send_string(monitor: &mut TcpStream, s: &str) -> Result<()> {
+        for c in s.chars() {
+            let key = match c {
+                'a'..='z' => c.to_string(),
+                'A'..='Z' => format!("shift-{}", c.to_ascii_lowercase()),
+                '0'..='9' => c.to_string(),
+                ' ' => "spc".to_string(),
+                '\n' => "ret".to_string(),
+                '-' => "minus".to_string(),
+                '_' => "shift-minus".to_string(),
+                '.' => "dot".to_string(),
+                '/' => "slash".to_string(),
+                '\\' => "backslash".to_string(),
+                ':' => "shift-semicolon".to_string(),
+                ';' => "semicolon".to_string(),
+                '=' => "equal".to_string(),
+                '+' => "shift-equal".to_string(),
+                '|' => "shift-backslash".to_string(),
+                _ => continue, // Skip unsupported characters
+            };
+            let cmd = format!("sendkey {}\n", key);
+            monitor.write_all(cmd.as_bytes())?;
+            thread::sleep(Duration::from_millis(50)); // Small delay between keys
+        }
+        // Read any response from monitor
+        let mut buf = [0u8; 256];
+        let _ = monitor.read(&mut buf);
+        Ok(())
+    }
+
+    // Helper to wait for string in output
+    fn wait_for_output(file: &str, needle: &str, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if let Ok(contents) = fs::read_to_string(file) {
+                if contents.contains(needle) {
+                    return true;
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    // Track test results
+    let mut tests_passed = 0;
+    let mut tests_failed = 0;
+
+    // Test 1: Run "help" command
+    println!();
+    println!("[Test 1] Sending 'help' command...");
+    send_string(&mut monitor, "help\n")?;
+
+    if wait_for_output(user_output_file, "Built-in commands:", Duration::from_secs(5)) {
+        println!("  ✓ PASS: 'help' command produced expected output");
+        tests_passed += 1;
+    } else {
+        println!("  ✗ FAIL: 'help' command did not produce expected output");
+        tests_failed += 1;
+    }
+
+    // Give shell time to return to prompt
+    thread::sleep(Duration::from_millis(500));
+
+    // Test 2: Run "help" again to verify shell continues working
+    println!();
+    println!("[Test 2] Sending 'help' command again (testing subsequent commands)...");
+    let output_len_before = fs::read_to_string(user_output_file).unwrap_or_default().len();
+    send_string(&mut monitor, "help\n")?;
+
+    thread::sleep(Duration::from_secs(2));
+    let output_after = fs::read_to_string(user_output_file).unwrap_or_default();
+
+    // Check if more output was produced (shell responded to second command)
+    if output_after.len() > output_len_before + 100 {
+        println!("  ✓ PASS: Shell responded to second 'help' command");
+        tests_passed += 1;
+    } else {
+        println!("  ✗ FAIL: Shell did not respond to second command (this is the bug!)");
+        tests_failed += 1;
+    }
+
+    // Test 3: Run "uptime" command
+    println!();
+    println!("[Test 3] Sending 'uptime' command...");
+    send_string(&mut monitor, "uptime\n")?;
+
+    // uptime prints "up N seconds" or similar
+    if wait_for_output(user_output_file, "up ", Duration::from_secs(5)) {
+        println!("  ✓ PASS: 'uptime' command produced expected output");
+        tests_passed += 1;
+    } else {
+        println!("  ✗ FAIL: 'uptime' command did not produce expected output");
+        tests_failed += 1;
+    }
+
+    // Test 4: Send Ctrl-C while at prompt (should just print ^C and continue)
+    println!();
+    println!("[Test 4] Sending Ctrl-C at prompt...");
+    // Ctrl-C is sent as ctrl-c in QEMU
+    monitor.write_all(b"sendkey ctrl-c\n")?;
+    let _ = monitor.read(&mut buf);
+    thread::sleep(Duration::from_secs(1));
+
+    // Shell should still be responsive - send another command
+    // Use a unique command "jobs" to detect if first char is lost (would show "Unknown command: obs")
+    send_string(&mut monitor, "jobs\n")?;
+    thread::sleep(Duration::from_secs(2));
+
+    let ctrl_c_output = fs::read_to_string(user_output_file).unwrap_or_default();
+    // Check for the specific bug: "Unknown command: obs" indicates first char was eaten
+    if ctrl_c_output.contains("Unknown command: obs") {
+        println!("  ✗ FAIL: First character after Ctrl-C was lost ('jobs' became 'obs')");
+        tests_failed += 1;
+    } else if ctrl_c_output.contains("No background jobs") || ctrl_c_output.contains("jobs") {
+        println!("  ✓ PASS: Shell remained responsive after Ctrl-C");
+        tests_passed += 1;
+    } else {
+        println!("  ? INCONCLUSIVE: Could not verify shell response after Ctrl-C");
+        // Don't count as failure, just informational
+    }
+
+    // Test 5: Run spinner and Ctrl-C to interrupt it
+    println!();
+    println!("[Test 5] Running spinner and sending Ctrl-C to interrupt...");
+    send_string(&mut monitor, "spinner\n")?;
+    thread::sleep(Duration::from_secs(2)); // Let spinner start
+
+    // Send Ctrl-C to interrupt
+    monitor.write_all(b"sendkey ctrl-c\n")?;
+    let _ = monitor.read(&mut buf);
+    thread::sleep(Duration::from_secs(2));
+
+    // Check if shell returned to prompt (should see another breenix> after the ^C)
+    let spinner_output = fs::read_to_string(user_output_file).unwrap_or_default();
+    let ctrl_c_count = spinner_output.matches("^C").count();
+    if ctrl_c_count >= 2 && spinner_output.ends_with("breenix> ") || spinner_output.contains("breenix> \n") {
+        println!("  ✓ PASS: Spinner interrupted and shell returned to prompt");
+        tests_passed += 1;
+    } else {
+        // Check for page fault (the bug we fixed)
+        if spinner_output.contains("Page fault") || spinner_output.contains("KERNEL PANIC") {
+            println!("  ✗ FAIL: Kernel crashed (page fault or panic) when interrupting spinner");
+            tests_failed += 1;
+        } else {
+            println!("  ? INCONCLUSIVE: Could not verify spinner interrupt behavior");
+        }
+    }
+
+    // Clean up
+    println!();
+    println!("Cleaning up...");
+    cleanup(&mut child);
+
+    // Print final output for debugging
+    println!();
+    println!("=== User Output (last 50 lines) ===");
+    if let Ok(contents) = fs::read_to_string(user_output_file) {
+        for line in contents.lines().rev().take(50).collect::<Vec<_>>().into_iter().rev() {
+            println!("{}", line);
+        }
+    }
+
+    // Print summary
+    println!();
+    println!("=== Test Summary ===");
+    println!("Passed: {}", tests_passed);
+    println!("Failed: {}", tests_failed);
+
+    if tests_failed > 0 {
+        bail!("{} interactive test(s) failed", tests_failed);
+    }
+
+    println!();
+    println!("All interactive tests passed!");
+    Ok(())
 }

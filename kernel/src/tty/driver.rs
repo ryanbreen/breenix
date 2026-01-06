@@ -135,8 +135,27 @@ impl TtyDevice {
             self.send_signal_to_foreground(sig);
         }
 
-        // Wake any blocked readers if data is now available
+        // Transfer data from line discipline to stdin buffer when available
+        // This bridges the TTY layer (which handles line editing, echo, signals)
+        // with the stdin buffer (which userspace reads via read() syscall)
         if ldisc.has_data() {
+            let mut buf = [0u8; 256];
+            loop {
+                match ldisc.read(&mut buf) {
+                    Ok(0) => break, // No more data
+                    Ok(n) => {
+                        // Push each byte to stdin (no echo - TTY already handled that)
+                        for &byte in &buf[..n] {
+                            crate::ipc::stdin::push_byte_from_irq(byte);
+                        }
+                    }
+                    Err(super::line_discipline::EOF_MARKER) => {
+                        // EOF on empty line - don't push anything, read() will return 0
+                        break;
+                    }
+                    Err(_) => break, // Other error, stop reading
+                }
+            }
             drop(ldisc); // Release lock before waking
             Self::wake_blocked_readers();
         }
@@ -168,12 +187,34 @@ impl TtyDevice {
             None => return false,
         };
 
-        // Process the character
+        // Process the character through line discipline (echo, signals, line editing)
         let signal = ldisc.input_char(c, &mut |echo_c| {
             self.output_char_nonblock(echo_c);
         });
 
+        // Transfer data from line discipline to stdin buffer when available
+        // This bridges the TTY layer (which handles line editing, echo, signals)
+        // with the stdin buffer (which userspace reads via read() syscall)
         let has_data = ldisc.has_data();
+        if has_data {
+            let mut buf = [0u8; 256];
+            loop {
+                match ldisc.read(&mut buf) {
+                    Ok(0) => break, // No more data
+                    Ok(n) => {
+                        // Push each byte to stdin (no echo - TTY already handled that)
+                        for &byte in &buf[..n] {
+                            crate::ipc::stdin::push_byte_from_irq(byte);
+                        }
+                    }
+                    Err(super::line_discipline::EOF_MARKER) => {
+                        // EOF on empty line - don't push anything, read() will return 0
+                        break;
+                    }
+                    Err(_) => break, // Other error, stop reading
+                }
+            }
+        }
         drop(ldisc);
 
         // Send signal if generated (non-blocking)
@@ -305,6 +346,46 @@ impl TtyDevice {
         }
     }
 
+    /// Write a buffer of bytes to the terminal output
+    ///
+    /// This is the optimized path for bulk output - it acquires the termios
+    /// settings once and processes all bytes with those settings. This avoids
+    /// the lock acquire/release overhead per character that output_char() has.
+    ///
+    /// # Arguments
+    /// * `buf` - Buffer of bytes to write
+    pub fn write_bytes(&self, buf: &[u8]) {
+        // Get termios settings once for the entire buffer
+        let termios = self.ldisc.lock().termios().clone();
+
+        // Process each byte with the cached termios settings
+        for &c in buf {
+            self.output_byte_with_termios(c, &termios);
+        }
+    }
+
+    /// Write a single byte using pre-fetched termios settings
+    ///
+    /// This is the inner loop for write_bytes - no locking is done here,
+    /// the caller must provide the termios settings.
+    #[inline]
+    fn output_byte_with_termios(&self, c: u8, termios: &Termios) {
+        // Handle NL -> CR-NL translation if OPOST and ONLCR are set
+        if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
+            crate::serial::write_byte(b'\r');
+            #[cfg(feature = "interactive")]
+            {
+                crate::logger::write_char_to_framebuffer(b'\r');
+            }
+        }
+        crate::serial::write_byte(c);
+
+        #[cfg(feature = "interactive")]
+        {
+            crate::logger::write_char_to_framebuffer(c);
+        }
+    }
+
     /// Write a character to the terminal output (non-blocking)
     ///
     /// This version avoids blocking and is safe for interrupt context.
@@ -367,12 +448,31 @@ impl TtyDevice {
     fn send_signal_to_foreground_nonblock(&self, sig: u32) {
         let pgrp = match self.foreground_pgrp.try_lock() {
             Some(guard) => *guard,
-            None => return,
+            None => {
+                crate::serial_println!(
+                    "TTY{}: Cannot send signal {} - foreground_pgrp lock busy",
+                    self.num,
+                    sig
+                );
+                return;
+            }
         };
 
         if let Some(pgrp) = pgrp {
+            crate::serial_println!(
+                "TTY{}: Sending signal {} to foreground pgrp {}",
+                self.num,
+                sig,
+                pgrp
+            );
             let pid = ProcessId::new(pgrp);
             Self::send_signal_to_process_nonblock(pid, sig);
+        } else {
+            crate::serial_println!(
+                "TTY{}: Cannot send signal {} - no foreground pgrp set",
+                self.num,
+                sig
+            );
         }
     }
 
@@ -430,13 +530,51 @@ impl TtyDevice {
     fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) {
         use crate::process;
 
+        let sig_name = match sig {
+            SIGINT => "SIGINT",
+            SIGQUIT => "SIGQUIT",
+            SIGTSTP => "SIGTSTP",
+            _ => "UNKNOWN",
+        };
+
         // Try to get the process manager without blocking
         if let Some(mut manager) = process::try_manager() {
             if let Some(ref mut pm) = *manager {
                 if let Some(proc) = pm.get_process_mut(pid) {
                     proc.signals.set_pending(sig);
+                    crate::serial_println!(
+                        "TTY: Sent {} to process {} (PID {}) [nonblock]",
+                        sig_name,
+                        proc.name,
+                        pid.as_u64()
+                    );
+
+                    // CRITICAL: Wake the thread if it's blocked waiting for a signal
+                    // Without this, a process blocked on pause() or a blocking syscall
+                    // won't receive the signal until it happens to be scheduled.
+                    if let Some(ref thread) = proc.main_thread {
+                        let thread_id = thread.id;
+                        drop(manager);
+
+                        // Wake the thread if it's blocked on a signal
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.unblock_for_signal(thread_id);
+                        });
+                    }
+                } else {
+                    crate::serial_println!(
+                        "TTY: Failed to send {} - no process with PID {}",
+                        sig_name,
+                        pid.as_u64()
+                    );
                 }
             }
+        } else {
+            crate::serial_println!(
+                "TTY: Failed to send {} to PID {} - manager lock busy",
+                sig_name,
+                pid.as_u64()
+            );
         }
     }
 
@@ -523,6 +661,34 @@ pub fn console() -> Option<Arc<TtyDevice>> {
 pub fn push_char(c: u8) {
     if let Some(tty) = console() {
         tty.input_char(c);
+    }
+}
+
+/// Write output through TTY processing
+///
+/// This is the POSIX-correct way to write to stdout/stderr.
+/// The TTY layer handles output processing (OPOST, ONLCR, etc.).
+///
+/// This function uses the optimized `write_bytes` path which acquires
+/// the termios settings once for the entire buffer, avoiding lock
+/// acquire/release overhead per character.
+///
+/// # Arguments
+/// * `buf` - Buffer of bytes to write
+///
+/// # Returns
+/// Number of bytes written
+pub fn write_output(buf: &[u8]) -> usize {
+    if let Some(tty) = console() {
+        // Use the optimized batched write that locks termios once
+        tty.write_bytes(buf);
+        buf.len()
+    } else {
+        // Fallback: write directly to serial if TTY not initialized
+        for &c in buf {
+            crate::serial::write_byte(c);
+        }
+        buf.len()
     }
 }
 

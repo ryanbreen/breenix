@@ -142,8 +142,8 @@ fn wake_blocked_readers_try() {
     // interrupts, but since we're already in an interrupt handler with a
     // non-reentrant interrupt, this is safe.
     crate::task::scheduler::with_scheduler(|sched| {
-        for thread_id in readers {
-            sched.unblock(thread_id);
+        for thread_id in &readers {
+            sched.unblock(*thread_id);
         }
     });
 

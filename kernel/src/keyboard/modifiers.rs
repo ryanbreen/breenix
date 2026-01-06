@@ -110,6 +110,16 @@ impl Modifiers {
             || (0x1E <= key.scancode && key.scancode <= 0x26)  // A-L
             || (0x2C <= key.scancode && key.scancode <= 0x32); // Z-M
 
+        // Handle Ctrl modifier for alphabetic keys
+        // Ctrl+A = 0x01, Ctrl+B = 0x02, ..., Ctrl+Z = 0x1A
+        if self.ctrl() && is_alphabetic {
+            // Get the base letter (lowercase)
+            let base = key.lower;
+            // Convert to control character: 'a' (0x61) -> 0x01, 'z' (0x7A) -> 0x1A
+            let ctrl_char = (base as u8) - 0x60;
+            return char::from(ctrl_char);
+        }
+
         if is_alphabetic {
             // For alphabetic keys, caps lock XORs with shift
             if self.shift() ^ self.caps_lock {
