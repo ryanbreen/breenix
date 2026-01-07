@@ -25,6 +25,12 @@ pub const O_APPEND: u32 = 0x400;
 /// O_DIRECTORY - must be a directory
 pub const O_DIRECTORY: u32 = 0x10000;
 
+/// Access mode constants for access() syscall
+pub const F_OK: u32 = 0;  // Test for existence
+pub const R_OK: u32 = 4;  // Test for read permission
+pub const W_OK: u32 = 2;  // Test for write permission
+pub const X_OK: u32 = 1;  // Test for execute permission
+
 /// Seek whence values
 pub const SEEK_SET: i32 = 0;
 pub const SEEK_CUR: i32 = 1;
@@ -151,6 +157,30 @@ pub fn open_with_mode(path: &str, flags: u32, mode: u32) -> Result<Fd, Errno> {
         ) as i64
     };
     Errno::from_syscall(ret)
+}
+
+/// Check user's permissions for a file.
+///
+/// # Arguments
+/// * `path` - Path to the file (null-terminated string)
+/// * `mode` - Access mode to check (F_OK, R_OK, W_OK, X_OK or combination)
+///
+/// # Returns
+/// * `Ok(())` - Access is allowed
+/// * `Err(errno)` - Access denied or file doesn't exist
+///
+/// # Example
+/// ```ignore
+/// // Check if file exists
+/// access("/hello.txt\0", F_OK)?;
+///
+/// // Check if file is readable and writable
+/// access("/hello.txt\0", R_OK | W_OK)?;
+/// ```
+#[inline]
+pub fn access(path: &str, mode: u32) -> Result<(), Errno> {
+    let ret = unsafe { raw::syscall2(nr::ACCESS, path.as_ptr() as u64, mode as u64) as i64 };
+    Errno::from_syscall(ret).map(|_| ())
 }
 
 /// Read from a file descriptor into a buffer.

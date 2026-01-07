@@ -62,6 +62,19 @@ pub enum SyscallNumber {
     GetTid = 186,       // Linux syscall number for gettid
     ClockGetTime = 228, // Linux syscall number for clock_gettime
     Pipe2 = 293,        // Linux syscall number for pipe2
+    // Filesystem syscalls
+    Access = 21,        // Linux syscall number for access
+    Rename = 82,        // Linux syscall number for rename
+    Mkdir = 83,         // Linux syscall number for mkdir
+    Rmdir = 84,         // Linux syscall number for rmdir
+    Link = 86,          // Linux syscall number for link (hard links)
+    Unlink = 87,        // Linux syscall number for unlink
+    Symlink = 88,       // Linux syscall number for symlink
+    Readlink = 89,      // Linux syscall number for readlink
+    Open = 257,         // Breenix: filesystem open syscall
+    Lseek = 258,        // Breenix: filesystem lseek syscall
+    Fstat = 259,        // Breenix: filesystem fstat syscall
+    Getdents64 = 260,   // Breenix: directory listing syscall
 }
 
 #[allow(dead_code)]
@@ -106,6 +119,19 @@ impl SyscallNumber {
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
             293 => Some(Self::Pipe2),
+            // Filesystem syscalls
+            21 => Some(Self::Access),
+            82 => Some(Self::Rename),
+            83 => Some(Self::Mkdir),
+            84 => Some(Self::Rmdir),
+            86 => Some(Self::Link),
+            87 => Some(Self::Unlink),
+            88 => Some(Self::Symlink),
+            89 => Some(Self::Readlink),
+            257 => Some(Self::Open),
+            258 => Some(Self::Lseek),
+            259 => Some(Self::Fstat),
+            260 => Some(Self::Getdents64),
             _ => None,
         }
     }

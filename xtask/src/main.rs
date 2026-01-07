@@ -786,6 +786,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "link operations failed - hard links, symlinks, or link count handling broken",
             check_hint: "Check kernel/src/fs/ext2/mod.rs link(), symlink(), readlink() and inode link count",
         },
+        // Filesystem access() syscall test
+        BootStage {
+            name: "Access syscall test passed",
+            marker: "ACCESS_TEST_PASSED",
+            failure_meaning: "access() syscall failed - file existence or permission checking broken",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_access() and permission bit handling",
+        },
         // Rust std library test - validates real Rust std works in userspace
         BootStage {
             name: "Rust std println! works",
