@@ -7,6 +7,7 @@
 //! - O_EXCL flag - exclusive creation
 //! - O_APPEND flag - append mode
 //! - unlink syscall - delete files
+//! - unlink on directory returns EISDIR
 
 #![no_std]
 #![no_main]
@@ -14,7 +15,7 @@
 use core::panic::PanicInfo;
 use libbreenix::errno::Errno;
 use libbreenix::fs::{
-    close, fstat, open, open_with_mode, read, unlink, write,
+    close, fstat, mkdir, open, open_with_mode, read, rmdir, unlink, write,
     O_APPEND, O_CREAT, O_EXCL, O_RDONLY, O_TRUNC, O_WRONLY,
 };
 use libbreenix::io::println;
@@ -486,6 +487,45 @@ pub extern "C" fn _start() -> ! {
 
         // Clean up
         let _ = unlink("/appendtest.txt\0");
+    }
+
+    // ============================================
+    // Test 7: unlink on directory returns EISDIR
+    // ============================================
+    libbreenix::io::print("\nTest 7: unlink on directory returns EISDIR\n");
+    {
+        // Create a test directory
+        match mkdir("/unlink_dir_test\0", 0o755) {
+            Ok(()) => {
+                libbreenix::io::print("  Created directory /unlink_dir_test\n");
+            }
+            Err(_) => {
+                println("FAILED: Could not create test directory");
+                exit(1);
+            }
+        }
+
+        // Try to unlink the directory - should fail with EISDIR
+        match unlink("/unlink_dir_test\0") {
+            Ok(()) => {
+                println("FAILED: unlink on directory should return EISDIR");
+                let _ = rmdir("/unlink_dir_test\0");
+                exit(1);
+            }
+            Err(e) => {
+                if matches!(e, Errno::EISDIR) {
+                    libbreenix::io::print("  Correctly returned EISDIR\n");
+                } else {
+                    libbreenix::io::print("FAILED: Expected EISDIR but got different error\n");
+                    let _ = rmdir("/unlink_dir_test\0");
+                    exit(1);
+                }
+            }
+        }
+
+        // Clean up the directory
+        let _ = rmdir("/unlink_dir_test\0");
+        libbreenix::io::print("  Verified: unlink on directory returns EISDIR\n");
     }
 
     // ============================================

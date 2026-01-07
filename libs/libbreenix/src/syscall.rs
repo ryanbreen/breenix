@@ -26,6 +26,7 @@ pub mod nr {
     pub const SIGPROCMASK: u64 = 14; // Linux x86_64 rt_sigprocmask
     pub const SIGRETURN: u64 = 15;   // Linux x86_64 rt_sigreturn
     pub const IOCTL: u64 = 16;       // Linux x86_64 ioctl
+    pub const ACCESS: u64 = 21;      // Linux x86_64 access
     pub const PIPE: u64 = 22;        // Linux x86_64 pipe
     pub const SELECT: u64 = 23;       // Linux x86_64 select
     pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2

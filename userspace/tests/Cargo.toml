@@ -210,6 +210,10 @@ path = "fs_directory_test.rs"
 name = "fs_link_test"
 path = "fs_link_test.rs"
 
+[[bin]]
+name = "access_test"
+path = "access_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

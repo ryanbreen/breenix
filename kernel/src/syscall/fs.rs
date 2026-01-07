@@ -1388,3 +1388,99 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
     log::debug!("sys_readlink: returning {} bytes: {:?}", bytes_to_copy, &target[..bytes_to_copy]);
     SyscallResult::Ok(bytes_to_copy as u64)
 }
+
+/// sys_access - Check user's permissions for a file
+///
+/// # Arguments
+/// * `pathname` - Path to the file (userspace pointer to null-terminated string)
+/// * `mode` - Access mode to check (R_OK=4, W_OK=2, X_OK=1, F_OK=0)
+///
+/// # Returns
+/// 0 on success (access allowed), negative errno on failure
+///
+/// # Errors
+/// * ENOENT - File does not exist
+/// * EACCES - Access would be denied
+/// * ENOTDIR - A component of path is not a directory
+pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
+    use super::errno::{EACCES, ENOENT, ENOTDIR};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2;
+
+    // Access mode constants
+    const F_OK: u32 = 0;  // Test for existence
+    const X_OK: u32 = 1;  // Test for execute permission
+    const W_OK: u32 = 2;  // Test for write permission
+    const R_OK: u32 = 4;  // Test for read permission
+
+    // Copy path from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_access: path={:?}, mode={:#o}", path, mode);
+
+    // Get the root filesystem
+    let fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_ref() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_access: ext2 root filesystem not mounted");
+            return SyscallResult::Err(ENOENT as u64);
+        }
+    };
+
+    // Try to resolve the path to an inode number
+    let inode_num = match fs.resolve_path(&path) {
+        Ok(ino) => ino,
+        Err(e) => {
+            log::debug!("sys_access: path resolution failed: {}", e);
+            let errno = if e.contains("not found") {
+                ENOENT
+            } else if e.contains("Not a directory") {
+                ENOTDIR
+            } else {
+                5 // EIO
+            };
+            return SyscallResult::Err(errno as u64);
+        }
+    };
+
+    // F_OK just checks existence - we already found it
+    if mode == F_OK {
+        log::debug!("sys_access: file exists, F_OK check passed");
+        return SyscallResult::Ok(0);
+    }
+
+    // Read the inode to check permissions
+    let inode = match fs.read_inode(inode_num) {
+        Ok(ino) => ino,
+        Err(_) => {
+            log::error!("sys_access: failed to read inode {}", inode_num);
+            return SyscallResult::Err(5); // EIO
+        }
+    };
+
+    // Get permission bits from inode mode (owner permissions in bits 8-6)
+    let inode_mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mode)) };
+    let owner_perms = (inode_mode >> 6) & 0o7;
+
+    // Check requested permissions against owner permissions
+    // (We don't have real users yet, so we check owner bits only)
+    if (mode & R_OK) != 0 && (owner_perms & 0o4) == 0 {
+        log::debug!("sys_access: read permission denied");
+        return SyscallResult::Err(EACCES as u64);
+    }
+    if (mode & W_OK) != 0 && (owner_perms & 0o2) == 0 {
+        log::debug!("sys_access: write permission denied");
+        return SyscallResult::Err(EACCES as u64);
+    }
+    if (mode & X_OK) != 0 && (owner_perms & 0o1) == 0 {
+        log::debug!("sys_access: execute permission denied");
+        return SyscallResult::Err(EACCES as u64);
+    }
+
+    log::debug!("sys_access: access check passed");
+    SyscallResult::Ok(0)
+}

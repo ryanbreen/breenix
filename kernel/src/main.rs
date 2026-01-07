@@ -732,6 +732,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: link operations ===");
         test_exec::test_fs_link();
 
+        // Test access() syscall
+        log::info!("=== FS TEST: access() syscall ===");
+        test_exec::test_access();
+
         // Test Rust std library support
         log::info!("=== STD TEST: Rust std library support ===");
         test_exec::test_hello_std_real();

@@ -2,8 +2,16 @@
 //!
 //! Tests the link-related filesystem operations:
 //! - link: Create hard links
+//! - link: ENOENT when oldpath doesn't exist
+//! - link: EPERM/EISDIR when oldpath is a directory
+//! - link: EEXIST when newpath already exists
 //! - symlink: Create symbolic links
+//! - symlink: Dangling symlinks (target doesn't exist)
+//! - symlink: EEXIST when linkpath already exists
+//! - symlink: EINVAL with empty target
 //! - readlink: Read symbolic link target
+//! - readlink: EINVAL on regular file
+//! - readlink: ENOENT on non-existent path
 
 #![no_std]
 #![no_main]
@@ -258,9 +266,64 @@ pub extern "C" fn _start() -> ! {
     }
 
     // ============================================
-    // Test 5: Create symbolic link and read through it
+    // Test 5: link when newpath exists returns EEXIST
     // ============================================
-    libbreenix::io::print("\nTest 5: Create symbolic link\n");
+    libbreenix::io::print("\nTest 5: link when newpath exists returns EEXIST\n");
+    {
+        // Create original file
+        let fd = match open_with_mode("/link_eexist_orig.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+            Ok(fd) => fd,
+            Err(_) => {
+                println("FAILED: Could not create /link_eexist_orig.txt");
+                exit(1);
+            }
+        };
+        let _ = write(fd, b"Original file for EEXIST test\n");
+        let _ = close(fd);
+        libbreenix::io::print("  Created /link_eexist_orig.txt\n");
+
+        // Create the file that will be the newpath (already exists)
+        let fd = match open_with_mode("/link_eexist_newpath.txt\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
+            Ok(fd) => fd,
+            Err(_) => {
+                let _ = unlink("/link_eexist_orig.txt\0");
+                println("FAILED: Could not create /link_eexist_newpath.txt");
+                exit(1);
+            }
+        };
+        let _ = write(fd, b"File at newpath already exists\n");
+        let _ = close(fd);
+        libbreenix::io::print("  Created /link_eexist_newpath.txt (newpath exists)\n");
+
+        // Try to link - should fail with EEXIST because newpath already exists
+        match link("/link_eexist_orig.txt\0", "/link_eexist_newpath.txt\0") {
+            Ok(()) => {
+                let _ = unlink("/link_eexist_orig.txt\0");
+                let _ = unlink("/link_eexist_newpath.txt\0");
+                println("FAILED: link() should return EEXIST when newpath exists");
+                exit(1);
+            }
+            Err(e) => {
+                if matches!(e, Errno::EEXIST) {
+                    libbreenix::io::print("  Correctly returned EEXIST\n");
+                } else {
+                    libbreenix::io::print("FAILED: Expected EEXIST but got different error\n");
+                    let _ = unlink("/link_eexist_orig.txt\0");
+                    let _ = unlink("/link_eexist_newpath.txt\0");
+                    exit(1);
+                }
+            }
+        }
+
+        // Clean up
+        let _ = unlink("/link_eexist_orig.txt\0");
+        let _ = unlink("/link_eexist_newpath.txt\0");
+    }
+
+    // ============================================
+    // Test 6: Create symbolic link and read through it
+    // ============================================
+    libbreenix::io::print("\nTest 6: Create symbolic link\n");
     {
         let test_content = b"Symlink target content!\n";
 
@@ -328,9 +391,9 @@ pub extern "C" fn _start() -> ! {
     }
 
     // ============================================
-    // Test 6: symlink to non-existent target (dangling symlink)
+    // Test 7: symlink to non-existent target (dangling symlink)
     // ============================================
-    libbreenix::io::print("\nTest 6: Create dangling symlink (target doesn't exist)\n");
+    libbreenix::io::print("\nTest 7: Create dangling symlink (target doesn't exist)\n");
     {
         // Symlinks can point to non-existent paths
         match symlink("/does_not_exist.txt\0", "/dangling_link.txt\0") {
@@ -365,9 +428,9 @@ pub extern "C" fn _start() -> ! {
     }
 
     // ============================================
-    // Test 7: symlink to existing path returns EEXIST
+    // Test 8: symlink to existing path returns EEXIST
     // ============================================
-    libbreenix::io::print("\nTest 7: symlink to existing path returns EEXIST\n");
+    libbreenix::io::print("\nTest 8: symlink to existing path returns EEXIST\n");
     {
         // Create a regular file at the linkpath
         let fd = match open_with_mode("/symlink_exists_test\0", O_WRONLY | O_CREAT | O_TRUNC, 0o644) {
@@ -405,9 +468,33 @@ pub extern "C" fn _start() -> ! {
     }
 
     // ============================================
-    // Test 8: readlink returns symlink target
+    // Test 9: symlink with empty target returns EINVAL
     // ============================================
-    libbreenix::io::print("\nTest 8: readlink returns symlink target\n");
+    libbreenix::io::print("\nTest 9: symlink with empty target returns EINVAL\n");
+    {
+        // An empty target path should return EINVAL
+        match symlink("\0", "/symlink_empty_target.txt\0") {
+            Ok(()) => {
+                let _ = unlink("/symlink_empty_target.txt\0");
+                println("FAILED: symlink() with empty target should return EINVAL");
+                exit(1);
+            }
+            Err(e) => {
+                if matches!(e, Errno::EINVAL) || matches!(e, Errno::ENOENT) {
+                    // Some systems return ENOENT for empty path, others EINVAL
+                    libbreenix::io::print("  Correctly returned error for empty target\n");
+                } else {
+                    libbreenix::io::print("FAILED: Expected EINVAL or ENOENT but got different error\n");
+                    exit(1);
+                }
+            }
+        }
+    }
+
+    // ============================================
+    // Test 10: readlink returns symlink target
+    // ============================================
+    libbreenix::io::print("\nTest 10: readlink returns symlink target\n");
     {
         let mut buf = [0u8; 256];
         let expected_target = b"/symlink_target.txt";
@@ -447,9 +534,9 @@ pub extern "C" fn _start() -> ! {
     }
 
     // ============================================
-    // Test 9: readlink on non-symlink returns EINVAL
+    // Test 11: readlink on non-symlink returns EINVAL
     // ============================================
-    libbreenix::io::print("\nTest 9: readlink on regular file returns EINVAL\n");
+    libbreenix::io::print("\nTest 11: readlink on regular file returns EINVAL\n");
     {
         let mut buf = [0u8; 256];
 
@@ -470,9 +557,9 @@ pub extern "C" fn _start() -> ! {
     }
 
     // ============================================
-    // Test 10: readlink on non-existent path returns ENOENT
+    // Test 12: readlink on non-existent path returns ENOENT
     // ============================================
-    libbreenix::io::print("\nTest 10: readlink on non-existent path returns ENOENT\n");
+    libbreenix::io::print("\nTest 12: readlink on non-existent path returns ENOENT\n");
     {
         let mut buf = [0u8; 256];
 
@@ -493,9 +580,9 @@ pub extern "C" fn _start() -> ! {
     }
 
     // ============================================
-    // Test 11: Long symlink target (> 60 bytes, uses data block storage in ext2)
+    // Test 13: Long symlink target (> 60 bytes, uses data block storage in ext2)
     // ============================================
-    libbreenix::io::print("\nTest 11: Long symlink target (> 60 bytes, data block storage)\n");
+    libbreenix::io::print("\nTest 13: Long symlink target (> 60 bytes, data block storage)\n");
     {
         // ext2 stores symlink targets <= 60 bytes inline in the inode.
         // Targets > 60 bytes are stored in a data block.

@@ -68,5 +68,18 @@ pub fn dispatch_syscall(
         SyscallNumber::SetSid => super::session::sys_setsid(),
         SyscallNumber::GetPgid => super::session::sys_getpgid(arg1 as i32),
         SyscallNumber::GetSid => super::session::sys_getsid(arg1 as i32),
+        // Filesystem syscalls
+        SyscallNumber::Access => super::fs::sys_access(arg1, arg2 as u32),
+        SyscallNumber::Open => super::fs::sys_open(arg1, arg2 as u32, arg3 as u32),
+        SyscallNumber::Lseek => super::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32),
+        SyscallNumber::Fstat => super::fs::sys_fstat(arg1 as i32, arg2),
+        SyscallNumber::Getdents64 => super::fs::sys_getdents64(arg1 as i32, arg2, arg3),
+        SyscallNumber::Rename => super::fs::sys_rename(arg1, arg2),
+        SyscallNumber::Mkdir => super::fs::sys_mkdir(arg1, arg2 as u32),
+        SyscallNumber::Rmdir => super::fs::sys_rmdir(arg1),
+        SyscallNumber::Link => super::fs::sys_link(arg1, arg2),
+        SyscallNumber::Unlink => super::fs::sys_unlink(arg1),
+        SyscallNumber::Symlink => super::fs::sys_symlink(arg1, arg2),
+        SyscallNumber::Readlink => super::fs::sys_readlink(arg1, arg2, arg3),
     }
 }

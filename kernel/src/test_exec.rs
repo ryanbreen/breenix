@@ -1952,6 +1952,33 @@ pub fn test_fs_link() {
     }
 }
 
+/// Test access() syscall
+pub fn test_access() {
+    log::info!("Testing access() syscall (F_OK, R_OK, W_OK)");
+
+    #[cfg(feature = "testing")]
+    let access_test_elf_buf = crate::userspace_test::get_test_binary("access_test");
+    #[cfg(feature = "testing")]
+    let access_test_elf: &[u8] = &access_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let access_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("access_test"),
+        access_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created access_test process with PID {:?}", pid);
+            log::info!("Access test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit ACCESS_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create access_test process: {}", e);
+            log::error!("Access test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test Rust std library support via hello_std_real
 pub fn test_hello_std_real() {
     log::info!("Testing Rust std library support (hello_std_real)");
