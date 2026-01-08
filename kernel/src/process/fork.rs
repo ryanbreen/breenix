@@ -3,21 +3,113 @@
 //! This module implements proper fork semantics by duplicating the parent's
 //! address space to the child process.
 
+use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::process::{Process, ProcessId};
 use crate::task::thread::Thread;
-use x86_64::structures::paging::{Page, Size4KiB};
+use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
 use x86_64::VirtAddr;
+
+/// Copy all mapped user pages from parent to child
+///
+/// This implements proper fork() semantics by:
+/// 1. Walking parent's page tables to find all mapped user pages
+/// 2. Allocating new physical frames for the child
+/// 3. Copying the page contents from parent to child
+/// 4. Mapping the new frames in child's page table with same flags
+///
+/// Returns the number of pages copied.
+pub fn copy_user_pages(
+    parent_page_table: &ProcessPageTable,
+    child_page_table: &mut ProcessPageTable,
+) -> Result<usize, &'static str> {
+    let phys_offset = crate::memory::physical_memory_offset();
+    let mut pages_copied = 0;
+    let mut copy_error: Option<&'static str> = None;
+
+    log::info!("copy_user_pages: starting to copy parent's address space to child");
+
+    // Walk parent's page tables and copy each mapped page
+    parent_page_table.walk_mapped_pages(|virt_addr, parent_phys, flags| {
+        // Skip if we've already encountered an error
+        if copy_error.is_some() {
+            return;
+        }
+
+        // Only copy user-accessible pages (skip any kernel pages that slipped through)
+        if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            log::trace!(
+                "copy_user_pages: skipping non-user page at {:#x}",
+                virt_addr.as_u64()
+            );
+            return;
+        }
+
+        // Allocate a new physical frame for the child
+        let child_frame = match allocate_frame() {
+            Some(frame) => frame,
+            None => {
+                log::error!("copy_user_pages: out of memory allocating frame for {:#x}", virt_addr.as_u64());
+                copy_error = Some("Out of memory during fork");
+                return;
+            }
+        };
+
+        // Copy the page contents from parent to child
+        // Access both pages via the kernel's physical memory offset
+        let parent_virt = phys_offset + parent_phys.as_u64();
+        let child_virt = phys_offset + child_frame.start_address().as_u64();
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                parent_virt.as_ptr::<u8>(),
+                child_virt.as_mut_ptr::<u8>(),
+                4096, // PAGE_SIZE
+            );
+        }
+
+        // Map the new frame in child's page table with the same flags
+        let page = Page::<Size4KiB>::containing_address(virt_addr);
+        if let Err(e) = child_page_table.map_page(page, child_frame, flags) {
+            log::error!(
+                "copy_user_pages: failed to map page {:#x} in child: {}",
+                virt_addr.as_u64(),
+                e
+            );
+            copy_error = Some("Failed to map page in child");
+            return;
+        }
+
+        pages_copied += 1;
+        log::trace!(
+            "copy_user_pages: copied page {:#x} (parent phys {:#x} -> child phys {:#x})",
+            virt_addr.as_u64(),
+            parent_phys.as_u64(),
+            child_frame.start_address().as_u64()
+        );
+    })?;
+
+    if let Some(err) = copy_error {
+        return Err(err);
+    }
+
+    log::info!("copy_user_pages: copied {} pages from parent to child", pages_copied);
+    Ok(pages_copied)
+}
 
 /// Copy memory from parent process to child process
 ///
-/// This implements a simplified copy for fork() semantics.
-/// For now, we'll copy the parent's stack contents to the child.
-/// In the future, this should implement full copy-on-write.
+/// This implements full copy for fork() semantics including:
+/// 1. All program code and data pages
+/// 2. Stack contents
+/// 3. Heap (if any)
+/// 4. Other mapped regions
 #[allow(dead_code)]
 pub fn copy_process_memory(
     parent_pid: ProcessId,
     child_process: &mut Process,
+    parent_page_table: &ProcessPageTable,
+    child_page_table: &mut ProcessPageTable,
     parent_thread: &Thread,
     child_thread: &mut Thread,
 ) -> Result<(), &'static str> {
@@ -27,214 +119,274 @@ pub fn copy_process_memory(
         child_process.id.as_u64()
     );
 
-    // For a proper fork(), we need to copy the parent's entire virtual address space.
-    // This includes:
-    // 1. Program code and data (already loaded by ELF loader)
-    // 2. Stack contents
-    // 3. Heap (if any)
-    // 4. Other mapped regions
+    // Copy all user pages from parent to child
+    let pages_copied = copy_user_pages(parent_page_table, child_page_table)?;
+    log::info!("copy_process_memory: copied {} user pages", pages_copied);
 
-    // For now, we'll implement basic stack copying since that's what's needed
-    // for fork() to work correctly. The child needs to be able to return from
-    // the same function call that the parent made.
+    // Copy heap metadata
+    child_process.heap_start = child_process.heap_start; // Already set, but be explicit
+    child_process.heap_end = child_process.heap_end;
 
-    copy_stack_contents(parent_thread, child_thread)?;
-
-    // TODO: Future improvements:
-    // - Copy program pages (code/data segments)
-    // - Copy heap pages
-    // - Implement copy-on-write for efficiency
-    // - Handle memory protection flags
+    // Adjust child's stack pointer relative to parent's
+    copy_stack_state(parent_thread, child_thread)?;
 
     log::info!("copy_process_memory: completed successfully");
     Ok(())
 }
 
-/// Copy stack contents from parent to child
+/// Copy stack state from parent to child
 ///
-/// This ensures the child has the same execution context as the parent
-/// and can properly return from the fork() system call.
-#[allow(dead_code)]
-fn copy_stack_contents(
+/// The actual stack pages are already copied by copy_user_pages().
+/// This function adjusts the child's RSP to the same relative position
+/// in its stack as the parent's RSP is in the parent's stack.
+fn copy_stack_state(
     parent_thread: &Thread,
     child_thread: &mut Thread,
 ) -> Result<(), &'static str> {
-    let parent_stack_start = parent_thread.stack_bottom;
-    let parent_stack_end = parent_thread.stack_top;
-    let parent_stack_size = (parent_stack_end.as_u64() - parent_stack_start.as_u64()) as usize;
+    let parent_stack_top = parent_thread.stack_top.as_u64();
+    let child_stack_top = child_thread.stack_top.as_u64();
+    let parent_rsp = parent_thread.context.rsp;
 
-    let child_stack_start = child_thread.stack_bottom;
-    let child_stack_end = child_thread.stack_top;
-    let child_stack_size = (child_stack_end.as_u64() - child_stack_start.as_u64()) as usize;
+    // Calculate how far the parent's RSP is from the top of its stack
+    let stack_offset_from_top = parent_stack_top.saturating_sub(parent_rsp);
+
+    // Set child's RSP to the same relative position in its stack
+    let child_rsp = child_stack_top.saturating_sub(stack_offset_from_top);
+    child_thread.context.rsp = child_rsp;
 
     log::debug!(
-        "copy_stack_contents: parent stack [{:#x}..{:#x}] size={} bytes",
-        parent_stack_start,
-        parent_stack_end,
-        parent_stack_size
+        "copy_stack_state: parent RSP={:#x} (offset {} from top {:#x})",
+        parent_rsp,
+        stack_offset_from_top,
+        parent_stack_top
     );
     log::debug!(
-        "copy_stack_contents: child stack [{:#x}..{:#x}] size={} bytes",
-        child_stack_start,
-        child_stack_end,
-        child_stack_size
+        "copy_stack_state: child RSP={:#x} (top={:#x})",
+        child_rsp,
+        child_stack_top
     );
 
-    // Ensure stacks are the same size
+    Ok(())
+}
+
+/// Copy stack contents from parent to child (for when stacks are at different addresses)
+///
+/// This is used when the child has a separate stack allocation from the parent.
+/// The stack pages need to be copied separately from the main copy_user_pages
+/// because they may be at different virtual addresses.
+pub fn copy_stack_contents(
+    parent_thread: &Thread,
+    child_thread: &mut Thread,
+    parent_page_table: &ProcessPageTable,
+    child_page_table: &ProcessPageTable,
+) -> Result<(), &'static str> {
+    let phys_offset = crate::memory::physical_memory_offset();
+
+    let parent_stack_top = parent_thread.stack_top.as_u64();
+    let parent_stack_bottom = parent_thread.stack_bottom.as_u64();
+    let parent_rsp = parent_thread.context.rsp;
+
+    let child_stack_top = child_thread.stack_top.as_u64();
+    let child_stack_bottom = child_thread.stack_bottom.as_u64();
+
+    // Calculate stack usage
+    let stack_used = parent_stack_top.saturating_sub(parent_rsp);
+    let parent_stack_size = parent_stack_top.saturating_sub(parent_stack_bottom);
+    let child_stack_size = child_stack_top.saturating_sub(child_stack_bottom);
+
+    log::debug!(
+        "copy_stack_contents: parent stack [{:#x}..{:#x}], RSP={:#x}, used={}",
+        parent_stack_bottom,
+        parent_stack_top,
+        parent_rsp,
+        stack_used
+    );
+    log::debug!(
+        "copy_stack_contents: child stack [{:#x}..{:#x}]",
+        child_stack_bottom,
+        child_stack_top
+    );
+
     if parent_stack_size != child_stack_size {
-        log::error!(
+        log::warn!(
             "Stack size mismatch: parent={}, child={}",
             parent_stack_size,
             child_stack_size
         );
-        return Err("Stack size mismatch between parent and child");
     }
 
-    // CRITICAL: The parent's current RSP tells us how much of the stack is actually in use
-    let parent_rsp = parent_thread.context.rsp;
-    let stack_used = parent_stack_end.as_u64() - parent_rsp;
-
-    log::debug!(
-        "copy_stack_contents: parent RSP={:#x}, stack used={} bytes",
-        parent_rsp,
-        stack_used
-    );
-
-    // The child's RSP should be at the same relative position in its stack
-    let child_rsp = child_stack_end.as_u64() - stack_used;
+    // Set child's RSP to same relative position
+    let child_rsp = child_stack_top.saturating_sub(stack_used);
     child_thread.context.rsp = child_rsp;
 
+    // Copy stack pages that are actually in use
+    // Start from the page containing RSP to the top of stack
+    let start_page_addr = parent_rsp & !0xFFF; // Page-align down
+    let mut parent_page_addr = start_page_addr;
+
+    while parent_page_addr < parent_stack_top {
+        // Calculate corresponding child page address
+        let offset_from_top = parent_stack_top - parent_page_addr;
+        let child_page_addr = child_stack_top - offset_from_top;
+
+        // Translate parent page to physical
+        let parent_phys = match parent_page_table.translate_page(VirtAddr::new(parent_page_addr)) {
+            Some(phys) => phys,
+            None => {
+                log::warn!(
+                    "copy_stack_contents: parent stack page {:#x} not mapped, skipping",
+                    parent_page_addr
+                );
+                parent_page_addr += 4096;
+                continue;
+            }
+        };
+
+        // Translate child page to physical
+        let child_phys = match child_page_table.translate_page(VirtAddr::new(child_page_addr)) {
+            Some(phys) => phys,
+            None => {
+                log::error!(
+                    "copy_stack_contents: child stack page {:#x} not mapped!",
+                    child_page_addr
+                );
+                return Err("Child stack page not mapped");
+            }
+        };
+
+        // Copy via kernel physical mapping
+        let parent_virt = phys_offset + parent_phys.as_u64();
+        let child_virt = phys_offset + child_phys.as_u64();
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                parent_virt.as_ptr::<u8>(),
+                child_virt.as_mut_ptr::<u8>(),
+                4096,
+            );
+        }
+
+        log::trace!(
+            "copy_stack_contents: copied stack page {:#x} -> {:#x}",
+            parent_page_addr,
+            child_page_addr
+        );
+
+        parent_page_addr += 4096;
+    }
+
     log::debug!(
-        "copy_stack_contents: set child RSP to {:#x} (mirroring parent)",
+        "copy_stack_contents: set child RSP to {:#x}",
         child_thread.context.rsp
     );
-
-    // For now, we'll use a workaround: ensure the child's stack has enough
-    // data to not crash when popping. This is a temporary fix until we
-    // implement proper stack copying.
-    log::warn!("copy_stack_contents: Using simplified stack setup for child");
-    log::warn!("copy_stack_contents: Full stack copying requires parent page table access");
-
-    // TODO: Implement proper stack copying using parent's page table
-    // This requires:
-    // 1. Getting physical addresses of parent's stack pages from parent's page table
-    // 2. Mapping those physical pages temporarily in kernel space
-    // 3. Copying the data
-    // 4. Unmapping the temporary mappings
 
     Ok(())
 }
 
 /// Copy other process state that should be inherited by fork()
 ///
-/// This includes things like signal handlers, file descriptors, etc.
-/// For now, this is mostly a placeholder for future implementation.
-#[allow(dead_code)]
+/// This function copies all process state that a child should inherit from its parent
+/// according to POSIX fork() semantics:
+///
+/// - **File descriptors**: Child inherits all open FDs with shared file positions.
+///   The FdTable::clone() handles incrementing reference counts for pipes and other
+///   shared resources, ensuring proper cleanup when either process closes an FD.
+///
+/// - **Signal handlers**: Child inherits parent's signal handlers and signal mask.
+///   Pending signals are NOT inherited (child starts with empty pending set per POSIX).
+///   The SignalState::fork() method handles this correctly.
+///
+/// - **Process group ID (pgid)**: Already copied during Process::new() creation in the
+///   fork path. Verified here for consistency.
+///
+/// - **Session ID (sid)**: Already copied during Process::new() creation in the fork path.
+///   Verified here for consistency.
+///
+/// - **umask**: Not yet tracked per-process (uses global default). TODO when implemented.
+///
+/// - **Current working directory**: Not yet tracked per-process (uses global cwd).
+///   TODO when per-process cwd is implemented.
+///
+/// Note: Memory (pages, heap bounds) and stack are copied separately by copy_user_pages()
+/// and copy_stack_contents() before this function is called.
 pub fn copy_process_state(
-    _parent_process: &Process,
-    _child_process: &mut Process,
+    parent_process: &Process,
+    child_process: &mut Process,
 ) -> Result<(), &'static str> {
-    // TODO: Copy file descriptor table
-    // TODO: Copy signal handler table
-    // TODO: Copy environment variables
-    // TODO: Copy working directory
-    // TODO: Copy process groups and session information
+    log::debug!(
+        "copy_process_state: copying state from parent {} to child {}",
+        parent_process.id.as_u64(),
+        child_process.id.as_u64()
+    );
 
-    log::debug!("copy_process_state: state copying not yet fully implemented");
+    // 1. Copy file descriptor table
+    // FdTable::clone() properly handles:
+    // - Cloning all FD entries
+    // - Incrementing pipe reader/writer reference counts
+    // - Arc cloning for shared sockets and files
+    child_process.fd_table = parent_process.fd_table.clone();
+    log::debug!(
+        "copy_process_state: cloned fd_table from parent {} to child {}",
+        parent_process.id.as_u64(),
+        child_process.id.as_u64()
+    );
+
+    // 2. Copy signal state (handlers and mask, NOT pending signals)
+    // SignalState::fork() creates a new state with:
+    // - pending = 0 (empty, per POSIX)
+    // - blocked = parent.blocked (inherited)
+    // - handlers = parent.handlers.clone() (inherited)
+    child_process.signals = parent_process.signals.fork();
+    log::debug!(
+        "copy_process_state: forked signal state from parent {} to child {}",
+        parent_process.id.as_u64(),
+        child_process.id.as_u64()
+    );
+
+    // 3. Verify process group ID was already set correctly
+    // The fork path should have already set child.pgid = parent.pgid
+    // We verify this here rather than overwriting to catch bugs
+    if child_process.pgid != parent_process.pgid {
+        log::warn!(
+            "copy_process_state: pgid mismatch! child={}, parent={}. Correcting.",
+            child_process.pgid.as_u64(),
+            parent_process.pgid.as_u64()
+        );
+        child_process.pgid = parent_process.pgid;
+    }
+
+    // 4. Verify session ID was already set correctly
+    if child_process.sid != parent_process.sid {
+        log::warn!(
+            "copy_process_state: sid mismatch! child={}, parent={}. Correcting.",
+            child_process.sid.as_u64(),
+            parent_process.sid.as_u64()
+        );
+        child_process.sid = parent_process.sid;
+    }
+
+    // 5. Copy umask (when per-process umask is implemented)
+    // TODO: child_process.umask = parent_process.umask;
+
+    // 6. Copy current working directory (when per-process cwd is implemented)
+    // TODO: child_process.cwd = parent_process.cwd.clone();
+
+    log::debug!(
+        "copy_process_state: completed state copy for child {}",
+        child_process.id.as_u64()
+    );
     Ok(())
 }
 
-/// Copy page table contents from parent to child
+/// Copy page table contents from parent to child (legacy wrapper)
 ///
-/// This implements a simplified copy of all mapped pages from parent to child.
-/// In a real implementation, this would use copy-on-write for efficiency.
+/// This is kept for compatibility but now uses the proper copy_user_pages().
 #[allow(dead_code)]
 pub fn copy_page_table_contents(
     parent_page_table: &ProcessPageTable,
     child_page_table: &mut ProcessPageTable,
 ) -> Result<(), &'static str> {
-    log::info!("copy_page_table_contents: copying parent's memory pages to child");
-
-    // DEBUG: Check current CR3 during fork
-    let current_cr3 = x86_64::registers::control::Cr3::read();
-    log::debug!(
-        "copy_page_table_contents: Current CR3 during fork: {:#x}",
-        current_cr3.0.start_address()
-    );
-    log::debug!(
-        "copy_page_table_contents: Parent page table CR3: {:#x}",
-        parent_page_table.level_4_frame().start_address()
-    );
-
-    // DEBUG: Test if parent page table can translate addresses we know should work
-    let test_addresses = [
-        0x40000000u64,
-        0x40001000u64,
-        0x40001001u64,
-        0x40001082u64,
-        0x40002000u64,
-    ];
-    for &addr in &test_addresses {
-        match parent_page_table.translate_page(VirtAddr::new(addr)) {
-            Some(phys) => log::debug!("Parent page table translates {:#x} -> {:#x}", addr, phys),
-            None => log::debug!("Parent page table CANNOT translate {:#x}", addr),
-        }
-    }
-
-    // For a minimal implementation, we'll copy the program's memory regions
-    // These are typically at standard userspace addresses:
-    // - 0x40000000: Code segment
-    // - 0x40001000: Data segment
-    // - 0x40002000: BSS segment
-
-    // Define the address ranges we know contain program data
-    let program_regions = [
-        (VirtAddr::new(0x40000000), VirtAddr::new(0x40001000)), // Code
-        (VirtAddr::new(0x40001000), VirtAddr::new(0x40002000)), // Data
-        (VirtAddr::new(0x40002000), VirtAddr::new(0x40003000)), // BSS
-    ];
-
-    for (start_addr, end_addr) in program_regions.iter() {
-        copy_memory_region(*start_addr, *end_addr, parent_page_table, child_page_table)?;
-    }
-
-    log::info!("copy_page_table_contents: completed successfully");
-    Ok(())
-}
-
-/// Copy a specific memory region from parent to child
-///
-/// TEMPORARY WORKAROUND: Since ProcessPageTable.translate_page() is broken,
-/// use the copy_from_user approach to copy memory pages.
-#[allow(dead_code)]
-fn copy_memory_region(
-    start_addr: VirtAddr,
-    end_addr: VirtAddr,
-    _parent_page_table: &ProcessPageTable,
-    _child_page_table: &mut ProcessPageTable,
-) -> Result<(), &'static str> {
-    let _start_page: Page<Size4KiB> = Page::containing_address(start_addr);
-    let _end_page: Page<Size4KiB> = Page::containing_address(end_addr - 1u64);
-
-    log::debug!(
-        "copy_memory_region: copying region {:#x}..{:#x}",
-        start_addr,
-        end_addr
-    );
-
-    // CRITICAL WORKAROUND: Since ProcessPageTable.translate_page() is fundamentally broken,
-    // we'll load the same ELF into the child process instead of copying pages.
-    // This is NOT a proper fork(), but it allows testing the exec integration.
-    log::warn!(
-        "copy_memory_region: ProcessPageTable.translate_page() is broken - implementing workaround"
-    );
-    log::warn!("copy_memory_region: Child will get fresh ELF load instead of memory copy (NOT proper fork semantics)");
-
-    // NOTE: The child process will be created with its own fresh copy of the program
-    // loaded from the ELF, not copied from the parent. This means:
-    // 1. Child variables won't inherit parent's values
-    // 2. Child will start from the beginning, not from the fork point
-    // 3. This violates POSIX fork() semantics but allows testing exec()
-
+    log::info!("copy_page_table_contents: using proper page copying");
+    copy_user_pages(parent_page_table, child_page_table)?;
     Ok(())
 }

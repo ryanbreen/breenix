@@ -672,6 +672,9 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: fcntl() syscall functionality ===");
         test_exec::test_fcntl();
 
+        // Test close-on-exec (O_CLOEXEC) behavior
+        test_exec::test_cloexec();
+
         // Test pipe2() syscall
         log::info!("=== IPC TEST: pipe2() syscall functionality ===");
         test_exec::test_pipe2();
@@ -703,6 +706,26 @@ fn kernel_main_continue() -> ! {
         // Test Ctrl-C (SIGINT) signal delivery
         log::info!("=== SIGNAL TEST: Ctrl-C (SIGINT) signal delivery ===");
         test_exec::test_ctrl_c();
+
+        // Test fork memory isolation (CoW semantics)
+        log::info!("=== FORK TEST: Fork memory isolation (CoW semantics) ===");
+        test_exec::test_fork_memory();
+
+        // Test fork state copying (copy_process_state)
+        log::info!("=== FORK TEST: Fork state copying (FD, signals, pgid, sid) ===");
+        test_exec::test_fork_state();
+
+        // Test fork pending signal non-inheritance (POSIX)
+        log::info!("=== SIGNAL TEST: fork pending signal non-inheritance ===");
+        test_exec::test_fork_pending_signal();
+
+        // Test argv support in exec syscall
+        log::info!("=== EXEC TEST: argv support ===");
+        test_exec::test_argv();
+
+        // Test exec with argv (fork+exec with arguments)
+        log::info!("=== EXEC TEST: exec with argv ===");
+        test_exec::test_exec_argv();
 
         // Test getdents64 syscall for directory listing
         log::info!("=== FS TEST: getdents64 directory listing ===");

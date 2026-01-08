@@ -6,6 +6,8 @@ use super::SyscallResult;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use x86_64::structures::paging::Translate;
+use x86_64::VirtAddr;
 
 /// Global flag to signal that userspace testing is complete and kernel should exit
 pub static USERSPACE_TEST_COMPLETE: AtomicBool = AtomicBool::new(false);
@@ -46,6 +48,38 @@ fn copy_from_user(user_ptr: u64, len: usize) -> Result<Vec<u8>, &'static str> {
         // because we're already in the process's context
         let slice = core::slice::from_raw_parts(user_ptr as *const u8, len);
         buffer.extend_from_slice(slice);
+    }
+
+    Ok(buffer)
+}
+
+fn copy_string_from_user(user_ptr: u64, max_len: usize) -> Result<Vec<u8>, &'static str> {
+    if user_ptr == 0 {
+        return Err("null pointer");
+    }
+
+    let mapper = unsafe { crate::memory::paging::get_mapper() };
+    let mut buffer = Vec::new();
+
+    for offset in 0..max_len {
+        let addr = user_ptr
+            .checked_add(offset as u64)
+            .ok_or("userspace address overflow")?;
+
+        if !crate::memory::layout::is_valid_user_address(addr) {
+            return Err("invalid userspace address");
+        }
+
+        if mapper.translate_addr(VirtAddr::new(addr)).is_none() {
+            return Err("unmapped userspace address");
+        }
+
+        let byte = unsafe { *(addr as *const u8) };
+        buffer.push(byte);
+
+        if byte == 0 {
+            break;
+        }
     }
 
     Ok(buffer)
@@ -798,11 +832,10 @@ pub fn sys_fork() -> SyscallResult {
     SyscallResult::Err(22) // EINVAL - invalid argument
 }
 
-/// sys_exec_with_frame - Replace the current process with a new program
+/// sys_exec_with_frame - Replace the current process with a new program (legacy, no argv support)
 ///
-/// This is the proper implementation that modifies the syscall frame so that
-/// when the syscall returns, it jumps to the NEW program instead of returning
-/// to the old one.
+/// This is the older implementation without argv support. It is kept for backward
+/// compatibility but is no longer used by the syscall handler (use sys_execv_with_frame instead).
 ///
 /// Parameters:
 /// - frame: mutable reference to the syscall frame (to update RIP/RSP on success)
@@ -811,6 +844,7 @@ pub fn sys_fork() -> SyscallResult {
 ///
 /// Returns: Never returns on success (frame is modified to jump to new program)
 /// Returns: Error code on failure
+#[allow(dead_code)]
 pub fn sys_exec_with_frame(
     frame: &mut super::handler::SyscallFrame,
     program_name_ptr: u64,
@@ -1008,6 +1042,237 @@ pub fn sys_exec_with_frame(
         #[cfg(not(feature = "testing"))]
         {
             let _ = elf_data;
+            SyscallResult::Err(38) // ENOSYS
+        }
+    })
+}
+
+/// sys_execv_with_frame - Replace the current process with a new program (with argv support)
+///
+/// This is the extended implementation that supports passing command-line arguments.
+/// The kernel sets up argc/argv on the new process's stack following Linux ABI.
+///
+/// Parameters:
+/// - frame: mutable reference to the syscall frame (to update RIP/RSP on success)
+/// - program_name_ptr: pointer to program name (null-terminated string)
+/// - argv_ptr: pointer to argv array (array of pointers to null-terminated strings, ending with NULL)
+///
+/// The argv array should be laid out in user memory as:
+///   argv[0] -> pointer to first string (usually program name)
+///   argv[1] -> pointer to second string
+///   ...
+///   argv[n] -> NULL (end of array)
+///
+/// Returns: Never returns on success (frame is modified to jump to new program)
+/// Returns: Error code on failure
+pub fn sys_execv_with_frame(
+    frame: &mut super::handler::SyscallFrame,
+    program_name_ptr: u64,
+    argv_ptr: u64,
+) -> SyscallResult {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        log::info!(
+            "sys_execv_with_frame called: program_name_ptr={:#x}, argv_ptr={:#x}",
+            program_name_ptr,
+            argv_ptr
+        );
+
+        // Get current process and thread
+        let current_thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("sys_execv: No current thread");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+
+        // Read the program name from userspace
+        if program_name_ptr == 0 {
+            log::error!("sys_execv: NULL program name");
+            return SyscallResult::Err(22); // EINVAL
+        }
+
+        let name_bytes = match copy_string_from_user(program_name_ptr, 256) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("sys_execv: Failed to read program name: {}", e);
+                return SyscallResult::Err(14); // EFAULT
+            }
+        };
+
+        let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+        let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
+            Ok(s) => s,
+            Err(_) => {
+                log::error!("sys_execv: Invalid UTF-8 in program name");
+                return SyscallResult::Err(22); // EINVAL
+            }
+        };
+
+        log::info!("sys_execv: Loading program '{}'", program_name);
+
+        // Read argv array from userspace
+        let mut argv_vec: Vec<Vec<u8>> = Vec::new();
+
+        if argv_ptr != 0 {
+            // Read up to 64 argument pointers
+            const MAX_ARGS: usize = 64;
+            const MAX_ARG_LEN: usize = 4096;
+
+            for i in 0..MAX_ARGS {
+                let ptr_addr = argv_ptr + (i * 8) as u64;
+                let arg_ptr_bytes = match copy_from_user(ptr_addr, 8) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        log::error!("sys_execv: Failed to read argv[{}] pointer: {}", i, e);
+                        return SyscallResult::Err(14); // EFAULT
+                    }
+                };
+
+                // Interpret as u64 pointer
+                let arg_ptr = u64::from_le_bytes([
+                    arg_ptr_bytes[0], arg_ptr_bytes[1], arg_ptr_bytes[2], arg_ptr_bytes[3],
+                    arg_ptr_bytes[4], arg_ptr_bytes[5], arg_ptr_bytes[6], arg_ptr_bytes[7],
+                ]);
+
+                // NULL pointer marks end of argv
+                if arg_ptr == 0 {
+                    break;
+                }
+
+                // Read the argument string
+                let arg_bytes = match copy_string_from_user(arg_ptr, MAX_ARG_LEN) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        log::error!("sys_execv: Failed to read argv[{}] string at {:#x}: {}", i, arg_ptr, e);
+                        return SyscallResult::Err(14); // EFAULT
+                    }
+                };
+
+                // Find null terminator and truncate
+                let arg_len = arg_bytes.iter().position(|&b| b == 0).unwrap_or(arg_bytes.len());
+                let mut arg = arg_bytes[..arg_len].to_vec();
+                arg.push(0); // Ensure null-terminated
+                argv_vec.push(arg);
+            }
+        }
+
+        // If no argv provided, use program name as argv[0]
+        if argv_vec.is_empty() {
+            let mut arg0 = program_name.as_bytes().to_vec();
+            arg0.push(0);
+            argv_vec.push(arg0);
+        }
+
+        log::info!("sys_execv: argc={}", argv_vec.len());
+        for (i, arg) in argv_vec.iter().enumerate() {
+            if let Ok(s) = core::str::from_utf8(&arg[..arg.len().saturating_sub(1)]) {
+                log::debug!("sys_execv: argv[{}] = '{}'", i, s);
+            }
+        }
+
+        #[cfg(feature = "testing")]
+        {
+            // Load the binary from the test disk by name
+            let elf_vec = crate::userspace_test::get_test_binary(program_name);
+            let boxed_slice = elf_vec.into_boxed_slice();
+            let elf_data = Box::leak(boxed_slice) as &'static [u8];
+            let name_string = alloc::string::String::from(program_name);
+            let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+
+            // Find current process
+            let current_pid = {
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                        pid
+                    } else {
+                        log::error!("sys_execv: Thread {} not found in any process", current_thread_id);
+                        return SyscallResult::Err(3); // ESRCH
+                    }
+                } else {
+                    log::error!("sys_execv: Process manager not available");
+                    return SyscallResult::Err(12); // ENOMEM
+                }
+            };
+
+            log::info!(
+                "sys_execv: Replacing process {} (thread {}) with new program",
+                current_pid.as_u64(),
+                current_thread_id
+            );
+
+            // Convert argv_vec to slice of slices for exec_process_with_argv
+            let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
+
+            // Replace the process's address space with argv support
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                match manager.exec_process_with_argv(current_pid, elf_data, Some(leaked_name), &argv_slices) {
+                    Ok((new_entry_point, new_rsp)) => {
+                        log::info!(
+                            "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
+                            new_entry_point, new_rsp
+                        );
+
+                        // Modify the syscall frame to jump to the new program
+                        frame.rip = new_entry_point;
+                        frame.rsp = new_rsp;
+                        frame.rflags = 0x202;
+
+                        // Clear all registers for security
+                        frame.rax = 0;
+                        frame.rbx = 0;
+                        frame.rcx = 0;
+                        frame.rdx = 0;
+                        frame.rsi = 0;
+                        frame.rdi = 0;
+                        frame.rbp = 0;
+                        frame.r8 = 0;
+                        frame.r9 = 0;
+                        frame.r10 = 0;
+                        frame.r11 = 0;
+                        frame.r12 = 0;
+                        frame.r13 = 0;
+                        frame.r14 = 0;
+                        frame.r15 = 0;
+
+                        // Set up CR3 for the new process page table
+                        if let Some(process) = manager.get_process(current_pid) {
+                            if let Some(ref page_table) = process.page_table {
+                                let new_cr3 = page_table.level_4_frame().start_address().as_u64();
+                                log::info!("sys_execv: Setting next_cr3 to {:#x}", new_cr3);
+                                unsafe {
+                                    crate::per_cpu::set_next_cr3(new_cr3);
+                                    core::arch::asm!(
+                                        "mov gs:[80], {}",
+                                        in(reg) new_cr3,
+                                        options(nostack, preserves_flags)
+                                    );
+                                }
+                            }
+                        }
+
+                        log::info!(
+                            "sys_execv: Frame updated - RIP={:#x}, RSP={:#x}",
+                            frame.rip, frame.rsp
+                        );
+
+                        SyscallResult::Ok(0)
+                    }
+                    Err(e) => {
+                        log::error!("sys_execv: Failed to exec process: {}", e);
+                        SyscallResult::Err(12) // ENOMEM
+                    }
+                }
+            } else {
+                log::error!("sys_execv: Process manager not available");
+                SyscallResult::Err(12) // ENOMEM
+            }
+        }
+
+        #[cfg(not(feature = "testing"))]
+        {
             SyscallResult::Err(38) // ENOSYS
         }
     })

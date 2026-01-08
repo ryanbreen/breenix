@@ -6,8 +6,8 @@
 //!
 //! ```text
 //! Sector 0:       TestDiskHeader (64 bytes)
-//! Sectors 1-63:   BinaryEntry table (up to 64 entries, 8 per sector)
-//! Sector 64+:     Binary data (concatenated, sector-aligned)
+//! Sectors 1-127:  BinaryEntry table (up to 128 entries, 8 per sector)
+//! Sector 128+:    Binary data (concatenated, sector-aligned)
 //! ```
 //!
 //! ## Format Details
@@ -35,8 +35,8 @@ use anyhow::{bail, Result};
 const SECTOR_SIZE: usize = 512;
 const MAGIC: &[u8; 8] = b"BXTEST\0\0";
 const VERSION: u32 = 1;
-const MAX_BINARIES: usize = 64;
-const DATA_START_SECTOR: u64 = 64;
+const MAX_BINARIES: usize = 128;
+const DATA_START_SECTOR: u64 = 128;
 
 /// Disk header stored in sector 0
 ///
@@ -223,9 +223,9 @@ pub fn create_test_disk() -> Result<()> {
         sector_buffer.fill(0);
     }
 
-    // Pad to sector 64 (we need 63 sectors for entry table: sectors 1-63)
+    // Pad to sector 128 (entry table in sectors 1-127, data starts at sector 128)
     let entries_sectors_written = (entries.len() + 7) / 8; // Round up
-    let padding_sectors = 63_usize.saturating_sub(entries_sectors_written);
+    let padding_sectors = 127_usize.saturating_sub(entries_sectors_written);
     for _ in 0..padding_sectors {
         output.write_all(&sector_buffer)?;
     }

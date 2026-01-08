@@ -142,7 +142,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
             let length = args.1;
             super::mmap::sys_munmap(addr, length)
         }
-        Some(SyscallNumber::Exec) => super::handlers::sys_exec_with_frame(frame, args.0, args.1),
+        Some(SyscallNumber::Exec) => super::handlers::sys_execv_with_frame(frame, args.0, args.1),
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
         Some(SyscallNumber::ClockGetTime) => {

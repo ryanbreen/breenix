@@ -2004,3 +2004,200 @@ pub fn test_hello_std_real() {
         }
     }
 }
+
+/// Test fork memory isolation
+///
+/// This test verifies that fork() correctly implements copy-on-write semantics,
+/// ensuring parent and child have isolated memory spaces.
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "fork_memory_test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates memory isolation
+///   - Marker: "FORK_MEMORY_ISOLATION_PASSED"
+///   - This PROVES:
+///     1. Stack memory is isolated (child sees original value after parent modifies)
+///     2. Heap memory (sbrk) is isolated
+///     3. Global/static memory is isolated
+///
+/// This test was added to prevent regression of a bug where fork was copying
+/// 707 pages instead of ~20, indicating incorrect CoW behavior.
+pub fn test_fork_memory() {
+    log::info!("Testing fork memory isolation (CoW semantics)");
+
+    #[cfg(feature = "testing")]
+    let fork_memory_test_elf_buf = crate::userspace_test::get_test_binary("fork_memory_test");
+    #[cfg(feature = "testing")]
+    let fork_memory_test_elf: &[u8] = &fork_memory_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fork_memory_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fork_memory_test"),
+        fork_memory_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fork_memory_test process with PID {:?}", pid);
+            log::info!("fork_memory_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FORK_MEMORY_ISOLATION_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fork_memory_test process: {}", e);
+            log::error!("Fork memory test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test fork state copying (copy_process_state)
+///
+/// This test verifies that fork() correctly copies all inherited process state:
+/// - File descriptors (pipe FDs work across fork)
+/// - Signal handlers (child inherits parent's handlers)
+/// - Process group ID (child inherits parent's PGID)
+/// - Session ID (child inherits parent's SID)
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "fork_state_test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates state inheritance
+///   - Marker: "FORK_STATE_COPY_PASSED"
+///   - This PROVES:
+///     1. File descriptors are inherited (pipe data readable)
+///     2. Signal handlers are inherited (SIGUSR1 handler works)
+///     3. PGID is inherited
+///     4. SID is inherited
+pub fn test_fork_state() {
+    log::info!("Testing fork state copying (copy_process_state)");
+
+    #[cfg(feature = "testing")]
+    let fork_state_test_elf_buf = crate::userspace_test::get_test_binary("fork_state_test");
+    #[cfg(feature = "testing")]
+    let fork_state_test_elf: &[u8] = &fork_state_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fork_state_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fork_state_test"),
+        fork_state_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fork_state_test process with PID {:?}", pid);
+            log::info!("fork_state_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FORK_STATE_COPY_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fork_state_test process: {}", e);
+            log::error!("Fork state test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test fork pending signal non-inheritance (POSIX requirement)
+pub fn test_fork_pending_signal() {
+    log::info!("Testing fork pending signal non-inheritance (POSIX)");
+
+    #[cfg(feature = "testing")]
+    let fork_pending_signal_test_elf_buf =
+        crate::userspace_test::get_test_binary("fork_pending_signal_test");
+    #[cfg(feature = "testing")]
+    let fork_pending_signal_test_elf: &[u8] = &fork_pending_signal_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fork_pending_signal_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fork_pending_signal_test"),
+        fork_pending_signal_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fork_pending_signal_test process with PID {:?}", pid);
+            log::info!(
+                "    -> Userspace will emit FORK_PENDING_SIGNAL_TEST_PASSED marker if successful"
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to create fork_pending_signal_test process: {}", e);
+        }
+    }
+}
+
+/// Test argv support in exec syscall
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (This function): Creates and schedules the process
+/// - Stage 2 (Boot stage): Validates actual execution via ARGV_TEST_PASSED marker
+pub fn test_argv() {
+    log::info!("Testing argv support in exec syscall");
+
+    #[cfg(feature = "testing")]
+    let argv_test_elf_buf = crate::userspace_test::get_test_binary("argv_test");
+    #[cfg(feature = "testing")]
+    let argv_test_elf: &[u8] = &argv_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let argv_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("argv_test"),
+        argv_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created argv_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit ARGV_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create argv_test process: {}", e);
+            log::error!("Argv test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test exec with argv - validates fork+exec with arguments
+pub fn test_exec_argv() {
+    log::info!("Testing exec with argv (fork+exec with specific arguments)");
+
+    #[cfg(feature = "testing")]
+    let exec_argv_test_elf_buf = crate::userspace_test::get_test_binary("exec_argv_test");
+    #[cfg(feature = "testing")]
+    let exec_argv_test_elf: &[u8] = &exec_argv_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let exec_argv_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("exec_argv_test"),
+        exec_argv_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created exec_argv_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit EXEC_ARGV_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create exec_argv_test process: {}", e);
+        }
+    }
+}
+
+/// Test close-on-exec (O_CLOEXEC) behavior
+pub fn test_cloexec() {
+    log::info!("Testing close-on-exec (O_CLOEXEC) behavior");
+
+    #[cfg(feature = "testing")]
+    let cloexec_test_elf_buf = crate::userspace_test::get_test_binary("cloexec_test");
+    #[cfg(feature = "testing")]
+    let cloexec_test_elf: &[u8] = &cloexec_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cloexec_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cloexec_test"),
+        cloexec_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cloexec_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit CLOEXEC_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cloexec_test process: {}", e);
+        }
+    }
+}

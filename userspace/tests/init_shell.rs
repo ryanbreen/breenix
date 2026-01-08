@@ -21,7 +21,7 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 use libbreenix::io::{close, dup2, pipe, print, println, read, write};
 use libbreenix::process::{
-    exec, fork, getpgrp, setpgid, waitpid, wexitstatus, wifexited, wifsignaled, wifstopped,
+    exec, execv, fork, getpgrp, setpgid, waitpid, wexitstatus, wifexited, wifsignaled, wifstopped,
     yield_now, WNOHANG, WUNTRACED,
 };
 use libbreenix::signal::{kill, sigaction, Sigaction, SIGCHLD, SIGCONT, SIGINT};
@@ -529,6 +529,47 @@ static PROGRAM_REGISTRY: &[ProgramEntry] = &[
         binary_name: b"signal_test\0",
         description: "Test signal handling",
     },
+    // === Coreutils ===
+    ProgramEntry {
+        name: "cat",
+        binary_name: b"cat\0",
+        description: "Concatenate and print files",
+    },
+    ProgramEntry {
+        name: "ls",
+        binary_name: b"ls_cmd\0",
+        description: "List directory contents",
+    },
+    ProgramEntry {
+        name: "mkdir",
+        binary_name: b"mkdir_cmd\0",
+        description: "Create directories",
+    },
+    ProgramEntry {
+        name: "rmdir",
+        binary_name: b"rmdir_cmd\0",
+        description: "Remove empty directories",
+    },
+    ProgramEntry {
+        name: "rm",
+        binary_name: b"rm_cmd\0",
+        description: "Remove files",
+    },
+    ProgramEntry {
+        name: "cp",
+        binary_name: b"cp_cmd\0",
+        description: "Copy files",
+    },
+    ProgramEntry {
+        name: "mv",
+        binary_name: b"mv_cmd\0",
+        description: "Move/rename files",
+    },
+    ProgramEntry {
+        name: "echo",
+        binary_name: b"echo_cmd\0",
+        description: "Print arguments to stdout",
+    },
 ];
 
 /// Find a program in the registry by command name.
@@ -553,7 +594,7 @@ pub fn find_program(name: &str) -> Option<&'static ProgramEntry> {
 /// Returns:
 /// - Ok(exit_code) if the program was found and executed (0 for background)
 /// - Err(()) if the program was not found in the registry
-pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Result<i32, ()> {
+pub fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<i32, ()> {
     let entry = find_program(cmd_name).ok_or(())?;
 
     if !background {
@@ -580,8 +621,33 @@ pub fn try_execute_external(cmd_name: &str, _args: &str, background: bool) -> Re
         // setpgid(0, 0) means: set my (pid=0=self) process group to my own PID (pgid=0=self).
         let _ = setpgid(0, 0);
 
-        // Now exec the program
-        let result = exec(entry.binary_name);
+        let args = trim(args);
+        let result = if args.is_empty() {
+            let argv: [*const u8; 2] = [entry.binary_name.as_ptr(), core::ptr::null()];
+            execv(entry.binary_name, argv.as_ptr())
+        } else {
+            const ARG_BUF_LEN: usize = 128;
+            let arg_end = args
+                .as_bytes()
+                .iter()
+                .position(|&c| c == b' ' || c == b'\t')
+                .unwrap_or(args.len());
+            let first_arg = &args[..arg_end];
+            if first_arg.len() + 1 > ARG_BUF_LEN {
+                print("Error: argument too long: ");
+                println(first_arg);
+                libbreenix::process::exit(1);
+            }
+            let mut arg_buf = [0u8; ARG_BUF_LEN];
+            arg_buf[..first_arg.len()].copy_from_slice(first_arg.as_bytes());
+            arg_buf[first_arg.len()] = 0;
+            let argv: [*const u8; 3] = [
+                entry.binary_name.as_ptr(),
+                arg_buf.as_ptr(),
+                core::ptr::null(),
+            ];
+            execv(entry.binary_name, argv.as_ptr())
+        };
 
         // If exec returns, it failed
         print("Error: exec failed with code ");
