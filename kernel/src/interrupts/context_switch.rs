@@ -502,12 +502,39 @@ fn switch_to_thread(
                         }
 
                         // Now deliver the signal (modifies interrupt_frame and saved_regs)
-                        if crate::signal::delivery::deliver_pending_signals(
+                        let signal_result = crate::signal::delivery::deliver_pending_signals(
                             process,
                             interrupt_frame,
                             saved_regs,
-                        ) {
-                            log::info!("Signal delivered to thread {}", thread_id);
+                        );
+
+                        // Handle signal result
+                        match signal_result {
+                            crate::signal::delivery::SignalDeliveryResult::Terminated(n) => {
+                                log::info!("Signal terminated process, thread {}", thread_id);
+                                // Process was terminated - notify parent after releasing locks
+                                // We need to return from this function and let the locks drop naturally
+                                // but first save the notification data
+                                // We have the notification info but can't call notify while holding locks.
+                                // The notification will be handled by the timer interrupt when it
+                                // eventually switches to the parent process, because:
+                                // 1. The child is now marked as terminated
+                                // 2. When the parent's waitpid resumes, it will find the terminated child
+                                // 3. The scheduler will see the parent is unblocked
+                                // However, this path is rare (signal terminating a process whose parent
+                                // is blocked in waitpid *at the exact same time*).
+                                // The parent notification happens in the other code paths.
+                                log::debug!(
+                                    "Signal termination in blocked_in_syscall path: parent {} will be notified when resumed",
+                                    n.parent_pid.as_u64()
+                                );
+                                // Just return - RAII will release the locks
+                                return;
+                            }
+                            crate::signal::delivery::SignalDeliveryResult::Delivered => {
+                                log::info!("Signal delivered to thread {}", thread_id);
+                            }
+                            crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                         }
                     } else {
                         // NO PENDING SIGNALS: Resume at kernel HLT loop
@@ -764,7 +791,7 @@ fn restore_userspace_thread_context(
     let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
 
     // Track if signal termination happened (for parent notification after borrow ends)
-    let mut signal_termination_info: Option<(crate::process::ProcessId, crate::process::ProcessId)> = None;
+    let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
 
     if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
@@ -854,25 +881,33 @@ fn restore_userspace_thread_context(
                                 );
                             }
 
-                            // Save parent info BEFORE delivering signal, in case the signal
-                            // terminates the process and we need to notify parent
-                            let child_pid = pid;
-                            let parent_pid = process.parent;
-
-                            if crate::signal::delivery::deliver_pending_signals(
+                            // Deliver pending signals
+                            let signal_result = crate::signal::delivery::deliver_pending_signals(
                                 process,
                                 interrupt_frame,
                                 saved_regs,
-                            ) {
-                                // Signal was delivered and frame was modified
-                                // If process was terminated, save info for parent notification
-                                if process.is_terminated() {
+                            );
+
+                            match signal_result {
+                                crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
+                                    // Signal terminated the process
                                     crate::task::scheduler::set_need_resched();
-                                    // Save for later parent notification
-                                    if let Some(ppid) = parent_pid {
-                                        signal_termination_info = Some((child_pid, ppid));
+                                    // Save notification for later (after manager lock is released)
+                                    signal_termination_info = Some(notification);
+                                    setup_idle_return(interrupt_frame);
+                                    crate::task::scheduler::switch_to_idle();
+                                    // Don't return here - fall through to handle notification
+                                }
+                                crate::signal::delivery::SignalDeliveryResult::Delivered => {
+                                    // Signal was delivered and frame was modified
+                                    if process.is_terminated() {
+                                        // Process was terminated (somehow?)
+                                        crate::task::scheduler::set_need_resched();
+                                        setup_idle_return(interrupt_frame);
+                                        crate::task::scheduler::switch_to_idle();
                                     }
                                 }
+                                crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                             }
                         }
                     }
@@ -880,27 +915,10 @@ fn restore_userspace_thread_context(
             }
 
             // Now process borrow has ended - notify parent if signal terminated a child
-            if let Some((child_pid, parent_pid)) = signal_termination_info {
-                if let Some(parent_process) = manager.get_process_mut(parent_pid) {
-                    use crate::signal::constants::SIGCHLD;
-                    parent_process.signals.set_pending(SIGCHLD);
-
-                    // Get parent's main thread ID to wake it if blocked on waitpid
-                    let parent_thread_id = parent_process.main_thread.as_ref().map(|t| t.id());
-
-                    log::info!(
-                        "Signal termination: sent SIGCHLD to parent {} for child {} exit",
-                        parent_pid.as_u64(),
-                        child_pid.as_u64()
-                    );
-
-                    // Wake up the parent thread if it's blocked on waitpid
-                    if let Some(parent_tid) = parent_thread_id {
-                        scheduler::with_scheduler(|sched| {
-                            sched.unblock_for_child_exit(parent_tid);
-                        });
-                    }
-                }
+            // Drop manager guard first to avoid deadlock when notifying parent
+            drop(manager_guard);
+            if let Some(notification) = signal_termination_info {
+                crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
             }
         }
     } else {
@@ -1058,11 +1076,11 @@ fn check_and_deliver_signals_for_current_thread(
     };
 
     // Track if signal termination happened (for parent notification after borrow ends)
-    let mut signal_termination_info: Option<(crate::process::ProcessId, crate::process::ProcessId)> = None;
+    let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
 
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
-        if let Some((pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
             // Note: Debug logging removed from hot path - use GDB if debugging is needed
             if crate::signal::delivery::has_deliverable_signals(process) {
                 // Switch to process's page table for signal delivery
@@ -1080,52 +1098,41 @@ fn check_and_deliver_signals_for_current_thread(
                     }
                 }
 
-                // Save parent info BEFORE delivering signal, in case the signal
-                // terminates the process and we need to notify parent
-                let child_pid = pid;
-                let parent_pid = process.parent;
-
                 // Deliver signals
-                if crate::signal::delivery::deliver_pending_signals(
+                let signal_result = crate::signal::delivery::deliver_pending_signals(
                     process,
                     interrupt_frame,
                     saved_regs,
-                ) {
-                    // Signal was delivered (may have terminated process)
-                    if process.is_terminated() {
+                );
+
+                match signal_result {
+                    crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
+                        // Signal terminated the process
                         crate::task::scheduler::set_need_resched();
-                        // Save for later parent notification (after borrow ends)
-                        if let Some(ppid) = parent_pid {
-                            signal_termination_info = Some((child_pid, ppid));
+                        signal_termination_info = Some(notification);
+                        setup_idle_return(interrupt_frame);
+                        crate::task::scheduler::switch_to_idle();
+                        // Don't return here - fall through to handle notification
+                    }
+                    crate::signal::delivery::SignalDeliveryResult::Delivered => {
+                        if process.is_terminated() {
+                            crate::task::scheduler::set_need_resched();
+                            setup_idle_return(interrupt_frame);
+                            crate::task::scheduler::switch_to_idle();
                         }
                     }
+                    crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                 }
             }
         }
         // process borrow has ended here
 
+        // Drop manager guard first to avoid deadlock when notifying parent
+        drop(manager_guard);
+
         // Notify parent if signal terminated a child
-        if let Some((child_pid, parent_pid)) = signal_termination_info {
-            if let Some(parent_process) = manager.get_process_mut(parent_pid) {
-                use crate::signal::constants::SIGCHLD;
-                parent_process.signals.set_pending(SIGCHLD);
-
-                // Get parent's main thread ID to wake it if blocked on waitpid
-                let parent_thread_id = parent_process.main_thread.as_ref().map(|t| t.id());
-
-                log::info!(
-                    "Signal termination (no-switch path): sent SIGCHLD to parent {} for child {} exit",
-                    parent_pid.as_u64(),
-                    child_pid.as_u64()
-                );
-
-                // Wake up the parent thread if it's blocked on waitpid
-                if let Some(parent_tid) = parent_thread_id {
-                    scheduler::with_scheduler(|sched| {
-                        sched.unblock_for_child_exit(parent_tid);
-                    });
-                }
-            }
+        if let Some(notification) = signal_termination_info {
+            crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
         }
     }
 }

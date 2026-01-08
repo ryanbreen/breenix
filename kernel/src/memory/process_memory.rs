@@ -413,24 +413,30 @@ impl ProcessPageTable {
                     log::info!("CRITICAL: Copied PML4[2] (direct phys mapping) from master with kernel-only flags: {:?}", master_flags);
                 }
 
-                // Copy lower-half entries (1-255) from master for shared kernel resources
-                // This includes the heap (PML4[136]) and other kernel allocations
-                // CRITICAL: Skip PML4[0] - it covers 0x0 - 0x7FFFFFFFFF (512GB) which is userspace
-                // Each process needs its own PML4[0] so they have independent page tables for
-                // userspace addresses like 0x40000000 where ELF programs are loaded.
-                // Sharing PML4[0] causes "Page already mapped to different frame" errors.
+                // Copy ONLY kernel-specific lower-half entries from master
+                // CRITICAL BUG FIX: Do NOT copy entries that contain userspace content!
+                // PML4[0] (0x0-0x7FFFFFFFFF) - userspace code/data, per-process
+                // PML4[255] (0x7F8000000000-0x8000000000) - userspace stack region, per-process
+                // PML4[2] is handled above (direct physical memory)
+                // Only copy entries that are truly kernel-only (no USER_ACCESSIBLE)
                 let mut lower_half_copied = 0;
-                for i in 1..256 {  // Start at 1, NOT 0 - skip PML4[0] for per-process userspace
+                for i in 1..256 {
                     if i == 2 {
                         continue; // Already handled above with special flags
                     }
                     if !master_pml4[i].is_unused() {
-                        // Keep master flags as-is (kernel mappings don't need USER_ACCESSIBLE)
+                        // CRITICAL: Only copy if the entry does NOT have USER_ACCESSIBLE
+                        // Entries with USER_ACCESSIBLE are userspace regions that should be per-process
+                        let flags = master_pml4[i].flags();
+                        if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                            log::trace!("Skipping PML4[{}] - has USER_ACCESSIBLE flag (userspace region)", i);
+                            continue;
+                        }
                         level_4_table[i] = master_pml4[i].clone();
                         lower_half_copied += 1;
                     }
                 }
-                log::info!("PHASE2: Copied {} lower-half entries (1-255) from master, PML4[0] left empty for userspace", lower_half_copied);
+                log::info!("PHASE2: Copied {} kernel-only lower-half entries (skipped userspace), PML4[0] left empty", lower_half_copied);
 
                 // CREATE a fresh PDPT for PML4[0] to enable userspace mappings
                 // PML4[0] covers 0x0 - 0x7FFFFFFFFF (512GB) - this is the userspace region
@@ -861,6 +867,101 @@ impl ProcessPageTable {
     /// Get the physical frame of the level 4 page table
     pub fn level_4_frame(&self) -> PhysFrame {
         self.level_4_frame
+    }
+
+    /// Walk all mapped user pages in this page table
+    ///
+    /// This walks the entire page table hierarchy (L4 -> L3 -> L2 -> L1) and calls
+    /// the callback for each mapped page with (VirtAddr, PhysAddr, PageTableFlags).
+    ///
+    /// Only userspace pages (addresses < 0x8000_0000_0000_0000) are visited.
+    /// Returns the count of pages visited.
+    pub fn walk_mapped_pages<F>(&self, mut callback: F) -> Result<usize, &'static str>
+    where
+        F: FnMut(VirtAddr, PhysAddr, PageTableFlags),
+    {
+        let phys_offset = crate::memory::physical_memory_offset();
+        let mut page_count = 0;
+
+        unsafe {
+            // Get the L4 table
+            let l4_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+            let l4_table = &*(l4_virt.as_ptr() as *const PageTable);
+
+            // Walk L4 entries 0-255 (userspace only, 256-511 is kernel)
+            for l4_idx in 0..256u64 {
+                let l4_entry = &l4_table[l4_idx as usize];
+                if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
+                    continue;
+                }
+
+                // Get L3 table
+                let l3_phys = l4_entry.addr();
+                let l3_virt = phys_offset + l3_phys.as_u64();
+                let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
+
+                for l3_idx in 0..512u64 {
+                    let l3_entry = &l3_table[l3_idx as usize];
+                    if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
+                        continue;
+                    }
+
+                    // Check for 1GB huge page
+                    if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        // 1GB huge page - calculate virtual address
+                        let virt_addr = VirtAddr::new((l4_idx << 39) | (l3_idx << 30));
+                        let phys_addr = l3_entry.addr();
+                        callback(virt_addr, phys_addr, l3_entry.flags());
+                        page_count += 1;
+                        continue;
+                    }
+
+                    // Get L2 table
+                    let l2_phys = l3_entry.addr();
+                    let l2_virt = phys_offset + l2_phys.as_u64();
+                    let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
+
+                    for l2_idx in 0..512u64 {
+                        let l2_entry = &l2_table[l2_idx as usize];
+                        if l2_entry.is_unused() || !l2_entry.flags().contains(PageTableFlags::PRESENT) {
+                            continue;
+                        }
+
+                        // Check for 2MB huge page
+                        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                            // 2MB huge page - calculate virtual address
+                            let virt_addr = VirtAddr::new((l4_idx << 39) | (l3_idx << 30) | (l2_idx << 21));
+                            let phys_addr = l2_entry.addr();
+                            callback(virt_addr, phys_addr, l2_entry.flags());
+                            page_count += 1;
+                            continue;
+                        }
+
+                        // Get L1 table
+                        let l1_phys = l2_entry.addr();
+                        let l1_virt = phys_offset + l1_phys.as_u64();
+                        let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
+
+                        for l1_idx in 0..512u64 {
+                            let l1_entry = &l1_table[l1_idx as usize];
+                            if l1_entry.is_unused() || !l1_entry.flags().contains(PageTableFlags::PRESENT) {
+                                continue;
+                            }
+
+                            // 4KB page - calculate virtual address
+                            let virt_addr = VirtAddr::new(
+                                (l4_idx << 39) | (l3_idx << 30) | (l2_idx << 21) | (l1_idx << 12)
+                            );
+                            let phys_addr = l1_entry.addr();
+                            callback(virt_addr, phys_addr, l1_entry.flags());
+                            page_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(page_count)
     }
 
     /// Map a page in this process's address space

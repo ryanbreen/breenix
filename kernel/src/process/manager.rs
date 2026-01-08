@@ -560,9 +560,9 @@ impl ProcessManager {
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))] return_rip: Option<u64>,
         #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))] mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
-        // Get the parent process info we need
+        // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info, parent_heap_start, parent_heap_end) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -580,6 +580,8 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 _parent_thread.clone(),
+                parent.heap_start,
+                parent.heap_end,
             )
         };
 
@@ -603,32 +605,34 @@ impl ProcessManager {
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
 
-        // Load the same program into the child page table
-        // Use the parent's name to load the correct binary (not hardcoded fork_test)
+        // PROPER FORK: Copy parent's memory to child instead of reloading ELF
         #[cfg(feature = "testing")]
         {
-            let elf_buf = crate::userspace_test::get_test_binary(&parent_name);
-            let loaded_elf =
-                crate::elf::load_elf_into_page_table(&elf_buf, child_page_table.as_mut())?;
+            // Get parent's page table for copying
+            let parent = self
+                .processes
+                .get(&parent_pid)
+                .ok_or("Parent process not found during page copy")?;
+            let parent_page_table = parent
+                .page_table
+                .as_ref()
+                .ok_or("Parent process has no page table")?;
 
-            // Update the child process entry point to match the loaded ELF
-            child_process.entry_point = loaded_elf.entry_point;
-
-            // Initialize heap tracking for the child
-            let heap_base = loaded_elf.segments_end;
-            child_process.heap_start = heap_base;
-            child_process.heap_end = heap_base;
+            // Copy all mapped user pages from parent to child
+            let pages_copied = super::fork::copy_user_pages(parent_page_table, child_page_table.as_mut())?;
 
             log::info!(
-                "fork_process: Loaded {}.elf into child, entry point: {:#x}, heap_start: {:#x}",
-                parent_name,
-                loaded_elf.entry_point,
-                heap_base
+                "fork_process_with_page_table: Copied {} pages from parent to child",
+                pages_copied
             );
+
+            // Child inherits parent's heap bounds
+            child_process.heap_start = parent_heap_start;
+            child_process.heap_end = parent_heap_end;
         }
         #[cfg(not(feature = "testing"))]
         {
-            log::error!("fork_process: Cannot reload ELF - testing feature not enabled");
+            log::error!("fork_process: Cannot fork - testing feature not enabled");
             return Err("Cannot implement fork without testing feature");
         }
 
@@ -660,9 +664,9 @@ impl ProcessManager {
         #[cfg_attr(not(feature = "testing"), allow(unused_variables, unused_mut))]
         mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
-        // Get the parent process info we need
+        // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info, parent_heap_start, parent_heap_end) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -680,6 +684,8 @@ impl ProcessManager {
                 parent.pgid,
                 parent.sid,
                 _parent_thread.clone(),
+                parent.heap_start,
+                parent.heap_end,
             )
         };
 
@@ -703,28 +709,35 @@ impl ProcessManager {
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
 
-        // Load the same program into the child page table
+        // PROPER FORK: Copy parent's memory to child instead of reloading ELF
+        // This implements true fork() semantics where child inherits parent's state
         #[cfg(feature = "testing")]
         {
-            let elf_buf = crate::userspace_test::get_test_binary(&parent_name);
-            let loaded_elf =
-                crate::elf::load_elf_into_page_table(&elf_buf, child_page_table.as_mut())?;
+            // Get parent's page table for copying
+            let parent = self
+                .processes
+                .get(&parent_pid)
+                .ok_or("Parent process not found during page copy")?;
+            let parent_page_table = parent
+                .page_table
+                .as_ref()
+                .ok_or("Parent process has no page table")?;
 
-            child_process.entry_point = loaded_elf.entry_point;
-            let heap_base = loaded_elf.segments_end;
-            child_process.heap_start = heap_base;
-            child_process.heap_end = heap_base;
+            // Copy all mapped user pages from parent to child
+            let pages_copied = super::fork::copy_user_pages(parent_page_table, child_page_table.as_mut())?;
 
             log::info!(
-                "fork_process: Loaded {}.elf into child, entry point: {:#x}, heap_start: {:#x}",
-                parent_name,
-                loaded_elf.entry_point,
-                heap_base
+                "fork_process: Copied {} pages from parent to child (proper fork semantics)",
+                pages_copied
             );
+
+            // Child inherits parent's heap bounds
+            child_process.heap_start = parent_heap_start;
+            child_process.heap_end = parent_heap_end;
         }
         #[cfg(not(feature = "testing"))]
         {
-            log::error!("fork_process: Cannot reload ELF - testing feature not enabled");
+            log::error!("fork_process: Cannot fork - testing feature not enabled");
             return Err("Cannot implement fork without testing feature");
         }
 
@@ -991,40 +1004,27 @@ impl ProcessManager {
         // Store the stack in the child process
         child_process.stack = Some(Box::new(child_stack));
 
-        // Clone the file descriptor table from parent to child
-        // This is critical for pipes, sockets, and other shared resources
+        // Copy all other process state (fd_table, signals, verify pgid/sid)
+        // This uses the centralized copy_process_state which handles:
+        // - File descriptor table cloning (with proper pipe refcount handling)
+        // - Signal state forking (handlers and mask, NOT pending signals)
+        // - Verification of pgid and sid inheritance
         if let Some(parent) = self.processes.get(&parent_pid) {
-            // Debug: Log what's in the parent's fd_table BEFORE cloning
-            log::debug!(
-                "fork: Parent {} '{}' fd_table BEFORE clone:",
-                parent_pid.as_u64(),
-                parent.name
-            );
-            for i in 0..10 {
-                if let Some(fd_entry) = parent.fd_table.get(i) {
-                    log::debug!("  parent fd[{}] = {:?}", i, fd_entry.kind);
-                }
+            if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
+                log::error!(
+                    "fork: Failed to copy process state from parent {} to child {}: {}",
+                    parent_pid.as_u64(),
+                    child_pid.as_u64(),
+                    e
+                );
+                return Err(e);
             }
-
-            child_process.fd_table = parent.fd_table.clone();
-            log::debug!(
-                "fork: Cloned fd_table from parent {} to child {}",
-                parent_pid.as_u64(),
-                child_pid.as_u64()
-            );
-
-            // Inherit signal handlers from parent (but NOT pending signals per POSIX)
-            child_process.signals = parent.signals.fork();
-            log::debug!(
-                "fork: Inherited signal handlers from parent {} to child {}",
-                parent_pid.as_u64(),
-                child_pid.as_u64()
-            );
         } else {
             log::error!(
-                "fork: CRITICAL - Parent {} not found when cloning fd_table!",
+                "fork: CRITICAL - Parent {} not found when copying process state!",
                 parent_pid.as_u64()
             );
+            return Err("Parent process not found during state copy");
         }
 
         // Add the child to the parent's children list
@@ -1132,47 +1132,25 @@ impl ProcessManager {
             child_page_table.level_4_frame().start_address()
         );
 
-        // CRITICAL WORKAROUND: ProcessPageTable.translate_page() is broken, so we can't copy pages.
-        // Instead, load the same ELF into the child process. This is NOT proper fork() semantics,
-        // but it allows testing the exec() integration.
-        log::warn!("fork_process: Using ELF reload workaround instead of proper page copying");
-
-        // WORKAROUND: We'd like to clear existing userspace mappings before loading ELF
-        // but since L3 tables are shared between processes, unmapping pages affects
-        // all processes sharing that table. This causes double faults.
-        /*
-        child_page_table.clear_userspace_for_exec()
-            .map_err(|e| {
-                log::error!("Failed to clear child userspace mappings: {}", e);
-                "Failed to clear child userspace mappings"
-            })?;
-        */
-
-        // Load the parent's ELF into the child (use parent's name, not hardcoded fork_test)
-        // We need to save the parent name before the mutable borrow
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let parent_binary_name = {
-            let parent = self.processes.get(&parent_pid).ok_or("Parent process not found")?;
-            parent.name.clone()
-        };
-
+        // PROPER FORK: Copy parent's memory to child instead of reloading ELF
+        // This implements true fork() semantics where child inherits parent's state
         #[cfg(feature = "testing")]
         {
-            let elf_buf = crate::userspace_test::get_test_binary(&parent_binary_name);
-            let loaded_elf =
-                crate::elf::load_elf_into_page_table(&elf_buf, child_page_table.as_mut())?;
+            // Copy all mapped user pages from parent to child
+            let pages_copied = super::fork::copy_user_pages(parent_page_table, child_page_table.as_mut())?;
 
-            // Update the child process entry point to match the loaded ELF
-            child_process.entry_point = loaded_elf.entry_point;
             log::info!(
-                "fork_process: Loaded {}.elf into child, entry point: {:#x}",
-                parent_binary_name,
-                loaded_elf.entry_point
+                "fork_process_with_context: Copied {} pages from parent to child (proper fork semantics)",
+                pages_copied
             );
+
+            // Child inherits parent's heap bounds
+            child_process.heap_start = parent.heap_start;
+            child_process.heap_end = parent.heap_end;
         }
         #[cfg(not(feature = "testing"))]
         {
-            log::error!("fork_process: Cannot reload ELF - testing feature not enabled");
+            log::error!("fork_process: Cannot fork - testing feature not enabled");
             return Err("Cannot implement fork without testing feature");
         }
 
@@ -1292,33 +1270,26 @@ impl ProcessManager {
         // Store the stack in the child process
         child_process.stack = Some(Box::new(child_stack));
 
-        // Copy process memory from parent to child (this modifies child_thread)
-        super::fork::copy_process_memory(
-            parent_pid,
-            &mut child_process,
+        // Copy stack contents from parent to child
+        // Note: User pages were already copied earlier with copy_user_pages().
+        // However, the child has a new stack at a different virtual address,
+        // so we need to copy the stack contents separately.
+        let child_page_table_ref = child_process
+            .page_table
+            .as_ref()
+            .ok_or("Child process has no page table")?;
+        super::fork::copy_stack_contents(
             parent_thread,
             &mut child_thread,
+            parent_page_table,
+            child_page_table_ref,
         )?;
+        // Copy all other process state (fd_table, signals, verify pgid/sid)
+        // This is done via copy_process_state which handles:
+        // - File descriptor table cloning (with proper pipe refcount handling)
+        // - Signal state forking (handlers and mask, NOT pending signals)
+        // - Verification of pgid and sid inheritance
         super::fork::copy_process_state(parent, &mut child_process)?;
-
-        // Clone the file descriptor table from parent to child
-        // This is critical for pipes, sockets, and other shared resources
-        // The FdTable::clone() implementation handles incrementing reference counts
-        // for pipes and other shared resources
-        child_process.fd_table = parent.fd_table.clone();
-        log::debug!(
-            "fork: Cloned fd_table from parent {} to child {}",
-            parent_pid.as_u64(),
-            child_pid.as_u64()
-        );
-
-        // Inherit signal handlers from parent (but NOT pending signals per POSIX)
-        child_process.signals = parent.signals.fork();
-        log::debug!(
-            "fork: Inherited signal handlers from parent {} to child {}",
-            parent_pid.as_u64(),
-            child_pid.as_u64()
-        );
 
         // Set the child thread as the main thread of the child process
         child_process.set_main_thread(child_thread);
@@ -1641,5 +1612,392 @@ impl ProcessManager {
         // - If exec() fails, it returns an error to the original program
         // For now, we return the entry point for testing, but this violates POSIX
         Ok(new_entry_point)
+    }
+
+    /// Replace a process's address space with a new program (exec) with argv support
+    ///
+    /// This is the extended version of exec_process that sets up argc/argv on the stack
+    /// following the Linux/FreeBSD ABI convention:
+    ///
+    /// Stack layout at _start (from high to low addresses):
+    /// - argv strings (null-terminated)
+    /// - padding for 16-byte alignment
+    /// - NULL (end of argv pointers)
+    /// - argv[n-1] pointer
+    /// - ...
+    /// - argv[0] pointer
+    /// - argc           <- RSP points here
+    ///
+    /// Parameters:
+    /// - pid: Process ID to exec
+    /// - elf_data: The ELF binary data
+    /// - program_name: Optional name for the process
+    /// - argv: Array of argument strings (argv[0] is typically the program name)
+    ///
+    /// Returns: (entry_point, stack_pointer) on success
+    pub fn exec_process_with_argv(
+        &mut self,
+        pid: ProcessId,
+        elf_data: &[u8],
+        program_name: Option<&str>,
+        argv: &[&[u8]],
+    ) -> Result<(u64, u64), &'static str> {
+        log::info!(
+            "exec_process_with_argv: Replacing process {} with new program, argc={}",
+            pid.as_u64(),
+            argv.len()
+        );
+
+        // CRITICAL OS-STANDARD CHECK: Is this the current process?
+        let is_current_process = self.current_pid == Some(pid);
+        if is_current_process {
+            log::info!("exec_process_with_argv: Executing on current process - special handling required");
+        }
+
+        // For now, assume non-current processes are not actively running
+        let is_scheduled = false;
+
+        // Get thread ID and take old page table before dropping the mutable borrow
+        // We need to do this early so we can call setup_argv_on_stack later
+        let (thread_id, old_page_table) = {
+            let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            let main_thread = process
+                .main_thread
+                .as_ref()
+                .ok_or("Process has no main thread")?;
+            let thread_id = main_thread.id;
+            let old_page_table = process.page_table.take();
+            (thread_id, old_page_table)
+        };
+
+        log::info!(
+            "exec_process_with_argv: Preserving thread ID {} for process {}",
+            thread_id,
+            pid.as_u64()
+        );
+
+        // Create a new page table for the new program
+        log::info!("exec_process_with_argv: Creating new page table...");
+        let mut new_page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new()
+                .map_err(|_| "Failed to create new page table for exec")?,
+        );
+
+        // Clear any user mappings that might have been copied
+        new_page_table.clear_user_entries();
+
+        // Unmap old pages
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000)
+        ) {
+            log::warn!("Failed to unmap old user code pages: {}", e);
+        }
+
+        if let Err(e) = new_page_table.unmap_user_pages(VirtAddr::new(0x10001000), VirtAddr::new(0x10010000)) {
+            log::warn!("Failed to unmap old user data pages: {}", e);
+        }
+
+        // Unmap the stack region
+        {
+            const STACK_SIZE: usize = 64 * 1024;
+            const STACK_TOP: u64 = 0x7FFF_FF01_0000;
+            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(STACK_TOP);
+            if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
+                log::warn!("Failed to unmap old stack pages: {}", e);
+            }
+        }
+
+        // Load the ELF binary into the new page table
+        log::info!("exec_process_with_argv: Loading ELF into new page table...");
+        let loaded_elf = crate::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
+        let new_entry_point = loaded_elf.entry_point.as_u64();
+        log::info!(
+            "exec_process_with_argv: ELF loaded successfully, entry point: {:#x}",
+            new_entry_point
+        );
+
+        // Map stack pages into the NEW process page table
+        const USER_STACK_SIZE: usize = 64 * 1024;
+        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
+
+        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(USER_STACK_TOP);
+
+        log::info!("exec_process_with_argv: Mapping stack pages into new process page table");
+        let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_bottom);
+        let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_top - 1u64);
+
+        for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+            let frame = crate::memory::frame_allocator::allocate_frame()
+                .ok_or("Failed to allocate frame for exec stack")?;
+
+            new_page_table.map_page(
+                page,
+                frame,
+                x86_64::structures::paging::PageTableFlags::PRESENT
+                    | x86_64::structures::paging::PageTableFlags::WRITABLE
+                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE,
+            )?;
+        }
+
+        // Set up argc/argv on the stack following Linux ABI
+        // We need to write to the new stack pages that we just mapped
+        // Since the new page table is not active yet, we need to translate addresses
+        // and write via the physical frames
+        let initial_rsp = self.setup_argv_on_stack(&new_page_table, USER_STACK_TOP, argv)?;
+
+        log::info!(
+            "exec_process_with_argv: argc/argv set up on stack, RSP={:#x}",
+            initial_rsp
+        );
+
+        // Create a dummy stack object since we manually mapped the stack
+        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
+            4096,
+            crate::task::thread::ThreadPrivilege::User,
+        )
+        .map_err(|_| "Failed to create stack object")?;
+
+        // Re-borrow the process for the remaining updates
+        let process = self.processes.get_mut(&pid).ok_or("Process not found during update")?;
+
+        // Update the process with new program data
+        if let Some(name) = program_name {
+            process.name = String::from(name);
+            log::info!("exec_process_with_argv: Updated process name to '{}'", name);
+        }
+        process.entry_point = loaded_elf.entry_point;
+
+        // Reset signal handlers per POSIX
+        process.signals.exec_reset();
+
+        // Replace the page table with the new one
+        process.page_table = Some(new_page_table);
+        process.stack = Some(Box::new(new_stack));
+
+        // Update the main thread context for the new program
+        if let Some(ref mut thread) = process.main_thread {
+            let preserved_kernel_stack_top = thread.kernel_stack_top;
+
+            // Reset the CPU context for the new program
+            thread.context.rip = new_entry_point;
+            thread.context.rsp = initial_rsp;  // Points to argc on stack
+            thread.context.rflags = 0x202;
+            thread.stack_top = stack_top;
+            thread.stack_bottom = stack_bottom;
+            thread.kernel_stack_top = preserved_kernel_stack_top;
+
+            // Clear all other registers for security
+            thread.context.rax = 0;
+            thread.context.rbx = 0;
+            thread.context.rcx = 0;
+            thread.context.rdx = 0;
+            thread.context.rsi = 0;
+            thread.context.rdi = 0;
+            thread.context.rbp = 0;
+            thread.context.r8 = 0;
+            thread.context.r9 = 0;
+            thread.context.r10 = 0;
+            thread.context.r11 = 0;
+            thread.context.r12 = 0;
+            thread.context.r13 = 0;
+            thread.context.r14 = 0;
+            thread.context.r15 = 0;
+
+            thread.context.cs = 0x33;
+            thread.context.ss = 0x2b;
+            thread.state = crate::task::thread::ThreadState::Ready;
+
+            log::info!(
+                "exec_process_with_argv: Updated thread {} context for new program",
+                thread_id
+            );
+        }
+
+        // Handle page table switching
+        if is_current_process {
+            log::info!("exec_process_with_argv: Current process exec - page table will be used on next context switch");
+        } else if is_scheduled {
+            log::info!("exec_process_with_argv: Process {} is scheduled - new page table will be used on next schedule", pid.as_u64());
+        } else {
+            log::info!(
+                "exec_process_with_argv: Process {} is not scheduled - new page table ready for when it runs",
+                pid.as_u64()
+            );
+        }
+
+        // Clean up old page table resources
+        if let Some(_old_pt) = old_page_table {
+            log::info!("exec_process_with_argv: Old page table cleanup needed (TODO)");
+        }
+
+        // Add the process back to the ready queue if it's not already there
+        if !self.ready_queue.contains(&pid) {
+            self.ready_queue.push(pid);
+        }
+
+        Ok((new_entry_point, initial_rsp))
+    }
+
+    /// Set up argc/argv on the stack for a new process
+    ///
+    /// This function writes the argc/argv structure to the stack following the
+    /// Linux x86_64 ABI convention. The stack layout at _start is:
+    ///
+    /// High addresses:
+    ///   argv strings (null-terminated, packed)
+    ///   padding for 16-byte alignment
+    ///   NULL (end of argv)
+    ///   argv[n-1] pointer
+    ///   ...
+    ///   argv[0] pointer
+    ///   argc               <- RSP points here
+    /// Low addresses:
+    ///
+    /// Parameters:
+    /// - page_table: The process's page table (for translating virtual to physical addresses)
+    /// - stack_top: The top of the stack (highest address)
+    /// - argv: Array of argument strings (each must be null-terminated)
+    ///
+    /// Returns: The initial RSP value (pointing to argc)
+    fn setup_argv_on_stack(
+        &self,
+        page_table: &crate::memory::process_memory::ProcessPageTable,
+        stack_top: u64,
+        argv: &[&[u8]],
+    ) -> Result<u64, &'static str> {
+        let argc = argv.len();
+
+        // We need to access the stack memory directly via physical addresses
+        // since the new page table isn't active yet
+
+        // Calculate total space needed for strings
+        let mut total_string_space: usize = 0;
+        for arg in argv.iter() {
+            // Each string + null terminator (if not already null-terminated)
+            let len = arg.len();
+            if len > 0 && arg[len - 1] == 0 {
+                total_string_space += len;
+            } else {
+                total_string_space += len + 1;
+            }
+        }
+
+        // Start placing strings at the top of the stack and work down
+        let mut string_ptr = stack_top;
+
+        // Reserve space for strings
+        string_ptr -= total_string_space as u64;
+
+        // Align down to 8 bytes for string area
+        string_ptr = string_ptr & !7;
+
+        // We'll collect the string addresses as we write them
+        let mut string_addresses: Vec<u64> = Vec::with_capacity(argc);
+
+        // Write strings from the reserved area upward
+        let mut current_string_addr = string_ptr;
+
+        for arg in argv.iter() {
+            string_addresses.push(current_string_addr);
+
+            // Write the string bytes
+            for byte in arg.iter() {
+                self.write_byte_to_stack(page_table, current_string_addr, *byte)?;
+                current_string_addr += 1;
+            }
+
+            // Add null terminator if not present
+            let len = arg.len();
+            if len == 0 || arg[len - 1] != 0 {
+                self.write_byte_to_stack(page_table, current_string_addr, 0)?;
+                current_string_addr += 1;
+            }
+        }
+
+        // Now place the pointer array and argc below the strings
+        // Layout (from high to low):
+        //   strings (already placed)
+        //   NULL (8 bytes)
+        //   argv[n-1] pointer (8 bytes)
+        //   ...
+        //   argv[0] pointer (8 bytes)
+        //   argc (8 bytes)
+
+        // Calculate space needed for pointers + argc
+        let pointers_space = (argc + 1) * 8 + 8; // argc pointers + NULL + argc value
+
+        // Start of pointer area (below strings)
+        let mut ptr_area = string_ptr - pointers_space as u64;
+
+        // Align to 16 bytes (required by x86_64 ABI)
+        ptr_area = ptr_area & !15;
+
+        // Write argc at the bottom
+        let rsp = ptr_area;
+        self.write_u64_to_stack(page_table, rsp, argc as u64)?;
+
+        // Write argv pointers
+        let argv_start = rsp + 8;
+        for (i, addr) in string_addresses.iter().enumerate() {
+            self.write_u64_to_stack(page_table, argv_start + (i * 8) as u64, *addr)?;
+        }
+
+        // Write NULL terminator for argv array
+        self.write_u64_to_stack(page_table, argv_start + (argc * 8) as u64, 0)?;
+
+        log::debug!(
+            "setup_argv_on_stack: argc={}, RSP={:#x}, argv[0] at {:#x}",
+            argc,
+            rsp,
+            if !string_addresses.is_empty() { string_addresses[0] } else { 0 }
+        );
+
+        Ok(rsp)
+    }
+
+    /// Write a single byte to the stack via physical address translation
+    fn write_byte_to_stack(
+        &self,
+        page_table: &crate::memory::process_memory::ProcessPageTable,
+        virt_addr: u64,
+        value: u8,
+    ) -> Result<(), &'static str> {
+        // Translate virtual address to physical
+        let phys_addr = page_table.translate_page(VirtAddr::new(virt_addr))
+            .ok_or("Failed to translate stack address")?;
+
+        // Calculate offset within page
+        let page_offset = virt_addr & 0xFFF;
+        let phys_with_offset = phys_addr + page_offset;
+
+        // Write via direct physical memory mapping
+        // The kernel has a direct mapping of all physical memory
+        let phys_offset = crate::memory::physical_memory_offset();
+        let kernel_virt = phys_offset + phys_with_offset.as_u64();
+
+        unsafe {
+            core::ptr::write_volatile(kernel_virt.as_mut_ptr::<u8>(), value);
+        }
+
+        Ok(())
+    }
+
+    /// Write a u64 to the stack via physical address translation
+    fn write_u64_to_stack(
+        &self,
+        page_table: &crate::memory::process_memory::ProcessPageTable,
+        virt_addr: u64,
+        value: u64,
+    ) -> Result<(), &'static str> {
+        // Write as 8 individual bytes to handle potential page boundaries
+        // (though in practice argv data shouldn't cross page boundaries)
+        let bytes = value.to_le_bytes();
+        for (i, byte) in bytes.iter().enumerate() {
+            self.write_byte_to_stack(page_table, virt_addr + i as u64, *byte)?;
+        }
+        Ok(())
     }
 }

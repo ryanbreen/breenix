@@ -28,7 +28,7 @@ pub fn fork() -> i64 {
     unsafe { raw::syscall0(nr::FORK) as i64 }
 }
 
-/// Replace the current process image with a new program.
+/// Replace the current process image with a new program (no arguments).
 ///
 /// Note: Currently only supports embedded binaries, not filesystem loading.
 /// IMPORTANT: path must be a null-terminated C string slice (ending with \0)
@@ -46,8 +46,40 @@ pub fn fork() -> i64 {
 pub fn exec(path: &[u8]) -> i64 {
     // Verify path is null-terminated
     debug_assert!(path.last() == Some(&0), "exec path must be null-terminated");
+    // Pass null argv - kernel will use program name as argv[0]
     unsafe {
         raw::syscall2(nr::EXEC, path.as_ptr() as u64, 0) as i64
+    }
+}
+
+/// Replace the current process image with a new program (with arguments).
+///
+/// This implements execv() which allows passing command-line arguments.
+/// The kernel sets up argc/argv on the new process's stack following Linux ABI.
+///
+/// IMPORTANT: path and each argv element must be null-terminated.
+///
+/// # Arguments
+/// * `path` - Path to the program (must end with \0 byte)
+/// * `argv` - Array of argument pointers, must end with a null pointer
+///
+/// # Example
+/// ```
+/// // Execute "cat" with argument "/hello.txt"
+/// let path = b"cat\0";
+/// let arg0 = b"cat\0";
+/// let arg1 = b"/hello.txt\0";
+/// let argv: [*const u8; 3] = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
+/// execv(path, argv.as_ptr());
+/// ```
+///
+/// # Returns
+/// This function should not return on success. On error, returns negative errno.
+#[inline]
+pub fn execv(path: &[u8], argv: *const *const u8) -> i64 {
+    debug_assert!(path.last() == Some(&0), "execv path must be null-terminated");
+    unsafe {
+        raw::syscall2(nr::EXEC, path.as_ptr() as u64, argv as u64) as i64
     }
 }
 

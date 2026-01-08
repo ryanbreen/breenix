@@ -15,11 +15,19 @@ pub fn has_deliverable_signals(process: &Process) -> bool {
     process.signals.has_deliverable_signals()
 }
 
+/// Result of signal delivery
+pub enum SignalDeliveryResult {
+    /// No signals were delivered
+    NoAction,
+    /// Signal was delivered, process state may have changed
+    Delivered,
+    /// Process was terminated - caller should notify parent after releasing lock
+    Terminated(ParentNotification),
+}
+
 /// Deliver pending signals to a process
 ///
 /// Called from check_need_resched_and_switch() before returning to userspace.
-/// Returns true if the process state was modified (terminated, stopped, or
-/// signal frame set up for user handler).
 ///
 /// # Arguments
 /// * `process` - The process to deliver signals to
@@ -27,19 +35,21 @@ pub fn has_deliverable_signals(process: &Process) -> bool {
 /// * `saved_regs` - The saved general-purpose registers
 ///
 /// # Returns
-/// * `true` if process state was modified
-/// * `false` if no action was taken
+/// * `SignalDeliveryResult` indicating what action was taken
+///
+/// IMPORTANT: If `Terminated` is returned, the caller MUST call
+/// `notify_parent_of_termination_deferred` AFTER releasing the process manager lock!
 pub fn deliver_pending_signals(
     process: &mut Process,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
-) -> bool {
+) -> SignalDeliveryResult {
     // Process all deliverable signals in a loop (avoids unbounded recursion)
     loop {
         // Get next deliverable signal
         let sig = match process.signals.next_deliverable_signal() {
             Some(s) => s,
-            None => return false,
+            None => return SignalDeliveryResult::NoAction,
         };
 
         // Clear pending flag for this signal
@@ -59,10 +69,13 @@ pub fn deliver_pending_signals(
         match action.handler {
             SIG_DFL => {
                 // Default action may terminate/stop the process
-                if deliver_default_action(process, sig) {
-                    return true;
+                match deliver_default_action(process, sig) {
+                    DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
+                    DeliverResult::Terminated(notification) => return SignalDeliveryResult::Terminated(notification),
+                    DeliverResult::Ignored => {
+                        // Continue loop to check for more signals
+                    }
                 }
-                // Default action was Ignore or Continue with no state change - check for more signals
             }
             SIG_IGN => {
                 log::debug!(
@@ -75,14 +88,28 @@ pub fn deliver_pending_signals(
             handler_addr => {
                 // User-defined handler - set up signal frame and return
                 // Only one user handler can be delivered at a time
-                return deliver_to_user_handler(process, interrupt_frame, saved_regs, sig, handler_addr, &action);
+                if deliver_to_user_handler(process, interrupt_frame, saved_regs, sig, handler_addr, &action) {
+                    return SignalDeliveryResult::Delivered;
+                }
+                return SignalDeliveryResult::NoAction;
             }
         }
     }
 }
 
+/// Result of delivering a signal's default action
+pub enum DeliverResult {
+    /// Signal was delivered, process state may have changed
+    Delivered,
+    /// Signal was ignored or no action needed
+    Ignored,
+    /// Process was terminated - caller should notify parent after releasing lock
+    Terminated(ParentNotification),
+}
+
 /// Deliver a signal's default action
-fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
+/// Returns DeliverResult indicating what action was taken
+fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     match default_action(sig) {
         SignalDefaultAction::Terminate => {
             log::info!(
@@ -109,7 +136,13 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
                     );
                 });
             }
-            true
+
+            // Return notification info for parent - caller will notify after releasing lock
+            if let Some(notification) = notify_parent_of_termination(process) {
+                DeliverResult::Terminated(notification)
+            } else {
+                DeliverResult::Delivered
+            }
         }
         SignalDefaultAction::CoreDump => {
             log::info!(
@@ -133,7 +166,13 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
                     );
                 });
             }
-            true
+
+            // Return notification info for parent - caller will notify after releasing lock
+            if let Some(notification) = notify_parent_of_termination(process) {
+                DeliverResult::Terminated(notification)
+            } else {
+                DeliverResult::Delivered
+            }
         }
         SignalDefaultAction::Stop => {
             log::info!(
@@ -143,7 +182,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
                 signal_name(sig)
             );
             process.set_blocked();
-            true
+            DeliverResult::Delivered
         }
         SignalDefaultAction::Continue => {
             log::info!(
@@ -155,9 +194,9 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
             // Only change state if process was stopped
             if matches!(process.state, ProcessState::Blocked) {
                 process.set_ready();
-                true
+                DeliverResult::Delivered
             } else {
-                false
+                DeliverResult::Ignored
             }
         }
         SignalDefaultAction::Ignore => {
@@ -167,7 +206,7 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> bool {
                 signal_name(sig),
                 process.id.as_u64()
             );
-            false
+            DeliverResult::Ignored
         }
     }
 }
@@ -291,4 +330,96 @@ fn deliver_to_user_handler(
     );
 
     true
+}
+
+/// Store information about parent notification that needs to happen after lock is released
+///
+/// This is used to defer parent notification until after the process manager lock is released,
+/// avoiding deadlocks when signal delivery happens while the manager lock is held.
+pub struct ParentNotification {
+    pub parent_pid: crate::process::ProcessId,
+    pub child_pid: crate::process::ProcessId,
+}
+
+/// Notify parent process when a child process is terminated by signal
+///
+/// This function:
+/// 1. Sends SIGCHLD to the parent process
+/// 2. Unblocks the parent's main thread if it's blocked on waitpid
+///
+/// This is critical for waitpid() to work correctly when children are killed by signals.
+///
+/// IMPORTANT: This function must be called AFTER the process manager lock is released!
+/// It will try to acquire the lock internally, so calling it while the lock is held
+/// will cause a deadlock.
+pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) {
+    let parent_pid = notification.parent_pid;
+    let child_pid = notification.child_pid;
+
+    log::info!(
+        "notify_parent_of_termination_deferred: notifying parent {} about child {} termination",
+        parent_pid.as_u64(),
+        child_pid.as_u64()
+    );
+
+    // Get process manager to find and update parent
+    // This is safe because we're called after the caller released their lock
+    let parent_thread_id = {
+        let mut manager_guard = crate::process::manager();
+        let Some(ref mut manager) = *manager_guard else {
+            log::warn!("notify_parent_of_termination_deferred: no process manager");
+            return;
+        };
+
+        // Find parent process and send SIGCHLD
+        if let Some(parent_process) = manager.get_process_mut(parent_pid) {
+            // Send SIGCHLD to parent
+            parent_process.signals.set_pending(SIGCHLD);
+            log::debug!(
+                "notify_parent_of_termination_deferred: sent SIGCHLD to parent {} for child {} termination",
+                parent_pid.as_u64(),
+                child_pid.as_u64()
+            );
+
+            // Get parent's main thread ID for unblocking
+            parent_process.main_thread.as_ref().map(|t| t.id)
+        } else {
+            log::warn!(
+                "notify_parent_of_termination_deferred: parent process {} not found for child {}",
+                parent_pid.as_u64(),
+                child_pid.as_u64()
+            );
+            None
+        }
+        // manager_guard is dropped here
+    };
+
+    // Unblock parent thread if it's waiting on waitpid
+    if let Some(parent_tid) = parent_thread_id {
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.unblock_for_child_exit(parent_tid);
+        });
+        log::info!(
+            "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",
+            parent_tid,
+            child_pid.as_u64()
+        );
+    }
+}
+
+/// Internal function called from deliver_default_action
+/// Returns parent notification info if parent should be notified (does NOT acquire lock)
+fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification> {
+    let parent_pid = process.parent?;
+
+    log::debug!(
+        "notify_parent_of_termination: process {} has parent {}, notification queued",
+        process.id.as_u64(),
+        parent_pid.as_u64()
+    );
+
+    Some(ParentNotification {
+        parent_pid,
+        child_pid: process.id,
+    })
 }

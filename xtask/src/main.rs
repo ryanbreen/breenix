@@ -659,6 +659,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "fcntl() syscall test failed - F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD broken",
             check_hint: "Check kernel/src/syscall/handlers.rs:sys_fcntl() and kernel/src/ipc/fd.rs",
         },
+        // Close-on-exec (O_CLOEXEC) test
+        BootStage {
+            name: "Close-on-exec test passed",
+            marker: "CLOEXEC_TEST_PASSED",
+            failure_meaning: "close-on-exec test failed - FD_CLOEXEC not closing descriptors during exec",
+            check_hint: "Check kernel/src/process/manager.rs exec_process_with_argv() and kernel/src/ipc/fd.rs handling of FD_CLOEXEC",
+        },
         // Pipe2 syscall test
         BootStage {
             name: "Pipe2 syscall test passed",
@@ -924,6 +931,49 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "CTRL_C_TEST_PASSED",
             failure_meaning: "Ctrl-C signal test failed - SIGINT not delivered or child not terminated correctly",
             check_hint: "Check kernel/src/signal/delivery.rs, kernel/src/syscall/signal.rs:sys_kill(), and wstatus encoding in syscall/process.rs:sys_wait4()",
+        },
+        // Fork memory isolation test
+        // Verifies copy-on-write (CoW) semantics work correctly:
+        // - Stack isolation: child has separate copy of parent's stack
+        // - Heap isolation: child has separate copy of parent's heap (sbrk)
+        // - Global isolation: child has separate copy of parent's static data
+        BootStage {
+            name: "Fork memory isolation test passed",
+            marker: "FORK_MEMORY_ISOLATION_PASSED",
+            failure_meaning: "Fork memory isolation test failed - parent and child share memory instead of having isolated copies",
+            check_hint: "Check kernel/src/process/fork.rs CoW page table cloning and fault handler in kernel/src/memory/",
+        },
+        // === Fork State Copy ===
+        // Tests that fork correctly copies FD table, signal handlers, pgid, and sid
+        BootStage {
+            name: "Fork state copy test passed",
+            marker: "FORK_STATE_COPY_PASSED",
+            failure_meaning: "Fork state test failed - FD table, signal handlers, pgid, or sid not correctly inherited",
+            check_hint: "Check kernel/src/process/fork.rs copy_process_state() function",
+        },
+        // === Fork Pending Signal ===
+        // Tests POSIX requirement that pending signals are NOT inherited by child
+        BootStage {
+            name: "Fork pending signal test passed",
+            marker: "FORK_PENDING_SIGNAL_TEST_PASSED",
+            failure_meaning: "Fork pending signal test failed - child inherited pending signals (POSIX violation)",
+            check_hint: "Check kernel/src/process/fork.rs and signal state handling during fork",
+        },
+        // === Argv Support ===
+        // Tests that exec syscall properly sets up argc/argv on the userspace stack
+        BootStage {
+            name: "Argv support test passed",
+            marker: "ARGV_TEST_PASSED",
+            failure_meaning: "Argv test failed - exec syscall not properly setting up argc/argv on stack",
+            check_hint: "Check kernel/src/process/manager.rs exec_process_with_argv() and setup_argv_on_stack()",
+        },
+        // === Exec with Argv ===
+        // Tests that fork+exec correctly passes argv to child process
+        BootStage {
+            name: "Exec argv test passed",
+            marker: "EXEC_ARGV_TEST_PASSED",
+            failure_meaning: "Exec argv test failed - fork+exec not passing arguments correctly",
+            check_hint: "Check kernel/src/process/manager.rs exec_process_with_argv() and setup_argv_on_stack()",
         },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.

@@ -37,6 +37,7 @@ pub use errno::Errno;
 pub use syscall::raw;
 pub use types::*;
 
+pub mod argv;
 pub mod errno;
 pub mod fs;
 pub mod io;

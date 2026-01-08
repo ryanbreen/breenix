@@ -107,6 +107,10 @@ name = "signal_fork_test"
 path = "signal_fork_test.rs"
 
 [[bin]]
+name = "fork_pending_signal_test"
+path = "fork_pending_signal_test.rs"
+
+[[bin]]
 name = "sigchld_test"
 path = "sigchld_test.rs"
 
@@ -137,6 +141,10 @@ path = "fcntl_test.rs"
 [[bin]]
 name = "pipe2_test"
 path = "pipe2_test.rs"
+
+[[bin]]
+name = "cloexec_test"
+path = "cloexec_test.rs"
 
 [[bin]]
 name = "poll_test"
@@ -214,6 +222,52 @@ path = "fs_link_test.rs"
 name = "access_test"
 path = "access_test.rs"
 
+# Coreutils
+[[bin]]
+name = "cat"
+path = "cat.rs"
+
+[[bin]]
+name = "ls_cmd"
+path = "ls_cmd.rs"
+
+[[bin]]
+name = "echo_cmd"
+path = "echo_cmd.rs"
+
+[[bin]]
+name = "mkdir_cmd"
+path = "mkdir_cmd.rs"
+
+[[bin]]
+name = "rm_cmd"
+path = "rm_cmd.rs"
+
+[[bin]]
+name = "rmdir_cmd"
+path = "rmdir_cmd.rs"
+
+[[bin]]
+name = "cp_cmd"
+path = "cp_cmd.rs"
+
+[[bin]]
+name = "mv_cmd"
+path = "mv_cmd.rs"
+
+[[bin]]
+name = "fork_memory_test"
+path = "fork_memory_test.rs"
+
+[[bin]]
+name = "fork_state_test"
+path = "fork_state_test.rs"
+
+# Argv test for command-line argument support
+[[bin]]
+name = "argv_test"
+path = "argv_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
@@ -221,3 +275,6 @@ opt-level = "z"
 strip = true
 
 [workspace]
+[[bin]]
+name = "exec_argv_test"
+path = "exec_argv_test.rs"

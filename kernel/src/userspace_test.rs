@@ -74,10 +74,10 @@ pub fn load_test_binary_from_disk(name: &str) -> Result<Vec<u8>, &'static str> {
         return Err("No binaries in test disk");
     }
 
-    // Read entry table (sectors 1-63)
+    // Read entry table (sectors 1-127)
     // Each entry is 64 bytes, so 8 entries per sector
     let entries_needed = ((binary_count as usize + 7) / 8) as u64;
-    let entries_needed = core::cmp::min(entries_needed, 63); // Max 63 sectors for entry table
+    let entries_needed = core::cmp::min(entries_needed, 127); // Max 127 sectors for entry table
 
     let mut entries_buffer = Vec::new();
     entries_buffer.resize(entries_needed as usize * SECTOR_SIZE, 0u8);
