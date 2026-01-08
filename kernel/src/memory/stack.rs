@@ -127,26 +127,28 @@ impl GuardedStack {
         unsafe {
             match privilege {
                 ThreadPrivilege::User => {
-                    let addr = VirtAddr::new(NEXT_USER_STACK_ADDR);
-                    NEXT_USER_STACK_ADDR += size as u64;
-
-                    // Simple bounds check for user stacks
-                    // Keep user stacks well below kernel space
-                    if NEXT_USER_STACK_ADDR > USER_STACK_REGION_END {
+                    // Check bounds BEFORE allocating to prevent overflow
+                    // USER_STACK_REGION_END is the canonical boundary (0x8000_0000_0000)
+                    // We need to ensure the entire stack fits STRICTLY BELOW the boundary
+                    // because 0x8000_0000_0000 is non-canonical
+                    let proposed_end = NEXT_USER_STACK_ADDR.saturating_add(size as u64);
+                    if proposed_end >= USER_STACK_REGION_END || proposed_end < NEXT_USER_STACK_ADDR {
                         return Err("Out of virtual address space for user stacks");
                     }
 
+                    let addr = VirtAddr::new(NEXT_USER_STACK_ADDR);
+                    NEXT_USER_STACK_ADDR = proposed_end;
                     Ok(addr)
                 }
                 ThreadPrivilege::Kernel => {
-                    let addr = VirtAddr::new(NEXT_KERNEL_STACK_ADDR);
-                    NEXT_KERNEL_STACK_ADDR += size as u64;
-
-                    // Simple bounds check for kernel stacks
-                    if NEXT_KERNEL_STACK_ADDR > 0xFFFF_CA00_0000_0000 {
+                    // Check bounds BEFORE allocating
+                    let proposed_end = NEXT_KERNEL_STACK_ADDR.saturating_add(size as u64);
+                    if proposed_end >= 0xFFFF_CA00_0000_0000 || proposed_end < NEXT_KERNEL_STACK_ADDR {
                         return Err("Out of virtual address space for kernel stacks");
                     }
 
+                    let addr = VirtAddr::new(NEXT_KERNEL_STACK_ADDR);
+                    NEXT_KERNEL_STACK_ADDR = proposed_end;
                     Ok(addr)
                 }
             }
