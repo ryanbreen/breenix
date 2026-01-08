@@ -145,7 +145,7 @@ impl Iterator for ArgsIter {
 ///     // ...
 /// }
 /// ```
-#[inline(never)]
+#[inline(always)]
 pub unsafe fn get_args() -> Args {
     let argc: usize;
     let argv_ptr: *const *const u8;
