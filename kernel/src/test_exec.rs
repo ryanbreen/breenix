@@ -2233,3 +2233,40 @@ pub fn test_cloexec() {
         }
     }
 }
+
+/// Test shell pipeline execution (pipe+fork+dup2 pattern)
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Shell pipe test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates pipeline data flow
+///   - Marker: "SHELL_PIPE_TEST_PASSED"
+///   - This PROVES the pipe+fork+dup2 pattern works correctly for shell pipelines
+///
+/// The test simulates `echo TEST | cat` and verifies data flows through the pipeline.
+pub fn test_shell_pipe() {
+    log::info!("Testing shell pipeline execution (pipe+fork+dup2 pattern)");
+
+    #[cfg(feature = "testing")]
+    let shell_pipe_test_elf_buf = crate::userspace_test::get_test_binary("shell_pipe_test");
+    #[cfg(feature = "testing")]
+    let shell_pipe_test_elf: &[u8] = &shell_pipe_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let shell_pipe_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("shell_pipe_test"),
+        shell_pipe_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created shell_pipe_test process with PID {:?}", pid);
+            log::info!("Shell pipe test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit SHELL_PIPE_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create shell_pipe_test process: {}", e);
+            log::error!("Shell pipe test cannot run without valid userspace process");
+        }
+    }
+}

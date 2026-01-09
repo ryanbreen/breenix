@@ -783,6 +783,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: WNOHANG timing behavior ===");
         test_exec::test_wnohang_timing();
 
+        // Test shell pipeline execution (pipe+fork+dup2 pattern)
+        log::info!("=== IPC TEST: Shell pipeline execution ===");
+        test_exec::test_shell_pipe();
+
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");
         userspace_fault_tests::run_fault_tests();

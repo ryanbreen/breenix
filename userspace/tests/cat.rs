@@ -3,7 +3,7 @@
 //! Usage: cat [FILE...]
 //!
 //! Reads FILE(s) and prints their contents to stdout.
-//! If no FILE is specified, reads from stdin (not yet implemented).
+//! If no FILE is specified, reads from stdin.
 //! Supports argv for command-line argument passing.
 
 #![no_std]
@@ -18,6 +18,22 @@ use libbreenix::io::{stdout, stderr};
 use libbreenix::process::exit;
 
 const BUF_SIZE: usize = 4096;
+
+/// Read from stdin and write to stdout
+fn cat_stdin() -> Result<(), Errno> {
+    let mut buf = [0u8; BUF_SIZE];
+    loop {
+        let n = libbreenix::io::read(0, &mut buf); // fd 0 = stdin
+        if n < 0 {
+            return Err(Errno::from_raw(-n));
+        }
+        if n == 0 {
+            break; // EOF
+        }
+        let _ = stdout().write(&buf[..n as usize]);
+    }
+    Ok(())
+}
 
 fn cat_file(path: &[u8]) -> Result<(), Errno> {
     // Create null-terminated path for open syscall
@@ -83,11 +99,13 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
     // stack_ptr was captured BEFORE the call instruction, so it points to argc
     let args = unsafe { argv::get_args_from_stack(stack_ptr) };
 
-    // If no arguments (besides program name), print usage and exit with error
+    // If no arguments (besides program name), read from stdin
     if args.argc < 2 {
-        let _ = stderr().write_str("cat: missing file operand\n");
-        let _ = stderr().write_str("Usage: cat FILE...\n");
-        exit(1);
+        if let Err(_e) = cat_stdin() {
+            let _ = stderr().write_str("cat: error reading stdin\n");
+            exit(1);
+        }
+        exit(0);
     }
 
     // Process each file argument
