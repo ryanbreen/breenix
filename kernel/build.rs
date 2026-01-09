@@ -94,24 +94,38 @@ fn main() {
                 panic!("Failed to build userspace test programs with libbreenix");
             }
 
-            // Tell cargo to rerun if userspace sources change
-            let userspace_tests = userspace_test_dir.to_str().unwrap();
-            let libbreenix_dir = repo_root.join("libs/libbreenix/src");
-            println!("cargo:rerun-if-changed={}/build.sh", userspace_tests);
-            println!("cargo:rerun-if-changed={}/hello_world.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/hello_time.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/fork_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/clock_gettime_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/udp_socket_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/tty_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/job_control_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/session_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/job_table_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/pipeline_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/sigchld_job_test.rs", userspace_tests);
-            println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
+            // Tell cargo to rerun if ANY userspace source changes
+            // Watch the entire src directory so new files are automatically tracked
+            let userspace_src = userspace_test_dir.join("src");
+            println!("cargo:rerun-if-changed={}", userspace_test_dir.join("build.sh").display());
+            println!("cargo:rerun-if-changed={}", userspace_test_dir.join("Cargo.toml").display());
+
+            // Recursively watch all .rs files in userspace/tests/src/
+            if userspace_src.exists() {
+                watch_directory_recursive(&userspace_src);
+            }
+
+            // Also watch libbreenix library sources
+            let libbreenix_src = repo_root.join("libs/libbreenix/src");
+            if libbreenix_src.exists() {
+                watch_directory_recursive(&libbreenix_src);
+            }
         }
     } else {
         println!("cargo:warning=Userspace test directory not found at {:?}", userspace_test_dir);
+    }
+}
+
+/// Recursively emit rerun-if-changed for all .rs files in a directory
+fn watch_directory_recursive(dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                watch_directory_recursive(&path);
+            } else if path.extension().map_or(false, |ext| ext == "rs") {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
     }
 }
