@@ -575,6 +575,122 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
     // Note: preempt_enable() not called here since we enter infinite loop or exit
 }
 
+/// Handle a Copy-on-Write page fault
+///
+/// This function is called when a page fault occurs due to a write to a
+/// CoW-shared page. It:
+/// 1. Checks if the page has the COW_FLAG set
+/// 2. If the frame is no longer shared (refcount == 1), just makes it writable
+/// 3. Otherwise, allocates a new frame, copies the page, and remaps
+///
+/// Returns true if the fault was handled (was a CoW fault), false otherwise.
+fn handle_cow_fault(
+    faulting_addr: VirtAddr,
+    error_code: PageFaultErrorCode,
+    cr3: u64,
+) -> bool {
+    use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::process_memory::{is_cow_page, make_private_flags};
+    use x86_64::structures::paging::{Page, Size4KiB};
+
+    // CoW faults are:
+    // - Protection violation (page is present but not writable)
+    // - Caused by write
+    if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+        return false;
+    }
+    if !error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+        return false;
+    }
+
+    // Find the process by CR3 and check if this is a CoW page
+    let result = crate::process::with_process_manager(|pm| {
+        if let Some((_pid, process)) = pm.find_process_by_cr3_mut(cr3) {
+            if let Some(ref mut page_table) = process.page_table {
+                let page = Page::<Size4KiB>::containing_address(faulting_addr);
+
+                // Get the current page info
+                let (old_frame, old_flags) = match page_table.get_page_info(page) {
+                    Some(info) => info,
+                    None => return Err("Page not mapped"),
+                };
+
+                // Check if this is actually a CoW page
+                if !is_cow_page(old_flags) {
+                    return Err("Not a CoW page");
+                }
+
+                // Check if we're the only reference - can just make it writable
+                if !frame_is_shared(old_frame) {
+                    // We're the only user - just update flags to make writable
+                    let new_flags = make_private_flags(old_flags);
+                    if let Err(e) = page_table.update_page_flags(page, new_flags) {
+                        log::error!("CoW: Failed to update flags for sole owner: {}", e);
+                        return Err("Failed to update page flags");
+                    }
+
+                    // Flush TLB for this page
+                    x86_64::instructions::tlb::flush(faulting_addr);
+                    log::trace!(
+                        "CoW: Made page {:#x} writable (sole owner)",
+                        faulting_addr.as_u64()
+                    );
+                    return Ok(());
+                }
+
+                // Multiple references - need to copy
+                let new_frame = match allocate_frame() {
+                    Some(frame) => frame,
+                    None => {
+                        log::error!("CoW: Out of memory during page copy");
+                        return Err("Out of memory");
+                    }
+                };
+
+                // Copy page contents
+                let phys_offset = crate::memory::physical_memory_offset();
+                unsafe {
+                    let src = (phys_offset + old_frame.start_address().as_u64()).as_ptr::<u8>();
+                    let dst = (phys_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>();
+                    core::ptr::copy_nonoverlapping(src, dst, 4096);
+                }
+
+                // Update page table: unmap old, map new with writable flags
+                let new_flags = make_private_flags(old_flags);
+                if let Err(e) = page_table.unmap_page(page) {
+                    log::error!("CoW: Failed to unmap old page: {}", e);
+                    return Err("Failed to unmap old page");
+                }
+                if let Err(e) = page_table.map_page(page, new_frame, new_flags) {
+                    log::error!("CoW: Failed to map new page: {}", e);
+                    return Err("Failed to map new page");
+                }
+
+                // Decrement old frame reference count
+                frame_decref(old_frame);
+
+                // Flush TLB for this page
+                x86_64::instructions::tlb::flush(faulting_addr);
+
+                log::trace!(
+                    "CoW: Copied page {:#x} (old frame {:#x} -> new frame {:#x})",
+                    faulting_addr.as_u64(),
+                    old_frame.start_address().as_u64(),
+                    new_frame.start_address().as_u64()
+                );
+                return Ok(());
+            }
+        }
+        Err("Process not found")
+    });
+
+    match result {
+        Some(Ok(())) => true,
+        Some(Err(_)) | None => false,
+    }
+}
+
 extern "x86-interrupt" fn page_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
@@ -717,6 +833,18 @@ extern "x86-interrupt" fn page_fault_handler(
         log::error!("Stack frame: {:#?}", stack_frame);
 
         panic!("Stack overflow - guard page accessed");
+    }
+
+    // Try to handle as Copy-on-Write fault
+    // This handles writes to pages that were marked read-only during fork()
+    // We check if the address is in userspace (< 0x8000_0000_0000) rather than
+    // just checking if the fault came from userspace. This allows the kernel
+    // to trigger CoW when writing to user memory (e.g., signal frame setup).
+    let is_user_address = accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END;
+    if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3) {
+        // CoW fault handled successfully - resume execution
+        crate::per_cpu::preempt_enable();
+        return;
     }
 
     crate::serial_println!("EXCEPTION: PAGE FAULT - Now using IST stack for reliable diagnostics");

@@ -1,4 +1,5 @@
 pub mod frame_allocator;
+pub mod frame_metadata;
 pub mod heap;
 pub mod kernel_page_table;
 pub mod kernel_stack;
