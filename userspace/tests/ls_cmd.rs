@@ -8,7 +8,9 @@
 #![no_std]
 #![no_main]
 
+use core::arch::naked_asm;
 use core::panic::PanicInfo;
+use libbreenix::argv;
 use libbreenix::errno::Errno;
 use libbreenix::fs::{close, getdents64, open, DirentIter, O_DIRECTORY, O_RDONLY, DT_DIR, DT_LNK};
 use libbreenix::io::{print, println, stderr};
@@ -16,8 +18,20 @@ use libbreenix::process::exit;
 
 const BUF_SIZE: usize = 2048;
 
-fn ls_directory(path: &str) -> Result<(), Errno> {
-    let fd = open(path, O_RDONLY | O_DIRECTORY)?;
+fn ls_directory(path: &[u8]) -> Result<(), Errno> {
+    // Create null-terminated path for open syscall
+    let mut path_buf = [0u8; 256];
+    let len = path.len().min(255);
+    path_buf[..len].copy_from_slice(&path[..len]);
+    path_buf[len] = 0;
+
+    // Convert to &str for open
+    let path_str = match core::str::from_utf8(&path_buf[..len+1]) {
+        Ok(s) => s,
+        Err(_) => return Err(Errno::EINVAL),
+    };
+
+    let fd = open(path_str, O_RDONLY | O_DIRECTORY)?;
 
     let mut buf = [0u8; BUF_SIZE];
 
@@ -54,9 +68,9 @@ fn ls_directory(path: &str) -> Result<(), Errno> {
     Ok(())
 }
 
-fn print_error(path: &str, e: Errno) {
+fn print_error(path: &[u8], e: Errno) {
     let _ = stderr().write_str("ls: cannot access '");
-    let _ = stderr().write_str(path);
+    let _ = stderr().write(path);
     let _ = stderr().write_str("': ");
     let _ = stderr().write_str(match e {
         Errno::ENOENT => "No such file or directory",
@@ -67,15 +81,35 @@ fn print_error(path: &str, e: Errno) {
     let _ = stderr().write(b"\n");
 }
 
+/// Naked entry point that captures RSP before any prologue modifies it.
+#[unsafe(naked)]
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // Default to root directory without argv
-    let dir_path = "/\0";
+    naked_asm!(
+        "mov rdi, rsp",    // Pass original RSP as first argument
+        "and rsp, -16",    // Align stack to 16 bytes (ABI requirement)
+        "call {main}",     // Call rust_main(stack_ptr)
+        "ud2",             // Should never return
+        main = sym rust_main,
+    )
+}
 
-    match ls_directory(dir_path) {
+/// Real entry point called from naked _start with the original stack pointer.
+extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
+    // Get command-line arguments from the original stack pointer
+    let args = unsafe { argv::get_args_from_stack(stack_ptr) };
+
+    // Default to root directory if no arguments
+    let path: &[u8] = if args.argc >= 2 {
+        args.argv(1).unwrap_or(b"/")
+    } else {
+        b"/"
+    };
+
+    match ls_directory(path) {
         Ok(()) => exit(0),
         Err(e) => {
-            print_error(dir_path, e);
+            print_error(path, e);
             exit(1);
         }
     }

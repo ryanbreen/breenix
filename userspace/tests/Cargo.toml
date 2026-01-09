@@ -226,6 +226,10 @@ path = "fs_link_test.rs"
 name = "access_test"
 path = "access_test.rs"
 
+[[bin]]
+name = "devfs_test"
+path = "devfs_test.rs"
+
 # Coreutils
 [[bin]]
 name = "cat"

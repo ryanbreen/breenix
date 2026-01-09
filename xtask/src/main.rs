@@ -807,6 +807,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "access() syscall failed - file existence or permission checking broken",
             check_hint: "Check kernel/src/syscall/fs.rs sys_access() and permission bit handling",
         },
+        // Device filesystem (devfs) test
+        BootStage {
+            name: "Devfs test passed",
+            marker: "DEVFS_TEST_PASSED",
+            failure_meaning: "devfs test failed - /dev/null, /dev/zero, or /dev/console broken",
+            check_hint: "Check kernel/src/fs/devfs/mod.rs and syscall routing in sys_open for /dev/* paths",
+        },
         // Rust std library test - validates real Rust std works in userspace
         BootStage {
             name: "Rust std println! works",

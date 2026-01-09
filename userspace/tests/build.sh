@@ -84,6 +84,7 @@ BINARIES=(
     "fs_directory_test"
     "fs_link_test"
     "access_test"
+    "devfs_test"
     "fork_memory_test"
     "fork_state_test"
     "argv_test"

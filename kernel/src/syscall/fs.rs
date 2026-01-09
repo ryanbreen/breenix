@@ -160,6 +160,17 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
 
     log::debug!("sys_open: path={:?}, flags={:#x}, mode={:#o}", path, flags, mode);
 
+    // Check for /dev directory itself
+    if path == "/dev" || path == "/dev/" {
+        return handle_devfs_directory_open(flags);
+    }
+
+    // Check for /dev/* paths - route to devfs
+    if path.starts_with("/dev/") {
+        let device_name = &path[5..]; // Remove "/dev/" prefix
+        return handle_devfs_open(device_name, flags);
+    }
+
     // Parse flags
     let want_creat = (flags & O_CREAT) != 0;
     let want_excl = (flags & O_EXCL) != 0;
@@ -587,6 +598,25 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 stat.st_blocks = inode_stat.blocks;
             }
         }
+        FdKind::Device(device_type) => {
+            // Device files from devfs
+            use crate::fs::devfs;
+
+            // Look up device node for major/minor numbers
+            let device_node = devfs::lookup_by_inode(device_type.inode());
+            stat.st_dev = 0; // devfs has no backing device
+            stat.st_ino = device_type.inode();
+            stat.st_mode = S_IFCHR | 0o666; // Character device with rw-rw-rw-
+            stat.st_nlink = 1;
+            stat.st_rdev = device_node.map(|d| d.rdev()).unwrap_or(0);
+        }
+        FdKind::DevfsDirectory { .. } => {
+            // /dev directory itself
+            stat.st_dev = 0; // devfs has no backing device
+            stat.st_ino = 0; // Virtual inode for /dev
+            stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x
+            stat.st_nlink = 2; // . and ..
+        }
     }
 
     // Copy stat structure to userspace
@@ -746,6 +776,13 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         Some(entry) => entry,
         None => return SyscallResult::Err(EBADF as u64),
     };
+
+    // Handle DevfsDirectory specially
+    if let FdKind::DevfsDirectory { position } = &fd_entry.kind {
+        let start_position = *position;
+        drop(manager_guard);
+        return handle_devfs_getdents64(fd, dirp, count as usize, start_position, thread_id);
+    }
 
     // Must be a directory fd
     let dir_file = match &fd_entry.kind {
@@ -1421,6 +1458,32 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 
     log::debug!("sys_access: path={:?}, mode={:#o}", path, mode);
 
+    // Handle /dev paths specially
+    if path == "/dev" || path == "/dev/" {
+        // /dev directory exists with rwxr-xr-x permissions
+        if mode == F_OK {
+            return SyscallResult::Ok(0);
+        }
+        // Owner has rwx, so all access checks pass
+        return SyscallResult::Ok(0);
+    }
+    if path.starts_with("/dev/") {
+        use crate::fs::devfs;
+        let device_name = &path[5..];
+        if devfs::lookup(device_name).is_some() {
+            // Device exists with rw-rw-rw- permissions
+            if mode == F_OK {
+                return SyscallResult::Ok(0);
+            }
+            // Devices have rw permissions (no execute)
+            if (mode & X_OK) != 0 {
+                return SyscallResult::Err(EACCES as u64);
+            }
+            return SyscallResult::Ok(0);
+        }
+        return SyscallResult::Err(ENOENT as u64);
+    }
+
     // Get the root filesystem
     let fs_guard = ext2::root_fs();
     let fs = match fs_guard.as_ref() {
@@ -1483,4 +1546,262 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 
     log::debug!("sys_access: access check passed");
     SyscallResult::Ok(0)
+}
+
+/// Handle opening a device file from /dev/*
+///
+/// # Arguments
+/// * `device_name` - Name of the device (without /dev/ prefix)
+/// * `_flags` - Open flags (currently unused for devices)
+///
+/// # Returns
+/// File descriptor on success, negative errno on failure
+fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
+    use super::errno::{EMFILE, ENOENT};
+    use crate::fs::devfs;
+
+    log::debug!("handle_devfs_open: device_name={:?}", device_name);
+
+    // Look up the device
+    let device = match devfs::lookup(device_name) {
+        Some(d) => d,
+        None => {
+            log::debug!("handle_devfs_open: device not found: {}", device_name);
+            return SyscallResult::Err(ENOENT as u64);
+        }
+    };
+
+    // Get current process and allocate fd
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("handle_devfs_open: No current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_, p)) => p,
+            None => {
+                log::error!("handle_devfs_open: Process not found for thread {}", thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        },
+        None => {
+            log::error!("handle_devfs_open: Process manager not initialized");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    // Allocate file descriptor with Device kind
+    let fd_kind = FdKind::Device(device.device_type);
+    match process.fd_table.alloc(fd_kind) {
+        Ok(fd) => {
+            log::info!("handle_devfs_open: opened /dev/{} as fd {}", device_name, fd);
+            SyscallResult::Ok(fd as u64)
+        }
+        Err(_) => {
+            log::error!("handle_devfs_open: too many open files");
+            SyscallResult::Err(EMFILE as u64)
+        }
+    }
+}
+
+/// Handle opening the /dev directory itself
+///
+/// Returns a DevfsDirectory fd that can be used with getdents64.
+///
+/// # Arguments
+/// * `_flags` - Open flags (O_DIRECTORY expected)
+fn handle_devfs_directory_open(_flags: u32) -> SyscallResult {
+    use super::errno::EMFILE;
+
+    log::debug!("handle_devfs_directory_open: opening /dev directory");
+
+    // Get current process and allocate fd
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("handle_devfs_directory_open: No current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_, p)) => p,
+            None => {
+                log::error!("handle_devfs_directory_open: Process not found for thread {}", thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        },
+        None => {
+            log::error!("handle_devfs_directory_open: Process manager not initialized");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    // Allocate file descriptor with DevfsDirectory kind
+    let fd_kind = FdKind::DevfsDirectory { position: 0 };
+    match process.fd_table.alloc(fd_kind) {
+        Ok(fd) => {
+            log::info!("handle_devfs_directory_open: opened /dev as fd {}", fd);
+            SyscallResult::Ok(fd as u64)
+        }
+        Err(_) => {
+            log::error!("handle_devfs_directory_open: too many open files");
+            SyscallResult::Err(EMFILE as u64)
+        }
+    }
+}
+
+/// Handle getdents64 for the /dev directory
+///
+/// Returns virtual directory entries for all registered devices.
+fn handle_devfs_getdents64(
+    fd: i32,
+    dirp: u64,
+    buffer_size: usize,
+    start_position: u64,
+    thread_id: u64,
+) -> SyscallResult {
+    use crate::fs::devfs;
+
+    // Get the list of device names
+    let devices = devfs::list_devices();
+
+    // Build entries: ".", "..", then each device
+    // We treat position as entry index (0 = ".", 1 = "..", 2+ = devices)
+    let buffer = dirp as *mut u8;
+    let mut bytes_written = 0usize;
+    let mut entry_index = 0u64;
+    let mut new_position = start_position;
+
+    // Helper entries
+    let special_entries: [(&str, u64); 2] = [
+        (".", 0),   // inode 0 for /dev directory itself
+        ("..", 2),  // inode 2 = root directory
+    ];
+
+    // Iterate through special entries first
+    for (name, inode) in special_entries.iter() {
+        if entry_index < start_position {
+            entry_index += 1;
+            continue;
+        }
+
+        let name_len = name.len();
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
+
+        if bytes_written + reclen > buffer_size {
+            break;
+        }
+
+        unsafe {
+            let entry_ptr = buffer.add(bytes_written);
+
+            // d_ino (u64) at offset 0
+            let d_ino_ptr = entry_ptr as *mut u64;
+            core::ptr::write_unaligned(d_ino_ptr, *inode);
+
+            // d_off (i64) at offset 8 - offset to NEXT entry
+            let d_off_ptr = entry_ptr.add(8) as *mut i64;
+            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+
+            // d_reclen (u16) at offset 16
+            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
+            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
+
+            // d_type (u8) at offset 18 - DT_DIR for . and ..
+            let d_type_ptr = entry_ptr.add(18);
+            *d_type_ptr = DT_DIR;
+
+            // d_name at offset 19
+            let d_name_ptr = entry_ptr.add(19);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
+            *d_name_ptr.add(name_len) = 0;
+
+            // Zero padding
+            for i in (19 + name_len + 1)..reclen {
+                *entry_ptr.add(i) = 0;
+            }
+        }
+
+        bytes_written += reclen;
+        entry_index += 1;
+        new_position = entry_index;
+    }
+
+    // Now iterate through device entries
+    for device_name in devices.iter() {
+        if entry_index < start_position {
+            entry_index += 1;
+            continue;
+        }
+
+        let name_len = device_name.len();
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
+
+        if bytes_written + reclen > buffer_size {
+            break;
+        }
+
+        // Get device inode
+        let inode = devfs::lookup(device_name)
+            .map(|d| d.device_type.inode())
+            .unwrap_or(0);
+
+        unsafe {
+            let entry_ptr = buffer.add(bytes_written);
+
+            // d_ino (u64) at offset 0
+            let d_ino_ptr = entry_ptr as *mut u64;
+            core::ptr::write_unaligned(d_ino_ptr, inode);
+
+            // d_off (i64) at offset 8 - offset to NEXT entry
+            let d_off_ptr = entry_ptr.add(8) as *mut i64;
+            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+
+            // d_reclen (u16) at offset 16
+            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
+            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
+
+            // d_type (u8) at offset 18 - DT_CHR for character devices
+            let d_type_ptr = entry_ptr.add(18);
+            *d_type_ptr = DT_CHR;
+
+            // d_name at offset 19
+            let d_name_ptr = entry_ptr.add(19);
+            core::ptr::copy_nonoverlapping(device_name.as_ptr(), d_name_ptr, name_len);
+            *d_name_ptr.add(name_len) = 0;
+
+            // Zero padding
+            for i in (19 + name_len + 1)..reclen {
+                *entry_ptr.add(i) = 0;
+            }
+        }
+
+        bytes_written += reclen;
+        entry_index += 1;
+        new_position = entry_index;
+    }
+
+    // Update directory position in the fd
+    // Need to get process again since we dropped manager_guard
+    let mut manager_guard = crate::process::manager();
+    if let Some(manager) = &mut *manager_guard {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some(fd_entry) = process.fd_table.get_mut(fd) {
+                if let FdKind::DevfsDirectory { ref mut position } = fd_entry.kind {
+                    *position = new_position;
+                }
+            }
+        }
+    }
+
+    log::debug!("handle_devfs_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
+    SyscallResult::Ok(bytes_written as u64)
 }

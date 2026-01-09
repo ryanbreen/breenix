@@ -189,6 +189,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         Err(e) => log::warn!("Failed to mount ext2 root: {:?}", e),
     }
 
+    // Initialize devfs (/dev virtual filesystem)
+    crate::fs::devfs::init();
+    log::info!("devfs initialized at /dev");
+
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
     log::info!("Updated IST stacks with per-CPU emergency and page fault stacks");
@@ -762,6 +766,10 @@ fn kernel_main_continue() -> ! {
         // Test access() syscall
         log::info!("=== FS TEST: access() syscall ===");
         test_exec::test_access();
+
+        // Test devfs device files (/dev/null, /dev/zero, /dev/console, /dev/tty)
+        log::info!("=== FS TEST: devfs device files ===");
+        test_exec::test_devfs();
 
         // Test Rust std library support
         log::info!("=== STD TEST: Rust std library support ===");

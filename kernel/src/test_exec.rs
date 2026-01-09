@@ -1979,6 +1979,33 @@ pub fn test_access() {
     }
 }
 
+/// Test devfs (/dev/null, /dev/zero, /dev/console, /dev/tty)
+pub fn test_devfs() {
+    log::info!("Testing devfs device files (/dev/null, /dev/zero, /dev/console, /dev/tty)");
+
+    #[cfg(feature = "testing")]
+    let devfs_test_elf_buf = crate::userspace_test::get_test_binary("devfs_test");
+    #[cfg(feature = "testing")]
+    let devfs_test_elf: &[u8] = &devfs_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let devfs_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("devfs_test"),
+        devfs_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created devfs_test process with PID {:?}", pid);
+            log::info!("Devfs test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit DEVFS_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create devfs_test process: {}", e);
+            log::error!("Devfs test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test Rust std library support via hello_std_real
 pub fn test_hello_std_real() {
     log::info!("Testing Rust std library support (hello_std_real)");
