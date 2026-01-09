@@ -10,7 +10,7 @@ use libbreenix::process::{execv, exit, fork, waitpid, wexitstatus, wifexited};
 pub extern "C" fn _start() -> ! {
     println("=== Exec Argv Test ===");
 
-    let pid = unsafe { fork() };
+    let pid = fork();
     if pid == 0 {
         // Child: exec argv_test with specific args.
         let program = b"argv_test\0";
@@ -19,7 +19,7 @@ pub extern "C" fn _start() -> ! {
         let arg2 = b"world\0" as *const u8;
         let argv: [*const u8; 4] = [arg0, arg1, arg2, core::ptr::null()];
 
-        let _ = unsafe { execv(program, argv.as_ptr()) };
+        let _ = execv(program, argv.as_ptr());
         // If we get here, exec failed.
         println("exec failed");
         exit(1);
