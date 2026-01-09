@@ -975,6 +975,17 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Exec argv test failed - fork+exec not passing arguments correctly",
             check_hint: "Check kernel/src/process/manager.rs exec_process_with_argv() and setup_argv_on_stack()",
         },
+        // === Exec with Stack-Allocated Argv ===
+        // Tests that stack-allocated argument buffers work through execv.
+        // This is a regression test for a bug where the compiler could optimize
+        // away stack-allocated arg buffers before the syscall read from them.
+        // The fix uses core::hint::black_box() to prevent the optimization.
+        BootStage {
+            name: "Exec stack argv test passed",
+            marker: "EXEC_STACK_ARGV_TEST_PASSED",
+            failure_meaning: "Stack-allocated argv test failed - compiler may have optimized away argument buffers",
+            check_hint: "Check core::hint::black_box() usage in try_execute_external() and test code",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]
@@ -1941,9 +1952,46 @@ fn interactive_test() -> Result<()> {
         tests_failed += 1;
     }
 
-    // Test 4: Send Ctrl-C while at prompt (should just print ^C and continue)
+    // Test 4: Run "cat /hello.txt" to test argv passing
     println!();
-    println!("[Test 4] Sending Ctrl-C at prompt...");
+    println!("[Test 4] Sending 'cat /hello.txt' command...");
+    send_string(&mut monitor, "cat /hello.txt\n")?;
+    thread::sleep(Duration::from_secs(3)); // Give time for cat to run and print debug
+
+    let cat_output = fs::read_to_string(user_output_file).unwrap_or_default();
+    // Check for cat debug output to understand what's happening
+    if cat_output.contains("Hello from ext2") || cat_output.contains("Hello, World") {
+        println!("  ✓ PASS: 'cat /hello.txt' displayed file contents");
+        tests_passed += 1;
+    } else if cat_output.contains("cat: missing file operand") {
+        println!("  ✗ FAIL: cat didn't receive argv (argc < 2)");
+        // Print debug info if available
+        if let Some(debug_start) = cat_output.rfind("cat DEBUG:") {
+            let debug_section: String = cat_output[debug_start..].lines().take(5).collect::<Vec<_>>().join("\n");
+            println!("  Debug output: {}", debug_section);
+        }
+        tests_failed += 1;
+    } else if cat_output.contains("cat DEBUG:") {
+        // Debug output exists but file not found or other error
+        println!("  ? cat debug output present, checking...");
+        let debug_lines: Vec<&str> = cat_output.lines()
+            .filter(|l| l.contains("cat DEBUG:") || l.contains("cat:"))
+            .collect();
+        for line in debug_lines.iter().take(10) {
+            println!("    {}", line);
+        }
+        tests_failed += 1;
+    } else {
+        println!("  ? INCONCLUSIVE: Could not verify cat output");
+        println!("  Last 5 lines of output:");
+        for line in cat_output.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev() {
+            println!("    {}", line);
+        }
+    }
+
+    // Test 5: Send Ctrl-C while at prompt (should just print ^C and continue)
+    println!();
+    println!("[Test 5] Sending Ctrl-C at prompt...");
     // Ctrl-C is sent as ctrl-c in QEMU
     monitor.write_all(b"sendkey ctrl-c\n")?;
     let _ = monitor.read(&mut buf);
@@ -1967,9 +2015,9 @@ fn interactive_test() -> Result<()> {
         // Don't count as failure, just informational
     }
 
-    // Test 5: Run spinner and Ctrl-C to interrupt it
+    // Test 6: Run spinner and Ctrl-C to interrupt it
     println!();
-    println!("[Test 5] Running spinner and sending Ctrl-C to interrupt...");
+    println!("[Test 6] Running spinner and sending Ctrl-C to interrupt...");
     send_string(&mut monitor, "spinner\n")?;
     thread::sleep(Duration::from_secs(2)); // Let spinner start
 

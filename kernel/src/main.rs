@@ -727,6 +727,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== EXEC TEST: exec with argv ===");
         test_exec::test_exec_argv();
 
+        // Test exec with stack-allocated argv (regression test for black_box fix)
+        log::info!("=== EXEC TEST: exec with stack-allocated argv ===");
+        test_exec::test_exec_stack_argv();
+
         // Test getdents64 syscall for directory listing
         log::info!("=== FS TEST: getdents64 directory listing ===");
         test_exec::test_getdents();

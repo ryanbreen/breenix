@@ -89,6 +89,7 @@ BINARIES=(
     "argv_test"
     "cat"
     "exec_argv_test"
+    "exec_stack_argv_test"
     # Coreutils
     "ls_cmd"
     "echo_cmd"
