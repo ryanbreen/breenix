@@ -112,6 +112,43 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLIN;
             }
         }
+        FdKind::Device(device_type) => {
+            // Device files have different poll behavior based on type
+            use crate::fs::devfs::DeviceType;
+            match device_type {
+                DeviceType::Null => {
+                    // /dev/null: always readable (returns EOF), always writable
+                    if (events & events::POLLIN) != 0 {
+                        revents |= events::POLLIN;
+                    }
+                    if (events & events::POLLOUT) != 0 {
+                        revents |= events::POLLOUT;
+                    }
+                }
+                DeviceType::Zero => {
+                    // /dev/zero: always readable (infinite zeros), always writable
+                    if (events & events::POLLIN) != 0 {
+                        revents |= events::POLLIN;
+                    }
+                    if (events & events::POLLOUT) != 0 {
+                        revents |= events::POLLOUT;
+                    }
+                }
+                DeviceType::Console | DeviceType::Tty => {
+                    // Console/TTY: always writable, not readable (no input buffer yet)
+                    if (events & events::POLLOUT) != 0 {
+                        revents |= events::POLLOUT;
+                    }
+                    // TODO: Check input buffer for POLLIN when implemented
+                }
+            }
+        }
+        FdKind::DevfsDirectory { .. } => {
+            // Devfs directory is always "readable" for getdents purposes
+            if (events & events::POLLIN) != 0 {
+                revents |= events::POLLIN;
+            }
+        }
     }
 
     revents

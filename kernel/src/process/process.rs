@@ -238,6 +238,14 @@ impl Process {
                         // Directory cleanup handled by Arc refcount
                         log::debug!("Process::close_all_fds() - released directory fd {}", fd);
                     }
+                    FdKind::Device(_) => {
+                        // Device files don't need cleanup
+                        log::debug!("Process::close_all_fds() - released device fd {}", fd);
+                    }
+                    FdKind::DevfsDirectory { .. } => {
+                        // Devfs directory doesn't need cleanup
+                        log::debug!("Process::close_all_fds() - released devfs directory fd {}", fd);
+                    }
                 }
             }
         }

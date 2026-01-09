@@ -72,6 +72,7 @@ pub struct DirectoryFile {
 /// - Pipes (read and write ends)
 /// - UDP sockets (with future support for TCP, files, etc.)
 /// - Regular files (filesystem files)
+/// - Device files (/dev/null, /dev/zero, etc.)
 ///
 /// Note: Sockets use Arc<Mutex<>> like pipes because they need to be shared
 /// and cannot be cloned (they contain unique socket handles and rx queues).
@@ -90,6 +91,10 @@ pub enum FdKind {
     RegularFile(Arc<Mutex<RegularFile>>),
     /// Directory file descriptor (for getdents)
     Directory(Arc<Mutex<DirectoryFile>>),
+    /// Device file (/dev/null, /dev/zero, /dev/console, /dev/tty)
+    Device(crate::fs::devfs::DeviceType),
+    /// /dev directory (virtual directory for listing devices)
+    DevfsDirectory { position: u64 },
 }
 
 impl core::fmt::Debug for FdKind {
@@ -101,6 +106,8 @@ impl core::fmt::Debug for FdKind {
             FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
             FdKind::RegularFile(_) => write!(f, "RegularFile"),
             FdKind::Directory(_) => write!(f, "Directory"),
+            FdKind::Device(dt) => write!(f, "Device({:?})", dt),
+            FdKind::DevfsDirectory { position } => write!(f, "DevfsDirectory(pos={})", position),
         }
     }
 }
@@ -410,6 +417,14 @@ impl Drop for FdTable {
                     FdKind::Directory(_) => {
                         // Directory cleanup handled by Arc refcount
                         log::debug!("FdTable::drop() - releasing directory fd {}", i);
+                    }
+                    FdKind::Device(_) => {
+                        // Device files don't need cleanup
+                        log::debug!("FdTable::drop() - releasing device fd {}", i);
+                    }
+                    FdKind::DevfsDirectory { .. } => {
+                        // Devfs directory doesn't need cleanup
+                        log::debug!("FdTable::drop() - releasing devfs directory fd {}", i);
                     }
                 }
             }

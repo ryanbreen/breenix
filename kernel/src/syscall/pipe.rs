@@ -170,6 +170,14 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Directory cleanup handled by Arc refcount
                     log::debug!("sys_close: Closed directory fd={}", fd);
                 }
+                FdKind::Device(_) => {
+                    // Device files don't need cleanup
+                    log::debug!("sys_close: Closed device fd={}", fd);
+                }
+                FdKind::DevfsDirectory { .. } => {
+                    // Devfs directory doesn't need cleanup
+                    log::debug!("sys_close: Closed devfs directory fd={}", fd);
+                }
             }
             SyscallResult::Ok(0)
         }

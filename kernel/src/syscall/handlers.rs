@@ -361,6 +361,24 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_write: Cannot write to directory");
             SyscallResult::Err(super::errno::EISDIR as u64)
         }
+        FdKind::Device(device_type) => {
+            // Write to devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
+            match crate::fs::devfs::device_write(*device_type, &buffer) {
+                Ok(n) => {
+                    log::debug!("sys_write: Wrote {} bytes to device {:?}", n, device_type);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => {
+                    log::debug!("sys_write: Device write error: {}", e);
+                    SyscallResult::Err((-e) as u64)
+                }
+            }
+        }
+        FdKind::DevfsDirectory { .. } => {
+            // Cannot write to a directory
+            log::error!("sys_write: Cannot write to /dev directory");
+            SyscallResult::Err(super::errno::EISDIR as u64)
+        }
     }
 }
 
@@ -654,6 +672,31 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::Directory(_) => {
             // Cannot read from directory with read() - must use getdents
             log::debug!("sys_read: Cannot read from directory, use getdents instead");
+            SyscallResult::Err(super::errno::EISDIR as u64)
+        }
+        FdKind::Device(device_type) => {
+            // Read from devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
+            let mut user_buf = alloc::vec![0u8; count as usize];
+            match crate::fs::devfs::device_read(*device_type, &mut user_buf) {
+                Ok(n) => {
+                    if n > 0 {
+                        // Copy to userspace
+                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                            return SyscallResult::Err(14); // EFAULT
+                        }
+                    }
+                    log::debug!("sys_read: Read {} bytes from device {:?}", n, device_type);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => {
+                    log::debug!("sys_read: Device read error: {}", e);
+                    SyscallResult::Err((-e) as u64)
+                }
+            }
+        }
+        FdKind::DevfsDirectory { .. } => {
+            // Cannot read from directory with read() - must use getdents
+            log::debug!("sys_read: Cannot read from /dev directory, use getdents instead");
             SyscallResult::Err(super::errno::EISDIR as u64)
         }
     }

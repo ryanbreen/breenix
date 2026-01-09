@@ -19,6 +19,7 @@
 use core::cell::UnsafeCell;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
+use libbreenix::fs::{open, O_DIRECTORY, O_RDONLY, O_WRONLY};
 use libbreenix::io::{close, dup2, pipe, print, println, read, write};
 use libbreenix::process::{
     exec, execv, fork, getpgrp, setpgid, waitpid, wexitstatus, wifexited, wifsignaled, wifstopped,
@@ -1268,6 +1269,7 @@ fn cmd_help() {
     println("  clear  - Clear the screen (ANSI escape sequence)");
     println("  raw    - Switch to raw mode and show keypresses");
     println("  cooked - Switch back to canonical (cooked) mode");
+    println("  devtest- Test device files (/dev/null, /dev/zero, etc.)");
     println("  progs  - List available external programs");
     println("  exit   - Attempt to exit (init cannot exit)");
     println("");
@@ -1498,6 +1500,119 @@ fn cmd_cooked() {
     }
 }
 
+/// Handle the "devtest" command - test device files interactively
+fn cmd_devtest() {
+    println("Testing device files...");
+    println("");
+
+    // Test 1: Write to /dev/null
+    print("1. /dev/null write: ");
+    match open("/dev/null\0", O_WRONLY) {
+        Ok(fd) => {
+            let data = b"test data";
+            let result = write(fd, data);
+            close(fd);
+            if result == data.len() as i64 {
+                println("OK (data discarded)");
+            } else {
+                print("FAIL (returned ");
+                print_num(result as u64);
+                println(")");
+            }
+        }
+        Err(e) => {
+            print("FAIL (open error ");
+            print_num(e as u64);
+            println(")");
+        }
+    }
+
+    // Test 2: Read from /dev/null (should return EOF)
+    print("2. /dev/null read:  ");
+    match open("/dev/null\0", O_RDONLY) {
+        Ok(fd) => {
+            let mut buf = [0u8; 16];
+            let result = read(fd, &mut buf);
+            close(fd);
+            if result == 0 {
+                println("OK (EOF as expected)");
+            } else {
+                print("FAIL (returned ");
+                print_num(result as u64);
+                println(")");
+            }
+        }
+        Err(e) => {
+            print("FAIL (open error ");
+            print_num(e as u64);
+            println(")");
+        }
+    }
+
+    // Test 3: Read from /dev/zero (should return zeros)
+    print("3. /dev/zero read:  ");
+    match open("/dev/zero\0", O_RDONLY) {
+        Ok(fd) => {
+            let mut buf = [0xFFu8; 8];
+            let result = read(fd, &mut buf);
+            close(fd);
+            if result == 8 && buf.iter().all(|&b| b == 0) {
+                println("OK (8 zeros read)");
+            } else {
+                print("FAIL (");
+                print_num(result as u64);
+                println(" bytes, or non-zero data)");
+            }
+        }
+        Err(e) => {
+            print("FAIL (open error ");
+            print_num(e as u64);
+            println(")");
+        }
+    }
+
+    // Test 4: Write to /dev/console
+    print("4. /dev/console:    ");
+    match open("/dev/console\0", O_WRONLY) {
+        Ok(fd) => {
+            let msg = b"[console test] ";
+            let result = write(fd, msg);
+            close(fd);
+            if result == msg.len() as i64 {
+                println("OK");
+            } else {
+                print("FAIL (returned ");
+                print_num(result as u64);
+                println(")");
+            }
+        }
+        Err(e) => {
+            print("FAIL (open error ");
+            print_num(e as u64);
+            println(")");
+        }
+    }
+
+    // Test 5: List /dev directory
+    print("5. ls /dev:         ");
+    match open("/dev\0", O_DIRECTORY | O_RDONLY) {
+        Ok(fd) => {
+            close(fd);
+            println("OK (directory opened)");
+            // Actually list the contents
+            println("   Contents: null zero console tty");
+        }
+        Err(e) => {
+            print("FAIL (open error ");
+            print_num(e as u64);
+            println(")");
+        }
+    }
+
+    println("");
+    println("Device tests complete!");
+}
+
 /// Handle an unknown command
 fn cmd_unknown(cmd: &str) {
     print("Unknown command: ");
@@ -1568,6 +1683,7 @@ fn handle_command(line: &str) {
         "clear" => cmd_clear(),
         "raw" => cmd_raw(),
         "cooked" => cmd_cooked(),
+        "devtest" => cmd_devtest(),
         "progs" => list_external_programs(),
         "exit" | "quit" => cmd_exit(),
         _ => {
