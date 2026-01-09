@@ -638,15 +638,22 @@ pub fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Res
                 println(first_arg);
                 libbreenix::process::exit(1);
             }
+            // CRITICAL: Use black_box to prevent the compiler from optimizing
+            // away arg_buf before the syscall reads from it. Without this,
+            // the compiler may reuse this stack memory since arg_buf is only
+            // used to get a pointer.
             let mut arg_buf = [0u8; ARG_BUF_LEN];
             arg_buf[..first_arg.len()].copy_from_slice(first_arg.as_bytes());
             arg_buf[first_arg.len()] = 0;
+            let arg_ptr = core::hint::black_box(arg_buf.as_ptr());
             let argv: [*const u8; 3] = [
                 entry.binary_name.as_ptr(),
-                arg_buf.as_ptr(),
+                arg_ptr,
                 core::ptr::null(),
             ];
-            execv(entry.binary_name, argv.as_ptr())
+            // Also black_box the argv array itself
+            let argv_ptr = core::hint::black_box(argv.as_ptr());
+            execv(entry.binary_name, argv_ptr)
         };
 
         // If exec returns, it failed

@@ -278,3 +278,7 @@ strip = true
 [[bin]]
 name = "exec_argv_test"
 path = "exec_argv_test.rs"
+
+[[bin]]
+name = "exec_stack_argv_test"
+path = "exec_stack_argv_test.rs"

@@ -2177,6 +2177,38 @@ pub fn test_exec_argv() {
     }
 }
 
+/// Test exec with stack-allocated argv buffers
+///
+/// This is a regression test for a bug where the compiler could optimize away
+/// stack-allocated argument buffers before the syscall read from them.
+/// The fix uses core::hint::black_box() to prevent the optimization.
+pub fn test_exec_stack_argv() {
+    log::info!("Testing exec with stack-allocated argv (regression test for black_box fix)");
+
+    #[cfg(feature = "testing")]
+    let exec_stack_argv_test_elf_buf =
+        crate::userspace_test::get_test_binary("exec_stack_argv_test");
+    #[cfg(feature = "testing")]
+    let exec_stack_argv_test_elf: &[u8] = &exec_stack_argv_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let exec_stack_argv_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("exec_stack_argv_test"),
+        exec_stack_argv_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created exec_stack_argv_test process with PID {:?}", pid);
+            log::info!(
+                "    -> Userspace will emit EXEC_STACK_ARGV_TEST_PASSED marker if successful"
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to create exec_stack_argv_test process: {}", e);
+        }
+    }
+}
+
 /// Test close-on-exec (O_CLOEXEC) behavior
 pub fn test_cloexec() {
     log::info!("Testing close-on-exec (O_CLOEXEC) behavior");

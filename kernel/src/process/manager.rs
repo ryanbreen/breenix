@@ -1966,17 +1966,15 @@ impl ProcessManager {
         value: u8,
     ) -> Result<(), &'static str> {
         // Translate virtual address to physical
+        // NOTE: translate_page uses translate_addr which returns the FULL physical
+        // address including the page offset - do NOT add page_offset again!
         let phys_addr = page_table.translate_page(VirtAddr::new(virt_addr))
             .ok_or("Failed to translate stack address")?;
-
-        // Calculate offset within page
-        let page_offset = virt_addr & 0xFFF;
-        let phys_with_offset = phys_addr + page_offset;
 
         // Write via direct physical memory mapping
         // The kernel has a direct mapping of all physical memory
         let phys_offset = crate::memory::physical_memory_offset();
-        let kernel_virt = phys_offset + phys_with_offset.as_u64();
+        let kernel_virt = phys_offset + phys_addr.as_u64();
 
         unsafe {
             core::ptr::write_volatile(kernel_virt.as_mut_ptr::<u8>(), value);

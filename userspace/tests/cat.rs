@@ -9,6 +9,7 @@
 #![no_std]
 #![no_main]
 
+use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use libbreenix::argv;
 use libbreenix::errno::Errno;
@@ -61,10 +62,26 @@ fn print_error_bytes(path: &[u8], e: Errno) {
     let _ = stderr().write(b"\n");
 }
 
+/// Naked entry point that captures RSP before any prologue modifies it.
+/// RSP points to argc on entry per Linux x86_64 ABI.
+#[unsafe(naked)]
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // Get command-line arguments from the stack
-    let args = unsafe { argv::get_args() };
+    naked_asm!(
+        "mov rdi, rsp",    // Pass original RSP as first argument
+        "and rsp, -16",    // Align stack to 16 bytes (ABI requirement)
+        "call {main}",     // Call rust_main(stack_ptr)
+        "ud2",             // Should never return
+        main = sym rust_main,
+    )
+}
+
+/// Real entry point called from naked _start with the original stack pointer.
+/// Note: stack_ptr points to the ORIGINAL RSP (argc location), not current RSP.
+extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
+    // Get command-line arguments from the original stack pointer
+    // stack_ptr was captured BEFORE the call instruction, so it points to argc
+    let args = unsafe { argv::get_args_from_stack(stack_ptr) };
 
     // If no arguments (besides program name), print usage and exit with error
     if args.argc < 2 {

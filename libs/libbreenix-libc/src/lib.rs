@@ -833,7 +833,7 @@ pub extern "C" fn pause() -> i32 {
 /// This provides a way for std to make syscalls. We implement the common
 /// syscalls that std uses directly.
 #[no_mangle]
-pub unsafe extern "C" fn syscall(num: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64 {
+pub unsafe extern "C" fn syscall(num: i64, _a1: i64, _a2: i64, _a3: i64, _a4: i64, _a5: i64, _a6: i64) -> i64 {
     // Linux x86_64 syscall numbers
     const SYS_FUTEX: i64 = 202;
     const SYS_GETRANDOM: i64 = 318;

@@ -43,7 +43,7 @@ pub extern "C" fn _start() -> ! {
     }
     close(write_fd);
 
-    let pid = unsafe { fork() };
+    let pid = fork();
     if pid == 0 {
         let mut fd_buf = [0u8; 21];
         let fd_str = format_u64(read_fd, &mut fd_buf[..20]);
@@ -59,7 +59,7 @@ pub extern "C" fn _start() -> ! {
             core::ptr::null(),
         ];
 
-        let _ = unsafe { execv(program, argv.as_ptr()) };
+        let _ = execv(program, argv.as_ptr());
         println("exec failed");
         exit(1);
     } else if pid > 0 {
