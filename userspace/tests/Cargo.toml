@@ -91,6 +91,10 @@ name = "pipe_refcount_test"
 path = "pipe_refcount_test.rs"
 
 [[bin]]
+name = "shell_pipe_test"
+path = "shell_pipe_test.rs"
+
+[[bin]]
 name = "stdin_test"
 path = "stdin_test.rs"
 

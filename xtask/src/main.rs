@@ -673,6 +673,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "pipe2() syscall test failed - O_CLOEXEC/O_NONBLOCK flags not applied correctly",
             check_hint: "Check kernel/src/syscall/pipe.rs:sys_pipe2() and kernel/src/ipc/fd.rs:alloc_with_entry()",
         },
+        // Shell pipeline execution test - validates pipe+fork+dup2 pattern
+        BootStage {
+            name: "Shell pipeline execution test passed",
+            marker: "SHELL_PIPE_TEST_PASSED",
+            failure_meaning: "Shell pipeline test failed - pipe+fork+dup2 pattern broken, data not flowing through pipeline",
+            check_hint: "Check dup2() in kernel/src/syscall/fd.rs, pipe read/write in kernel/src/ipc/pipe.rs, verify stdin/stdout redirection works",
+        },
         // Signal exec reset test
         // Validates signal handlers are reset to SIG_DFL after exec
         BootStage {
