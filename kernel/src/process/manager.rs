@@ -740,7 +740,7 @@ impl ProcessManager {
             parent.page_table = Some(parent_page_table);
 
             log::info!(
-                "fork_process: Set up {} pages for CoW sharing (efficient fork semantics)",
+                "fork_process: Set up {} pages for CoW sharing",
                 pages_shared
             );
 

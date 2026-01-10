@@ -271,6 +271,30 @@ path = "fork_memory_test.rs"
 name = "fork_state_test"
 path = "fork_state_test.rs"
 
+[[bin]]
+name = "cow_signal_test"
+path = "cow_signal_test.rs"
+
+[[bin]]
+name = "cow_cleanup_test"
+path = "cow_cleanup_test.rs"
+
+[[bin]]
+name = "cow_sole_owner_test"
+path = "cow_sole_owner_test.rs"
+
+[[bin]]
+name = "cow_stress_test"
+path = "cow_stress_test.rs"
+
+[[bin]]
+name = "cow_readonly_test"
+path = "cow_readonly_test.rs"
+
+[[bin]]
+name = "cow_oom_test"
+path = "cow_oom_test.rs"
+
 # Argv test for command-line argument support
 [[bin]]
 name = "argv_test"

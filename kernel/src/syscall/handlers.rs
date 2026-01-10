@@ -2334,3 +2334,105 @@ pub fn sys_select(
 
     SyscallResult::Ok(ready_count)
 }
+
+/// CowStats structure returned by sys_cow_stats
+/// Matches the layout expected by userspace
+#[repr(C)]
+pub struct CowStatsResult {
+    pub total_faults: u64,
+    pub manager_path: u64,
+    pub direct_path: u64,
+    pub pages_copied: u64,
+    pub sole_owner_opt: u64,
+}
+
+/// sys_cow_stats - Get Copy-on-Write statistics (for testing)
+///
+/// This syscall is used to verify that the CoW optimization paths are working.
+/// It returns the current CoW statistics to userspace.
+///
+/// Parameters:
+/// - stats_ptr: pointer to a CowStatsResult structure in userspace
+///
+/// Returns: 0 on success, negative error code on failure
+pub fn sys_cow_stats(stats_ptr: u64) -> SyscallResult {
+    use crate::interrupts::cow_stats;
+
+    if stats_ptr == 0 {
+        return SyscallResult::Err(14); // EFAULT - null pointer
+    }
+
+    // Validate the address is in userspace
+    if !crate::memory::layout::is_valid_user_address(stats_ptr) {
+        log::error!("sys_cow_stats: Invalid userspace address {:#x}", stats_ptr);
+        return SyscallResult::Err(14); // EFAULT
+    }
+
+    // Get the current stats
+    let stats = cow_stats::get_stats();
+
+    // Copy to userspace
+    unsafe {
+        let user_stats = stats_ptr as *mut CowStatsResult;
+        (*user_stats).total_faults = stats.total_faults;
+        (*user_stats).manager_path = stats.manager_path;
+        (*user_stats).direct_path = stats.direct_path;
+        (*user_stats).pages_copied = stats.pages_copied;
+        (*user_stats).sole_owner_opt = stats.sole_owner_opt;
+    }
+
+    log::debug!(
+        "sys_cow_stats: total={}, manager={}, direct={}, copied={}, sole_owner={}",
+        stats.total_faults,
+        stats.manager_path,
+        stats.direct_path,
+        stats.pages_copied,
+        stats.sole_owner_opt
+    );
+
+    SyscallResult::Ok(0)
+}
+
+/// sys_simulate_oom - Enable or disable OOM simulation (for testing)
+///
+/// This syscall is used to test the kernel's behavior when frame allocation fails
+/// during Copy-on-Write page faults. When OOM simulation is enabled, all frame
+/// allocations will return None, causing CoW faults to fail and processes to be
+/// terminated with SIGSEGV.
+///
+/// Parameters:
+/// - enable: 1 to enable OOM simulation, 0 to disable
+///
+/// Returns: 0 on success, -ENOSYS if testing feature is not compiled in
+///
+/// # Safety
+/// Only enable OOM simulation briefly for testing! Extended OOM simulation will
+/// crash the kernel because it affects ALL frame allocations.
+///
+/// # Expected behavior when OOM is active
+/// 1. Fork succeeds (CoW sharing, no new frames needed)
+/// 2. Child writes to shared page (triggers CoW fault)
+/// 3. CoW fault handler tries to allocate frame, fails
+/// 4. handle_cow_fault() returns false
+/// 5. page_fault_handler() kills the process with exit code -11 (SIGSEGV)
+/// 6. Parent receives SIGCHLD and can waitpid() for the child
+pub fn sys_simulate_oom(enable: u64) -> SyscallResult {
+    #[cfg(feature = "testing")]
+    {
+        if enable != 0 {
+            crate::memory::frame_allocator::enable_oom_simulation();
+            log::info!("sys_simulate_oom: OOM simulation ENABLED");
+        } else {
+            crate::memory::frame_allocator::disable_oom_simulation();
+            log::info!("sys_simulate_oom: OOM simulation disabled");
+        }
+        SyscallResult::Ok(0)
+    }
+
+    #[cfg(not(feature = "testing"))]
+    {
+        let _ = enable; // suppress unused warning
+        log::warn!("sys_simulate_oom: testing feature not compiled in");
+        SyscallResult::Err(38) // ENOSYS - function not implemented
+    }
+}

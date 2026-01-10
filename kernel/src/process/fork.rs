@@ -168,6 +168,12 @@ pub fn setup_cow_pages(
                 continue;
             }
 
+            // CRITICAL: Flush the TLB entry for this page in the parent's address space
+            // Without this, the parent's TLB may still have the old WRITABLE entry,
+            // allowing writes without triggering page faults. This causes memory
+            // corruption since parent and child would write to the same physical frame.
+            x86_64::instructions::tlb::flush(virt_addr);
+
             // Map same frame in child with CoW flags
             if let Err(e) = child_page_table.map_page(page, frame, cow_flags) {
                 log::error!(

@@ -81,5 +81,8 @@ pub fn dispatch_syscall(
         SyscallNumber::Unlink => super::fs::sys_unlink(arg1),
         SyscallNumber::Symlink => super::fs::sys_symlink(arg1, arg2),
         SyscallNumber::Readlink => super::fs::sys_readlink(arg1, arg2, arg3),
+        // Testing/diagnostic syscalls (Breenix-specific)
+        SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
+        SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),
     }
 }

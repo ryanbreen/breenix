@@ -188,3 +188,105 @@ pub fn mprotect(addr: *mut u8, length: usize, prot: i32) -> i32 {
     };
     result as i32
 }
+
+/// Copy-on-Write statistics
+///
+/// This structure is returned by the cow_stats() syscall and contains
+/// counters for various CoW events in the kernel.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CowStats {
+    /// Total number of CoW page faults handled
+    pub total_faults: u64,
+    /// Faults handled via process manager (normal path)
+    pub manager_path: u64,
+    /// Faults handled via direct page table manipulation (lock-held path)
+    pub direct_path: u64,
+    /// Pages that were actually copied (frame was shared)
+    pub pages_copied: u64,
+    /// Pages made writable without copy (sole owner optimization)
+    pub sole_owner_opt: u64,
+}
+
+/// Get Copy-on-Write statistics from the kernel.
+///
+/// This is a testing/debugging syscall that returns the current CoW counters.
+/// Use this to verify that the sole-owner optimization and page copying are
+/// working as expected.
+///
+/// # Returns
+/// Some(CowStats) on success, None on error.
+///
+/// # Example
+/// ```rust,ignore
+/// use libbreenix::memory::cow_stats;
+///
+/// if let Some(stats) = cow_stats() {
+///     println!("Total CoW faults: {}", stats.total_faults);
+///     println!("Sole owner optimizations: {}", stats.sole_owner_opt);
+/// }
+/// ```
+#[inline]
+pub fn cow_stats() -> Option<CowStats> {
+    let mut stats = CowStats::default();
+    let result = unsafe {
+        raw::syscall1(nr::COW_STATS, &mut stats as *mut CowStats as u64)
+    };
+    if (result as i64) < 0 {
+        None
+    } else {
+        Some(stats)
+    }
+}
+
+/// Enable or disable OOM simulation for testing.
+///
+/// When OOM simulation is enabled, all frame allocations will fail, causing
+/// Copy-on-Write page faults to fail. Processes that trigger a CoW fault
+/// during OOM simulation will be terminated with SIGSEGV (exit code -11).
+///
+/// This is used to test that the kernel gracefully handles memory exhaustion
+/// during CoW page faults.
+///
+/// # Arguments
+/// * `enable` - true to enable OOM simulation, false to disable
+///
+/// # Returns
+/// 0 on success, -ENOSYS if the testing feature is not compiled into the kernel.
+///
+/// # Safety
+/// Only enable OOM simulation briefly for testing! Extended OOM simulation will
+/// crash the kernel because it affects ALL frame allocations.
+///
+/// # Example
+/// ```rust,ignore
+/// use libbreenix::memory::simulate_oom;
+/// use libbreenix::process::{fork, exit, waitpid, wifexited, wexitstatus};
+///
+/// // Enable OOM simulation
+/// simulate_oom(true);
+///
+/// let pid = fork();
+/// if pid == 0 {
+///     // Child process
+///     // This write will trigger a CoW fault that fails due to OOM
+///     // The child will be killed with SIGSEGV
+///     let ptr = some_shared_memory;
+///     *ptr = 42; // Triggers CoW fault -> SIGSEGV
+///     // Never reaches here
+/// } else {
+///     // Parent process
+///     simulate_oom(false); // Disable OOM simulation
+///     let mut status = 0;
+///     waitpid(pid, &mut status, 0);
+///     // Child should have been killed with SIGSEGV (exit code -11)
+///     assert!(!wifexited(status)); // Killed by signal, not normal exit
+/// }
+/// ```
+#[inline]
+pub fn simulate_oom(enable: bool) -> i32 {
+    let result = unsafe {
+        raw::syscall1(nr::SIMULATE_OOM, if enable { 1 } else { 0 })
+    };
+    result as i32
+}

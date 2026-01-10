@@ -723,6 +723,26 @@ fn kernel_main_continue() -> ! {
         log::info!("=== SIGNAL TEST: fork pending signal non-inheritance ===");
         test_exec::test_fork_pending_signal();
 
+        // Test CoW signal delivery (deadlock fix)
+        log::info!("=== COW TEST: signal delivery on CoW-shared stack ===");
+        test_exec::test_cow_signal();
+
+        // Test CoW cleanup on process exit
+        log::info!("=== COW TEST: cleanup on process exit ===");
+        test_exec::test_cow_cleanup();
+
+        // Test CoW sole owner optimization
+        log::info!("=== COW TEST: sole owner optimization ===");
+        test_exec::test_cow_sole_owner();
+
+        // Test CoW at scale with many pages
+        log::info!("=== COW TEST: stress test with many pages ===");
+        test_exec::test_cow_stress();
+
+        // Test CoW read-only page sharing (code sections)
+        log::info!("=== COW TEST: read-only page sharing (code sections) ===");
+        test_exec::test_cow_readonly();
+
         // Test argv support in exec syscall
         log::info!("=== EXEC TEST: argv support ===");
         test_exec::test_argv();
