@@ -291,7 +291,9 @@ impl Process {
             let frame = PhysFrame::containing_address(phys_addr);
 
             // Decrement reference count
-            // If this was the last reference, deallocate the frame
+            // If this was the last reference (frame was tracked and refcount reached 0),
+            // deallocate the frame. frame_decref returns false for untracked frames
+            // to prevent corruption from freeing potentially in-use frames.
             if frame_decref(frame) {
                 deallocate_frame(frame);
                 freed_count += 1;

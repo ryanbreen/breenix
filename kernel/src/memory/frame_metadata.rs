@@ -76,9 +76,20 @@ pub fn frame_decref(frame: PhysFrame) -> bool {
         // old_count > 1, still shared
         false
     } else {
-        // Frame wasn't tracked - this is the sole owner
-        // Return true to indicate it can be freed
-        true
+        // Frame wasn't tracked in CoW metadata.
+        // This could be:
+        // 1. A frame allocated by a child process after fork (could be freed)
+        // 2. A frame that was never part of CoW sharing (might be unsafe to free)
+        //
+        // SAFETY: Don't free untracked frames. This causes a memory leak for
+        // child-allocated pages, but prevents potential corruption if the frame
+        // is still in use by something else. The root cause needs further
+        // investigation.
+        log::trace!(
+            "frame_decref: frame {:#x} not tracked, refusing to free (leak to prevent corruption)",
+            addr
+        );
+        false
     }
 }
 
