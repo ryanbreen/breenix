@@ -2149,6 +2149,186 @@ pub fn test_fork_pending_signal() {
     }
 }
 
+/// Test CoW signal delivery
+///
+/// This test specifically verifies that signal delivery works correctly
+/// when the user stack is a CoW-shared page. This was the root cause of
+/// a deadlock bug where signal delivery writes to a CoW page while holding
+/// the PROCESS_MANAGER lock.
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: (none - process creation logs)
+/// - Stage 2 (Boot stage): Validates CoW + signal interaction
+///   - Marker: "COW_SIGNAL_TEST_PASSED"
+///   - This PROVES:
+///     1. Signal delivery can write to CoW-shared stack without deadlocking
+///     2. Signal handler executes correctly on CoW-copied stack
+///     3. The try_manager() + handle_cow_direct() fallback works
+pub fn test_cow_signal() {
+    log::info!("Testing CoW signal delivery (deadlock fix)");
+
+    #[cfg(feature = "testing")]
+    let cow_signal_test_elf_buf = crate::userspace_test::get_test_binary("cow_signal_test");
+    #[cfg(feature = "testing")]
+    let cow_signal_test_elf: &[u8] = &cow_signal_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cow_signal_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cow_signal_test"),
+        cow_signal_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cow_signal_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit COW_SIGNAL_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cow_signal_test process: {}", e);
+        }
+    }
+}
+
+/// Test CoW cleanup on process exit
+///
+/// This test verifies that when forked children exit, shared CoW frame
+/// reference counts are properly decremented. Tests that parent's memory
+/// remains intact after multiple children write to and exit from shared pages.
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+/// - Stage 2 (Boot stage): Validates CoW cleanup
+///   - Marker: "COW_CLEANUP_TEST_PASSED"
+///   - This PROVES: Frame refcounts are correctly decremented on child exit
+pub fn test_cow_cleanup() {
+    log::info!("Testing CoW cleanup on process exit");
+
+    #[cfg(feature = "testing")]
+    let cow_cleanup_test_elf_buf = crate::userspace_test::get_test_binary("cow_cleanup_test");
+    #[cfg(feature = "testing")]
+    let cow_cleanup_test_elf: &[u8] = &cow_cleanup_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cow_cleanup_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cow_cleanup_test"),
+        cow_cleanup_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cow_cleanup_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit COW_CLEANUP_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cow_cleanup_test process: {}", e);
+        }
+    }
+}
+
+/// Test CoW sole owner optimization
+///
+/// This test verifies that when a forked child exits without writing to
+/// shared pages, the parent becomes the sole owner and can write without
+/// triggering a page copy (just makes page writable).
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+/// - Stage 2 (Boot stage): Validates sole owner optimization
+///   - Marker: "COW_SOLE_OWNER_TEST_PASSED"
+///   - This PROVES: Sole owner optimization path works correctly
+pub fn test_cow_sole_owner() {
+    log::info!("Testing CoW sole owner optimization");
+
+    #[cfg(feature = "testing")]
+    let cow_sole_owner_test_elf_buf = crate::userspace_test::get_test_binary("cow_sole_owner_test");
+    #[cfg(feature = "testing")]
+    let cow_sole_owner_test_elf: &[u8] = &cow_sole_owner_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cow_sole_owner_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cow_sole_owner_test"),
+        cow_sole_owner_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cow_sole_owner_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit COW_SOLE_OWNER_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cow_sole_owner_test process: {}", e);
+        }
+    }
+}
+
+/// Test CoW at scale with many pages
+///
+/// This test verifies that Copy-on-Write works correctly at scale with many
+/// pages. It allocates a large amount of memory (128 pages = 512KB), fills
+/// it with a known pattern, forks, then has the child write to every page
+/// to trigger many CoW faults in sequence.
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+/// - Stage 2 (Boot stage): Validates CoW at scale
+///   - Marker: "COW_STRESS_TEST_PASSED"
+///   - This PROVES: CoW works correctly with many pages, no memory corruption
+pub fn test_cow_stress() {
+    log::info!("Testing CoW at scale with many pages (stress test)");
+
+    #[cfg(feature = "testing")]
+    let cow_stress_test_elf_buf = crate::userspace_test::get_test_binary("cow_stress_test");
+    #[cfg(feature = "testing")]
+    let cow_stress_test_elf: &[u8] = &cow_stress_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cow_stress_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cow_stress_test"),
+        cow_stress_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cow_stress_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit COW_STRESS_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cow_stress_test process: {}", e);
+        }
+    }
+}
+
+/// Test CoW read-only page sharing (code sections)
+///
+/// This test verifies that read-only pages (like code/text sections) are
+/// shared directly between parent and child after fork WITHOUT the COW flag.
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+/// - Stage 2 (Boot stage): Validates read-only page sharing
+///   - Marker: "COW_READONLY_TEST_PASSED"
+///   - This PROVES: Code sections are shared without COW overhead
+pub fn test_cow_readonly() {
+    log::info!("Testing CoW read-only page sharing (code sections)");
+
+    #[cfg(feature = "testing")]
+    let cow_readonly_test_elf_buf = crate::userspace_test::get_test_binary("cow_readonly_test");
+    #[cfg(feature = "testing")]
+    let cow_readonly_test_elf: &[u8] = &cow_readonly_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cow_readonly_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cow_readonly_test"),
+        cow_readonly_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cow_readonly_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit COW_READONLY_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cow_readonly_test process: {}", e);
+        }
+    }
+}
+
 /// Test argv support in exec syscall
 ///
 /// TWO-STAGE VALIDATION PATTERN:

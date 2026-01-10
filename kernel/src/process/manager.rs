@@ -605,25 +605,31 @@ impl ProcessManager {
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
 
-        // PROPER FORK: Copy parent's memory to child instead of reloading ELF
+        // COPY-ON-WRITE FORK: Share pages between parent and child
         #[cfg(feature = "testing")]
         {
-            // Get parent's page table for copying
+            // Get mutable access to parent's page table for CoW setup
             let parent = self
                 .processes
-                .get(&parent_pid)
-                .ok_or("Parent process not found during page copy")?;
-            let parent_page_table = parent
+                .get_mut(&parent_pid)
+                .ok_or("Parent process not found during CoW setup")?;
+            let mut parent_page_table = parent
                 .page_table
-                .as_ref()
+                .take()
                 .ok_or("Parent process has no page table")?;
 
-            // Copy all mapped user pages from parent to child
-            let pages_copied = super::fork::copy_user_pages(parent_page_table, child_page_table.as_mut())?;
+            // Set up Copy-on-Write sharing between parent and child
+            let pages_shared = super::fork::setup_cow_pages(
+                parent_page_table.as_mut(),
+                child_page_table.as_mut(),
+            )?;
+
+            // Put parent's page table back
+            parent.page_table = Some(parent_page_table);
 
             log::info!(
-                "fork_process_with_page_table: Copied {} pages from parent to child",
-                pages_copied
+                "fork_process_with_page_table: Set up {} pages for CoW sharing",
+                pages_shared
             );
 
             // Child inherits parent's heap bounds
@@ -709,26 +715,33 @@ impl ProcessManager {
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
 
-        // PROPER FORK: Copy parent's memory to child instead of reloading ELF
-        // This implements true fork() semantics where child inherits parent's state
+        // COPY-ON-WRITE FORK: Share pages between parent and child
+        // Pages are marked read-only and only copied when written to
         #[cfg(feature = "testing")]
         {
-            // Get parent's page table for copying
+            // Get mutable access to parent's page table for CoW setup
+            // We temporarily take ownership to modify parent's page flags
             let parent = self
                 .processes
-                .get(&parent_pid)
-                .ok_or("Parent process not found during page copy")?;
-            let parent_page_table = parent
+                .get_mut(&parent_pid)
+                .ok_or("Parent process not found during CoW setup")?;
+            let mut parent_page_table = parent
                 .page_table
-                .as_ref()
+                .take()
                 .ok_or("Parent process has no page table")?;
 
-            // Copy all mapped user pages from parent to child
-            let pages_copied = super::fork::copy_user_pages(parent_page_table, child_page_table.as_mut())?;
+            // Set up Copy-on-Write sharing between parent and child
+            let pages_shared = super::fork::setup_cow_pages(
+                parent_page_table.as_mut(),
+                child_page_table.as_mut(),
+            )?;
+
+            // Put parent's page table back
+            parent.page_table = Some(parent_page_table);
 
             log::info!(
-                "fork_process: Copied {} pages from parent to child (proper fork semantics)",
-                pages_copied
+                "fork_process: Set up {} pages for CoW sharing",
+                pages_shared
             );
 
             // Child inherits parent's heap bounds
@@ -1062,11 +1075,13 @@ impl ProcessManager {
             .ok_or("Parent process not found")?;
 
         // Get parent's main thread (used in testing builds for context cloning)
+        // Clone to avoid borrow issues when we need mutable access to parent later
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_thread = parent
             .main_thread
             .as_ref()
-            .ok_or("Parent process has no main thread")?;
+            .ok_or("Parent process has no main thread")?
+            .clone();
 
         // Allocate a new PID for the child
         let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
@@ -1092,21 +1107,16 @@ impl ProcessManager {
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
 
-        // Create a new page table for the child process
-        let parent_page_table = parent
-            .page_table
-            .as_ref()
-            .ok_or("Parent process has no page table")?;
+        // Extract parent heap bounds before we drop the parent borrow
+        let parent_heap_start = parent.heap_start;
+        let parent_heap_end = parent.heap_end;
 
-        // DEBUG: Test parent page table before creating child
-        log::debug!("BEFORE creating child page table:");
-        let test_addr = VirtAddr::new(0x10001000);
-        match parent_page_table.translate_page(test_addr) {
-            Some(phys) => log::debug!("Parent can translate {:#x} -> {:#x}", test_addr, phys),
-            None => log::debug!("Parent CANNOT translate {:#x}", test_addr),
+        // Verify parent has a page table
+        if parent.page_table.is_none() {
+            return Err("Parent process has no page table");
         }
 
-        // Create a new page table and copy parent's program memory
+        // Create a new page table for the child process
         log::debug!("fork_process: About to create child page table");
         let child_page_table_result = crate::memory::process_memory::ProcessPageTable::new();
         log::debug!("fork_process: ProcessPageTable::new() returned");
@@ -1115,38 +1125,46 @@ impl ProcessManager {
             Box::new(child_page_table_result.map_err(|_| "Failed to create child page table")?);
         log::debug!("fork_process: Child page table created successfully");
 
-        // DEBUG: Test parent page table after creating child
-        log::debug!("AFTER creating child page table:");
-        match parent_page_table.translate_page(test_addr) {
-            Some(phys) => log::debug!("Parent can translate {:#x} -> {:#x}", test_addr, phys),
-            None => log::debug!("Parent CANNOT translate {:#x}", test_addr),
-        }
-
-        // Log page table addresses for debugging
-        log::debug!(
-            "Parent page table CR3: {:#x}",
-            parent_page_table.level_4_frame().start_address()
-        );
-        log::debug!(
-            "Child page table CR3: {:#x}",
-            child_page_table.level_4_frame().start_address()
-        );
-
-        // PROPER FORK: Copy parent's memory to child instead of reloading ELF
-        // This implements true fork() semantics where child inherits parent's state
+        // COPY-ON-WRITE FORK: Share pages between parent and child
         #[cfg(feature = "testing")]
         {
-            // Copy all mapped user pages from parent to child
-            let pages_copied = super::fork::copy_user_pages(parent_page_table, child_page_table.as_mut())?;
+            // Get mutable access to parent's page table for CoW setup
+            let parent_mut = self
+                .processes
+                .get_mut(&parent_pid)
+                .ok_or("Parent process not found during CoW setup")?;
+            let mut parent_page_table = parent_mut
+                .page_table
+                .take()
+                .ok_or("Parent process has no page table")?;
+
+            // Log page table addresses for debugging
+            log::debug!(
+                "Parent page table CR3: {:#x}",
+                parent_page_table.level_4_frame().start_address()
+            );
+            log::debug!(
+                "Child page table CR3: {:#x}",
+                child_page_table.level_4_frame().start_address()
+            );
+
+            // Set up Copy-on-Write sharing between parent and child
+            let pages_shared = super::fork::setup_cow_pages(
+                parent_page_table.as_mut(),
+                child_page_table.as_mut(),
+            )?;
+
+            // Put parent's page table back
+            parent_mut.page_table = Some(parent_page_table);
 
             log::info!(
-                "fork_process_with_context: Copied {} pages from parent to child (proper fork semantics)",
-                pages_copied
+                "fork_process_with_context: Set up {} pages for CoW sharing",
+                pages_shared
             );
 
             // Child inherits parent's heap bounds
-            child_process.heap_start = parent.heap_start;
-            child_process.heap_end = parent.heap_end;
+            child_process.heap_start = parent_heap_start;
+            child_process.heap_end = parent_heap_end;
         }
         #[cfg(not(feature = "testing"))]
         {
@@ -1271,15 +1289,24 @@ impl ProcessManager {
         child_process.stack = Some(Box::new(child_stack));
 
         // Copy stack contents from parent to child
-        // Note: User pages were already copied earlier with copy_user_pages().
+        // Note: User pages were set up for CoW sharing earlier with setup_cow_pages().
         // However, the child has a new stack at a different virtual address,
         // so we need to copy the stack contents separately.
+        // Re-acquire parent references (we dropped them earlier for CoW setup)
+        let parent = self
+            .processes
+            .get(&parent_pid)
+            .ok_or("Parent process not found for stack copy")?;
+        let parent_page_table = parent
+            .page_table
+            .as_ref()
+            .ok_or("Parent process has no page table for stack copy")?;
         let child_page_table_ref = child_process
             .page_table
             .as_ref()
             .ok_or("Child process has no page table")?;
         super::fork::copy_stack_contents(
-            parent_thread,
+            &parent_thread,
             &mut child_thread,
             parent_page_table,
             child_page_table_ref,

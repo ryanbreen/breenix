@@ -1,5 +1,6 @@
+use alloc::vec::Vec;
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
@@ -30,6 +31,50 @@ struct MemoryInfo {
 
 static MEMORY_INFO: Mutex<Option<MemoryInfo>> = Mutex::new(None);
 static NEXT_FREE_FRAME: AtomicUsize = AtomicUsize::new(0);
+
+/// Free list for deallocated frames
+/// When frames are deallocated (e.g., after CoW copy reduces refcount to 0),
+/// they are added to this list for reuse
+static FREE_FRAMES: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
+
+/// Test-only flag to simulate OOM conditions
+///
+/// When set to true, allocate_frame() will return None to simulate out-of-memory.
+/// This is used to test that CoW fault handling gracefully terminates processes
+/// when memory allocation fails.
+///
+/// # Safety
+/// Only enable this flag briefly during testing. The flag affects ALL frame
+/// allocations, so enabling it for too long will crash the kernel.
+#[cfg(feature = "testing")]
+static SIMULATE_OOM: AtomicBool = AtomicBool::new(false);
+
+/// Enable OOM simulation for testing
+///
+/// After calling this, all frame allocations will return None until
+/// `disable_oom_simulation()` is called.
+///
+/// # Warning
+/// Only use this for brief tests! Extended OOM simulation will crash the kernel.
+#[cfg(feature = "testing")]
+pub fn enable_oom_simulation() {
+    log::warn!("OOM simulation ENABLED - all frame allocations will fail");
+    SIMULATE_OOM.store(true, Ordering::SeqCst);
+}
+
+/// Disable OOM simulation
+#[cfg(feature = "testing")]
+pub fn disable_oom_simulation() {
+    SIMULATE_OOM.store(false, Ordering::SeqCst);
+    log::info!("OOM simulation disabled - frame allocations restored");
+}
+
+/// Check if OOM simulation is currently active
+#[cfg(feature = "testing")]
+#[allow(dead_code)] // May be useful for future diagnostic output
+pub fn is_oom_simulation_active() -> bool {
+    SIMULATE_OOM.load(Ordering::SeqCst)
+}
 
 /// A simple frame allocator that returns usable frames from the bootloader's memory map
 pub struct BootInfoFrameAllocator;
@@ -185,17 +230,79 @@ pub fn init(memory_regions: &'static MemoryRegions) {
 }
 
 /// Allocate a physical frame
+///
+/// First checks the free list for previously deallocated frames,
+/// then falls back to sequential allocation from the memory map.
+///
+/// # OOM Behavior
+///
+/// When memory is exhausted (or OOM simulation is active in test builds),
+/// this function returns `None`. Callers must handle this gracefully:
+///
+/// - **CoW fault handler**: Returns `false`, causing the page fault handler
+///   to terminate the process with SIGSEGV (exit code -11). This is the
+///   correct POSIX behavior for processes that cannot allocate memory
+///   during page faults.
+///
+/// - **Other kernel code**: Should propagate the error or use fallback paths.
 pub fn allocate_frame() -> Option<PhysFrame> {
+    // Test-only: simulate OOM if flag is set
+    #[cfg(feature = "testing")]
+    if SIMULATE_OOM.load(Ordering::SeqCst) {
+        log::trace!("Frame allocator: OOM simulation active, returning None");
+        return None;
+    }
+
+    // First, try to reuse a frame from the free list
+    {
+        if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+            if let Some(frame) = free_list.pop() {
+                log::trace!(
+                    "Frame allocator: Reused frame {:#x} from free list ({} remaining)",
+                    frame.start_address().as_u64(),
+                    free_list.len()
+                );
+                return Some(frame);
+            }
+        }
+        // If we couldn't get the lock, fall through to sequential allocation
+        // This avoids deadlock if called from interrupt context
+    }
+
+    // Fall back to sequential allocation from memory map
     let mut allocator = BootInfoFrameAllocator::new();
     allocator.allocate_frame()
 }
 
-/// Deallocate a physical frame (currently a no-op)
-/// TODO: Implement proper frame deallocation
-#[allow(dead_code)]
-pub fn deallocate_frame(_frame: PhysFrame) {
-    // For now, we don't reclaim frames
-    // A proper implementation would add the frame back to a free list
+/// Deallocate a physical frame, returning it to the free pool
+///
+/// The frame will be available for reuse by future allocations.
+/// This is called when a CoW page's reference count drops to zero.
+pub fn deallocate_frame(frame: PhysFrame) {
+    // Don't deallocate frames below the low memory floor
+    if frame.start_address().as_u64() < LOW_MEMORY_FLOOR {
+        log::warn!(
+            "Refusing to deallocate frame {:#x} below low memory floor",
+            frame.start_address().as_u64()
+        );
+        return;
+    }
+
+    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+        log::trace!(
+            "Frame allocator: Deallocated frame {:#x} (free list size: {})",
+            frame.start_address().as_u64(),
+            free_list.len() + 1
+        );
+        free_list.push(frame);
+    } else {
+        // If we can't get the lock (e.g., called from interrupt context),
+        // we lose this frame. This is a memory leak but prevents deadlock.
+        log::warn!(
+            "Frame allocator: Could not deallocate frame {:#x} - lock contention",
+            frame.start_address().as_u64()
+        );
+    }
 }
 
 /// A wrapper that allows using the global frame allocator with the mapper

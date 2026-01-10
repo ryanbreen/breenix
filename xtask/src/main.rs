@@ -973,6 +973,52 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Fork pending signal test failed - child inherited pending signals (POSIX violation)",
             check_hint: "Check kernel/src/process/fork.rs and signal state handling during fork",
         },
+        // === CoW Signal Delivery ===
+        // Tests that signal delivery works when user stack is CoW-shared.
+        // This specifically tests the deadlock fix where signal delivery
+        // writes to a CoW page while holding the PROCESS_MANAGER lock.
+        BootStage {
+            name: "CoW signal delivery test passed",
+            marker: "COW_SIGNAL_TEST_PASSED",
+            failure_meaning: "CoW signal test failed - signal delivery deadlocked or failed when writing to CoW-shared stack",
+            check_hint: "Check kernel/src/interrupts.rs handle_cow_direct() - CoW fault during signal delivery",
+        },
+        // === CoW Cleanup ===
+        // Tests that frame reference counts are properly decremented when
+        // forked children exit. Ensures no memory leaks or use-after-free.
+        BootStage {
+            name: "CoW cleanup test passed",
+            marker: "COW_CLEANUP_TEST_PASSED",
+            failure_meaning: "CoW cleanup test failed - frame refcounts not properly decremented on child exit",
+            check_hint: "Check frame_decref() calls on process exit and CoW fault handling",
+        },
+        // === CoW Sole Owner Optimization ===
+        // Tests that when child exits without writing, parent becomes sole
+        // owner and can write without page copy (just makes page writable).
+        BootStage {
+            name: "CoW sole owner test passed",
+            marker: "COW_SOLE_OWNER_TEST_PASSED",
+            failure_meaning: "CoW sole owner test failed - sole owner optimization not working",
+            check_hint: "Check frame_is_shared() and sole owner path in handle_cow_fault",
+        },
+        // === CoW Stress Test ===
+        // Tests CoW at scale with many pages (128 pages = 512KB).
+        // Verifies no memory corruption with many shared pages.
+        BootStage {
+            name: "CoW stress test passed",
+            marker: "COW_STRESS_TEST_PASSED",
+            failure_meaning: "CoW stress test failed - many CoW faults in sequence caused issues",
+            check_hint: "Check refcounting at scale, memory corruption with many shared pages",
+        },
+        // === CoW Read-Only Page Sharing ===
+        // Tests that read-only pages (code sections) are shared directly without
+        // the COW flag. Code sections never need copying, so skipping COW reduces overhead.
+        BootStage {
+            name: "CoW read-only page sharing test passed",
+            marker: "COW_READONLY_TEST_PASSED",
+            failure_meaning: "CoW read-only test failed - code sections not shared correctly after fork",
+            check_hint: "Check setup_cow_pages() read-only path in kernel/src/process/fork.rs",
+        },
         // === Argv Support ===
         // Tests that exec syscall properly sets up argc/argv on the userspace stack
         BootStage {

@@ -575,13 +575,322 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
     // Note: preempt_enable() not called here since we enter infinite loop or exit
 }
 
+/// Handle a Copy-on-Write page fault
+///
+/// This function is called when a page fault occurs due to a write to a
+/// CoW-shared page. It:
+/// 1. Checks if the page has the COW_FLAG set
+/// 2. If the frame is no longer shared (refcount == 1), just makes it writable
+/// 3. Otherwise, allocates a new frame, copies the page, and remaps
+///
+/// Returns true if the fault was handled (was a CoW fault), false otherwise.
+///
+/// IMPORTANT: This function uses try_manager() to avoid deadlock when called
+/// during signal delivery (which holds the process manager lock). If the lock
+/// is held, we handle the CoW fault directly by manipulating page tables via CR3.
+/// Copy-on-Write statistics for testing and debugging
+pub mod cow_stats {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Total CoW faults handled
+    pub static TOTAL_FAULTS: AtomicU64 = AtomicU64::new(0);
+    /// Faults handled via process manager (normal path)
+    pub static MANAGER_PATH: AtomicU64 = AtomicU64::new(0);
+    /// Faults handled via direct page table manipulation (lock-held path)
+    pub static DIRECT_PATH: AtomicU64 = AtomicU64::new(0);
+    /// Pages that were copied (frame was shared)
+    pub static PAGES_COPIED: AtomicU64 = AtomicU64::new(0);
+    /// Pages made writable without copy (sole owner optimization)
+    pub static SOLE_OWNER_OPT: AtomicU64 = AtomicU64::new(0);
+
+    /// Get current CoW statistics
+    #[allow(dead_code)]
+    pub fn get_stats() -> CowStats {
+        CowStats {
+            total_faults: TOTAL_FAULTS.load(Ordering::Relaxed),
+            manager_path: MANAGER_PATH.load(Ordering::Relaxed),
+            direct_path: DIRECT_PATH.load(Ordering::Relaxed),
+            pages_copied: PAGES_COPIED.load(Ordering::Relaxed),
+            sole_owner_opt: SOLE_OWNER_OPT.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Reset all statistics (for testing)
+    #[allow(dead_code)]
+    pub fn reset_stats() {
+        TOTAL_FAULTS.store(0, Ordering::Relaxed);
+        MANAGER_PATH.store(0, Ordering::Relaxed);
+        DIRECT_PATH.store(0, Ordering::Relaxed);
+        PAGES_COPIED.store(0, Ordering::Relaxed);
+        SOLE_OWNER_OPT.store(0, Ordering::Relaxed);
+    }
+
+    /// CoW statistics snapshot
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct CowStats {
+        pub total_faults: u64,
+        pub manager_path: u64,
+        pub direct_path: u64,
+        pub pages_copied: u64,
+        pub sole_owner_opt: u64,
+    }
+
+    #[allow(dead_code)]
+    impl CowStats {
+        /// Print statistics to serial output
+        pub fn print(&self) {
+            crate::serial_println!(
+                "[COW STATS] total={} manager={} direct={} copied={} sole_owner={}",
+                self.total_faults,
+                self.manager_path,
+                self.direct_path,
+                self.pages_copied,
+                self.sole_owner_opt
+            );
+        }
+    }
+}
+
+fn handle_cow_fault(
+    faulting_addr: VirtAddr,
+    error_code: PageFaultErrorCode,
+    cr3: u64,
+) -> bool {
+    // CoW faults are:
+    // - Protection violation (page is present but not writable)
+    // - Caused by write
+    if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+        return false;
+    }
+    if !error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+        return false;
+    }
+
+    // Track CoW fault count for debugging
+    let fault_num = cow_stats::TOTAL_FAULTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if fault_num < 20 {
+        crate::serial_println!(
+            "[COW FAULT #{}] addr={:#x} cr3={:#x}",
+            fault_num,
+            faulting_addr.as_u64(),
+            cr3
+        );
+    }
+
+    // Try to acquire process manager lock. If it's held (e.g., by signal delivery),
+    // we'll handle the CoW fault directly via CR3 to avoid deadlock.
+    match crate::process::try_manager() {
+        Some(mut guard) => {
+            // Lock acquired, proceed with normal CoW handling via ProcessPageTable
+            cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            handle_cow_with_manager(&mut guard, faulting_addr, cr3)
+        }
+        None => {
+            // Lock is held - handle CoW directly via CR3 to avoid deadlock
+            // This can happen during signal delivery which writes to user stack
+            cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if fault_num < 20 {
+                crate::serial_println!("[COW FAULT #{}] lock held, using direct path", fault_num);
+            }
+            handle_cow_direct(faulting_addr, cr3)
+        }
+    }
+}
+
+/// Handle CoW fault through the process manager (normal path)
+fn handle_cow_with_manager(
+    guard: &mut spin::MutexGuard<'static, Option<crate::process::ProcessManager>>,
+    faulting_addr: VirtAddr,
+    cr3: u64,
+) -> bool {
+    use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::process_memory::{is_cow_page, make_private_flags};
+    use x86_64::structures::paging::{Page, Size4KiB};
+
+    let pm = match guard.as_mut() {
+        Some(pm) => pm,
+        None => return false,
+    };
+
+    let (_pid, process) = match pm.find_process_by_cr3_mut(cr3) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let page_table = match &mut process.page_table {
+        Some(pt) => pt,
+        None => return false,
+    };
+
+    let page = Page::<Size4KiB>::containing_address(faulting_addr);
+
+    // Get the current page info
+    let (old_frame, old_flags) = match page_table.get_page_info(page) {
+        Some(info) => info,
+        None => return false,
+    };
+
+    // Check if this is actually a CoW page
+    if !is_cow_page(old_flags) {
+        return false;
+    }
+
+    // Check if we're the only reference - can just make it writable
+    if !frame_is_shared(old_frame) {
+        let new_flags = make_private_flags(old_flags);
+        if page_table.update_page_flags(page, new_flags).is_err() {
+            return false;
+        }
+        x86_64::instructions::tlb::flush(faulting_addr);
+        cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        return true;
+    }
+
+    // Multiple references - need to copy
+    let new_frame = match allocate_frame() {
+        Some(frame) => frame,
+        None => return false,
+    };
+
+    // Copy page contents
+    let phys_offset = crate::memory::physical_memory_offset();
+    unsafe {
+        let src = (phys_offset + old_frame.start_address().as_u64()).as_ptr::<u8>();
+        let dst = (phys_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>();
+        core::ptr::copy_nonoverlapping(src, dst, 4096);
+    }
+
+    // Update page table: unmap old, map new with writable flags
+    let new_flags = make_private_flags(old_flags);
+    if page_table.unmap_page(page).is_err() {
+        return false;
+    }
+    if page_table.map_page(page, new_frame, new_flags).is_err() {
+        return false;
+    }
+
+    // Decrement old frame reference count
+    frame_decref(old_frame);
+
+    // Flush TLB for this page
+    x86_64::instructions::tlb::flush(faulting_addr);
+    cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    true
+}
+
+/// Handle CoW fault directly via CR3 (used when process manager lock is held)
+///
+/// This function walks the page table manually and modifies entries directly,
+/// avoiding the need to acquire the process manager lock.
+fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
+    use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::process_memory::{is_cow_page, make_private_flags};
+    use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
+
+    let phys_offset = crate::memory::physical_memory_offset();
+    let virt_addr = faulting_addr;
+
+    // Walk the page table hierarchy to find the L1 entry
+    unsafe {
+        // L4 table
+        let l4_virt = phys_offset + cr3;
+        let l4_table = &mut *(l4_virt.as_mut_ptr() as *mut PageTable);
+        let l4_idx = ((virt_addr.as_u64() >> 39) & 0x1FF) as usize;
+        let l4_entry = &l4_table[l4_idx];
+
+        if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+
+        // L3 table
+        let l3_virt = phys_offset + l4_entry.addr().as_u64();
+        let l3_table = &mut *(l3_virt.as_mut_ptr() as *mut PageTable);
+        let l3_idx = ((virt_addr.as_u64() >> 30) & 0x1FF) as usize;
+        let l3_entry = &l3_table[l3_idx];
+
+        if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+        if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            return false; // 1GB huge pages not supported for CoW
+        }
+
+        // L2 table
+        let l2_virt = phys_offset + l3_entry.addr().as_u64();
+        let l2_table = &mut *(l2_virt.as_mut_ptr() as *mut PageTable);
+        let l2_idx = ((virt_addr.as_u64() >> 21) & 0x1FF) as usize;
+        let l2_entry = &l2_table[l2_idx];
+
+        if l2_entry.is_unused() || !l2_entry.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            return false; // 2MB huge pages not supported for CoW
+        }
+
+        // L1 table - this is where we modify the entry
+        let l1_virt = phys_offset + l2_entry.addr().as_u64();
+        let l1_table = &mut *(l1_virt.as_mut_ptr() as *mut PageTable);
+        let l1_idx = ((virt_addr.as_u64() >> 12) & 0x1FF) as usize;
+        let l1_entry = &mut l1_table[l1_idx];
+
+        if l1_entry.is_unused() || !l1_entry.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+
+        let old_flags = l1_entry.flags();
+        let old_frame = PhysFrame::<Size4KiB>::containing_address(l1_entry.addr());
+
+        // Check if this is a CoW page
+        if !is_cow_page(old_flags) {
+            return false;
+        }
+
+        // Check if we're the only reference
+        if !frame_is_shared(old_frame) {
+            // Sole owner - just update flags to make writable
+            let new_flags = make_private_flags(old_flags);
+            l1_entry.set_addr(l1_entry.addr(), new_flags);
+            x86_64::instructions::tlb::flush(faulting_addr);
+            cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            return true;
+        }
+
+        // Multiple references - need to copy
+        let new_frame = match allocate_frame() {
+            Some(frame) => frame,
+            None => return false,
+        };
+
+        // Copy page contents
+        let src = (phys_offset + old_frame.start_address().as_u64()).as_ptr::<u8>();
+        let dst = (phys_offset + new_frame.start_address().as_u64()).as_mut_ptr::<u8>();
+        core::ptr::copy_nonoverlapping(src, dst, 4096);
+
+        // Update the L1 entry with new frame and writable flags
+        let new_flags = make_private_flags(old_flags);
+        l1_entry.set_addr(new_frame.start_address(), new_flags);
+
+        // Decrement old frame reference count
+        frame_decref(old_frame);
+
+        // Flush TLB
+        x86_64::instructions::tlb::flush(faulting_addr);
+        cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        true
+    }
+}
+
 extern "x86-interrupt" fn page_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
 
-    // DIAGNOSTIC OUTPUT AT THE VERY START
+    // Read CR2 and CR3 first
     let cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
     let cr3 = {
         use x86_64::registers::control::Cr3;
@@ -589,39 +898,49 @@ extern "x86-interrupt" fn page_fault_handler(
         frame.start_address().as_u64()
     };
 
-    crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
-    crate::serial_println!("[DIAG:PAGEFAULT] Fault addr: {:#x}", cr2);
-    crate::serial_println!("[DIAG:PAGEFAULT] Error code: {:#x}", error_code.bits());
-    crate::serial_println!("[DIAG:PAGEFAULT] RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
-    crate::serial_println!("[DIAG:PAGEFAULT] CS: {:#x}", stack_frame.code_segment.0);
-    crate::serial_println!("[DIAG:PAGEFAULT] RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
-    crate::serial_println!("[DIAG:PAGEFAULT] RSP: {:#x}", stack_frame.stack_pointer.as_u64());
-    crate::serial_println!("[DIAG:PAGEFAULT] SS: {:#x}", stack_frame.stack_segment.0);
-    crate::serial_println!("[DIAG:PAGEFAULT] CR3: {:#x}", cr3);
-    crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
+    // Check if this looks like a CoW fault (protection violation + write)
+    // If so, skip verbose diagnostics to avoid polluting output and slowing down
+    let is_potential_cow = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+        && error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+
+    // Only print verbose diagnostics for non-CoW faults
+    if !is_potential_cow {
+        crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
+        crate::serial_println!("[DIAG:PAGEFAULT] Fault addr: {:#x}", cr2);
+        crate::serial_println!("[DIAG:PAGEFAULT] Error code: {:#x}", error_code.bits());
+        crate::serial_println!("[DIAG:PAGEFAULT] RIP: {:#x}", stack_frame.instruction_pointer.as_u64());
+        crate::serial_println!("[DIAG:PAGEFAULT] CS: {:#x}", stack_frame.code_segment.0);
+        crate::serial_println!("[DIAG:PAGEFAULT] RFLAGS: {:#x}", stack_frame.cpu_flags.bits());
+        crate::serial_println!("[DIAG:PAGEFAULT] RSP: {:#x}", stack_frame.stack_pointer.as_u64());
+        crate::serial_println!("[DIAG:PAGEFAULT] SS: {:#x}", stack_frame.stack_segment.0);
+        crate::serial_println!("[DIAG:PAGEFAULT] CR3: {:#x}", cr3);
+        crate::serial_println!("[DIAG:PAGEFAULT] ==============================");
+    }
 
     // Increment preempt count on exception entry FIRST to avoid recursion
     crate::per_cpu::preempt_disable();
 
     let accessed_addr = Cr2::read().expect("Failed to read accessed address from CR2");
-    
-    // Use raw serial output for critical info to avoid recursion
-    unsafe {
-        // Output 'P' for page fault
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x50",      // 'P'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-        
-        // Output 'F' for fault
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x46",      // 'F'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
+
+    // Skip raw serial output for potential CoW faults
+    if !is_potential_cow {
+        // Use raw serial output for critical info to avoid recursion
+        unsafe {
+            // Output 'P' for page fault
+            core::arch::asm!(
+                "mov dx, 0x3F8",
+                "mov al, 0x50",      // 'P'
+                "out dx, al",
+                options(nostack, nomem, preserves_flags)
+            );
+
+            // Output 'F' for fault
+            core::arch::asm!(
+                "mov dx, 0x3F8",
+                "mov al, 0x46",      // 'F'
+                "out dx, al",
+                options(nostack, nomem, preserves_flags)
+            );
         
         // Check error code bits
         let error_bits = error_code.bits();
@@ -666,44 +985,50 @@ extern "x86-interrupt" fn page_fault_handler(
                 options(nostack, nomem, preserves_flags)
             );
         }
+        }
+    }
+
+    // Only print verbose diagnostics for non-CoW faults
+    if !is_potential_cow {
+        // Emergency output to confirm we're in page fault handler
+        crate::serial_println!("PF_ENTRY!");
+
+        // Output page fault error code details
+        let error_bits = error_code.bits();
+        crate::serial_println!("PF @ {:#x} Error: {:#x} (P={}, W={}, U={}, I={})",
+            accessed_addr.as_u64(),
+            error_bits,
+            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::USER_MODE) { 1 } else { 0 },
+            if error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) { 1 } else { 0 }
+        );
     }
     
-    // Emergency output to confirm we're in page fault handler  
-    crate::serial_println!("PF_ENTRY!");
-    
-    // Output page fault error code details
-    let error_bits = error_code.bits();
-    crate::serial_println!("PF @ {:#x} Error: {:#x} (P={}, W={}, U={}, I={})", 
-        accessed_addr.as_u64(),
-        error_bits,
-        if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { 1 } else { 0 },
-        if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) { 1 } else { 0 },
-        if error_code.contains(PageFaultErrorCode::USER_MODE) { 1 } else { 0 },
-        if error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) { 1 } else { 0 }
-    );
-    
-    // Quick debug output for int3 test - use raw output
-    unsafe {
-        // Output 'F' for Fault
-        core::arch::asm!(
-            "mov dx, 0x3F8",
-            "mov al, 0x46",      // 'F'
-            "out dx, al",
-            options(nostack, nomem, preserves_flags)
-        );
-        
-        // Check if it's 0x400000 (our int3 page)
-        if accessed_addr.as_u64() == 0x400000 {
-            // Output '4' to indicate fault at 0x400000
+    // Quick debug output for int3 test - only for non-CoW faults
+    if !is_potential_cow {
+        unsafe {
+            // Output 'F' for Fault
             core::arch::asm!(
                 "mov dx, 0x3F8",
-                "mov al, 0x34",      // '4'
+                "mov al, 0x46",      // 'F'
                 "out dx, al",
                 options(nostack, nomem, preserves_flags)
             );
+
+            // Check if it's 0x400000 (our int3 page)
+            if accessed_addr.as_u64() == 0x400000 {
+                // Output '4' to indicate fault at 0x400000
+                core::arch::asm!(
+                    "mov dx, 0x3F8",
+                    "mov al, 0x34",      // '4'
+                    "out dx, al",
+                    options(nostack, nomem, preserves_flags)
+                );
+            }
         }
     }
-    
+
     // Check if this came from userspace
     let from_userspace = (stack_frame.code_segment.0 & 3) == 3;
 
@@ -717,6 +1042,18 @@ extern "x86-interrupt" fn page_fault_handler(
         log::error!("Stack frame: {:#?}", stack_frame);
 
         panic!("Stack overflow - guard page accessed");
+    }
+
+    // Try to handle as Copy-on-Write fault
+    // This handles writes to pages that were marked read-only during fork()
+    // We check if the address is in userspace (< 0x8000_0000_0000) rather than
+    // just checking if the fault came from userspace. This allows the kernel
+    // to trigger CoW when writing to user memory (e.g., signal frame setup).
+    let is_user_address = accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END;
+    if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3) {
+        // CoW fault handled successfully - resume execution
+        crate::per_cpu::preempt_enable();
+        return;
     }
 
     crate::serial_println!("EXCEPTION: PAGE FAULT - Now using IST stack for reliable diagnostics");

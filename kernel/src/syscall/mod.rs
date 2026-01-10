@@ -75,6 +75,8 @@ pub enum SyscallNumber {
     Lseek = 258,        // Breenix: filesystem lseek syscall
     Fstat = 259,        // Breenix: filesystem fstat syscall
     Getdents64 = 260,   // Breenix: directory listing syscall
+    CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
+    SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
 }
 
 #[allow(dead_code)]
@@ -132,6 +134,8 @@ impl SyscallNumber {
             258 => Some(Self::Lseek),
             259 => Some(Self::Fstat),
             260 => Some(Self::Getdents64),
+            500 => Some(Self::CowStats),
+            501 => Some(Self::SimulateOom),
             _ => None,
         }
     }

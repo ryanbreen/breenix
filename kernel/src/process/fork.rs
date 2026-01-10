@@ -1,13 +1,20 @@
-//! Proper Unix fork() implementation with memory copying
+//! Proper Unix fork() implementation with Copy-on-Write optimization
 //!
-//! This module implements proper fork semantics by duplicating the parent's
-//! address space to the child process.
+//! This module implements proper fork semantics. Two modes are available:
+//!
+//! 1. **Copy-on-Write (CoW)** - `setup_cow_pages()`: Marks pages as shared and
+//!    read-only. Pages are only copied when written to (handled by page fault).
+//!    This is much faster for fork+exec patterns.
+//!
+//! 2. **Full Copy** - `copy_user_pages()`: Immediately copies all pages. Used
+//!    as fallback and for testing.
 
 use crate::memory::frame_allocator::allocate_frame;
-use crate::memory::process_memory::ProcessPageTable;
+use crate::memory::frame_metadata::frame_incref;
+use crate::memory::process_memory::{make_cow_flags, ProcessPageTable};
 use crate::process::{Process, ProcessId};
 use crate::task::thread::Thread;
-use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::VirtAddr;
 
 /// Copy all mapped user pages from parent to child
@@ -95,6 +102,132 @@ pub fn copy_user_pages(
 
     log::info!("copy_user_pages: copied {} pages from parent to child", pages_copied);
     Ok(pages_copied)
+}
+
+/// Set up Copy-on-Write sharing between parent and child
+///
+/// Instead of copying all pages immediately (expensive), this function:
+/// 1. Marks writable pages as read-only in BOTH parent and child (CoW flag)
+/// 2. Maps the same physical frames in both page tables
+/// 3. Tracks shared frames via reference counting
+///
+/// When either process later writes to a CoW page, a page fault occurs,
+/// the page is copied, and the writing process gets a private copy.
+///
+/// Read-only pages (like code sections) are shared directly without CoW
+/// overhead since they can never be written.
+///
+/// Returns the number of pages set up for sharing.
+pub fn setup_cow_pages(
+    parent_page_table: &mut ProcessPageTable,
+    child_page_table: &mut ProcessPageTable,
+) -> Result<usize, &'static str> {
+    let mut pages_shared = 0;
+    let mut cow_error: Option<&'static str> = None;
+
+    log::info!("setup_cow_pages: setting up CoW sharing between parent and child");
+
+    // First pass: collect all pages we need to process
+    // (We can't modify parent while iterating, so we collect first)
+    let mut pages_to_share: alloc::vec::Vec<(VirtAddr, x86_64::PhysAddr, PageTableFlags)> =
+        alloc::vec::Vec::new();
+
+    parent_page_table.walk_mapped_pages(|virt_addr, phys_addr, flags| {
+        // Only process user-accessible pages
+        if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            pages_to_share.push((virt_addr, phys_addr, flags));
+        }
+    })?;
+
+    log::info!(
+        "setup_cow_pages: found {} user pages to share",
+        pages_to_share.len()
+    );
+
+    // Second pass: set up CoW for each page
+    for (virt_addr, phys_addr, flags) in pages_to_share {
+        if cow_error.is_some() {
+            break;
+        }
+
+        let page = Page::<Size4KiB>::containing_address(virt_addr);
+        let frame = PhysFrame::containing_address(phys_addr);
+
+        if flags.contains(PageTableFlags::WRITABLE) {
+            // Writable page - needs CoW protection
+            let cow_flags = make_cow_flags(flags);
+
+            // Mark parent page as CoW (read-only + COW flag)
+            if let Err(e) = parent_page_table.update_page_flags(page, cow_flags) {
+                log::error!(
+                    "setup_cow_pages: failed to mark parent page {:#x} as CoW: {}",
+                    virt_addr.as_u64(),
+                    e
+                );
+                cow_error = Some("Failed to mark parent page as CoW");
+                continue;
+            }
+
+            // CRITICAL: Flush the TLB entry for this page in the parent's address space
+            // Without this, the parent's TLB may still have the old WRITABLE entry,
+            // allowing writes without triggering page faults. This causes memory
+            // corruption since parent and child would write to the same physical frame.
+            x86_64::instructions::tlb::flush(virt_addr);
+
+            // Map same frame in child with CoW flags
+            if let Err(e) = child_page_table.map_page(page, frame, cow_flags) {
+                log::error!(
+                    "setup_cow_pages: failed to map CoW page {:#x} in child: {}",
+                    virt_addr.as_u64(),
+                    e
+                );
+                cow_error = Some("Failed to map CoW page in child");
+                continue;
+            }
+
+            // Increment reference count (frame is now shared)
+            frame_incref(frame);
+
+            log::trace!(
+                "setup_cow_pages: CoW page {:#x} -> frame {:#x}",
+                virt_addr.as_u64(),
+                frame.start_address().as_u64()
+            );
+        } else {
+            // Read-only page (e.g., code) - share directly without CoW flag
+            // These pages can never be written, so no fault handling needed
+            if let Err(e) = child_page_table.map_page(page, frame, flags) {
+                log::error!(
+                    "setup_cow_pages: failed to share read-only page {:#x} in child: {}",
+                    virt_addr.as_u64(),
+                    e
+                );
+                cow_error = Some("Failed to share read-only page");
+                continue;
+            }
+
+            // Still track reference for cleanup when process exits
+            frame_incref(frame);
+
+            log::trace!(
+                "setup_cow_pages: shared RO page {:#x} -> frame {:#x}",
+                virt_addr.as_u64(),
+                frame.start_address().as_u64()
+            );
+        }
+
+        pages_shared += 1;
+    }
+
+    if let Some(err) = cow_error {
+        return Err(err);
+    }
+
+    log::info!(
+        "setup_cow_pages: set up {} pages for CoW sharing",
+        pages_shared
+    );
+    Ok(pages_shared)
 }
 
 /// Copy memory from parent process to child process

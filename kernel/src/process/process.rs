@@ -176,12 +176,17 @@ impl Process {
     ///
     /// This sets the process state to Terminated and closes all file descriptors
     /// to properly release resources (e.g., decrement pipe reader/writer counts).
+    /// Also cleans up Copy-on-Write frame references to avoid memory leaks.
     /// CRITICAL: Also marks the main thread as Terminated so the scheduler
     /// doesn't keep scheduling this thread after process termination.
     pub fn terminate(&mut self, exit_code: i32) {
         // Close all file descriptors before setting state to Terminated
         // This ensures pipe counts are properly decremented so readers get EOF
         self.close_all_fds();
+
+        // Clean up Copy-on-Write frame references
+        // This decrements refcounts for all pages and deallocates frames that are no longer shared
+        self.cleanup_cow_frames();
 
         self.state = ProcessState::Terminated(exit_code);
         self.exit_code = Some(exit_code);
@@ -248,6 +253,60 @@ impl Process {
                     }
                 }
             }
+        }
+    }
+
+    /// Clean up Copy-on-Write frame references when process exits
+    ///
+    /// Walks all user pages in the process's page table and decrements their
+    /// reference counts. Frames that are no longer shared (refcount reaches 0)
+    /// are returned to the frame allocator for reuse.
+    fn cleanup_cow_frames(&mut self) {
+        use crate::memory::frame_allocator::deallocate_frame;
+        use crate::memory::frame_metadata::frame_decref;
+        use x86_64::structures::paging::{PageTableFlags, PhysFrame};
+
+        // Get the page table for this process
+        let page_table = match self.page_table.as_ref() {
+            Some(pt) => pt,
+            None => {
+                log::debug!(
+                    "Process {}: No page table to clean up",
+                    self.id.as_u64()
+                );
+                return;
+            }
+        };
+
+        let mut freed_count = 0;
+        let mut shared_count = 0;
+
+        // Walk all user pages and decrement refcounts
+        let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
+            // Only process user-accessible pages
+            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return;
+            }
+
+            let frame = PhysFrame::containing_address(phys_addr);
+
+            // Decrement reference count
+            // If this was the last reference, deallocate the frame
+            if frame_decref(frame) {
+                deallocate_frame(frame);
+                freed_count += 1;
+            } else {
+                shared_count += 1;
+            }
+        });
+
+        if freed_count > 0 || shared_count > 0 {
+            log::debug!(
+                "Process {}: CoW cleanup - freed {} frames, {} still shared",
+                self.id.as_u64(),
+                freed_count,
+                shared_count
+            );
         }
     }
 

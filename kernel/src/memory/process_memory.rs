@@ -12,6 +12,53 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
+// ============================================================================
+// Copy-on-Write (CoW) Support
+// ============================================================================
+
+/// Copy-on-Write flag - uses bit 9 (available for OS use in x86_64 page tables)
+///
+/// When set: page is read-only due to CoW sharing (was originally writable)
+/// When clear: page is truly read-only or writable as intended
+///
+/// This flag distinguishes between:
+/// - Pages that are read-only because they're CoW-shared (can become writable after copy)
+/// - Pages that are genuinely read-only (e.g., code sections)
+pub const COW_FLAG: PageTableFlags = PageTableFlags::BIT_9;
+
+/// Check if a page has Copy-on-Write semantics
+///
+/// A CoW page is one that was originally writable but is currently marked
+/// read-only for sharing. On write, it should be copied to a private page.
+#[inline]
+pub fn is_cow_page(flags: PageTableFlags) -> bool {
+    flags.contains(COW_FLAG)
+}
+
+/// Convert writable page flags to CoW flags
+///
+/// Removes WRITABLE and adds COW_FLAG to mark the page as CoW-shared.
+/// Used when setting up page sharing during fork().
+#[inline]
+pub fn make_cow_flags(original_flags: PageTableFlags) -> PageTableFlags {
+    let mut flags = original_flags;
+    flags.remove(PageTableFlags::WRITABLE);
+    flags.insert(COW_FLAG);
+    flags
+}
+
+/// Convert CoW page flags back to private writable flags
+///
+/// Adds WRITABLE and removes COW_FLAG after copying the page.
+/// Used when handling a CoW fault - the new private copy becomes writable.
+#[inline]
+pub fn make_private_flags(original_flags: PageTableFlags) -> PageTableFlags {
+    let mut flags = original_flags;
+    flags.insert(PageTableFlags::WRITABLE);
+    flags.remove(COW_FLAG);
+    flags
+}
+
 /// A per-process page table
 pub struct ProcessPageTable {
     /// Physical frame containing the level 4 page table
@@ -1141,6 +1188,71 @@ impl ProcessPageTable {
         }
 
         Ok(())
+    }
+
+    /// Get frame and flags for a mapped page
+    ///
+    /// Returns the physical frame and page table flags for a 4KB page.
+    /// Returns None if the page is not mapped or is a huge page.
+    pub fn get_page_info(
+        &self,
+        page: Page<Size4KiB>,
+    ) -> Option<(PhysFrame<Size4KiB>, PageTableFlags)> {
+        let phys_offset = crate::memory::physical_memory_offset();
+        let virt_addr = page.start_address();
+
+        unsafe {
+            let l4_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+            let l4_table = &*(l4_virt.as_ptr() as *const PageTable);
+
+            let l4_idx = (virt_addr.as_u64() >> 39) & 0x1FF;
+            let l4_entry = &l4_table[l4_idx as usize];
+            if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
+                return None;
+            }
+
+            let l3_virt = phys_offset + l4_entry.addr().as_u64();
+            let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
+
+            let l3_idx = (virt_addr.as_u64() >> 30) & 0x1FF;
+            let l3_entry = &l3_table[l3_idx as usize];
+            if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
+                return None;
+            }
+
+            // 1GB huge page - not supported for CoW
+            if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+
+            let l2_virt = phys_offset + l3_entry.addr().as_u64();
+            let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
+
+            let l2_idx = (virt_addr.as_u64() >> 21) & 0x1FF;
+            let l2_entry = &l2_table[l2_idx as usize];
+            if l2_entry.is_unused() || !l2_entry.flags().contains(PageTableFlags::PRESENT) {
+                return None;
+            }
+
+            // 2MB huge page - not supported for CoW
+            if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+
+            let l1_virt = phys_offset + l2_entry.addr().as_u64();
+            let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
+
+            let l1_idx = (virt_addr.as_u64() >> 12) & 0x1FF;
+            let l1_entry = &l1_table[l1_idx as usize];
+            if l1_entry.is_unused() || !l1_entry.flags().contains(PageTableFlags::PRESENT) {
+                return None;
+            }
+
+            Some((
+                PhysFrame::containing_address(l1_entry.addr()),
+                l1_entry.flags(),
+            ))
+        }
     }
 
     /// Translate a virtual address to physical address
