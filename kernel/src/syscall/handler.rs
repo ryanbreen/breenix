@@ -81,6 +81,60 @@ impl SyscallFrame {
     pub fn set_return_value(&mut self, value: u64) {
         self.rax = value;
     }
+
+    /// Get return value
+    pub fn return_value(&self) -> u64 {
+        self.rax
+    }
+}
+
+// Implement the HAL SyscallFrame trait
+// This is compile-time trait glue with zero runtime overhead - all methods inline
+impl crate::arch_impl::traits::SyscallFrame for SyscallFrame {
+    #[inline(always)]
+    fn syscall_number(&self) -> u64 {
+        self.rax
+    }
+
+    #[inline(always)]
+    fn arg1(&self) -> u64 {
+        self.rdi
+    }
+
+    #[inline(always)]
+    fn arg2(&self) -> u64 {
+        self.rsi
+    }
+
+    #[inline(always)]
+    fn arg3(&self) -> u64 {
+        self.rdx
+    }
+
+    #[inline(always)]
+    fn arg4(&self) -> u64 {
+        self.r10
+    }
+
+    #[inline(always)]
+    fn arg5(&self) -> u64 {
+        self.r8
+    }
+
+    #[inline(always)]
+    fn arg6(&self) -> u64 {
+        self.r9
+    }
+
+    #[inline(always)]
+    fn set_return_value(&mut self, value: u64) {
+        self.rax = value;
+    }
+
+    #[inline(always)]
+    fn return_value(&self) -> u64 {
+        self.rax
+    }
 }
 
 // Static flag to track first Ring 3 syscall
