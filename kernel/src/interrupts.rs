@@ -920,7 +920,8 @@ extern "x86-interrupt" fn page_fault_handler(
     // Increment preempt count on exception entry FIRST to avoid recursion
     crate::per_cpu::preempt_disable();
 
-    let accessed_addr = Cr2::read().expect("Failed to read accessed address from CR2");
+    // Use the cr2 value we already read safely above (line 894)
+    let accessed_addr = x86_64::VirtAddr::new(cr2);
 
     // Skip raw serial output for potential CoW faults
     if !is_potential_cow {
