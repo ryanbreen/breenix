@@ -189,6 +189,9 @@ pub fn calibrate() {
             CALIBRATION_MS,
             tsc_elapsed
         );
+
+        // HAL boot stage marker - proves HAL timer operations are working
+        log::info!("HAL_TIMER_CALIBRATED: TSC calibration via HAL complete");
     }
 }
 
