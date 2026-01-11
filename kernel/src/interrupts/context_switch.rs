@@ -668,13 +668,13 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
             *flags_ptr = 0x202;
 
-            // CRITICAL: Must set kernel stack pointer when returning to idle!
-            // The idle thread runs in kernel mode and needs a kernel stack.
-            // Get the kernel stack pointer from the current CPU stack
-            let current_rsp: u64;
-            core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-            // Add some space to account for the interrupt frame
-            frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
+            // CRITICAL: Use the idle thread's actual kernel stack!
+            // Do NOT use current_rsp because this function may be called from
+            // IST stacks (page fault, NMI, etc.) which are small and not meant
+            // for general execution. Using per_cpu::kernel_stack_top() ensures
+            // we return to the proper kernel stack that can handle interrupts.
+            let idle_stack = crate::per_cpu::kernel_stack_top();
+            frame.stack_pointer = x86_64::VirtAddr::new(idle_stack);
         });
 
         // NOTE: We do NOT switch page tables here. The userspace process page table

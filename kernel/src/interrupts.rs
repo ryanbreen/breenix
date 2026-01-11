@@ -1217,10 +1217,12 @@ extern "x86-interrupt" fn page_fault_handler(
                     let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
                     *flags_ptr = 0x202;
 
-                    // Set up kernel stack - use current RSP with some headroom
-                    let current_rsp: u64;
-                    core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-                    frame.stack_pointer = x86_64::VirtAddr::new(current_rsp + 256);
+                    // CRITICAL: Use the idle thread's actual kernel stack, NOT the IST stack!
+                    // The page fault handler runs on IST[1] which is small and not meant
+                    // for general execution. Using current_rsp would continue on IST stack
+                    // which can overflow when timer interrupts fire.
+                    let idle_stack = crate::per_cpu::kernel_stack_top();
+                    frame.stack_pointer = x86_64::VirtAddr::new(idle_stack);
                 });
             }
 
