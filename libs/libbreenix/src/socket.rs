@@ -24,8 +24,20 @@ use crate::syscall::{nr, raw};
 /// Address family: IPv4
 pub const AF_INET: i32 = 2;
 
+/// Socket type: Stream (TCP)
+pub const SOCK_STREAM: i32 = 1;
+
 /// Socket type: Datagram (UDP)
 pub const SOCK_DGRAM: i32 = 2;
+
+/// Shutdown how: Stop receiving
+pub const SHUT_RD: i32 = 0;
+
+/// Shutdown how: Stop sending
+pub const SHUT_WR: i32 = 1;
+
+/// Shutdown how: Stop both
+pub const SHUT_RDWR: i32 = 2;
 
 /// IPv4 socket address structure (matches kernel sockaddr_in)
 #[repr(C)]
@@ -211,5 +223,104 @@ pub fn recvfrom(fd: i32, buf: &mut [u8], src_addr: Option<&mut SockAddrIn>) -> R
         Err(-(ret as i64) as i32)
     } else {
         Ok(ret as usize)
+    }
+}
+
+/// Connect a socket to a remote address (TCP)
+///
+/// # Arguments
+/// * `fd` - Socket file descriptor
+/// * `addr` - Remote address to connect to
+///
+/// # Returns
+/// 0 on success, or negative errno on error
+pub fn connect(fd: i32, addr: &SockAddrIn) -> Result<(), i32> {
+    let ret = unsafe {
+        raw::syscall3(
+            nr::CONNECT,
+            fd as u64,
+            addr as *const SockAddrIn as u64,
+            core::mem::size_of::<SockAddrIn>() as u64,
+        )
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Mark a socket as listening for connections (TCP)
+///
+/// # Arguments
+/// * `fd` - Socket file descriptor (must be bound)
+/// * `backlog` - Maximum pending connections (usually 128)
+///
+/// # Returns
+/// 0 on success, or negative errno on error
+pub fn listen(fd: i32, backlog: i32) -> Result<(), i32> {
+    let ret = unsafe {
+        raw::syscall2(nr::LISTEN, fd as u64, backlog as u64)
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Accept a connection on a listening socket (TCP)
+///
+/// # Arguments
+/// * `fd` - Listening socket file descriptor
+/// * `addr` - Optional buffer to receive client address
+///
+/// # Returns
+/// New socket file descriptor for the connection on success, or negative errno on error
+pub fn accept(fd: i32, addr: Option<&mut SockAddrIn>) -> Result<i32, i32> {
+    let (addr_ptr, addrlen_ptr) = match addr {
+        Some(a) => {
+            static mut ADDRLEN: u32 = core::mem::size_of::<SockAddrIn>() as u32;
+            unsafe {
+                ADDRLEN = core::mem::size_of::<SockAddrIn>() as u32;
+                (
+                    a as *mut SockAddrIn as u64,
+                    &raw mut ADDRLEN as *mut u32 as u64,
+                )
+            }
+        }
+        None => (0u64, 0u64),
+    };
+
+    let ret = unsafe {
+        raw::syscall3(nr::ACCEPT, fd as u64, addr_ptr, addrlen_ptr)
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(ret as i32)
+    }
+}
+
+/// Shutdown a socket connection (TCP)
+///
+/// # Arguments
+/// * `fd` - Socket file descriptor
+/// * `how` - SHUT_RD (stop receiving), SHUT_WR (stop sending), or SHUT_RDWR (both)
+///
+/// # Returns
+/// 0 on success, or negative errno on error
+pub fn shutdown(fd: i32, how: i32) -> Result<(), i32> {
+    let ret = unsafe {
+        raw::syscall2(nr::SHUTDOWN, fd as u64, how as u64)
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
     }
 }

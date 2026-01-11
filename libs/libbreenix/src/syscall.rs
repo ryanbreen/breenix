@@ -36,9 +36,13 @@ pub mod nr {
     pub const GETPID: u64 = 39;
     pub const FCNTL: u64 = 72;        // Linux x86_64 fcntl
     pub const SOCKET: u64 = 41;
+    pub const CONNECT: u64 = 42;
+    pub const ACCEPT: u64 = 43;
     pub const SENDTO: u64 = 44;
     pub const RECVFROM: u64 = 45;
+    pub const SHUTDOWN: u64 = 48;
     pub const BIND: u64 = 49;
+    pub const LISTEN: u64 = 50;
     pub const EXEC: u64 = 59;        // Linux x86_64 execve
     pub const WAIT4: u64 = 61;       // Linux x86_64 wait4/waitpid
     pub const KILL: u64 = 62;        // Linux x86_64 kill

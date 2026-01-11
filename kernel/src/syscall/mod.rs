@@ -49,9 +49,13 @@ pub enum SyscallNumber {
     Fcntl = 72,         // Linux syscall number for fcntl
     GetPid = 39,        // Linux syscall number for getpid
     Socket = 41,        // Linux syscall number for socket
+    Connect = 42,       // Linux syscall number for connect
+    Accept = 43,        // Linux syscall number for accept
     SendTo = 44,        // Linux syscall number for sendto
     RecvFrom = 45,      // Linux syscall number for recvfrom
+    Shutdown = 48,      // Linux syscall number for shutdown
     Bind = 49,          // Linux syscall number for bind
+    Listen = 50,        // Linux syscall number for listen
     Exec = 59,          // Linux syscall number for execve
     Wait4 = 61,         // Linux syscall number for wait4/waitpid
     Kill = 62,          // Linux syscall number for kill
@@ -108,9 +112,13 @@ impl SyscallNumber {
             39 => Some(Self::GetPid),
             72 => Some(Self::Fcntl),
             41 => Some(Self::Socket),
+            42 => Some(Self::Connect),
+            43 => Some(Self::Accept),
             44 => Some(Self::SendTo),
             45 => Some(Self::RecvFrom),
+            48 => Some(Self::Shutdown),
             49 => Some(Self::Bind),
+            50 => Some(Self::Listen),
             59 => Some(Self::Exec),
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),

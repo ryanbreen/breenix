@@ -5,6 +5,9 @@
 /// Address family: IPv4
 pub const AF_INET: u16 = 2;
 
+/// Socket type: Stream (TCP)
+pub const SOCK_STREAM: u16 = 1;
+
 /// Socket type: Datagram (UDP)
 pub const SOCK_DGRAM: u16 = 2;
 

@@ -175,8 +175,7 @@ pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
             }
         }
         PROTOCOL_TCP => {
-            // TCP not implemented yet
-            log::debug!("IPv4: Received TCP packet (not implemented)");
+            super::tcp::handle_tcp(ip, ip.payload);
         }
         PROTOCOL_UDP => {
             super::udp::handle_udp(ip, ip.payload);

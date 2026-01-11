@@ -75,6 +75,17 @@ pub const EADDRINUSE: i32 = 98;
 #[allow(dead_code)]
 pub const ENETUNREACH: i32 = 101;
 
+/// Connection refused
+pub const ECONNREFUSED: i32 = 111;
+
+/// Transport endpoint is already connected
+pub const EISCONN: i32 = 106;
+
 /// Transport endpoint is not connected (part of network API)
-#[allow(dead_code)]
 pub const ENOTCONN: i32 = 107;
+
+/// Connection timed out
+pub const ETIMEDOUT: i32 = 110;
+
+/// Operation not supported
+pub const EOPNOTSUPP: i32 = 95;

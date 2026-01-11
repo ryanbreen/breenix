@@ -610,6 +610,79 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "UDP socket test did not complete successfully",
             check_hint: "Check userspace/tests/udp_socket_test.rs for which step failed",
         },
+        // TCP Socket tests - validates TCP syscall path (socket, bind, listen, connect, accept)
+        BootStage {
+            name: "TCP socket created",
+            marker: "TCP_TEST: socket created OK",
+            failure_meaning: "sys_socket(SOCK_STREAM) failed from userspace",
+            check_hint: "Check syscall/socket.rs:sys_socket() for SOCK_STREAM support",
+        },
+        BootStage {
+            name: "TCP socket bound",
+            marker: "TCP_TEST: bind OK",
+            failure_meaning: "sys_bind for TCP socket failed",
+            check_hint: "Check syscall/socket.rs:sys_bind() for TCP socket handling",
+        },
+        BootStage {
+            name: "TCP socket listening",
+            marker: "TCP_TEST: listen OK",
+            failure_meaning: "sys_listen failed - TCP socket not converted to listener",
+            check_hint: "Check syscall/socket.rs:sys_listen() implementation",
+        },
+        BootStage {
+            name: "TCP client socket created",
+            marker: "TCP_TEST: client socket OK",
+            failure_meaning: "Second TCP socket creation failed",
+            check_hint: "Check fd allocation or socket creation in sys_socket()",
+        },
+        BootStage {
+            name: "TCP connect executed",
+            marker: "TCP_TEST: connect OK",
+            failure_meaning: "sys_connect failed to return Ok(())",
+            check_hint: "Check syscall/socket.rs:sys_connect() - must return 0 for loopback connection",
+        },
+        BootStage {
+            name: "TCP accept executed",
+            marker: "TCP_TEST: accept OK",
+            failure_meaning: "sys_accept returned unexpected error",
+            check_hint: "Check syscall/socket.rs:sys_accept() - expected EAGAIN for no pending connections",
+        },
+        BootStage {
+            name: "TCP shutdown executed",
+            marker: "TCP_TEST: shutdown OK",
+            failure_meaning: "sys_shutdown(SHUT_RDWR) on connected socket failed",
+            check_hint: "Check syscall/socket.rs:sys_shutdown() for TcpConnection handling",
+        },
+        BootStage {
+            name: "TCP shutdown unconnected rejected",
+            marker: "TCP_TEST: shutdown_unconnected OK",
+            failure_meaning: "sys_shutdown on unconnected socket did not return ENOTCONN",
+            check_hint: "Check syscall/socket.rs:sys_shutdown() - unconnected TcpSocket should return ENOTCONN",
+        },
+        BootStage {
+            name: "TCP EADDRINUSE detected",
+            marker: "TCP_TEST: eaddrinuse OK",
+            failure_meaning: "Binding to already-bound port did not return EADDRINUSE",
+            check_hint: "Check kernel port conflict detection in sys_bind()",
+        },
+        BootStage {
+            name: "TCP listen unbound rejected",
+            marker: "TCP_TEST: listen_unbound OK",
+            failure_meaning: "listen() on unbound socket did not return EINVAL",
+            check_hint: "Check sys_listen() validates socket is bound first",
+        },
+        BootStage {
+            name: "TCP accept nonlisten rejected",
+            marker: "TCP_TEST: accept_nonlisten OK",
+            failure_meaning: "accept() on non-listening socket did not return error",
+            check_hint: "Check sys_accept() validates socket is in listen state",
+        },
+        BootStage {
+            name: "TCP socket test passed",
+            marker: "TCP Socket Test: PASSED",
+            failure_meaning: "TCP socket test did not complete successfully",
+            check_hint: "Check userspace/tests/tcp_socket_test.rs for which step failed",
+        },
         // IPC (pipe) tests
         BootStage {
             name: "Pipe IPC test passed",

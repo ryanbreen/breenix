@@ -568,6 +568,20 @@ fn kernel_main_continue() -> ! {
                     }
                 }
             }
+
+            // Launch TCP socket test to verify TCP syscalls from userspace
+            {
+                serial_println!("RING3_SMOKE: creating tcp_socket_test userspace process");
+                let tcp_test_buf = crate::userspace_test::get_test_binary("tcp_socket_test");
+                match process::creation::create_user_process(String::from("tcp_socket_test"), &tcp_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created tcp_socket_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create tcp_socket_test process: {}", e);
+                    }
+                }
+            }
         });
     }
 

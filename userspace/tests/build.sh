@@ -47,6 +47,8 @@ BINARIES=(
     "signal_return_test"
     "signal_regs_test"
     "udp_socket_test"
+    "tcp_socket_test"
+    "tcp_client_test"
     "pipe_test"
     "pipe_fork_test"
     "pipe_concurrent_test"

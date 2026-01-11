@@ -86,6 +86,15 @@ pub enum FdKind {
     PipeWrite(Arc<Mutex<super::pipe::PipeBuffer>>),
     /// UDP socket (wrapped in Arc<Mutex<>> for sharing and dup/fork)
     UdpSocket(Arc<Mutex<crate::socket::udp::UdpSocket>>),
+    /// TCP socket (unbound, or bound but not connected/listening)
+    /// The u16 is the bound local port (0 if unbound)
+    TcpSocket(u16),
+    /// TCP listener (bound and listening socket)
+    /// The u16 is the listening port
+    TcpListener(u16),
+    /// TCP connection (established connection)
+    /// Contains the connection ID for lookup in the global TCP connection table
+    TcpConnection(crate::net::tcp::ConnectionId),
     /// Regular file descriptor
     #[allow(dead_code)] // Will be constructed when open() is fully implemented
     RegularFile(Arc<Mutex<RegularFile>>),
@@ -104,6 +113,9 @@ impl core::fmt::Debug for FdKind {
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
             FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
+            FdKind::TcpSocket(port) => write!(f, "TcpSocket(port={})", port),
+            FdKind::TcpListener(port) => write!(f, "TcpListener(port={})", port),
+            FdKind::TcpConnection(id) => write!(f, "TcpConnection({:?})", id),
             FdKind::RegularFile(_) => write!(f, "RegularFile"),
             FdKind::Directory(_) => write!(f, "Directory"),
             FdKind::Device(dt) => write!(f, "Device({:?})", dt),
@@ -406,6 +418,20 @@ impl Drop for FdTable {
                     FdKind::UdpSocket(_) => {
                         // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
                         log::debug!("FdTable::drop() - releasing UDP socket fd {}", i);
+                    }
+                    FdKind::TcpSocket(_) => {
+                        // Unbound TCP socket doesn't need cleanup
+                        log::debug!("FdTable::drop() - releasing TCP socket fd {}", i);
+                    }
+                    FdKind::TcpListener(port) => {
+                        // Remove from listener table
+                        crate::net::tcp::TCP_LISTENERS.lock().remove(&port);
+                        log::debug!("FdTable::drop() - closed TCP listener fd {} on port {}", i, port);
+                    }
+                    FdKind::TcpConnection(conn_id) => {
+                        // Close the TCP connection
+                        let _ = crate::net::tcp::tcp_close(&conn_id);
+                        log::debug!("FdTable::drop() - closed TCP connection fd {}", i);
                     }
                     FdKind::StdIo(_) => {
                         // StdIo doesn't need cleanup
