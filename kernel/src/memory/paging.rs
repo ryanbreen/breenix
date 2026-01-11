@@ -6,6 +6,10 @@ use x86_64::structures::paging::{
 };
 use x86_64::VirtAddr;
 
+// Import HAL page table operations for CR3/TLB operations
+use crate::arch_impl::PageTableOps;
+use crate::arch_impl::current::paging::X86PageTableOps;
+
 /// The global page table mapper
 static PAGE_TABLE_MAPPER: OnceCell<Mutex<OffsetPageTable<'static>>> = OnceCell::uninit();
 
@@ -34,12 +38,10 @@ pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static>
 /// Caller must ensure that the complete physical memory is mapped to virtual memory
 /// at the provided `physical_memory_offset`.
 unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
-    use x86_64::registers::control::Cr3;
+    // Use HAL to read CR3 (page table root)
+    let level_4_table_phys = X86PageTableOps::read_root();
 
-    let (level_4_table_frame, _) = Cr3::read();
-
-    let phys = level_4_table_frame.start_address();
-    let virt = physical_memory_offset + phys.as_u64();
+    let virt = physical_memory_offset + level_4_table_phys;
     let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
 
     &mut *page_table_ptr
@@ -118,27 +120,22 @@ pub unsafe fn map_page(
 }
 
 /// Enable global pages support (CR4.PGE)
-/// 
+///
 /// This allows the CPU to keep kernel pages in the TLB across CR3 changes,
 /// significantly improving performance during context switches.
-/// 
+///
 /// # Safety
 /// Should be called after kernel page tables are set up but before userspace processes start.
 pub unsafe fn enable_global_pages() {
-    use x86_64::registers::control::{Cr4, Cr4Flags};
-    
-    // Read current CR4 value
-    let mut cr4 = Cr4::read();
-    
-    // Check if PGE is already enabled
-    if cr4.contains(Cr4Flags::PAGE_GLOBAL) {
+    use crate::arch_impl::current::paging;
+
+    // Check if already enabled
+    if paging::global_pages_enabled() {
         log::info!("CR4.PGE already enabled");
         return;
     }
-    
-    // Enable the PGE bit
-    cr4 |= Cr4Flags::PAGE_GLOBAL;
-    Cr4::write(cr4);
-    
+
+    // Enable via HAL
+    paging::enable_global_pages();
     log::info!("PHASE2: Enabled global pages support (CR4.PGE)");
 }

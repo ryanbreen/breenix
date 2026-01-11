@@ -25,6 +25,7 @@ bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 #[macro_use]
 mod macros;
+mod arch_impl;
 mod clock_gettime_test;
 mod block;
 mod drivers;

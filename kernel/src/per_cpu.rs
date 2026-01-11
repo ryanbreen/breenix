@@ -2,11 +2,16 @@
 //!
 //! This module provides per-CPU data structures that can be accessed
 //! efficiently via the GS segment register without locks.
+//!
+//! Architecture-specific operations (GS-relative memory access, MSR operations)
+//! are delegated to the HAL's per-CPU module.
 
 use core::ptr;
 use core::sync::atomic::{compiler_fence, Ordering, AtomicU64};
 use x86_64::VirtAddr;
-use x86_64::registers::model_specific::{GsBase, KernelGsBase};
+
+// Import HAL per-CPU operations
+use crate::arch_impl::current::percpu as hal_percpu;
 
 // Global tracking counters for irq_enter/irq_exit balance analysis
 static IRQ_ENTER_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -252,41 +257,40 @@ pub fn is_initialized() -> bool {
 
 /// Initialize per-CPU data for the current CPU
 pub fn init() {
+    use crate::arch_impl::PageTableOps;
+    use crate::arch_impl::current::paging::X86PageTableOps;
+
     log::info!("Initializing per-CPU data via GS segment");
 
     // Get pointer to CPU0's per-CPU data
     let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
     let cpu_data_addr = cpu_data_ptr as u64;
 
-    // Set up GS base to point to per-CPU data
+    // Set up GS base to point to per-CPU data via HAL
     // This allows us to access per-CPU data via GS segment
-    GsBase::write(VirtAddr::new(cpu_data_addr));
-    KernelGsBase::write(VirtAddr::new(cpu_data_addr));
+    unsafe {
+        hal_percpu::msr::write_gs_base_msr(cpu_data_addr);
+        hal_percpu::write_kernel_gs_base(cpu_data_addr);
+    }
 
     log::info!("Per-CPU data initialized at {:#x}", cpu_data_addr);
-    log::debug!("  GS_BASE = {:#x}", GsBase::read().as_u64());
-    log::debug!("  KERNEL_GS_BASE = {:#x}", KernelGsBase::read().as_u64());
+    log::debug!("  GS_BASE = {:#x}", hal_percpu::msr::read_gs_base_msr());
+    log::debug!("  KERNEL_GS_BASE = {:#x}", hal_percpu::read_kernel_gs_base());
 
     // Mark per-CPU data as initialized and safe to use
     PER_CPU_INITIALIZED.store(true, Ordering::Release);
     log::info!("Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage");
 
-    // Store the current CR3 as the initial kernel CR3
+    // Store the current CR3 as the initial kernel CR3 via HAL
     // NOTE: At this point, we're still using the bootloader's page tables.
     // After memory::init() calls build_master_kernel_pml4(), the kernel switches
     // to the master PML4 and calls set_kernel_cr3() to update this value.
     // This initial value provides a fallback during early boot.
-    let (current_frame, _) = x86_64::registers::control::Cr3::read();
-    let kernel_cr3_val = current_frame.start_address().as_u64();
+    let kernel_cr3_val = X86PageTableOps::read_root();
     log::info!("Storing initial kernel_cr3 = {:#x} in per-CPU data (bootloader PT)", kernel_cr3_val);
 
     unsafe {
-        core::arch::asm!(
-            "mov gs:[{offset}], {}",
-            in(reg) kernel_cr3_val,
-            offset = const KERNEL_CR3_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_kernel_cr3(kernel_cr3_val);
     }
     log::info!("kernel_cr3 stored successfully - interrupt handlers can now switch to kernel page tables");
 }
