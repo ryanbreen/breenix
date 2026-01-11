@@ -232,6 +232,20 @@ impl Process {
                         // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
                         log::debug!("Process::close_all_fds() - released UDP socket fd {}", fd);
                     }
+                    FdKind::TcpSocket(_) => {
+                        // Unbound TCP socket doesn't need cleanup
+                        log::debug!("Process::close_all_fds() - released TCP socket fd {}", fd);
+                    }
+                    FdKind::TcpListener(port) => {
+                        // Remove from listener table
+                        crate::net::tcp::TCP_LISTENERS.lock().remove(&port);
+                        log::debug!("Process::close_all_fds() - closed TCP listener fd {} on port {}", fd, port);
+                    }
+                    FdKind::TcpConnection(conn_id) => {
+                        // Close the TCP connection
+                        let _ = crate::net::tcp::tcp_close(&conn_id);
+                        log::debug!("Process::close_all_fds() - closed TCP connection fd {}", fd);
+                    }
                     FdKind::StdIo(_) => {
                         // StdIo doesn't need cleanup
                     }

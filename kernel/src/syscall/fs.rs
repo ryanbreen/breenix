@@ -617,6 +617,15 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x
             stat.st_nlink = 2; // . and ..
         }
+        FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
+            // TCP sockets
+            static TCP_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(3000);
+            stat.st_dev = 0;
+            stat.st_ino = TCP_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            stat.st_mode = S_IFSOCK | 0o755; // Socket with rwxr-xr-x
+            stat.st_nlink = 1;
+        }
     }
 
     // Copy stat structure to userspace

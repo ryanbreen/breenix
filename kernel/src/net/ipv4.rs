@@ -158,8 +158,8 @@ impl<'a> Ipv4Packet<'a> {
 pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
     let config = super::config();
 
-    // Check if this packet is for us
-    if ip.dst_ip != config.ip_addr {
+    // Check if this packet is for us (accept our IP or loopback addresses)
+    if ip.dst_ip != config.ip_addr && ip.dst_ip[0] != 127 {
         // Not for us, ignore (we don't do routing)
         return;
     }
@@ -175,8 +175,7 @@ pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
             }
         }
         PROTOCOL_TCP => {
-            // TCP not implemented yet
-            log::debug!("IPv4: Received TCP packet (not implemented)");
+            super::tcp::handle_tcp(ip, ip.payload);
         }
         PROTOCOL_UDP => {
             super::udp::handle_udp(ip, ip.payload);

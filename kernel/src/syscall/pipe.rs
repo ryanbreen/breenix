@@ -178,6 +178,15 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Devfs directory doesn't need cleanup
                     log::debug!("sys_close: Closed devfs directory fd={}", fd);
                 }
+                FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
+                    // Unbound/listening TCP socket doesn't need special cleanup
+                    log::debug!("sys_close: Closed TCP socket fd={}", fd);
+                }
+                FdKind::TcpConnection(conn_id) => {
+                    // Close the TCP connection
+                    let _ = crate::net::tcp::tcp_close(&conn_id);
+                    log::debug!("sys_close: Closed TCP connection fd={}", fd);
+                }
             }
             SyscallResult::Ok(0)
         }

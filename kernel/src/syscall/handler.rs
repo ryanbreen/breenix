@@ -247,6 +247,18 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::RecvFrom) => {
             super::socket::sys_recvfrom(args.0, args.1, args.2, args.3, args.4, args.5)
         }
+        Some(SyscallNumber::Connect) => {
+            super::socket::sys_connect(args.0, args.1, args.2)
+        }
+        Some(SyscallNumber::Accept) => {
+            super::socket::sys_accept(args.0, args.1, args.2)
+        }
+        Some(SyscallNumber::Listen) => {
+            super::socket::sys_listen(args.0, args.1)
+        }
+        Some(SyscallNumber::Shutdown) => {
+            super::socket::sys_shutdown(args.0, args.1)
+        }
         Some(SyscallNumber::Poll) => super::handlers::sys_poll(args.0, args.1, args.2 as i32),
         Some(SyscallNumber::Select) => {
             super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4)

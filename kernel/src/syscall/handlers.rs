@@ -379,6 +379,31 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_write: Cannot write to /dev directory");
             SyscallResult::Err(super::errno::EISDIR as u64)
         }
+        FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
+            // Cannot write to unconnected TCP socket
+            log::error!("sys_write: Cannot write to unconnected TCP socket");
+            SyscallResult::Err(super::errno::ENOTCONN as u64)
+        }
+        FdKind::TcpConnection(conn_id) => {
+            // Write to TCP connection
+            match crate::net::tcp::tcp_send(conn_id, &buffer) {
+                Ok(n) => {
+                    log::debug!("sys_write: Sent {} bytes on TCP connection", n);
+                    // Drain loopback queue so data is delivered for localhost connections
+                    crate::net::drain_loopback_queue();
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => {
+                    if e.contains("shutdown") {
+                        log::error!("sys_write: TCP send failed - connection shutdown");
+                        SyscallResult::Err(super::errno::EPIPE as u64)
+                    } else {
+                        log::error!("sys_write: TCP send failed - {}", e);
+                        SyscallResult::Err(super::errno::EIO as u64)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -698,6 +723,33 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Cannot read from directory with read() - must use getdents
             log::debug!("sys_read: Cannot read from /dev directory, use getdents instead");
             SyscallResult::Err(super::errno::EISDIR as u64)
+        }
+        FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
+            // Cannot read from unconnected TCP socket
+            log::error!("sys_read: Cannot read from unconnected TCP socket");
+            SyscallResult::Err(super::errno::ENOTCONN as u64)
+        }
+        FdKind::TcpConnection(conn_id) => {
+            // Read from TCP connection
+            // First drain loopback queue in case there are pending packets
+            crate::net::drain_loopback_queue();
+            let mut user_buf = alloc::vec![0u8; count as usize];
+            match crate::net::tcp::tcp_recv(conn_id, &mut user_buf) {
+                Ok(n) => {
+                    if n > 0 {
+                        // Copy to userspace
+                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                            return SyscallResult::Err(14); // EFAULT
+                        }
+                    }
+                    log::debug!("sys_read: Received {} bytes from TCP connection", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(_) => {
+                    // No data available - return EAGAIN (would block)
+                    SyscallResult::Err(11) // EAGAIN
+                }
+            }
         }
     }
 }

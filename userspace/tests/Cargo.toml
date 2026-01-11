@@ -75,6 +75,10 @@ name = "udp_socket_test"
 path = "udp_socket_test.rs"
 
 [[bin]]
+name = "tcp_socket_test"
+path = "tcp_socket_test.rs"
+
+[[bin]]
 name = "pipe_test"
 path = "pipe_test.rs"
 
@@ -314,3 +318,7 @@ path = "exec_argv_test.rs"
 [[bin]]
 name = "exec_stack_argv_test"
 path = "exec_stack_argv_test.rs"
+
+[[bin]]
+name = "tcp_client_test"
+path = "tcp_client_test.rs"
