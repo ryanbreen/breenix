@@ -642,6 +642,8 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             for i in 0..MAX_WAIT_ITERATIONS {
                 // Poll for incoming packets (process SYN-ACK)
                 crate::net::process_rx();
+                // Also drain loopback queue for localhost connections
+                crate::net::drain_loopback_queue();
 
                 // Check if connected
                 if crate::net::tcp::tcp_is_established(&conn_id) {

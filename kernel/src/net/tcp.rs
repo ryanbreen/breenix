@@ -694,10 +694,18 @@ pub fn tcp_connect(
 ) -> Result<ConnectionId, &'static str> {
     let config = super::config();
 
+    // Normalize loopback addresses (127.x.x.x) to our own IP
+    // This ensures connection lookups work when SYN-ACK replies come from our IP
+    let effective_remote = if remote_ip[0] == 127 {
+        config.ip_addr
+    } else {
+        remote_ip
+    };
+
     let conn_id = ConnectionId {
         local_ip: config.ip_addr,
         local_port,
-        remote_ip,
+        remote_ip: effective_remote,
         remote_port,
     };
 

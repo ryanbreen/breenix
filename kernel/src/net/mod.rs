@@ -229,8 +229,8 @@ pub fn send_ethernet(dst_mac: &[u8; 6], ethertype: u16, payload: &[u8]) -> Resul
 pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'static str> {
     let config = config();
 
-    // Check for loopback - sending to ourselves
-    if dst_ip == config.ip_addr {
+    // Check for loopback - sending to ourselves or to 127.x.x.x network
+    if dst_ip == config.ip_addr || dst_ip[0] == 127 {
         log::debug!("NET: Loopback detected, queueing packet for deferred delivery");
 
         // Build IP packet
