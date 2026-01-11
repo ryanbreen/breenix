@@ -389,11 +389,18 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             match crate::net::tcp::tcp_send(conn_id, &buffer) {
                 Ok(n) => {
                     log::debug!("sys_write: Sent {} bytes on TCP connection", n);
+                    // Drain loopback queue so data is delivered for localhost connections
+                    crate::net::drain_loopback_queue();
                     SyscallResult::Ok(n as u64)
                 }
-                Err(_) => {
-                    log::error!("sys_write: TCP send failed");
-                    SyscallResult::Err(super::errno::EIO as u64)
+                Err(e) => {
+                    if e.contains("shutdown") {
+                        log::error!("sys_write: TCP send failed - connection shutdown");
+                        SyscallResult::Err(super::errno::EPIPE as u64)
+                    } else {
+                        log::error!("sys_write: TCP send failed - {}", e);
+                        SyscallResult::Err(super::errno::EIO as u64)
+                    }
                 }
             }
         }
@@ -724,6 +731,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::TcpConnection(conn_id) => {
             // Read from TCP connection
+            // First drain loopback queue in case there are pending packets
+            crate::net::drain_loopback_queue();
             let mut user_buf = alloc::vec![0u8; count as usize];
             match crate::net::tcp::tcp_recv(conn_id, &mut user_buf) {
                 Ok(n) => {

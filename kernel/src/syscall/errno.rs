@@ -55,6 +55,9 @@ pub const EMFILE: i32 = 24;
 /// No space left on device
 pub const ENOSPC: i32 = 28;
 
+/// Broken pipe
+pub const EPIPE: i32 = 32;
+
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]
 pub const ENOSYS: i32 = 38;

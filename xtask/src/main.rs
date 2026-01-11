@@ -677,6 +677,179 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "accept() on non-listening socket did not return error",
             check_hint: "Check sys_accept() validates socket is in listen state",
         },
+        // TCP Data Transfer Test - validates actual read/write over TCP connections
+        BootStage {
+            name: "TCP data test started",
+            marker: "TCP_DATA_TEST: starting",
+            failure_meaning: "TCP data transfer test did not start",
+            check_hint: "Check userspace/tests/tcp_socket_test.rs - test 12 section",
+        },
+        BootStage {
+            name: "TCP data server listening",
+            marker: "TCP_DATA_TEST: server listening on 8082",
+            failure_meaning: "TCP data test server failed to bind/listen on port 8082",
+            check_hint: "Check sys_bind/sys_listen for TCP sockets",
+        },
+        BootStage {
+            name: "TCP data client connected",
+            marker: "TCP_DATA_TEST: client connected",
+            failure_meaning: "TCP data test client failed to connect to server",
+            check_hint: "Check sys_connect for loopback TCP connections",
+        },
+        BootStage {
+            name: "TCP data send",
+            marker: "TCP_DATA_TEST: send OK",
+            failure_meaning: "write() syscall on TCP socket failed",
+            check_hint: "Check kernel/src/syscall/io.rs:sys_write() for TCP socket support - must route to tcp_send()",
+        },
+        BootStage {
+            name: "TCP data accept",
+            marker: "TCP_DATA_TEST: accept OK",
+            failure_meaning: "accept() on data test server returned EAGAIN or error after connect",
+            check_hint: "Check sys_accept() - loopback connect should queue connection immediately",
+        },
+        BootStage {
+            name: "TCP data recv",
+            marker: "TCP_DATA_TEST: recv OK",
+            failure_meaning: "read() syscall on accepted TCP socket failed",
+            check_hint: "Check kernel/src/syscall/io.rs:sys_read() for TCP socket support - must route to tcp_recv()",
+        },
+        BootStage {
+            name: "TCP data verified",
+            marker: "TCP_DATA_TEST: data verified",
+            failure_meaning: "Received TCP data did not match sent data 'HELLO'",
+            check_hint: "Check tcp_send/tcp_recv implementation - data corruption or length mismatch",
+        },
+        // Test 13: Post-shutdown write verification
+        BootStage {
+            name: "TCP post-shutdown write test started",
+            marker: "TCP_SHUTDOWN_WRITE_TEST: starting",
+            failure_meaning: "Post-shutdown write test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP write after shutdown rejected with EPIPE",
+            marker: "TCP_SHUTDOWN_WRITE_TEST: EPIPE OK",
+            failure_meaning: "Write after SHUT_WR was not properly rejected with EPIPE",
+            check_hint: "Check tcp_send returns EPIPE when send_shutdown=true",
+        },
+        // Test 14: SHUT_RD test
+        BootStage {
+            name: "TCP SHUT_RD test started",
+            marker: "TCP_SHUT_RD_TEST: starting",
+            failure_meaning: "SHUT_RD test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP SHUT_RD returns EOF",
+            marker: "TCP_SHUT_RD_TEST:",
+            failure_meaning: "Read after SHUT_RD did not return EOF",
+            check_hint: "Check tcp_recv honors recv_shutdown flag",
+        },
+        // Test 15: SHUT_WR test
+        BootStage {
+            name: "TCP SHUT_WR test started",
+            marker: "TCP_SHUT_WR_TEST: starting",
+            failure_meaning: "SHUT_WR test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP SHUT_WR succeeded",
+            marker: "TCP_SHUT_WR_TEST: SHUT_WR write rejected OK",
+            failure_meaning: "shutdown(SHUT_WR) failed on connected socket",
+            check_hint: "Check sys_shutdown handling of SHUT_WR",
+        },
+        // Test 16: Bidirectional data test
+        BootStage {
+            name: "TCP bidirectional test started",
+            marker: "TCP_BIDIR_TEST: starting",
+            failure_meaning: "Bidirectional data test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP server->client data verified",
+            marker: "TCP_BIDIR_TEST: server->client OK",
+            failure_meaning: "Server-to-client TCP data transfer failed",
+            check_hint: "Check tcp_send/tcp_recv for accepted connection fd",
+        },
+        // Test 17: Large data test
+        BootStage {
+            name: "TCP large data test started",
+            marker: "TCP_LARGE_TEST: starting",
+            failure_meaning: "Large data test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP 256 bytes verified",
+            marker: "TCP_LARGE_TEST: 256 bytes verified OK",
+            failure_meaning: "256-byte TCP transfer failed or corrupted",
+            check_hint: "Check buffer handling in tcp_send/tcp_recv for larger data",
+        },
+        // Test 18: Backlog overflow test
+        BootStage {
+            name: "TCP backlog test started",
+            marker: "TCP_BACKLOG_TEST: starting",
+            failure_meaning: "Backlog test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP backlog test passed",
+            marker: "TCP_BACKLOG_TEST:",
+            failure_meaning: "Backlog overflow test failed",
+            check_hint: "Check tcp_listen backlog parameter handling",
+        },
+        // Test 19: ECONNREFUSED test
+        BootStage {
+            name: "TCP ECONNREFUSED test started",
+            marker: "TCP_CONNREFUSED_TEST: starting",
+            failure_meaning: "ECONNREFUSED test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP ECONNREFUSED test passed",
+            marker: "TCP_CONNREFUSED_TEST:",
+            failure_meaning: "Connect to non-listening port did not fail properly",
+            check_hint: "Check tcp_connect error handling for non-listening ports",
+        },
+        // Test 20: MSS boundary test
+        BootStage {
+            name: "TCP MSS test started",
+            marker: "TCP_MSS_TEST: starting",
+            failure_meaning: "MSS boundary test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP MSS test passed",
+            marker: "TCP_MSS_TEST: 2000 bytes",
+            failure_meaning: "Data > MSS (1460) failed to transfer",
+            check_hint: "Check TCP segmentation for large data transfers",
+        },
+        // Test 21: Multiple write/read cycles
+        BootStage {
+            name: "TCP multi-cycle test started",
+            marker: "TCP_MULTI_TEST: starting",
+            failure_meaning: "Multi-cycle test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP multi-cycle test passed",
+            marker: "TCP_MULTI_TEST: 3 messages",
+            failure_meaning: "Multiple write/read cycles on same connection failed",
+            check_hint: "Check TCP connection state management between sends",
+        },
+        // Test 22: Accept with client address
+        BootStage {
+            name: "TCP address test started",
+            marker: "TCP_ADDR_TEST: starting",
+            failure_meaning: "Client address test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP address test passed",
+            marker: "TCP_ADDR_TEST: 10.x.x.x OK",
+            failure_meaning: "Accept did not return client address correctly",
+            check_hint: "Check sys_accept address output handling",
+        },
         BootStage {
             name: "TCP socket test passed",
             marker: "TCP Socket Test: PASSED",

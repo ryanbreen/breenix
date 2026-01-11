@@ -282,6 +282,10 @@ pub struct TcpConnection {
     pub mss: u16,
     /// Process ID that owns this connection
     pub owner_pid: crate::process::process::ProcessId,
+    /// True if SHUT_WR was called (no more sending)
+    pub send_shutdown: bool,
+    /// True if SHUT_RD was called (no more receiving)
+    pub recv_shutdown: bool,
 }
 
 impl TcpConnection {
@@ -305,6 +309,8 @@ impl TcpConnection {
             tx_buffer: VecDeque::new(),
             mss: 1460, // Default MSS for Ethernet
             owner_pid,
+            send_shutdown: false,
+            recv_shutdown: false,
         }
     }
 
@@ -333,6 +339,8 @@ impl TcpConnection {
             tx_buffer: VecDeque::new(),
             mss: 1460,
             owner_pid,
+            send_shutdown: false,
+            recv_shutdown: false,
         }
     }
 }
@@ -343,6 +351,12 @@ pub struct PendingConnection {
     pub remote_port: u16,
     pub recv_initial: u32,
     pub send_initial: u32,
+    /// True if the final ACK of the 3-way handshake has been received
+    pub ack_received: bool,
+    /// Data received before accept() was called (buffered here until connection is created)
+    pub early_data: Vec<u8>,
+    /// Next expected sequence number for early data
+    pub recv_next: u32,
 }
 
 /// Listening socket info
@@ -416,8 +430,27 @@ pub fn handle_tcp(ip: &Ipv4Packet, data: &[u8]) {
             if header.flags.syn && !header.flags.ack {
                 // SYN received on listening socket - add to pending queue
                 handle_syn_for_listener(listener, ip.src_ip, &header, &config);
+            } else if header.flags.ack && !header.flags.syn {
+                // ACK received - this completes the 3-way handshake
+                // Find matching pending connection, mark it as ready, and buffer any data
+                for pending in listener.pending.iter_mut() {
+                    if pending.remote_ip == ip.src_ip && pending.remote_port == header.src_port {
+                        // Verify ACK number matches our SYN+ACK (send_initial + 1)
+                        if header.ack_num == pending.send_initial.wrapping_add(1) {
+                            pending.ack_received = true;
+                            log::debug!("TCP: ACK received, handshake complete for pending connection");
+                        }
+                        // Buffer any data that arrived with this packet
+                        if !payload.is_empty() && header.seq_num == pending.recv_next {
+                            pending.early_data.extend_from_slice(payload);
+                            pending.recv_next = pending.recv_next.wrapping_add(payload.len() as u32);
+                            log::debug!("TCP: Buffered {} bytes of early data for pending connection", payload.len());
+                        }
+                        break;
+                    }
+                }
             } else {
-                log::debug!("TCP: Ignoring non-SYN packet on listening socket");
+                log::debug!("TCP: Ignoring packet on listening socket");
             }
             return;
         }
@@ -615,6 +648,9 @@ fn handle_syn_for_listener(
         remote_port: header.src_port,
         recv_initial: header.seq_num,
         send_initial: send_isn,
+        ack_received: false,
+        early_data: Vec::new(),
+        recv_next: header.seq_num.wrapping_add(1), // +1 for SYN
     });
 
     log::debug!("TCP: SYN received, sending SYN+ACK");
@@ -789,11 +825,29 @@ pub fn tcp_accept(local_port: u16) -> Option<ConnectionId> {
         listeners.get(&local_port)?.owner_pid
     };
 
-    // Create connection in SYN_RECEIVED state (SYN+ACK was already sent)
+    // Create connection - state depends on whether ACK was already received
     let mut conn = TcpConnection::new_outgoing(conn_id, pending.send_initial, owner_pid);
-    conn.state = TcpState::SynReceived;
+    if pending.ack_received {
+        // 3-way handshake complete, connection is established
+        conn.state = TcpState::Established;
+        // send_next should be incremented past our SYN+ACK
+        conn.send_next = pending.send_initial.wrapping_add(1);
+        conn.send_unack = conn.send_next;
+        log::info!("TCP: Connection established (server, ACK already received)");
+    } else {
+        // Still waiting for ACK
+        conn.state = TcpState::SynReceived;
+    }
     conn.recv_initial = pending.recv_initial;
-    conn.recv_next = pending.recv_initial.wrapping_add(1);
+    // Use the recv_next from pending, which accounts for any early data
+    conn.recv_next = pending.recv_next;
+    // Copy any early data that arrived before accept()
+    if !pending.early_data.is_empty() {
+        for byte in pending.early_data.iter() {
+            conn.rx_buffer.push_back(*byte);
+        }
+        log::debug!("TCP: Copied {} bytes of early data to connection rx_buffer", pending.early_data.len());
+    }
 
     let mut connections = TCP_CONNECTIONS.lock();
     connections.insert(conn_id, conn);
@@ -811,6 +865,10 @@ pub fn tcp_send(conn_id: &ConnectionId, data: &[u8]) -> Result<usize, &'static s
 
     let mut connections = TCP_CONNECTIONS.lock();
     let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
+
+    if conn.send_shutdown {
+        return Err("Connection shutdown for writing");
+    }
 
     if conn.state != TcpState::Established {
         return Err("Connection not established");
@@ -873,6 +931,39 @@ pub fn tcp_is_failed(conn_id: &ConnectionId) -> bool {
         matches!(conn.state, TcpState::Closed | TcpState::TimeWait)
     } else {
         true // Connection not found = failed
+    }
+}
+
+/// Shutdown part of a full-duplex connection
+/// shut_rd: stop receiving
+/// shut_wr: stop sending (also sends FIN to remote)
+pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
+    let config = super::config();
+
+    let mut connections = TCP_CONNECTIONS.lock();
+    if let Some(conn) = connections.get_mut(conn_id) {
+        if shut_rd {
+            conn.recv_shutdown = true;
+        }
+        if shut_wr && !conn.send_shutdown {
+            conn.send_shutdown = true;
+            // Send FIN to signal we're done sending
+            if conn.state == TcpState::Established {
+                send_tcp_packet(
+                    &config,
+                    conn.id.remote_ip,
+                    conn.id.local_port,
+                    conn.id.remote_port,
+                    conn.send_next,
+                    conn.recv_next,
+                    TcpFlags::fin_ack(),
+                    conn.recv_window,
+                    &[],
+                );
+                conn.send_next = conn.send_next.wrapping_add(1);
+                conn.state = TcpState::FinWait1;
+            }
+        }
     }
 }
 

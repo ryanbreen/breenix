@@ -647,6 +647,9 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
                 // Check if connected
                 if crate::net::tcp::tcp_is_established(&conn_id) {
+                    // Drain loopback one more time to deliver the ACK to the server
+                    // This ensures the server's pending connection has ack_received = true
+                    crate::net::drain_loopback_queue();
                     log::info!("TCP: Connection established after {} iterations", i);
                     return SyscallResult::Ok(0);
                 }
@@ -722,10 +725,12 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
     // Must be a TCP connection
     match &fd_entry.kind {
         FdKind::TcpConnection(conn_id) => {
-            // For SHUT_WR or SHUT_RDWR, close the connection
-            if how == 1 || how == 2 {
-                let _ = crate::net::tcp::tcp_close(conn_id);
-            }
+            // Set shutdown flags on the connection
+            let shut_rd = how == 0 || how == 2; // SHUT_RD or SHUT_RDWR
+            let shut_wr = how == 1 || how == 2; // SHUT_WR or SHUT_RDWR
+
+            crate::net::tcp::tcp_shutdown(conn_id, shut_rd, shut_wr);
+
             log::info!("TCP: Shutdown fd={} how={}", fd, how);
             SyscallResult::Ok(0)
         }
