@@ -5,6 +5,10 @@ use spin::Once;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::VirtAddr;
 
+// Import HAL for architecture-specific operations
+use crate::arch_impl::PageTableOps;
+use crate::arch_impl::current::paging::X86PageTableOps;
+
 pub(crate) mod context_switch;
 mod timer;
 
@@ -352,15 +356,16 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
+    use crate::arch_impl::current::paging;
+
     // DIAGNOSTIC OUTPUT AT THE VERY START
     let cr2: u64;
     let cr3: u64;
     let actual_rsp: u64;
     unsafe {
-        use x86_64::registers::control::{Cr2, Cr3};
-        cr2 = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
-        let (frame, _) = Cr3::read();
-        cr3 = frame.start_address().as_u64();
+        // Use HAL for CR2/CR3 access
+        cr2 = paging::read_page_fault_address().unwrap_or(0);
+        cr3 = X86PageTableOps::read_root();
         core::arch::asm!("mov {}, rsp", out(reg) actual_rsp);
     }
 
@@ -399,10 +404,8 @@ extern "x86-interrupt" fn double_fault_handler(
     log::error!("SS: {:?}", stack_frame.stack_segment);
     log::error!("Actual RSP (current): {:#x}", actual_rsp);
     
-    // Check current page table
-    use x86_64::registers::control::Cr3;
-    let (frame, _) = Cr3::read();
-    log::error!("Current CR3: {:#x}", frame.start_address().as_u64());
+    // Check current page table via HAL
+    log::error!("Current CR3: {:#x}", X86PageTableOps::read_root());
     
     // Analyze the fault
     if cr2 != 0 {
@@ -569,7 +572,8 @@ extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFram
     }
     #[cfg(not(feature = "test_invalid_opcode"))]
     loop {
-        x86_64::instructions::hlt();
+        use crate::arch_impl::CpuOps;
+        crate::arch_impl::current::cpu::X86Cpu::halt();
     }
     
     // Note: preempt_enable() not called here since we enter infinite loop or exit
@@ -743,7 +747,7 @@ fn handle_cow_with_manager(
         if page_table.update_page_flags(page, new_flags).is_err() {
             return false;
         }
-        x86_64::instructions::tlb::flush(faulting_addr);
+        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
         cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         return true;
     }
@@ -775,7 +779,7 @@ fn handle_cow_with_manager(
     frame_decref(old_frame);
 
     // Flush TLB for this page
-    x86_64::instructions::tlb::flush(faulting_addr);
+    X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
     cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     true
 }
@@ -854,7 +858,7 @@ fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
             // Sole owner - just update flags to make writable
             let new_flags = make_private_flags(old_flags);
             l1_entry.set_addr(l1_entry.addr(), new_flags);
-            x86_64::instructions::tlb::flush(faulting_addr);
+            X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
             cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             return true;
         }
@@ -878,7 +882,7 @@ fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
         frame_decref(old_frame);
 
         // Flush TLB
-        x86_64::instructions::tlb::flush(faulting_addr);
+        X86PageTableOps::flush_tlb_page(faulting_addr.as_u64());
         cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         true
     }

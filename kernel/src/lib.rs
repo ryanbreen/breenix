@@ -11,6 +11,7 @@ extern crate alloc;
 pub mod serial;
 pub mod drivers;
 pub mod memory;
+pub mod arch_impl;
 pub mod gdt;
 pub mod interrupts;
 pub mod per_cpu;
