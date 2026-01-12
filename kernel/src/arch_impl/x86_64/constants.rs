@@ -182,7 +182,7 @@ pub const SOFTIRQ_SHIFT: u32 = 8;
 /// Shift for HARDIRQ field (bits 16-25).
 pub const HARDIRQ_SHIFT: u32 = 16;
 
-/// Shift for NMI field (bits 26-27).
+/// Shift for NMI field (bit 26 only - Linux uses 1 bit for NMI).
 pub const NMI_SHIFT: u32 = 26;
 
 /// Bit position for PREEMPT_ACTIVE flag.
@@ -197,8 +197,8 @@ pub const SOFTIRQ_MASK: u32 = 0xFF << SOFTIRQ_SHIFT;
 /// Mask for HARDIRQ field.
 pub const HARDIRQ_MASK: u32 = 0x3FF << HARDIRQ_SHIFT;
 
-/// Mask for NMI field.
-pub const NMI_MASK: u32 = 0x3 << NMI_SHIFT;
+/// Mask for NMI field (1 bit only, matching Linux kernel).
+pub const NMI_MASK: u32 = 0x1 << NMI_SHIFT;
 
 /// PREEMPT_ACTIVE flag value.
 pub const PREEMPT_ACTIVE: u32 = 1 << PREEMPT_ACTIVE_BIT;

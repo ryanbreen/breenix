@@ -238,23 +238,35 @@ impl X86PerCpu {
     /// Enter hard IRQ context (increment HARDIRQ count).
     #[inline(always)]
     pub unsafe fn irq_enter() {
+        // Compiler barrier before incrementing - ensures all prior operations complete
+        // before we mark ourselves as being in interrupt context
+        compiler_fence(Ordering::Acquire);
         asm!(
             "add dword ptr gs:[{offset}], {inc}",
             offset = const PERCPU_PREEMPT_COUNT_OFFSET,
             inc = const (1 << HARDIRQ_SHIFT),
             options(nostack, preserves_flags)
         );
+        // Compiler barrier after incrementing - ensures the context transition is
+        // visible before any interrupt handling code runs
+        compiler_fence(Ordering::Release);
     }
 
     /// Exit hard IRQ context (decrement HARDIRQ count).
     #[inline(always)]
     pub unsafe fn irq_exit() {
+        // Compiler barrier before decrementing - ensures all interrupt handling
+        // operations complete before we exit interrupt context
+        compiler_fence(Ordering::Acquire);
         asm!(
             "sub dword ptr gs:[{offset}], {dec}",
             offset = const PERCPU_PREEMPT_COUNT_OFFSET,
             dec = const (1 << HARDIRQ_SHIFT),
             options(nostack, preserves_flags)
         );
+        // Compiler barrier after decrementing - ensures the context transition is
+        // visible before we potentially reschedule or return to interrupted code
+        compiler_fence(Ordering::Release);
     }
 
     /// Set the PREEMPT_ACTIVE flag.

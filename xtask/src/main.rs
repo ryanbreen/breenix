@@ -200,6 +200,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "per_cpu::init() - check GS base setup",
         },
         BootStage {
+            name: "HAL per-CPU initialized",
+            marker: "HAL_PERCPU_INITIALIZED",
+            failure_meaning: "HAL per-CPU abstraction layer failed to initialize",
+            check_hint: "per_cpu::init() HAL integration - verify X86PerCpu trait methods work",
+        },
+        BootStage {
             name: "Physical memory available",
             marker: "Physical memory offset available",
             failure_meaning: "Bootloader didn't map physical memory",
@@ -312,6 +318,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "Timer initialized",
             failure_meaning: "PIT timer not configured",
             check_hint: "time::init() - timer frequency setup",
+        },
+        BootStage {
+            name: "HAL timer calibrated",
+            marker: "HAL_TIMER_CALIBRATED",
+            failure_meaning: "HAL timer abstraction layer failed to calibrate TSC",
+            check_hint: "arch_impl/x86_64/timer.rs calibrate() - verify TSC calibration via HAL",
         },
         BootStage {
             name: "Syscall infrastructure ready",

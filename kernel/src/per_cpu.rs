@@ -6,12 +6,23 @@
 //! Architecture-specific operations (GS-relative memory access, MSR operations)
 //! are delegated to the HAL's per-CPU module.
 
+use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::{compiler_fence, Ordering, AtomicU64};
 use x86_64::VirtAddr;
 
-// Import HAL per-CPU operations
+// Import HAL per-CPU operations and traits
 use crate::arch_impl::current::percpu as hal_percpu;
+use crate::arch_impl::PerCpuOps;
+
+// Import HAL constants - single source of truth for GS-relative offsets
+use crate::arch_impl::x86_64::constants::{
+    PERCPU_CPU_ID_OFFSET, PERCPU_CURRENT_THREAD_OFFSET, PERCPU_KERNEL_STACK_TOP_OFFSET,
+    PERCPU_IDLE_THREAD_OFFSET, PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_NEED_RESCHED_OFFSET,
+    PERCPU_USER_RSP_SCRATCH_OFFSET, PERCPU_TSS_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
+    PERCPU_NEXT_CR3_OFFSET, PERCPU_KERNEL_CR3_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET,
+    PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+};
 
 // Global tracking counters for irq_enter/irq_exit balance analysis
 static IRQ_ENTER_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -37,10 +48,11 @@ pub struct PerCpuData {
 
     /// Preempt count for kernel preemption control (offset 32) - properly aligned u32
     /// Linux-style bit layout:
-    /// Bits 0-7:   PREEMPT count (nested preempt_disable calls)
-    /// Bits 8-15:  SOFTIRQ count (nested softirq handlers)
-    /// Bits 16-23: HARDIRQ count (nested hardware interrupts)
-    /// Bits 24-27: NMI count (nested NMIs)
+    /// Bits 0-7:   PREEMPT count (8 bits, nested preempt_disable calls)
+    /// Bits 8-15:  SOFTIRQ count (8 bits, nested softirq handlers)
+    /// Bits 16-25: HARDIRQ count (10 bits, nested hardware interrupts)
+    /// Bit 26:     NMI flag (1 bit, in NMI context)
+    /// Bit 27:     Reserved
     /// Bit 28:     PREEMPT_ACTIVE flag
     /// Bits 29-31: Reserved
     pub preempt_count: u32,
@@ -150,54 +162,40 @@ const HARDIRQ_OFFSET: u32 = 1 << HARDIRQ_SHIFT;
 #[allow(dead_code)]
 const NMI_OFFSET: u32 = 1 << NMI_SHIFT;
 
-// Compile-time offset calculations and validation
-// These MUST match the actual struct layout or GS-relative access will be incorrect
-#[allow(dead_code)]
-const CPU_ID_OFFSET: usize = 0;           // offset 0: usize (8 bytes)
-#[allow(dead_code)]
-const CURRENT_THREAD_OFFSET: usize = 8;    // offset 8: *mut Thread (8 bytes)
-#[allow(dead_code)]
-const KERNEL_STACK_TOP_OFFSET: usize = 16; // offset 16: VirtAddr (8 bytes)
-#[allow(dead_code)]
-const IDLE_THREAD_OFFSET: usize = 24;      // offset 24: *mut Thread (8 bytes)
-#[allow(dead_code)]
-const PREEMPT_COUNT_OFFSET: usize = 32;    // offset 32: u32 (4 bytes) - ALIGNED
-#[allow(dead_code)]
-const NEED_RESCHED_OFFSET: usize = 36;     // offset 36: u8 (1 byte)
-// Padding at 37-39 (3 bytes)
-#[allow(dead_code)]
-const USER_RSP_SCRATCH_OFFSET: usize = 40; // offset 40: u64 (8 bytes) - ALIGNED
-#[allow(dead_code)]
-const TSS_OFFSET: usize = 48;              // offset 48: *mut TSS (8 bytes)
-#[allow(dead_code)]
-const SOFTIRQ_PENDING_OFFSET: usize = 56;  // offset 56: u32 (4 bytes)
-#[allow(dead_code)]
-const NEXT_CR3_OFFSET: usize = 64;         // offset 64: u64 (8 bytes) - ALIGNED
-#[allow(dead_code)]
-const KERNEL_CR3_OFFSET: usize = 72;       // offset 72: u64 (8 bytes) - ALIGNED
-#[allow(dead_code)]
-const SAVED_PROCESS_CR3_OFFSET: usize = 80; // offset 80: u64 (8 bytes) - ALIGNED
-#[allow(dead_code)]
-const EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88; // offset 88: bool (1 byte)
-// _pad3 at offset 89-95 (7 bytes)
-#[allow(dead_code)]
-const SWITCH_PRE_CANARY_OFFSET: usize = 96;         // offset 96: u64 (8 bytes)
-#[allow(dead_code)]
-const SWITCH_POST_CANARY_OFFSET: usize = 104;       // offset 104: u64 (8 bytes)
-#[allow(dead_code)]
-const SWITCH_TSC_OFFSET: usize = 112;               // offset 112: u64 (8 bytes)
-#[allow(dead_code)]
-const SWITCH_VIOLATIONS_OFFSET: usize = 120;        // offset 120: u64 (8 bytes)
+// Compile-time assertions to verify HAL constants match struct layout
+// These use offset_of! to get actual offsets and compare with HAL constants
+// If any assertion fails, the HAL constant is out of sync with the struct
 
-// Magic values for canary computation (non-zero to detect corruption)
-#[allow(dead_code)]
-const CANARY_MAGIC: u64 = 0xDEADCAFE_00000000;
+const _: () = assert!(offset_of!(PerCpuData, cpu_id) == PERCPU_CPU_ID_OFFSET,
+    "PERCPU_CPU_ID_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, current_thread) == PERCPU_CURRENT_THREAD_OFFSET,
+    "PERCPU_CURRENT_THREAD_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, kernel_stack_top) == PERCPU_KERNEL_STACK_TOP_OFFSET,
+    "PERCPU_KERNEL_STACK_TOP_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, idle_thread) == PERCPU_IDLE_THREAD_OFFSET,
+    "PERCPU_IDLE_THREAD_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, preempt_count) == PERCPU_PREEMPT_COUNT_OFFSET,
+    "PERCPU_PREEMPT_COUNT_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, need_resched) == PERCPU_NEED_RESCHED_OFFSET,
+    "PERCPU_NEED_RESCHED_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, user_rsp_scratch) == PERCPU_USER_RSP_SCRATCH_OFFSET,
+    "PERCPU_USER_RSP_SCRATCH_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, tss) == PERCPU_TSS_OFFSET,
+    "PERCPU_TSS_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, softirq_pending) == PERCPU_SOFTIRQ_PENDING_OFFSET,
+    "PERCPU_SOFTIRQ_PENDING_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, next_cr3) == PERCPU_NEXT_CR3_OFFSET,
+    "PERCPU_NEXT_CR3_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, kernel_cr3) == PERCPU_KERNEL_CR3_OFFSET,
+    "PERCPU_KERNEL_CR3_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, saved_process_cr3) == PERCPU_SAVED_PROCESS_CR3_OFFSET,
+    "PERCPU_SAVED_PROCESS_CR3_OFFSET mismatch with struct layout");
+const _: () = assert!(offset_of!(PerCpuData, exception_cleanup_context) == PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
+    "PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET mismatch with struct layout");
 
-// Compile-time assertions to ensure offsets are correct
-// These will fail to compile if the offsets don't match expected values
-const _: () = assert!(PREEMPT_COUNT_OFFSET % 4 == 0, "preempt_count must be 4-byte aligned");
-const _: () = assert!(PREEMPT_COUNT_OFFSET == 32, "preempt_count offset mismatch");
-const _: () = assert!(USER_RSP_SCRATCH_OFFSET % 8 == 0, "user_rsp_scratch must be 8-byte aligned");
+// Alignment assertions
+const _: () = assert!(PERCPU_PREEMPT_COUNT_OFFSET % 4 == 0, "preempt_count must be 4-byte aligned");
+const _: () = assert!(PERCPU_USER_RSP_SCRATCH_OFFSET % 8 == 0, "user_rsp_scratch must be 8-byte aligned");
 const _: () = assert!(core::mem::size_of::<usize>() == 8, "This code assumes 64-bit pointers");
 
 // Verify struct size is 192 bytes due to align(64) attribute
@@ -277,6 +275,30 @@ pub fn init() {
     log::debug!("  GS_BASE = {:#x}", hal_percpu::msr::read_gs_base_msr());
     log::debug!("  KERNEL_GS_BASE = {:#x}", hal_percpu::read_kernel_gs_base());
 
+    // HAL Read-back verification: Verify GS-relative operations actually work
+    // This catches misconfigured GS base before any interrupt handlers run
+
+    let read_cpu_id = hal_percpu::X86PerCpu::cpu_id();
+    if read_cpu_id != 0 {
+        panic!("HAL verification failed: cpu_id read-back mismatch (expected 0, got {})", read_cpu_id);
+    }
+
+    // Verify preempt_count read/write cycle
+    let initial_preempt = hal_percpu::X86PerCpu::preempt_count();
+    hal_percpu::X86PerCpu::preempt_disable();
+    let after_disable = hal_percpu::X86PerCpu::preempt_count();
+    if after_disable != initial_preempt + 1 {
+        panic!("HAL verification failed: preempt_disable did not increment (expected {}, got {})",
+               initial_preempt + 1, after_disable);
+    }
+    hal_percpu::X86PerCpu::preempt_enable();
+    let after_enable = hal_percpu::X86PerCpu::preempt_count();
+    if after_enable != initial_preempt {
+        panic!("HAL verification failed: preempt_enable did not restore (expected {}, got {})",
+               initial_preempt, after_enable);
+    }
+    log::info!("HAL read-back verification passed: GS-relative operations working");
+
     // Mark per-CPU data as initialized and safe to use
     PER_CPU_INITIALIZED.store(true, Ordering::Release);
     log::info!("Per-CPU data marked as initialized - preempt_count functions now use per-CPU storage");
@@ -293,82 +315,54 @@ pub fn init() {
         hal_percpu::X86PerCpu::set_kernel_cr3(kernel_cr3_val);
     }
     log::info!("kernel_cr3 stored successfully - interrupt handlers can now switch to kernel page tables");
+
+    // HAL boot stage marker - proves HAL per-CPU operations are working
+    log::info!("HAL_PERCPU_INITIALIZED: Per-CPU data setup via HAL complete");
 }
 
 /// Get the current thread from per-CPU data
 pub fn current_thread() -> Option<&'static mut crate::task::thread::Thread> {
-    unsafe {
-        // Access current_thread field via GS segment
-        // Offset 8 = size of cpu_id field
-        let thread_ptr: *mut crate::task::thread::Thread;
-        core::arch::asm!(
-            "mov {}, gs:[8]",
-            out(reg) thread_ptr,
-            options(nostack, preserves_flags)
-        );
-        
-        if thread_ptr.is_null() {
-            None
-        } else {
-            Some(&mut *thread_ptr)
-        }
+    // Use HAL for GS-relative access
+
+    let thread_ptr = hal_percpu::X86PerCpu::current_thread_ptr() as *mut crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        None
+    } else {
+        unsafe { Some(&mut *thread_ptr) }
     }
 }
 
 /// Set the current thread in per-CPU data
 pub fn set_current_thread(thread: *mut crate::task::thread::Thread) {
+    // Use HAL for GS-relative access
+
     unsafe {
-        // Write to current_thread field via GS segment
-        // Offset 8 = size of cpu_id field
-        core::arch::asm!(
-            "mov gs:[8], {}",
-            in(reg) thread,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_current_thread_ptr(thread as *mut u8);
     }
 }
 
 /// Get the kernel stack top from per-CPU data
 pub fn kernel_stack_top() -> u64 {
-    unsafe {
-        // Access kernel_stack_top field via GS segment
-        // Offset 16 = cpu_id (8) + current_thread (8)
-        let stack_top: u64;
-        core::arch::asm!(
-            "mov {}, gs:[16]",
-            out(reg) stack_top,
-            options(nostack, preserves_flags)
-        );
-        stack_top
-    }
+    // Use HAL for GS-relative access
+
+    hal_percpu::X86PerCpu::kernel_stack_top()
 }
 
 /// Set the kernel stack top in per-CPU data
 pub fn set_kernel_stack_top(stack_top: u64) {
+    // Use HAL for GS-relative access
+
     unsafe {
-        // Write to kernel_stack_top field via GS segment
-        // Offset 16 = cpu_id (8) + current_thread (8)
-        core::arch::asm!(
-            "mov gs:[16], {}",
-            in(reg) stack_top,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_kernel_stack_top(stack_top);
     }
 }
 
 /// Check if we need to reschedule
 pub fn need_resched() -> bool {
     if PER_CPU_INITIALIZED.load(Ordering::Acquire) {
-        unsafe {
-            let need_resched: u8;
-            core::arch::asm!(
-                "mov {need}, byte ptr gs:[{offset}]",
-                need = out(reg_byte) need_resched,
-                offset = const NEED_RESCHED_OFFSET,
-                options(nostack, readonly)
-            );
-            need_resched != 0
-        }
+        // Use HAL for GS-relative access
+        hal_percpu::X86PerCpu::need_resched()
     } else {
         false
     }
@@ -377,14 +371,9 @@ pub fn need_resched() -> bool {
 /// Set the reschedule needed flag
 pub fn set_need_resched(need: bool) {
     if PER_CPU_INITIALIZED.load(Ordering::Acquire) {
+        // Use HAL for GS-relative access
         unsafe {
-            let value: u8 = if need { 1 } else { 0 };
-            core::arch::asm!(
-                "mov byte ptr gs:[{offset}], {val}",
-                val = in(reg_byte) value,
-                offset = const NEED_RESCHED_OFFSET,
-                options(nostack)
-            );
+            hal_percpu::X86PerCpu::set_need_resched(need);
         }
     }
 }
@@ -392,27 +381,28 @@ pub fn set_need_resched(need: bool) {
 /// Check if we're in any interrupt context (hardware IRQ, softirq, or NMI)
 /// Returns true if any interrupt nesting level is non-zero
 pub fn in_interrupt() -> bool {
-    let count = preempt_count();
-    // Check if any interrupt bits are set (HARDIRQ, SOFTIRQ, or NMI)
-    (count & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK)) != 0
+    // Use HAL for interrupt context check
+
+    hal_percpu::X86PerCpu::in_interrupt()
 }
 
 /// Check if we're in hardware interrupt context
 pub fn in_hardirq() -> bool {
-    let count = preempt_count();
-    (count & HARDIRQ_MASK) != 0
+    // Use HAL for hardirq context check
+
+    hal_percpu::X86PerCpu::in_hardirq()
 }
 
 /// Check if we're in softirq context
 pub fn in_softirq() -> bool {
-    let count = preempt_count();
-    (count & SOFTIRQ_MASK) != 0
+    // Use HAL for softirq context check
+    hal_percpu::X86PerCpu::in_softirq()
 }
 
 /// Check if we're in NMI context
 pub fn in_nmi() -> bool {
-    let count = preempt_count();
-    (count & NMI_MASK) != 0
+    // Use HAL for NMI context check
+    hal_percpu::X86PerCpu::in_nmi()
 }
 
 /// Enter hardware IRQ context (called by interrupt handlers)
@@ -423,36 +413,30 @@ pub fn irq_enter() {
     // Track irq_enter calls for balance analysis
     IRQ_ENTER_COUNT.fetch_add(1, Ordering::Relaxed);
 
+    // Use HAL for atomic GS-relative increment
     unsafe {
-        let old_count: u32;
-        core::arch::asm!(
-            "mov {old:e}, dword ptr gs:[{offset}]",   // Read current value
-            "add dword ptr gs:[{offset}], {inc:e}",  // Add HARDIRQ_OFFSET
-            old = out(reg) old_count,
-            inc = in(reg) HARDIRQ_OFFSET,
-            offset = const PREEMPT_COUNT_OFFSET,
-            options(nostack, preserves_flags)
-        );
-
-        let new_count = old_count + HARDIRQ_OFFSET;
-
-        // Check for overflow in debug builds
-        debug_assert!(
-            (new_count & HARDIRQ_MASK) >= (old_count & HARDIRQ_MASK),
-            "irq_enter: HARDIRQ count overflow! Was {:#x}, would be {:#x}",
-            old_count & HARDIRQ_MASK,
-            new_count & HARDIRQ_MASK
-        );
-
-        // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
-        // Previously logged first 10 irq_enter calls for CI validation
+        hal_percpu::X86PerCpu::irq_enter();
     }
+
+    // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
 }
 
 /// Exit hardware IRQ context
 pub fn irq_exit() {
     debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "irq_exit called before per-CPU initialization");
+
+    // Debug-only underflow check: verify we're in hardirq context before decrementing
+    #[cfg(debug_assertions)]
+    {
+    
+        let count_before = hal_percpu::X86PerCpu::preempt_count();
+        debug_assert!(
+            (count_before & HARDIRQ_MASK) != 0,
+            "irq_exit called but HARDIRQ count is already 0 (preempt_count={:#x})",
+            count_before
+        );
+    }
 
     // Track irq_exit calls for balance analysis
     IRQ_EXIT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -465,360 +449,195 @@ pub fn irq_exit() {
         MAX_PREEMPT_IMBALANCE.fetch_max(imbalance, Ordering::Relaxed);
     }
 
+    // Use HAL for atomic GS-relative decrement
     unsafe {
-            let old_count: u32;
-            core::arch::asm!(
-                "mov {old:e}, dword ptr gs:[{offset}]",   // Read current value
-                "sub dword ptr gs:[{offset}], {dec:e}",  // Subtract HARDIRQ_OFFSET
-                old = out(reg) old_count,
-                dec = in(reg) HARDIRQ_OFFSET,
-                offset = const PREEMPT_COUNT_OFFSET,
-                options(nostack, preserves_flags)
-            );
+        hal_percpu::X86PerCpu::irq_exit();
+    }
 
-            let new_count = old_count.wrapping_sub(HARDIRQ_OFFSET);
+    // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
 
-            // Check for underflow in debug builds
-            debug_assert!(
-                (old_count & HARDIRQ_MASK) >= HARDIRQ_OFFSET,
-                "irq_exit: HARDIRQ count underflow! Was {:#x}",
-                old_count & HARDIRQ_MASK
-            );
+    // Check if we should process softirqs after exiting hardirq
+    // Use HAL to read current preempt_count
 
-            // LOGGING REMOVED: All logging removed to prevent serial lock deadlock
-            // Previously logged first 10 irq_exit calls for CI validation
+    let new_count = hal_percpu::X86PerCpu::preempt_count();
 
-        // Check if we should process softirqs
-        // Linux processes softirqs when returning to non-interrupt context
-        if new_count == 0 {
-            // Check if any softirqs are pending
-            let pending = softirq_pending();
-            if pending != 0 {
-                // Process softirqs (logging removed to prevent deadlock)
-                do_softirq();
-            }
-
-            // After softirq processing, re-check if we should schedule
-            // Only if we're still at preempt_count == 0 with need_resched set
-            // Defer the actual scheduling to the interrupt return path
-            // (No logging to avoid deadlock)
+    if new_count == 0 {
+        // Check if any softirqs are pending
+        let pending = softirq_pending();
+        if pending != 0 {
+            // Process softirqs (logging removed to prevent deadlock)
+            do_softirq();
         }
     }
 }
 
 /// Enter NMI context (Non-Maskable Interrupt)
 pub fn nmi_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "nmi_enter called before per-CPU initialization");
-    
-    unsafe {
-        compiler_fence(Ordering::Acquire);
-            
-            let old_count: u32;
-            core::arch::asm!(
-                "mov {old:e}, dword ptr gs:[{offset}]",   // Read current value
-                "add dword ptr gs:[{offset}], {inc:e}",  // Add NMI_OFFSET
-                old = out(reg) old_count,
-                inc = in(reg) NMI_OFFSET,
-                offset = const PREEMPT_COUNT_OFFSET,
-                options(nostack, preserves_flags)
-            );
 
-            let _new_count = old_count + NMI_OFFSET;
-            
-            // Check for overflow in debug builds (NMI only has 1 bit, so max nesting is 1)
-            debug_assert!(
-                (old_count & NMI_MASK) == 0,
-                "nmi_enter: NMI already set! Cannot nest NMIs. Count was {:#x}",
-                old_count
-            );
-            
-            // log::trace!("nmi_enter: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
-            
-            compiler_fence(Ordering::Release);
+    // Use HAL for atomic GS-relative increment (includes compiler fences)
+    unsafe {
+        hal_percpu::X86PerCpu::nmi_enter();
     }
 }
 
 /// Exit NMI context
 pub fn nmi_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "nmi_exit called before per-CPU initialization");
-    
-    unsafe {
-        compiler_fence(Ordering::Acquire);
-            
-            let old_count: u32;
-            core::arch::asm!(
-                "mov {old:e}, dword ptr gs:[{offset}]",   // Read current value
-                "sub dword ptr gs:[{offset}], {dec:e}",  // Subtract NMI_OFFSET
-                old = out(reg) old_count,
-                dec = in(reg) NMI_OFFSET,
-                offset = const PREEMPT_COUNT_OFFSET,
-                options(nostack, preserves_flags)
-            );
 
-            let _new_count = old_count.wrapping_sub(NMI_OFFSET);
-            
-            // Check for underflow in debug builds
-            debug_assert!(
-                (old_count & NMI_MASK) != 0,
-                "nmi_exit: NMI bit not set! Was {:#x}",
-                old_count
-            );
-            
-            // log::trace!("nmi_exit: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
-            
-            compiler_fence(Ordering::Release);
-            // NMIs never schedule
+    // Debug-only underflow check: verify we're in NMI context before decrementing
+    #[cfg(debug_assertions)]
+    {
+    
+        let count_before = hal_percpu::X86PerCpu::preempt_count();
+        debug_assert!(
+            (count_before & NMI_MASK) != 0,
+            "nmi_exit called but NMI count is already 0 (preempt_count={:#x})",
+            count_before
+        );
+    }
+
+    // Use HAL for atomic GS-relative decrement (includes compiler fences)
+    // NMIs never schedule
+    unsafe {
+        hal_percpu::X86PerCpu::nmi_exit();
     }
 }
 
 /// Enter softirq context (software interrupt / bottom half)
 pub fn softirq_enter() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "softirq_enter called before per-CPU initialization");
-    
+
+    // Use HAL for atomic GS-relative increment (includes compiler fences)
     unsafe {
-        compiler_fence(Ordering::Acquire);
-            
-            let old_count: u32;
-            core::arch::asm!(
-                "mov {old:e}, dword ptr gs:[{offset}]",   // Read current value
-                "add dword ptr gs:[{offset}], {inc:e}",  // Add SOFTIRQ_OFFSET
-                old = out(reg) old_count,
-                inc = in(reg) SOFTIRQ_OFFSET,
-                offset = const PREEMPT_COUNT_OFFSET,
-                options(nostack, preserves_flags)
-            );
-            
-            let new_count = old_count + SOFTIRQ_OFFSET;
-            
-            // Check for overflow in debug builds
-            debug_assert!(
-                (new_count & SOFTIRQ_MASK) >= (old_count & SOFTIRQ_MASK),
-                "softirq_enter: SOFTIRQ count overflow! Was {:#x}, would be {:#x}",
-                old_count & SOFTIRQ_MASK,
-                new_count & SOFTIRQ_MASK
-            );
-            
-            // log::trace!("softirq_enter: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
-            
-            compiler_fence(Ordering::Release);
+        hal_percpu::X86PerCpu::softirq_enter();
     }
 }
 
 /// Exit softirq context
 pub fn softirq_exit() {
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "softirq_exit called before per-CPU initialization");
+
+    // Debug-only underflow check: verify we're in softirq context before decrementing
+    #[cfg(debug_assertions)]
+    {
     
+        let count_before = hal_percpu::X86PerCpu::preempt_count();
+        debug_assert!(
+            (count_before & SOFTIRQ_MASK) != 0,
+            "softirq_exit called but SOFTIRQ count is already 0 (preempt_count={:#x})",
+            count_before
+        );
+    }
+
+    // Use HAL for atomic GS-relative decrement (includes compiler fences)
     unsafe {
-        compiler_fence(Ordering::Acquire);
-            
-            let old_count: u32;
-            core::arch::asm!(
-                "mov {old:e}, dword ptr gs:[{offset}]",   // Read current value
-                "sub dword ptr gs:[{offset}], {dec:e}",  // Subtract SOFTIRQ_OFFSET
-                old = out(reg) old_count,
-                dec = in(reg) SOFTIRQ_OFFSET,
-                offset = const PREEMPT_COUNT_OFFSET,
-                options(nostack, preserves_flags)
-            );
-            
-            let new_count = old_count.wrapping_sub(SOFTIRQ_OFFSET);
-            
-            // Check for underflow in debug builds
-            debug_assert!(
-                (old_count & SOFTIRQ_MASK) >= SOFTIRQ_OFFSET,
-                "softirq_exit: SOFTIRQ count underflow! Was {:#x}",
-                old_count & SOFTIRQ_MASK
-            );
-            
-            // log::trace!("softirq_exit: {:#x} -> {:#x}", old_count, new_count);  // Disabled to avoid deadlock
-            
-            compiler_fence(Ordering::Release);
-            
-            // Check if we should schedule on softirq exit (similar to IRQ exit)
-            // Only if we're returning to preemptible context
-            if new_count == 0 && need_resched() {
-                log::info!("softirq_exit: Triggering preempt_schedule_irq");
-                crate::task::scheduler::preempt_schedule_irq();
-            }
+        hal_percpu::X86PerCpu::softirq_exit();
+    }
+
+    // Check if we should schedule on softirq exit (similar to IRQ exit)
+    // Only if we're returning to preemptible context
+
+    let new_count = hal_percpu::X86PerCpu::preempt_count();
+    if new_count == 0 && need_resched() {
+        log::info!("softirq_exit: Triggering preempt_schedule_irq");
+        crate::task::scheduler::preempt_schedule_irq();
     }
 }
 
 /// Get the idle thread from per-CPU data
 #[allow(dead_code)]
 pub fn idle_thread() -> Option<&'static mut crate::task::thread::Thread> {
-    unsafe {
-        // Access idle_thread field via GS segment
-        // Offset 24 = cpu_id (8) + current_thread (8) + kernel_stack_top (8)
-        let thread_ptr: *mut crate::task::thread::Thread;
-        core::arch::asm!(
-            "mov {}, gs:[24]",
-            out(reg) thread_ptr,
-            options(nostack, preserves_flags)
-        );
-        
-        if thread_ptr.is_null() {
-            None
-        } else {
-            Some(&mut *thread_ptr)
-        }
+    // Use HAL for GS-relative access
+    let thread_ptr = hal_percpu::X86PerCpu::idle_thread_ptr() as *mut crate::task::thread::Thread;
+
+    if thread_ptr.is_null() {
+        None
+    } else {
+        unsafe { Some(&mut *thread_ptr) }
     }
 }
 
 /// Set the idle thread in per-CPU data
 pub fn set_idle_thread(thread: *mut crate::task::thread::Thread) {
+    // Use HAL for GS-relative access
     unsafe {
-        // Write to idle_thread field via GS segment
-        // Offset 24 = cpu_id (8) + current_thread (8) + kernel_stack_top (8)
-        core::arch::asm!(
-            "mov gs:[24], {}",
-            in(reg) thread,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_idle_thread_ptr(thread as *mut u8);
     }
 }
 
 /// Update TSS RSP0 with the current thread's kernel stack
 /// This must be called on every context switch to a thread
 pub fn update_tss_rsp0(kernel_stack_top: u64) {
-    unsafe {
-        // BUG FIX: Previously this code read gs:0 expecting a pointer to PerCpuData,
-        // but gs:0 contains cpu_id (value 0), not a pointer. When cpu_id is 0,
-        // the code treated it as a null pointer and skipped the TSS update entirely!
-        // This caused syscalls to use stale kernel stacks, leading to page faults.
-        //
-        // The fix is to access the TSS pointer directly at its correct offset (48),
-        // and update kernel_stack_top at its correct offset (16).
+    // Get TSS pointer via HAL
+    let tss_ptr = hal_percpu::X86PerCpu::tss_ptr() as *mut x86_64::structures::tss::TaskStateSegment;
 
-        // Get TSS pointer from per-CPU data at offset 48 (TSS_OFFSET)
-        let tss_ptr: *mut x86_64::structures::tss::TaskStateSegment;
-        core::arch::asm!(
-            "mov {}, gs:[{offset}]",
-            out(reg) tss_ptr,
-            offset = const TSS_OFFSET,
-            options(nostack, preserves_flags)
-        );
+    if !tss_ptr.is_null() {
+        // Update per-CPU kernel_stack_top via HAL
+    
+        unsafe {
+            hal_percpu::X86PerCpu::set_kernel_stack_top(kernel_stack_top);
+        }
 
-        if !tss_ptr.is_null() {
-            // Update per-CPU kernel_stack_top at offset 16 (KERNEL_STACK_TOP_OFFSET)
-            core::arch::asm!(
-                "mov gs:[{offset}], {}",
-                in(reg) kernel_stack_top,
-                offset = const KERNEL_STACK_TOP_OFFSET,
-                options(nostack, preserves_flags)
-            );
-
-            // Update TSS.RSP0
+        // Update TSS.RSP0
+        unsafe {
             (*tss_ptr).privilege_stack_table[0] = VirtAddr::new(kernel_stack_top);
-
-            // log::trace!("Updated TSS.RSP0 to {:#x}", kernel_stack_top);  // Disabled to avoid deadlock
         }
     }
 }
 
 /// Set the TSS pointer for this CPU
 pub fn set_tss(tss: *mut x86_64::structures::tss::TaskStateSegment) {
+    // Use HAL for GS-relative access
     unsafe {
-        // Store TSS pointer directly at offset 48 (TSS_OFFSET) in per-CPU data
-        // BUG FIX: Previously read gs:0 (cpu_id) as a pointer, which is wrong.
-        core::arch::asm!(
-            "mov gs:[{offset}], {}",
-            in(reg) tss,
-            offset = const TSS_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_tss_ptr(tss as *mut u8);
     }
 }
 
 /// Get the user RSP scratch space (used during syscall entry)
 #[allow(dead_code)]
 pub fn user_rsp_scratch() -> u64 {
-    unsafe {
-        // Read user_rsp_scratch directly at offset 40 (USER_RSP_SCRATCH_OFFSET)
-        // BUG FIX: Previously read gs:0 (cpu_id) as a pointer, which is wrong.
-        let rsp: u64;
-        core::arch::asm!(
-            "mov {}, gs:[{offset}]",
-            out(reg) rsp,
-            offset = const USER_RSP_SCRATCH_OFFSET,
-            options(nostack, preserves_flags)
-        );
-        rsp
-    }
+    // Use HAL for GS-relative access
+    hal_percpu::X86PerCpu::user_rsp_scratch()
 }
 
 /// Set the user RSP scratch space (used during syscall entry)
 #[allow(dead_code)]
 pub fn set_user_rsp_scratch(rsp: u64) {
+    // Use HAL for GS-relative access
     unsafe {
-        // Store user_rsp_scratch directly at offset 40 (USER_RSP_SCRATCH_OFFSET)
-        // BUG FIX: Previously read gs:0 (cpu_id) as a pointer, which is wrong.
-        core::arch::asm!(
-            "mov gs:[{offset}], {}",
-            in(reg) rsp,
-            offset = const USER_RSP_SCRATCH_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_user_rsp_scratch(rsp);
     }
 }
 
 /// Increment preempt count (disable kernel preemption)
 /// Only manipulates the PREEMPT bits (0-7), not interrupt counts
 /// CRITICAL: Must only be called after per_cpu::init() with interrupts disabled until then
+///
+/// NOTE on compiler fences: This function adds fences because the HAL's preempt_disable()
+/// is a minimal trait implementation without fences. In contrast, irq_enter/exit, nmi_enter/exit,
+/// and softirq_enter/exit wrappers don't add fences because their HAL implementations already
+/// include them.
 pub fn preempt_disable() {
     // Per-CPU data must be initialized before any preemption operations
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "preempt_disable called before per-CPU initialization");
-    
-    unsafe {
-        // Compiler barrier before incrementing preempt count
-        compiler_fence(Ordering::Acquire);
-        
-        let old_count: u32;
-        
-        // Use addl for incrementing per-CPU preempt count
-        // No LOCK prefix needed for per-CPU data
-        core::arch::asm!(
-            "mov {old:e}, dword ptr gs:[{offset}]",  // Read current value
-            "add dword ptr gs:[{offset}], {inc:e}", // Add PREEMPT_OFFSET
-            old = out(reg) old_count,
-            inc = in(reg) PREEMPT_OFFSET,
-            offset = const PREEMPT_COUNT_OFFSET,
-            options(nostack, preserves_flags)
-        );
-        
-        let new_count = old_count + PREEMPT_OFFSET;
-        
-        // Check for overflow in debug builds
-        debug_assert!(
-            (new_count & PREEMPT_MASK) >= (old_count & PREEMPT_MASK),
-            "preempt_disable: PREEMPT count overflow! Was {:#x}, would be {:#x}",
-            old_count & PREEMPT_MASK,
-            new_count & PREEMPT_MASK
-        );
-        
-        // Compiler barrier after incrementing preempt count
-        compiler_fence(Ordering::Release);
-        
-        // CRITICAL: Do NOT use log:: macros here as they may recursively call preempt_disable!
-        // This was causing the double preempt_disable issue when coming from userspace.
-        // The logging infrastructure might acquire locks which call preempt_disable.
-        #[cfg(never)] // Disable this logging to prevent recursion
-        {
-            // Get CPU ID for logging (at offset 0)
-            let cpu_id: usize;
-            core::arch::asm!(
-                "mov {}, gs:[0]",
-                out(reg) cpu_id,
-                options(nostack)
-            );
-            
-            log::debug!("preempt_disable: {:#x} -> {:#x} (per-CPU, CPU {})", old_count, new_count, cpu_id);
-        }
-    }
+
+    // Compiler barrier before incrementing preempt count
+    compiler_fence(Ordering::Acquire);
+
+    // Use HAL for atomic GS-relative increment
+
+    hal_percpu::X86PerCpu::preempt_disable();
+
+    // Compiler barrier after incrementing preempt count
+    compiler_fence(Ordering::Release);
+
+    // CRITICAL: Do NOT use log:: macros here as they may recursively call preempt_disable!
 }
 
 /// Decrement preempt count (enable kernel preemption)
@@ -827,66 +646,26 @@ pub fn preempt_disable() {
 /// CRITICAL: Must only be called after per_cpu::init() with interrupts disabled until then
 pub fn preempt_enable() {
     // Per-CPU data must be initialized before any preemption operations
-    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire), 
+    debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "preempt_enable called before per-CPU initialization");
-    
-    unsafe {
-        // Compiler barrier before decrementing preempt count
-        compiler_fence(Ordering::Acquire);
-        
-        // Atomic decrement on GS-relative memory
-        let old_count: u32;
-        
-        // Use subl for decrementing per-CPU preempt count
-        // No LOCK prefix needed for per-CPU data
-        core::arch::asm!(
-            "mov {old:e}, dword ptr gs:[{offset}]",   // Read current value
-            "sub dword ptr gs:[{offset}], {dec:e}",  // Subtract PREEMPT_OFFSET
-            old = out(reg) old_count,
-            dec = in(reg) PREEMPT_OFFSET,
-            offset = const PREEMPT_COUNT_OFFSET,
-            options(nostack, preserves_flags)
-        );
-        
-        let new_count = old_count.wrapping_sub(PREEMPT_OFFSET);
-        
-        // Compiler barrier after decrementing preempt count
-        compiler_fence(Ordering::Release);
 
-        // Get CPU ID for logging (at offset 0)
-        let _cpu_id: usize;
-        core::arch::asm!(
-            "mov {}, gs:[0]",
-            out(reg) _cpu_id,
-            options(nostack)
-        );
+    // Compiler barrier before decrementing preempt count
+    compiler_fence(Ordering::Acquire);
 
-        // CRITICAL: Disable logging to prevent recursion issues
-        #[cfg(never)]
-        log::debug!("preempt_enable: {:#x} -> {:#x} (per-CPU, CPU {})", old_count, new_count, _cpu_id);
-        
-        // Check for underflow in debug builds
-        debug_assert!(
-            (old_count & PREEMPT_MASK) >= PREEMPT_OFFSET,
-            "preempt_enable: PREEMPT count underflow! Was {:#x}",
-            old_count & PREEMPT_MASK
-        );
-        
-        if (new_count & PREEMPT_MASK) == 0 {
-            // PREEMPT count reached 0, check if we should schedule
-            // Only schedule if:
-            // 1. We're not in any interrupt context (no HARDIRQ/SOFTIRQ/NMI bits)
-            // 2. need_resched is set
-            if (new_count & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK)) == 0 {
-                // Not in interrupt context, safe to check for scheduling
-                // Note: We intentionally do NOT call try_schedule() or clear need_resched here.
-                // The syscall return path and timer interrupt return path both check
-                // need_resched and call check_need_resched_and_switch() which performs
-                // the actual context switch with proper register save/restore.
-                // Clearing the flag here would prevent those paths from scheduling.
-            }
-        }
-    }
+    // Use HAL for atomic GS-relative decrement
+
+    hal_percpu::X86PerCpu::preempt_enable();
+
+    // Compiler barrier after decrementing preempt count
+    compiler_fence(Ordering::Release);
+
+    // CRITICAL: Disable logging to prevent recursion issues
+
+    // Check if we should schedule after preempt_enable
+    // Note: We intentionally do NOT call try_schedule() or clear need_resched here.
+    // The syscall return path and timer interrupt return path both check
+    // need_resched and call check_need_resched_and_switch() which performs
+    // the actual context switch with proper register save/restore.
 }
 
 /// Get current preempt count
@@ -894,17 +673,9 @@ pub fn preempt_count() -> u32 {
     debug_assert!(PER_CPU_INITIALIZED.load(Ordering::Acquire),
                   "preempt_count called before per-CPU initialization");
 
-    // Read preempt_count directly from GS segment
-    unsafe {
-        let count: u32;
-        core::arch::asm!(
-            "mov {count:e}, dword ptr gs:[{offset}]",
-            count = out(reg) count,
-            offset = const PREEMPT_COUNT_OFFSET,
-            options(nostack, readonly)
-        );
-        count
-    }
+    // Use HAL for GS-relative access
+
+    hal_percpu::X86PerCpu::preempt_count()
 }
 
 /// Clear PREEMPT_ACTIVE bit (bit 28) from preempt_count
@@ -920,15 +691,9 @@ pub fn clear_preempt_active() {
         return;
     }
 
+    // Use HAL for atomic GS-relative bit clear
     unsafe {
-        // Clear bit 28 (PREEMPT_ACTIVE) from preempt_count
-        // Use AND with ~PREEMPT_ACTIVE to clear the bit
-        core::arch::asm!(
-            "and dword ptr gs:[{offset}], {mask:e}",
-            mask = in(reg) !PREEMPT_ACTIVE,
-            offset = const PREEMPT_COUNT_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::clear_preempt_active();
     }
 }
 
@@ -937,56 +702,37 @@ pub fn softirq_pending() -> u32 {
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return 0;
     }
-    
-    unsafe {
-        let pending: u32;
-        core::arch::asm!(
-            "mov {pending:e}, dword ptr gs:[{offset}]",
-            pending = out(reg) pending,
-            offset = const SOFTIRQ_PENDING_OFFSET,
-            options(nostack, readonly, preserves_flags)
-        );
-        pending
-    }
+
+    // Use HAL for GS-relative access
+    hal_percpu::X86PerCpu::softirq_pending()
 }
 
 /// Set softirq pending bit
 #[allow(dead_code)]
 pub fn raise_softirq(nr: u32) {
     debug_assert!(nr < 32, "Invalid softirq number");
-    
+
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return;
     }
-    
+
+    // Use HAL for atomic GS-relative bit set
     unsafe {
-        let bit = 1u32 << nr;
-        core::arch::asm!(
-            "or dword ptr gs:[{offset}], {bit:e}",
-            bit = in(reg) bit,
-            offset = const SOFTIRQ_PENDING_OFFSET,
-            options(nostack, preserves_flags)
-        );
-        // log::trace!("Raised softirq {}, pending bitmap now: {:#x}", nr, softirq_pending());  // Disabled to avoid deadlock
+        hal_percpu::X86PerCpu::raise_softirq(nr);
     }
 }
 
 /// Clear softirq pending bit
 pub fn clear_softirq(nr: u32) {
     debug_assert!(nr < 32, "Invalid softirq number");
-    
+
     if !PER_CPU_INITIALIZED.load(Ordering::Acquire) {
         return;
     }
-    
+
+    // Use HAL for atomic GS-relative bit clear
     unsafe {
-        let mask = !(1u32 << nr);
-        core::arch::asm!(
-            "and dword ptr gs:[{offset}], {mask:e}",
-            mask = in(reg) mask,
-            offset = const SOFTIRQ_PENDING_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::clear_softirq(nr);
     }
 }
 
@@ -1030,16 +776,8 @@ pub fn get_next_cr3() -> u64 {
         return 0;
     }
 
-    unsafe {
-        let cr3: u64;
-        core::arch::asm!(
-            "mov {}, gs:[{offset}]",
-            out(reg) cr3,
-            offset = const NEXT_CR3_OFFSET,
-            options(nostack, readonly, preserves_flags)
-        );
-        cr3
-    }
+    // Use HAL for GS-relative access
+    hal_percpu::X86PerCpu::next_cr3()
 }
 
 /// Set the target CR3 for next IRETQ
@@ -1051,13 +789,9 @@ pub fn set_next_cr3(cr3: u64) {
         return;
     }
 
+    // Use HAL for GS-relative access
     unsafe {
-        core::arch::asm!(
-            "mov gs:[{offset}], {}",
-            in(reg) cr3,
-            offset = const NEXT_CR3_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_next_cr3(cr3);
     }
 }
 
@@ -1069,16 +803,8 @@ pub fn get_kernel_cr3() -> u64 {
         return 0;
     }
 
-    unsafe {
-        let cr3: u64;
-        core::arch::asm!(
-            "mov {}, gs:[{offset}]",
-            out(reg) cr3,
-            offset = const KERNEL_CR3_OFFSET,
-            options(nostack, readonly, preserves_flags)
-        );
-        cr3
-    }
+    // Use HAL for GS-relative access
+    hal_percpu::X86PerCpu::kernel_cr3()
 }
 
 /// Set the kernel CR3 (master kernel page table)
@@ -1091,13 +817,9 @@ pub fn set_kernel_cr3(cr3: u64) {
     }
 
     log::info!("Setting kernel_cr3 in per-CPU data to {:#x}", cr3);
+    // Use HAL for GS-relative access
     unsafe {
-        core::arch::asm!(
-            "mov gs:[{offset}], {}",
-            in(reg) cr3,
-            offset = const KERNEL_CR3_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_kernel_cr3(cr3);
     }
 }
 
@@ -1109,13 +831,9 @@ pub fn set_exception_cleanup_context() {
         return;
     }
 
+    // Use HAL for GS-relative access
     unsafe {
-        // Set exception_cleanup_context to 1 at offset 88
-        core::arch::asm!(
-            "mov byte ptr gs:[{offset}], 1",
-            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_exception_cleanup_context(true);
     }
 }
 
@@ -1126,13 +844,9 @@ pub fn clear_exception_cleanup_context() {
         return;
     }
 
+    // Use HAL for GS-relative access
     unsafe {
-        // Set exception_cleanup_context to 0 at offset 88
-        core::arch::asm!(
-            "mov byte ptr gs:[{offset}], 0",
-            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
-            options(nostack, preserves_flags)
-        );
+        hal_percpu::X86PerCpu::set_exception_cleanup_context(false);
     }
 }
 
@@ -1142,16 +856,8 @@ pub fn in_exception_cleanup_context() -> bool {
         return false;
     }
 
-    unsafe {
-        let value: u8;
-        core::arch::asm!(
-            "mov {val}, byte ptr gs:[{offset}]",
-            val = out(reg_byte) value,
-            offset = const EXCEPTION_CLEANUP_CONTEXT_OFFSET,
-            options(nostack, readonly, preserves_flags)
-        );
-        value != 0
-    }
+    // Use HAL for GS-relative access
+    hal_percpu::X86PerCpu::exception_cleanup_context()
 }
 
 /// Check if we can schedule (preempt_count == 0 and returning to userspace)
