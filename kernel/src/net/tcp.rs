@@ -568,31 +568,79 @@ fn handle_tcp_for_connection(
             }
         }
         TcpState::FinWait1 => {
+            // In FinWait1, we've sent FIN but can still receive data
             if header.flags.ack {
                 conn.send_unack = header.ack_num;
-                if header.flags.fin {
-                    // Simultaneous close
-                    conn.recv_next = conn.recv_next.wrapping_add(1);
-                    conn.state = TcpState::TimeWait;
-
-                    // Send ACK for FIN
-                    send_tcp_packet(
-                        config,
-                        conn.id.remote_ip,
-                        conn.id.local_port,
-                        conn.id.remote_port,
-                        conn.send_next,
-                        conn.recv_next,
-                        TcpFlags::ack(),
-                        conn.recv_window,
-                        &[],
-                    );
-                } else {
+                // Our FIN was ACKed, move to FinWait2
+                if !header.flags.fin {
                     conn.state = TcpState::FinWait2;
                 }
             }
+
+            // Process incoming data (half-close: we can still receive)
+            if !payload.is_empty() && header.seq_num == conn.recv_next {
+                conn.rx_buffer.extend(payload);
+                conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
+
+                log::debug!("TCP: Received {} bytes of data in FinWait1", payload.len());
+
+                // Send ACK for data
+                send_tcp_packet(
+                    config,
+                    conn.id.remote_ip,
+                    conn.id.local_port,
+                    conn.id.remote_port,
+                    conn.send_next,
+                    conn.recv_next,
+                    TcpFlags::ack(),
+                    conn.recv_window,
+                    &[],
+                );
+            }
+
+            // Handle FIN from peer (simultaneous close or peer closing after we did)
+            if header.flags.fin {
+                conn.recv_next = conn.recv_next.wrapping_add(1);
+                conn.state = TcpState::TimeWait;
+
+                // Send ACK for FIN
+                send_tcp_packet(
+                    config,
+                    conn.id.remote_ip,
+                    conn.id.local_port,
+                    conn.id.remote_port,
+                    conn.send_next,
+                    conn.recv_next,
+                    TcpFlags::ack(),
+                    conn.recv_window,
+                    &[],
+                );
+            }
         }
         TcpState::FinWait2 => {
+            // In FinWait2, our FIN was ACKed but peer hasn't sent FIN yet
+            // We can still receive data (half-close)
+            if !payload.is_empty() && header.seq_num == conn.recv_next {
+                conn.rx_buffer.extend(payload);
+                conn.recv_next = conn.recv_next.wrapping_add(payload.len() as u32);
+
+                log::debug!("TCP: Received {} bytes of data in FinWait2", payload.len());
+
+                // Send ACK for data
+                send_tcp_packet(
+                    config,
+                    conn.id.remote_ip,
+                    conn.id.local_port,
+                    conn.id.remote_port,
+                    conn.send_next,
+                    conn.recv_next,
+                    TcpFlags::ack(),
+                    conn.recv_window,
+                    &[],
+                );
+            }
+
+            // Handle FIN from peer
             if header.flags.fin {
                 conn.recv_next = conn.recv_next.wrapping_add(1);
                 conn.state = TcpState::TimeWait;
@@ -899,8 +947,14 @@ pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'stati
     let mut connections = TCP_CONNECTIONS.lock();
     let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
 
+    // Check recv_shutdown flag - if set, return EOF immediately
+    if conn.recv_shutdown {
+        return Ok(0); // EOF - user called SHUT_RD
+    }
+
     if conn.rx_buffer.is_empty() {
-        if conn.state == TcpState::CloseWait || conn.state == TcpState::Closed {
+        // Return EOF if connection is closing/closed
+        if matches!(conn.state, TcpState::CloseWait | TcpState::Closed | TcpState::TimeWait) {
             return Ok(0); // EOF
         }
         return Err("No data available");

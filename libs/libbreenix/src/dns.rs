@@ -239,6 +239,27 @@ impl DnsHeader {
 // Encoding Functions
 // ============================================================================
 
+/// Generate a pseudo-random transaction ID for DNS queries
+///
+/// Uses a simple hash of the hostname combined with a monotonic counter.
+/// This isn't cryptographically secure but provides enough variation
+/// to avoid transaction ID collisions and basic spoofing.
+fn generate_txid(hostname: &str) -> u16 {
+    use core::sync::atomic::{AtomicU16, Ordering};
+    static COUNTER: AtomicU16 = AtomicU16::new(0);
+
+    // Increment counter for each query
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    // Hash hostname bytes using simple multiply-add
+    let hash: u16 = hostname
+        .bytes()
+        .fold(0u16, |acc, b| acc.wrapping_add(b as u16).wrapping_mul(31));
+
+    // Combine hash, counter, and a constant for variation
+    hash ^ counter ^ 0xBEEF
+}
+
 /// Encode a hostname as DNS wire format labels
 ///
 /// Example: "www.google.com" -> "\x03www\x06google\x03com\x00"
@@ -471,8 +492,8 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
     // Build query packet
     let mut query_buf = [0u8; DNS_BUF_SIZE];
 
-    // Simple transaction ID (in production, should be random)
-    let txid: u16 = 0x1234;
+    // Generate pseudo-random transaction ID based on hostname and counter
+    let txid: u16 = generate_txid(hostname);
 
     let query_len = encode_query(hostname, txid, &mut query_buf);
     if query_len == 0 {
