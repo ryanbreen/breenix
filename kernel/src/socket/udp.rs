@@ -66,26 +66,28 @@ impl UdpSocket {
     }
 
     /// Bind the socket to a local address and port
-    pub fn bind(&mut self, pid: ProcessId, addr: [u8; 4], port: u16) -> Result<(), i32> {
+    /// If port is 0, an ephemeral port will be allocated
+    pub fn bind(&mut self, pid: ProcessId, addr: [u8; 4], port: u16) -> Result<u16, i32> {
         if self.bound {
             return Err(crate::syscall::errno::EINVAL); // Already bound
         }
 
-        // Register in global socket registry
-        SOCKET_REGISTRY.bind_udp(port, pid, self.handle)?;
+        // Register in global socket registry (returns allocated port if port was 0)
+        let actual_port = SOCKET_REGISTRY.bind_udp(port, pid, self.handle)?;
 
         self.local_addr = Some(addr);
-        self.local_port = Some(port);
+        self.local_port = Some(actual_port);
         self.bound = true;
 
         log::debug!(
-            "UDP: Socket {:?} bound to {}.{}.{}.{}:{}",
+            "UDP: Socket {:?} bound to {}.{}.{}.{}:{} (requested: {})",
             self.handle,
             addr[0], addr[1], addr[2], addr[3],
+            actual_port,
             port
         );
 
-        Ok(())
+        Ok(actual_port)
     }
 
     /// Receive a packet from the queue

@@ -322,3 +322,7 @@ path = "exec_stack_argv_test.rs"
 [[bin]]
 name = "tcp_client_test"
 path = "tcp_client_test.rs"
+
+[[bin]]
+name = "dns_test"
+path = "dns_test.rs"

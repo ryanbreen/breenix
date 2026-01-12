@@ -37,10 +37,17 @@ pub fn alloc_socket_handle() -> SocketHandle {
     handle
 }
 
+/// Ephemeral port range start (IANA recommendation)
+const EPHEMERAL_PORT_START: u16 = 49152;
+/// Ephemeral port range end
+const EPHEMERAL_PORT_END: u16 = 65535;
+
 /// Global socket registry - maps ports to sockets for incoming packet dispatch
 pub struct SocketRegistry {
     /// UDP port bindings: port -> (pid, socket_handle)
     udp_ports: spin::Mutex<alloc::collections::BTreeMap<u16, (ProcessId, SocketHandle)>>,
+    /// Next ephemeral port to try (simple rotating counter)
+    next_ephemeral: spin::Mutex<u16>,
 }
 
 impl SocketRegistry {
@@ -48,18 +55,54 @@ impl SocketRegistry {
     pub const fn new() -> Self {
         SocketRegistry {
             udp_ports: spin::Mutex::new(alloc::collections::BTreeMap::new()),
+            next_ephemeral: spin::Mutex::new(EPHEMERAL_PORT_START),
+        }
+    }
+
+    /// Allocate an ephemeral port
+    fn alloc_ephemeral_port(&self, ports: &alloc::collections::BTreeMap<u16, (ProcessId, SocketHandle)>) -> Option<u16> {
+        let mut next = self.next_ephemeral.lock();
+        let start = *next;
+
+        // Search for an available port, wrapping around if necessary
+        loop {
+            let port = *next;
+            *next = if *next >= EPHEMERAL_PORT_END {
+                EPHEMERAL_PORT_START
+            } else {
+                *next + 1
+            };
+
+            if !ports.contains_key(&port) {
+                return Some(port);
+            }
+
+            // If we've wrapped around to the start, no ports available
+            if *next == start {
+                return None;
+            }
         }
     }
 
     /// Bind a UDP port to a socket
-    pub fn bind_udp(&self, port: u16, pid: ProcessId, handle: SocketHandle) -> Result<(), i32> {
+    /// If port is 0, allocates an ephemeral port and returns it
+    pub fn bind_udp(&self, port: u16, pid: ProcessId, handle: SocketHandle) -> Result<u16, i32> {
         let mut ports = self.udp_ports.lock();
-        if ports.contains_key(&port) {
-            Err(crate::syscall::errno::EADDRINUSE) // Address already in use
+
+        let actual_port = if port == 0 {
+            // Allocate ephemeral port
+            self.alloc_ephemeral_port(&ports)
+                .ok_or(crate::syscall::errno::EADDRINUSE)?
         } else {
-            ports.insert(port, (pid, handle));
-            Ok(())
-        }
+            // Use specified port
+            if ports.contains_key(&port) {
+                return Err(crate::syscall::errno::EADDRINUSE);
+            }
+            port
+        };
+
+        ports.insert(actual_port, (pid, handle));
+        Ok(actual_port)
     }
 
     /// Unbind a UDP port
