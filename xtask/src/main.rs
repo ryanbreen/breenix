@@ -856,6 +856,31 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "TCP socket test did not complete successfully",
             check_hint: "Check userspace/tests/tcp_socket_test.rs for which step failed",
         },
+        // DNS resolution tests - validates DNS client using UDP sockets
+        BootStage {
+            name: "DNS google resolve",
+            marker: "DNS_TEST: google_resolve OK",
+            failure_meaning: "DNS resolution of www.google.com failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket path",
+        },
+        BootStage {
+            name: "DNS example resolve",
+            marker: "DNS_TEST: example_resolve OK",
+            failure_meaning: "DNS resolution of example.com failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs - may be DNS server or parsing issue",
+        },
+        BootStage {
+            name: "DNS NXDOMAIN handling",
+            marker: "DNS_TEST: nxdomain OK",
+            failure_meaning: "NXDOMAIN handling for nonexistent domain failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs - error handling for RCODE 3",
+        },
+        BootStage {
+            name: "DNS test completed",
+            marker: "DNS Test: All tests passed",
+            failure_meaning: "DNS test did not complete successfully",
+            check_hint: "Check userspace/tests/dns_test.rs for which step failed",
+        },
         // IPC (pipe) tests
         BootStage {
             name: "Pipe IPC test passed",

@@ -582,6 +582,20 @@ fn kernel_main_continue() -> ! {
                     }
                 }
             }
+
+            // Launch DNS test to verify DNS resolution using UDP sockets
+            {
+                serial_println!("RING3_SMOKE: creating dns_test userspace process");
+                let dns_test_buf = crate::userspace_test::get_test_binary("dns_test");
+                match process::creation::create_user_process(String::from("dns_test"), &dns_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created dns_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create dns_test process: {}", e);
+                    }
+                }
+            }
         });
     }
 

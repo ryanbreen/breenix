@@ -38,6 +38,7 @@ pub use syscall::raw;
 pub use types::*;
 
 pub mod argv;
+pub mod dns;
 pub mod errno;
 pub mod fs;
 pub mod io;

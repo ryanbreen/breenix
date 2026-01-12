@@ -258,13 +258,11 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
     }
 
     // Look up destination MAC in ARP cache
-    let dst_mac = if is_same_subnet(&dst_ip, &config.ip_addr, &config.subnet_mask) {
-        // Same subnet - ARP for destination directly
-        arp::lookup(&dst_ip).ok_or("ARP lookup failed - destination not in cache")?
-    } else {
-        // Different subnet - send to gateway
-        arp::lookup(&config.gateway).ok_or("ARP lookup failed - gateway not in cache")?
-    };
+    // For QEMU SLIRP mode, always send through gateway since SLIRP doesn't have real
+    // hosts on the virtual subnet - all services (DNS at 10.0.2.3, etc.) are emulated
+    // by SLIRP and routed through the gateway MAC.
+    // For real networks, we could try direct ARP for same-subnet destinations.
+    let dst_mac = arp::lookup(&config.gateway).ok_or("ARP lookup failed - gateway not in cache")?;
 
     // Build IP packet
     let ip_packet = ipv4::Ipv4Packet::build(
@@ -275,16 +273,6 @@ pub fn send_ipv4(dst_ip: [u8; 4], protocol: u8, payload: &[u8]) -> Result<(), &'
     );
 
     send_ethernet(&dst_mac, ethernet::ETHERTYPE_IPV4, &ip_packet)
-}
-
-/// Check if two IPs are on the same subnet
-fn is_same_subnet(ip1: &[u8; 4], ip2: &[u8; 4], mask: &[u8; 4]) -> bool {
-    for i in 0..4 {
-        if (ip1[i] & mask[i]) != (ip2[i] & mask[i]) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Send an ICMP echo request (ping)

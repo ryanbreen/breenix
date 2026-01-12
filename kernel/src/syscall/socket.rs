@@ -151,8 +151,8 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             let socket_ref = s.clone();
             let mut socket = socket_ref.lock();
             match socket.bind(pid, addr.addr, addr.port_host()) {
-                Ok(()) => {
-                    log::info!("UDP: Socket bound to port {}", addr.port_host());
+                Ok(actual_port) => {
+                    log::info!("UDP: Socket bound to port {} (requested: {})", actual_port, addr.port_host());
                     SyscallResult::Ok(0)
                 }
                 Err(e) => SyscallResult::Err(e as u64),
