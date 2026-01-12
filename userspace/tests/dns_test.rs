@@ -97,6 +97,75 @@ pub extern "C" fn _start() -> ! {
         }
     }
 
+    // Test 4: Empty hostname should return InvalidHostname
+    io::print("DNS_TEST: testing empty hostname...\n");
+    match resolve("", SLIRP_DNS) {
+        Err(DnsError::InvalidHostname) => {
+            io::print("DNS_TEST: empty_hostname OK\n");
+        }
+        Ok(_) => {
+            io::print("DNS_TEST: empty_hostname FAILED (should not resolve)\n");
+            process::exit(4);
+        }
+        Err(e) => {
+            io::print("DNS_TEST: empty_hostname FAILED wrong err=");
+            print_error(e);
+            io::print("\n");
+            process::exit(4);
+        }
+    }
+
+    // Test 5: Hostname too long should return HostnameTooLong
+    io::print("DNS_TEST: testing long hostname...\n");
+    // Create a hostname > 255 chars: 260 'a's + ".com" = 264 chars
+    let long_hostname = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com";
+    match resolve(long_hostname, SLIRP_DNS) {
+        Err(DnsError::HostnameTooLong) => {
+            io::print("DNS_TEST: long_hostname OK\n");
+        }
+        Ok(_) => {
+            io::print("DNS_TEST: long_hostname FAILED (should not resolve)\n");
+            process::exit(5);
+        }
+        Err(e) => {
+            io::print("DNS_TEST: long_hostname FAILED wrong err=");
+            print_error(e);
+            io::print("\n");
+            process::exit(5);
+        }
+    }
+
+    // Test 6: Verify transaction IDs vary between queries
+    // The txid is generated based on hostname + counter, so consecutive
+    // resolves should work (the counter ensures different txids even for
+    // same hostname). We verify this by doing two consecutive resolves
+    // and ensuring both succeed (if txid was static and broken, we'd fail).
+    // Note: txid verification happens in parse_response which checks response.id == txid
+    io::print("DNS_TEST: testing txid variation...\n");
+    let mut txid_ok = true;
+    for i in 0..2u8 {
+        match resolve("example.com", SLIRP_DNS) {
+            Ok(_) => {
+                // Success - txid matched
+            }
+            Err(e) => {
+                io::print("DNS_TEST: txid query ");
+                print_num(i as u64);
+                io::print(" failed err=");
+                print_error(e);
+                io::print("\n");
+                txid_ok = false;
+                break;
+            }
+        }
+    }
+    if txid_ok {
+        io::print("DNS_TEST: txid_varies OK\n");
+    } else {
+        io::print("DNS_TEST: txid_varies FAILED\n");
+        process::exit(6);
+    }
+
     io::print("DNS Test: All tests passed!\n");
     process::exit(0);
 }

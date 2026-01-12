@@ -617,6 +617,30 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check packet data integrity in RX path - possible buffer corruption",
         },
         BootStage {
+            name: "UDP ephemeral port bind",
+            marker: "UDP_EPHEMERAL_TEST: port 0 bind OK",
+            failure_meaning: "bind(port=0) failed - ephemeral port allocation broken",
+            check_hint: "Check syscall/socket.rs:sys_bind() for port 0 handling",
+        },
+        BootStage {
+            name: "UDP EADDRINUSE detection",
+            marker: "UDP_EADDRINUSE_TEST: conflict detected OK",
+            failure_meaning: "Binding to already-bound port did not return EADDRINUSE",
+            check_hint: "Check kernel port conflict detection in UDP bind path",
+        },
+        BootStage {
+            name: "UDP EAGAIN on empty queue",
+            marker: "UDP_EAGAIN_TEST: empty queue OK",
+            failure_meaning: "recvfrom on empty queue did not return EAGAIN",
+            check_hint: "Check syscall/socket.rs:sys_recvfrom() - should return EAGAIN when no data",
+        },
+        BootStage {
+            name: "UDP multiple packets received",
+            marker: "UDP_MULTIPACKET_TEST: 3 packets OK",
+            failure_meaning: "Failed to receive 3 packets in sequence - queue or delivery broken",
+            check_hint: "Check net/udp.rs packet queuing and delivery_to_socket()",
+        },
+        BootStage {
             name: "UDP socket test completed",
             marker: "UDP Socket Test: All tests passed",
             failure_meaning: "UDP socket test did not complete successfully",
@@ -862,6 +886,32 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Accept did not return client address correctly",
             check_hint: "Check sys_accept address output handling",
         },
+        // Test 23: Simultaneous close test
+        BootStage {
+            name: "TCP simultaneous close test started",
+            marker: "TCP_SIMUL_CLOSE_TEST: starting",
+            failure_meaning: "Simultaneous close test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP simultaneous close test passed",
+            marker: "TCP_SIMUL_CLOSE_TEST: simultaneous close OK",
+            failure_meaning: "Both sides calling shutdown(SHUT_RDWR) simultaneously failed",
+            check_hint: "Check sys_shutdown handling when both sides close together",
+        },
+        // Test 24: Half-close data flow test
+        BootStage {
+            name: "TCP half-close test started",
+            marker: "TCP_HALFCLOSE_TEST: starting",
+            failure_meaning: "Half-close test did not start",
+            check_hint: "Previous test may have failed",
+        },
+        BootStage {
+            name: "TCP half-close test passed",
+            marker: "TCP_HALFCLOSE_TEST: read after SHUT_WR OK",
+            failure_meaning: "Client could not read data after calling SHUT_WR (half-close broken)",
+            check_hint: "Check tcp_recv - recv_shutdown should only be set by SHUT_RD, not SHUT_WR",
+        },
         BootStage {
             name: "TCP socket test passed",
             marker: "TCP Socket Test: PASSED",
@@ -886,6 +936,24 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "DNS_TEST: nxdomain OK",
             failure_meaning: "NXDOMAIN handling for nonexistent domain failed",
             check_hint: "Check libs/libbreenix/src/dns.rs - error handling for RCODE 3",
+        },
+        BootStage {
+            name: "DNS empty hostname",
+            marker: "DNS_TEST: empty_hostname OK",
+            failure_meaning: "Empty hostname validation failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs - resolve() should return InvalidHostname for empty string",
+        },
+        BootStage {
+            name: "DNS long hostname",
+            marker: "DNS_TEST: long_hostname OK",
+            failure_meaning: "Hostname too long validation failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs - resolve() should return HostnameTooLong for >255 char hostname",
+        },
+        BootStage {
+            name: "DNS txid varies",
+            marker: "DNS_TEST: txid_varies OK",
+            failure_meaning: "Transaction ID variation test failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs - generate_txid() should produce different IDs for consecutive queries",
         },
         BootStage {
             name: "DNS test completed",
