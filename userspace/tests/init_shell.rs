@@ -22,8 +22,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use libbreenix::fs::{open, O_DIRECTORY, O_RDONLY, O_WRONLY};
 use libbreenix::io::{close, dup2, pipe, print, println, read, write};
 use libbreenix::process::{
-    exec, execv, fork, getpgrp, setpgid, waitpid, wexitstatus, wifexited, wifsignaled, wifstopped,
-    yield_now, WNOHANG, WUNTRACED,
+    chdir, exec, execv, fork, getcwd, getpgrp, setpgid, waitpid, wexitstatus, wifexited,
+    wifsignaled, wifstopped, yield_now, WNOHANG, WUNTRACED,
 };
 use libbreenix::signal::{kill, sigaction, Sigaction, SIGCHLD, SIGCONT, SIGINT};
 use libbreenix::termios::{
@@ -1204,6 +1204,16 @@ fn print_num(mut n: u64) {
     }
 }
 
+/// Print a signed number (i32)
+fn print_i32(n: i32) {
+    if n < 0 {
+        print("-");
+        print_num((-n) as u64);
+    } else {
+        print_num(n as u64);
+    }
+}
+
 /// Read a line from stdin, handling backspace and yielding on EAGAIN
 /// Returns None if interrupted by SIGINT (Ctrl+C)
 fn read_line() -> Option<&'static str> {
@@ -1267,6 +1277,8 @@ fn cmd_help() {
     println("Built-in commands:");
     println("  help   - Show this help message");
     println("  echo   - Echo text back to the terminal");
+    println("  cd     - Change current directory (cd /path)");
+    println("  pwd    - Print current working directory");
     println("  ps     - List processes (placeholder)");
     println("  jobs   - List background and stopped jobs");
     println("  bg     - Resume stopped job in background (bg %N)");
@@ -1344,6 +1356,55 @@ fn cmd_uptime() {
         print("s");
     }
     println("");
+}
+
+/// Handle the "cd" command - change current directory
+fn cmd_cd(args: &str) {
+    // If no argument, go to root
+    let path = if args.is_empty() { "/" } else { args.trim() };
+
+    // Build null-terminated path
+    let mut path_buf = [0u8; 256];
+    let path_bytes = path.as_bytes();
+    if path_bytes.len() >= path_buf.len() {
+        println("cd: path too long");
+        return;
+    }
+    path_buf[..path_bytes.len()].copy_from_slice(path_bytes);
+    path_buf[path_bytes.len()] = 0; // null terminator
+
+    let result = chdir(&path_buf[..=path_bytes.len()]);
+    if result < 0 {
+        print("cd: ");
+        print(path);
+        match -result {
+            2 => println(": No such file or directory"),
+            20 => println(": Not a directory"),
+            13 => println(": Permission denied"),
+            _ => {
+                print(": error ");
+                print_i32(-result);
+                println("");
+            }
+        }
+    }
+}
+
+/// Handle the "pwd" command - print working directory
+fn cmd_pwd() {
+    let mut buf = [0u8; 256];
+    let result = getcwd(&mut buf);
+    if result > 0 {
+        // Find the null terminator and print the path
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        if let Ok(path) = core::str::from_utf8(&buf[..len]) {
+            println(path);
+        } else {
+            println("pwd: invalid path encoding");
+        }
+    } else {
+        println("pwd: cannot get current directory");
+    }
 }
 
 /// Handle the "clear" command
@@ -1681,6 +1742,8 @@ fn handle_command(line: &str) {
     match cmd {
         "help" => cmd_help(),
         "echo" => cmd_echo(args),
+        "cd" => cmd_cd(args),
+        "pwd" => cmd_pwd(),
         "ps" => cmd_ps(),
         "jobs" => list_jobs(),
         "bg" => builtin_bg(args),

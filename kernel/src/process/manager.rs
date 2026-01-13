@@ -562,7 +562,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info, parent_heap_start, parent_heap_end) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -579,6 +579,7 @@ impl ProcessManager {
                 parent.entry_point,
                 parent.pgid,
                 parent.sid,
+                parent.cwd.clone(),
                 _parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
@@ -601,9 +602,10 @@ impl ProcessManager {
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
         child_process.parent = Some(parent_pid);
-        // POSIX: Child inherits parent's process group and session
+        // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
+        child_process.cwd = parent_cwd.clone();
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
         #[cfg(feature = "testing")]
@@ -672,7 +674,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_thread_info, parent_heap_start, parent_heap_end) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -689,6 +691,7 @@ impl ProcessManager {
                 parent.entry_point,
                 parent.pgid,
                 parent.sid,
+                parent.cwd.clone(),
                 _parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
@@ -711,9 +714,10 @@ impl ProcessManager {
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
         child_process.parent = Some(parent_pid);
-        // POSIX: Child inherits parent's process group and session
+        // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
+        child_process.cwd = parent_cwd.clone();
 
         // COPY-ON-WRITE FORK: Share pages between parent and child
         // Pages are marked read-only and only copied when written to
@@ -1096,16 +1100,18 @@ impl ProcessManager {
         // Create child process name
         let child_name = format!("{}_child_{}", parent.name, child_pid.as_u64());
 
-        // Capture parent's pgid and sid before borrowing page_table
+        // Capture parent's pgid, sid, and cwd before borrowing page_table
         let parent_pgid = parent.pgid;
         let parent_sid = parent.sid;
+        let parent_cwd = parent.cwd.clone();
 
         // Create the child process with the same entry point
         let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
         child_process.parent = Some(parent_pid);
-        // POSIX: Child inherits parent's process group and session
+        // POSIX: Child inherits parent's process group, session, and working directory
         child_process.pgid = parent_pgid;
         child_process.sid = parent_sid;
+        child_process.cwd = parent_cwd;
 
         // Extract parent heap bounds before we drop the parent borrow
         let parent_heap_start = parent.heap_start;

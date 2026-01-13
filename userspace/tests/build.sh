@@ -89,6 +89,7 @@ BINARIES=(
     "fs_link_test"
     "access_test"
     "devfs_test"
+    "cwd_test"
     "fork_memory_test"
     "fork_state_test"
     "cow_signal_test"

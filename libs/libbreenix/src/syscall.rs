@@ -28,6 +28,8 @@ pub mod nr {
     pub const IOCTL: u64 = 16;       // Linux x86_64 ioctl
     pub const ACCESS: u64 = 21;      // Linux x86_64 access
     pub const PIPE: u64 = 22;        // Linux x86_64 pipe
+    pub const GETCWD: u64 = 79;      // Linux x86_64 getcwd
+    pub const CHDIR: u64 = 80;       // Linux x86_64 chdir
     pub const SELECT: u64 = 23;       // Linux x86_64 select
     pub const PIPE2: u64 = 293;       // Linux x86_64 pipe2
     pub const DUP: u64 = 32;          // Linux x86_64 dup

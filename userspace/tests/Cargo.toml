@@ -234,6 +234,10 @@ path = "access_test.rs"
 name = "devfs_test"
 path = "devfs_test.rs"
 
+[[bin]]
+name = "cwd_test"
+path = "cwd_test.rs"
+
 # Coreutils
 [[bin]]
 name = "cat"

@@ -1218,6 +1218,55 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "devfs test failed - /dev/null, /dev/zero, or /dev/console broken",
             check_hint: "Check kernel/src/fs/devfs/mod.rs and syscall routing in sys_open for /dev/* paths",
         },
+        // Current working directory syscalls test
+        BootStage {
+            name: "CWD initial OK",
+            marker: "CWD_INITIAL_OK",
+            failure_meaning: "Initial cwd is not / - process cwd not initialized correctly",
+            check_hint: "Check kernel/src/process/process.rs cwd initialization and kernel/src/syscall/fs.rs sys_getcwd",
+        },
+        BootStage {
+            name: "CWD chdir OK",
+            marker: "CWD_CHDIR_OK",
+            failure_meaning: "chdir to valid directory failed - cwd update not working",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_chdir path resolution and process cwd update",
+        },
+        BootStage {
+            name: "CWD ENOENT OK",
+            marker: "CWD_ENOENT_OK",
+            failure_meaning: "chdir to nonexistent path did not return ENOENT",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_chdir error handling for missing paths",
+        },
+        BootStage {
+            name: "CWD ENOTDIR OK",
+            marker: "CWD_ENOTDIR_OK",
+            failure_meaning: "chdir to file did not return ENOTDIR",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_chdir directory type validation",
+        },
+        BootStage {
+            name: "CWD relative OK",
+            marker: "CWD_RELATIVE_OK",
+            failure_meaning: "Relative path navigation (cd ..) failed",
+            check_hint: "Check kernel/src/syscall/fs.rs normalize_path function for .. handling",
+        },
+        BootStage {
+            name: "CWD fork inheritance OK",
+            marker: "CWD_FORK_OK",
+            failure_meaning: "Fork did not inherit cwd from parent",
+            check_hint: "Check kernel/src/process/manager.rs fork_internal clones parent cwd to child",
+        },
+        BootStage {
+            name: "CWD getcwd errors OK",
+            marker: "CWD_ERRORS_OK",
+            failure_meaning: "getcwd error handling (EINVAL/ERANGE) failed",
+            check_hint: "Check kernel/src/syscall/fs.rs sys_getcwd validates size and returns correct error codes",
+        },
+        BootStage {
+            name: "CWD test passed",
+            marker: "CWD_TEST_PASSED",
+            failure_meaning: "One or more cwd tests failed",
+            check_hint: "Check userspace/tests/cwd_test.rs output for specific failure",
+        },
         // Rust std library test - validates real Rust std works in userspace
         BootStage {
             name: "Rust std println! works",

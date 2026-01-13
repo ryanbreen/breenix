@@ -2006,6 +2006,33 @@ pub fn test_devfs() {
     }
 }
 
+/// Test current working directory syscalls (getcwd, chdir)
+pub fn test_cwd() {
+    log::info!("Testing cwd syscalls (getcwd, chdir)");
+
+    #[cfg(feature = "testing")]
+    let cwd_test_elf_buf = crate::userspace_test::get_test_binary("cwd_test");
+    #[cfg(feature = "testing")]
+    let cwd_test_elf: &[u8] = &cwd_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cwd_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cwd_test"),
+        cwd_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cwd_test process with PID {:?}", pid);
+            log::info!("CWD test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit CWD_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cwd_test process: {}", e);
+            log::error!("CWD test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test Rust std library support via hello_std_real
 pub fn test_hello_std_real() {
     log::info!("Testing Rust std library support (hello_std_real)");

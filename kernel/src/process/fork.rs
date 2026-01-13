@@ -437,8 +437,7 @@ pub fn copy_stack_contents(
 ///
 /// - **umask**: Not yet tracked per-process (uses global default). TODO when implemented.
 ///
-/// - **Current working directory**: Not yet tracked per-process (uses global cwd).
-///   TODO when per-process cwd is implemented.
+/// - **Current working directory**: Inherited from parent in fork_internal().
 ///
 /// Note: Memory (pages, heap bounds) and stack are copied separately by copy_user_pages()
 /// and copy_stack_contents() before this function is called.
@@ -501,8 +500,8 @@ pub fn copy_process_state(
     // 5. Copy umask (when per-process umask is implemented)
     // TODO: child_process.umask = parent_process.umask;
 
-    // 6. Copy current working directory (when per-process cwd is implemented)
-    // TODO: child_process.cwd = parent_process.cwd.clone();
+    // 6. Current working directory: inherited from parent in fork_internal()
+    //    (before copy_process_state is called)
 
     log::debug!(
         "copy_process_state: completed state copy for child {}",

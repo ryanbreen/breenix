@@ -54,6 +54,9 @@ pub struct Process {
     /// a controlling terminal. Initially set to pid on process creation.
     pub sid: ProcessId,
 
+    /// Current working directory (absolute path)
+    pub cwd: String,
+
     /// Process name (for debugging)
     pub name: String,
 
@@ -130,6 +133,8 @@ impl Process {
             pgid: id,
             // By default, a process's sid equals its pid (process is its own session leader)
             sid: id,
+            // Default working directory is root
+            cwd: String::from("/"),
             name,
             state: ProcessState::Creating,
             entry_point,

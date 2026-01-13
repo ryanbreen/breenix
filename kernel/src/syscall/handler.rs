@@ -276,6 +276,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::GetSid) => super::session::sys_getsid(args.0 as i32),
         // Filesystem syscalls
         Some(SyscallNumber::Access) => super::fs::sys_access(args.0, args.1 as u32),
+        Some(SyscallNumber::Getcwd) => super::fs::sys_getcwd(args.0, args.1),
+        Some(SyscallNumber::Chdir) => super::fs::sys_chdir(args.0),
         Some(SyscallNumber::Open) => super::fs::sys_open(args.0, args.1 as u32, args.2 as u32),
         Some(SyscallNumber::Lseek) => super::fs::sys_lseek(args.0 as i32, args.1 as i64, args.2 as i32),
         Some(SyscallNumber::Fstat) => super::fs::sys_fstat(args.0 as i32, args.1),
