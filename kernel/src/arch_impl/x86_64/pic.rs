@@ -1,3 +1,10 @@
+//! x86_64 PIC (8259A) interrupt controller.
+//!
+//! Note: This is part of the complete HAL API. The X86Pic struct
+//! implements the InterruptController trait.
+
+#![allow(dead_code)] // HAL type - part of complete API
+
 use crate::arch_impl::traits::InterruptController;
 use crate::interrupts::{PICS, PIC_1_OFFSET};
 

@@ -596,6 +596,20 @@ fn kernel_main_continue() -> ! {
                     }
                 }
             }
+
+            // Launch HTTP test to verify HTTP client over TCP+DNS
+            {
+                serial_println!("RING3_SMOKE: creating http_test userspace process");
+                let http_test_buf = crate::userspace_test::get_test_binary("http_test");
+                match process::creation::create_user_process(String::from("http_test"), &http_test_buf) {
+                    Ok(pid) => {
+                        log::info!("Created http_test process with PID {}", pid.as_u64());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create http_test process: {}", e);
+                    }
+                }
+            }
         });
     }
 

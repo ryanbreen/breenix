@@ -30,6 +30,7 @@
 
 #![no_std]
 #![no_main]
+#![allow(unused_assignments)]  // Some failed += 1 before exit() are intentional for consistency
 
 use core::panic::PanicInfo;
 use libbreenix::io;
@@ -52,14 +53,15 @@ const MAX_LOOPBACK_RETRIES: usize = 3;
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     io::print("TCP Socket Test: Starting\n");
-    let mut passed = 0;
-    let mut failed = 0;
+    // Track test results - failed counter determines exit status
+    let mut _passed = 0usize;  // Tracked for debugging, not used in exit logic
+    let mut failed = 0usize;
 
     // Test 1: Create TCP socket
     let server_fd = match socket(AF_INET, SOCK_STREAM, 0) {
         Ok(fd) if fd >= 0 => {
             io::print("TCP_TEST: socket created OK\n");
-            passed += 1;
+            _passed += 1;
             fd
         }
         Ok(_) => {
@@ -79,7 +81,7 @@ pub extern "C" fn _start() -> ! {
     match bind(server_fd, &local_addr) {
         Ok(()) => {
             io::print("TCP_TEST: bind OK\n");
-            passed += 1;
+            _passed += 1;
         }
         Err(_) => {
             io::print("TCP_TEST: bind FAILED\n");
@@ -92,7 +94,7 @@ pub extern "C" fn _start() -> ! {
     match listen(server_fd, 128) {
         Ok(()) => {
             io::print("TCP_TEST: listen OK\n");
-            passed += 1;
+            _passed += 1;
         }
         Err(_) => {
             io::print("TCP_TEST: listen FAILED\n");
@@ -105,7 +107,7 @@ pub extern "C" fn _start() -> ! {
     let client_fd = match socket(AF_INET, SOCK_STREAM, 0) {
         Ok(fd) if fd >= 0 => {
             io::print("TCP_TEST: client socket OK\n");
-            passed += 1;
+            _passed += 1;
             fd
         }
         Ok(_) => {
@@ -125,7 +127,7 @@ pub extern "C" fn _start() -> ! {
     match connect(client_fd, &loopback_addr) {
         Ok(()) => {
             io::print("TCP_TEST: connect OK\n");
-            passed += 1;
+            _passed += 1;
         }
         Err(_) => {
             io::print("TCP_TEST: connect FAILED\n");
@@ -172,7 +174,7 @@ pub extern "C" fn _start() -> ! {
             } else {
                 io::print("TCP_TEST: accept OK\n");
             }
-            passed += 1;
+            _passed += 1;
         }
         None => {
             io::print("TCP_TEST: accept FAILED\n");
@@ -184,7 +186,7 @@ pub extern "C" fn _start() -> ! {
     match shutdown(client_fd, SHUT_RDWR) {
         Ok(()) => {
             io::print("TCP_TEST: shutdown OK\n");
-            passed += 1;
+            _passed += 1;
         }
         Err(_) => {
             io::print("TCP_TEST: shutdown FAILED\n");
@@ -201,7 +203,7 @@ pub extern "C" fn _start() -> ! {
         match shutdown(fd, SHUT_RDWR) {
             Err(ENOTCONN) => {
                 io::print("TCP_TEST: shutdown_unconnected OK\n");
-                passed += 1;
+                _passed += 1;
             }
             _ => {
                 io::print("TCP_TEST: shutdown_unconnected FAILED\n");
@@ -229,7 +231,7 @@ pub extern "C" fn _start() -> ! {
                 match bind(fd2, &conflict_addr) {
                     Err(EADDRINUSE) => {
                         io::print("TCP_TEST: eaddrinuse OK\n");
-                        passed += 1;
+                        _passed += 1;
                     }
                     _ => {
                         io::print("TCP_TEST: eaddrinuse FAILED\n");
@@ -258,7 +260,7 @@ pub extern "C" fn _start() -> ! {
         match listen(fd, 128) {
             Err(EINVAL) => {
                 io::print("TCP_TEST: listen_unbound OK\n");
-                passed += 1;
+                _passed += 1;
             }
             _ => {
                 io::print("TCP_TEST: listen_unbound FAILED\n");
@@ -281,7 +283,7 @@ pub extern "C" fn _start() -> ! {
             match accept(fd, None) {
                 Err(EOPNOTSUPP) => {
                     io::print("TCP_TEST: accept_nonlisten OK\n");
-                    passed += 1;
+                    _passed += 1;
                 }
                 _ => {
                     io::print("TCP_TEST: accept_nonlisten FAILED\n");
@@ -368,7 +370,7 @@ pub extern "C" fn _start() -> ! {
         process::exit(12);
     }
     io::print("TCP_DATA_TEST: send OK\n");
-    passed += 1;
+    _passed += 1;
 
     // Server accepts the connection (limited retries with warning)
     let mut data_accepted_fd = None;
@@ -440,7 +442,7 @@ pub extern "C" fn _start() -> ! {
     } else {
         io::print("TCP_DATA_TEST: recv OK\n");
     }
-    passed += 1;
+    _passed += 1;
 
     // Verify received data matches "HELLO"
     let expected = b"HELLO";
@@ -455,7 +457,7 @@ pub extern "C" fn _start() -> ! {
         }
         if matches {
             io::print("TCP_DATA_TEST: data verified\n");
-            passed += 1;
+            _passed += 1;
         } else {
             io::print("TCP_DATA_TEST: data mismatch\n");
             failed += 1;
@@ -539,7 +541,7 @@ pub extern "C" fn _start() -> ! {
         let write_result = io::write(shutdown_client_fd as u64, test_data);
         if write_result == -(EPIPE as i64) {
             io::print("TCP_SHUTDOWN_WRITE_TEST: EPIPE OK\n");
-            passed += 1;
+            _passed += 1;
         } else if write_result >= 0 {
             io::print("TCP_SHUTDOWN_WRITE_TEST: write should fail after shutdown\n");
             failed += 1;
@@ -611,11 +613,11 @@ pub extern "C" fn _start() -> ! {
                 let read_result = io::read(shutrd_client_fd as u64, &mut shutrd_buf);
                 if read_result == 0 {
                     io::print("TCP_SHUT_RD_TEST: EOF OK\n");
-                    passed += 1;
+                    _passed += 1;
                 } else if read_result < 0 {
                     // Error is also acceptable (EAGAIN if non-blocking, etc.)
                     io::print("TCP_SHUT_RD_TEST: read error OK\n");
-                    passed += 1;
+                    _passed += 1;
                 } else {
                     // Should NOT return positive bytes after SHUT_RD with no buffered data
                     io::print("TCP_SHUT_RD_TEST: read returned data after SHUT_RD\n");
@@ -692,7 +694,7 @@ pub extern "C" fn _start() -> ! {
                 let write_result = io::write(shutwr_client_fd as u64, shutwr_test_data);
                 if write_result < 0 {
                     io::print("TCP_SHUT_WR_TEST: SHUT_WR write rejected OK\n");
-                    passed += 1;
+                    _passed += 1;
                 } else {
                     io::print("TCP_SHUT_WR_TEST: write should fail after SHUT_WR\n");
                     failed += 1;
@@ -810,7 +812,7 @@ pub extern "C" fn _start() -> ! {
             }
             if matches {
                 io::print("TCP_BIDIR_TEST: server->client OK\n");
-                passed += 1;
+                _passed += 1;
             } else {
                 io::print("TCP_BIDIR_TEST: data mismatch\n");
                 failed += 1;
@@ -921,7 +923,7 @@ pub extern "C" fn _start() -> ! {
             }
             if matches {
                 io::print("TCP_LARGE_TEST: 256 bytes verified OK\n");
-                passed += 1;
+                _passed += 1;
             } else {
                 io::print("TCP_LARGE_TEST: data mismatch\n");
                 failed += 1;
@@ -1030,16 +1032,16 @@ pub extern "C" fn _start() -> ! {
         if !connect_results[2] {
             // 3rd connection was rejected at connect - backlog enforced strictly
             io::print("TCP_BACKLOG_TEST: overflow rejected OK\n");
-            passed += 1;
+            _passed += 1;
         } else if accepted_count <= 2 {
             // 3rd connect succeeded but only 2 are in accept queue - backlog enforced
             io::print("TCP_BACKLOG_TEST: overflow limited OK\n");
-            passed += 1;
+            _passed += 1;
         } else {
             // All 3 connected AND all 3 accepted - backlog NOT enforced
             // This is actually acceptable for some implementations (SYN queue vs accept queue)
             io::print("TCP_BACKLOG_TEST: all accepted OK\n");
-            passed += 1;
+            _passed += 1;
         }
     } else {
         io::print("TCP_BACKLOG_TEST: first 2 connects FAILED\n");
@@ -1070,11 +1072,11 @@ pub extern "C" fn _start() -> ! {
     match connect(refused_client_fd, &refused_addr) {
         Err(ECONNREFUSED) => {
             io::print("TCP_CONNREFUSED_TEST: ECONNREFUSED OK\n");
-            passed += 1;
+            _passed += 1;
         }
         Err(ETIMEDOUT) => {
             io::print("TCP_CONNREFUSED_TEST: ETIMEDOUT OK\n");
-            passed += 1;
+            _passed += 1;
         }
         Err(e) => {
             io::print("TCP_CONNREFUSED_TEST: unexpected error\n");
@@ -1203,7 +1205,7 @@ pub extern "C" fn _start() -> ! {
             }
             if matches {
                 io::print("TCP_MSS_TEST: 2000 bytes (>MSS) verified OK\n");
-                passed += 1;
+                _passed += 1;
             } else {
                 io::print("TCP_MSS_TEST: data mismatch\n");
                 failed += 1;
@@ -1321,7 +1323,7 @@ pub extern "C" fn _start() -> ! {
 
     if multi_success {
         io::print("TCP_MULTI_TEST: 3 messages verified OK\n");
-        passed += 1;
+        _passed += 1;
     } else {
         io::print("TCP_MULTI_TEST: multi-message FAILED\n");
         failed += 1;
@@ -1387,11 +1389,11 @@ pub extern "C" fn _start() -> ! {
         if client_addr.addr[0] == 127 && client_addr.addr[1] == 0 &&
            client_addr.addr[2] == 0 && client_addr.addr[3] == 1 {
             io::print("TCP_ADDR_TEST: 127.0.0.1 OK\n");
-            passed += 1;
+            _passed += 1;
         } else if client_addr.addr[0] == 10 {
             // QEMU SLIRP network guest IP - loopback was normalized
             io::print("TCP_ADDR_TEST: 10.x.x.x OK\n");
-            passed += 1;
+            _passed += 1;
         } else if client_addr.addr[0] == 0 && client_addr.addr[1] == 0 &&
                   client_addr.addr[2] == 0 && client_addr.addr[3] == 0 {
             // FAIL: Address not filled in - this is a bug
@@ -1477,11 +1479,11 @@ pub extern "C" fn _start() -> ! {
     // Both shutdowns should succeed (or at least not panic)
     if client_shutdown_result.is_ok() && server_shutdown_result.is_ok() {
         io::print("TCP_SIMUL_CLOSE_TEST: simultaneous close OK\n");
-        passed += 1;
+        _passed += 1;
     } else if client_shutdown_result.is_ok() || server_shutdown_result.is_ok() {
         // One side succeeded - this is acceptable for simultaneous close
         io::print("TCP_SIMUL_CLOSE_TEST: simultaneous close OK\n");
-        passed += 1;
+        _passed += 1;
     } else {
         io::print("TCP_SIMUL_CLOSE_TEST: both shutdowns FAILED\n");
         failed += 1;
@@ -1587,7 +1589,7 @@ pub extern "C" fn _start() -> ! {
                 }
                 if matches {
                     io::print("TCP_HALFCLOSE_TEST: read after SHUT_WR OK\n");
-                    passed += 1;
+                    _passed += 1;
                 } else {
                     io::print("TCP_HALFCLOSE_TEST: data mismatch FAILED\n");
                     failed += 1;
@@ -1602,7 +1604,7 @@ pub extern "C" fn _start() -> ! {
         }
     }
 
-    // Final result
+    // Final result - _passed tracked for debugging, failed determines exit status
     if failed == 0 {
         io::print("TCP Socket Test: PASSED\n");
         process::exit(0);

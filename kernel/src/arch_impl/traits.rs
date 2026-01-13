@@ -2,6 +2,11 @@
 //!
 //! These traits define the interface between architecture-specific code and
 //! the rest of the kernel. Each architecture must implement these traits.
+//!
+//! Note: This is part of the complete HAL API. Not all traits and their
+//! methods are actively used yet, but they define the complete abstraction.
+
+#![allow(dead_code)] // HAL traits - complete API for architecture abstraction
 
 use core::ops::BitOr;
 

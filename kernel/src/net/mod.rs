@@ -25,7 +25,8 @@ use crate::drivers::e1000;
 pub struct NetConfig {
     /// Our IPv4 address
     pub ip_addr: [u8; 4],
-    /// Subnet mask
+    /// Subnet mask (for routing decisions - not yet used but required for complete config)
+    #[allow(dead_code)] // Part of complete network config API
     pub subnet_mask: [u8; 4],
     /// Default gateway
     pub gateway: [u8; 4],

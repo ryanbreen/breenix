@@ -326,3 +326,7 @@ path = "tcp_client_test.rs"
 [[bin]]
 name = "dns_test"
 path = "dns_test.rs"
+
+[[bin]]
+name = "http_test"
+path = "http_test.rs"

@@ -1,3 +1,10 @@
+//! x86_64 interrupt frame abstraction.
+//!
+//! Note: This is part of the complete HAL API. The struct may not be
+//! directly constructed in all code paths but implements the InterruptFrame trait.
+
+#![allow(dead_code)] // HAL type - part of complete API
+
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::VirtAddr;
 

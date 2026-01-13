@@ -51,7 +51,8 @@ unsafe fn print_number(num: u64) {
     io::write(fd::STDOUT, &buffer[..i]);
 }
 
-/// Print signed number
+/// Print signed number (available for debugging, currently unused)
+#[allow(dead_code)]
 unsafe fn print_signed(num: i64) {
     if num < 0 {
         io::print("-");

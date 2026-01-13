@@ -2,6 +2,12 @@
 //!
 //! This module centralizes all x86_64-specific magic numbers and constants
 //! that were previously scattered throughout the kernel.
+//!
+//! Note: This is a complete HAL constants module. Many constants are
+//! intentionally defined for API completeness and documentation even
+//! if not currently used by the kernel.
+
+#![allow(dead_code)] // HAL constants - complete API for x86_64 architecture
 
 // ============================================================================
 // Memory Layout Constants

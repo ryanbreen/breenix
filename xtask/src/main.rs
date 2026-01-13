@@ -949,6 +949,59 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "DNS test did not complete successfully",
             check_hint: "Check userspace/tests/dns_test.rs for which step failed",
         },
+        // HTTP client tests - validates HTTP/1.1 GET over TCP using DNS resolution
+        // Section 1: URL parsing tests (no network needed, specific error assertions)
+        BootStage {
+            name: "HTTP port out of range",
+            marker: "HTTP_TEST: port_out_of_range OK",
+            failure_meaning: "HTTP client should reject port > 65535 with InvalidUrl error",
+            check_hint: "Check libs/libbreenix/src/http.rs parse_port() - must reject ports > 65535",
+        },
+        BootStage {
+            name: "HTTP port non-numeric",
+            marker: "HTTP_TEST: port_non_numeric OK",
+            failure_meaning: "HTTP client should reject non-numeric port with InvalidUrl error",
+            check_hint: "Check libs/libbreenix/src/http.rs parse_port() - must reject non-digit chars",
+        },
+        BootStage {
+            name: "HTTP empty host",
+            marker: "HTTP_TEST: empty_host OK",
+            failure_meaning: "HTTP client should reject empty host with InvalidUrl error",
+            check_hint: "Check libs/libbreenix/src/http.rs parse_url() - must validate host is non-empty",
+        },
+        BootStage {
+            name: "HTTP URL too long",
+            marker: "HTTP_TEST: url_too_long OK",
+            failure_meaning: "HTTP client should reject URL > 2048 chars with UrlTooLong error",
+            check_hint: "Check libs/libbreenix/src/http.rs http_get_with_buf() - MAX_URL_LEN check",
+        },
+        // Section 2: HTTPS rejection test (no network needed)
+        BootStage {
+            name: "HTTP HTTPS rejection",
+            marker: "HTTP_TEST: https_rejected OK",
+            failure_meaning: "HTTP client should reject HTTPS URLs with HttpsNotSupported error",
+            check_hint: "Check libs/libbreenix/src/http.rs parse_url() HTTPS check",
+        },
+        // Section 3: Error handling for invalid domain (expects DnsError specifically)
+        BootStage {
+            name: "HTTP invalid domain",
+            marker: "HTTP_TEST: invalid_domain OK",
+            failure_meaning: "HTTP client should return DnsError for .invalid TLD",
+            check_hint: "Check libs/libbreenix/src/http.rs and dns.rs - .invalid TLD must not resolve",
+        },
+        // Section 4: Network integration test (SKIP is acceptable if network unavailable)
+        BootStage {
+            name: "HTTP example fetch",
+            marker: "HTTP_TEST: example_fetch OK|HTTP_TEST: example_fetch SKIP",
+            failure_meaning: "HTTP GET to example.com failed with unexpected error",
+            check_hint: "Check libs/libbreenix/src/http.rs - OK requires status 200 + HTML, SKIP for network unavailable",
+        },
+        BootStage {
+            name: "HTTP test completed",
+            marker: "HTTP Test: All tests passed",
+            failure_meaning: "HTTP test did not complete successfully",
+            check_hint: "Check userspace/tests/http_test.rs for which step failed",
+        },
         // IPC (pipe) tests
         BootStage {
             name: "Pipe IPC test passed",

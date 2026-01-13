@@ -81,11 +81,6 @@ impl SyscallFrame {
     pub fn set_return_value(&mut self, value: u64) {
         self.rax = value;
     }
-
-    /// Get return value
-    pub fn return_value(&self) -> u64 {
-        self.rax
-    }
 }
 
 // Implement the HAL SyscallFrame trait
