@@ -1142,6 +1142,42 @@ pub fn sys_exec_with_frame(
     })
 }
 
+/// Load ELF binary from ext2 filesystem path.
+///
+/// Returns the file content as Vec<u8> on success, or an errno on failure.
+#[cfg(feature = "testing")]
+fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
+    use super::errno::{EACCES, EIO, ENOENT, ENOTDIR};
+    use crate::fs::ext2;
+
+    // Get ext2 filesystem
+    let fs_guard = ext2::root_fs();
+    let fs = fs_guard.as_ref().ok_or(EIO)?;
+
+    // Resolve path to inode number
+    let inode_num = fs
+        .resolve_path(path)
+        .map_err(|e| if e.contains("not found") { ENOENT } else { EIO })?;
+
+    // Read inode metadata
+    let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
+
+    // Check it's a regular file (not directory)
+    if inode.is_dir() {
+        return Err(ENOTDIR);
+    }
+
+    // Check execute permission (S_IXUSR = 0o100)
+    if (inode.i_mode & 0o100) == 0 {
+        return Err(EACCES);
+    }
+
+    // Read file content
+    let data = fs.read_file_content(&inode).map_err(|_| EIO)?;
+
+    Ok(data)
+}
+
 /// sys_execv_with_frame - Replace the current process with a new program (with argv support)
 ///
 /// This is the extended implementation that supports passing command-line arguments.
@@ -1268,8 +1304,24 @@ pub fn sys_execv_with_frame(
 
         #[cfg(feature = "testing")]
         {
-            // Load the binary from the test disk by name
-            let elf_vec = crate::userspace_test::get_test_binary(program_name);
+            // Try to load from ext2 filesystem first, fall back to test disk
+            let elf_vec = if program_name.contains('/') {
+                // Path-like name: load from ext2 filesystem
+                match load_elf_from_ext2(program_name) {
+                    Ok(data) => data,
+                    Err(errno) => return SyscallResult::Err(errno as u64),
+                }
+            } else {
+                // Bare name: try ext2 /bin/ first, then fall back to test disk
+                let bin_path = alloc::format!("/bin/{}", program_name);
+                match load_elf_from_ext2(&bin_path) {
+                    Ok(data) => data,
+                    Err(_) => {
+                        // Fall back to test disk for compatibility
+                        crate::userspace_test::get_test_binary(program_name)
+                    }
+                }
+            };
             let boxed_slice = elf_vec.into_boxed_slice();
             let elf_data = Box::leak(boxed_slice) as &'static [u8];
             let name_string = alloc::string::String::from(program_name);
