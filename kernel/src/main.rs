@@ -834,6 +834,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: devfs device files ===");
         test_exec::test_devfs();
 
+        // Test current working directory syscalls (getcwd, chdir)
+        log::info!("=== FS TEST: cwd syscalls (getcwd, chdir) ===");
+        test_exec::test_cwd();
+
         // Test Rust std library support
         log::info!("=== STD TEST: Rust std library support ===");
         test_exec::test_hello_std_real();

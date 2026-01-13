@@ -68,6 +68,8 @@ pub enum SyscallNumber {
     Pipe2 = 293,        // Linux syscall number for pipe2
     // Filesystem syscalls
     Access = 21,        // Linux syscall number for access
+    Getcwd = 79,        // Linux syscall number for getcwd
+    Chdir = 80,         // Linux syscall number for chdir
     Rename = 82,        // Linux syscall number for rename
     Mkdir = 83,         // Linux syscall number for mkdir
     Rmdir = 84,         // Linux syscall number for rmdir
@@ -131,6 +133,8 @@ impl SyscallNumber {
             293 => Some(Self::Pipe2),
             // Filesystem syscalls
             21 => Some(Self::Access),
+            79 => Some(Self::Getcwd),
+            80 => Some(Self::Chdir),
             82 => Some(Self::Rename),
             83 => Some(Self::Mkdir),
             84 => Some(Self::Rmdir),

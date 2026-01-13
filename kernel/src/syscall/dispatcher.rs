@@ -74,6 +74,8 @@ pub fn dispatch_syscall(
         SyscallNumber::GetSid => super::session::sys_getsid(arg1 as i32),
         // Filesystem syscalls
         SyscallNumber::Access => super::fs::sys_access(arg1, arg2 as u32),
+        SyscallNumber::Getcwd => super::fs::sys_getcwd(arg1, arg2),
+        SyscallNumber::Chdir => super::fs::sys_chdir(arg1),
         SyscallNumber::Open => super::fs::sys_open(arg1, arg2 as u32, arg3 as u32),
         SyscallNumber::Lseek => super::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32),
         SyscallNumber::Fstat => super::fs::sys_fstat(arg1 as i32, arg2),

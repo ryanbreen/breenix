@@ -153,12 +153,28 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     use spin::Mutex;
 
     // Copy path from userspace
-    let path = match copy_cstr_from_user(pathname) {
+    let raw_path = match copy_cstr_from_user(pathname) {
         Ok(p) => p,
         Err(errno) => return SyscallResult::Err(errno),
     };
 
-    log::debug!("sys_open: path={:?}, flags={:#x}, mode={:#o}", path, flags, mode);
+    log::debug!("sys_open: raw_path={:?}, flags={:#x}, mode={:#o}", raw_path, flags, mode);
+
+    // Resolve relative paths using current working directory
+    let path = if raw_path.starts_with('/') {
+        raw_path
+    } else {
+        // Get current process's cwd
+        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
+        let absolute = if cwd.ends_with('/') {
+            alloc::format!("{}{}", cwd, raw_path)
+        } else {
+            alloc::format!("{}/{}", cwd, raw_path)
+        };
+        normalize_path(&absolute)
+    };
+
+    log::debug!("sys_open: resolved path={:?}", path);
 
     // Check for /dev directory itself
     if path == "/dev" || path == "/dev/" {
@@ -1813,4 +1829,294 @@ fn handle_devfs_getdents64(
 
     log::debug!("handle_devfs_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
     SyscallResult::Ok(bytes_written as u64)
+}
+
+/// sys_getcwd - Get current working directory
+///
+/// Returns the absolute pathname of the current working directory.
+///
+/// # Arguments
+/// * `buf` - Buffer to store the path (userspace pointer)
+/// * `size` - Size of the buffer
+///
+/// # Returns
+/// Pointer to buf on success (as u64), negative errno on failure
+///
+/// # Errors
+/// * EFAULT - Invalid buffer pointer
+/// * ERANGE - Buffer too small
+/// * ENOENT - cwd has been unlinked (not implemented yet)
+pub fn sys_getcwd(buf: u64, size: u64) -> SyscallResult {
+    use super::errno::{EFAULT, EINVAL, ERANGE};
+
+    log::debug!("sys_getcwd: buf={:#x}, size={}", buf, size);
+
+    // Validate buffer pointer
+    if buf == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Size must be at least 1 for the null terminator
+    if size == 0 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Get current process
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_getcwd: No current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    let manager_guard = crate::process::manager();
+    let process = match &*manager_guard {
+        Some(manager) => match manager.find_process_by_thread(thread_id) {
+            Some((_, p)) => p,
+            None => {
+                log::error!("sys_getcwd: Process not found for thread {}", thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        },
+        None => {
+            log::error!("sys_getcwd: Process manager not initialized");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    // Get the cwd from the process
+    let cwd = &process.cwd;
+    let cwd_bytes = cwd.as_bytes();
+    let required_size = cwd_bytes.len() + 1; // +1 for null terminator
+
+    // Check if buffer is large enough
+    if required_size > size as usize {
+        log::debug!("sys_getcwd: buffer too small ({} < {})", size, required_size);
+        return SyscallResult::Err(ERANGE as u64);
+    }
+
+    // Copy to user buffer with null terminator
+    let user_buf = buf as *mut u8;
+    unsafe {
+        core::ptr::copy_nonoverlapping(cwd_bytes.as_ptr(), user_buf, cwd_bytes.len());
+        *user_buf.add(cwd_bytes.len()) = 0; // Null terminator
+    }
+
+    log::debug!("sys_getcwd: returning {:?}", cwd);
+    SyscallResult::Ok(buf)
+}
+
+/// sys_chdir - Change current working directory
+///
+/// Changes the current working directory to the specified path.
+///
+/// # Arguments
+/// * `pathname` - Path to the new working directory (userspace pointer)
+///
+/// # Returns
+/// 0 on success, negative errno on failure
+///
+/// # Errors
+/// * ENOENT - Directory does not exist
+/// * ENOTDIR - Path is not a directory
+/// * EACCES - Permission denied
+/// * EIO - I/O error
+pub fn sys_chdir(pathname: u64) -> SyscallResult {
+    use super::errno::{EACCES, EIO, ENOENT, ENOTDIR};
+    use super::userptr::copy_cstr_from_user;
+    use crate::fs::ext2::{self, FileType as Ext2FileType};
+    use alloc::string::String;
+
+    // Copy path from userspace
+    let path = match copy_cstr_from_user(pathname) {
+        Ok(p) => p,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+
+    log::debug!("sys_chdir: path={:?}", path);
+
+    // Handle empty path
+    if path.is_empty() {
+        return SyscallResult::Err(ENOENT as u64);
+    }
+
+    // Get current process cwd for resolving relative paths
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_chdir: No current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    // First, get the current cwd for relative path resolution
+    let current_cwd = {
+        let manager_guard = crate::process::manager();
+        match &*manager_guard {
+            Some(manager) => match manager.find_process_by_thread(thread_id) {
+                Some((_, p)) => p.cwd.clone(),
+                None => return SyscallResult::Err(3), // ESRCH
+            },
+            None => return SyscallResult::Err(3), // ESRCH
+        }
+    };
+
+    // Normalize the path (handle relative paths)
+    let absolute_path = if path.starts_with('/') {
+        path.clone()
+    } else {
+        // Combine current cwd with relative path
+        if current_cwd.ends_with('/') {
+            alloc::format!("{}{}", current_cwd, path)
+        } else {
+            alloc::format!("{}/{}", current_cwd, path)
+        }
+    };
+
+    // Normalize the path (resolve . and ..)
+    let normalized = normalize_path(&absolute_path);
+
+    // Handle /dev directory and its contents specially
+    if normalized == "/dev" {
+        // /dev is always accessible as a directory
+        let mut manager_guard = crate::process::manager();
+        if let Some(manager) = &mut *manager_guard {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                process.cwd = String::from("/dev");
+                log::info!("sys_chdir: changed cwd to /dev");
+                return SyscallResult::Ok(0);
+            }
+        }
+        return SyscallResult::Err(3); // ESRCH
+    }
+
+    // Handle paths under /dev - these are device files, not directories
+    if normalized.starts_with("/dev/") {
+        let device_name = &normalized[5..]; // Strip "/dev/" prefix
+        if crate::fs::devfs::lookup(device_name).is_some() {
+            // Device exists but is a file, not a directory
+            log::debug!("sys_chdir: /dev/{} is a device file, not a directory", device_name);
+            return SyscallResult::Err(ENOTDIR as u64);
+        } else {
+            // Device doesn't exist
+            log::debug!("sys_chdir: /dev/{} not found", device_name);
+            return SyscallResult::Err(ENOENT as u64);
+        }
+    }
+
+    // Get the root filesystem
+    let fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_ref() {
+        Some(fs) => fs,
+        None => {
+            log::error!("sys_chdir: ext2 root filesystem not mounted");
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Resolve the path to an inode number
+    let inode_num = match fs.resolve_path(&normalized) {
+        Ok(ino) => ino,
+        Err(e) => {
+            log::debug!("sys_chdir: path resolution failed: {}", e);
+            let errno = if e.contains("not found") {
+                ENOENT
+            } else if e.contains("Not a directory") {
+                ENOTDIR
+            } else if e.contains("permission") {
+                EACCES
+            } else {
+                EIO
+            };
+            return SyscallResult::Err(errno as u64);
+        }
+    };
+
+    // Read the inode to verify it's a directory
+    let inode = match fs.read_inode(inode_num) {
+        Ok(ino) => ino,
+        Err(_) => {
+            log::error!("sys_chdir: failed to read inode {}", inode_num);
+            return SyscallResult::Err(EIO as u64);
+        }
+    };
+
+    // Check if it's a directory
+    if !matches!(inode.file_type(), Ext2FileType::Directory) {
+        log::debug!("sys_chdir: {} is not a directory", normalized);
+        return SyscallResult::Err(ENOTDIR as u64);
+    }
+
+    // Drop filesystem lock before getting process lock
+    drop(fs_guard);
+
+    // Update the process's cwd
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_, p)) => p,
+            None => {
+                log::error!("sys_chdir: Process not found for thread {}", thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        },
+        None => {
+            log::error!("sys_chdir: Process manager not initialized");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    process.cwd = normalized.clone();
+    log::info!("sys_chdir: changed cwd to {}", normalized);
+    SyscallResult::Ok(0)
+}
+
+/// Normalize a path by resolving . and .. components
+///
+/// Examples:
+/// - "/foo/bar/../baz" -> "/foo/baz"
+/// - "/foo/./bar" -> "/foo/bar"
+/// - "/../foo" -> "/foo" (can't go above root)
+fn normalize_path(path: &str) -> alloc::string::String {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    let mut components: Vec<&str> = Vec::new();
+
+    for component in path.split('/') {
+        match component {
+            "" | "." => continue, // Skip empty and current directory
+            ".." => {
+                // Go up one level (but not above root)
+                components.pop();
+            }
+            _ => components.push(component),
+        }
+    }
+
+    if components.is_empty() {
+        String::from("/")
+    } else {
+        let mut result = String::new();
+        for component in components {
+            result.push('/');
+            result.push_str(component);
+        }
+        result
+    }
+}
+
+/// Get the current working directory for the current process
+///
+/// Returns None if the current thread or process cannot be determined.
+fn get_current_cwd() -> Option<alloc::string::String> {
+    let thread_id = crate::task::scheduler::current_thread_id()?;
+    let manager_guard = crate::process::manager();
+    match &*manager_guard {
+        Some(manager) => manager
+            .find_process_by_thread(thread_id)
+            .map(|(_, p)| p.cwd.clone()),
+        None => None,
+    }
 }

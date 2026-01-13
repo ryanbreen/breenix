@@ -58,6 +58,9 @@ pub const ENOSPC: i32 = 28;
 /// Broken pipe
 pub const EPIPE: i32 = 32;
 
+/// Result too large / buffer too small
+pub const ERANGE: i32 = 34;
+
 /// Function not implemented (used by syscall dispatcher)
 #[allow(dead_code)]
 pub const ENOSYS: i32 = 38;

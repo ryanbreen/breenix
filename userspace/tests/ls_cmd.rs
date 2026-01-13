@@ -99,11 +99,11 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
     // Get command-line arguments from the original stack pointer
     let args = unsafe { argv::get_args_from_stack(stack_ptr) };
 
-    // Default to root directory if no arguments
+    // Default to current directory if no arguments
     let path: &[u8] = if args.argc >= 2 {
-        args.argv(1).unwrap_or(b"/")
+        args.argv(1).unwrap_or(b".")
     } else {
-        b"/"
+        b"."
     };
 
     match ls_directory(path) {

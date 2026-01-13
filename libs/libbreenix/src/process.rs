@@ -262,3 +262,47 @@ pub fn setsid() -> i32 {
 pub fn getsid(pid: i32) -> i32 {
     unsafe { raw::syscall1(nr::GETSID, pid as u64) as i32 }
 }
+
+/// Get the current working directory.
+///
+/// Writes the absolute pathname of the current working directory
+/// to the provided buffer.
+///
+/// # Arguments
+/// * `buf` - Buffer to store the path
+/// * `size` - Size of the buffer
+///
+/// # Returns
+/// * On success: pointer to buf (as usize)
+/// * On error: 0 and sets errno
+///
+/// # Errors
+/// * EFAULT - Invalid buffer pointer
+/// * ERANGE - Buffer too small
+#[inline]
+pub fn getcwd(buf: &mut [u8]) -> i64 {
+    unsafe {
+        raw::syscall2(nr::GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64) as i64
+    }
+}
+
+/// Change the current working directory.
+///
+/// Changes the current working directory to the specified path.
+///
+/// # Arguments
+/// * `path` - Path to the new working directory (must be null-terminated)
+///
+/// # Returns
+/// * On success: 0
+/// * On error: negative errno
+///
+/// # Errors
+/// * ENOENT - Directory does not exist
+/// * ENOTDIR - Path is not a directory
+/// * EACCES - Permission denied
+#[inline]
+pub fn chdir(path: &[u8]) -> i32 {
+    debug_assert!(path.last() == Some(&0), "chdir path must be null-terminated");
+    unsafe { raw::syscall1(nr::CHDIR, path.as_ptr() as u64) as i32 }
+}
