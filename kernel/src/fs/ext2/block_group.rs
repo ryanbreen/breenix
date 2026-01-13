@@ -214,9 +214,12 @@ pub fn allocate_block<B: BlockDevice>(
             .map_err(|_| "Failed to read block bitmap")?;
 
         // Search for a free block in this group
+        // s_first_data_block is the first data block in the filesystem (usually 1 for 1KB blocks)
+        let first_data_block = superblock.s_first_data_block;
         for local_block in 0..blocks_per_group {
             // Calculate the global block number
-            let global_block = bg_index as u32 * blocks_per_group + local_block;
+            // Bitmap bit N corresponds to block (s_first_data_block + bg_index * blocks_per_group + N)
+            let global_block = first_data_block + bg_index as u32 * blocks_per_group + local_block;
 
             // Check if this block is free (bit = 0)
             let byte_index = (local_block / 8) as usize;
@@ -278,10 +281,18 @@ pub fn free_block<B: BlockDevice>(
 ) -> Result<(), &'static str> {
     let block_size = superblock.block_size();
     let blocks_per_group = superblock.s_blocks_per_group;
+    let first_data_block = superblock.s_first_data_block;
+
+    // Block number must be >= s_first_data_block
+    if block_num < first_data_block {
+        return Err("Invalid block number (below first data block)");
+    }
 
     // Calculate which block group contains this block
-    let bg_index = (block_num / blocks_per_group) as usize;
-    let local_block = block_num % blocks_per_group;
+    // Subtract s_first_data_block before dividing/modding
+    let adjusted_block = block_num - first_data_block;
+    let bg_index = (adjusted_block / blocks_per_group) as usize;
+    let local_block = adjusted_block % blocks_per_group;
 
     if bg_index >= block_groups.len() {
         return Err("Block number out of range");

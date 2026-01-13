@@ -1150,30 +1150,61 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
     use super::errno::{EACCES, EIO, ENOENT, ENOTDIR};
     use crate::fs::ext2;
 
+    log::info!("load_elf_from_ext2: loading '{}'", path);
+
     // Get ext2 filesystem
     let fs_guard = ext2::root_fs();
-    let fs = fs_guard.as_ref().ok_or(EIO)?;
+    let fs = fs_guard.as_ref().ok_or_else(|| {
+        log::error!("load_elf_from_ext2: ext2 root_fs not available");
+        EIO
+    })?;
 
     // Resolve path to inode number
-    let inode_num = fs
-        .resolve_path(path)
-        .map_err(|e| if e.contains("not found") { ENOENT } else { EIO })?;
+    let inode_num = fs.resolve_path(path).map_err(|e| {
+        log::info!("load_elf_from_ext2: resolve_path failed: {}", e);
+        if e.contains("not found") {
+            ENOENT
+        } else {
+            EIO
+        }
+    })?;
+    log::info!("load_elf_from_ext2: resolved to inode {}", inode_num);
 
     // Read inode metadata
-    let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
+    let inode = fs.read_inode(inode_num).map_err(|e| {
+        log::error!("load_elf_from_ext2: read_inode failed: {}", e);
+        EIO
+    })?;
 
     // Check it's a regular file (not directory)
     if inode.is_dir() {
+        log::info!("load_elf_from_ext2: '{}' is a directory", path);
         return Err(ENOTDIR);
     }
 
     // Check execute permission (S_IXUSR = 0o100)
-    if (inode.i_mode & 0o100) == 0 {
+    // Note: inode.permissions() handles packed struct unaligned access
+    let perms = inode.permissions();
+    log::info!(
+        "load_elf_from_ext2: inode perms=0o{:o}, size={}",
+        perms,
+        inode.size()
+    );
+    if (perms & 0o100) == 0 {
+        log::info!("load_elf_from_ext2: '{}' not executable", path);
         return Err(EACCES);
     }
 
     // Read file content
-    let data = fs.read_file_content(&inode).map_err(|_| EIO)?;
+    let data = fs.read_file_content(&inode).map_err(|e| {
+        log::error!("load_elf_from_ext2: read_file_content failed: {}", e);
+        EIO
+    })?;
+    log::info!(
+        "load_elf_from_ext2: read {} bytes from '{}'",
+        data.len(),
+        path
+    );
 
     Ok(data)
 }

@@ -15,6 +15,10 @@ name = "hello_world"
 path = "hello_world.rs"
 
 [[bin]]
+name = "simple_exit"
+path = "simple_exit.rs"
+
+[[bin]]
 name = "counter"
 path = "counter.rs"
 
@@ -334,3 +338,7 @@ path = "dns_test.rs"
 [[bin]]
 name = "http_test"
 path = "http_test.rs"
+
+[[bin]]
+name = "exec_from_ext2_test"
+path = "exec_from_ext2_test.rs"
