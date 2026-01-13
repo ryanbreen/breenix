@@ -50,6 +50,7 @@ BINARIES=(
     "tcp_socket_test"
     "tcp_client_test"
     "dns_test"
+    "http_test"
     "pipe_test"
     "pipe_fork_test"
     "pipe_concurrent_test"

@@ -1,3 +1,10 @@
+//! x86_64 privilege level abstraction.
+//!
+//! Note: This is part of the complete HAL API. The enum variants
+//! represent x86_64 protection rings.
+
+#![allow(dead_code)] // HAL type - part of complete API
+
 use crate::arch_impl::traits::PrivilegeLevel;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

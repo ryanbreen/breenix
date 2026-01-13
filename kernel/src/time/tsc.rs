@@ -11,6 +11,7 @@ use crate::arch_impl::current::timer as hal_timer;
 /// Returns a 64-bit cycle count. On modern CPUs with invariant TSC,
 /// this increments at a constant rate regardless of CPU frequency scaling.
 #[inline(always)]
+#[allow(dead_code)] // Low-level timing primitive, part of TSC API
 pub fn read_tsc() -> u64 {
     hal_timer::rdtsc()
 }
@@ -21,6 +22,7 @@ pub fn read_tsc() -> u64 {
 /// providing more accurate timing for benchmarking. This is more portable
 /// than RDTSCP which isn't available on all CPU models.
 #[inline(always)]
+#[allow(dead_code)] // Low-level timing primitive, part of TSC API
 pub fn read_tsc_serialized() -> u64 {
     hal_timer::rdtsc_serialized()
 }

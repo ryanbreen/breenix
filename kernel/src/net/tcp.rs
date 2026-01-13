@@ -80,7 +80,10 @@ impl TcpFlags {
 }
 
 /// Parsed TCP header
+///
+/// All fields are parsed from the TCP header for completeness and protocol conformance.
 #[derive(Debug)]
+#[allow(dead_code)] // All TCP header fields are part of RFC 793 protocol structure
 pub struct TcpHeader {
     /// Source port
     pub src_port: u16,
@@ -232,7 +235,11 @@ pub fn build_tcp_packet_with_checksum(
 }
 
 /// TCP connection state (RFC 793)
+///
+/// All variants are part of the complete TCP state machine as defined in RFC 793.
+/// Some states may not be actively used yet as the implementation matures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // RFC 793 state machine - all states are part of the complete protocol
 pub enum TcpState {
     Closed,
     Listen,
@@ -262,7 +269,8 @@ pub struct TcpConnection {
     pub state: TcpState,
     /// Our sequence number (next byte to send)
     pub send_next: u32,
-    /// Initial send sequence number
+    /// Initial send sequence number (RFC 793 - needed for retransmission and RST validation)
+    #[allow(dead_code)] // Part of RFC 793 state machine, needed for future retransmission logic
     pub send_initial: u32,
     /// Send unacknowledged (oldest unacked seq)
     pub send_unack: u32,
@@ -276,11 +284,13 @@ pub struct TcpConnection {
     pub send_window: u16,
     /// Pending data to receive
     pub rx_buffer: VecDeque<u8>,
-    /// Pending data to send
+    /// Pending data to send (for future send buffering/retransmission)
+    #[allow(dead_code)] // Part of TCP API, needed for send buffering when window is full
     pub tx_buffer: VecDeque<u8>,
     /// Maximum segment size
     pub mss: u16,
-    /// Process ID that owns this connection
+    /// Process ID that owns this connection (for cleanup on process exit)
+    #[allow(dead_code)] // Needed for connection ownership tracking
     pub owner_pid: crate::process::process::ProcessId,
     /// True if SHUT_WR was called (no more sending)
     pub send_shutdown: bool,
@@ -315,6 +325,7 @@ impl TcpConnection {
     }
 
     /// Create a new connection in LISTEN state (for accept)
+    #[allow(dead_code)] // Part of TCP server API, used when implementing server-side accept
     pub fn new_listening(
         local_ip: [u8; 4],
         local_port: u16,
@@ -361,6 +372,8 @@ pub struct PendingConnection {
 
 /// Listening socket info
 pub struct ListenSocket {
+    /// Local IP address for this listening socket (for binding to specific interfaces)
+    #[allow(dead_code)] // Part of socket bind API, needed for interface-specific listening
     pub local_ip: [u8; 4],
     pub local_port: u16,
     pub backlog: usize,
@@ -1074,14 +1087,6 @@ pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Check if a connection is established
-pub fn tcp_is_connected(conn_id: &ConnectionId) -> bool {
-    let connections = TCP_CONNECTIONS.lock();
-    connections.get(conn_id)
-        .map(|c| c.state == TcpState::Established)
-        .unwrap_or(false)
-}
-
 /// Check if there's a pending connection to accept
 pub fn tcp_has_pending(local_port: u16) -> bool {
     let listeners = TCP_LISTENERS.lock();
@@ -1090,7 +1095,8 @@ pub fn tcp_has_pending(local_port: u16) -> bool {
         .unwrap_or(false)
 }
 
-/// Get connection state for debugging
+/// Get connection state for debugging and introspection
+#[allow(dead_code)] // Part of TCP debugging API
 pub fn tcp_get_state(conn_id: &ConnectionId) -> Option<TcpState> {
     let connections = TCP_CONNECTIONS.lock();
     connections.get(conn_id).map(|c| c.state)

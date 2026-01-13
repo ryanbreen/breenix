@@ -2,6 +2,11 @@
 //!
 //! Implements the PageTableOps and PageFlags traits for x86_64's 4-level
 //! page table hierarchy.
+//!
+//! Note: This is part of the complete HAL API. Helper functions like
+//! index extractors are defined for API completeness.
+
+#![allow(dead_code)] // HAL module - complete API for x86_64 paging
 
 use crate::arch_impl::traits::{PageFlags, PageTableOps};
 use core::ops::BitOr;

@@ -3,6 +3,11 @@
 //! Implements the TimerOps trait using the Time Stamp Counter (TSC).
 //! This module provides all x86_64-specific timer functionality including
 //! TSC reading and PIT-based calibration.
+//!
+//! Note: This is part of the complete HAL API. Helper functions for TSC
+//! operations are defined for API completeness.
+
+#![allow(dead_code)] // HAL module - complete API for x86_64 timer operations
 
 use crate::arch_impl::traits::TimerOps;
 use core::arch::asm;

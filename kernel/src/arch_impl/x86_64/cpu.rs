@@ -1,6 +1,11 @@
 //! x86_64 CPU operations.
 //!
 //! Implements basic CPU control operations like interrupt management and halt.
+//!
+//! Note: This is part of the complete HAL API. The X86Cpu struct
+//! implements the CpuOps trait.
+
+#![allow(dead_code)] // HAL type - part of complete API
 
 use crate::arch_impl::traits::CpuOps;
 

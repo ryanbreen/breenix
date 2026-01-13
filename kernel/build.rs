@@ -107,6 +107,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}/job_control_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/session_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/job_table_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/http_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/pipeline_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/sigchld_job_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());

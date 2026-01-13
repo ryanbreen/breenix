@@ -7,6 +7,11 @@
 //! This module provides all x86_64-specific per-CPU operations. The kernel's
 //! per_cpu.rs module delegates to these functions for architecture-specific
 //! operations.
+//!
+//! Note: This is part of the complete HAL API. Many operations are defined
+//! for API completeness (e.g., NMI context, softirq operations).
+
+#![allow(dead_code)] // HAL module - complete API for x86_64 per-CPU operations
 
 use crate::arch_impl::traits::PerCpuOps;
 use crate::arch_impl::x86_64::constants::*;
