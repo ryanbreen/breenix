@@ -114,6 +114,11 @@ BINARIES=(
     "rm"
     "cp"
     "mv"
+    "true"
+    "false"
+    "head"
+    "tail"
+    "wc"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."
