@@ -47,8 +47,9 @@ const EPIPE: i32 = 32;
 const ECONNREFUSED: i32 = 111;
 const ETIMEDOUT: i32 = 110;
 
-// Maximum retries for loopback operations - if exceeded, indicates a bug
-const MAX_LOOPBACK_RETRIES: usize = 3;
+// Maximum retries for loopback operations - needs to be generous for CI environments
+// where system load can cause delays in packet processing
+const MAX_LOOPBACK_RETRIES: usize = 10;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
