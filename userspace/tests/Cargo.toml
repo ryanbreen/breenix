@@ -248,32 +248,32 @@ name = "cat"
 path = "cat.rs"
 
 [[bin]]
-name = "ls_cmd"
-path = "ls_cmd.rs"
+name = "ls"
+path = "ls.rs"
 
 [[bin]]
-name = "echo_cmd"
-path = "echo_cmd.rs"
+name = "echo"
+path = "echo.rs"
 
 [[bin]]
-name = "mkdir_cmd"
-path = "mkdir_cmd.rs"
+name = "mkdir"
+path = "mkdir.rs"
 
 [[bin]]
-name = "rm_cmd"
-path = "rm_cmd.rs"
+name = "rm"
+path = "rm.rs"
 
 [[bin]]
-name = "rmdir_cmd"
-path = "rmdir_cmd.rs"
+name = "rmdir"
+path = "rmdir.rs"
 
 [[bin]]
-name = "cp_cmd"
-path = "cp_cmd.rs"
+name = "cp"
+path = "cp.rs"
 
 [[bin]]
-name = "mv_cmd"
-path = "mv_cmd.rs"
+name = "mv"
+path = "mv.rs"
 
 [[bin]]
 name = "fork_memory_test"

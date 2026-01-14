@@ -1,7 +1,11 @@
 #!/bin/bash
 # Create ext2 disk image for Breenix kernel testing
 #
-# This script creates a 4MB ext2 filesystem image with test files.
+# This script creates a 4MB ext2 filesystem image with:
+#   - Test files for filesystem testing
+#   - Coreutils binaries in /bin/ (cat, ls, echo, mkdir, rmdir, rm, cp, mv)
+#   - hello_world binary for exec testing
+#
 # Requires Docker on macOS (or mke2fs on Linux).
 #
 # Usage:
@@ -15,15 +19,22 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="$PROJECT_ROOT/target"
+USERSPACE_DIR="$PROJECT_ROOT/userspace/tests"
 OUTPUT_FILE="$TARGET_DIR/ext2.img"
+TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 SIZE_MB=4
+
+# Coreutils to install in /bin
+COREUTILS="cat ls echo mkdir rmdir rm cp mv"
 
 echo "Creating ext2 disk image..."
 echo "  Output: $OUTPUT_FILE"
 echo "  Size: ${SIZE_MB}MB"
+echo "  Coreutils: $COREUTILS"
 
 # Ensure target directory exists
 mkdir -p "$TARGET_DIR"
+mkdir -p "$PROJECT_ROOT/testdata"
 
 # Check if we're on macOS or Linux
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -44,6 +55,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
     docker run --rm --privileged \
         -v "$TARGET_DIR:/work" \
+        -v "$USERSPACE_DIR:/binaries:ro" \
         alpine:latest \
         sh -c '
             set -e
@@ -59,7 +71,31 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2
             mount /work/ext2.img /mnt/ext2
 
-            # Create test files
+            # Create /bin directory for coreutils
+            mkdir -p /mnt/ext2/bin
+
+            # Copy coreutils binaries
+            echo "Installing coreutils in /bin..."
+            for bin in cat ls echo mkdir rmdir rm cp mv; do
+                if [ -f /binaries/${bin}.elf ]; then
+                    cp /binaries/${bin}.elf /mnt/ext2/bin/${bin}
+                    chmod 755 /mnt/ext2/bin/${bin}
+                    echo "  /bin/${bin} installed"
+                else
+                    echo "  WARNING: ${bin}.elf not found in /binaries/"
+                fi
+            done
+
+            # Copy hello_world for exec testing
+            if [ -f /binaries/hello_world.elf ]; then
+                cp /binaries/hello_world.elf /mnt/ext2/bin/hello_world
+                chmod 755 /mnt/ext2/bin/hello_world
+                echo "  /bin/hello_world installed"
+            else
+                echo "  WARNING: hello_world.elf not found"
+            fi
+
+            # Create test files for filesystem testing
             echo "Hello from ext2!" > /mnt/ext2/hello.txt
             mkdir -p /mnt/ext2/test
             echo "Nested file content" > /mnt/ext2/test/nested.txt
@@ -69,12 +105,17 @@ if [[ "$(uname)" == "Darwin" ]]; then
             echo "Deep nested content" > /mnt/ext2/deep/path/to/file/data.txt
 
             # Show what was created
-            echo "Files created:"
-            find /mnt/ext2 -type f -exec ls -la {} \;
+            echo ""
+            echo "ext2 filesystem contents:"
+            echo "  Binaries in /bin:"
+            ls -la /mnt/ext2/bin/ 2>/dev/null || echo "    (none)"
+            echo "  Test files:"
+            find /mnt/ext2 -type f -not -path "/mnt/ext2/bin/*" -exec ls -la {} \;
 
             # Unmount
             umount /mnt/ext2
 
+            echo ""
             echo "ext2 image created successfully"
         '
 else
@@ -102,6 +143,28 @@ else
     MOUNT_DIR=$(mktemp -d)
     mount "$OUTPUT_FILE" "$MOUNT_DIR"
 
+    # Create /bin directory
+    mkdir -p "$MOUNT_DIR/bin"
+
+    # Copy coreutils binaries
+    echo "Installing coreutils in /bin..."
+    for bin in cat ls echo mkdir rmdir rm cp mv; do
+        if [ -f "$USERSPACE_DIR/${bin}.elf" ]; then
+            cp "$USERSPACE_DIR/${bin}.elf" "$MOUNT_DIR/bin/${bin}"
+            chmod 755 "$MOUNT_DIR/bin/${bin}"
+            echo "  /bin/${bin} installed"
+        else
+            echo "  WARNING: ${bin}.elf not found"
+        fi
+    done
+
+    # Copy hello_world for exec testing
+    if [ -f "$USERSPACE_DIR/hello_world.elf" ]; then
+        cp "$USERSPACE_DIR/hello_world.elf" "$MOUNT_DIR/bin/hello_world"
+        chmod 755 "$MOUNT_DIR/bin/hello_world"
+        echo "  /bin/hello_world installed"
+    fi
+
     # Create test files
     echo "Hello from ext2!" > "$MOUNT_DIR/hello.txt"
     mkdir -p "$MOUNT_DIR/test"
@@ -110,8 +173,10 @@ else
     echo "Deep nested content" > "$MOUNT_DIR/deep/path/to/file/data.txt"
 
     # Show what was created
-    echo "Files created:"
-    find "$MOUNT_DIR" -type f -exec ls -la {} \;
+    echo ""
+    echo "ext2 filesystem contents:"
+    ls -la "$MOUNT_DIR/bin/"
+    find "$MOUNT_DIR" -type f -not -path "$MOUNT_DIR/bin/*" -exec ls -la {} \;
 
     # Unmount and cleanup
     umount "$MOUNT_DIR"
@@ -120,16 +185,22 @@ else
     echo "ext2 image created successfully"
 fi
 
-# Verify output
+# Copy to testdata/ for version control
 if [[ -f "$OUTPUT_FILE" ]]; then
+    cp "$OUTPUT_FILE" "$TESTDATA_FILE"
     SIZE=$(ls -lh "$OUTPUT_FILE" | awk '{print $5}')
     echo ""
-    echo "ext2 disk created: $OUTPUT_FILE"
+    echo "ext2 disk created and copied to testdata/:"
+    echo "  $OUTPUT_FILE"
+    echo "  $TESTDATA_FILE"
     echo "  Size: $SIZE"
-    echo "  Contents:"
-    echo "    /hello.txt - \"Hello from ext2!\""
-    echo "    /test/nested.txt - \"Nested file content\""
-    echo "    /deep/path/to/file/data.txt - \"Deep nested content\""
+    echo ""
+    echo "Contents:"
+    echo "  /bin/cat, ls, echo, mkdir, rmdir, rm, cp, mv - coreutils"
+    echo "  /bin/hello_world - exec test binary (exit code 42)"
+    echo "  /hello.txt - test file"
+    echo "  /test/nested.txt - nested test file"
+    echo "  /deep/path/to/file/data.txt - deep nested test file"
 else
     echo "Error: Failed to create ext2 image"
     exit 1

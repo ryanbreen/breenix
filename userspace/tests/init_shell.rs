@@ -538,37 +538,37 @@ static PROGRAM_REGISTRY: &[ProgramEntry] = &[
     },
     ProgramEntry {
         name: "ls",
-        binary_name: b"ls_cmd\0",
+        binary_name: b"ls\0",
         description: "List directory contents",
     },
     ProgramEntry {
         name: "mkdir",
-        binary_name: b"mkdir_cmd\0",
+        binary_name: b"mkdir\0",
         description: "Create directories",
     },
     ProgramEntry {
         name: "rmdir",
-        binary_name: b"rmdir_cmd\0",
+        binary_name: b"rmdir\0",
         description: "Remove empty directories",
     },
     ProgramEntry {
         name: "rm",
-        binary_name: b"rm_cmd\0",
+        binary_name: b"rm\0",
         description: "Remove files",
     },
     ProgramEntry {
         name: "cp",
-        binary_name: b"cp_cmd\0",
+        binary_name: b"cp\0",
         description: "Copy files",
     },
     ProgramEntry {
         name: "mv",
-        binary_name: b"mv_cmd\0",
+        binary_name: b"mv\0",
         description: "Move/rename files",
     },
     ProgramEntry {
         name: "echo",
-        binary_name: b"echo_cmd\0",
+        binary_name: b"echo\0",
         description: "Print arguments to stdout",
     },
     // === Network Tools ===
