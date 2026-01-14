@@ -1304,6 +1304,13 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "One or more exec from ext2 tests failed",
             check_hint: "Check userspace/tests/exec_from_ext2_test.rs output for specific failure",
         },
+        // Block allocation regression test - validates s_first_data_block fixes
+        BootStage {
+            name: "Block alloc test passed",
+            marker: "BLOCK_ALLOC_TEST_PASSED",
+            failure_meaning: "Block allocation regression test failed - truncate may not free blocks or allocate_block/free_block arithmetic wrong",
+            check_hint: "Check userspace/tests/fs_block_alloc_test.rs and kernel/src/fs/ext2/block_group.rs s_first_data_block handling",
+        },
         // Rust std library test - validates real Rust std works in userspace
         BootStage {
             name: "Rust std println! works",

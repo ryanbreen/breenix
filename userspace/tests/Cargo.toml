@@ -342,3 +342,7 @@ path = "http_test.rs"
 [[bin]]
 name = "exec_from_ext2_test"
 path = "exec_from_ext2_test.rs"
+
+[[bin]]
+name = "fs_block_alloc_test"
+path = "fs_block_alloc_test.rs"
