@@ -1209,158 +1209,164 @@ pub fn sys_execv_with_frame(
     program_name_ptr: u64,
     argv_ptr: u64,
 ) -> SyscallResult {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        log::info!(
-            "sys_execv_with_frame called: program_name_ptr={:#x}, argv_ptr={:#x}",
-            program_name_ptr,
-            argv_ptr
-        );
+    // IMPORTANT: Do NOT wrap the entire function in without_interrupts()!
+    // ELF loading from ext2 filesystem requires interrupts for VirtIO I/O.
+    // Only the final frame manipulation needs to be interrupt-safe.
 
-        // Get current process and thread
-        let current_thread_id = match crate::task::scheduler::current_thread_id() {
-            Some(id) => id,
-            None => {
-                log::error!("sys_execv: No current thread");
-                return SyscallResult::Err(22); // EINVAL
-            }
-        };
+    log::info!(
+        "sys_execv_with_frame called: program_name_ptr={:#x}, argv_ptr={:#x}",
+        program_name_ptr,
+        argv_ptr
+    );
 
-        // Read the program name from userspace
-        if program_name_ptr == 0 {
-            log::error!("sys_execv: NULL program name");
+    // Get current process and thread
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_execv: No current thread");
             return SyscallResult::Err(22); // EINVAL
         }
+    };
 
-        let name_bytes = match copy_string_from_user(program_name_ptr, 256) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                log::error!("sys_execv: Failed to read program name: {}", e);
-                return SyscallResult::Err(14); // EFAULT
-            }
-        };
+    // Read the program name from userspace
+    if program_name_ptr == 0 {
+        log::error!("sys_execv: NULL program name");
+        return SyscallResult::Err(22); // EINVAL
+    }
 
-        let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
-        let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
-            Ok(s) => s,
-            Err(_) => {
-                log::error!("sys_execv: Invalid UTF-8 in program name");
-                return SyscallResult::Err(22); // EINVAL
-            }
-        };
+    let name_bytes = match copy_string_from_user(program_name_ptr, 256) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            log::error!("sys_execv: Failed to read program name: {}", e);
+            return SyscallResult::Err(14); // EFAULT
+        }
+    };
 
-        log::info!("sys_execv: Loading program '{}'", program_name);
+    let name_len = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+    let program_name = match core::str::from_utf8(&name_bytes[..name_len]) {
+        Ok(s) => s,
+        Err(_) => {
+            log::error!("sys_execv: Invalid UTF-8 in program name");
+            return SyscallResult::Err(22); // EINVAL
+        }
+    };
 
-        // Read argv array from userspace
-        let mut argv_vec: Vec<Vec<u8>> = Vec::new();
+    log::info!("sys_execv: Loading program '{}'", program_name);
 
-        if argv_ptr != 0 {
-            // Read up to 64 argument pointers
-            const MAX_ARGS: usize = 64;
-            const MAX_ARG_LEN: usize = 4096;
+    // Read argv array from userspace (with interrupts enabled - safe)
+    let mut argv_vec: Vec<Vec<u8>> = Vec::new();
 
-            for i in 0..MAX_ARGS {
-                let ptr_addr = argv_ptr + (i * 8) as u64;
-                let arg_ptr_bytes = match copy_from_user(ptr_addr, 8) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        log::error!("sys_execv: Failed to read argv[{}] pointer: {}", i, e);
-                        return SyscallResult::Err(14); // EFAULT
-                    }
-                };
+    if argv_ptr != 0 {
+        // Read up to 64 argument pointers
+        const MAX_ARGS: usize = 64;
+        const MAX_ARG_LEN: usize = 4096;
 
-                // Interpret as u64 pointer
-                let arg_ptr = u64::from_le_bytes([
-                    arg_ptr_bytes[0], arg_ptr_bytes[1], arg_ptr_bytes[2], arg_ptr_bytes[3],
-                    arg_ptr_bytes[4], arg_ptr_bytes[5], arg_ptr_bytes[6], arg_ptr_bytes[7],
-                ]);
-
-                // NULL pointer marks end of argv
-                if arg_ptr == 0 {
-                    break;
+        for i in 0..MAX_ARGS {
+            let ptr_addr = argv_ptr + (i * 8) as u64;
+            let arg_ptr_bytes = match copy_from_user(ptr_addr, 8) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::error!("sys_execv: Failed to read argv[{}] pointer: {}", i, e);
+                    return SyscallResult::Err(14); // EFAULT
                 }
+            };
 
-                // Read the argument string
-                let arg_bytes = match copy_string_from_user(arg_ptr, MAX_ARG_LEN) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        log::error!("sys_execv: Failed to read argv[{}] string at {:#x}: {}", i, arg_ptr, e);
-                        return SyscallResult::Err(14); // EFAULT
-                    }
-                };
+            // Interpret as u64 pointer
+            let arg_ptr = u64::from_le_bytes([
+                arg_ptr_bytes[0], arg_ptr_bytes[1], arg_ptr_bytes[2], arg_ptr_bytes[3],
+                arg_ptr_bytes[4], arg_ptr_bytes[5], arg_ptr_bytes[6], arg_ptr_bytes[7],
+            ]);
 
-                // Find null terminator and truncate
-                let arg_len = arg_bytes.iter().position(|&b| b == 0).unwrap_or(arg_bytes.len());
-                let mut arg = arg_bytes[..arg_len].to_vec();
-                arg.push(0); // Ensure null-terminated
-                argv_vec.push(arg);
+            // NULL pointer marks end of argv
+            if arg_ptr == 0 {
+                break;
             }
-        }
 
-        // If no argv provided, use program name as argv[0]
-        if argv_vec.is_empty() {
-            let mut arg0 = program_name.as_bytes().to_vec();
-            arg0.push(0);
-            argv_vec.push(arg0);
-        }
+            // Read the argument string
+            let arg_bytes = match copy_string_from_user(arg_ptr, MAX_ARG_LEN) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::error!("sys_execv: Failed to read argv[{}] string at {:#x}: {}", i, arg_ptr, e);
+                    return SyscallResult::Err(14); // EFAULT
+                }
+            };
 
-        log::info!("sys_execv: argc={}", argv_vec.len());
-        for (i, arg) in argv_vec.iter().enumerate() {
-            if let Ok(s) = core::str::from_utf8(&arg[..arg.len().saturating_sub(1)]) {
-                log::debug!("sys_execv: argv[{}] = '{}'", i, s);
+            // Find null terminator and truncate
+            let arg_len = arg_bytes.iter().position(|&b| b == 0).unwrap_or(arg_bytes.len());
+            let mut arg = arg_bytes[..arg_len].to_vec();
+            arg.push(0); // Ensure null-terminated
+            argv_vec.push(arg);
+        }
+    }
+
+    // If no argv provided, use program name as argv[0]
+    if argv_vec.is_empty() {
+        let mut arg0 = program_name.as_bytes().to_vec();
+        arg0.push(0);
+        argv_vec.push(arg0);
+    }
+
+    log::info!("sys_execv: argc={}", argv_vec.len());
+    for (i, arg) in argv_vec.iter().enumerate() {
+        if let Ok(s) = core::str::from_utf8(&arg[..arg.len().saturating_sub(1)]) {
+            log::debug!("sys_execv: argv[{}] = '{}'", i, s);
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    {
+        // Load ELF binary WITH interrupts enabled - ext2 I/O needs timer interrupts
+        // for proper VirtIO operation
+        let elf_vec = if program_name.contains('/') {
+            // Path-like name: load from ext2 filesystem
+            match load_elf_from_ext2(program_name) {
+                Ok(data) => data,
+                Err(errno) => return SyscallResult::Err(errno as u64),
             }
-        }
+        } else {
+            // Bare name: try ext2 /bin/ first, then fall back to test disk
+            let bin_path = alloc::format!("/bin/{}", program_name);
+            match load_elf_from_ext2(&bin_path) {
+                Ok(data) => data,
+                Err(_) => {
+                    // Fall back to test disk for compatibility
+                    crate::userspace_test::get_test_binary(program_name)
+                }
+            }
+        };
+        let boxed_slice = elf_vec.into_boxed_slice();
+        let elf_data = Box::leak(boxed_slice) as &'static [u8];
+        let name_string = alloc::string::String::from(program_name);
+        let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
 
-        #[cfg(feature = "testing")]
-        {
-            // Try to load from ext2 filesystem first, fall back to test disk
-            let elf_vec = if program_name.contains('/') {
-                // Path-like name: load from ext2 filesystem
-                match load_elf_from_ext2(program_name) {
-                    Ok(data) => data,
-                    Err(errno) => return SyscallResult::Err(errno as u64),
+        // Find current process
+        let current_pid = {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                    pid
+                } else {
+                    log::error!("sys_execv: Thread {} not found in any process", current_thread_id);
+                    return SyscallResult::Err(3); // ESRCH
                 }
             } else {
-                // Bare name: try ext2 /bin/ first, then fall back to test disk
-                let bin_path = alloc::format!("/bin/{}", program_name);
-                match load_elf_from_ext2(&bin_path) {
-                    Ok(data) => data,
-                    Err(_) => {
-                        // Fall back to test disk for compatibility
-                        crate::userspace_test::get_test_binary(program_name)
-                    }
-                }
-            };
-            let boxed_slice = elf_vec.into_boxed_slice();
-            let elf_data = Box::leak(boxed_slice) as &'static [u8];
-            let name_string = alloc::string::String::from(program_name);
-            let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+                log::error!("sys_execv: Process manager not available");
+                return SyscallResult::Err(12); // ENOMEM
+            }
+        };
 
-            // Find current process
-            let current_pid = {
-                let manager_guard = crate::process::manager();
-                if let Some(ref manager) = *manager_guard {
-                    if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                        pid
-                    } else {
-                        log::error!("sys_execv: Thread {} not found in any process", current_thread_id);
-                        return SyscallResult::Err(3); // ESRCH
-                    }
-                } else {
-                    log::error!("sys_execv: Process manager not available");
-                    return SyscallResult::Err(12); // ENOMEM
-                }
-            };
+        log::info!(
+            "sys_execv: Replacing process {} (thread {}) with new program",
+            current_pid.as_u64(),
+            current_thread_id
+        );
 
-            log::info!(
-                "sys_execv: Replacing process {} (thread {}) with new program",
-                current_pid.as_u64(),
-                current_thread_id
-            );
+        // Convert argv_vec to slice of slices for exec_process_with_argv
+        let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
 
-            // Convert argv_vec to slice of slices for exec_process_with_argv
-            let argv_slices: Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
-
-            // Replace the process's address space with argv support
+        // CRITICAL SECTION: Frame manipulation and process state changes
+        // Only this part needs interrupts disabled for atomicity
+        x86_64::instructions::interrupts::without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
                 match manager.exec_process_with_argv(current_pid, elf_data, Some(leaked_name), &argv_slices) {
@@ -1424,13 +1430,13 @@ pub fn sys_execv_with_frame(
                 log::error!("sys_execv: Process manager not available");
                 SyscallResult::Err(12) // ENOMEM
             }
-        }
+        })
+    }
 
-        #[cfg(not(feature = "testing"))]
-        {
-            SyscallResult::Err(38) // ENOSYS
-        }
-    })
+    #[cfg(not(feature = "testing"))]
+    {
+        SyscallResult::Err(38) // ENOSYS
+    }
 }
 
 /// sys_exec - Replace the current process with a new program (deprecated)
