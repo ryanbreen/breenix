@@ -2033,6 +2033,63 @@ pub fn test_cwd() {
     }
 }
 
+/// Test exec from ext2 filesystem
+pub fn test_exec_from_ext2() {
+    log::info!("Testing exec from ext2 filesystem");
+
+    #[cfg(feature = "testing")]
+    let exec_ext2_elf_buf = crate::userspace_test::get_test_binary("exec_from_ext2_test");
+    #[cfg(feature = "testing")]
+    let exec_ext2_elf: &[u8] = &exec_ext2_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let exec_ext2_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("exec_from_ext2_test"),
+        exec_ext2_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created exec_from_ext2_test process with PID {:?}", pid);
+            log::info!("Exec ext2 test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit EXEC_EXT2_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create exec_from_ext2_test process: {}", e);
+            log::error!("Exec ext2 test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test filesystem block allocation (regression test for s_first_data_block offset bug)
+/// This tests:
+/// - truncate_file() properly frees blocks (not just clears pointers)
+/// - Multi-file operations don't corrupt other files' data blocks
+pub fn test_fs_block_alloc() {
+    log::info!("Testing filesystem block allocation (regression test)");
+
+    #[cfg(feature = "testing")]
+    let fs_block_alloc_test_elf_buf = crate::userspace_test::get_test_binary("fs_block_alloc_test");
+    #[cfg(feature = "testing")]
+    let fs_block_alloc_test_elf: &[u8] = &fs_block_alloc_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fs_block_alloc_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fs_block_alloc_test"),
+        fs_block_alloc_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fs_block_alloc_test process with PID {:?}", pid);
+            log::info!("Block alloc test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit BLOCK_ALLOC_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fs_block_alloc_test process: {}", e);
+            log::error!("Block alloc test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test Rust std library support via hello_std_real
 pub fn test_hello_std_real() {
     log::info!("Testing Rust std library support (hello_std_real)");

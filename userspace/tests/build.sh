@@ -31,6 +31,7 @@ echo ""
 # List binaries being built
 BINARIES=(
     "hello_world"
+    "simple_exit"
     "hello_time"
     "counter"
     "spinner"
@@ -102,6 +103,8 @@ BINARIES=(
     "cat"
     "exec_argv_test"
     "exec_stack_argv_test"
+    "exec_from_ext2_test"
+    "fs_block_alloc_test"
     "shell_pipe_test"
     # Coreutils
     "ls_cmd"

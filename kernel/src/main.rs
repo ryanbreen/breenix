@@ -838,6 +838,14 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: cwd syscalls (getcwd, chdir) ===");
         test_exec::test_cwd();
 
+        // Test exec from ext2 filesystem
+        log::info!("=== FS TEST: exec from ext2 filesystem ===");
+        test_exec::test_exec_from_ext2();
+
+        // Test filesystem block allocation (regression test for truncate/alloc bugs)
+        log::info!("=== FS TEST: block allocation regression test ===");
+        test_exec::test_fs_block_alloc();
+
         // Test Rust std library support
         log::info!("=== STD TEST: Rust std library support ===");
         test_exec::test_hello_std_real();

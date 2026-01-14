@@ -1267,6 +1267,50 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "One or more cwd tests failed",
             check_hint: "Check userspace/tests/cwd_test.rs output for specific failure",
         },
+        // Exec from ext2 filesystem test - validates loading binaries from filesystem
+        BootStage {
+            name: "Exec ext2 test start",
+            marker: "EXEC_EXT2_TEST_START",
+            failure_meaning: "exec from ext2 test failed to start",
+            check_hint: "Check userspace/tests/exec_from_ext2_test.rs is built and loaded",
+        },
+        BootStage {
+            name: "Exec ext2 /bin OK",
+            marker: "EXEC_EXT2_BIN_OK",
+            failure_meaning: "exec /bin/hello_world from ext2 failed - filesystem loading broken",
+            check_hint: "Check kernel/src/syscall/handlers.rs load_elf_from_ext2(), verify testdata/ext2.img has /bin/hello_world",
+        },
+        BootStage {
+            name: "Exec ext2 ENOENT OK",
+            marker: "EXEC_EXT2_ENOENT_OK",
+            failure_meaning: "exec of nonexistent file did not return ENOENT",
+            check_hint: "Check kernel/src/syscall/handlers.rs load_elf_from_ext2() error handling",
+        },
+        BootStage {
+            name: "Exec ext2 EACCES OK",
+            marker: "EXEC_EXT2_EACCES_OK",
+            failure_meaning: "exec of non-executable file did not return EACCES",
+            check_hint: "Check kernel/src/syscall/handlers.rs load_elf_from_ext2() permission check",
+        },
+        BootStage {
+            name: "Exec ext2 ENOTDIR OK",
+            marker: "EXEC_EXT2_ENOTDIR_OK",
+            failure_meaning: "exec of directory did not return ENOTDIR/EACCES",
+            check_hint: "Check kernel/src/syscall/handlers.rs load_elf_from_ext2() directory check",
+        },
+        BootStage {
+            name: "Exec ext2 test passed",
+            marker: "EXEC_EXT2_TEST_PASSED",
+            failure_meaning: "One or more exec from ext2 tests failed",
+            check_hint: "Check userspace/tests/exec_from_ext2_test.rs output for specific failure",
+        },
+        // Block allocation regression test - validates s_first_data_block fixes
+        BootStage {
+            name: "Block alloc test passed",
+            marker: "BLOCK_ALLOC_TEST_PASSED",
+            failure_meaning: "Block allocation regression test failed - truncate may not free blocks or allocate_block/free_block arithmetic wrong",
+            check_hint: "Check userspace/tests/fs_block_alloc_test.rs and kernel/src/fs/ext2/block_group.rs s_first_data_block handling",
+        },
         // Rust std library test - validates real Rust std works in userspace
         BootStage {
             name: "Rust std println! works",

@@ -293,8 +293,26 @@ impl Ext2Fs {
             return Err("Not a regular file");
         }
 
-        // For now, just set size to 0 and clear block pointers
-        // A full implementation would also free the data blocks in the block bitmap
+        // Free all allocated data blocks before clearing pointers
+        // This prevents block leaks where blocks remain marked "in use" but are unreachable
+        let i_block = inode.i_block;
+
+        // Free direct blocks (0-11)
+        for i in 0..12 {
+            if i_block[i] != 0 {
+                let _ = block_group::free_block(
+                    self.device.as_ref(),
+                    i_block[i],
+                    &self.superblock,
+                    &mut self.block_groups,
+                );
+            }
+        }
+
+        // TODO: Free indirect blocks (single, double, triple) for large files
+        // For now, just handle direct blocks which covers files up to 12KB (1KB blocks)
+        // or 48KB (4KB blocks)
+
         inode.i_size = 0;
         inode.i_dir_acl = 0; // Clear high bits of size
         inode.i_blocks = 0;
