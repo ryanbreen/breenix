@@ -107,13 +107,13 @@ BINARIES=(
     "fs_block_alloc_test"
     "shell_pipe_test"
     # Coreutils
-    "ls_cmd"
-    "echo_cmd"
-    "mkdir_cmd"
-    "rmdir_cmd"
-    "rm_cmd"
-    "cp_cmd"
-    "mv_cmd"
+    "ls"
+    "echo"
+    "mkdir"
+    "rmdir"
+    "rm"
+    "cp"
+    "mv"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."
