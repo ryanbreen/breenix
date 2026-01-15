@@ -325,6 +325,14 @@ name = "which_test"
 path = "which_test.rs"
 
 [[bin]]
+name = "cat_test"
+path = "cat_test.rs"
+
+[[bin]]
+name = "ls_test"
+path = "ls_test.rs"
+
+[[bin]]
 name = "fork_memory_test"
 path = "fork_memory_test.rs"
 

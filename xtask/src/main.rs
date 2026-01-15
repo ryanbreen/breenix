@@ -1355,6 +1355,20 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "/bin/which failed to locate commands in PATH",
             check_hint: "Check userspace/tests/which.rs and which_test.rs",
         },
+        // cat coreutil test
+        BootStage {
+            name: "cat coreutil test passed",
+            marker: "CAT_TEST_PASSED",
+            failure_meaning: "/bin/cat failed to output file contents correctly",
+            check_hint: "Check userspace/tests/cat.rs and cat_test.rs",
+        },
+        // ls coreutil test
+        BootStage {
+            name: "ls coreutil test passed",
+            marker: "LS_TEST_PASSED",
+            failure_meaning: "/bin/ls failed to list directory contents correctly",
+            check_hint: "Check userspace/tests/ls.rs and ls_test.rs",
+        },
         // Rust std library test - validates real Rust std works in userspace
         BootStage {
             name: "Rust std println! works",
