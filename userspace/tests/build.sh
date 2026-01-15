@@ -127,6 +127,8 @@ BINARIES=(
     "tail_test"
     "wc_test"
     "which_test"
+    "cat_test"
+    "ls_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

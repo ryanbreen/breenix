@@ -859,6 +859,10 @@ fn kernel_main_continue() -> ! {
         test_exec::test_wc_coreutil();
         log::info!("=== COREUTIL TEST: which (command location) ===");
         test_exec::test_which_coreutil();
+        log::info!("=== COREUTIL TEST: cat (file concatenation) ===");
+        test_exec::test_cat_coreutil();
+        log::info!("=== COREUTIL TEST: ls (directory listing) ===");
+        test_exec::test_ls_coreutil();
 
         // Test Rust std library support
         log::info!("=== STD TEST: Rust std library support ===");

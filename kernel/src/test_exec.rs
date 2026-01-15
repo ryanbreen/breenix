@@ -2735,3 +2735,61 @@ pub fn test_which_coreutil() {
         }
     }
 }
+
+/// Test the `cat` coreutil
+///
+/// Verifies that /bin/cat correctly outputs file contents.
+pub fn test_cat_coreutil() {
+    log::info!("Testing cat coreutil (file concatenation)");
+
+    #[cfg(feature = "testing")]
+    let cat_test_elf_buf = crate::userspace_test::get_test_binary("cat_test");
+    #[cfg(feature = "testing")]
+    let cat_test_elf: &[u8] = &cat_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let cat_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("cat_test"),
+        cat_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created cat_test process with PID {:?}", pid);
+            log::info!("cat_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit CAT_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create cat_test process: {}", e);
+            log::error!("cat_test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test the `ls` coreutil
+///
+/// Verifies that /bin/ls correctly lists directory contents.
+pub fn test_ls_coreutil() {
+    log::info!("Testing ls coreutil (directory listing)");
+
+    #[cfg(feature = "testing")]
+    let ls_test_elf_buf = crate::userspace_test::get_test_binary("ls_test");
+    #[cfg(feature = "testing")]
+    let ls_test_elf: &[u8] = &ls_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let ls_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("ls_test"),
+        ls_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created ls_test process with PID {:?}", pid);
+            log::info!("ls_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit LS_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create ls_test process: {}", e);
+            log::error!("ls_test cannot run without valid userspace process");
+        }
+    }
+}
