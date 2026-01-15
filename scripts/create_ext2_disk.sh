@@ -3,7 +3,7 @@
 #
 # This script creates a 4MB ext2 filesystem image with:
 #   - Test files for filesystem testing
-#   - Coreutils binaries in /bin/ (cat, ls, echo, mkdir, rmdir, rm, cp, mv)
+#   - Coreutils binaries in /bin/ (cat, ls, echo, mkdir, rmdir, rm, cp, mv, true, false, head, tail, wc)
 #   - hello_world binary for exec testing
 #
 # Requires Docker on macOS (or mke2fs on Linux).
@@ -25,7 +25,7 @@ TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 SIZE_MB=4
 
 # Coreutils to install in /bin
-COREUTILS="cat ls echo mkdir rmdir rm cp mv"
+COREUTILS="cat ls echo mkdir rmdir rm cp mv true false head tail wc"
 
 echo "Creating ext2 disk image..."
 echo "  Output: $OUTPUT_FILE"
@@ -76,7 +76,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
             # Copy coreutils binaries
             echo "Installing coreutils in /bin..."
-            for bin in cat ls echo mkdir rmdir rm cp mv; do
+            for bin in cat ls echo mkdir rmdir rm cp mv true false head tail wc; do
                 if [ -f /binaries/${bin}.elf ]; then
                     cp /binaries/${bin}.elf /mnt/ext2/bin/${bin}
                     chmod 755 /mnt/ext2/bin/${bin}
@@ -148,7 +148,7 @@ else
 
     # Copy coreutils binaries
     echo "Installing coreutils in /bin..."
-    for bin in cat ls echo mkdir rmdir rm cp mv; do
+    for bin in cat ls echo mkdir rmdir rm cp mv true false head tail wc; do
         if [ -f "$USERSPACE_DIR/${bin}.elf" ]; then
             cp "$USERSPACE_DIR/${bin}.elf" "$MOUNT_DIR/bin/${bin}"
             chmod 755 "$MOUNT_DIR/bin/${bin}"
@@ -196,7 +196,9 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "  Size: $SIZE"
     echo ""
     echo "Contents:"
-    echo "  /bin/cat, ls, echo, mkdir, rmdir, rm, cp, mv - coreutils"
+    echo "  /bin/cat, ls, echo, mkdir, rmdir, rm, cp, mv - file coreutils"
+    echo "  /bin/true, false - exit status coreutils"
+    echo "  /bin/head, tail, wc - text processing coreutils"
     echo "  /bin/hello_world - exec test binary (exit code 42)"
     echo "  /hello.txt - test file"
     echo "  /test/nested.txt - nested test file"

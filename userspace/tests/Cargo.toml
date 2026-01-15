@@ -276,6 +276,26 @@ name = "mv"
 path = "mv.rs"
 
 [[bin]]
+name = "true"
+path = "true.rs"
+
+[[bin]]
+name = "false"
+path = "false.rs"
+
+[[bin]]
+name = "head"
+path = "head.rs"
+
+[[bin]]
+name = "tail"
+path = "tail.rs"
+
+[[bin]]
+name = "wc"
+path = "wc.rs"
+
+[[bin]]
 name = "fork_memory_test"
 path = "fork_memory_test.rs"
 
