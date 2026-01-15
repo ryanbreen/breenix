@@ -2561,3 +2561,177 @@ pub fn test_shell_pipe() {
         }
     }
 }
+
+/// Test the `true` coreutil
+///
+/// Verifies that /bin/true correctly exits with code 0.
+pub fn test_true_coreutil() {
+    log::info!("Testing true coreutil (exit code 0)");
+
+    #[cfg(feature = "testing")]
+    let true_test_elf_buf = crate::userspace_test::get_test_binary("true_test");
+    #[cfg(feature = "testing")]
+    let true_test_elf: &[u8] = &true_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let true_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("true_test"),
+        true_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created true_test process with PID {:?}", pid);
+            log::info!("true_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit TRUE_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create true_test process: {}", e);
+            log::error!("true_test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test the `false` coreutil
+///
+/// Verifies that /bin/false correctly exits with code 1.
+pub fn test_false_coreutil() {
+    log::info!("Testing false coreutil (exit code 1)");
+
+    #[cfg(feature = "testing")]
+    let false_test_elf_buf = crate::userspace_test::get_test_binary("false_test");
+    #[cfg(feature = "testing")]
+    let false_test_elf: &[u8] = &false_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let false_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("false_test"),
+        false_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created false_test process with PID {:?}", pid);
+            log::info!("false_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit FALSE_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create false_test process: {}", e);
+            log::error!("false_test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test the `head` coreutil
+///
+/// Verifies that /bin/head correctly outputs the first N lines of files.
+pub fn test_head_coreutil() {
+    log::info!("Testing head coreutil (first N lines)");
+
+    #[cfg(feature = "testing")]
+    let head_test_elf_buf = crate::userspace_test::get_test_binary("head_test");
+    #[cfg(feature = "testing")]
+    let head_test_elf: &[u8] = &head_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let head_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("head_test"),
+        head_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created head_test process with PID {:?}", pid);
+            log::info!("head_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit HEAD_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create head_test process: {}", e);
+            log::error!("head_test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test the `tail` coreutil
+///
+/// Verifies that /bin/tail correctly outputs the last N lines of files.
+pub fn test_tail_coreutil() {
+    log::info!("Testing tail coreutil (last N lines)");
+
+    #[cfg(feature = "testing")]
+    let tail_test_elf_buf = crate::userspace_test::get_test_binary("tail_test");
+    #[cfg(feature = "testing")]
+    let tail_test_elf: &[u8] = &tail_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let tail_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("tail_test"),
+        tail_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created tail_test process with PID {:?}", pid);
+            log::info!("tail_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit TAIL_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create tail_test process: {}", e);
+            log::error!("tail_test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test the `wc` coreutil
+///
+/// Verifies that /bin/wc correctly counts lines, words, and bytes.
+pub fn test_wc_coreutil() {
+    log::info!("Testing wc coreutil (line/word/byte counts)");
+
+    #[cfg(feature = "testing")]
+    let wc_test_elf_buf = crate::userspace_test::get_test_binary("wc_test");
+    #[cfg(feature = "testing")]
+    let wc_test_elf: &[u8] = &wc_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let wc_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("wc_test"),
+        wc_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created wc_test process with PID {:?}", pid);
+            log::info!("wc_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit WC_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create wc_test process: {}", e);
+            log::error!("wc_test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test the `which` coreutil
+///
+/// Verifies that /bin/which correctly locates commands in PATH.
+pub fn test_which_coreutil() {
+    log::info!("Testing which coreutil (command location)");
+
+    #[cfg(feature = "testing")]
+    let which_test_elf_buf = crate::userspace_test::get_test_binary("which_test");
+    #[cfg(feature = "testing")]
+    let which_test_elf: &[u8] = &which_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let which_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("which_test"),
+        which_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created which_test process with PID {:?}", pid);
+            log::info!("which_test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit WHICH_TEST_PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create which_test process: {}", e);
+            log::error!("which_test cannot run without valid userspace process");
+        }
+    }
+}
