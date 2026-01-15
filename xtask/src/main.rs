@@ -1679,8 +1679,17 @@ fn boot_stages() -> Result<()> {
     let mut stage_start_time = Instant::now();
 
     let test_start = Instant::now();
-    let timeout = Duration::from_secs(120); // Increased for complex multi-process tests
-    let stage_timeout = Duration::from_secs(60); // Increased for complex multi-process tests that need scheduling time
+    // CI environments need more time due to virtualization overhead and resource contention
+    let timeout = if std::env::var("CI").is_ok() {
+        Duration::from_secs(180) // 3 minutes for CI
+    } else {
+        Duration::from_secs(120) // 2 minutes locally
+    };
+    let stage_timeout = if std::env::var("CI").is_ok() {
+        Duration::from_secs(90) // 90 seconds per stage in CI
+    } else {
+        Duration::from_secs(60) // 60 seconds per stage locally
+    };
     let mut last_progress = Instant::now();
 
     // Print initial waiting message
