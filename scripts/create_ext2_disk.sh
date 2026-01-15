@@ -3,7 +3,8 @@
 #
 # This script creates a 4MB ext2 filesystem image with:
 #   - Test files for filesystem testing
-#   - Coreutils binaries in /bin/ (cat, ls, echo, mkdir, rmdir, rm, cp, mv, true, false, head, tail, wc)
+#   - Coreutils binaries in /bin/ (cat, ls, echo, mkdir, rmdir, rm, cp, mv, false, head, tail, wc, which)
+#   - /sbin/true for PATH order testing
 #   - hello_world binary for exec testing
 #
 # Requires Docker on macOS (or mke2fs on Linux).
@@ -25,7 +26,7 @@ TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 SIZE_MB=4
 
 # Coreutils to install in /bin
-COREUTILS="cat ls echo mkdir rmdir rm cp mv true false head tail wc"
+COREUTILS="cat ls echo mkdir rmdir rm cp mv true false head tail wc which"
 
 echo "Creating ext2 disk image..."
 echo "  Output: $OUTPUT_FILE"
@@ -71,12 +72,13 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2
             mount /work/ext2.img /mnt/ext2
 
-            # Create /bin directory for coreutils
+            # Create /bin and /sbin directories for coreutils
             mkdir -p /mnt/ext2/bin
+            mkdir -p /mnt/ext2/sbin
 
-            # Copy coreutils binaries
+            # Copy coreutils binaries to /bin (excluding true which goes to /sbin)
             echo "Installing coreutils in /bin..."
-            for bin in cat ls echo mkdir rmdir rm cp mv true false head tail wc; do
+            for bin in cat ls echo mkdir rmdir rm cp mv false head tail wc which; do
                 if [ -f /binaries/${bin}.elf ]; then
                     cp /binaries/${bin}.elf /mnt/ext2/bin/${bin}
                     chmod 755 /mnt/ext2/bin/${bin}
@@ -85,6 +87,16 @@ if [[ "$(uname)" == "Darwin" ]]; then
                     echo "  WARNING: ${bin}.elf not found in /binaries/"
                 fi
             done
+
+            # Install true in /sbin to test PATH lookup order
+            echo "Installing binaries in /sbin..."
+            if [ -f /binaries/true.elf ]; then
+                cp /binaries/true.elf /mnt/ext2/sbin/true
+                chmod 755 /mnt/ext2/sbin/true
+                echo "  /sbin/true installed"
+            else
+                echo "  WARNING: true.elf not found in /binaries/"
+            fi
 
             # Copy hello_world for exec testing
             if [ -f /binaries/hello_world.elf ]; then
@@ -97,12 +109,33 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
             # Create test files for filesystem testing
             echo "Hello from ext2!" > /mnt/ext2/hello.txt
+            echo "Truncate test file" > /mnt/ext2/trunctest.txt
+            touch /mnt/ext2/empty.txt  # Empty file for wc testing
             mkdir -p /mnt/ext2/test
             echo "Nested file content" > /mnt/ext2/test/nested.txt
 
             # Create additional test content
             mkdir -p /mnt/ext2/deep/path/to/file
             echo "Deep nested content" > /mnt/ext2/deep/path/to/file/data.txt
+
+            # Create multi-line test file for head/tail/wc testing (15 lines)
+            cat > /mnt/ext2/lines.txt << EOF
+Line 1
+Line 2
+Line 3
+Line 4
+Line 5
+Line 6
+Line 7
+Line 8
+Line 9
+Line 10
+Line 11
+Line 12
+Line 13
+Line 14
+Line 15
+EOF
 
             # Show what was created
             echo ""
@@ -143,12 +176,13 @@ else
     MOUNT_DIR=$(mktemp -d)
     mount "$OUTPUT_FILE" "$MOUNT_DIR"
 
-    # Create /bin directory
+    # Create /bin and /sbin directories
     mkdir -p "$MOUNT_DIR/bin"
+    mkdir -p "$MOUNT_DIR/sbin"
 
-    # Copy coreutils binaries
+    # Copy coreutils binaries to /bin (excluding true which goes to /sbin)
     echo "Installing coreutils in /bin..."
-    for bin in cat ls echo mkdir rmdir rm cp mv true false head tail wc; do
+    for bin in cat ls echo mkdir rmdir rm cp mv false head tail wc which; do
         if [ -f "$USERSPACE_DIR/${bin}.elf" ]; then
             cp "$USERSPACE_DIR/${bin}.elf" "$MOUNT_DIR/bin/${bin}"
             chmod 755 "$MOUNT_DIR/bin/${bin}"
@@ -157,6 +191,16 @@ else
             echo "  WARNING: ${bin}.elf not found"
         fi
     done
+
+    # Install true in /sbin to test PATH lookup order
+    echo "Installing binaries in /sbin..."
+    if [ -f "$USERSPACE_DIR/true.elf" ]; then
+        cp "$USERSPACE_DIR/true.elf" "$MOUNT_DIR/sbin/true"
+        chmod 755 "$MOUNT_DIR/sbin/true"
+        echo "  /sbin/true installed"
+    else
+        echo "  WARNING: true.elf not found"
+    fi
 
     # Copy hello_world for exec testing
     if [ -f "$USERSPACE_DIR/hello_world.elf" ]; then
@@ -167,10 +211,31 @@ else
 
     # Create test files
     echo "Hello from ext2!" > "$MOUNT_DIR/hello.txt"
+    echo "Truncate test file" > "$MOUNT_DIR/trunctest.txt"
+    touch "$MOUNT_DIR/empty.txt"  # Empty file for wc testing
     mkdir -p "$MOUNT_DIR/test"
     echo "Nested file content" > "$MOUNT_DIR/test/nested.txt"
     mkdir -p "$MOUNT_DIR/deep/path/to/file"
     echo "Deep nested content" > "$MOUNT_DIR/deep/path/to/file/data.txt"
+
+    # Create multi-line test file for head/tail/wc testing (15 lines)
+    cat > "$MOUNT_DIR/lines.txt" << EOF
+Line 1
+Line 2
+Line 3
+Line 4
+Line 5
+Line 6
+Line 7
+Line 8
+Line 9
+Line 10
+Line 11
+Line 12
+Line 13
+Line 14
+Line 15
+EOF
 
     # Show what was created
     echo ""
@@ -197,10 +262,11 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo ""
     echo "Contents:"
     echo "  /bin/cat, ls, echo, mkdir, rmdir, rm, cp, mv - file coreutils"
-    echo "  /bin/true, false - exit status coreutils"
-    echo "  /bin/head, tail, wc - text processing coreutils"
+    echo "  /sbin/true, /bin/false - exit status coreutils"
+    echo "  /bin/head, tail, wc, which - text processing coreutils"
     echo "  /bin/hello_world - exec test binary (exit code 42)"
-    echo "  /hello.txt - test file"
+    echo "  /hello.txt - test file (1 line)"
+    echo "  /lines.txt - multi-line test file (15 lines) for head/tail/wc"
     echo "  /test/nested.txt - nested test file"
     echo "  /deep/path/to/file/data.txt - deep nested test file"
 else

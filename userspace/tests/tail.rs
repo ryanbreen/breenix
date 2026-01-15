@@ -23,11 +23,15 @@ use libbreenix::io::{stdout, stderr};
 use libbreenix::process::exit;
 
 const DEFAULT_LINES: usize = 10;
-const MAX_BUF_SIZE: usize = 65536; // 64KB max file size for tail
-const MAX_LINES: usize = 1024; // Max lines to track
+// NOTE: User stack is 64KB. Keep buffer + line tracker under ~20KB to avoid overflow.
+const MAX_BUF_SIZE: usize = 16384; // 16KB max file size for tail
+const MAX_LINES: usize = 256; // Max lines to track (256 * 8 = 2KB)
 
-/// Parse a number from bytes
+/// Parse a number from bytes. Returns None for empty or invalid input.
 fn parse_num(s: &[u8]) -> Option<usize> {
+    if s.is_empty() {
+        return None;
+    }
     let mut n: usize = 0;
     for &c in s {
         if c < b'0' || c > b'9' {
@@ -115,6 +119,15 @@ fn tail_stdin(max_lines: usize) -> Result<(), Errno> {
         total_len += n as usize;
     }
 
+    // If input ends with newline, we pushed a phantom "line start" at total_len.
+    // Adjust count to reflect actual number of lines.
+    if tracker.count > 1 {
+        let last_idx = (tracker.head + tracker.count - 1) % MAX_LINES;
+        if tracker.starts[last_idx] >= total_len {
+            tracker.count -= 1;
+        }
+    }
+
     // Output last N lines
     if let Some(start) = tracker.get_start(max_lines) {
         let _ = stdout().write(&buf[start..total_len]);
@@ -168,6 +181,15 @@ fn tail_file(path: &[u8], max_lines: usize) -> Result<(), Errno> {
     }
 
     let _ = close(fd);
+
+    // If file ends with newline, we pushed a phantom "line start" at total_len.
+    // Adjust count to reflect actual number of lines.
+    if tracker.count > 1 {
+        let last_idx = (tracker.head + tracker.count - 1) % MAX_LINES;
+        if tracker.starts[last_idx] >= total_len {
+            tracker.count -= 1;
+        }
+    }
 
     // Output last N lines
     if let Some(start) = tracker.get_start(max_lines) {

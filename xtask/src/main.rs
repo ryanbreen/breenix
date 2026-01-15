@@ -1299,6 +1299,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check kernel/src/syscall/handlers.rs load_elf_from_ext2() directory check",
         },
         BootStage {
+            name: "Exec ext2 /bin/ls OK",
+            marker: "EXEC_EXT2_LS_OK",
+            failure_meaning: "exec /bin/ls failed - explicit path execution broken",
+            check_hint: "Check kernel exec path resolution and ls binary in ext2 image",
+        },
+        BootStage {
             name: "Exec ext2 test passed",
             marker: "EXEC_EXT2_TEST_PASSED",
             failure_meaning: "One or more exec from ext2 tests failed",
@@ -1310,6 +1316,44 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "BLOCK_ALLOC_TEST_PASSED",
             failure_meaning: "Block allocation regression test failed - truncate may not free blocks or allocate_block/free_block arithmetic wrong",
             check_hint: "Check userspace/tests/fs_block_alloc_test.rs and kernel/src/fs/ext2/block_group.rs s_first_data_block handling",
+        },
+        // Coreutil tests - verify true, false, head, tail, wc work correctly
+        BootStage {
+            name: "true coreutil test passed",
+            marker: "TRUE_TEST_PASSED",
+            failure_meaning: "/bin/true did not exit with code 0",
+            check_hint: "Check userspace/tests/true.rs and true_test.rs",
+        },
+        BootStage {
+            name: "false coreutil test passed",
+            marker: "FALSE_TEST_PASSED",
+            failure_meaning: "/bin/false did not exit with code 1",
+            check_hint: "Check userspace/tests/false.rs and false_test.rs",
+        },
+        BootStage {
+            name: "head coreutil test passed",
+            marker: "HEAD_TEST_PASSED",
+            failure_meaning: "/bin/head failed to process files correctly",
+            check_hint: "Check userspace/tests/head.rs and head_test.rs",
+        },
+        BootStage {
+            name: "tail coreutil test passed",
+            marker: "TAIL_TEST_PASSED",
+            failure_meaning: "/bin/tail failed to process files correctly",
+            check_hint: "Check userspace/tests/tail.rs and tail_test.rs",
+        },
+        BootStage {
+            name: "wc coreutil test passed",
+            marker: "WC_TEST_PASSED",
+            failure_meaning: "/bin/wc failed to count lines/words/bytes correctly",
+            check_hint: "Check userspace/tests/wc.rs and wc_test.rs",
+        },
+        // which coreutil test
+        BootStage {
+            name: "which coreutil test passed",
+            marker: "WHICH_TEST_PASSED",
+            failure_meaning: "/bin/which failed to locate commands in PATH",
+            check_hint: "Check userspace/tests/which.rs and which_test.rs",
         },
         // Rust std library test - validates real Rust std works in userspace
         BootStage {
@@ -1635,8 +1679,17 @@ fn boot_stages() -> Result<()> {
     let mut stage_start_time = Instant::now();
 
     let test_start = Instant::now();
-    let timeout = Duration::from_secs(120); // Increased for complex multi-process tests
-    let stage_timeout = Duration::from_secs(60); // Increased for complex multi-process tests that need scheduling time
+    // CI environments need more time due to virtualization overhead and resource contention
+    let timeout = if std::env::var("CI").is_ok() {
+        Duration::from_secs(180) // 3 minutes for CI
+    } else {
+        Duration::from_secs(120) // 2 minutes locally
+    };
+    let stage_timeout = if std::env::var("CI").is_ok() {
+        Duration::from_secs(90) // 90 seconds per stage in CI
+    } else {
+        Duration::from_secs(60) // 60 seconds per stage locally
+    };
     let mut last_progress = Instant::now();
 
     // Print initial waiting message

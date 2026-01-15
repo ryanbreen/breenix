@@ -119,6 +119,14 @@ BINARIES=(
     "head"
     "tail"
     "wc"
+    "which"
+    # Coreutil tests
+    "true_test"
+    "false_test"
+    "head_test"
+    "tail_test"
+    "wc_test"
+    "which_test"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

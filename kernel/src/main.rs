@@ -846,6 +846,20 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: block allocation regression test ===");
         test_exec::test_fs_block_alloc();
 
+        // Coreutil tests - verify true, false, head, tail, wc work correctly
+        log::info!("=== COREUTIL TEST: true (exit code 0) ===");
+        test_exec::test_true_coreutil();
+        log::info!("=== COREUTIL TEST: false (exit code 1) ===");
+        test_exec::test_false_coreutil();
+        log::info!("=== COREUTIL TEST: head (first N lines) ===");
+        test_exec::test_head_coreutil();
+        log::info!("=== COREUTIL TEST: tail (last N lines) ===");
+        test_exec::test_tail_coreutil();
+        log::info!("=== COREUTIL TEST: wc (line/word/byte counts) ===");
+        test_exec::test_wc_coreutil();
+        log::info!("=== COREUTIL TEST: which (command location) ===");
+        test_exec::test_which_coreutil();
+
         // Test Rust std library support
         log::info!("=== STD TEST: Rust std library support ===");
         test_exec::test_hello_std_real();

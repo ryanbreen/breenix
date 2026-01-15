@@ -19,7 +19,7 @@
 use core::cell::UnsafeCell;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
-use libbreenix::fs::{open, O_DIRECTORY, O_RDONLY, O_WRONLY};
+use libbreenix::fs::{access, open, O_DIRECTORY, O_RDONLY, O_WRONLY, X_OK};
 use libbreenix::io::{close, dup2, pipe, print, println, read, write};
 use libbreenix::process::{
     chdir, exec, execv, fork, getcwd, getpgrp, setpgid, waitpid, wexitstatus, wifexited,
@@ -595,18 +595,71 @@ pub fn find_program(name: &str) -> Option<&'static ProgramEntry> {
 ///
 /// Arguments:
 /// - `cmd_name`: The command name to execute
-/// - `_args`: Arguments (currently unused)
+/// - `args`: Arguments to pass to the command
 /// - `background`: If true, don't wait for the child process
 ///
 /// Returns:
 /// - Ok(exit_code) if the program was found and executed (0 for background)
-/// - Err(()) if the program was not found in the registry
+/// - Err(()) if the program was not found
+///
+/// Search order:
+/// 1. PROGRAM_REGISTRY (for backwards compatibility with test disk binaries)
+/// 2. Explicit path (if cmd_name contains '/') - use directly
+/// 3. PATH-based lookup: /bin/{cmd_name}, /sbin/{cmd_name}
 pub fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<i32, ()> {
-    let entry = find_program(cmd_name).ok_or(())?;
+    // Check if command is in registry
+    let registry_entry = find_program(cmd_name);
+
+    // Determine if this is an explicit path or a bare command name
+    let is_explicit_path = cmd_name.contains('/');
+
+    // Build path for execution
+    const PATH_BUF_LEN: usize = 128;
+    let mut path_buf = [0u8; PATH_BUF_LEN];
+    let cmd_bytes = cmd_name.as_bytes();
+    let mut path_len: usize = 0; // Length of null-terminated path in path_buf
+
+    let path_valid = if is_explicit_path {
+        // Use the explicit path directly
+        if cmd_bytes.len() + 1 <= PATH_BUF_LEN {
+            path_buf[..cmd_bytes.len()].copy_from_slice(cmd_bytes);
+            path_buf[cmd_bytes.len()] = 0;
+            path_len = cmd_bytes.len() + 1;
+            true
+        } else {
+            false
+        }
+    } else {
+        // PATH-based lookup: try /bin/ first, then /sbin/
+        let prefixes: [&[u8]; 2] = [b"/bin/", b"/sbin/"];
+        let mut found = false;
+        for prefix in prefixes {
+            if prefix.len() + cmd_bytes.len() + 1 <= PATH_BUF_LEN {
+                path_buf[..prefix.len()].copy_from_slice(prefix);
+                path_buf[prefix.len()..prefix.len() + cmd_bytes.len()].copy_from_slice(cmd_bytes);
+                path_buf[prefix.len() + cmd_bytes.len()] = 0;
+                path_len = prefix.len() + cmd_bytes.len() + 1;
+
+                // Check if file exists and is executable
+                if let Ok(path_str) = core::str::from_utf8(&path_buf[..path_len]) {
+                    if access(path_str, X_OK).is_ok() {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        found
+    };
+
+    // If not in registry and path is invalid, fail
+    if registry_entry.is_none() && !path_valid {
+        return Err(());
+    }
 
     if !background {
         print("Running: ");
-        println(entry.name);
+        println(cmd_name);
     }
 
     // Fork a child process
@@ -629,9 +682,18 @@ pub fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Res
         let _ = setpgid(0, 0);
 
         let args = trim(args);
+
+        // Determine which binary path to use
+        let binary_path: &[u8] = if let Some(entry) = registry_entry {
+            entry.binary_name
+        } else {
+            // Use path from path_buf (either explicit or /bin/{cmd_name})
+            &path_buf[..path_len]
+        };
+
         let result = if args.is_empty() {
-            let argv: [*const u8; 2] = [entry.binary_name.as_ptr(), core::ptr::null()];
-            execv(entry.binary_name, argv.as_ptr())
+            let argv: [*const u8; 2] = [binary_path.as_ptr(), core::ptr::null()];
+            execv(binary_path, argv.as_ptr())
         } else {
             const ARG_BUF_LEN: usize = 128;
             let arg_end = args
@@ -654,13 +716,13 @@ pub fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Res
             arg_buf[first_arg.len()] = 0;
             let arg_ptr = core::hint::black_box(arg_buf.as_ptr());
             let argv: [*const u8; 3] = [
-                entry.binary_name.as_ptr(),
+                binary_path.as_ptr(),
                 arg_ptr,
                 core::ptr::null(),
             ];
             // Also black_box the argv array itself
             let argv_ptr = core::hint::black_box(argv.as_ptr());
-            execv(entry.binary_name, argv_ptr)
+            execv(binary_path, argv_ptr)
         };
 
         // If exec returns, it failed
@@ -894,6 +956,10 @@ fn split_pipeline<'a>(
 /// This handles built-in commands that can participate in pipelines (like echo).
 /// For external commands, it calls exec.
 ///
+/// Search order for external commands:
+/// 1. PROGRAM_REGISTRY (for backwards compatibility with test disk binaries)
+/// 2. /bin/{cmd_name} (PATH-based lookup from ext2 filesystem)
+///
 /// This function never returns - it either execs or exits.
 fn execute_pipeline_command(cmd: &PipelineCommand) -> ! {
     // Handle built-in commands that can participate in pipelines
@@ -908,9 +974,29 @@ fn execute_pipeline_command(cmd: &PipelineCommand) -> ! {
         libbreenix::process::exit(0);
     }
 
-    // Try external command
+    // Try external command from registry first
     if let Some(entry) = find_program(cmd.name) {
         let result = exec(entry.binary_name);
+        // If exec returns, it failed
+        print("exec failed: ");
+        print_num((-result) as u64);
+        println("");
+        libbreenix::process::exit(1);
+    }
+
+    // Try /bin/{cmd_name} PATH lookup
+    const PATH_BUF_LEN: usize = 64;
+    let mut path_buf = [0u8; PATH_BUF_LEN];
+    let prefix = b"/bin/";
+    let cmd_bytes = cmd.name.as_bytes();
+
+    if prefix.len() + cmd_bytes.len() + 1 <= PATH_BUF_LEN {
+        path_buf[..prefix.len()].copy_from_slice(prefix);
+        path_buf[prefix.len()..prefix.len() + cmd_bytes.len()].copy_from_slice(cmd_bytes);
+        path_buf[prefix.len() + cmd_bytes.len()] = 0; // null terminate
+
+        let path_len = prefix.len() + cmd_bytes.len() + 1;
+        let result = exec(&path_buf[..path_len]);
         // If exec returns, it failed
         print("exec failed: ");
         print_num((-result) as u64);

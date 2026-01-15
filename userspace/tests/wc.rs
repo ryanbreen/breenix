@@ -76,8 +76,10 @@ impl Options {
     }
 }
 
+/// POSIX-compliant whitespace check: space, tab, newline, carriage return,
+/// form feed (\f = 0x0c), and vertical tab (\v = 0x0b)
 fn is_whitespace(c: u8) -> bool {
-    c == b' ' || c == b'\t' || c == b'\n' || c == b'\r'
+    c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == 0x0c || c == 0x0b
 }
 
 /// Count lines, words, bytes from stdin

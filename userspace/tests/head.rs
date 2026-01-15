@@ -22,8 +22,11 @@ use libbreenix::process::exit;
 const DEFAULT_LINES: usize = 10;
 const BUF_SIZE: usize = 4096;
 
-/// Parse a number from bytes
+/// Parse a number from bytes. Returns None for empty or invalid input.
 fn parse_num(s: &[u8]) -> Option<usize> {
+    if s.is_empty() {
+        return None;
+    }
     let mut n: usize = 0;
     for &c in s {
         if c < b'0' || c > b'9' {
@@ -36,6 +39,11 @@ fn parse_num(s: &[u8]) -> Option<usize> {
 
 /// Read and output up to `max_lines` lines from stdin
 fn head_stdin(max_lines: usize) -> Result<(), Errno> {
+    // Early return for -n0: output nothing
+    if max_lines == 0 {
+        return Ok(());
+    }
+
     let mut buf = [0u8; BUF_SIZE];
     let mut lines_output = 0;
 
@@ -64,6 +72,11 @@ fn head_stdin(max_lines: usize) -> Result<(), Errno> {
 
 /// Read and output up to `max_lines` lines from a file
 fn head_file(path: &[u8], max_lines: usize) -> Result<(), Errno> {
+    // Early return for -n0: output nothing
+    if max_lines == 0 {
+        return Ok(());
+    }
+
     let mut path_buf = [0u8; 256];
     let len = path.len().min(255);
     path_buf[..len].copy_from_slice(&path[..len]);

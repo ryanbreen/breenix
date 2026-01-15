@@ -296,6 +296,35 @@ name = "wc"
 path = "wc.rs"
 
 [[bin]]
+name = "which"
+path = "which.rs"
+
+# Coreutil tests
+[[bin]]
+name = "true_test"
+path = "true_test.rs"
+
+[[bin]]
+name = "false_test"
+path = "false_test.rs"
+
+[[bin]]
+name = "head_test"
+path = "head_test.rs"
+
+[[bin]]
+name = "tail_test"
+path = "tail_test.rs"
+
+[[bin]]
+name = "wc_test"
+path = "wc_test.rs"
+
+[[bin]]
+name = "which_test"
+path = "which_test.rs"
+
+[[bin]]
 name = "fork_memory_test"
 path = "fork_memory_test.rs"
 

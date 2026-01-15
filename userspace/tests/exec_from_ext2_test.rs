@@ -194,6 +194,43 @@ pub extern "C" fn _start() -> ! {
         tests_failed += 1;
     }
 
+    // Test 5: exec("/bin/ls", ...) should succeed and exit 0
+    // This tests that ls specifically works, not just hello_world
+    println("Test 5: exec /bin/ls");
+    let pid = fork();
+    if pid == 0 {
+        let program = b"/bin/ls\0";
+        let arg0 = b"ls\0" as *const u8;
+        let arg1 = b"/\0" as *const u8;
+        let argv: [*const u8; 3] = [arg0, arg1, core::ptr::null()];
+
+        let result = execv(program, argv.as_ptr());
+        // If we get here, exec failed
+        libbreenix::io::print("exec /bin/ls failed: ");
+        print_num((-result) as u64);
+        libbreenix::io::print("\n");
+        exit(result as i32);
+    } else if pid > 0 {
+        let mut status: i32 = 0;
+        let _ = waitpid(pid as i32, &mut status, 0);
+
+        // ls should exit with code 0 on success
+        if wifexited(status) && wexitstatus(status) == 0 {
+            println("EXEC_EXT2_LS_OK");
+            // Test passed
+        } else {
+            libbreenix::io::print("EXEC_EXT2_LS_FAILED (status=");
+            print_num(status as u64);
+            libbreenix::io::print(", exit=");
+            print_num(wexitstatus(status) as u64);
+            libbreenix::io::print(")\n");
+            tests_failed += 1;
+        }
+    } else {
+        println("fork failed");
+        tests_failed += 1;
+    }
+
     // Summary
     if tests_failed == 0 {
         println("EXEC_EXT2_TEST_PASSED");

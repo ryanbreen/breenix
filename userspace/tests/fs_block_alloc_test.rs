@@ -161,12 +161,12 @@ pub extern "C" fn _start() -> ! {
             }
         }
 
-        // Step 2: Open /hello.txt and write content
+        // Step 2: Create /trunctest.txt and write content
         if hello_world_inode_before != 0 {
-            let fd = match open("/hello.txt\0", O_WRONLY) {
+            let fd = match open_with_mode("/trunctest.txt\0", O_WRONLY | O_CREAT, 0o644) {
                 Ok(fd) => fd,
                 Err(_) => {
-                    println("FAILED: Could not open /hello.txt");
+                    println("FAILED: Could not create /trunctest.txt");
                     tests_failed += 1;
                     0
                 }
@@ -176,12 +176,12 @@ pub extern "C" fn _start() -> ! {
                 let _ = close(fd);
             }
 
-            // Step 3: Truncate /hello.txt and write new content
+            // Step 3: Truncate /trunctest.txt and write new content
             // This is the operation that previously corrupted /bin
-            let fd = match open("/hello.txt\0", O_WRONLY | O_TRUNC) {
+            let fd = match open("/trunctest.txt\0", O_WRONLY | O_TRUNC) {
                 Ok(fd) => fd,
                 Err(_) => {
-                    println("FAILED: Could not open /hello.txt with O_TRUNC");
+                    println("FAILED: Could not open /trunctest.txt with O_TRUNC");
                     tests_failed += 1;
                     0
                 }
