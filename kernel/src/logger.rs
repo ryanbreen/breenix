@@ -141,6 +141,13 @@ impl ShellFrameBuffer {
         }
     }
 
+    /// Get mutable access to the double buffer (if available).
+    ///
+    /// Returns None if double buffering has not been enabled yet.
+    pub fn double_buffer_mut(&mut self) -> Option<&mut DoubleBufferedFrameBuffer> {
+        self.double_buffer.as_mut()
+    }
+
     /// Clear the framebuffer (fill with black)
     pub fn clear(&mut self) {
         self.x_pos = BORDER_PADDING;
