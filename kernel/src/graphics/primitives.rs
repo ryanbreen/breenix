@@ -347,6 +347,211 @@ pub fn fill_circle(canvas: &mut impl Canvas, cx: i32, cy: i32, radius: u32, colo
     }
 }
 
+// ============================================================================
+// Text Rendering
+// ============================================================================
+
+use super::font::{Font, Glyph};
+
+/// Text rendering style configuration.
+#[derive(Debug, Clone, Copy)]
+pub struct TextStyle {
+    /// Foreground text color
+    pub foreground: Color,
+    /// Background color (None for transparent background)
+    pub background: Option<Color>,
+    /// Font to use for rendering
+    pub font: Font,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            foreground: Color::WHITE,
+            background: None,
+            font: Font::default_font(),
+        }
+    }
+}
+
+impl TextStyle {
+    /// Create a new text style with default settings (white on transparent).
+    pub const fn new() -> Self {
+        Self {
+            foreground: Color::WHITE,
+            background: None,
+            font: Font::default_font(),
+        }
+    }
+
+    /// Set the foreground color.
+    pub const fn with_color(mut self, color: Color) -> Self {
+        self.foreground = color;
+        self
+    }
+
+    /// Set the background color.
+    pub const fn with_background(mut self, color: Color) -> Self {
+        self.background = Some(color);
+        self
+    }
+
+    /// Set the font.
+    pub const fn with_font(mut self, font: Font) -> Self {
+        self.font = font;
+        self
+    }
+}
+
+/// Blend two colors based on an intensity value (0-255).
+/// intensity=0 returns bg, intensity=255 returns fg.
+fn blend_colors(fg: Color, bg: Color, intensity: u8) -> Color {
+    if intensity == 0 {
+        return bg;
+    }
+    if intensity == 255 {
+        return fg;
+    }
+    let alpha = intensity as u16;
+    let inv_alpha = 255 - alpha;
+    Color::rgb(
+        ((fg.r as u16 * alpha + bg.r as u16 * inv_alpha) / 255) as u8,
+        ((fg.g as u16 * alpha + bg.g as u16 * inv_alpha) / 255) as u8,
+        ((fg.b as u16 * alpha + bg.b as u16 * inv_alpha) / 255) as u8,
+    )
+}
+
+/// Draw a single character at the specified position.
+///
+/// Returns the width in pixels that the cursor should advance.
+pub fn draw_char(canvas: &mut impl Canvas, x: i32, y: i32, c: char, style: &TextStyle) -> i32 {
+    let glyph = style.font.glyph_or_replacement(c);
+    let metrics = style.font.metrics();
+
+    // If background is set, fill the character cell first
+    if let Some(bg) = style.background {
+        fill_rect(
+            canvas,
+            Rect {
+                x,
+                y,
+                width: metrics.char_advance() as u32,
+                height: metrics.char_height as u32,
+            },
+            bg,
+        );
+    }
+
+    // Draw the glyph pixels
+    draw_glyph(canvas, x, y, &glyph, style);
+
+    metrics.char_advance() as i32
+}
+
+/// Draw a glyph at the specified position with the given style.
+fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &TextStyle) {
+    let threshold = if style.background.is_some() { 0 } else { 32 };
+
+    for (gx, gy, intensity) in glyph.pixels() {
+        if intensity <= threshold {
+            continue;
+        }
+
+        let px = x + gx as i32;
+        let py = y + gy as i32;
+
+        let color = if let Some(bg) = style.background {
+            blend_colors(style.foreground, bg, intensity)
+        } else {
+            // No background - use intensity to modulate foreground
+            Color::rgb(
+                (style.foreground.r as u16 * intensity as u16 / 255) as u8,
+                (style.foreground.g as u16 * intensity as u16 / 255) as u8,
+                (style.foreground.b as u16 * intensity as u16 / 255) as u8,
+            )
+        };
+
+        canvas.set_pixel(px, py, color);
+    }
+}
+
+/// Draw a text string at the specified position.
+///
+/// Handles newlines by moving to the next line.
+/// Returns the final cursor position (x, y) after drawing.
+pub fn draw_text(
+    canvas: &mut impl Canvas,
+    x: i32,
+    y: i32,
+    text: &str,
+    style: &TextStyle,
+) -> (i32, i32) {
+    let metrics = style.font.metrics();
+    let mut cx = x;
+    let mut cy = y;
+
+    for c in text.chars() {
+        if c == '\n' {
+            cx = x;
+            cy += metrics.line_height() as i32;
+            continue;
+        }
+
+        // Skip carriage return
+        if c == '\r' {
+            continue;
+        }
+
+        // Skip tab (or treat as spaces)
+        if c == '\t' {
+            cx += (metrics.char_advance() * 4) as i32;
+            continue;
+        }
+
+        let advance = draw_char(canvas, cx, cy, c, style);
+        cx += advance;
+    }
+
+    (cx, cy)
+}
+
+/// Measure the width of a string without drawing it.
+pub fn text_width(text: &str, style: &TextStyle) -> i32 {
+    let metrics = style.font.metrics();
+    let mut max_width = 0i32;
+    let mut current_width = 0i32;
+
+    for c in text.chars() {
+        if c == '\n' {
+            max_width = max_width.max(current_width);
+            current_width = 0;
+            continue;
+        }
+        if c == '\r' {
+            continue;
+        }
+        if c == '\t' {
+            current_width += (metrics.char_advance() * 4) as i32;
+            continue;
+        }
+        current_width += metrics.char_advance() as i32;
+    }
+
+    max_width.max(current_width)
+}
+
+/// Get the line height for a given style.
+pub fn text_line_height(style: &TextStyle) -> i32 {
+    style.font.metrics().line_height() as i32
+}
+
+/// Get the height needed for multi-line text.
+pub fn text_height(text: &str, style: &TextStyle) -> i32 {
+    let metrics = style.font.metrics();
+    let line_count = text.lines().count().max(1);
+    (line_count * metrics.line_height()) as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +668,167 @@ mod tests {
         assert_eq!(clipped.y, 0);
         assert_eq!(clipped.width, 3);
         assert_eq!(clipped.height, 3);
+    }
+
+    // ========================================================================
+    // Text Rendering Tests
+    // ========================================================================
+
+    #[test]
+    fn text_style_default_values() {
+        let style = TextStyle::default();
+        assert_eq!(style.foreground, Color::WHITE);
+        assert!(style.background.is_none());
+    }
+
+    #[test]
+    fn text_style_builder_methods() {
+        let style = TextStyle::new()
+            .with_color(Color::RED)
+            .with_background(Color::BLUE);
+        assert_eq!(style.foreground, Color::RED);
+        assert_eq!(style.background, Some(Color::BLUE));
+    }
+
+    #[test]
+    fn blend_colors_extremes() {
+        let fg = Color::WHITE;
+        let bg = Color::BLACK;
+
+        // intensity=0 should return background
+        let result = blend_colors(fg, bg, 0);
+        assert_eq!(result, bg);
+
+        // intensity=255 should return foreground
+        let result = blend_colors(fg, bg, 255);
+        assert_eq!(result, fg);
+    }
+
+    #[test]
+    fn blend_colors_midpoint() {
+        let fg = Color::WHITE;
+        let bg = Color::BLACK;
+        let result = blend_colors(fg, bg, 128);
+        // Should be approximately half (128/255 * 255 ≈ 128)
+        assert!(result.r > 100 && result.r < 140);
+        assert!(result.g > 100 && result.g < 140);
+        assert!(result.b > 100 && result.b < 140);
+    }
+
+    #[test]
+    fn text_width_single_line() {
+        let style = TextStyle::default();
+        let width = text_width("ABC", &style);
+        let metrics = style.font.metrics();
+        assert_eq!(width, (3 * metrics.char_advance()) as i32);
+    }
+
+    #[test]
+    fn text_width_empty_string() {
+        let style = TextStyle::default();
+        assert_eq!(text_width("", &style), 0);
+    }
+
+    #[test]
+    fn text_width_multiline_returns_max() {
+        let style = TextStyle::default();
+        let metrics = style.font.metrics();
+        // "ABCD" is wider than "AB"
+        let width = text_width("AB\nABCD", &style);
+        assert_eq!(width, (4 * metrics.char_advance()) as i32);
+    }
+
+    #[test]
+    fn text_height_single_line() {
+        let style = TextStyle::default();
+        let height = text_height("Hello", &style);
+        let metrics = style.font.metrics();
+        assert_eq!(height, metrics.line_height() as i32);
+    }
+
+    #[test]
+    fn text_height_multiline() {
+        let style = TextStyle::default();
+        let height = text_height("Line1\nLine2\nLine3", &style);
+        let metrics = style.font.metrics();
+        assert_eq!(height, (3 * metrics.line_height()) as i32);
+    }
+
+    #[test]
+    fn text_line_height_matches_metrics() {
+        let style = TextStyle::default();
+        let metrics = style.font.metrics();
+        assert_eq!(text_line_height(&style), metrics.line_height() as i32);
+    }
+
+    #[test]
+    fn draw_char_modifies_canvas() {
+        let mut canvas = TestCanvas::new(100, 100, 4, false);
+        let style = TextStyle::new().with_color(Color::WHITE);
+
+        // Canvas should start all black
+        assert!(canvas.buffer.iter().all(|&b| b == 0));
+
+        // Draw a character
+        let advance = draw_char(&mut canvas, 10, 10, 'X', &style);
+
+        // Advance should be positive
+        assert!(advance > 0);
+
+        // Some pixels should have been modified (non-zero)
+        assert!(canvas.buffer.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn draw_text_positions_correctly() {
+        let mut canvas = TestCanvas::new(200, 100, 4, false);
+        let style = TextStyle::new().with_color(Color::WHITE);
+        let metrics = style.font.metrics();
+
+        let (final_x, final_y) = draw_text(&mut canvas, 0, 0, "AB", &style);
+
+        // Final X should be 2 character widths
+        assert_eq!(final_x, (2 * metrics.char_advance()) as i32);
+        // Final Y should be unchanged (no newlines)
+        assert_eq!(final_y, 0);
+    }
+
+    #[test]
+    fn draw_text_handles_newlines() {
+        let mut canvas = TestCanvas::new(200, 100, 4, false);
+        let style = TextStyle::new().with_color(Color::WHITE);
+        let metrics = style.font.metrics();
+
+        let (final_x, final_y) = draw_text(&mut canvas, 10, 10, "A\nB", &style);
+
+        // After newline, X resets to starting X
+        assert_eq!(final_x, 10 + metrics.char_advance() as i32);
+        // Y advances by one line
+        assert_eq!(final_y, 10 + metrics.line_height() as i32);
+    }
+
+    #[test]
+    fn draw_text_with_background_fills_cells() {
+        let mut canvas = TestCanvas::new(100, 100, 4, false);
+        let style = TextStyle::new()
+            .with_color(Color::WHITE)
+            .with_background(Color::BLUE);
+
+        draw_text(&mut canvas, 0, 0, "A", &style);
+
+        // Check that at least some pixels have blue component
+        // (background should have been drawn)
+        let has_blue = canvas.buffer.chunks(4).any(|pixel| pixel[2] > 0);
+        assert!(has_blue);
+    }
+
+    #[test]
+    fn draw_char_returns_advance_width() {
+        let mut canvas = TestCanvas::new(100, 100, 4, false);
+        let style = TextStyle::default();
+        let metrics = style.font.metrics();
+
+        let advance = draw_char(&mut canvas, 0, 0, 'M', &style);
+        assert_eq!(advance, metrics.char_advance() as i32);
     }
 }
