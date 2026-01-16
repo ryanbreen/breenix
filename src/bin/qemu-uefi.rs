@@ -202,7 +202,34 @@ fn main() {
         "-cpu", "qemu64",
         "-smp", "1",
         "-m", "512",
-        "-nographic",
+    ]);
+
+    // Graphics configuration: interactive mode vs headless
+    let is_interactive = env::var("BREENIX_INTERACTIVE").ok().as_deref() == Some("1");
+    if is_interactive {
+        // Interactive mode: use virtio-vga for high-resolution support
+        // Resolution can be overridden via BREENIX_FB_WIDTH/HEIGHT
+        let fb_width = env::var("BREENIX_FB_WIDTH")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1920);
+        let fb_height = env::var("BREENIX_FB_HEIGHT")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1080);
+
+        // virtio-vga provides GOP with configurable resolution
+        qemu.args([
+            "-device",
+            &format!("virtio-vga,xres={},yres={}", fb_width, fb_height),
+        ]);
+        eprintln!("[qemu-uefi] Graphics: virtio-vga {}x{} (interactive mode)", fb_width, fb_height);
+    } else {
+        // Headless mode for CI/testing
+        qemu.args(["-nographic"]);
+    }
+
+    qemu.args([
         "-boot", "strict=on",
         "-no-reboot",
         "-no-shutdown",
