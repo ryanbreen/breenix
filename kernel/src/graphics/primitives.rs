@@ -155,15 +155,16 @@ pub fn draw_hline(canvas: &mut impl Canvas, x1: i32, x2: i32, y: i32, color: Col
     }
 
     let stride = canvas.stride();
+    let stride_bytes = stride * bpp; // stride is in pixels, convert to bytes
     let is_bgr = canvas.is_bgr();
     let pixel = color.to_pixel_bytes(bpp, is_bgr);
     let buffer = canvas.buffer_mut();
 
-    let row_start = (y as usize).saturating_mul(stride);
+    let row_start = (y as usize).saturating_mul(stride_bytes);
     if row_start >= buffer.len() {
         return;
     }
-    let row_end = min(row_start + stride, buffer.len());
+    let row_end = min(row_start + stride_bytes, buffer.len());
     let row_slice = &mut buffer[row_start..row_end];
 
     let start_byte = (start as usize).saturating_mul(bpp);
@@ -262,6 +263,7 @@ pub fn fill_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
         return;
     }
     let stride = canvas.stride();
+    let stride_bytes = stride * bpp; // stride is in pixels, convert to bytes
     let is_bgr = canvas.is_bgr();
     let pixel = color.to_pixel_bytes(bpp, is_bgr);
     let buffer = canvas.buffer_mut();
@@ -272,11 +274,11 @@ pub fn fill_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
     let end_x = start_x.saturating_add(clipped.width as usize);
 
     for y in start_y..end_y {
-        let row_start = y.saturating_mul(stride);
+        let row_start = y.saturating_mul(stride_bytes);
         if row_start >= buffer.len() {
             break;
         }
-        let row_end = min(row_start + stride, buffer.len());
+        let row_end = min(row_start + stride_bytes, buffer.len());
         let row_slice = &mut buffer[row_start..row_end];
 
         let start_byte = start_x.saturating_mul(bpp);
