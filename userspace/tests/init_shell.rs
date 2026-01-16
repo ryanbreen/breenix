@@ -579,7 +579,7 @@ static PROGRAM_REGISTRY: &[ProgramEntry] = &[
     },
     ProgramEntry {
         name: "telnetd",
-        binary_name: b"telnetd\0",
+        binary_name: b"/sbin/telnetd\0",
         description: "Telnet server on port 2323",
     },
     // === PTY Test ===
