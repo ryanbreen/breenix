@@ -1,5 +1,7 @@
 use crate::log_serial_println;
 #[cfg(feature = "interactive")]
+use crate::graphics::DoubleBufferedFrameBuffer;
+#[cfg(feature = "interactive")]
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use bootloader_x86_64_common::logger::LockedLogger;
 use conquer_once::spin::OnceCell;
@@ -69,12 +71,14 @@ fn get_char_raster(c: char) -> RasterizedChar {
 /// Shell framebuffer writer for direct text output
 #[cfg(feature = "interactive")]
 pub struct ShellFrameBuffer {
-    /// Pointer to the framebuffer memory
+    /// Pointer to hardware framebuffer memory (from bootloader)
     buffer_ptr: *mut u8,
-    /// Length of the framebuffer
+    /// Length of hardware buffer in bytes
     buffer_len: usize,
-    /// Framebuffer info (dimensions, pixel format, etc.)
+    /// Framebuffer metadata (dimensions, pixel format, stride)
     info: FrameBufferInfo,
+    /// Double buffer (Some after heap init, None before)
+    double_buffer: Option<DoubleBufferedFrameBuffer>,
     /// Current x position (in pixels)
     x_pos: usize,
     /// Current y position (in pixels)
@@ -96,18 +100,19 @@ unsafe impl Sync for ShellFrameBuffer {}
 
 #[cfg(feature = "interactive")]
 impl ShellFrameBuffer {
-    /// Create a new shell framebuffer from raw pointer and info
+    /// Create a new shell framebuffer with direct hardware writes.
+    ///
+    /// Used during early boot before the heap is initialized.
+    /// Call `upgrade_to_double_buffer()` after heap init for tear-free rendering.
     ///
     /// # Safety
-    /// The caller must ensure that:
-    /// - buffer_ptr points to valid framebuffer memory
-    /// - buffer_len is the correct length
-    /// - The memory remains valid for the lifetime of this struct
-    pub unsafe fn new(buffer_ptr: *mut u8, buffer_len: usize, info: FrameBufferInfo) -> Self {
+    /// The caller must ensure that buffer_ptr points to valid framebuffer memory.
+    pub fn new_direct(buffer_ptr: *mut u8, buffer_len: usize, info: FrameBufferInfo) -> Self {
         let mut fb = Self {
             buffer_ptr,
             buffer_len,
             info,
+            double_buffer: None,
             x_pos: BORDER_PADDING,
             y_pos: BORDER_PADDING,
             cursor_visible: true,
@@ -119,12 +124,32 @@ impl ShellFrameBuffer {
         fb
     }
 
+    /// Upgrade from direct writes to double-buffered mode.
+    ///
+    /// This allocates a shadow buffer on the heap, so it must be called
+    /// after the heap allocator is initialized.
+    pub fn upgrade_to_double_buffer(&mut self) {
+        if self.double_buffer.is_none() {
+            let stride = self.info.stride * self.info.bytes_per_pixel;
+            let height = self.info.height;
+            let double_buffer =
+                DoubleBufferedFrameBuffer::new(self.buffer_ptr, self.buffer_len, stride, height);
+            self.double_buffer = Some(double_buffer);
+            log::info!("Shell framebuffer upgraded to double buffering");
+        }
+    }
+
     /// Clear the framebuffer (fill with black)
     pub fn clear(&mut self) {
         self.x_pos = BORDER_PADDING;
         self.y_pos = BORDER_PADDING;
-        unsafe {
-            core::ptr::write_bytes(self.buffer_ptr, 0, self.buffer_len);
+        if let Some(db) = &mut self.double_buffer {
+            db.buffer_mut().fill(0);
+            db.flush_full();
+        } else {
+            unsafe {
+                core::ptr::write_bytes(self.buffer_ptr, 0, self.buffer_len);
+            }
         }
     }
 
@@ -160,20 +185,47 @@ impl ShellFrameBuffer {
         let line_height = shell_font::CHAR_RASTER_HEIGHT.val() + LINE_SPACING;
         let bytes_per_pixel = self.info.bytes_per_pixel;
         let stride = self.info.stride;
-
-        // Calculate the number of bytes in one row of pixels
+        let height = self.info.height;
         let row_bytes = stride * bytes_per_pixel;
         let scroll_bytes = line_height * row_bytes;
 
-        // Move everything up
-        unsafe {
-            let src = self.buffer_ptr.add(scroll_bytes);
-            let remaining_bytes = self.buffer_len.saturating_sub(scroll_bytes);
-            core::ptr::copy(src, self.buffer_ptr, remaining_bytes);
+        if let Some(db) = &mut self.double_buffer {
+            db.flush_if_dirty();
+            let buffer_len = db.buffer_mut().len();
+            if scroll_bytes < buffer_len {
+                {
+                    let buffer = db.buffer_mut();
+                    buffer.copy_within(scroll_bytes..buffer_len, 0);
+                    let clear_start = buffer_len - scroll_bytes;
+                    buffer[clear_start..].fill(0);
+                }
+                db.scroll_hardware_up(scroll_bytes);
 
-            // Clear the bottom line
-            let clear_start = self.buffer_ptr.add(remaining_bytes);
-            core::ptr::write_bytes(clear_start, 0, scroll_bytes.min(self.buffer_len - remaining_bytes));
+                let clear_start_y = height.saturating_sub(line_height);
+                for y in clear_start_y..height {
+                    db.mark_region_dirty(y, 0, row_bytes);
+                }
+                db.flush();
+            } else {
+                {
+                    let buffer = db.buffer_mut();
+                    buffer.fill(0);
+                }
+                db.flush_full();
+            }
+        } else {
+            unsafe {
+                let src = self.buffer_ptr.add(scroll_bytes);
+                let remaining_bytes = self.buffer_len.saturating_sub(scroll_bytes);
+                core::ptr::copy(src, self.buffer_ptr, remaining_bytes);
+
+                let clear_start = self.buffer_ptr.add(remaining_bytes);
+                core::ptr::write_bytes(
+                    clear_start,
+                    0,
+                    scroll_bytes.min(self.buffer_len - remaining_bytes),
+                );
+            }
         }
 
         // Adjust y position
@@ -181,7 +233,26 @@ impl ShellFrameBuffer {
     }
 
     /// Write a single character to the framebuffer (with ANSI escape sequence parsing)
+    ///
+    /// This is the public API for single character input (e.g., keyboard).
+    /// Flushes the double buffer after processing to make changes visible.
     pub fn write_char(&mut self, c: char) {
+        self.write_char_internal(c);
+        self.flush_if_needed();
+    }
+
+    /// Flush the double buffer if in double-buffered mode and dirty
+    fn flush_if_needed(&mut self) {
+        if let Some(db) = &mut self.double_buffer {
+            db.flush_if_dirty();
+        }
+        // Direct mode doesn't need flushing - writes go directly to hardware
+    }
+
+    /// Internal character write without automatic flush.
+    ///
+    /// Used by write_str to batch multiple characters before flushing.
+    fn write_char_internal(&mut self, c: char) {
         let byte = c as u8;
 
         match self.ansi_state {
@@ -338,15 +409,27 @@ impl ShellFrameBuffer {
             PixelFormat::Bgr => [intensity / 2, intensity, intensity, 0],
             PixelFormat::U8 => [if intensity > 200 { 0xf } else { 0 }, 0, 0, 0],
             other => {
-                // Unsupported format - just use RGB and hope for the best
                 let _ = other;
                 [intensity, intensity, intensity / 2, 0]
             }
         };
         let bytes_per_pixel = self.info.bytes_per_pixel;
         let byte_offset = pixel_offset * bytes_per_pixel;
+        let x_byte_offset = x * bytes_per_pixel;
 
-        if byte_offset + bytes_per_pixel <= self.buffer_len {
+        if let Some(db) = &mut self.double_buffer {
+            let buffer = db.buffer_mut();
+            if byte_offset + bytes_per_pixel <= buffer.len() {
+                for (i, &byte) in color[..bytes_per_pixel].iter().enumerate() {
+                    buffer[byte_offset + i] = byte;
+                }
+                db.mark_region_dirty(
+                    y,
+                    x_byte_offset,
+                    x_byte_offset + bytes_per_pixel,
+                );
+            }
+        } else if byte_offset + bytes_per_pixel <= self.buffer_len {
             unsafe {
                 let dest = self.buffer_ptr.add(byte_offset);
                 for (i, &byte) in color[..bytes_per_pixel].iter().enumerate() {
@@ -357,10 +440,13 @@ impl ShellFrameBuffer {
     }
 
     /// Write a string to the framebuffer
+    ///
+    /// Batches all character writes and flushes once at the end for efficiency.
     pub fn write_str(&mut self, s: &str) {
         for c in s.chars() {
-            self.write_char(c);
+            self.write_char_internal(c);
         }
+        self.flush_if_needed();
     }
 
     /// Draw the cursor at the current position
@@ -393,6 +479,7 @@ impl ShellFrameBuffer {
 
         // Draw cursor in new state
         self.draw_cursor(self.cursor_visible);
+        self.flush_if_needed();
     }
 
     /// Show the cursor (if it was hidden)
@@ -403,6 +490,7 @@ impl ShellFrameBuffer {
         if !self.cursor_visible {
             self.cursor_visible = true;
             self.draw_cursor(true);
+            self.flush_if_needed();
         }
     }
 
@@ -414,6 +502,7 @@ impl ShellFrameBuffer {
         if self.cursor_visible {
             self.draw_cursor(false);
             self.cursor_visible = false;
+            self.flush_if_needed();
         }
     }
 
@@ -424,6 +513,7 @@ impl ShellFrameBuffer {
     pub fn reset_cursor_blink(&mut self) {
         self.cursor_visible = true;
         self.draw_cursor(true);
+        self.flush_if_needed();
     }
 }
 
@@ -715,20 +805,22 @@ pub fn serial_ready() {
 }
 
 /// Complete initialization with framebuffer
+///
+/// Note: In interactive mode, this does basic initialization only.
+/// Call `upgrade_to_double_buffer()` after heap is initialized to enable
+/// double buffering for tear-free rendering.
 pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::FrameBufferInfo) {
-    // In interactive mode, initialize the SHELL_FRAMEBUFFER FIRST
-    // by capturing the raw pointer before passing to LockedLogger
+    // In interactive mode, store framebuffer info for later double buffer upgrade
+    // We can't allocate the shadow buffer yet because the heap isn't initialized
     #[cfg(feature = "interactive")]
     {
-        // Store the raw pointer and info for shell output
-        // SAFETY: We're storing a pointer to the same buffer that LockedLogger will use.
-        // This is intentionally sharing the framebuffer memory between kernel logs (LockedLogger)
-        // and shell output (ShellFrameBuffer). In interactive mode, kernel logs go to COM2 only,
-        // so there's no actual conflict - only shell output uses the framebuffer.
+        // Store the framebuffer parameters for later use
         let buffer_ptr = buffer.as_mut_ptr();
         let buffer_len = buffer.len();
+
+        // Initialize with direct hardware writes (no double buffering yet)
         let _ = SHELL_FRAMEBUFFER.get_or_init(|| {
-            Mutex::new(unsafe { ShellFrameBuffer::new(buffer_ptr, buffer_len, info) })
+            Mutex::new(ShellFrameBuffer::new_direct(buffer_ptr, buffer_len, info))
         });
     }
 
@@ -776,5 +868,20 @@ pub fn toggle_cursor_blink() {
         if let Some(mut guard) = fb.try_lock() {
             guard.toggle_cursor();
         }
+    }
+}
+
+/// Upgrade the shell framebuffer to double-buffered mode.
+///
+/// This must be called AFTER the heap allocator is initialized, as it allocates
+/// a shadow buffer on the heap. Double buffering provides tear-free rendering
+/// by writing to a shadow buffer and then copying to hardware in one operation.
+///
+/// Safe to call multiple times - will only upgrade once.
+#[cfg(feature = "interactive")]
+pub fn upgrade_to_double_buffer() {
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        let mut guard = fb.lock();
+        guard.upgrade_to_double_buffer();
     }
 }
