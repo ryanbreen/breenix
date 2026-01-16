@@ -1605,6 +1605,72 @@ pub extern "C" fn _start() -> ! {
         }
     }
 
+    // =========================================================================
+    // Test 25: First-call accept (no retry)
+    // Verify accept succeeds on the first call after connect
+    // =========================================================================
+    io::print("TCP_FIRST_ACCEPT_TEST: starting\n");
+
+    let first_accept_server_fd = match socket(AF_INET, SOCK_STREAM, 0) {
+        Ok(fd) if fd >= 0 => fd,
+        _ => {
+            io::print("TCP_FIRST_ACCEPT_TEST: server socket FAILED\n");
+            failed += 1;
+            -1
+        }
+    };
+
+    if first_accept_server_fd >= 0 {
+        let first_accept_addr = SockAddrIn::new([0, 0, 0, 0], 9090);
+        if bind(first_accept_server_fd, &first_accept_addr).is_err() ||
+           listen(first_accept_server_fd, 128).is_err() {
+            io::print("TCP_FIRST_ACCEPT_TEST: bind/listen FAILED\n");
+            failed += 1;
+        } else {
+            let first_accept_client_fd = match socket(AF_INET, SOCK_STREAM, 0) {
+                Ok(fd) if fd >= 0 => fd,
+                _ => {
+                    io::print("TCP_FIRST_ACCEPT_TEST: client socket FAILED\n");
+                    failed += 1;
+                    -1
+                }
+            };
+
+            if first_accept_client_fd >= 0 {
+                let first_accept_loopback = SockAddrIn::new([127, 0, 0, 1], 9090);
+                if connect(first_accept_client_fd, &first_accept_loopback).is_err() {
+                    io::print("TCP_FIRST_ACCEPT_TEST: connect FAILED\n");
+                    failed += 1;
+                } else {
+                    match accept(first_accept_server_fd, None) {
+                        Ok(accepted_fd) if accepted_fd >= 0 => {
+                            io::print("TCP_FIRST_ACCEPT_TEST: accept OK\n");
+                            _passed += 1;
+                            // Close the accepted connection
+                            io::close(accepted_fd as u64);
+                        }
+                        Ok(_) => {
+                            io::print("TCP_FIRST_ACCEPT_TEST: accept invalid fd FAILED\n");
+                            failed += 1;
+                        }
+                        Err(EAGAIN) => {
+                            io::print("TCP_FIRST_ACCEPT_TEST: accept returned EAGAIN FAILED\n");
+                            failed += 1;
+                        }
+                        Err(_) => {
+                            io::print("TCP_FIRST_ACCEPT_TEST: accept FAILED\n");
+                            failed += 1;
+                        }
+                    }
+                }
+                // Close client socket
+                io::close(first_accept_client_fd as u64);
+            }
+        }
+        // Close server socket
+        io::close(first_accept_server_fd as u64);
+    }
+
     // Final result - _passed tracked for debugging, failed determines exit status
     if failed == 0 {
         io::print("TCP Socket Test: PASSED\n");

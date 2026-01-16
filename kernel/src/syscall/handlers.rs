@@ -783,7 +783,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::TcpConnection(conn_id) => {
             // Read from TCP connection
-            // First drain loopback queue in case there are pending packets
+            // First process any pending network packets
+            crate::net::process_rx();
             crate::net::drain_loopback_queue();
             let mut user_buf = alloc::vec![0u8; count as usize];
             match crate::net::tcp::tcp_recv(conn_id, &mut user_buf) {
@@ -2301,6 +2302,12 @@ pub fn sys_poll(fds_ptr: u64, nfds: u64, _timeout: i32) -> SyscallResult {
 
     log::debug!("sys_poll: fds_ptr={:#x}, nfds={}, timeout={}", fds_ptr, nfds, _timeout);
 
+    // Process any pending network packets before checking fd readiness.
+    // This is critical for TCP listeners - without this, incoming SYN packets
+    // remain unprocessed in the e1000 driver buffer and accept() never sees connections.
+    crate::net::process_rx();
+    crate::net::drain_loopback_queue();
+
     // Validate parameters
     if fds_ptr == 0 && nfds > 0 {
         return SyscallResult::Err(14); // EFAULT
@@ -2428,6 +2435,12 @@ pub fn sys_select(
         "sys_select: nfds={}, readfds={:#x}, writefds={:#x}, exceptfds={:#x}, timeout={:#x}",
         nfds, readfds_ptr, writefds_ptr, exceptfds_ptr, _timeout_ptr
     );
+
+    // Process any pending network packets before checking fd readiness.
+    // This is critical for TCP listeners - without this, incoming SYN packets
+    // remain unprocessed in the e1000 driver buffer and accept() never sees connections.
+    crate::net::process_rx();
+    crate::net::drain_loopback_queue();
 
     // Validate nfds - must be non-negative and <= 64 (we only support u64 bitmaps)
     if nfds < 0 {

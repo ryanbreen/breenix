@@ -275,9 +275,16 @@ impl Process {
                         log::debug!("Process::close_all_fds() - released devpts directory fd {}", fd);
                     }
                     FdKind::PtyMaster(pty_num) => {
-                        // PTY master cleanup - release the PTY pair when master closes
-                        crate::tty::pty::release(pty_num);
-                        log::debug!("Process::close_all_fds() - released PTY master fd {} (pty {})", fd, pty_num);
+                        // PTY master cleanup - decrement refcount, only release when all masters closed
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                            log::debug!("Process::close_all_fds() - PTY master fd {} (pty {}) refcount {} -> {}",
+                                fd, pty_num, old_count, old_count - 1);
+                            if old_count == 1 {
+                                crate::tty::pty::release(pty_num);
+                                log::debug!("Process::close_all_fds() - released PTY {} (last master closed)", pty_num);
+                            }
+                        }
                     }
                     FdKind::PtySlave(_pty_num) => {
                         // PTY slave doesn't own the pair, just decrement reference

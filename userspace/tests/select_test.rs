@@ -14,6 +14,13 @@ const SYS_READ: u64 = 2;
 const SYS_CLOSE: u64 = 6;
 const SYS_PIPE: u64 = 22;
 const SYS_SELECT: u64 = 23;
+const SYS_SOCKET: u64 = 41;
+const SYS_CONNECT: u64 = 42;
+const SYS_BIND: u64 = 49;
+const SYS_LISTEN: u64 = 50;
+
+const AF_INET: i32 = 2;
+const SOCK_STREAM: i32 = 1;
 
 // Syscall wrappers
 #[inline(always)]
@@ -26,6 +33,24 @@ unsafe fn syscall1(n: u64, arg1: u64) -> u64 {
         out("rcx") _,
         out("rdx") _,
         out("rsi") _,
+        out("r8") _,
+        out("r9") _,
+        out("r10") _,
+        out("r11") _,
+    );
+    ret
+}
+
+#[inline(always)]
+unsafe fn syscall2(n: u64, arg1: u64, arg2: u64) -> u64 {
+    let ret: u64;
+    core::arch::asm!(
+        "int 0x80",
+        inlateout("rax") n => ret,
+        inlateout("rdi") arg1 => _,
+        inlateout("rsi") arg2 => _,
+        out("rcx") _,
+        out("rdx") _,
         out("r8") _,
         out("r9") _,
         out("r10") _,
@@ -68,6 +93,26 @@ unsafe fn syscall5(n: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64
         out("r11") _,
     );
     ret
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockAddrIn {
+    sin_family: u16,
+    sin_port: u16,
+    sin_addr: [u8; 4],
+    sin_zero: [u8; 8],
+}
+
+impl SockAddrIn {
+    fn new(addr: [u8; 4], port: u16) -> Self {
+        Self {
+            sin_family: AF_INET as u16,
+            sin_port: port.to_be(),
+            sin_addr: addr,
+            sin_zero: [0; 8],
+        }
+    }
 }
 
 // Helper to write a string
@@ -392,8 +437,95 @@ pub extern "C" fn _start() -> ! {
     }
     write_str("  OK: stdout is writable\n");
 
+    // Phase 8: Select on TCP listener for first-call readiness
+    write_str("Phase 8: Selecting on TCP listener...\n");
+    let server_fd = unsafe { syscall3(SYS_SOCKET, AF_INET as u64, SOCK_STREAM as u64, 0) } as i64;
+    if server_fd < 0 {
+        write_str("  socket() returned: ");
+        write_num(server_fd);
+        write_str("\n");
+        fail("socket() failed");
+    }
+    let server_fd = server_fd as i32;
+
+    let server_addr = SockAddrIn::new([0, 0, 0, 0], 9092);
+    let bind_ret = unsafe {
+        syscall3(
+            SYS_BIND,
+            server_fd as u64,
+            &server_addr as *const SockAddrIn as u64,
+            core::mem::size_of::<SockAddrIn>() as u64,
+        )
+    } as i64;
+    if bind_ret < 0 {
+        write_str("  bind() returned: ");
+        write_num(bind_ret);
+        write_str("\n");
+        fail("bind() failed");
+    }
+
+    let listen_ret = unsafe { syscall2(SYS_LISTEN, server_fd as u64, 16) } as i64;
+    if listen_ret < 0 {
+        write_str("  listen() returned: ");
+        write_num(listen_ret);
+        write_str("\n");
+        fail("listen() failed");
+    }
+
+    let client_fd = unsafe { syscall3(SYS_SOCKET, AF_INET as u64, SOCK_STREAM as u64, 0) } as i64;
+    if client_fd < 0 {
+        write_str("  client socket() returned: ");
+        write_num(client_fd);
+        write_str("\n");
+        fail("client socket() failed");
+    }
+    let client_fd = client_fd as i32;
+
+    let loopback_addr = SockAddrIn::new([127, 0, 0, 1], 9092);
+    let connect_ret = unsafe {
+        syscall3(
+            SYS_CONNECT,
+            client_fd as u64,
+            &loopback_addr as *const SockAddrIn as u64,
+            core::mem::size_of::<SockAddrIn>() as u64,
+        )
+    } as i64;
+    if connect_ret < 0 {
+        write_str("  connect() returned: ");
+        write_num(connect_ret);
+        write_str("\n");
+        fail("connect() failed");
+    }
+
+    fd_zero(&mut readfds);
+    fd_set_bit(server_fd, &mut readfds);
+    let nfds_tcp = (server_fd + 1) as u64;
+    let select_ret = unsafe {
+        syscall5(SYS_SELECT, nfds_tcp, &mut readfds as *mut u64 as u64, 0, 0, 0)
+    } as i64;
+
+    write_str("  select() returned: ");
+    write_num(select_ret);
+    write_str(", readfds=");
+    write_hex(readfds);
+    write_str("\n");
+
+    if select_ret < 0 {
+        fail("select() on listener failed");
+    }
+    if select_ret != 1 {
+        fail("select() should return 1 for listener readiness");
+    }
+    if !fd_isset(server_fd, &readfds) {
+        fail("Listener should be ready for read on first select");
+    }
+    write_str("  OK: Listener ready on first select\n");
+
+    unsafe { syscall1(SYS_CLOSE, client_fd as u64) };
+    unsafe { syscall1(SYS_CLOSE, server_fd as u64) };
+
     // Clean up
-    write_str("Phase 8: Cleanup...\n");
+    write_str("Phase 9: Cleanup...\n");
     unsafe { syscall1(SYS_CLOSE, pipefd[0] as u64) };
     write_str("  Closed remaining fds\n");
 

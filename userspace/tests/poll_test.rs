@@ -14,6 +14,10 @@ const SYS_READ: u64 = 2;
 const SYS_CLOSE: u64 = 6;
 const SYS_POLL: u64 = 7;
 const SYS_PIPE: u64 = 22;
+const SYS_SOCKET: u64 = 41;
+const SYS_CONNECT: u64 = 42;
+const SYS_BIND: u64 = 49;
+const SYS_LISTEN: u64 = 50;
 
 // Poll event constants
 const POLLIN: i16 = 0x0001;
@@ -23,6 +27,9 @@ const POLLERR: i16 = 0x0008;
 const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
 
+const AF_INET: i32 = 2;
+const SOCK_STREAM: i32 = 1;
+
 // pollfd structure
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -30,6 +37,26 @@ struct PollFd {
     fd: i32,
     events: i16,
     revents: i16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SockAddrIn {
+    sin_family: u16,
+    sin_port: u16,
+    sin_addr: [u8; 4],
+    sin_zero: [u8; 8],
+}
+
+impl SockAddrIn {
+    fn new(addr: [u8; 4], port: u16) -> Self {
+        Self {
+            sin_family: AF_INET as u16,
+            sin_port: port.to_be(),
+            sin_addr: addr,
+            sin_zero: [0; 8],
+        }
+    }
 }
 
 // Syscall wrappers
@@ -43,6 +70,24 @@ unsafe fn syscall1(n: u64, arg1: u64) -> u64 {
         out("rcx") _,
         out("rdx") _,
         out("rsi") _,
+        out("r8") _,
+        out("r9") _,
+        out("r10") _,
+        out("r11") _,
+    );
+    ret
+}
+
+#[inline(always)]
+unsafe fn syscall2(n: u64, arg1: u64, arg2: u64) -> u64 {
+    let ret: u64;
+    core::arch::asm!(
+        "int 0x80",
+        inlateout("rax") n => ret,
+        inlateout("rdi") arg1 => _,
+        inlateout("rsi") arg2 => _,
+        out("rcx") _,
+        out("rdx") _,
         out("r8") _,
         out("r9") _,
         out("r10") _,
@@ -363,8 +408,97 @@ pub extern "C" fn _start() -> ! {
     }
     write_str("  OK: Multiple fds poll works correctly\n");
 
+    // Phase 8: Poll TCP listener for first-call readiness
+    write_str("Phase 8: Polling TCP listener for POLLIN...\n");
+    let server_fd = unsafe { syscall3(SYS_SOCKET, AF_INET as u64, SOCK_STREAM as u64, 0) } as i64;
+    if server_fd < 0 {
+        write_str("  socket() returned: ");
+        write_num(server_fd);
+        write_str("\n");
+        fail("socket() failed");
+    }
+    let server_fd = server_fd as i32;
+
+    let server_addr = SockAddrIn::new([0, 0, 0, 0], 9091);
+    let bind_ret = unsafe {
+        syscall3(
+            SYS_BIND,
+            server_fd as u64,
+            &server_addr as *const SockAddrIn as u64,
+            core::mem::size_of::<SockAddrIn>() as u64,
+        )
+    } as i64;
+    if bind_ret < 0 {
+        write_str("  bind() returned: ");
+        write_num(bind_ret);
+        write_str("\n");
+        fail("bind() failed");
+    }
+
+    let listen_ret = unsafe { syscall2(SYS_LISTEN, server_fd as u64, 16) } as i64;
+    if listen_ret < 0 {
+        write_str("  listen() returned: ");
+        write_num(listen_ret);
+        write_str("\n");
+        fail("listen() failed");
+    }
+
+    let client_fd = unsafe { syscall3(SYS_SOCKET, AF_INET as u64, SOCK_STREAM as u64, 0) } as i64;
+    if client_fd < 0 {
+        write_str("  client socket() returned: ");
+        write_num(client_fd);
+        write_str("\n");
+        fail("client socket() failed");
+    }
+    let client_fd = client_fd as i32;
+
+    let loopback_addr = SockAddrIn::new([127, 0, 0, 1], 9091);
+    let connect_ret = unsafe {
+        syscall3(
+            SYS_CONNECT,
+            client_fd as u64,
+            &loopback_addr as *const SockAddrIn as u64,
+            core::mem::size_of::<SockAddrIn>() as u64,
+        )
+    } as i64;
+    if connect_ret < 0 {
+        write_str("  connect() returned: ");
+        write_num(connect_ret);
+        write_str("\n");
+        fail("connect() failed");
+    }
+
+    let mut listen_fds = [PollFd {
+        fd: server_fd,
+        events: POLLIN,
+        revents: 0,
+    }];
+    let poll_ret = unsafe {
+        syscall3(SYS_POLL, listen_fds.as_mut_ptr() as u64, 1, 0)
+    } as i64;
+
+    write_str("  poll() returned: ");
+    write_num(poll_ret);
+    write_str(", revents=");
+    write_hex(listen_fds[0].revents);
+    write_str("\n");
+
+    if poll_ret < 0 {
+        fail("poll() on listener failed");
+    }
+    if poll_ret != 1 {
+        fail("poll() should return 1 for listener readiness");
+    }
+    if listen_fds[0].revents & POLLIN == 0 {
+        fail("Listener should have POLLIN set on first poll");
+    }
+    write_str("  OK: Listener POLLIN set on first poll\n");
+
+    unsafe { syscall1(SYS_CLOSE, client_fd as u64) };
+    unsafe { syscall1(SYS_CLOSE, server_fd as u64) };
+
     // Clean up
-    write_str("Phase 8: Cleanup...\n");
+    write_str("Phase 9: Cleanup...\n");
     unsafe { syscall1(SYS_CLOSE, pipefd[0] as u64) };
     write_str("  Closed remaining fds\n");
 
