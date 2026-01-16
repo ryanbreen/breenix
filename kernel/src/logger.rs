@@ -2,6 +2,8 @@ use crate::log_serial_println;
 #[cfg(feature = "interactive")]
 use crate::graphics::DoubleBufferedFrameBuffer;
 #[cfg(feature = "interactive")]
+use crate::graphics::primitives::{Canvas, Color};
+#[cfg(feature = "interactive")]
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use bootloader_x86_64_common::logger::LockedLogger;
 use conquer_once::spin::OnceCell;
@@ -518,6 +520,72 @@ impl ShellFrameBuffer {
 }
 
 #[cfg(feature = "interactive")]
+impl Canvas for ShellFrameBuffer {
+    fn width(&self) -> usize {
+        self.info.width
+    }
+
+    fn height(&self) -> usize {
+        self.info.height
+    }
+
+    fn bytes_per_pixel(&self) -> usize {
+        self.info.bytes_per_pixel
+    }
+
+    fn stride(&self) -> usize {
+        self.info.stride
+    }
+
+    fn is_bgr(&self) -> bool {
+        true
+    }
+
+    fn set_pixel(&mut self, x: i32, y: i32, color: Color) {
+        if x < 0 || y < 0 {
+            return;
+        }
+        let x = x as usize;
+        let y = y as usize;
+        if x >= self.info.width || y >= self.info.height {
+            return;
+        }
+
+        let bytes_per_pixel = self.info.bytes_per_pixel;
+        let pixel_bytes = color.to_pixel_bytes(bytes_per_pixel, self.is_bgr());
+
+        let pixel_offset = y * self.info.stride + x;
+        let byte_offset = pixel_offset * bytes_per_pixel;
+
+        if let Some(db) = &mut self.double_buffer {
+            let buffer = db.buffer_mut();
+            if byte_offset + bytes_per_pixel <= buffer.len() {
+                for (i, &byte) in pixel_bytes[..bytes_per_pixel].iter().enumerate() {
+                    buffer[byte_offset + i] = byte;
+                }
+                let x_byte_offset = x * bytes_per_pixel;
+                db.mark_region_dirty(y, x_byte_offset, x_byte_offset + bytes_per_pixel);
+            }
+        } else if byte_offset + bytes_per_pixel <= self.buffer_len {
+            unsafe {
+                let dest = self.buffer_ptr.add(byte_offset);
+                for (i, &byte) in pixel_bytes[..bytes_per_pixel].iter().enumerate() {
+                    *dest.add(i) = byte;
+                }
+            }
+        }
+    }
+
+    fn buffer_mut(&mut self) -> &mut [u8] {
+        if let Some(db) = &mut self.double_buffer {
+            db.buffer_mut()
+        } else {
+            unsafe { core::slice::from_raw_parts_mut(self.buffer_ptr, self.buffer_len) }
+        }
+    }
+}
+
+#[cfg(feature = "interactive")]
 impl fmt::Write for ShellFrameBuffer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.write_str(s);
@@ -883,5 +951,31 @@ pub fn upgrade_to_double_buffer() {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         let mut guard = fb.lock();
         guard.upgrade_to_double_buffer();
+    }
+}
+
+/// Draw a simple test pattern with graphics primitives.
+/// This is a demo function for testing the graphics primitives API.
+#[cfg(feature = "interactive")]
+#[allow(dead_code)]
+pub fn draw_test_pattern() {
+    use crate::graphics::primitives::{fill_rect, Rect, Color};
+
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        let mut guard = fb.lock();
+        fill_rect(
+            &mut *guard,
+            Rect {
+                x: 10,
+                y: 10,
+                width: 50,
+                height: 30,
+            },
+            Color::RED,
+        );
+
+        if let Some(db) = &mut guard.double_buffer {
+            db.flush();
+        }
     }
 }
