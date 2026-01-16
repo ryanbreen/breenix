@@ -130,8 +130,10 @@ impl ShellFrameBuffer {
     /// after the heap allocator is initialized.
     pub fn upgrade_to_double_buffer(&mut self) {
         if self.double_buffer.is_none() {
+            let stride = self.info.stride * self.info.bytes_per_pixel;
+            let height = self.info.height;
             let double_buffer =
-                DoubleBufferedFrameBuffer::new(self.buffer_ptr, self.buffer_len);
+                DoubleBufferedFrameBuffer::new(self.buffer_ptr, self.buffer_len, stride, height);
             self.double_buffer = Some(double_buffer);
             log::info!("Shell framebuffer upgraded to double buffering");
         }
@@ -143,8 +145,7 @@ impl ShellFrameBuffer {
         self.y_pos = BORDER_PADDING;
         if let Some(db) = &mut self.double_buffer {
             db.buffer_mut().fill(0);
-            db.mark_dirty();
-            db.flush();
+            db.flush_full();
         } else {
             unsafe {
                 core::ptr::write_bytes(self.buffer_ptr, 0, self.buffer_len);
@@ -184,21 +185,34 @@ impl ShellFrameBuffer {
         let line_height = shell_font::CHAR_RASTER_HEIGHT.val() + LINE_SPACING;
         let bytes_per_pixel = self.info.bytes_per_pixel;
         let stride = self.info.stride;
+        let height = self.info.height;
         let row_bytes = stride * bytes_per_pixel;
         let scroll_bytes = line_height * row_bytes;
 
         if let Some(db) = &mut self.double_buffer {
-            let buffer = db.buffer_mut();
-            let buffer_len = buffer.len();
+            db.flush_if_dirty();
+            let buffer_len = db.buffer_mut().len();
             if scroll_bytes < buffer_len {
-                buffer.copy_within(scroll_bytes..buffer_len, 0);
-                let clear_start = buffer_len - scroll_bytes;
-                buffer[clear_start..].fill(0);
+                {
+                    let buffer = db.buffer_mut();
+                    buffer.copy_within(scroll_bytes..buffer_len, 0);
+                    let clear_start = buffer_len - scroll_bytes;
+                    buffer[clear_start..].fill(0);
+                }
+                db.scroll_hardware_up(scroll_bytes);
+
+                let clear_start_y = height.saturating_sub(line_height);
+                for y in clear_start_y..height {
+                    db.mark_region_dirty(y, 0, row_bytes);
+                }
+                db.flush();
             } else {
-                buffer.fill(0);
+                {
+                    let buffer = db.buffer_mut();
+                    buffer.fill(0);
+                }
+                db.flush_full();
             }
-            db.mark_dirty();
-            db.flush();
         } else {
             unsafe {
                 let src = self.buffer_ptr.add(scroll_bytes);
@@ -408,7 +422,7 @@ impl ShellFrameBuffer {
                 for (i, &byte) in color[..bytes_per_pixel].iter().enumerate() {
                     buffer[byte_offset + i] = byte;
                 }
-                db.mark_dirty();
+                db.mark_region_dirty(y, byte_offset, byte_offset + bytes_per_pixel);
             }
         } else if byte_offset + bytes_per_pixel <= self.buffer_len {
             unsafe {
