@@ -107,6 +107,24 @@ if [[ "$(uname)" == "Darwin" ]]; then
                 echo "  WARNING: hello_world.elf not found"
             fi
 
+            # Copy init_shell for interactive use and telnet
+            if [ -f /binaries/init_shell.elf ]; then
+                cp /binaries/init_shell.elf /mnt/ext2/bin/init_shell
+                chmod 755 /mnt/ext2/bin/init_shell
+                echo "  /bin/init_shell installed"
+            else
+                echo "  WARNING: init_shell.elf not found"
+            fi
+
+            # Copy telnetd for remote access
+            if [ -f /binaries/telnetd.elf ]; then
+                cp /binaries/telnetd.elf /mnt/ext2/bin/telnetd
+                chmod 755 /mnt/ext2/bin/telnetd
+                echo "  /bin/telnetd installed"
+            else
+                echo "  WARNING: telnetd.elf not found"
+            fi
+
             # Create test files for filesystem testing
             echo "Hello from ext2!" > /mnt/ext2/hello.txt
             echo "Truncate test file" > /mnt/ext2/trunctest.txt
@@ -207,6 +225,20 @@ else
         cp "$USERSPACE_DIR/hello_world.elf" "$MOUNT_DIR/bin/hello_world"
         chmod 755 "$MOUNT_DIR/bin/hello_world"
         echo "  /bin/hello_world installed"
+    fi
+
+    # Copy init_shell for interactive use and telnet
+    if [ -f "$USERSPACE_DIR/init_shell.elf" ]; then
+        cp "$USERSPACE_DIR/init_shell.elf" "$MOUNT_DIR/bin/init_shell"
+        chmod 755 "$MOUNT_DIR/bin/init_shell"
+        echo "  /bin/init_shell installed"
+    fi
+
+    # Copy telnetd for remote access
+    if [ -f "$USERSPACE_DIR/telnetd.elf" ]; then
+        cp "$USERSPACE_DIR/telnetd.elf" "$MOUNT_DIR/bin/telnetd"
+        chmod 755 "$MOUNT_DIR/bin/telnetd"
+        echo "  /bin/telnetd installed"
     fi
 
     # Create test files
