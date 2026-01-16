@@ -178,6 +178,10 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Devfs directory doesn't need cleanup
                     log::debug!("sys_close: Closed devfs directory fd={}", fd);
                 }
+                FdKind::DevptsDirectory { .. } => {
+                    // Devpts directory doesn't need cleanup
+                    log::debug!("sys_close: Closed devpts directory fd={}", fd);
+                }
                 FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
                     // Unbound/listening TCP socket doesn't need special cleanup
                     log::debug!("sys_close: Closed TCP socket fd={}", fd);
@@ -186,6 +190,15 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Close the TCP connection
                     let _ = crate::net::tcp::tcp_close(&conn_id);
                     log::debug!("sys_close: Closed TCP connection fd={}", fd);
+                }
+                FdKind::PtyMaster(pty_num) => {
+                    // PTY master cleanup - release the PTY pair when master closes
+                    crate::tty::pty::release(pty_num);
+                    log::debug!("sys_close: Closed PTY master fd={} (pty {})", fd, pty_num);
+                }
+                FdKind::PtySlave(pty_num) => {
+                    // PTY slave doesn't own the pair, just log closure
+                    log::debug!("sys_close: Closed PTY slave fd={} (pty {})", fd, pty_num);
                 }
             }
             SyscallResult::Ok(0)

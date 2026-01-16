@@ -291,6 +291,11 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Readlink) => super::fs::sys_readlink(args.0, args.1, args.2),
         Some(SyscallNumber::CowStats) => super::handlers::sys_cow_stats(args.0),
         Some(SyscallNumber::SimulateOom) => super::handlers::sys_simulate_oom(args.0),
+        // PTY syscalls
+        Some(SyscallNumber::PosixOpenpt) => super::pty::sys_posix_openpt(args.0),
+        Some(SyscallNumber::Grantpt) => super::pty::sys_grantpt(args.0),
+        Some(SyscallNumber::Unlockpt) => super::pty::sys_unlockpt(args.0),
+        Some(SyscallNumber::Ptsname) => super::pty::sys_ptsname(args.0, args.1, args.2),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

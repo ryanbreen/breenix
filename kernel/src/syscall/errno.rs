@@ -52,6 +52,9 @@ pub const EINVAL: i32 = 22;
 /// Too many open files
 pub const EMFILE: i32 = 24;
 
+/// Not a typewriter (inappropriate ioctl for device)
+pub const ENOTTY: i32 = 25;
+
 /// No space left on device
 pub const ENOSPC: i32 = 28;
 

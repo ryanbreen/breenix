@@ -104,6 +104,16 @@ pub enum FdKind {
     Device(crate::fs::devfs::DeviceType),
     /// /dev directory (virtual directory for listing devices)
     DevfsDirectory { position: u64 },
+    /// /dev/pts directory (virtual directory for listing PTY slaves)
+    DevptsDirectory { position: u64 },
+    /// PTY master file descriptor
+    /// Allow unused - constructed by posix_openpt syscall in Phase 2
+    #[allow(dead_code)]
+    PtyMaster(u32),
+    /// PTY slave file descriptor
+    /// Allow unused - constructed when opening /dev/pts/N in Phase 2
+    #[allow(dead_code)]
+    PtySlave(u32),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -120,6 +130,9 @@ impl core::fmt::Debug for FdKind {
             FdKind::Directory(_) => write!(f, "Directory"),
             FdKind::Device(dt) => write!(f, "Device({:?})", dt),
             FdKind::DevfsDirectory { position } => write!(f, "DevfsDirectory(pos={})", position),
+            FdKind::DevptsDirectory { position } => write!(f, "DevptsDirectory(pos={})", position),
+            FdKind::PtyMaster(n) => write!(f, "PtyMaster({})", n),
+            FdKind::PtySlave(n) => write!(f, "PtySlave({})", n),
         }
     }
 }
@@ -451,6 +464,19 @@ impl Drop for FdTable {
                     FdKind::DevfsDirectory { .. } => {
                         // Devfs directory doesn't need cleanup
                         log::debug!("FdTable::drop() - releasing devfs directory fd {}", i);
+                    }
+                    FdKind::DevptsDirectory { .. } => {
+                        // Devpts directory doesn't need cleanup
+                        log::debug!("FdTable::drop() - releasing devpts directory fd {}", i);
+                    }
+                    FdKind::PtyMaster(pty_num) => {
+                        // PTY master cleanup - release the PTY pair when master closes
+                        crate::tty::pty::release(pty_num);
+                        log::debug!("FdTable::drop() - released PTY master fd {} (pty {})", i, pty_num);
+                    }
+                    FdKind::PtySlave(_pty_num) => {
+                        // PTY slave doesn't own the pair, just decrement reference
+                        log::debug!("FdTable::drop() - released PTY slave fd {}", i);
                     }
                 }
             }

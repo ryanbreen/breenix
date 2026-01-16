@@ -291,11 +291,13 @@ fn main() {
         _ => {
             // Default: SLIRP user-mode networking
             // Traffic is internal to QEMU, not visible on host interfaces
+            // Port forwarding: host:2323 -> guest:2323 (telnet)
             qemu.args([
-                "-netdev", "user,id=net0",
+                "-netdev", "user,id=net0,hostfwd=tcp::2323-:2323",
                 "-device", "e1000,netdev=net0,mac=52:54:00:12:34:56",
             ]);
             eprintln!("[qemu-uefi] Network: SLIRP user-mode (10.0.2.x internal)");
+            eprintln!("[qemu-uefi]   Port forward: localhost:2323 -> guest:2323 (telnet)");
         }
     }
 

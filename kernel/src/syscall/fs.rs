@@ -633,6 +633,13 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x
             stat.st_nlink = 2; // . and ..
         }
+        FdKind::DevptsDirectory { .. } => {
+            // /dev/pts directory
+            stat.st_dev = 0; // devpts has no backing device
+            stat.st_ino = 1; // Virtual inode for /dev/pts
+            stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x
+            stat.st_nlink = 2; // . and ..
+        }
         FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
             // TCP sockets
             static TCP_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
@@ -641,6 +648,17 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_ino = TCP_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             stat.st_mode = S_IFSOCK | 0o755; // Socket with rwxr-xr-x
             stat.st_nlink = 1;
+        }
+        FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
+            // PTY devices are character devices
+            static PTY_INODE_COUNTER: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(4000);
+            stat.st_dev = 0;
+            stat.st_ino = PTY_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            stat.st_mode = S_IFCHR | 0o620; // Character device with rw--w----
+            stat.st_nlink = 1;
+            // Major 136 for PTY, minor is pty_num
+            stat.st_rdev = make_dev(136, *pty_num as u64);
         }
     }
 
@@ -807,6 +825,13 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         let start_position = *position;
         drop(manager_guard);
         return handle_devfs_getdents64(fd, dirp, count as usize, start_position, thread_id);
+    }
+
+    // Handle DevptsDirectory specially
+    if let FdKind::DevptsDirectory { position } = &fd_entry.kind {
+        let start_position = *position;
+        drop(manager_guard);
+        return handle_devpts_getdents64(fd, dirp, count as usize, start_position, thread_id);
     }
 
     // Must be a directory fd
@@ -1587,7 +1612,18 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
 
     log::debug!("handle_devfs_open: device_name={:?}", device_name);
 
-    // Look up the device
+    // Check for /dev/pts/* paths - route to devptsfs
+    if device_name.starts_with("pts/") {
+        let pty_name = &device_name[4..]; // Remove "pts/" prefix
+        return handle_devpts_open(pty_name);
+    }
+
+    // Check for /dev/pts directory itself
+    if device_name == "pts" {
+        return handle_devpts_directory_open();
+    }
+
+    // Look up the device in static devfs
     let device = match devfs::lookup(device_name) {
         Some(d) => d,
         None => {
@@ -1629,6 +1665,112 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
         }
         Err(_) => {
             log::error!("handle_devfs_open: too many open files");
+            SyscallResult::Err(EMFILE as u64)
+        }
+    }
+}
+
+/// Handle opening a PTY slave device from /dev/pts/*
+///
+/// # Arguments
+/// * `pty_name` - PTY number as string (e.g., "0", "1")
+///
+/// # Returns
+/// File descriptor on success, negative errno on failure
+fn handle_devpts_open(pty_name: &str) -> SyscallResult {
+    use super::errno::{EMFILE, ENOENT};
+    use crate::fs::devptsfs;
+
+    log::debug!("handle_devpts_open: pty_name={:?}", pty_name);
+
+    // Look up the PTY slave in devptsfs
+    let pty_num = match devptsfs::lookup(pty_name) {
+        Some(num) => num,
+        None => {
+            log::debug!("handle_devpts_open: PTY slave not found or locked: {}", pty_name);
+            return SyscallResult::Err(ENOENT as u64);
+        }
+    };
+
+    // Get current process and allocate fd
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("handle_devpts_open: No current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_, p)) => p,
+            None => {
+                log::error!("handle_devpts_open: Process not found for thread {}", thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        },
+        None => {
+            log::error!("handle_devpts_open: Process manager not initialized");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    // Allocate file descriptor with PtySlave kind
+    let fd_kind = FdKind::PtySlave(pty_num);
+    match process.fd_table.alloc(fd_kind) {
+        Ok(fd) => {
+            log::info!("handle_devpts_open: opened /dev/pts/{} as fd {}", pty_num, fd);
+            SyscallResult::Ok(fd as u64)
+        }
+        Err(_) => {
+            log::error!("handle_devpts_open: too many open files");
+            SyscallResult::Err(EMFILE as u64)
+        }
+    }
+}
+
+/// Handle opening the /dev/pts directory itself
+///
+/// Returns a directory fd that can be used with getdents64 to list PTY slaves.
+fn handle_devpts_directory_open() -> SyscallResult {
+    use super::errno::EMFILE;
+
+    log::debug!("handle_devpts_directory_open: opening /dev/pts directory");
+
+    // Get current process and allocate fd
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("handle_devpts_directory_open: No current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_, p)) => p,
+            None => {
+                log::error!("handle_devpts_directory_open: Process not found for thread {}", thread_id);
+                return SyscallResult::Err(3); // ESRCH
+            }
+        },
+        None => {
+            log::error!("handle_devpts_directory_open: Process manager not initialized");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    // Allocate file descriptor with DevptsDirectory kind
+    let fd_kind = FdKind::DevptsDirectory { position: 0 };
+    match process.fd_table.alloc(fd_kind) {
+        Ok(fd) => {
+            log::info!("handle_devpts_directory_open: opened /dev/pts as fd {}", fd);
+            SyscallResult::Ok(fd as u64)
+        }
+        Err(_) => {
+            log::error!("handle_devpts_directory_open: too many open files");
             SyscallResult::Err(EMFILE as u64)
         }
     }
@@ -1828,6 +1970,148 @@ fn handle_devfs_getdents64(
     }
 
     log::debug!("handle_devfs_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
+    SyscallResult::Ok(bytes_written as u64)
+}
+
+/// Handle getdents64 for the /dev/pts directory
+///
+/// Returns virtual directory entries for all active and unlocked PTY slaves.
+fn handle_devpts_getdents64(
+    fd: i32,
+    dirp: u64,
+    buffer_size: usize,
+    start_position: u64,
+    thread_id: u64,
+) -> SyscallResult {
+    use crate::fs::devptsfs;
+
+    // Get the list of PTY slave entries
+    let entries = devptsfs::list_entries();
+
+    // Build entries: ".", "..", then each PTY slave
+    let buffer = dirp as *mut u8;
+    let mut bytes_written = 0usize;
+    let mut entry_index = 0u64;
+    let mut new_position = start_position;
+
+    // Special entries: . and ..
+    let special_entries: [(&str, u64, u8); 2] = [
+        (".", 1, DT_DIR),      // inode 1 for /dev/pts directory itself
+        ("..", 0, DT_DIR),     // inode 0 = /dev directory (parent)
+    ];
+
+    // Iterate through special entries first
+    for (name, inode, dtype) in special_entries.iter() {
+        if entry_index < start_position {
+            entry_index += 1;
+            continue;
+        }
+
+        let name_len = name.len();
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
+
+        if bytes_written + reclen > buffer_size {
+            break;
+        }
+
+        unsafe {
+            let entry_ptr = buffer.add(bytes_written);
+
+            // d_ino (u64) at offset 0
+            let d_ino_ptr = entry_ptr as *mut u64;
+            core::ptr::write_unaligned(d_ino_ptr, *inode);
+
+            // d_off (i64) at offset 8 - offset to NEXT entry
+            let d_off_ptr = entry_ptr.add(8) as *mut i64;
+            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+
+            // d_reclen (u16) at offset 16
+            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
+            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
+
+            // d_type (u8) at offset 18
+            let d_type_ptr = entry_ptr.add(18);
+            *d_type_ptr = *dtype;
+
+            // d_name at offset 19
+            let d_name_ptr = entry_ptr.add(19);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
+            *d_name_ptr.add(name_len) = 0;
+
+            // Zero padding
+            for i in (19 + name_len + 1)..reclen {
+                *entry_ptr.add(i) = 0;
+            }
+        }
+
+        bytes_written += reclen;
+        entry_index += 1;
+        new_position = entry_index;
+    }
+
+    // Now iterate through PTY slave entries
+    for entry in entries.iter() {
+        if entry_index < start_position {
+            entry_index += 1;
+            continue;
+        }
+
+        let name = entry.name();
+        let name_len = name.len();
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
+
+        if bytes_written + reclen > buffer_size {
+            break;
+        }
+
+        unsafe {
+            let entry_ptr = buffer.add(bytes_written);
+
+            // d_ino (u64) at offset 0
+            let d_ino_ptr = entry_ptr as *mut u64;
+            core::ptr::write_unaligned(d_ino_ptr, entry.inode);
+
+            // d_off (i64) at offset 8 - offset to NEXT entry
+            let d_off_ptr = entry_ptr.add(8) as *mut i64;
+            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+
+            // d_reclen (u16) at offset 16
+            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
+            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
+
+            // d_type (u8) at offset 18 - DT_CHR for character devices
+            let d_type_ptr = entry_ptr.add(18);
+            *d_type_ptr = DT_CHR;
+
+            // d_name at offset 19
+            let d_name_ptr = entry_ptr.add(19);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
+            *d_name_ptr.add(name_len) = 0;
+
+            // Zero padding
+            for i in (19 + name_len + 1)..reclen {
+                *entry_ptr.add(i) = 0;
+            }
+        }
+
+        bytes_written += reclen;
+        entry_index += 1;
+        new_position = entry_index;
+    }
+
+    // Update directory position in the fd
+    let mut manager_guard = crate::process::manager();
+    if let Some(manager) = &mut *manager_guard {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some(fd_entry) = process.fd_table.get_mut(fd) {
+                if let FdKind::DevptsDirectory { ref mut position } = fd_entry.kind {
+                    *position = new_position;
+                }
+            }
+        }
+    }
+
+    log::debug!("handle_devpts_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
     SyscallResult::Ok(bytes_written as u64)
 }
 
