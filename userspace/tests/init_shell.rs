@@ -577,6 +577,17 @@ static PROGRAM_REGISTRY: &[ProgramEntry] = &[
         binary_name: b"tcp_client_test\0",
         description: "Send TCP message to 10.0.2.2:18888",
     },
+    ProgramEntry {
+        name: "telnetd",
+        binary_name: b"telnetd\0",
+        description: "Telnet server on port 2323",
+    },
+    // === PTY Test ===
+    ProgramEntry {
+        name: "pty_test",
+        binary_name: b"pty_test\0",
+        description: "Test PTY functionality",
+    },
 ];
 
 /// Find a program in the registry by command name.
