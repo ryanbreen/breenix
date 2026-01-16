@@ -1,8 +1,10 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     fs,
+    hash::{Hash, Hasher},
     io::{Read, Write},
     net::TcpStream,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -12,6 +14,61 @@ use anyhow::{bail, Result};
 use structopt::StructOpt;
 
 mod test_disk;
+
+/// Get the PID file path unique to this worktree.
+/// Uses a hash of the current working directory to avoid conflicts between worktrees.
+fn get_qemu_pid_file() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    cwd.hash(&mut hasher);
+    let hash = hasher.finish();
+    PathBuf::from(format!("/tmp/breenix-qemu-{:016x}.pid", hash))
+}
+
+/// Send a signal to this worktree's QEMU process.
+/// Returns true if the process was found and signaled.
+fn signal_worktree_qemu(signal: &str) -> bool {
+    let pid_file = get_qemu_pid_file();
+    if let Ok(pid_str) = fs::read_to_string(&pid_file) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            #[cfg(unix)]
+            {
+                // Check if process exists before signaling
+                let exists = Command::new("kill")
+                    .args(&["-0", &pid.to_string()])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if exists {
+                    let _ = Command::new("kill")
+                        .args(&[signal, &pid.to_string()])
+                        .status();
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Kill any existing QEMU process that belongs to this worktree (SIGKILL).
+/// Only kills the process if the PID file exists and the process is still running.
+fn kill_worktree_qemu() {
+    signal_worktree_qemu("-9");
+    // Remove the stale PID file
+    let _ = fs::remove_file(&get_qemu_pid_file());
+}
+
+/// Send SIGTERM to this worktree's QEMU to allow graceful shutdown.
+fn term_worktree_qemu() {
+    signal_worktree_qemu("-TERM");
+}
+
+/// Save the QEMU PID for this worktree.
+fn save_qemu_pid(pid: u32) {
+    let pid_file = get_qemu_pid_file();
+    let _ = fs::write(&pid_file, pid.to_string());
+}
 
 fn build_std_test_binaries() -> Result<()> {
     println!("Building Rust std test binaries...\n");
@@ -1638,10 +1695,8 @@ fn boot_stages() -> Result<()> {
     let _ = fs::remove_file(serial_output_file);
     let _ = fs::remove_file(user_output_file);
 
-    // Kill any existing QEMU
-    let _ = Command::new("pkill")
-        .args(&["-9", "qemu-system-x86_64"])
-        .status();
+    // Kill any existing QEMU for THIS worktree only (not other worktrees)
+    kill_worktree_qemu();
     thread::sleep(Duration::from_millis(500));
 
     println!("Starting QEMU...\n");
@@ -1672,6 +1727,9 @@ fn boot_stages() -> Result<()> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
+
+    // Save the PID so other runs of this worktree can kill it if needed
+    save_qemu_pid(child.id());
 
     // Wait for output file to be created
     let start = Instant::now();
@@ -1811,9 +1869,7 @@ fn boot_stages() -> Result<()> {
         if last_progress.elapsed() > stage_timeout {
             // Before giving up, send SIGTERM to allow QEMU to flush buffers
             println!("\r\nTimeout reached, sending SIGTERM to QEMU to flush buffers...");
-            let _ = Command::new("pkill")
-                .args(&["-TERM", "qemu-system-x86_64"])
-                .status();
+            term_worktree_qemu();
 
             // Wait 2 seconds for QEMU to flush and terminate gracefully
             thread::sleep(Duration::from_secs(2));
@@ -1994,10 +2050,8 @@ fn ring3_smoke() -> Result<()> {
     let _ = fs::remove_file(serial_output_file);
     let _ = fs::remove_file(user_output_file);
 
-    // Kill any existing QEMU processes
-    let _ = Command::new("pkill")
-        .args(&["-9", "qemu-system-x86_64"])
-        .status();
+    // Kill any existing QEMU for THIS worktree only (not other worktrees)
+    kill_worktree_qemu();
     thread::sleep(Duration::from_millis(500));
 
     println!("Building and running kernel with testing features...");
@@ -2028,6 +2082,9 @@ fn ring3_smoke() -> Result<()> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
+
+    // Save the PID so other runs of this worktree can kill it if needed
+    save_qemu_pid(child.id());
 
     println!("QEMU started, monitoring output...");
 
@@ -2112,10 +2169,8 @@ fn ring3_enosys() -> Result<()> {
     let _ = fs::remove_file(serial_output_file);
     let _ = fs::remove_file(user_output_file);
 
-    // Kill any existing QEMU processes
-    let _ = Command::new("pkill")
-        .args(&["-9", "qemu-system-x86_64"])
-        .status();
+    // Kill any existing QEMU for THIS worktree only (not other worktrees)
+    kill_worktree_qemu();
     thread::sleep(Duration::from_millis(500));
 
     println!("Building and running kernel with testing features...");
@@ -2146,6 +2201,9 @@ fn ring3_enosys() -> Result<()> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
+
+    // Save the PID so other runs of this worktree can kill it if needed
+    save_qemu_pid(child.id());
 
     println!("QEMU started, monitoring output...");
 
@@ -2354,10 +2412,8 @@ fn interactive_test() -> Result<()> {
     let _ = fs::remove_file(user_output_file);
     let _ = fs::remove_file(kernel_log_file);
 
-    // Kill any existing QEMU processes
-    let _ = Command::new("pkill")
-        .args(&["-9", "qemu-system-x86_64"])
-        .status();
+    // Kill any existing QEMU for THIS worktree only (not other worktrees)
+    kill_worktree_qemu();
     thread::sleep(Duration::from_millis(500));
 
     println!("Building with interactive feature...");
@@ -2414,13 +2470,14 @@ fn interactive_test() -> Result<()> {
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
 
+    // Save the PID so other runs of this worktree can kill it if needed
+    save_qemu_pid(child.id());
+
     // Helper to clean up on failure
     let cleanup = |child: &mut std::process::Child| {
         let _ = child.kill();
         let _ = child.wait();
-        let _ = Command::new("pkill")
-            .args(&["-9", "qemu-system-x86_64"])
-            .status();
+        kill_worktree_qemu();
     };
 
     // Wait for output files to be created
