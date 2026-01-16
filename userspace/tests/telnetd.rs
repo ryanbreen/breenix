@@ -153,16 +153,13 @@ fn handle_connection(client_fd: i32) {
     ];
 
     let mut buf = [0u8; 1024];
-    let mut cycles = 0;
-    const MAX_CYCLES: i32 = 100; // Limit for test - run for limited time
-
     loop {
         // Clear revents before polling
         for pfd in &mut fds {
             pfd.revents = 0;
         }
 
-        let ready = poll(&mut fds, 100); // 100ms timeout
+        let ready = poll(&mut fds, 1000); // 1 second timeout
 
         if ready < 0 {
             break;
@@ -205,12 +202,6 @@ fn handle_connection(client_fd: i32) {
                 break;
             }
         }
-
-        cycles += 1;
-        if cycles >= MAX_CYCLES {
-            io::print("TELNETD_RELAY_TIMEOUT\n");
-            break;
-        }
     }
 
     io::print("TELNETD_RELAY_DONE\n");
@@ -248,30 +239,28 @@ pub extern "C" fn _start() -> ! {
 
     io::print("TELNETD_LISTENING\n");
 
-    // Accept one connection (for test purposes)
-    let mut attempts = 0;
-    const MAX_ATTEMPTS: i32 = 1000;
-
+    // Accept connections forever (daemon mode)
     loop {
         match accept(listen_fd, None) {
             Ok(client_fd) => {
                 io::print("TELNETD_CONNECTED\n");
                 handle_connection(client_fd);
-                break;
+                // After connection closes, continue accepting
+                io::print("TELNETD_LISTENING\n");
             }
             Err(_) => {
-                attempts += 1;
-                if attempts >= MAX_ATTEMPTS {
-                    io::print("TELNETD_TIMEOUT: no connection\n");
-                    break;
-                }
+                // EAGAIN or other error - just yield and retry
                 process::yield_now();
             }
         }
     }
 
-    io::print("TELNETD_TEST_COMPLETE\n");
-    process::exit(0);
+    // Unreachable in daemon mode, but keep for completeness
+    #[allow(unreachable_code)]
+    {
+        io::print("TELNETD_SHUTDOWN\n");
+        process::exit(0);
+    }
 }
 
 #[panic_handler]
