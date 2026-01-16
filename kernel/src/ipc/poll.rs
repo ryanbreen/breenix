@@ -149,6 +149,12 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLIN;
             }
         }
+        FdKind::DevptsDirectory { .. } => {
+            // Devpts directory is always "readable" for getdents purposes
+            if (events & events::POLLIN) != 0 {
+                revents |= events::POLLIN;
+            }
+        }
         FdKind::TcpSocket(_) => {
             // Unconnected TCP socket - always writable (for connect attempt)
             if (events & events::POLLOUT) != 0 {
@@ -186,6 +192,43 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             } else {
                 // Connection not found - error
+                revents |= events::POLLERR;
+            }
+        }
+        FdKind::PtyMaster(pty_num) => {
+            // PTY master - check slave_to_master buffer for readable data
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                if (events & events::POLLIN) != 0 {
+                    let buffer = pair.slave_to_master.lock();
+                    if !buffer.is_empty() {
+                        revents |= events::POLLIN;
+                    }
+                }
+                if (events & events::POLLOUT) != 0 {
+                    // Master can always write (goes through line discipline)
+                    revents |= events::POLLOUT;
+                }
+            } else {
+                revents |= events::POLLERR;
+            }
+        }
+        FdKind::PtySlave(pty_num) => {
+            // PTY slave - check line discipline for readable data
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                if (events & events::POLLIN) != 0 {
+                    let ldisc = pair.ldisc.lock();
+                    if ldisc.has_data() {
+                        revents |= events::POLLIN;
+                    }
+                }
+                if (events & events::POLLOUT) != 0 {
+                    let buffer = pair.slave_to_master.lock();
+                    // Can write if buffer not full
+                    if buffer.available() < 4096 {
+                        revents |= events::POLLOUT;
+                    }
+                }
+            } else {
                 revents |= events::POLLERR;
             }
         }

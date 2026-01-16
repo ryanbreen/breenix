@@ -379,6 +379,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::error!("sys_write: Cannot write to /dev directory");
             SyscallResult::Err(super::errno::EISDIR as u64)
         }
+        FdKind::DevptsDirectory { .. } => {
+            // Cannot write to a directory
+            log::error!("sys_write: Cannot write to /dev/pts directory");
+            SyscallResult::Err(super::errno::EISDIR as u64)
+        }
         FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
             // Cannot write to unconnected TCP socket
             log::error!("sys_write: Cannot write to unconnected TCP socket");
@@ -401,6 +406,48 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         log::error!("sys_write: TCP send failed - {}", e);
                         SyscallResult::Err(super::errno::EIO as u64)
                     }
+                }
+            }
+        }
+        FdKind::PtyMaster(pty_num) => {
+            // Write to PTY master (goes to slave's input via line discipline)
+            match crate::tty::pty::get(*pty_num) {
+                Some(pair) => {
+                    match pair.master_write(&buffer) {
+                        Ok(n) => {
+                            log::debug!("sys_write: Wrote {} bytes to PTY master {}", n, pty_num);
+                            SyscallResult::Ok(n as u64)
+                        }
+                        Err(e) => {
+                            log::debug!("sys_write: PTY master write error: {}", e);
+                            SyscallResult::Err(e as u64)
+                        }
+                    }
+                }
+                None => {
+                    log::error!("sys_write: PTY {} not found", pty_num);
+                    SyscallResult::Err(super::errno::EIO as u64)
+                }
+            }
+        }
+        FdKind::PtySlave(pty_num) => {
+            // Write from PTY slave (goes to master's read buffer)
+            match crate::tty::pty::get(*pty_num) {
+                Some(pair) => {
+                    match pair.slave_write(&buffer) {
+                        Ok(n) => {
+                            log::debug!("sys_write: Wrote {} bytes from PTY slave {}", n, pty_num);
+                            SyscallResult::Ok(n as u64)
+                        }
+                        Err(e) => {
+                            log::debug!("sys_write: PTY slave write error: {}", e);
+                            SyscallResult::Err(e as u64)
+                        }
+                    }
+                }
+                None => {
+                    log::error!("sys_write: PTY {} not found", pty_num);
+                    SyscallResult::Err(super::errno::EIO as u64)
                 }
             }
         }
@@ -724,6 +771,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             log::debug!("sys_read: Cannot read from /dev directory, use getdents instead");
             SyscallResult::Err(super::errno::EISDIR as u64)
         }
+        FdKind::DevptsDirectory { .. } => {
+            // Cannot read from directory with read() - must use getdents
+            log::debug!("sys_read: Cannot read from /dev/pts directory, use getdents instead");
+            SyscallResult::Err(super::errno::EISDIR as u64)
+        }
         FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
             // Cannot read from unconnected TCP socket
             log::error!("sys_read: Cannot read from unconnected TCP socket");
@@ -748,6 +800,62 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 Err(_) => {
                     // No data available - return EAGAIN (would block)
                     SyscallResult::Err(11) // EAGAIN
+                }
+            }
+        }
+        FdKind::PtyMaster(pty_num) => {
+            // Read from PTY master (slave's output)
+            match crate::tty::pty::get(*pty_num) {
+                Some(pair) => {
+                    let mut user_buf = alloc::vec![0u8; count as usize];
+                    match pair.master_read(&mut user_buf) {
+                        Ok(n) => {
+                            if n > 0 {
+                                // Copy to userspace
+                                if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                                    return SyscallResult::Err(14); // EFAULT
+                                }
+                            }
+                            log::debug!("sys_read: Read {} bytes from PTY master {}", n, pty_num);
+                            SyscallResult::Ok(n as u64)
+                        }
+                        Err(e) => {
+                            log::debug!("sys_read: PTY master read error: {}", e);
+                            SyscallResult::Err(e as u64)
+                        }
+                    }
+                }
+                None => {
+                    log::error!("sys_read: PTY {} not found", pty_num);
+                    SyscallResult::Err(super::errno::EIO as u64)
+                }
+            }
+        }
+        FdKind::PtySlave(pty_num) => {
+            // Read from PTY slave (from line discipline output)
+            match crate::tty::pty::get(*pty_num) {
+                Some(pair) => {
+                    let mut user_buf = alloc::vec![0u8; count as usize];
+                    match pair.slave_read(&mut user_buf) {
+                        Ok(n) => {
+                            if n > 0 {
+                                // Copy to userspace
+                                if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                                    return SyscallResult::Err(14); // EFAULT
+                                }
+                            }
+                            log::debug!("sys_read: Read {} bytes from PTY slave {}", n, pty_num);
+                            SyscallResult::Ok(n as u64)
+                        }
+                        Err(e) => {
+                            log::debug!("sys_read: PTY slave read error: {}", e);
+                            SyscallResult::Err(e as u64)
+                        }
+                    }
+                }
+                None => {
+                    log::error!("sys_read: PTY {} not found", pty_num);
+                    SyscallResult::Err(super::errno::EIO as u64)
                 }
             }
         }

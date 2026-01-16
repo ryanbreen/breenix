@@ -87,6 +87,11 @@ pub fn dispatch_syscall(
         SyscallNumber::Unlink => super::fs::sys_unlink(arg1),
         SyscallNumber::Symlink => super::fs::sys_symlink(arg1, arg2),
         SyscallNumber::Readlink => super::fs::sys_readlink(arg1, arg2, arg3),
+        // PTY syscalls
+        SyscallNumber::PosixOpenpt => super::pty::sys_posix_openpt(arg1),
+        SyscallNumber::Grantpt => super::pty::sys_grantpt(arg1),
+        SyscallNumber::Unlockpt => super::pty::sys_unlockpt(arg1),
+        SyscallNumber::Ptsname => super::pty::sys_ptsname(arg1, arg2, arg3),
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

@@ -194,6 +194,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     crate::fs::devfs::init();
     log::info!("devfs initialized at /dev");
 
+    // Initialize devptsfs (/dev/pts pseudo-terminal slave filesystem)
+    crate::fs::devptsfs::init();
+    log::info!("devptsfs initialized at /dev/pts");
+
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
     log::info!("Updated IST stacks with per-CPU emergency and page fault stacks");

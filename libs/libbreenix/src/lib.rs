@@ -45,6 +45,7 @@ pub mod http;
 pub mod io;
 pub mod memory;
 pub mod process;
+pub mod pty;
 pub mod signal;
 pub mod socket;
 pub mod syscall;

@@ -403,3 +403,11 @@ path = "exec_from_ext2_test.rs"
 [[bin]]
 name = "fs_block_alloc_test"
 path = "fs_block_alloc_test.rs"
+
+[[bin]]
+name = "telnetd"
+path = "telnetd.rs"
+
+[[bin]]
+name = "pty_test"
+path = "pty_test.rs"

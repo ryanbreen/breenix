@@ -10,5 +10,6 @@
 #![allow(dead_code)]
 
 pub mod devfs;
+pub mod devptsfs;
 pub mod ext2;
 pub mod vfs;

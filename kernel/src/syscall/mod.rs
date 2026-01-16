@@ -14,6 +14,7 @@ pub mod ioctl;
 pub mod memory;
 pub mod mmap;
 pub mod pipe;
+pub mod pty;
 pub mod session;
 pub mod signal;
 pub mod socket;
@@ -81,6 +82,11 @@ pub enum SyscallNumber {
     Lseek = 258,        // Breenix: filesystem lseek syscall
     Fstat = 259,        // Breenix: filesystem fstat syscall
     Getdents64 = 260,   // Breenix: directory listing syscall
+    // PTY syscalls (Breenix-specific numbers)
+    PosixOpenpt = 400,  // Breenix: open PTY master
+    Grantpt = 401,      // Breenix: grant access to PTY slave
+    Unlockpt = 402,     // Breenix: unlock PTY slave
+    Ptsname = 403,      // Breenix: get PTY slave path
     CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
     SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
 }
@@ -146,6 +152,11 @@ impl SyscallNumber {
             258 => Some(Self::Lseek),
             259 => Some(Self::Fstat),
             260 => Some(Self::Getdents64),
+            // PTY syscalls
+            400 => Some(Self::PosixOpenpt),
+            401 => Some(Self::Grantpt),
+            402 => Some(Self::Unlockpt),
+            403 => Some(Self::Ptsname),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,

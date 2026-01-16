@@ -270,6 +270,19 @@ impl Process {
                         // Devfs directory doesn't need cleanup
                         log::debug!("Process::close_all_fds() - released devfs directory fd {}", fd);
                     }
+                    FdKind::DevptsDirectory { .. } => {
+                        // Devpts directory doesn't need cleanup
+                        log::debug!("Process::close_all_fds() - released devpts directory fd {}", fd);
+                    }
+                    FdKind::PtyMaster(pty_num) => {
+                        // PTY master cleanup - release the PTY pair when master closes
+                        crate::tty::pty::release(pty_num);
+                        log::debug!("Process::close_all_fds() - released PTY master fd {} (pty {})", fd, pty_num);
+                    }
+                    FdKind::PtySlave(_pty_num) => {
+                        // PTY slave doesn't own the pair, just decrement reference
+                        log::debug!("Process::close_all_fds() - released PTY slave fd {}", fd);
+                    }
                 }
             }
         }

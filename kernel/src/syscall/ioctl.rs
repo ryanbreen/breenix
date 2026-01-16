@@ -3,9 +3,12 @@
 //! The ioctl (I/O control) syscall provides a mechanism for device-specific
 //! operations that don't fit into the standard read/write model.
 //!
-//! Currently supports TTY-related ioctls for terminal control.
+//! Supports:
+//! - TTY-related ioctls for terminal control
+//! - PTY-specific ioctls for pseudo-terminal devices
 
 use super::SyscallResult;
+use crate::ipc::fd::FdKind;
 
 /// POSIX error codes
 pub(crate) const EBADF: u64 = 9;   // Bad file descriptor
@@ -14,7 +17,7 @@ pub(crate) const ENOTTY: u64 = 25; // Inappropriate ioctl for device
 /// sys_ioctl - Perform I/O control operation on a file descriptor
 ///
 /// # Arguments
-/// * `fd` - File descriptor (currently only 0/1/2 for console TTY)
+/// * `fd` - File descriptor
 /// * `request` - The ioctl request code
 /// * `arg` - Request-specific argument (typically a pointer)
 ///
@@ -31,15 +34,50 @@ pub(crate) const ENOTTY: u64 = 25; // Inappropriate ioctl for device
 /// - TIOCGPGRP (0x540F): Get foreground process group
 /// - TIOCSPGRP (0x5410): Set foreground process group
 /// - TIOCGWINSZ (0x5413): Get window size
+///
+/// For PTY devices:
+/// - All TTY ioctls above, plus:
+/// - TIOCSWINSZ (0x5414): Set window size
+/// - TIOCSCTTY (0x540E): Set controlling terminal
+/// - TIOCNOTTY (0x5422): Release controlling terminal
+/// - TIOCGPTN (0x80045430): Get PTY number
+/// - TIOCSPTLCK (0x40045431): Lock/unlock PTY slave
+/// - TIOCGPTLCK (0x80045439): Get PTY lock status
 pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     log::debug!("sys_ioctl: fd={}, request={:#x}, arg={:#x}", fd, request, arg);
 
-    // Check if this fd is a TTY
-    // In a full implementation, we'd look up the fd in the process's fd table
-    // and check if it's a TTY device
+    // First, try to look up the fd in the process's fd table
+    // to check if it's a PTY device
+    if let Some((fd_kind, pid)) = get_fd_kind_and_pid(fd as i32) {
+        match fd_kind {
+            FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
+                // Dispatch to PTY ioctl handler
+                let pair = match crate::tty::pty::get(pty_num) {
+                    Some(p) => p,
+                    None => {
+                        log::warn!("sys_ioctl: PTY {} not found", pty_num);
+                        return SyscallResult::Err(EBADF);
+                    }
+                };
+
+                match crate::tty::ioctl::pty_ioctl(&pair, request, arg, pid) {
+                    Ok(ret) => return SyscallResult::Ok(ret as u64),
+                    Err(errno) => return SyscallResult::Err(errno as u64),
+                }
+            }
+            FdKind::StdIo(_) => {
+                // Fall through to console TTY handling
+            }
+            _ => {
+                // Not a TTY or PTY device
+                log::debug!("sys_ioctl: fd {} is not a TTY/PTY device", fd);
+                return SyscallResult::Err(ENOTTY);
+            }
+        }
+    }
+
+    // Check if this fd is a TTY (stdin/stdout/stderr)
     if !is_tty_fd(fd) {
-        // Not a TTY - check if it's a valid fd at all
-        // For now, return ENOTTY for any non-TTY fd
         log::debug!("sys_ioctl: fd {} is not a TTY", fd);
         return SyscallResult::Err(ENOTTY);
     }
@@ -58,6 +96,26 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         Ok(ret) => SyscallResult::Ok(ret as u64),
         Err(errno) => SyscallResult::Err(errno as u64),
     }
+}
+
+/// Get the FdKind for a file descriptor and the calling process's PID
+///
+/// Returns None if the process or fd is not found.
+fn get_fd_kind_and_pid(fd: i32) -> Option<(FdKind, u32)> {
+    // Get current thread ID
+    let thread_id = crate::task::scheduler::current_thread_id()?;
+
+    // Get the process manager
+    let manager_guard = crate::process::manager();
+    let manager = manager_guard.as_ref()?;
+
+    // Find process by thread
+    let (pid, process) = manager.find_process_by_thread(thread_id)?;
+
+    // Look up the fd
+    let fd_entry = process.fd_table.get(fd)?;
+
+    Some((fd_entry.kind.clone(), pid.as_u64() as u32))
 }
 
 /// Check if a file descriptor is a TTY

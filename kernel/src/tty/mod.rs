@@ -10,6 +10,7 @@ pub mod termios;
 pub mod line_discipline;
 pub mod driver;
 pub mod ioctl;
+pub mod pty;
 
 // Re-export for external use
 // Allow unused - these are public API re-exports for Phase 4+ syscalls and ioctls
@@ -29,5 +30,6 @@ pub use driver::{console, push_char, push_char_nonblock, write_output, TtyDevice
 /// the infrastructure for terminal I/O.
 pub fn init() {
     driver::init_console();
+    pty::init();
     log::info!("TTY subsystem initialized");
 }
