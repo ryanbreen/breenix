@@ -2,6 +2,7 @@
 //!
 //! Provides framebuffer abstractions used by the kernel graphics stack.
 
+pub mod demo;
 pub mod double_buffer;
 pub mod font;
 pub mod primitives;

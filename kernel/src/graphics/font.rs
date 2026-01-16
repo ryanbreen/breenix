@@ -155,18 +155,11 @@ impl Glyph {
         self.rasterized.height()
     }
 
-    /// Get the raster data as rows of intensity values (0-255).
-    /// Each row is a slice of bytes, one per pixel column.
-    pub fn raster(&self) -> &[[u8; 8]] {
-        // noto-sans-mono-bitmap returns fixed-width arrays
-        self.rasterized.raster()
-    }
-
     /// Iterate over the glyph pixels with coordinates and intensity.
     /// Yields (x, y, intensity) for each pixel.
     pub fn pixels(&self) -> impl Iterator<Item = (usize, usize, u8)> + '_ {
         let width = self.width();
-        self.raster().iter().enumerate().flat_map(move |(y, row)| {
+        self.rasterized.raster().iter().enumerate().flat_map(move |(y, row)| {
             row.iter()
                 .take(width)
                 .enumerate()
