@@ -219,6 +219,10 @@ impl Clone for FdTable {
                                 pty_num, old_count, old_count + 1);
                         }
                     }
+                    FdKind::TcpConnection(conn_id) => {
+                        // Increment TCP connection reference count for the clone
+                        crate::net::tcp::tcp_add_ref(conn_id);
+                    }
                     _ => {}
                 }
             }

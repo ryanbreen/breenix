@@ -296,6 +296,8 @@ pub struct TcpConnection {
     pub send_shutdown: bool,
     /// True if SHUT_RD was called (no more receiving)
     pub recv_shutdown: bool,
+    /// Reference count for fork() support - connection is only closed when last fd is closed
+    pub refcount: core::sync::atomic::AtomicUsize,
 }
 
 impl TcpConnection {
@@ -321,6 +323,7 @@ impl TcpConnection {
             owner_pid,
             send_shutdown: false,
             recv_shutdown: false,
+            refcount: core::sync::atomic::AtomicUsize::new(1),
         }
     }
 
@@ -352,6 +355,7 @@ impl TcpConnection {
             owner_pid,
             send_shutdown: false,
             recv_shutdown: false,
+            refcount: core::sync::atomic::AtomicUsize::new(1),
         }
     }
 }
@@ -1034,13 +1038,30 @@ pub fn tcp_shutdown(conn_id: &ConnectionId, shut_rd: bool, shut_wr: bool) {
     }
 }
 
-/// Close a connection
+/// Increment reference count on a TCP connection (called during fork)
+pub fn tcp_add_ref(conn_id: &ConnectionId) {
+    let connections = TCP_CONNECTIONS.lock();
+    if let Some(conn) = connections.get(conn_id) {
+        conn.refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Close a connection (decrement refcount, only actually close when last reference dropped)
 pub fn tcp_close(conn_id: &ConnectionId) -> Result<(), &'static str> {
     let config = super::config();
 
     let mut connections = TCP_CONNECTIONS.lock();
     let conn = connections.get_mut(conn_id).ok_or("Connection not found")?;
 
+    // Decrement reference count
+    let old_count = conn.refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+
+    // Only actually close when last reference is dropped
+    if old_count > 1 {
+        return Ok(());
+    }
+
+    // Last reference - actually close the connection
     match conn.state {
         TcpState::Established => {
             // Send FIN

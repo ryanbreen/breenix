@@ -178,13 +178,7 @@ pub fn set_kernel_stack(stack_top: VirtAddr) {
     let tss_ptr = TSS_PTR.load(Ordering::Acquire);
     if !tss_ptr.is_null() {
         unsafe {
-            let old_stack = (*tss_ptr).privilege_stack_table[0];
             (*tss_ptr).privilege_stack_table[0] = stack_top;
-            crate::serial_println!(
-                "TSS RSP0 updated: {:#x} -> {:#x}",
-                old_stack.as_u64(),
-                stack_top.as_u64()
-            );
         }
     } else {
         panic!("TSS not initialized");
