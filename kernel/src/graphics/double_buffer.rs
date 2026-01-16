@@ -268,4 +268,91 @@ mod tests {
         assert!(!db.dirty);
         assert!(db.dirty_region.is_empty());
     }
+
+    #[test]
+    fn double_buffer_flush_copies_dirty_bytes() {
+        let mut hw_buf = [0u8; 100];
+        let mut db = DoubleBufferedFrameBuffer::new(hw_buf.as_mut_ptr(), hw_buf.len(), 10, 10);
+
+        let shadow = db.buffer_mut();
+        shadow[23] = 0xAA;
+        shadow[24] = 0xBB;
+        shadow[25] = 0xCC;
+
+        db.mark_region_dirty(2, 3, 6);
+        db.flush();
+
+        assert_eq!(hw_buf[23], 0xAA);
+        assert_eq!(hw_buf[24], 0xBB);
+        assert_eq!(hw_buf[25], 0xCC);
+    }
+
+    #[test]
+    fn double_buffer_flush_only_copies_dirty_region() {
+        let mut hw_buf = [0u8; 100];
+        let mut db = DoubleBufferedFrameBuffer::new(hw_buf.as_mut_ptr(), hw_buf.len(), 10, 10);
+
+        let shadow = db.buffer_mut();
+        shadow[5] = 0x11;
+        shadow[23] = 0xAA;
+        shadow[45] = 0x22;
+
+        db.mark_region_dirty(2, 3, 4);
+        db.flush();
+
+        assert_eq!(hw_buf[23], 0xAA);
+        assert_eq!(hw_buf[5], 0x00, "Row 0 should not be touched");
+        assert_eq!(hw_buf[45], 0x00, "Row 4 should not be touched");
+    }
+
+    #[test]
+    fn double_buffer_flush_full_copies_everything() {
+        let mut hw_buf = [0u8; 100];
+        let mut db = DoubleBufferedFrameBuffer::new(hw_buf.as_mut_ptr(), hw_buf.len(), 10, 10);
+
+        let shadow = db.buffer_mut();
+        shadow[5] = 0x11;
+        shadow[50] = 0x22;
+        shadow[95] = 0x33;
+
+        db.flush_full();
+
+        assert_eq!(hw_buf[5], 0x11);
+        assert_eq!(hw_buf[50], 0x22);
+        assert_eq!(hw_buf[95], 0x33);
+    }
+
+    #[test]
+    fn double_buffer_coordinate_interpretation() {
+        let mut hw_buf = [0u8; 100];
+        let mut db = DoubleBufferedFrameBuffer::new(hw_buf.as_mut_ptr(), hw_buf.len(), 10, 10);
+
+        let shadow = db.buffer_mut();
+        shadow[52] = 0xDE;
+        shadow[53] = 0xAD;
+        shadow[54] = 0xBE;
+
+        db.mark_region_dirty(5, 2, 5);
+        db.flush();
+
+        assert_eq!(hw_buf[52], 0xDE);
+        assert_eq!(hw_buf[53], 0xAD);
+        assert_eq!(hw_buf[54], 0xBE);
+        assert_eq!(hw_buf[2], 0x00, "Row 0 col 2 should not be touched");
+    }
+
+    #[test]
+    fn double_buffer_scroll_hardware_up() {
+        let mut hw_buf = [0u8; 100];
+        for (idx, byte) in hw_buf.iter_mut().enumerate() {
+            *byte = idx as u8;
+        }
+
+        let mut db = DoubleBufferedFrameBuffer::new(hw_buf.as_mut_ptr(), hw_buf.len(), 10, 10);
+        db.scroll_hardware_up(10);
+
+        assert_eq!(hw_buf[0], 10);
+        assert_eq!(hw_buf[9], 19);
+        assert_eq!(hw_buf[80], 90);
+    }
 }
