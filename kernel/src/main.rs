@@ -180,6 +180,33 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     #[cfg(feature = "interactive")]
     logger::upgrade_to_double_buffer();
 
+    // Run graphics demo to showcase the graphics stack
+    #[cfg(feature = "interactive")]
+    {
+        log::info!("Running graphics demo...");
+        if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
+            let mut fb_guard = fb.lock();
+            graphics::demo::run_demo(&mut *fb_guard);
+            // Flush the demo to screen (access double buffer directly)
+            if let Some(db) = fb_guard.double_buffer_mut() {
+                db.flush_full();
+            }
+            log::info!("Graphics demo complete - display showing for 3 seconds");
+        }
+        // Wait 3 seconds so user can see the demo
+        for _ in 0..30 {
+            // Simple delay loop (approximately 100ms each iteration)
+            for _ in 0..10_000_000 {
+                core::hint::spin_loop();
+            }
+        }
+        // Clear and continue to normal boot
+        if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
+            let mut fb_guard = fb.lock();
+            fb_guard.clear();
+        }
+    }
+
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
 

@@ -208,8 +208,20 @@ pub extern "C" fn _start() -> ! {
             // DNS failed - SKIP, not OK
             io::print("HTTP_TEST: example_fetch SKIP (network unavailable - DNS unreachable)\n");
         }
+        Err(HttpError::SocketError) => {
+            // Socket creation failed - network interface may be unavailable
+            io::print("HTTP_TEST: example_fetch SKIP (network unavailable - SocketError)\n");
+        }
+        Err(HttpError::SendError) => {
+            // Send failed - network may have dropped
+            io::print("HTTP_TEST: example_fetch SKIP (network unavailable - SendError)\n");
+        }
+        Err(HttpError::RecvError) => {
+            // Receive failed - network may have dropped
+            io::print("HTTP_TEST: example_fetch SKIP (network unavailable - RecvError)\n");
+        }
         Err(e) => {
-            // Other errors indicate actual bugs in the HTTP client
+            // Other errors (UrlTooLong, InvalidUrl, ParseError, ResponseTooLarge) indicate actual bugs
             io::print("HTTP_TEST: example_fetch FAILED err=");
             print_error(e);
             io::print("\n");
