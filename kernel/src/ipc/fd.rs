@@ -205,12 +205,20 @@ impl Clone for FdTable {
 
         let cloned_fds = alloc::boxed::Box::new((*self.fds).clone());
 
-        // Increment pipe reference counts for all cloned pipe fds
+        // Increment reference counts for all cloned fds that need it
         for fd_opt in cloned_fds.iter() {
             if let Some(fd_entry) = fd_opt {
                 match &fd_entry.kind {
                     FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
                     FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+                    FdKind::PtyMaster(pty_num) => {
+                        // Increment PTY master reference count for the clone
+                        if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                            let old_count = pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+                            log::debug!("FdTable::clone() - PTY master {} refcount {} -> {}",
+                                pty_num, old_count, old_count + 1);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -470,9 +478,16 @@ impl Drop for FdTable {
                         log::debug!("FdTable::drop() - releasing devpts directory fd {}", i);
                     }
                     FdKind::PtyMaster(pty_num) => {
-                        // PTY master cleanup - release the PTY pair when master closes
-                        crate::tty::pty::release(pty_num);
-                        log::debug!("FdTable::drop() - released PTY master fd {} (pty {})", i, pty_num);
+                        // PTY master cleanup - decrement refcount, only release when all masters closed
+                        if let Some(pair) = crate::tty::pty::get(pty_num) {
+                            let old_count = pair.master_refcount.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+                            log::debug!("FdTable::drop() - PTY master fd {} (pty {}) refcount {} -> {}",
+                                i, pty_num, old_count, old_count - 1);
+                            if old_count == 1 {
+                                crate::tty::pty::release(pty_num);
+                                log::debug!("FdTable::drop() - released PTY {} (last master closed)", pty_num);
+                            }
+                        }
                     }
                     FdKind::PtySlave(_pty_num) => {
                         // PTY slave doesn't own the pair, just decrement reference

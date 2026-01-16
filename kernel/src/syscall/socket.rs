@@ -312,6 +312,10 @@ pub fn sys_recvfrom(
     src_addr_ptr: u64,
     addrlen_ptr: u64,
 ) -> SyscallResult {
+    // Process any pending network packets before checking for received data.
+    crate::net::process_rx();
+    crate::net::drain_loopback_queue();
+
     // Validate buffer pointer
     if buf_ptr == 0 {
         return SyscallResult::Err(EFAULT as u64);
@@ -470,6 +474,11 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
 /// Returns: new socket fd on success, negative errno on error
 pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     log::debug!("sys_accept: fd={}", fd);
+
+    // Process any pending network packets before checking for connections.
+    // This ensures incoming SYN packets are handled even if IRQ hasn't fired.
+    crate::net::process_rx();
+    crate::net::drain_loopback_queue();
 
     // Get current thread and process
     let current_thread_id = match crate::per_cpu::current_thread() {

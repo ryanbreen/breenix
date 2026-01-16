@@ -116,11 +116,11 @@ if [[ "$(uname)" == "Darwin" ]]; then
                 echo "  WARNING: init_shell.elf not found"
             fi
 
-            # Copy telnetd for remote access
+            # Copy telnetd for remote access (system daemon, goes in /sbin)
             if [ -f /binaries/telnetd.elf ]; then
-                cp /binaries/telnetd.elf /mnt/ext2/bin/telnetd
-                chmod 755 /mnt/ext2/bin/telnetd
-                echo "  /bin/telnetd installed"
+                cp /binaries/telnetd.elf /mnt/ext2/sbin/telnetd
+                chmod 755 /mnt/ext2/sbin/telnetd
+                echo "  /sbin/telnetd installed"
             else
                 echo "  WARNING: telnetd.elf not found"
             fi
@@ -234,11 +234,11 @@ else
         echo "  /bin/init_shell installed"
     fi
 
-    # Copy telnetd for remote access
+    # Copy telnetd for remote access (system daemon, goes in /sbin)
     if [ -f "$USERSPACE_DIR/telnetd.elf" ]; then
-        cp "$USERSPACE_DIR/telnetd.elf" "$MOUNT_DIR/bin/telnetd"
-        chmod 755 "$MOUNT_DIR/bin/telnetd"
-        echo "  /bin/telnetd installed"
+        cp "$USERSPACE_DIR/telnetd.elf" "$MOUNT_DIR/sbin/telnetd"
+        chmod 755 "$MOUNT_DIR/sbin/telnetd"
+        echo "  /sbin/telnetd installed"
     fi
 
     # Create test files
@@ -297,6 +297,8 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "  /sbin/true, /bin/false - exit status coreutils"
     echo "  /bin/head, tail, wc, which - text processing coreutils"
     echo "  /bin/hello_world - exec test binary (exit code 42)"
+    echo "  /bin/init_shell - interactive shell"
+    echo "  /sbin/telnetd - telnet daemon"
     echo "  /hello.txt - test file (1 line)"
     echo "  /lines.txt - multi-line test file (15 lines) for head/tail/wc"
     echo "  /test/nested.txt - nested test file"
