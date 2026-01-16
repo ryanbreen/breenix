@@ -32,6 +32,8 @@ mod drivers;
 mod elf;
 mod framebuffer;
 mod fs;
+#[cfg(feature = "interactive")]
+mod graphics;
 mod gdt;
 mod net;
 #[cfg(feature = "testing")]
@@ -173,7 +175,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     };
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
-    
+
+    // Upgrade framebuffer to double buffering now that heap is available
+    #[cfg(feature = "interactive")]
+    logger::upgrade_to_double_buffer();
+
     // Phase 0: Log kernel layout inventory
     memory::layout::log_kernel_layout();
 
