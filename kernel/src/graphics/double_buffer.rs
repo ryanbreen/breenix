@@ -201,3 +201,71 @@ unsafe impl Send for DoubleBufferedFrameBuffer {}
 // SAFETY: All access to internal state requires &mut self, so there's no data race risk.
 // The Mutex wrapper in SHELL_FRAMEBUFFER provides the actual synchronization.
 unsafe impl Sync for DoubleBufferedFrameBuffer {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_region_new_is_empty() {
+        let region = DirtyRegion::new();
+        assert!(region.is_empty());
+    }
+
+    #[test]
+    fn dirty_region_mark_expands() {
+        let mut region = DirtyRegion::new();
+        region.mark_dirty(2, 4, 8);
+        assert!(!region.is_empty());
+        assert_eq!(region.x_start, 4);
+        assert_eq!(region.x_end, 8);
+        assert_eq!(region.y_start, 2);
+        assert_eq!(region.y_end, 3);
+    }
+
+    #[test]
+    fn dirty_region_mark_unions() {
+        let mut region = DirtyRegion::new();
+        region.mark_dirty(2, 4, 8);
+        region.mark_dirty(1, 2, 6);
+        assert_eq!(region.x_start, 2);
+        assert_eq!(region.x_end, 8);
+        assert_eq!(region.y_start, 1);
+        assert_eq!(region.y_end, 3);
+    }
+
+    #[test]
+    fn dirty_region_clear_resets() {
+        let mut region = DirtyRegion::new();
+        region.mark_dirty(0, 1, 2);
+        region.clear();
+        assert!(region.is_empty());
+    }
+
+    #[test]
+    fn double_buffer_new_not_dirty() {
+        let mut buf = [0u8; 100];
+        let db = DoubleBufferedFrameBuffer::new(buf.as_mut_ptr(), buf.len(), 10, 10);
+        assert!(!db.dirty);
+        assert!(db.dirty_region.is_empty());
+    }
+
+    #[test]
+    fn double_buffer_mark_region_sets_dirty() {
+        let mut buf = [0u8; 100];
+        let mut db = DoubleBufferedFrameBuffer::new(buf.as_mut_ptr(), buf.len(), 10, 10);
+        db.mark_region_dirty(1, 2, 4);
+        assert!(db.dirty);
+        assert!(!db.dirty_region.is_empty());
+    }
+
+    #[test]
+    fn double_buffer_flush_clears_dirty() {
+        let mut buf = [0u8; 100];
+        let mut db = DoubleBufferedFrameBuffer::new(buf.as_mut_ptr(), buf.len(), 10, 10);
+        db.mark_region_dirty(1, 0, 2);
+        db.flush();
+        assert!(!db.dirty);
+        assert!(db.dirty_region.is_empty());
+    }
+}

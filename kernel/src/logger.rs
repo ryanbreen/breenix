@@ -415,6 +415,7 @@ impl ShellFrameBuffer {
         };
         let bytes_per_pixel = self.info.bytes_per_pixel;
         let byte_offset = pixel_offset * bytes_per_pixel;
+        let x_byte_offset = x * bytes_per_pixel;
 
         if let Some(db) = &mut self.double_buffer {
             let buffer = db.buffer_mut();
@@ -422,7 +423,11 @@ impl ShellFrameBuffer {
                 for (i, &byte) in color[..bytes_per_pixel].iter().enumerate() {
                     buffer[byte_offset + i] = byte;
                 }
-                db.mark_region_dirty(y, byte_offset, byte_offset + bytes_per_pixel);
+                db.mark_region_dirty(
+                    y,
+                    x_byte_offset,
+                    x_byte_offset + bytes_per_pixel,
+                );
             }
         } else if byte_offset + bytes_per_pixel <= self.buffer_len {
             unsafe {
