@@ -1760,8 +1760,9 @@ fn boot_stages() -> Result<()> {
 
     let test_start = Instant::now();
     // CI environments need more time due to virtualization overhead and resource contention
+    // With 227 stages, the test can take 4-5 minutes in CI
     let timeout = if std::env::var("CI").is_ok() {
-        Duration::from_secs(180) // 3 minutes for CI
+        Duration::from_secs(300) // 5 minutes for CI
     } else {
         Duration::from_secs(120) // 2 minutes locally
     };
