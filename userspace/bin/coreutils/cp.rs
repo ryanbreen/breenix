@@ -3,12 +3,12 @@
 //! Usage: cp SOURCE DEST
 //!
 //! Copies SOURCE to DEST. Does not support recursive directory copy.
-//! Currently uses hardcoded paths until argv support is added.
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
+use libbreenix::argv::get_args;
 use libbreenix::errno::Errno;
 use libbreenix::fs::{close, open, open_with_mode, read, write, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY};
 use libbreenix::io::{println, stderr};
@@ -49,9 +49,9 @@ fn copy_file(src: &str, dst: &str) -> Result<(), (Errno, bool)> {
     result
 }
 
-fn print_error(path: &str, e: Errno) {
+fn print_error(path: &[u8], e: Errno) {
     let _ = stderr().write_str("cp: ");
-    let _ = stderr().write_str(path);
+    let _ = stderr().write(path);
     let _ = stderr().write_str(": ");
     let _ = stderr().write_str(match e {
         Errno::ENOENT => "No such file or directory",
@@ -64,11 +64,92 @@ fn print_error(path: &str, e: Errno) {
     let _ = stderr().write(b"\n");
 }
 
+fn print_usage() {
+    let _ = stderr().write_str("Usage: cp SOURCE DEST\n");
+}
+
+/// Build a null-terminated path string from argv bytes
+/// Returns the path length (excluding null terminator) or None if too long
+fn build_path(arg: &[u8], buf: &mut [u8; 256]) -> Option<usize> {
+    if arg.starts_with(b"/") {
+        // Absolute path
+        if arg.len() >= 256 {
+            return None;
+        }
+        buf[..arg.len()].copy_from_slice(arg);
+        buf[arg.len()] = 0;
+        Some(arg.len())
+    } else {
+        // Relative path - prepend /
+        if arg.len() + 1 >= 256 {
+            return None;
+        }
+        buf[0] = b'/';
+        buf[1..=arg.len()].copy_from_slice(arg);
+        buf[arg.len() + 1] = 0;
+        Some(arg.len() + 1)
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // Demo: copy /hello.txt to /hello_copy.txt
-    let src = "/hello.txt\0";
-    let dst = "/hello_copy.txt\0";
+    let args = unsafe { get_args() };
+
+    if args.argc < 3 {
+        print_usage();
+        exit(1);
+    }
+
+    let src_arg = match args.argv(1) {
+        Some(arg) => arg,
+        None => {
+            print_usage();
+            exit(1);
+        }
+    };
+
+    let dst_arg = match args.argv(2) {
+        Some(arg) => arg,
+        None => {
+            print_usage();
+            exit(1);
+        }
+    };
+
+    let mut src_buf = [0u8; 256];
+    let mut dst_buf = [0u8; 256];
+
+    let src_len = match build_path(src_arg, &mut src_buf) {
+        Some(len) => len,
+        None => {
+            let _ = stderr().write_str("cp: source path too long\n");
+            exit(1);
+        }
+    };
+
+    let dst_len = match build_path(dst_arg, &mut dst_buf) {
+        Some(len) => len,
+        None => {
+            let _ = stderr().write_str("cp: destination path too long\n");
+            exit(1);
+        }
+    };
+
+    let src = match core::str::from_utf8(&src_buf[..=src_len]) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = stderr().write_str("cp: invalid source path encoding\n");
+            exit(1);
+        }
+    };
+
+    let dst = match core::str::from_utf8(&dst_buf[..=dst_len]) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = stderr().write_str("cp: invalid destination path encoding\n");
+            exit(1);
+        }
+    };
 
     match copy_file(src, dst) {
         Ok(()) => {
@@ -76,7 +157,7 @@ pub extern "C" fn _start() -> ! {
             exit(0)
         }
         Err((e, is_src)) => {
-            print_error(if is_src { src } else { dst }, e);
+            print_error(if is_src { src_arg } else { dst_arg }, e);
             exit(1);
         }
     }
