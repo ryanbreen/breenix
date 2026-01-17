@@ -702,39 +702,66 @@ pub fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Res
             &path_buf[..path_len]
         };
 
-        let result = if args.is_empty() {
-            let argv: [*const u8; 2] = [binary_path.as_ptr(), core::ptr::null()];
-            execv(binary_path, argv.as_ptr())
-        } else {
-            const ARG_BUF_LEN: usize = 128;
-            let arg_end = args
-                .as_bytes()
-                .iter()
-                .position(|&c| c == b' ' || c == b'\t')
-                .unwrap_or(args.len());
-            let first_arg = &args[..arg_end];
-            if first_arg.len() + 1 > ARG_BUF_LEN {
-                print("Error: argument too long: ");
-                println(first_arg);
-                libbreenix::process::exit(1);
+        // Parse all arguments and build argv array
+        // Constants for argument parsing
+        const MAX_ARGS: usize = 16; // Maximum number of arguments (including argv[0])
+        const ARG_BUF_SIZE: usize = 512; // Total buffer for all argument strings
+
+        // Buffer to hold all null-terminated argument strings
+        let mut arg_strings = [0u8; ARG_BUF_SIZE];
+        // Array of pointers to each argument (argv[0] = binary, then args, then null)
+        let mut argv_ptrs: [*const u8; MAX_ARGS + 1] = [core::ptr::null(); MAX_ARGS + 1];
+
+        // argv[0] is the binary path
+        argv_ptrs[0] = binary_path.as_ptr();
+        let mut argc = 1usize;
+        let mut buf_pos = 0usize;
+
+        if !args.is_empty() {
+            let args_bytes = args.as_bytes();
+            let mut i = 0;
+
+            while i < args_bytes.len() && argc < MAX_ARGS {
+                // Skip leading whitespace
+                while i < args_bytes.len() && (args_bytes[i] == b' ' || args_bytes[i] == b'\t') {
+                    i += 1;
+                }
+                if i >= args_bytes.len() {
+                    break;
+                }
+
+                // Find end of this argument
+                let arg_start = i;
+                while i < args_bytes.len() && args_bytes[i] != b' ' && args_bytes[i] != b'\t' {
+                    i += 1;
+                }
+                let arg_len = i - arg_start;
+
+                // Check if we have room in the buffer
+                if buf_pos + arg_len + 1 > ARG_BUF_SIZE {
+                    print("Error: argument list too long\n");
+                    libbreenix::process::exit(1);
+                }
+
+                // Copy argument to buffer and null-terminate
+                arg_strings[buf_pos..buf_pos + arg_len]
+                    .copy_from_slice(&args_bytes[arg_start..arg_start + arg_len]);
+                arg_strings[buf_pos + arg_len] = 0;
+
+                // Store pointer to this argument
+                argv_ptrs[argc] = arg_strings[buf_pos..].as_ptr();
+                argc += 1;
+                buf_pos += arg_len + 1;
             }
-            // CRITICAL: Use black_box to prevent the compiler from optimizing
-            // away arg_buf before the syscall reads from it. Without this,
-            // the compiler may reuse this stack memory since arg_buf is only
-            // used to get a pointer.
-            let mut arg_buf = [0u8; ARG_BUF_LEN];
-            arg_buf[..first_arg.len()].copy_from_slice(first_arg.as_bytes());
-            arg_buf[first_arg.len()] = 0;
-            let arg_ptr = core::hint::black_box(arg_buf.as_ptr());
-            let argv: [*const u8; 3] = [
-                binary_path.as_ptr(),
-                arg_ptr,
-                core::ptr::null(),
-            ];
-            // Also black_box the argv array itself
-            let argv_ptr = core::hint::black_box(argv.as_ptr());
-            execv(binary_path, argv_ptr)
-        };
+        }
+
+        // argv is already null-terminated (initialized with nulls)
+        // CRITICAL: Use black_box to prevent the compiler from optimizing
+        // away these buffers before the syscall reads from them.
+        let arg_strings_ptr = core::hint::black_box(arg_strings.as_ptr());
+        let _ = arg_strings_ptr; // Ensure buffer stays alive
+        let argv_ptr = core::hint::black_box(argv_ptrs.as_ptr());
+        let result = execv(binary_path, argv_ptr);
 
         // If exec returns, it failed
         print("Error: exec failed with code ");

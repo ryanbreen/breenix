@@ -427,6 +427,23 @@ path = "pty_test.rs"
 name = "fbinfo_test"
 path = "fbinfo_test.rs"
 
+# Coreutils argv integration tests
+[[bin]]
+name = "mkdir_argv_test"
+path = "mkdir_argv_test.rs"
+
+[[bin]]
+name = "cp_mv_argv_test"
+path = "cp_mv_argv_test.rs"
+
+[[bin]]
+name = "echo_argv_test"
+path = "echo_argv_test.rs"
+
+[[bin]]
+name = "rm_argv_test"
+path = "rm_argv_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
