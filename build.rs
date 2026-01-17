@@ -9,7 +9,9 @@ fn main() {
     let mut disk_builder = DiskImageBuilder::new(PathBuf::from(kernel_path));
 
     // Configure framebuffer resolution from environment variables
-    // Default: 1920x1080 for a good interactive experience
+    // Default: 1920x1080 (16:9, Full HD) - most widely supported by QEMU's UEFI GOP
+    // Note: 1920x1200 (16:10) is NOT available in QEMU's virtio-vga GOP mode list,
+    // causing fallback to 1280x800. Use 1920x1080 for reliable high-res graphics.
     let fb_width: u64 = env::var("BREENIX_FB_WIDTH")
         .ok()
         .and_then(|s| s.parse().ok())
