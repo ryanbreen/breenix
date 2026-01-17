@@ -296,14 +296,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Grantpt) => super::pty::sys_grantpt(args.0),
         Some(SyscallNumber::Unlockpt) => super::pty::sys_unlockpt(args.0),
         Some(SyscallNumber::Ptsname) => super::pty::sys_ptsname(args.0, args.1, args.2),
-        // Graphics syscalls (interactive mode only)
-        #[cfg(feature = "interactive")]
+        // Graphics syscalls
         Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
-        #[cfg(not(feature = "interactive"))]
-        Some(SyscallNumber::FbInfo) => {
-            log::warn!("FbInfo syscall not available (interactive feature disabled)");
-            SyscallResult::Err(super::ErrorCode::NoSys as u64)
-        }
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

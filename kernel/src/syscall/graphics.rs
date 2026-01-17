@@ -1,12 +1,8 @@
 //! Graphics-related system calls.
 //!
 //! Provides syscalls for querying framebuffer information.
-//!
-//! This module is only compiled when the `interactive` feature is enabled,
-//! as it depends on the framebuffer infrastructure.
 
-#![cfg(feature = "interactive")]
-
+#[cfg(feature = "interactive")]
 use crate::logger::SHELL_FRAMEBUFFER;
 use super::SyscallResult;
 
@@ -26,6 +22,10 @@ pub struct FbInfo {
     pub pixel_format: u64,
 }
 
+/// Maximum valid userspace address (canonical lower half)
+/// Addresses above this are kernel space and must be rejected.
+const USER_SPACE_MAX: u64 = 0x0000_8000_0000_0000;
+
 /// sys_fbinfo - Get framebuffer information
 ///
 /// # Arguments
@@ -33,11 +33,25 @@ pub struct FbInfo {
 ///
 /// # Returns
 /// * 0 on success
-/// * -EFAULT if info_ptr is invalid
+/// * -EFAULT if info_ptr is invalid or in kernel space
 /// * -ENODEV if no framebuffer is available
+#[cfg(feature = "interactive")]
 pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
-    // Validate pointer
+    // Validate pointer: must be non-null and in userspace address range
     if info_ptr == 0 {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    // Reject kernel-space pointers to prevent kernel memory corruption
+    if info_ptr >= USER_SPACE_MAX {
+        log::warn!("sys_fbinfo: rejected kernel-space pointer {:#x}", info_ptr);
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    // Validate the entire FbInfo struct fits in userspace
+    let end_ptr = info_ptr.saturating_add(core::mem::size_of::<FbInfo>() as u64);
+    if end_ptr > USER_SPACE_MAX {
+        log::warn!("sys_fbinfo: buffer extends into kernel space");
         return SyscallResult::Err(super::ErrorCode::Fault as u64);
     }
 
@@ -62,13 +76,18 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
         pixel_format: if fb_guard.is_bgr() { 1 } else { 0 },
     };
 
-    // Copy to userspace
-    // Note: In a real implementation, we'd validate the userspace pointer
-    // and use proper copy_to_user semantics. For now, direct write.
+    // Copy to userspace (pointer already validated above)
     unsafe {
         let info_out = info_ptr as *mut FbInfo;
         core::ptr::write(info_out, info);
     }
 
     SyscallResult::Ok(0)
+}
+
+/// sys_fbinfo - Stub for non-interactive mode (returns ENODEV)
+#[cfg(not(feature = "interactive"))]
+pub fn sys_fbinfo(_info_ptr: u64) -> SyscallResult {
+    // No framebuffer available in non-interactive mode
+    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }

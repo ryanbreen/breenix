@@ -8,7 +8,6 @@ use x86_64::structures::idt::InterruptStackFrame;
 pub(crate) mod dispatcher;
 pub mod errno;
 pub mod fs;
-#[cfg(feature = "interactive")]
 pub mod graphics;
 pub mod handler;
 pub mod handlers;

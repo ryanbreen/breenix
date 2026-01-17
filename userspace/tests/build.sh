@@ -133,6 +133,9 @@ BINARIES=(
     "telnetd"
     # PTY integration test
     "pty_test"
+    # Graphics syscall tests
+    "fbinfo_test"
+    "resolution"
 )
 
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."

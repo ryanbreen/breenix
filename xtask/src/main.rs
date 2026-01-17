@@ -1658,6 +1658,14 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Stack-allocated argv test failed - compiler may have optimized away argument buffers",
             check_hint: "Check core::hint::black_box() usage in try_execute_external() and test code",
         },
+        // === Graphics syscalls ===
+        // Tests that the FbInfo syscall (410) works correctly
+        BootStage {
+            name: "FbInfo syscall test passed",
+            marker: "FBINFO_TEST: all tests PASSED",
+            failure_meaning: "FbInfo syscall test failed - framebuffer info not returned correctly",
+            check_hint: "Check kernel/src/syscall/graphics.rs sys_fbinfo() and libs/libbreenix/src/graphics.rs",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]

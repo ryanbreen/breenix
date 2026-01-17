@@ -93,13 +93,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Unlockpt => super::pty::sys_unlockpt(arg1),
         SyscallNumber::Ptsname => super::pty::sys_ptsname(arg1, arg2, arg3),
         // Graphics syscalls (Breenix-specific)
-        #[cfg(feature = "interactive")]
         SyscallNumber::FbInfo => super::graphics::sys_fbinfo(arg1),
-        #[cfg(not(feature = "interactive"))]
-        SyscallNumber::FbInfo => {
-            log::warn!("FbInfo syscall not available (interactive feature disabled)");
-            SyscallResult::Err(38) // ENOSYS
-        }
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

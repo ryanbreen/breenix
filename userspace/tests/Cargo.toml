@@ -416,3 +416,7 @@ path = "pty_test.rs"
 [[bin]]
 name = "resolution"
 path = "resolution.rs"
+
+[[bin]]
+name = "fbinfo_test"
+path = "fbinfo_test.rs"
