@@ -583,11 +583,45 @@ impl Canvas for ShellFrameBuffer {
         }
     }
 
+    fn get_pixel(&self, x: i32, y: i32) -> Option<Color> {
+        if x < 0 || y < 0 {
+            return None;
+        }
+        let x = x as usize;
+        let y = y as usize;
+        if x >= self.info.width || y >= self.info.height {
+            return None;
+        }
+
+        let bytes_per_pixel = self.info.bytes_per_pixel;
+        let pixel_offset = y * self.info.stride + x;
+        let byte_offset = pixel_offset * bytes_per_pixel;
+
+        let buffer = self.buffer();
+        if byte_offset + bytes_per_pixel > buffer.len() {
+            return None;
+        }
+
+        Some(Color::from_pixel_bytes(
+            &buffer[byte_offset..byte_offset + bytes_per_pixel],
+            bytes_per_pixel,
+            self.is_bgr(),
+        ))
+    }
+
     fn buffer_mut(&mut self) -> &mut [u8] {
         if let Some(db) = &mut self.double_buffer {
             db.buffer_mut()
         } else {
             unsafe { core::slice::from_raw_parts_mut(self.buffer_ptr, self.buffer_len) }
+        }
+    }
+
+    fn buffer(&self) -> &[u8] {
+        if let Some(db) = &self.double_buffer {
+            db.buffer()
+        } else {
+            unsafe { core::slice::from_raw_parts(self.buffer_ptr, self.buffer_len) }
         }
     }
 }
