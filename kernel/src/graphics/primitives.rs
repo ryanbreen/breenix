@@ -58,6 +58,27 @@ impl Color {
 
         out
     }
+
+    /// Create a Color from pixel bytes based on pixel format (BGR or RGB).
+    pub fn from_pixel_bytes(bytes: &[u8], bytes_per_pixel: usize, is_bgr: bool) -> Self {
+        if bytes_per_pixel == 0 || bytes.is_empty() {
+            return Color::BLACK;
+        }
+
+        let (r, g, b) = if is_bgr {
+            let b = bytes[0];
+            let g = if bytes_per_pixel > 1 && bytes.len() > 1 { bytes[1] } else { 0 };
+            let r = if bytes_per_pixel > 2 && bytes.len() > 2 { bytes[2] } else { 0 };
+            (r, g, b)
+        } else {
+            let r = bytes[0];
+            let g = if bytes_per_pixel > 1 && bytes.len() > 1 { bytes[1] } else { 0 };
+            let b = if bytes_per_pixel > 2 && bytes.len() > 2 { bytes[2] } else { 0 };
+            (r, g, b)
+        };
+
+        Color::rgb(r, g, b)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,8 +105,15 @@ pub trait Canvas {
     /// Set a single pixel (must handle bounds checking).
     fn set_pixel(&mut self, x: i32, y: i32, color: Color);
 
+    /// Get a single pixel color (must handle bounds checking).
+    /// Returns None if coordinates are out of bounds.
+    fn get_pixel(&self, x: i32, y: i32) -> Option<Color>;
+
     /// Get buffer for direct access (optional optimization).
     fn buffer_mut(&mut self) -> &mut [u8];
+
+    /// Get buffer for read access.
+    fn buffer(&self) -> &[u8];
 }
 
 fn to_i32_clamped(value: u32) -> i32 {
@@ -452,10 +480,8 @@ pub fn draw_char(canvas: &mut impl Canvas, x: i32, y: i32, c: char, style: &Text
 
 /// Draw a glyph at the specified position with the given style.
 fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &TextStyle) {
-    let threshold = if style.background.is_some() { 0 } else { 32 };
-
     for (gx, gy, intensity) in glyph.pixels() {
-        if intensity <= threshold {
+        if intensity == 0 {
             continue;
         }
 
@@ -463,14 +489,16 @@ fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &T
         let py = y + gy as i32;
 
         let color = if let Some(bg) = style.background {
+            // Explicit background - blend foreground with specified background
             blend_colors(style.foreground, bg, intensity)
         } else {
-            // No background - use intensity to modulate foreground
-            Color::rgb(
-                (style.foreground.r as u16 * intensity as u16 / 255) as u8,
-                (style.foreground.g as u16 * intensity as u16 / 255) as u8,
-                (style.foreground.b as u16 * intensity as u16 / 255) as u8,
-            )
+            // No explicit background - blend with actual canvas pixel for proper anti-aliasing
+            if let Some(existing) = canvas.get_pixel(px, py) {
+                blend_colors(style.foreground, existing, intensity)
+            } else {
+                // Out of bounds, skip
+                continue;
+            }
         };
 
         canvas.set_pixel(px, py, color);
@@ -626,8 +654,28 @@ mod tests {
             self.buffer[offset..offset + self.bpp].copy_from_slice(&pixel[..self.bpp]);
         }
 
+        fn get_pixel(&self, x: i32, y: i32) -> Option<Color> {
+            if x < 0 || y < 0 {
+                return None;
+            }
+            let x = x as usize;
+            let y = y as usize;
+            if x >= self.width || y >= self.height {
+                return None;
+            }
+            let offset = y * self.stride + x * self.bpp;
+            if offset + self.bpp > self.buffer.len() {
+                return None;
+            }
+            Some(Color::from_pixel_bytes(&self.buffer[offset..offset + self.bpp], self.bpp, self.is_bgr))
+        }
+
         fn buffer_mut(&mut self) -> &mut [u8] {
             &mut self.buffer
+        }
+
+        fn buffer(&self) -> &[u8] {
+            &self.buffer
         }
     }
 

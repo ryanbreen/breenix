@@ -102,6 +102,12 @@ impl DoubleBufferedFrameBuffer {
         &mut self.shadow_buffer
     }
 
+    /// Get read-only access to the shadow buffer.
+    #[inline]
+    pub fn buffer(&self) -> &[u8] {
+        &self.shadow_buffer
+    }
+
     /// Copy the shadow buffer to the hardware framebuffer.
     ///
     /// This is the "page flip" operation that makes rendered content visible.

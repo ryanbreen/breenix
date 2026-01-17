@@ -1,12 +1,32 @@
 // build.rs
 
-use bootloader::DiskImageBuilder;
+use bootloader::{BootConfig, DiskImageBuilder};
 use std::{env, path::PathBuf};
 
 fn main() {
     // set by cargo for the kernel artifact dependency
     let kernel_path = env::var("CARGO_BIN_FILE_KERNEL").unwrap();
-    let disk_builder = DiskImageBuilder::new(PathBuf::from(kernel_path));
+    let mut disk_builder = DiskImageBuilder::new(PathBuf::from(kernel_path));
+
+    // Configure framebuffer resolution from environment variables
+    // Default: 1920x1080 (16:9, Full HD) - most widely supported by QEMU's UEFI GOP
+    // Note: 1920x1200 (16:10) is NOT available in QEMU's virtio-vga GOP mode list,
+    // causing fallback to 1280x800. Use 1920x1080 for reliable high-res graphics.
+    let fb_width: u64 = env::var("BREENIX_FB_WIDTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1920);
+    let fb_height: u64 = env::var("BREENIX_FB_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1080);
+
+    let mut boot_config = BootConfig::default();
+    boot_config.frame_buffer.minimum_framebuffer_width = Some(fb_width);
+    boot_config.frame_buffer.minimum_framebuffer_height = Some(fb_height);
+    disk_builder.set_boot_config(&boot_config);
+
+    println!("cargo:warning=Configured framebuffer: {}x{}", fb_width, fb_height);
 
     // specify output paths
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());

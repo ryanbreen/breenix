@@ -65,6 +65,9 @@ pub mod nr {
     pub const LSEEK: u64 = 258;       // Breenix: filesystem lseek syscall
     pub const FSTAT: u64 = 259;       // Breenix: filesystem fstat syscall
     pub const GETDENTS64: u64 = 260;  // Breenix: directory listing syscall
+    // Graphics syscalls (Breenix-specific)
+    pub const FBINFO: u64 = 410;       // Breenix: get framebuffer info
+    // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;   // Breenix: get CoW statistics (for testing)
     pub const SIMULATE_OOM: u64 = 501; // Breenix: enable/disable OOM simulation (for testing)
 }

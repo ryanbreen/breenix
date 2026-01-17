@@ -41,6 +41,7 @@ pub mod argv;
 pub mod dns;
 pub mod errno;
 pub mod fs;
+pub mod graphics;
 pub mod http;
 pub mod io;
 pub mod memory;

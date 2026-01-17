@@ -411,3 +411,12 @@ path = "telnetd.rs"
 [[bin]]
 name = "pty_test"
 path = "pty_test.rs"
+
+# Graphics utilities
+[[bin]]
+name = "resolution"
+path = "resolution.rs"
+
+[[bin]]
+name = "fbinfo_test"
+path = "fbinfo_test.rs"
