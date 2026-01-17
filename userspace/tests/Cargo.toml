@@ -6,25 +6,109 @@ edition = "2021"
 [dependencies]
 libbreenix = { path = "../../libs/libbreenix" }
 
+# ============================================================================
+# EXAMPLES - Demo programs and shell
+# ============================================================================
+
 [[bin]]
 name = "hello_time"
-path = "hello_time.rs"
+path = "../examples/hello_time.rs"
 
 [[bin]]
 name = "hello_world"
-path = "hello_world.rs"
+path = "../examples/hello_world.rs"
 
 [[bin]]
 name = "simple_exit"
-path = "simple_exit.rs"
+path = "../examples/simple_exit.rs"
 
 [[bin]]
 name = "counter"
-path = "counter.rs"
+path = "../examples/counter.rs"
 
 [[bin]]
 name = "spinner"
-path = "spinner.rs"
+path = "../examples/spinner.rs"
+
+[[bin]]
+name = "init_shell"
+path = "../examples/init_shell.rs"
+
+# ============================================================================
+# COREUTILS - Standard POSIX utilities
+# ============================================================================
+
+[[bin]]
+name = "cat"
+path = "../bin/coreutils/cat.rs"
+
+[[bin]]
+name = "ls"
+path = "../bin/coreutils/ls.rs"
+
+[[bin]]
+name = "echo"
+path = "../bin/coreutils/echo.rs"
+
+[[bin]]
+name = "mkdir"
+path = "../bin/coreutils/mkdir.rs"
+
+[[bin]]
+name = "rm"
+path = "../bin/coreutils/rm.rs"
+
+[[bin]]
+name = "rmdir"
+path = "../bin/coreutils/rmdir.rs"
+
+[[bin]]
+name = "cp"
+path = "../bin/coreutils/cp.rs"
+
+[[bin]]
+name = "mv"
+path = "../bin/coreutils/mv.rs"
+
+[[bin]]
+name = "true"
+path = "../bin/coreutils/true.rs"
+
+[[bin]]
+name = "false"
+path = "../bin/coreutils/false.rs"
+
+[[bin]]
+name = "head"
+path = "../bin/coreutils/head.rs"
+
+[[bin]]
+name = "tail"
+path = "../bin/coreutils/tail.rs"
+
+[[bin]]
+name = "wc"
+path = "../bin/coreutils/wc.rs"
+
+[[bin]]
+name = "which"
+path = "../bin/coreutils/which.rs"
+
+[[bin]]
+name = "resolution"
+path = "../bin/coreutils/resolution.rs"
+
+# ============================================================================
+# SERVICES - Daemons and network services
+# ============================================================================
+
+[[bin]]
+name = "telnetd"
+path = "../bin/services/telnetd.rs"
+
+# ============================================================================
+# TESTS - Actual test programs
+# ============================================================================
 
 [[bin]]
 name = "fork_test"
@@ -105,10 +189,6 @@ path = "shell_pipe_test.rs"
 [[bin]]
 name = "stdin_test"
 path = "stdin_test.rs"
-
-[[bin]]
-name = "init_shell"
-path = "init_shell.rs"
 
 [[bin]]
 name = "waitpid_test"
@@ -242,63 +322,6 @@ path = "devfs_test.rs"
 name = "cwd_test"
 path = "cwd_test.rs"
 
-# Coreutils
-[[bin]]
-name = "cat"
-path = "cat.rs"
-
-[[bin]]
-name = "ls"
-path = "ls.rs"
-
-[[bin]]
-name = "echo"
-path = "echo.rs"
-
-[[bin]]
-name = "mkdir"
-path = "mkdir.rs"
-
-[[bin]]
-name = "rm"
-path = "rm.rs"
-
-[[bin]]
-name = "rmdir"
-path = "rmdir.rs"
-
-[[bin]]
-name = "cp"
-path = "cp.rs"
-
-[[bin]]
-name = "mv"
-path = "mv.rs"
-
-[[bin]]
-name = "true"
-path = "true.rs"
-
-[[bin]]
-name = "false"
-path = "false.rs"
-
-[[bin]]
-name = "head"
-path = "head.rs"
-
-[[bin]]
-name = "tail"
-path = "tail.rs"
-
-[[bin]]
-name = "wc"
-path = "wc.rs"
-
-[[bin]]
-name = "which"
-path = "which.rs"
-
 # Coreutil tests
 [[bin]]
 name = "true_test"
@@ -364,18 +387,10 @@ path = "cow_readonly_test.rs"
 name = "cow_oom_test"
 path = "cow_oom_test.rs"
 
-# Argv test for command-line argument support
 [[bin]]
 name = "argv_test"
 path = "argv_test.rs"
 
-[profile.release]
-panic = "abort"
-lto = true
-opt-level = "z"
-strip = true
-
-[workspace]
 [[bin]]
 name = "exec_argv_test"
 path = "exec_argv_test.rs"
@@ -405,18 +420,34 @@ name = "fs_block_alloc_test"
 path = "fs_block_alloc_test.rs"
 
 [[bin]]
-name = "telnetd"
-path = "telnetd.rs"
-
-[[bin]]
 name = "pty_test"
 path = "pty_test.rs"
-
-# Graphics utilities
-[[bin]]
-name = "resolution"
-path = "resolution.rs"
 
 [[bin]]
 name = "fbinfo_test"
 path = "fbinfo_test.rs"
+
+# Coreutils argv integration tests
+[[bin]]
+name = "mkdir_argv_test"
+path = "mkdir_argv_test.rs"
+
+[[bin]]
+name = "cp_mv_argv_test"
+path = "cp_mv_argv_test.rs"
+
+[[bin]]
+name = "echo_argv_test"
+path = "echo_argv_test.rs"
+
+[[bin]]
+name = "rm_argv_test"
+path = "rm_argv_test.rs"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "z"
+strip = true
+
+[workspace]
