@@ -170,7 +170,6 @@ pub fn run_demo(canvas: &mut impl Canvas) {
     let red_style = TextStyle::new().with_color(Color::RED);
     let green_style = TextStyle::new().with_color(Color::GREEN);
     let blue_style = TextStyle::new().with_color(Color::BLUE);
-    let yellow_style = TextStyle::new().with_color(Color::rgb(255, 255, 0));
 
     draw_text(canvas, 50, text_y + 30, "Red Text", &red_style);
     draw_text(canvas, 150, text_y + 30, "Green Text", &green_style);
