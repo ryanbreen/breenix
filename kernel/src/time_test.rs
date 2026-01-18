@@ -2,9 +2,8 @@
 //!
 //! ## What This Test Validates
 //!
-//! ✓ get_monotonic_time() correctly converts PIT ticks to milliseconds
-//! ✓ Conversion formula: ticks * 100ms = milliseconds (10 Hz PIT)
-//! ✓ Millisecond values are 100ms-aligned (matching hardware resolution)
+//! ✓ get_monotonic_time() correctly returns ticks as milliseconds
+//! ✓ At 1000 Hz PIT, ticks == milliseconds (1 tick per ms)
 //!
 //! ## What This Test Does NOT Validate
 //!
@@ -17,8 +16,8 @@
 
 /// Validates timer resolution and correctness
 ///
-/// This test ensures that get_monotonic_time() returns actual milliseconds
-/// and correctly converts from the PIT tick rate (10 Hz = 100ms per tick).
+/// This test ensures that get_monotonic_time() returns actual milliseconds.
+/// At 1000 Hz PIT, ticks == milliseconds (1 tick = 1 ms).
 ///
 /// IMPORTANT: This test runs BEFORE interrupts are enabled, so we cannot wait
 /// for ticks to increment. Instead, we validate the conversion math is correct.
@@ -31,31 +30,19 @@ pub fn test_timer_resolution() {
 
     log::info!("Current state: {} ticks, {} ms", ticks, ms);
 
-    // Verify the conversion is correct: at 10 Hz, each tick = 100 ms
-    // get_monotonic_time() should return ticks * 100
-    let expected_ms = ticks * 100;
+    // Verify the conversion is correct: at 1000 Hz, each tick = 1 ms
+    // get_monotonic_time() should return ticks directly
+    let expected_ms = ticks;
 
     if ms == expected_ms {
-        log::info!("✓ Timer conversion correct: {} ticks * 100 = {} ms", ticks, ms);
-        log::info!("✓ Timer resolution: 100 ms per tick (10 Hz PIT)");
+        log::info!("✓ Timer conversion correct: {} ticks = {} ms", ticks, ms);
+        log::info!("✓ Timer resolution: 1 ms per tick (1000 Hz PIT)");
     } else {
         log::error!(
             "✗ Timer conversion INCORRECT: {} ticks should yield {} ms, got {} ms",
             ticks, expected_ms, ms
         );
         panic!("Timer resolution validation failed");
-    }
-
-    // Sanity check: monotonic_time should be divisible by 100
-    // (since we can only measure in 100ms increments at 10 Hz)
-    if ms % 100 == 0 {
-        log::info!("✓ Millisecond values correctly aligned to 100ms boundaries");
-    } else {
-        log::error!(
-            "✗ Millisecond value {} not aligned to 100ms boundary",
-            ms
-        );
-        panic!("Timer resolution alignment failed");
     }
 
     log::info!("=== TIMER RESOLUTION TEST COMPLETE ===");

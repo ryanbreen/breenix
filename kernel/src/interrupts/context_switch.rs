@@ -230,6 +230,11 @@ pub extern "C" fn check_need_resched_and_switch(
                 scheduler::set_need_resched();
                 return;
             }
+        } else if !from_userspace {
+            // Pure kernel thread (like kthread) being preempted - save its context
+            // This is NOT a userspace thread and NOT blocked in syscall - it's a
+            // kernel thread running its own code (e.g., kthread_entry -> user function)
+            save_kthread_context(old_thread_id, saved_regs, interrupt_frame);
         }
 
         // Switch to the new thread
@@ -350,6 +355,48 @@ fn save_kernel_context_with_guard(
     }
 }
 
+/// Save kernel thread (kthread) context before switching away
+/// This is similar to save_kernel_context_with_guard but for pure kernel threads
+/// that are not associated with a process (they only exist in the scheduler)
+fn save_kthread_context(
+    thread_id: u64,
+    saved_regs: &SavedRegisters,
+    interrupt_frame: &InterruptStackFrame,
+) {
+    scheduler::with_thread_mut(thread_id, |thread| {
+        // Save general purpose registers from the interrupt
+        thread.context.rax = saved_regs.rax;
+        thread.context.rbx = saved_regs.rbx;
+        thread.context.rcx = saved_regs.rcx;
+        thread.context.rdx = saved_regs.rdx;
+        thread.context.rsi = saved_regs.rsi;
+        thread.context.rdi = saved_regs.rdi;
+        thread.context.rbp = saved_regs.rbp;
+        thread.context.r8 = saved_regs.r8;
+        thread.context.r9 = saved_regs.r9;
+        thread.context.r10 = saved_regs.r10;
+        thread.context.r11 = saved_regs.r11;
+        thread.context.r12 = saved_regs.r12;
+        thread.context.r13 = saved_regs.r13;
+        thread.context.r14 = saved_regs.r14;
+        thread.context.r15 = saved_regs.r15;
+
+        // Save from interrupt frame - the kernel location where thread was preempted
+        thread.context.rip = interrupt_frame.instruction_pointer.as_u64();
+        thread.context.rsp = interrupt_frame.stack_pointer.as_u64();
+        thread.context.rflags = interrupt_frame.cpu_flags.bits();
+        thread.context.cs = interrupt_frame.code_segment.0 as u64;
+        thread.context.ss = interrupt_frame.stack_segment.0 as u64;
+
+        log::trace!(
+            "KTHREAD_SAVE: thread {} RIP={:#x} RSP={:#x}",
+            thread_id,
+            thread.context.rip,
+            thread.context.rsp
+        );
+    });
+}
+
 /// Switch to a different thread
 fn switch_to_thread(
     thread_id: u64,
@@ -396,8 +443,22 @@ fn switch_to_thread(
     }).unwrap_or(false);
 
     if is_idle {
-        // Set up to return to idle loop
-        setup_idle_return(interrupt_frame);
+        // Check if idle thread has a saved context to restore
+        // If it was preempted while running actual code (not idle_loop), restore that context
+        let has_saved_context = scheduler::with_thread_mut(thread_id, |thread| {
+            let idle_loop_addr = idle_loop as *const () as u64;
+            // Has saved context if RIP is non-zero AND not pointing to idle_loop
+            thread.context.rip != 0 && thread.context.rip != idle_loop_addr
+        }).unwrap_or(false);
+
+        if has_saved_context {
+            // Restore idle thread's saved context (like a kthread)
+            log::trace!("Restoring idle thread's saved context");
+            setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
+        } else {
+            // No saved context or was in idle_loop - go to idle loop
+            setup_idle_return(interrupt_frame);
+        }
     } else if is_kernel_thread {
         // Set up to return to kernel thread
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
@@ -657,6 +718,17 @@ fn switch_to_thread(
 
 /// Set up interrupt frame to return to idle loop
 fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
+    // CRITICAL: Get the idle thread's actual kernel stack from the scheduler
+    // Do NOT use per_cpu::kernel_stack_top() because that gets updated during
+    // context switches and may point to a different thread's stack!
+    let idle_stack = scheduler::with_scheduler(|sched| {
+        let idle_id = sched.idle_thread();
+        sched.get_thread(idle_id).and_then(|t| t.kernel_stack_top.map(|v| v.as_u64()))
+    }).flatten().unwrap_or_else(|| {
+        log::error!("Failed to get idle thread's kernel stack!");
+        crate::per_cpu::kernel_stack_top() // Fallback, but this is wrong
+    });
+
     unsafe {
         interrupt_frame.as_mut().update(|frame| {
             frame.code_segment = crate::gdt::kernel_code_selector();
@@ -668,12 +740,6 @@ fn setup_idle_return(interrupt_frame: &mut InterruptStackFrame) {
             let flags_ptr = &mut frame.cpu_flags as *mut x86_64::registers::rflags::RFlags as *mut u64;
             *flags_ptr = 0x202;
 
-            // CRITICAL: Use the idle thread's actual kernel stack!
-            // Do NOT use current_rsp because this function may be called from
-            // IST stacks (page fault, NMI, etc.) which are small and not meant
-            // for general execution. Using per_cpu::kernel_stack_top() ensures
-            // we return to the proper kernel stack that can handle interrupts.
-            let idle_stack = crate::per_cpu::kernel_stack_top();
             frame.stack_pointer = x86_64::VirtAddr::new(idle_stack);
         });
 
@@ -697,59 +763,57 @@ fn setup_kernel_thread_return(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // Get thread info
+    // Get thread info - restore ALL saved registers, not just a few
     let thread_info = scheduler::with_thread_mut(thread_id, |thread| {
         (
             thread.name.clone(),
-            thread.context.rip,
-            thread.context.rsp,
-            thread.context.rflags,
-            thread.context.rdi,
+            thread.context.clone(),
         )
     });
 
-    if let Some((name, rip, rsp, rflags, rdi)) = thread_info {
+    if let Some((name, context)) = thread_info {
         unsafe {
             interrupt_frame.as_mut().update(|frame| {
-                frame.instruction_pointer = x86_64::VirtAddr::new(rip);
-                frame.stack_pointer = x86_64::VirtAddr::new(rsp);
+                frame.instruction_pointer = x86_64::VirtAddr::new(context.rip);
+                frame.stack_pointer = x86_64::VirtAddr::new(context.rsp);
                 frame.code_segment = crate::gdt::kernel_code_selector();
                 frame.stack_segment = crate::gdt::kernel_data_selector();
-                frame.cpu_flags = x86_64::registers::rflags::RFlags::from_bits_truncate(rflags);
+                frame.cpu_flags = x86_64::registers::rflags::RFlags::from_bits_truncate(context.rflags);
             });
 
-            // Set up argument in RDI
-            saved_regs.rdi = rdi;
-
-            // Clear other registers for safety
-            saved_regs.rax = 0;
-            saved_regs.rbx = 0;
-            saved_regs.rcx = 0;
-            saved_regs.rdx = 0;
-            saved_regs.rsi = 0;
-            saved_regs.rbp = 0;
-            saved_regs.r8 = 0;
-            saved_regs.r9 = 0;
-            saved_regs.r10 = 0;
-            saved_regs.r11 = 0;
-            saved_regs.r12 = 0;
-            saved_regs.r13 = 0;
-            saved_regs.r14 = 0;
-            saved_regs.r15 = 0;
+            // Restore ALL general purpose registers from saved context
+            saved_regs.rax = context.rax;
+            saved_regs.rbx = context.rbx;
+            saved_regs.rcx = context.rcx;
+            saved_regs.rdx = context.rdx;
+            saved_regs.rsi = context.rsi;
+            saved_regs.rdi = context.rdi;
+            saved_regs.rbp = context.rbp;
+            saved_regs.r8 = context.r8;
+            saved_regs.r9 = context.r9;
+            saved_regs.r10 = context.r10;
+            saved_regs.r11 = context.r11;
+            saved_regs.r12 = context.r12;
+            saved_regs.r13 = context.r13;
+            saved_regs.r14 = context.r14;
+            saved_regs.r15 = context.r15;
         }
 
         log::trace!(
-            "Set up kernel thread {} '{}' to run at {:#x}",
+            "KTHREAD_RESTORE: thread {} '{}' RIP={:#x} RSP={:#x}",
             thread_id,
             name,
-            rip
+            context.rip,
+            context.rsp
         );
 
-        // FIXED: Switch back to kernel page table when running kernel threads
-        // This ensures kernel threads run with kernel page tables
+        // Switch to master kernel PML4 for running kernel threads
+        // This ensures kernel threads have access to all kernel mappings
         unsafe {
             crate::memory::process_memory::switch_to_kernel_page_table();
         }
+    } else {
+        log::error!("KTHREAD_SWITCH: Failed to get thread info for thread {}", thread_id);
     }
 }
 

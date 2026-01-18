@@ -906,15 +906,22 @@ pub fn can_schedule(saved_cs: u64) -> bool {
         }
     }).unwrap_or(false);
 
+    // Check if need_resched is set - kernel threads use yield_current() which sets this flag
+    let need_resched_set = crate::task::scheduler::is_need_resched();
+
     // CRITICAL: When in exception cleanup context, allow scheduling regardless of PREEMPT_ACTIVE.
     // The exception handler has explicitly requested a reschedule after terminating a process.
     // Without this, PREEMPT_ACTIVE (bit 28) blocks scheduling even though we need to recover.
     //
     // Also allow scheduling when the current thread is blocked or terminated - blocking syscalls
     // use HLT to wait for interrupts, and terminated threads need immediate switch.
+    //
+    // NEW: Allow scheduling for kernel threads (including kthreads) when they call yield_current().
+    // yield_current() sets need_resched, and we need to honor that even for kernel threads.
     let result = in_exception_cleanup
                  || current_thread_blocked_or_terminated
-                 || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel));
+                 || (current_preempt == 0 && (returning_to_userspace || returning_to_idle_kernel))
+                 || (current_preempt == 0 && need_resched_set);
 
     // Note: Debug logging removed from hot path - use GDB if debugging is needed
 

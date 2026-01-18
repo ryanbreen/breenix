@@ -8,11 +8,20 @@ use core::{
 
 pub mod context;
 pub mod executor;
+pub mod kthread;
 pub mod process_context;
 pub mod process_task;
 pub mod scheduler;
 pub mod spawn;
 pub mod thread;
+
+// Re-export kthread public API for kernel-wide use
+// These are intentionally available but may not be called yet
+#[allow(unused_imports)]
+pub use kthread::{
+    kthread_exit, kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop,
+    kthread_unpark, KthreadError, KthreadHandle,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);

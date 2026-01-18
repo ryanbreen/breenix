@@ -402,10 +402,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         // After this point, we're running on the upper-half kernel stack
         unsafe {
             // Switch stacks and continue initialization
+            // Pass the stack top as an argument so the continuation knows the correct value
             stack_switch::switch_stack_and_call_with_arg(
                 idle_kernel_stack_top.as_u64(),
                 kernel_main_on_kernel_stack,
-                core::ptr::null_mut(),  // No longer need boot_info
+                idle_kernel_stack_top.as_u64() as *mut core::ffi::c_void,
             );
         }
     });
@@ -415,21 +416,21 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 
 /// Continuation of kernel_main after switching to the upper-half kernel stack
 /// This function runs on the properly allocated kernel stack, not the bootstrap stack
-extern "C" fn kernel_main_on_kernel_stack(_arg: *mut core::ffi::c_void) -> ! {
+/// arg: the idle kernel stack top address (passed from kernel_main)
+extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Verify stack alignment per SysV ABI (RSP % 16 == 8 at function entry after call)
     let current_rsp: u64;
     unsafe {
         core::arch::asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack));
     }
     debug_assert_eq!(current_rsp & 0xF, 8, "SysV stack misaligned at callee entry");
-    
+
     // Log that we're now on the kernel stack
-    log::info!("Successfully switched to kernel stack! RSP={:#x} (PML4[{}])", 
+    log::info!("Successfully switched to kernel stack! RSP={:#x} (PML4[{}])",
         current_rsp, (current_rsp >> 39) & 0x1FF);
-    
-    // Get the kernel stack top that was allocated (we need to reconstruct this)
-    // It should be close to our current RSP (within the same stack region)
-    let idle_kernel_stack_top = VirtAddr::new((current_rsp & !0xFFF) + 0x4000); // Approximate
+
+    // Use the actual kernel stack top passed from kernel_main
+    let idle_kernel_stack_top = VirtAddr::new(arg as u64);
     
     // Create init_task (PID 0) - represents the currently running boot thread
     // This is the Linux swapper/idle task pattern
@@ -477,6 +478,23 @@ extern "C" fn kernel_main_on_kernel_stack(_arg: *mut core::ffi::c_void) -> ! {
     process::init();
     log::info!("Process management initialized");
 
+    // Test kthread lifecycle BEFORE creating userspace processes
+    // (must be done early so scheduler doesn't preempt to userspace)
+    #[cfg(feature = "testing")]
+    test_kthread_lifecycle();
+    #[cfg(feature = "testing")]
+    test_kthread_join();
+    #[cfg(feature = "testing")]
+    test_kthread_exit_code();
+    #[cfg(feature = "testing")]
+    test_kthread_park_unpark();
+    #[cfg(feature = "testing")]
+    test_kthread_double_stop();
+    #[cfg(feature = "testing")]
+    test_kthread_should_stop_non_kthread();
+    #[cfg(feature = "testing")]
+    test_kthread_stop_after_exit();
+
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
     kernel_main_continue();
@@ -512,13 +530,13 @@ fn kernel_main_continue() -> ! {
             let elf = userspace_test::get_test_binary("hello_time");
             match process::creation::create_user_process(String::from("smoke_hello_time"), &elf) {
                 Ok(pid) => {
-                    log::info!(
+                    serial_println!(
                         "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
                         pid.as_u64()
                     );
                 }
                 Err(e) => {
-                    log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
+                    serial_println!("RING3_SMOKE: failed to create userspace process: {}", e);
                 }
             }
 
@@ -1094,13 +1112,13 @@ fn kernel_main_continue() -> ! {
             let elf = userspace_test::get_test_binary("hello_time");
             match process::create_user_process(String::from("smoke_hello_time"), &elf) {
                 Ok(pid) => {
-                    log::info!(
+                    serial_println!(
                         "RING3_SMOKE: created userspace PID {} (will run on timer interrupts)",
                         pid.as_u64()
                     );
                 }
                 Err(e) => {
-                    log::error!("RING3_SMOKE: failed to create userspace process: {}", e);
+                    serial_println!("RING3_SMOKE: failed to create userspace process: {}", e);
                 }
             }
         });
@@ -1301,6 +1319,379 @@ fn test_syscalls() {
         log::info!("System call infrastructure test completed successfully!");
         log::info!("DEBUG: About to return from test_syscalls");
     }
+}
+
+/// Test kernel thread lifecycle
+///
+/// This test MUST be called BEFORE any userspace processes are created,
+/// otherwise the scheduler will immediately preempt to userspace and
+/// the test won't work correctly.
+///
+/// The test:
+/// 1. Creates a kthread (added to ready queue)
+/// 2. Enables interrupts so the kthread can be scheduled
+/// 3. Waits for kthread to run and complete
+/// 4. Disables interrupts for cleanup
+#[cfg(feature = "testing")]
+fn test_kthread_lifecycle() {
+    use crate::task::kthread::{kthread_run, kthread_should_stop, kthread_stop};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    // Two flags: one for started, one for done
+    static KTHREAD_STARTED: AtomicBool = AtomicBool::new(false);
+    static KTHREAD_DONE: AtomicBool = AtomicBool::new(false);
+
+    // Reset flags in case test runs multiple times
+    KTHREAD_STARTED.store(false, Ordering::Release);
+    KTHREAD_DONE.store(false, Ordering::Release);
+
+    log::info!("=== KTHREAD TEST: Starting kernel thread lifecycle test ===");
+
+    let handle = kthread_run(
+        || {
+            KTHREAD_STARTED.store(true, Ordering::Release);
+            log::info!("KTHREAD_RUN: kthread running");
+
+            // Kernel threads start with interrupts disabled - enable them to allow preemption
+            x86_64::instructions::interrupts::enable();
+
+            while !kthread_should_stop() {
+                // HLT to give main thread (idle task) a chance to run and send stop signal.
+                // yield_current() alone doesn't work because idle is never in ready_queue,
+                // but HLT allows the timer interrupt to schedule idle when queue is empty.
+                crate::task::scheduler::yield_current();
+                x86_64::instructions::hlt();
+            }
+
+            // Verify kthread_should_stop() is actually true
+            let stopped = kthread_should_stop();
+            assert!(stopped, "kthread_should_stop() must be true after loop exit");
+            log::info!("KTHREAD_VERIFY: kthread_should_stop() = {}", stopped);
+            log::info!("KTHREAD_STOP: kthread received stop signal");
+            KTHREAD_DONE.store(true, Ordering::Release);
+            log::info!("KTHREAD_EXIT: kthread exited cleanly");
+        },
+        "test_kthread",
+    )
+    .expect("Failed to create kthread");
+
+    log::info!("KTHREAD_CREATE: kthread created");
+
+    // Enable interrupts so the scheduler can run the kthread
+    x86_64::instructions::interrupts::enable();
+
+    // Step 1: Wait for kthread to START running
+    for _ in 0..100 {
+        if KTHREAD_STARTED.load(Ordering::Acquire) {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    assert!(KTHREAD_STARTED.load(Ordering::Acquire), "kthread never started");
+
+    // Step 2: Send stop signal
+    match kthread_stop(&handle) {
+        Ok(()) => log::info!("KTHREAD_STOP_SENT: stop signal sent successfully"),
+        Err(err) => panic!("kthread_stop failed: {:?}", err),
+    }
+
+    // Step 3: Wait for kthread to finish and verify it received the stop
+    for _ in 0..100 {
+        if KTHREAD_DONE.load(Ordering::Acquire) {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    assert!(KTHREAD_DONE.load(Ordering::Acquire), "kthread never finished after stop signal");
+
+    // Disable interrupts before returning to kernel initialization
+    x86_64::instructions::interrupts::disable();
+    log::info!("=== KTHREAD TEST: Completed ===");
+}
+
+/// Test kthread_join() - waiting for a kthread to exit
+/// This test verifies that join() actually BLOCKS until the kthread exits,
+/// not just that it returns the correct exit code.
+#[cfg(feature = "testing")]
+fn test_kthread_join() {
+    use crate::task::kthread::{kthread_join, kthread_run};
+
+    log::info!("=== KTHREAD JOIN TEST: Starting ===");
+
+    // Create a kthread that does minimal work before exiting
+    let handle = kthread_run(
+        || {
+            // Kernel threads start with interrupts disabled - enable them to allow preemption
+            x86_64::instructions::interrupts::enable();
+            // Minimal work - just one yield to prove join actually blocked
+            crate::task::scheduler::yield_current();
+            log::info!("KTHREAD_JOIN_TEST: kthread about to exit");
+            // Thread function returns, which sets exit_code=0 in kthread_entry
+        },
+        "join_test_kthread",
+    )
+    .expect("Failed to create kthread for join test");
+
+    // Enable interrupts so the kthread can be scheduled
+    x86_64::instructions::interrupts::enable();
+
+    // Call join IMMEDIATELY - this tests the blocking behavior.
+    // join() uses HLT internally, which allows timer interrupts to schedule
+    // the kthread. We do NOT pre-wait for the kthread to exit.
+    let exit_code = kthread_join(&handle).expect("kthread_join failed");
+    assert_eq!(exit_code, 0, "kthread exit_code should be 0");
+
+    // Disable interrupts before returning
+    x86_64::instructions::interrupts::disable();
+
+    log::info!("KTHREAD_JOIN_TEST: join returned exit_code={}", exit_code);
+    log::info!("=== KTHREAD JOIN TEST: Completed ===");
+}
+
+/// Test kthread_exit() - setting a custom exit code
+/// This test verifies that kthread_exit(code) properly sets the exit code
+/// and that join() returns it correctly, with join() actually blocking.
+#[cfg(feature = "testing")]
+fn test_kthread_exit_code() {
+    use crate::task::kthread::{kthread_exit, kthread_join, kthread_run};
+
+    log::info!("=== KTHREAD EXIT CODE TEST: Starting ===");
+
+    let handle = kthread_run(
+        || {
+            x86_64::instructions::interrupts::enable();
+            // Minimal work before exiting with custom code
+            crate::task::scheduler::yield_current();
+            kthread_exit(42);
+        },
+        "exit_code_kthread",
+    )
+    .expect("Failed to create kthread for exit code test");
+
+    x86_64::instructions::interrupts::enable();
+
+    // Call join IMMEDIATELY - tests blocking behavior
+    let exit_code = kthread_join(&handle).expect("kthread_join failed");
+    assert_eq!(exit_code, 42, "kthread exit_code should be 42");
+
+    x86_64::instructions::interrupts::disable();
+
+    log::info!("KTHREAD_EXIT_CODE_TEST: exit_code=42");
+    log::info!("=== KTHREAD EXIT CODE TEST: Completed ===");
+}
+
+/// Test kthread park/unpark functionality
+/// This test verifies that:
+/// 1. kthread_park() blocks the kthread
+/// 2. kthread_unpark() wakes it up
+/// 3. The kthread continues execution after unpark
+#[cfg(feature = "testing")]
+fn test_kthread_park_unpark() {
+    use crate::task::kthread::{
+        kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
+    };
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static KTHREAD_STARTED: AtomicBool = AtomicBool::new(false);
+    static KTHREAD_ABOUT_TO_PARK: AtomicBool = AtomicBool::new(false);
+    static KTHREAD_UNPARKED: AtomicBool = AtomicBool::new(false);
+    static KTHREAD_DONE: AtomicBool = AtomicBool::new(false);
+
+    // Reset flags
+    KTHREAD_STARTED.store(false, Ordering::Release);
+    KTHREAD_ABOUT_TO_PARK.store(false, Ordering::Release);
+    KTHREAD_UNPARKED.store(false, Ordering::Release);
+    KTHREAD_DONE.store(false, Ordering::Release);
+
+    log::info!("=== KTHREAD PARK TEST: Starting kthread park/unpark test ===");
+
+    let handle = kthread_run(
+        || {
+            // Kernel threads start with interrupts disabled - enable them to allow preemption
+            x86_64::instructions::interrupts::enable();
+
+            KTHREAD_STARTED.store(true, Ordering::Release);
+            log::info!("KTHREAD_PARK_TEST: started");
+
+            // Signal that we're about to park - main thread waits for this
+            // before checking that we haven't unparked yet
+            KTHREAD_ABOUT_TO_PARK.store(true, Ordering::Release);
+
+            // Park ourselves - will block until unparked
+            kthread_park();
+
+            // If we get here, we were unparked
+            KTHREAD_UNPARKED.store(true, Ordering::Release);
+            log::info!("KTHREAD_PARK_TEST: unparked");
+
+            while !kthread_should_stop() {
+                crate::task::scheduler::yield_current();
+                x86_64::instructions::hlt();
+            }
+
+            KTHREAD_DONE.store(true, Ordering::Release);
+        },
+        "test_kthread_park",
+    )
+    .expect("Failed to create kthread");
+
+    x86_64::instructions::interrupts::enable();
+
+    // Wait for kthread to reach the point right before kthread_park()
+    // This is the key fix - we wait for ABOUT_TO_PARK, not just STARTED
+    for _ in 0..100 {
+        if KTHREAD_ABOUT_TO_PARK.load(Ordering::Acquire) {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    assert!(KTHREAD_ABOUT_TO_PARK.load(Ordering::Acquire), "kthread never reached park point");
+
+    // Give one more timer tick for kthread to enter kthread_park()
+    x86_64::instructions::hlt();
+
+    // Verify kthread hasn't unparked yet (it should be blocked in park)
+    assert!(!KTHREAD_UNPARKED.load(Ordering::Acquire), "kthread unparked before kthread_unpark was called");
+
+    // Now unpark it
+    kthread_unpark(&handle);
+
+    // Wait for kthread to confirm it was unparked
+    for _ in 0..100 {
+        if KTHREAD_UNPARKED.load(Ordering::Acquire) {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    assert!(KTHREAD_UNPARKED.load(Ordering::Acquire), "kthread never unparked after kthread_unpark");
+
+    // Send stop signal and verify return value
+    match kthread_stop(&handle) {
+        Ok(()) => log::info!("KTHREAD_PARK_TEST: stop signal sent"),
+        Err(err) => panic!("kthread_stop failed: {:?}", err),
+    }
+
+    // Wait for kthread to finish
+    for _ in 0..100 {
+        if KTHREAD_DONE.load(Ordering::Acquire) {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    assert!(KTHREAD_DONE.load(Ordering::Acquire), "kthread never finished after stop signal");
+
+    x86_64::instructions::interrupts::disable();
+    log::info!("=== KTHREAD PARK TEST: Completed ===");
+}
+
+/// Test kthread_stop() called twice returns AlreadyStopped
+#[cfg(feature = "testing")]
+fn test_kthread_double_stop() {
+    use crate::task::kthread::{kthread_run, kthread_should_stop, kthread_stop, KthreadError};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static KTHREAD_STARTED: AtomicBool = AtomicBool::new(false);
+    static KTHREAD_DONE: AtomicBool = AtomicBool::new(false);
+
+    KTHREAD_STARTED.store(false, Ordering::Release);
+    KTHREAD_DONE.store(false, Ordering::Release);
+
+    let handle = kthread_run(
+        || {
+            x86_64::instructions::interrupts::enable();
+            KTHREAD_STARTED.store(true, Ordering::Release);
+
+            while !kthread_should_stop() {
+                crate::task::scheduler::yield_current();
+                x86_64::instructions::hlt();
+            }
+
+            KTHREAD_DONE.store(true, Ordering::Release);
+        },
+        "test_kthread_double_stop",
+    )
+    .expect("Failed to create kthread for double stop test");
+
+    x86_64::instructions::interrupts::enable();
+
+    for _ in 0..100 {
+        if KTHREAD_STARTED.load(Ordering::Acquire) {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    assert!(KTHREAD_STARTED.load(Ordering::Acquire), "kthread never started");
+
+    match kthread_stop(&handle) {
+        Ok(()) => {}
+        Err(err) => panic!("kthread_stop failed: {:?}", err),
+    }
+
+    for _ in 0..200 {
+        if KTHREAD_DONE.load(Ordering::Acquire) {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    assert!(KTHREAD_DONE.load(Ordering::Acquire), "kthread never finished after stop signal");
+
+    match kthread_stop(&handle) {
+        Err(KthreadError::AlreadyStopped) => {
+            log::info!("KTHREAD_DOUBLE_STOP_TEST: AlreadyStopped returned correctly");
+        }
+        Ok(()) => panic!("kthread_stop unexpectedly succeeded on second call"),
+        Err(err) => panic!("kthread_stop returned unexpected error: {:?}", err),
+    }
+
+    x86_64::instructions::interrupts::disable();
+}
+
+/// Test kthread_should_stop() from non-kthread context
+#[cfg(feature = "testing")]
+fn test_kthread_should_stop_non_kthread() {
+    use crate::task::kthread::kthread_should_stop;
+
+    let should_stop = kthread_should_stop();
+    assert!(!should_stop, "kthread_should_stop should return false for non-kthread");
+    log::info!("KTHREAD_SHOULD_STOP_TEST: returns false for non-kthread");
+}
+
+/// Test kthread_stop() on a thread that has already exited naturally
+/// This is distinct from double-stop (stop -> stop) - this tests (natural exit -> stop)
+#[cfg(feature = "testing")]
+fn test_kthread_stop_after_exit() {
+    use crate::task::kthread::{kthread_join, kthread_run, kthread_stop, KthreadError};
+
+    log::info!("=== KTHREAD STOP AFTER EXIT TEST: Starting ===");
+
+    // Create a kthread that exits immediately without being stopped
+    let handle = kthread_run(
+        || {
+            x86_64::instructions::interrupts::enable();
+            // Exit immediately - no stop signal needed
+            log::info!("KTHREAD_STOP_AFTER_EXIT_TEST: kthread exiting immediately");
+        },
+        "stop_after_exit_kthread",
+    )
+    .expect("Failed to create kthread");
+
+    x86_64::instructions::interrupts::enable();
+
+    // Wait for the kthread to exit using join (tests blocking join)
+    let exit_code = kthread_join(&handle).expect("kthread_join failed");
+    assert_eq!(exit_code, 0, "exit code should be 0");
+
+    // Now try to stop the already-exited thread - should return AlreadyStopped
+    match kthread_stop(&handle) {
+        Err(KthreadError::AlreadyStopped) => {
+            log::info!("KTHREAD_STOP_AFTER_EXIT_TEST: AlreadyStopped returned correctly");
+        }
+        Ok(()) => panic!("kthread_stop unexpectedly succeeded on exited thread"),
+        Err(err) => panic!("kthread_stop returned unexpected error: {:?}", err),
+    }
+
+    x86_64::instructions::interrupts::disable();
+    log::info!("=== KTHREAD STOP AFTER EXIT TEST: Completed ===");
 }
 
 /// Test basic threading functionality
