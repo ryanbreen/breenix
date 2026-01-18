@@ -2793,3 +2793,39 @@ pub fn test_ls_coreutil() {
         }
     }
 }
+
+/// Test FbInfo syscall (graphics framebuffer information)
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (This function): Creates and schedules the fbinfo_test process
+/// - Stage 2 (Boot stage): Validates actual execution via FBINFO_TEST: all tests PASSED marker
+///
+/// This test validates:
+/// - The FbInfo syscall (410) returns valid framebuffer information
+/// - Width and height are positive
+/// - Bytes per pixel is 3 or 4 (RGB or RGBA)
+/// - Pixel format is valid (RGB, BGR, or grayscale)
+pub fn test_fbinfo() {
+    log::info!("Testing FbInfo syscall (framebuffer information)");
+
+    #[cfg(feature = "testing")]
+    let fbinfo_test_elf_buf = crate::userspace_test::get_test_binary("fbinfo_test");
+    #[cfg(feature = "testing")]
+    let fbinfo_test_elf: &[u8] = &fbinfo_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fbinfo_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fbinfo_test"),
+        fbinfo_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fbinfo_test process with PID {:?}", pid);
+            log::info!("    -> Userspace will emit FBINFO_TEST: all tests PASSED marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create fbinfo_test process: {}", e);
+            log::error!("fbinfo_test cannot run without valid userspace process");
+        }
+    }
+}

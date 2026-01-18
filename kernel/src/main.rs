@@ -943,6 +943,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: Shell pipeline execution ===");
         test_exec::test_shell_pipe();
 
+        // Test FbInfo syscall (framebuffer information)
+        log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
+        test_exec::test_fbinfo();
+
         // Run fault tests to validate privilege isolation
         log::info!("=== FAULT TEST: Running privilege violation tests ===");
         userspace_fault_tests::run_fault_tests();

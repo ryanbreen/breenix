@@ -202,7 +202,39 @@ fn main() {
         "-cpu", "qemu64",
         "-smp", "1",
         "-m", "512",
-        "-nographic",
+    ]);
+
+    // Graphics configuration: always use virtio-vga for consistent resolution
+    // Resolution can be overridden via BREENIX_FB_WIDTH/HEIGHT
+    // Default: 1920x1080 (Full HD) - the highest resolution reliably supported by QEMU's
+    // virtio-vga UEFI GOP. Note: 1920x1200 is NOT in OVMF's mode list, causing fallback
+    // to 1280x800.
+    let fb_width = env::var("BREENIX_FB_WIDTH")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(1920);
+    let fb_height = env::var("BREENIX_FB_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(1080);
+
+    // virtio-vga provides GOP with configurable resolution
+    qemu.args([
+        "-device",
+        &format!("virtio-vga,xres={},yres={}", fb_width, fb_height),
+    ]);
+
+    let is_interactive = env::var("BREENIX_INTERACTIVE").ok().as_deref() == Some("1");
+    if is_interactive {
+        // Interactive mode: show graphical window
+        eprintln!("[qemu-uefi] Graphics: virtio-vga {}x{} (interactive mode)", fb_width, fb_height);
+    } else {
+        // Headless mode: no display window, serial to stdio
+        qemu.args(["-display", "none"]);
+        eprintln!("[qemu-uefi] Graphics: virtio-vga {}x{} (headless)", fb_width, fb_height);
+    }
+
+    qemu.args([
         "-boot", "strict=on",
         "-no-reboot",
         "-no-shutdown",

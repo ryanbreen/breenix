@@ -3,11 +3,18 @@
 //! Provides a visual demo of the graphics stack capabilities
 //! that runs during kernel boot.
 
+use alloc::string::String;
 use super::font::Font;
 use super::primitives::{
     draw_circle, draw_line, draw_rect, draw_text, fill_circle, fill_rect, Canvas, Color, Rect,
     TextStyle,
 };
+
+/// Format resolution as "WIDTHxHEIGHT" string
+fn format_resolution(width: usize, height: usize) -> String {
+    use alloc::format;
+    format!("{}x{}", width, height)
+}
 
 /// Run a graphics demonstration on the given canvas.
 ///
@@ -46,6 +53,13 @@ pub fn run_demo(canvas: &mut impl Canvas) {
         .with_font(Font::default_font());
 
     draw_text(canvas, 20, 20, "Breenix Graphics Stack Demo", &title_style);
+
+    // Resolution info (right-aligned in header)
+    let res_style = TextStyle::new().with_color(Color::rgb(180, 220, 255));
+    let res_text = format_resolution(width as usize, height as usize);
+    // Position on the right side, accounting for approx text width
+    let res_x = width - 200;
+    draw_text(canvas, res_x, 20, &res_text, &res_style);
 
     // Draw colorful rectangles
     let colors = [
@@ -156,7 +170,6 @@ pub fn run_demo(canvas: &mut impl Canvas) {
     let red_style = TextStyle::new().with_color(Color::RED);
     let green_style = TextStyle::new().with_color(Color::GREEN);
     let blue_style = TextStyle::new().with_color(Color::BLUE);
-    let yellow_style = TextStyle::new().with_color(Color::rgb(255, 255, 0));
 
     draw_text(canvas, 50, text_y + 30, "Red Text", &red_style);
     draw_text(canvas, 150, text_y + 30, "Green Text", &green_style);
@@ -185,7 +198,7 @@ pub fn run_demo(canvas: &mut impl Canvas) {
         canvas,
         50,
         height - 40,
-        "Phase 4: Text Rendering Complete!",
+        "Phase 5: Resolution Control Active",
         &footer_style,
     );
 

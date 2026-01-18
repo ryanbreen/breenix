@@ -8,6 +8,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 pub(crate) mod dispatcher;
 pub mod errno;
 pub mod fs;
+pub mod graphics;
 pub mod handler;
 pub mod handlers;
 pub mod ioctl;
@@ -87,6 +88,8 @@ pub enum SyscallNumber {
     Grantpt = 401,      // Breenix: grant access to PTY slave
     Unlockpt = 402,     // Breenix: unlock PTY slave
     Ptsname = 403,      // Breenix: get PTY slave path
+    // Graphics syscalls (Breenix-specific)
+    FbInfo = 410,       // Breenix: get framebuffer info
     CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
     SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
 }
@@ -157,6 +160,8 @@ impl SyscallNumber {
             401 => Some(Self::Grantpt),
             402 => Some(Self::Unlockpt),
             403 => Some(Self::Ptsname),
+            // Graphics syscalls
+            410 => Some(Self::FbInfo),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,
