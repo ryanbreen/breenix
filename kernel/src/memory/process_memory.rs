@@ -1578,11 +1578,15 @@ pub fn init_kernel_page_table() {
 /// # Safety
 /// Caller must ensure this is called from a safe context
 pub unsafe fn switch_to_kernel_page_table() {
-    if let Some(kernel_frame) = KERNEL_PAGE_TABLE_FRAME {
+    // Use the master kernel PML4 which has all kernel mappings including stacks.
+    // The bootloader's KERNEL_PAGE_TABLE_FRAME (0x101000) doesn't have the
+    // kernel stack region at 0xffffc90000000000 mapped, which would cause
+    // a page fault when switching.
+    if let Some(kernel_frame) = crate::memory::kernel_page_table::master_kernel_pml4() {
         let (current_frame, flags) = Cr3::read();
         if current_frame != kernel_frame {
             log::trace!(
-                "Switching back to kernel page table: {:?} -> {:?}",
+                "Switching to master kernel PML4: {:?} -> {:?}",
                 current_frame,
                 kernel_frame
             );
@@ -1591,7 +1595,7 @@ pub unsafe fn switch_to_kernel_page_table() {
             super::tlb::flush_after_page_table_switch();
         }
     } else {
-        log::error!("Kernel page table frame not initialized!");
+        log::error!("Master kernel PML4 not initialized!");
     }
 }
 

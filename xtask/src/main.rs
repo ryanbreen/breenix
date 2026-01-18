@@ -1658,6 +1658,50 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Stack-allocated argv test failed - compiler may have optimized away argument buffers",
             check_hint: "Check core::hint::black_box() usage in try_execute_external() and test code",
         },
+        // === Kernel Threads (kthreads) ===
+        // Tests the kernel thread infrastructure for background work
+        BootStage {
+            name: "Kthread created",
+            marker: "KTHREAD_CREATE: kthread created",
+            failure_meaning: "Kernel thread creation failed - Thread::new_kernel or scheduler::spawn broken",
+            check_hint: "Check kernel/src/task/kthread.rs:kthread_run() and scheduler integration",
+        },
+        BootStage {
+            name: "Kthread running",
+            marker: "KTHREAD_RUN: kthread running",
+            failure_meaning: "Kernel thread not scheduled - timer interrupts not working or kthread entry not called",
+            check_hint: "Check timer interrupt handler, scheduler ready queue, and kthread_entry() function",
+        },
+        BootStage {
+            name: "Kthread stop signal sent",
+            marker: "KTHREAD_STOP: kthread received stop signal",
+            failure_meaning: "kthread_stop() failed - should_stop flag not set or kthread not woken",
+            check_hint: "Check kthread_stop() and kthread_unpark() in kernel/src/task/kthread.rs",
+        },
+        BootStage {
+            name: "Kthread exited cleanly",
+            marker: "KTHREAD_EXIT: kthread exited cleanly",
+            failure_meaning: "Kernel thread did not exit - kthread_should_stop() not returning true or thread not terminating",
+            check_hint: "Check kthread_should_stop() and thread termination in kthread_entry()",
+        },
+        BootStage {
+            name: "Kthread join completed",
+            marker: "KTHREAD_JOIN_TEST: join returned exit_code=",
+            failure_meaning: "kthread_join() failed - thread did not exit or exit_code not retrieved",
+            check_hint: "Check kthread_join() spin loop and exit_code atomic access in kernel/src/task/kthread.rs",
+        },
+        BootStage {
+            name: "Kthread park test started",
+            marker: "KTHREAD_PARK_TEST: started",
+            failure_meaning: "Kthread park test did not start - kthread creation or scheduling failed",
+            check_hint: "Check test_kthread_park_unpark() in kernel/src/main.rs",
+        },
+        BootStage {
+            name: "Kthread unparked successfully",
+            marker: "KTHREAD_PARK_TEST: unparked",
+            failure_meaning: "Kthread not unparked - kthread_park() blocked forever or kthread_unpark() not working",
+            check_hint: "Check kthread_park() and kthread_unpark() in kernel/src/task/kthread.rs",
+        },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]
