@@ -174,14 +174,32 @@ impl Scheduler {
                 next_thread_id
             );
         } else if Some(next_thread_id) == self.current_thread {
-            // No other threads ready, stay with current
-            if debug_log {
-                log_serial_println!(
-                    "Staying with current thread {} (no other threads ready)",
-                    next_thread_id
-                );
+            // Current thread is the only runnable thread.
+            // If it's NOT the idle thread, switch to idle to give it a chance.
+            // This is important for kthreads that yield while waiting for the idle
+            // thread (which runs tests/main logic) to set a flag.
+            if next_thread_id != self.idle_thread {
+                self.ready_queue.push_back(next_thread_id);
+                next_thread_id = self.idle_thread;
+                if debug_log {
+                    log_serial_println!(
+                        "Thread {} is alone (non-idle), switching to idle {}",
+                        self.current_thread.unwrap_or(0),
+                        self.idle_thread
+                    );
+                }
+            } else {
+                // Idle is the only runnable thread - keep running it.
+                // No context switch needed.
+                self.ready_queue.push_back(next_thread_id);
+                if debug_log {
+                    log_serial_println!(
+                        "Idle thread {} is alone, continuing (no switch needed)",
+                        next_thread_id
+                    );
+                }
+                return None;
             }
-            return None;
         }
 
         // If current is idle and we have a real next thread, allow switch even if idle
@@ -371,6 +389,11 @@ impl Scheduler {
                 && t.privilege == super::thread::ThreadPrivilege::User
                 && t.state != super::thread::ThreadState::Terminated
         })
+    }
+
+    /// Remove a thread from the ready queue (used when blocking)
+    pub fn remove_from_ready_queue(&mut self, thread_id: u64) {
+        self.ready_queue.retain(|&id| id != thread_id);
     }
 
     /// Get a thread by ID (public for timer.rs)
@@ -580,6 +603,12 @@ pub fn check_and_clear_need_resched() -> bool {
     if need { crate::per_cpu::set_need_resched(false); }
     let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
     need
+}
+
+/// Check if the need_resched flag is set (without clearing it)
+/// Used by can_schedule() to determine if kernel threads should be rescheduled
+pub fn is_need_resched() -> bool {
+    crate::per_cpu::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
 }
 
 /// Switch to idle thread immediately (for use by exception handlers)
