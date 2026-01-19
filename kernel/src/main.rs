@@ -1917,6 +1917,9 @@ fn test_workqueue() {
     );
     let shutdown_queued = wq.queue(Arc::clone(&shutdown_work));
     assert!(shutdown_queued, "shutdown work should be queued");
+    // Wait for work to complete before destroying - critical for CI where worker
+    // thread may not be scheduled immediately after ensure_worker() spawns it
+    shutdown_work.wait();
     wq.destroy();
     let shutdown_done = SHUTDOWN_WORK_DONE.load(Ordering::SeqCst);
     assert!(
