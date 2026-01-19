@@ -614,8 +614,10 @@ pub fn build_master_kernel_pml4() {
 }
 
 /// Get the master kernel PML4 frame for process creation (Phase 2)
+///
+/// IMPORTANT: This function is called from the context switch path (via
+/// switch_to_kernel_page_table), so it must not do any logging. Logging
+/// from interrupt context can cause deadlocks if the logger lock is held.
 pub fn master_kernel_pml4() -> Option<PhysFrame> {
-    let result = MASTER_KERNEL_PML4.lock().clone();
-    log::debug!("master_kernel_pml4() returning {:?}", result);
-    result
+    MASTER_KERNEL_PML4.lock().clone()
 }

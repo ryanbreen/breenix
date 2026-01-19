@@ -91,9 +91,12 @@ pub fn kthread_stop(handle: &KthreadHandle) -> Result<(), KthreadError> {
         return Err(KthreadError::AlreadyStopped);
     }
 
-    if handle.inner.parked.load(Ordering::Acquire) {
-        kthread_unpark(handle);
-    }
+    // Always call unpark to wake the thread. This handles two cases:
+    // 1. If parked via kthread_park(), this wakes it immediately
+    // 2. If not parked, this is harmless but ensures the thread gets scheduled
+    // The kthread should use kthread_park() in its wait loop, not bare HLT,
+    // to ensure kthread_stop() can wake it promptly.
+    kthread_unpark(handle);
 
     Ok(())
 }
@@ -106,7 +109,7 @@ pub fn kthread_should_stop() -> bool {
 }
 
 /// Park current thread until unparked (sleep)
-#[allow(dead_code)] // Public API for kthread sleep/wake pattern
+/// Use this in kthread wait loops instead of bare HLT to ensure kthread_stop() can wake promptly.
 pub fn kthread_park() {
     let handle = match current_kthread() {
         Some(h) => h,
@@ -115,6 +118,14 @@ pub fn kthread_park() {
 
     // Set parked flag first
     handle.inner.parked.store(true, Ordering::Release);
+
+    // CRITICAL: Check should_stop AFTER setting parked to handle race with kthread_stop().
+    // If kthread_stop() was called before we set parked, we need to return immediately.
+    // If kthread_stop() is called after we set parked, it will call kthread_unpark().
+    if handle.inner.should_stop.load(Ordering::Acquire) {
+        handle.inner.parked.store(false, Ordering::Release);
+        return;
+    }
 
     // Wait in a loop until we're actually unparked.
     // For kthreads, we use the simple Blocked state (not BlockedOnSignal which
