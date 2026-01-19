@@ -18,6 +18,7 @@ test = false
 
 [features]
 testing = []
+kthread_test_only = ["testing"]  # Run only kthread tests and exit
 test_divide_by_zero = []
 test_invalid_opcode = []
 test_page_fault = []

@@ -85,64 +85,39 @@ impl Scheduler {
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
-        // Always log the first few scheduling decisions
+        // Count schedule calls - only log very sparingly to avoid timing issues
+        // Serial output is ~960 bytes/sec, so each log line can take 50-100ms!
         static SCHEDULE_COUNT: core::sync::atomic::AtomicU64 =
             core::sync::atomic::AtomicU64::new(0);
         let count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-        // Log all scheduling decisions after #30 to debug pause_test
-        let debug_log = count < 10 || count >= 30;
-        if debug_log {
-            log_serial_println!(
-                "schedule() #{}: current={:?}, ready_queue={:?}",
-                count,
-                self.current_thread,
-                self.ready_queue
-            );
-        }
+        // Only log first 5 calls (boot debugging) and then every 500th call
+        // CRITICAL: Excessive logging here causes timing issues with kthreads
+        let debug_log = count < 5 || (count % 500 == 0);
 
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
-                // First check the state and determine what to do
-                let (is_terminated, is_blocked, prev_state) =
+                // Check the state and determine what to do
+                let (is_terminated, is_blocked) =
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit;
-                        let prev = current.state;
                         // Only set to Ready if not terminated AND not blocked
                         if !was_terminated && !was_blocked {
                             current.set_ready();
                         }
-                        (was_terminated, was_blocked, prev)
+                        (was_terminated, was_blocked)
                     } else {
-                        (true, false, ThreadState::Terminated)
+                        (true, false)
                     };
 
-                // Then modify the ready queue
+                // Put non-terminated, non-blocked threads back in ready queue
                 if !is_terminated && !is_blocked {
                     self.ready_queue.push_back(current_id);
-                    if debug_log {
-                        log_serial_println!(
-                            "Put thread {} back in ready queue, state was {:?}",
-                            current_id,
-                            prev_state
-                        );
-                    }
-                } else if is_terminated {
-                    log_serial_println!(
-                        "Thread {} is terminated, not putting back in ready queue",
-                        current_id
-                    );
-                } else if is_blocked {
-                    log_serial_println!(
-                        "Thread {} is blocked ({:?}), not putting back in ready queue",
-                        current_id,
-                        prev_state
-                    );
                 }
             }
         }
@@ -168,11 +143,6 @@ impl Scheduler {
             // Put current thread back and get the next one
             self.ready_queue.push_back(next_thread_id);
             next_thread_id = self.ready_queue.pop_front()?;
-            log_serial_println!(
-                "Forced switch from {} to {} (other threads waiting)",
-                self.current_thread.unwrap_or(0),
-                next_thread_id
-            );
         } else if Some(next_thread_id) == self.current_thread {
             // Current thread is the only runnable thread.
             // If it's NOT the idle thread, switch to idle to give it a chance.
@@ -181,6 +151,10 @@ impl Scheduler {
             if next_thread_id != self.idle_thread {
                 self.ready_queue.push_back(next_thread_id);
                 next_thread_id = self.idle_thread;
+                // CRITICAL: Set NEED_RESCHED so the next timer interrupt will
+                // switch back to the deferred thread. Without this, idle would
+                // spin in HLT for an entire quantum (50ms) before rescheduling.
+                crate::per_cpu::set_need_resched(true);
                 if debug_log {
                     log_serial_println!(
                         "Thread {} is alone (non-idle), switching to idle {}",
@@ -504,10 +478,8 @@ pub fn preempt_schedule_irq() {
         crate::per_cpu::set_need_resched(false);
         
         // Try non-blocking schedule since we're in IRQ exit path
-        if let Some((old_tid, new_tid)) = try_schedule() {
-            log_serial_println!("preempt_schedule_irq: Scheduled {} -> {}", old_tid, new_tid);
-            // Context switch will happen on return from interrupt
-        }
+        // Note: Logging removed here to avoid timing issues in hot path
+        let _ = try_schedule();
         
         // Loop will check need_resched again in case it was set during scheduling
     }

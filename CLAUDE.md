@@ -59,6 +59,42 @@ All runs are logged to `logs/breenix_YYYYMMDD_HHMMSS.log`
 ls -t logs/*.log | head -1 | xargs less
 ```
 
+### Docker-Based Testing (Recommended for Parallel Execution)
+
+For isolated, parallel test execution, use Docker containers. Each container runs its own QEMU instance with no host interference.
+
+**One-time setup - build the Docker image:**
+```bash
+cd docker/qemu
+docker build -t breenix-qemu .
+```
+
+**Parallel kthread-only tests (fast - focused testing):**
+```bash
+# Build the kthread_test_only kernel (runs only kthread tests, then exits)
+cargo build --release --features kthread_test_only --bin qemu-uefi
+
+# Run 10 parallel tests
+./docker/qemu/run-kthread-parallel.sh 10
+```
+
+**Parallel full boot tests:**
+```bash
+# Build full test kernel
+cargo build --release --features testing,external_test_bins --bin qemu-uefi
+
+# Run 5 parallel full boot tests
+./docker/qemu/run-boot-parallel.sh 5
+```
+
+**Why Docker?**
+- Each container is fully isolated - no lock contention on disk images
+- Can run N tests in parallel without QEMU process conflicts
+- Containers clean up automatically with `--rm`
+- Uses TCG (software emulation) - slower than native but reliable
+
+**Note:** Docker tests use software CPU emulation (TCG) rather than hardware virtualization, so they run slower than native QEMU with Hypervisor.framework. Use Docker for parallel stress testing; use native QEMU for interactive debugging.
+
 ## Development Workflow
 
 ### Agent-Based Development (MANDATORY)
@@ -540,15 +576,17 @@ QEMU processes frequently get orphaned during testing, debugging, or when agents
 ### Cleanup Command
 
 ```bash
-pkill -9 qemu-system-x86 2>/dev/null; killall -9 qemu-system-x86_64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
+pkill -9 qemu-system-x86_64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
 ```
+
+**CRITICAL: QEMU will ALWAYS hang beyond the bounds of a run.** You MUST kill the previous QEMU before running any test, or it will fail due to disk image lock contention.
 
 ### When to Clean Up
 
+- **BEFORE every test run** - This is mandatory, not optional
 - After any `xtask boot-stages` or `xtask interactive` run
 - After GDB debugging sessions
 - When the user reports "cannot acquire lock" errors
-- Before starting any new QEMU-based test
 - When handing results back to the user after kernel work
 
 This is the agent's responsibility - do not wait for the user to ask.

@@ -6,6 +6,7 @@ edition = "2021"
 
 [features]
 testing = ["kernel/testing"]
+kthread_test_only = ["kernel/kthread_test_only"]  # Run only kthread tests and exit
 test_divide_by_zero = ["kernel/test_divide_by_zero"]
 test_invalid_opcode = ["kernel/test_invalid_opcode"]
 test_page_fault = ["kernel/test_page_fault"]
