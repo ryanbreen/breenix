@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 structopt = { version = "0.3", default-features = false }
 anyhow     = "1.0"
+glob       = "0.3"

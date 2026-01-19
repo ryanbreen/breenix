@@ -160,6 +160,8 @@ enum Cmd {
     Interactive,
     /// Run automated interactive shell tests (sends keyboard input via QEMU monitor).
     InteractiveTest,
+    /// Run kthread stress test (100+ kthreads, rapid create/stop cycles).
+    KthreadStress,
 }
 
 fn main() -> Result<()> {
@@ -170,6 +172,7 @@ fn main() -> Result<()> {
         Cmd::CreateTestDisk => test_disk::create_test_disk(),
         Cmd::Interactive => interactive(),
         Cmd::InteractiveTest => interactive_test(),
+        Cmd::KthreadStress => kthread_stress(),
     }
 }
 
@@ -2803,4 +2806,208 @@ fn interactive_test() -> Result<()> {
     println!();
     println!("All interactive tests passed!");
     Ok(())
+}
+
+/// Run the kthread stress test - 100+ kthreads with rapid create/stop cycles.
+/// This is a dedicated test harness that ONLY runs the stress test and exits.
+/// Runs in Docker for clean isolation (no stray QEMU processes).
+fn kthread_stress() -> Result<()> {
+    println!("=== Kthread Stress Test (Docker) ===\n");
+
+    // Step 0: Clean old build artifacts to ensure we use the fresh stress test build
+    // The glob pattern can pick up old UEFI images from different feature builds
+    println!("Cleaning old build artifacts...");
+    for entry in glob::glob("target/release/build/breenix-*").unwrap().filter_map(|p| p.ok()) {
+        let _ = fs::remove_dir_all(&entry);
+    }
+
+    // Step 1: Build kernel with stress test feature
+    println!("Building kernel with kthread_stress_test feature...");
+    let build_status = Command::new("cargo")
+        .args(&[
+            "build",
+            "--release",
+            "--features",
+            "kthread_stress_test",
+            "--bin",
+            "qemu-uefi",
+            "-p",
+            "breenix",
+        ])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build: {}", e))?;
+
+    if !build_status.success() {
+        bail!("Failed to build kernel with kthread_stress_test feature");
+    }
+
+    // Step 2: Find the built UEFI image
+    let uefi_glob = "target/release/build/breenix-*/out/breenix-uefi.img";
+    let uefi_img = glob::glob(uefi_glob)
+        .map_err(|e| anyhow::anyhow!("Glob error: {}", e))?
+        .filter_map(|p| p.ok())
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("UEFI image not found at {}", uefi_glob))?;
+
+    println!("Using UEFI image: {}", uefi_img.display());
+
+    // Step 3: Build Docker image if needed
+    let docker_dir = Path::new("docker/qemu");
+    println!("Ensuring Docker image is built...");
+    let docker_build = Command::new("docker")
+        .args(&["build", "-t", "breenix-qemu", "."])
+        .current_dir(docker_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if docker_build.is_err() || !docker_build.unwrap().success() {
+        // Try with more verbose output
+        let _ = Command::new("docker")
+            .args(&["build", "-t", "breenix-qemu", "."])
+            .current_dir(docker_dir)
+            .status();
+    }
+
+    // Step 4: Create temp directory for output
+    let output_dir = PathBuf::from("/tmp/breenix_stress_test");
+    let _ = fs::remove_dir_all(&output_dir);
+    fs::create_dir_all(&output_dir)?;
+
+    // Copy OVMF files
+    fs::copy("target/ovmf/x64/code.fd", output_dir.join("OVMF_CODE.fd"))?;
+    fs::copy("target/ovmf/x64/vars.fd", output_dir.join("OVMF_VARS.fd"))?;
+
+    // Create empty output files
+    fs::write(output_dir.join("serial_kernel.txt"), "")?;
+    fs::write(output_dir.join("serial_user.txt"), "")?;
+
+    // Step 5: Run QEMU in Docker with timeout
+    println!("\nRunning kthread stress test in Docker (100+ kthreads)...\n");
+
+    let uefi_img_abs = fs::canonicalize(&uefi_img)?;
+    let test_binaries = fs::canonicalize("target/test_binaries.img").ok();
+    let ext2_img = fs::canonicalize("target/ext2.img").ok();
+
+    let mut docker_args = vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        "-v".to_string(),
+        format!("{}:/breenix/breenix-uefi.img:ro", uefi_img_abs.display()),
+        "-v".to_string(),
+        format!("{}:/output", output_dir.display()),
+    ];
+
+    // Add optional disk images if they exist
+    if let Some(ref tb) = test_binaries {
+        docker_args.push("-v".to_string());
+        docker_args.push(format!("{}:/breenix/test_binaries.img:ro", tb.display()));
+    }
+    if let Some(ref ext2) = ext2_img {
+        docker_args.push("-v".to_string());
+        docker_args.push(format!("{}:/breenix/ext2.img:ro", ext2.display()));
+    }
+
+    docker_args.extend([
+        "breenix-qemu".to_string(),
+        "qemu-system-x86_64".to_string(),
+        "-pflash".to_string(), "/output/OVMF_CODE.fd".to_string(),
+        "-pflash".to_string(), "/output/OVMF_VARS.fd".to_string(),
+        "-drive".to_string(), "if=none,id=hd,format=raw,readonly=on,file=/breenix/breenix-uefi.img".to_string(),
+        "-device".to_string(), "virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off".to_string(),
+        "-machine".to_string(), "pc,accel=tcg".to_string(),
+        "-cpu".to_string(), "qemu64".to_string(),
+        "-smp".to_string(), "1".to_string(),
+        "-m".to_string(), "512".to_string(),
+        "-display".to_string(), "none".to_string(),
+        "-no-reboot".to_string(),
+        "-no-shutdown".to_string(),
+        "-device".to_string(), "isa-debug-exit,iobase=0xf4,iosize=0x04".to_string(),
+        "-serial".to_string(), "file:/output/serial_user.txt".to_string(),
+        "-serial".to_string(), "file:/output/serial_kernel.txt".to_string(),
+    ]);
+
+    // Add test disk drives if available
+    if test_binaries.is_some() {
+        docker_args.extend([
+            "-drive".to_string(), "if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img".to_string(),
+            "-device".to_string(), "virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off".to_string(),
+        ]);
+    }
+    if ext2_img.is_some() {
+        docker_args.extend([
+            "-drive".to_string(), "if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img".to_string(),
+            "-device".to_string(), "virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off".to_string(),
+        ]);
+    }
+
+    // Spawn Docker in background
+    let mut docker_child = Command::new("docker")
+        .args(&docker_args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn Docker: {}", e))?;
+
+    // Step 6: Monitor output file for completion
+    let start = Instant::now();
+    let timeout = Duration::from_secs(180); // 3 minute timeout for stress test
+    let kernel_log = output_dir.join("serial_kernel.txt");
+    let mut success = false;
+    let mut test_output = String::new();
+
+    while start.elapsed() < timeout {
+        if let Ok(contents) = fs::read_to_string(&kernel_log) {
+            test_output = contents.clone();
+
+            // Check for success marker
+            if contents.contains("KTHREAD_STRESS_TEST_COMPLETE") {
+                success = true;
+                break;
+            }
+
+            // Check for failure/panic
+            if contents.contains("panicked at") || contents.contains("PANIC:") {
+                println!("\n=== STRESS TEST FAILED (panic detected) ===\n");
+                for line in contents.lines() {
+                    if line.contains("KTHREAD_STRESS") || line.contains("panic") || line.contains("PANIC") {
+                        println!("{}", line);
+                    }
+                }
+                let _ = docker_child.kill();
+                let _ = Command::new("docker").args(&["kill", "-s", "KILL"]).arg(
+                    Command::new("docker").args(&["ps", "-q", "--filter", "ancestor=breenix-qemu"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+                ).status();
+                bail!("Kthread stress test panicked");
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    // Clean up Docker
+    let _ = docker_child.kill();
+    let _ = Command::new("sh")
+        .args(&["-c", "docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true"])
+        .status();
+
+    if success {
+        println!("\n=== Kthread Stress Test Results ===\n");
+
+        // Extract and print stress test results
+        for line in test_output.lines() {
+            if line.contains("KTHREAD_STRESS") {
+                println!("{}", line);
+            }
+        }
+
+        println!("\n=== KTHREAD STRESS TEST PASSED ===\n");
+        Ok(())
+    } else {
+        println!("\n=== STRESS TEST FAILED (timeout) ===\n");
+        println!("Last output:");
+        for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+            println!("{}", line);
+        }
+        bail!("Kthread stress test timed out after {} seconds", timeout.as_secs());
+    }
 }
