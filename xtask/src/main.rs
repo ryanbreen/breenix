@@ -2810,12 +2810,120 @@ fn interactive_test() -> Result<()> {
 
 /// Run the kthread stress test - 100+ kthreads with rapid create/stop cycles.
 /// This is a dedicated test harness that ONLY runs the stress test and exits.
-/// Runs in Docker for clean isolation (no stray QEMU processes).
+/// In CI: Uses cargo run (like boot_stages) for proper OVMF handling.
+/// Locally: Runs in Docker for clean isolation (no stray QEMU processes).
 fn kthread_stress() -> Result<()> {
+    let is_ci = std::env::var("CI").is_ok();
+
+    if is_ci {
+        kthread_stress_ci()
+    } else {
+        kthread_stress_docker()
+    }
+}
+
+/// CI version: Uses cargo run like boot_stages (handles OVMF via ovmf-prebuilt crate)
+fn kthread_stress_ci() -> Result<()> {
+    println!("=== Kthread Stress Test (CI mode) ===\n");
+
+    // COM1 (user output) and COM2 (kernel logs) - stress test markers go to COM2
+    let user_output_file = "target/kthread_stress_user.txt";
+    let serial_output_file = "target/kthread_stress_output.txt";
+    let _ = fs::remove_file(user_output_file);
+    let _ = fs::remove_file(serial_output_file);
+
+    println!("Starting QEMU via cargo run...\n");
+
+    let mut child = Command::new("cargo")
+        .args(&[
+            "run",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "kthread_stress_test",
+            "--bin",
+            "qemu-uefi",
+            "--",
+            "-serial",
+            &format!("file:{}", user_output_file),  // COM1: user output
+            "-serial",
+            &format!("file:{}", serial_output_file), // COM2: kernel logs (test markers)
+            "-display",
+            "none",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
+
+    // Wait for output file to be created
+    let start = Instant::now();
+    let file_creation_timeout = Duration::from_secs(120);
+
+    while !std::path::Path::new(serial_output_file).exists() {
+        if start.elapsed() > file_creation_timeout {
+            let _ = child.kill();
+            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Monitor for completion
+    let timeout = Duration::from_secs(300); // 5 minutes for CI
+    let mut success = false;
+    let mut test_output = String::new();
+
+    while start.elapsed() < timeout {
+        if let Ok(contents) = fs::read_to_string(serial_output_file) {
+            test_output = contents.clone();
+
+            if contents.contains("KTHREAD_STRESS_TEST_COMPLETE") {
+                success = true;
+                break;
+            }
+
+            if contents.contains("panicked at") || contents.contains("PANIC:") {
+                println!("\n=== STRESS TEST FAILED (panic detected) ===\n");
+                for line in contents.lines() {
+                    if line.contains("KTHREAD_STRESS") || line.contains("panic") || line.contains("PANIC") {
+                        println!("{}", line);
+                    }
+                }
+                let _ = child.kill();
+                bail!("Kthread stress test panicked");
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    let _ = child.kill();
+
+    if success {
+        println!("\n=== Kthread Stress Test Results ===\n");
+        for line in test_output.lines() {
+            if line.contains("KTHREAD_STRESS") {
+                println!("{}", line);
+            }
+        }
+        println!("\n=== KTHREAD STRESS TEST PASSED ===\n");
+        Ok(())
+    } else {
+        println!("\n=== STRESS TEST FAILED (timeout) ===\n");
+        println!("Last output:");
+        for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+            println!("{}", line);
+        }
+        bail!("Kthread stress test timed out after {} seconds", timeout.as_secs());
+    }
+}
+
+/// Local version: Uses Docker for clean QEMU isolation
+fn kthread_stress_docker() -> Result<()> {
     println!("=== Kthread Stress Test (Docker) ===\n");
 
     // Step 0: Clean old build artifacts to ensure we use the fresh stress test build
-    // The glob pattern can pick up old UEFI images from different feature builds
     println!("Cleaning old build artifacts...");
     for entry in glob::glob("target/release/build/breenix-*").unwrap().filter_map(|p| p.ok()) {
         let _ = fs::remove_dir_all(&entry);
@@ -2862,7 +2970,6 @@ fn kthread_stress() -> Result<()> {
         .status();
 
     if docker_build.is_err() || !docker_build.unwrap().success() {
-        // Try with more verbose output
         let _ = Command::new("docker")
             .args(&["build", "-t", "breenix-qemu", "."])
             .current_dir(docker_dir)
@@ -2898,7 +3005,6 @@ fn kthread_stress() -> Result<()> {
         format!("{}:/output", output_dir.display()),
     ];
 
-    // Add optional disk images if they exist
     if let Some(ref tb) = test_binaries {
         docker_args.push("-v".to_string());
         docker_args.push(format!("{}:/breenix/test_binaries.img:ro", tb.display()));
@@ -2927,7 +3033,6 @@ fn kthread_stress() -> Result<()> {
         "-serial".to_string(), "file:/output/serial_kernel.txt".to_string(),
     ]);
 
-    // Add test disk drives if available
     if test_binaries.is_some() {
         docker_args.extend([
             "-drive".to_string(), "if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img".to_string(),
@@ -2941,7 +3046,6 @@ fn kthread_stress() -> Result<()> {
         ]);
     }
 
-    // Spawn Docker in background
     let mut docker_child = Command::new("docker")
         .args(&docker_args)
         .stdout(Stdio::null())
@@ -2951,7 +3055,7 @@ fn kthread_stress() -> Result<()> {
 
     // Step 6: Monitor output file for completion
     let start = Instant::now();
-    let timeout = Duration::from_secs(180); // 3 minute timeout for stress test
+    let timeout = Duration::from_secs(180);
     let kernel_log = output_dir.join("serial_kernel.txt");
     let mut success = false;
     let mut test_output = String::new();
@@ -2960,13 +3064,11 @@ fn kthread_stress() -> Result<()> {
         if let Ok(contents) = fs::read_to_string(&kernel_log) {
             test_output = contents.clone();
 
-            // Check for success marker
             if contents.contains("KTHREAD_STRESS_TEST_COMPLETE") {
                 success = true;
                 break;
             }
 
-            // Check for failure/panic
             if contents.contains("panicked at") || contents.contains("PANIC:") {
                 println!("\n=== STRESS TEST FAILED (panic detected) ===\n");
                 for line in contents.lines() {
@@ -2975,16 +3077,15 @@ fn kthread_stress() -> Result<()> {
                     }
                 }
                 let _ = docker_child.kill();
-                let _ = Command::new("docker").args(&["kill", "-s", "KILL"]).arg(
-                    Command::new("docker").args(&["ps", "-q", "--filter", "ancestor=breenix-qemu"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
-                ).status();
+                let _ = Command::new("sh")
+                    .args(&["-c", "docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true"])
+                    .status();
                 bail!("Kthread stress test panicked");
             }
         }
         thread::sleep(Duration::from_millis(500));
     }
 
-    // Clean up Docker
     let _ = docker_child.kill();
     let _ = Command::new("sh")
         .args(&["-c", "docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true"])
@@ -2992,14 +3093,11 @@ fn kthread_stress() -> Result<()> {
 
     if success {
         println!("\n=== Kthread Stress Test Results ===\n");
-
-        // Extract and print stress test results
         for line in test_output.lines() {
             if line.contains("KTHREAD_STRESS") {
                 println!("{}", line);
             }
         }
-
         println!("\n=== KTHREAD STRESS TEST PASSED ===\n");
         Ok(())
     } else {

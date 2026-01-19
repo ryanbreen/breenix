@@ -48,68 +48,8 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-stress-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build kernel with kthread_stress_test feature
-        run: |
-          cargo build --release -p breenix --features kthread_stress_test --bin qemu-uefi
-
       - name: Run kthread stress test
-        run: |
-          # Find the UEFI image
-          UEFI_IMG=$(find target/release/build/breenix-*/out -name 'breenix-uefi.img' | head -1)
-          echo "Using UEFI image: $UEFI_IMG"
-
-          # Find OVMF firmware
-          OVMF_CODE="/usr/share/OVMF/OVMF_CODE.fd"
-          OVMF_VARS="/usr/share/OVMF/OVMF_VARS.fd"
-
-          # Run QEMU with timeout, capturing output
-          timeout 180 qemu-system-x86_64 \
-            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-            -drive if=pflash,format=raw,readonly=on,file="$OVMF_VARS" \
-            -drive format=raw,file="$UEFI_IMG" \
-            -machine q35 \
-            -cpu qemu64 \
-            -m 512M \
-            -serial stdio \
-            -display none \
-            -no-reboot \
-            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-            2>&1 | tee target/kthread_stress_output.txt &
-
-          QEMU_PID=$!
-
-          # Wait for completion marker or timeout
-          for i in $(seq 1 180); do
-            if grep -q "KTHREAD_STRESS_TEST_COMPLETE" target/kthread_stress_output.txt 2>/dev/null; then
-              echo ""
-              echo "=== KTHREAD STRESS TEST PASSED ==="
-              kill $QEMU_PID 2>/dev/null || true
-              exit 0
-            fi
-
-            # Check if QEMU exited
-            if ! kill -0 $QEMU_PID 2>/dev/null; then
-              if grep -q "KTHREAD_STRESS_TEST_COMPLETE" target/kthread_stress_output.txt 2>/dev/null; then
-                echo ""
-                echo "=== KTHREAD STRESS TEST PASSED ==="
-                exit 0
-              fi
-              echo ""
-              echo "=== KTHREAD STRESS TEST FAILED (QEMU exited without completion marker) ==="
-              echo "Last 50 lines of output:"
-              tail -50 target/kthread_stress_output.txt
-              exit 1
-            fi
-
-            sleep 1
-          done
-
-          echo ""
-          echo "=== KTHREAD STRESS TEST FAILED (timeout) ==="
-          echo "Last 50 lines of output:"
-          tail -50 target/kthread_stress_output.txt
-          kill $QEMU_PID 2>/dev/null || true
-          exit 1
+        run: cargo run -p xtask -- kthread-stress
 
       - name: Upload test artifacts on failure
         if: failure()
