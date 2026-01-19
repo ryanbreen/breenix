@@ -1705,6 +1705,68 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Kthread not unparked - kthread_park() blocked forever or kthread_unpark() not working",
             check_hint: "Check kthread_park() and kthread_unpark() in kernel/src/task/kthread.rs",
         },
+        // === Work Queues ===
+        // Tests the Linux-style work queue infrastructure for deferred execution
+        BootStage {
+            name: "Workqueue system initialized",
+            marker: "WORKQUEUE_INIT: workqueue system initialized",
+            failure_meaning: "Work queue initialization failed - system workqueue not created",
+            check_hint: "Check kernel/src/task/workqueue.rs:init_workqueue()",
+        },
+        BootStage {
+            name: "Kworker thread started",
+            marker: "KWORKER_SPAWN: kworker/0 started",
+            failure_meaning: "Worker thread spawn failed - kthread_run() or worker_thread_fn() broken",
+            check_hint: "Check kernel/src/task/workqueue.rs:ensure_worker() and worker_thread_fn()",
+        },
+        BootStage {
+            name: "Workqueue basic execution passed",
+            marker: "WORKQUEUE_TEST: basic execution passed",
+            failure_meaning: "Basic work execution failed - work not queued or worker not executing",
+            check_hint: "Check Work::execute() and Workqueue::queue() in kernel/src/task/workqueue.rs",
+        },
+        BootStage {
+            name: "Workqueue multiple items passed",
+            marker: "WORKQUEUE_TEST: multiple work items passed",
+            failure_meaning: "Multiple work items test failed - work not executed in order or not all executed",
+            check_hint: "Check worker_thread_fn() loop and queue ordering in kernel/src/task/workqueue.rs",
+        },
+        BootStage {
+            name: "Workqueue flush completed",
+            marker: "WORKQUEUE_TEST: flush completed",
+            failure_meaning: "Flush test failed - flush_system_workqueue() did not wait for pending work",
+            check_hint: "Check Workqueue::flush() sentinel pattern in kernel/src/task/workqueue.rs",
+        },
+        BootStage {
+            name: "Workqueue all tests passed",
+            marker: "WORKQUEUE_TEST: all tests passed",
+            failure_meaning: "One or more workqueue tests failed",
+            check_hint: "Check test_workqueue() in kernel/src/main.rs for specific assertion failures",
+        },
+        BootStage {
+            name: "Workqueue re-queue rejection passed",
+            marker: "WORKQUEUE_TEST: re-queue rejection passed",
+            failure_meaning: "Re-queue rejection test failed - schedule_work allowed already-pending work",
+            check_hint: "Check Work::try_set_pending() and Workqueue::queue() in kernel/src/task/workqueue.rs",
+        },
+        BootStage {
+            name: "Workqueue multi-item flush passed",
+            marker: "WORKQUEUE_TEST: multi-item flush passed",
+            failure_meaning: "Multi-item flush test failed - flush did not wait for all queued work",
+            check_hint: "Check Workqueue::flush() and flush_system_workqueue() in kernel/src/task/workqueue.rs",
+        },
+        BootStage {
+            name: "Workqueue shutdown test passed",
+            marker: "WORKQUEUE_TEST: shutdown test passed",
+            failure_meaning: "Workqueue shutdown test failed - destroy did not complete pending work",
+            check_hint: "Check Workqueue::destroy() and worker_thread_fn() in kernel/src/task/workqueue.rs",
+        },
+        BootStage {
+            name: "Workqueue error path test passed",
+            marker: "WORKQUEUE_TEST: error path test passed",
+            failure_meaning: "Workqueue error path test failed - schedule_work accepted re-queue",
+            check_hint: "Check Work::try_set_pending() and Workqueue::queue() in kernel/src/task/workqueue.rs",
+        },
         // === Graphics syscalls ===
         // Tests that the FbInfo syscall (410) works correctly
         BootStage {

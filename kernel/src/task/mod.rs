@@ -14,6 +14,7 @@ pub mod process_task;
 pub mod scheduler;
 pub mod spawn;
 pub mod thread;
+pub mod workqueue;
 
 // Re-export kthread public API for kernel-wide use
 // These are intentionally available but may not be called yet
@@ -21,6 +22,13 @@ pub mod thread;
 pub use kthread::{
     kthread_exit, kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop,
     kthread_unpark, KthreadError, KthreadHandle,
+};
+
+// Re-export workqueue public API for kernel-wide use
+#[allow(unused_imports)]
+pub use workqueue::{
+    flush_system_workqueue, init_workqueue, schedule_work, schedule_work_fn, Work, Workqueue,
+    WorkqueueFlags,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

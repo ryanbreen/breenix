@@ -478,12 +478,17 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     process::init();
     log::info!("Process management initialized");
 
+    // Initialize workqueue subsystem (depends on kthread infrastructure)
+    task::workqueue::init_workqueue();
+
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]
     test_kthread_lifecycle();
     #[cfg(feature = "testing")]
     test_kthread_join();
+    #[cfg(feature = "testing")]
+    test_workqueue();
 
     // In kthread_test_only mode, exit immediately after join test
     #[cfg(feature = "kthread_test_only")]
@@ -1744,6 +1749,207 @@ fn test_kthread_stop_after_exit() {
 
     x86_64::instructions::interrupts::disable();
     log::info!("=== KTHREAD STOP AFTER EXIT TEST: Completed ===");
+}
+
+/// Test workqueue functionality
+/// This validates the Linux-style work queue implementation:
+/// 1. Basic work execution via system workqueue
+/// 2. Multiple work items execute in order
+/// 3. Flush waits for all pending work
+#[cfg(feature = "testing")]
+fn test_workqueue() {
+    use alloc::sync::Arc;
+    use crate::task::workqueue::{flush_system_workqueue, schedule_work, schedule_work_fn, Work, Workqueue, WorkqueueFlags};
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    static EXEC_COUNT: AtomicU32 = AtomicU32::new(0);
+    static EXEC_ORDER: [AtomicU32; 3] = [
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+    ];
+
+    // Reset counters
+    EXEC_COUNT.store(0, Ordering::SeqCst);
+    for order in &EXEC_ORDER {
+        order.store(0, Ordering::SeqCst);
+    }
+
+    log::info!("=== WORKQUEUE TEST: Starting workqueue test ===");
+
+    // Enable interrupts so worker thread can run
+    x86_64::instructions::interrupts::enable();
+
+    // Test 1: Basic execution
+    log::info!("WORKQUEUE_TEST: Testing basic execution...");
+    let work1 = schedule_work_fn(
+        || {
+            EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
+            log::info!("WORKQUEUE_TEST: work1 executed");
+        },
+        "test_work1",
+    );
+
+    // Wait for work1 to complete
+    work1.wait();
+    let count = EXEC_COUNT.load(Ordering::SeqCst);
+    assert_eq!(count, 1, "work1 should have executed once");
+    log::info!("WORKQUEUE_TEST: basic execution passed");
+
+    // Test 2: Multiple work items
+    log::info!("WORKQUEUE_TEST: Testing multiple work items...");
+    let work2 = schedule_work_fn(
+        || {
+            let order = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
+            EXEC_ORDER[0].store(order, Ordering::SeqCst);
+            log::info!("WORKQUEUE_TEST: work2 executed (order={})", order);
+        },
+        "test_work2",
+    );
+
+    let work3 = schedule_work_fn(
+        || {
+            let order = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
+            EXEC_ORDER[1].store(order, Ordering::SeqCst);
+            log::info!("WORKQUEUE_TEST: work3 executed (order={})", order);
+        },
+        "test_work3",
+    );
+
+    let work4 = schedule_work_fn(
+        || {
+            let order = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
+            EXEC_ORDER[2].store(order, Ordering::SeqCst);
+            log::info!("WORKQUEUE_TEST: work4 executed (order={})", order);
+        },
+        "test_work4",
+    );
+
+    // Wait for all work items
+    work2.wait();
+    work3.wait();
+    work4.wait();
+
+    let final_count = EXEC_COUNT.load(Ordering::SeqCst);
+    assert_eq!(final_count, 4, "all 4 work items should have executed");
+
+    // Verify execution order (work2 < work3 < work4)
+    let order2 = EXEC_ORDER[0].load(Ordering::SeqCst);
+    let order3 = EXEC_ORDER[1].load(Ordering::SeqCst);
+    let order4 = EXEC_ORDER[2].load(Ordering::SeqCst);
+    assert!(order2 < order3, "work2 should execute before work3");
+    assert!(order3 < order4, "work3 should execute before work4");
+    log::info!("WORKQUEUE_TEST: multiple work items passed");
+
+    // Test 3: Flush functionality
+    log::info!("WORKQUEUE_TEST: Testing flush...");
+    static FLUSH_WORK_DONE: AtomicU32 = AtomicU32::new(0);
+    FLUSH_WORK_DONE.store(0, Ordering::SeqCst);
+
+    let _flush_work = schedule_work_fn(
+        || {
+            FLUSH_WORK_DONE.fetch_add(1, Ordering::SeqCst);
+            log::info!("WORKQUEUE_TEST: flush_work executed");
+        },
+        "flush_work",
+    );
+
+    // Flush should wait for the work to complete
+    flush_system_workqueue();
+
+    let flush_done = FLUSH_WORK_DONE.load(Ordering::SeqCst);
+    assert_eq!(flush_done, 1, "flush should have waited for work to complete");
+    log::info!("WORKQUEUE_TEST: flush completed");
+
+    // Test 4: Re-queue rejection test
+    log::info!("WORKQUEUE_TEST: Testing re-queue rejection...");
+    static REQUEUE_BLOCK: AtomicBool = AtomicBool::new(false);
+    REQUEUE_BLOCK.store(false, Ordering::SeqCst);
+    let requeue_work = schedule_work_fn(
+        || {
+            while !REQUEUE_BLOCK.load(Ordering::Acquire) {
+                x86_64::instructions::hlt();
+            }
+        },
+        "requeue_work",
+    );
+    let requeue_work_clone = Arc::clone(&requeue_work);
+    let requeue_accepted = schedule_work(requeue_work_clone);
+    assert!(
+        !requeue_accepted,
+        "re-queue should be rejected while work is pending"
+    );
+    REQUEUE_BLOCK.store(true, Ordering::Release);
+    requeue_work.wait();
+    log::info!("WORKQUEUE_TEST: re-queue rejection passed");
+
+    // Test 5: Multi-item flush test
+    log::info!("WORKQUEUE_TEST: Testing multi-item flush...");
+    static MULTI_FLUSH_COUNT: AtomicU32 = AtomicU32::new(0);
+    MULTI_FLUSH_COUNT.store(0, Ordering::SeqCst);
+    for _ in 0..6 {
+        let _work = schedule_work_fn(
+            || {
+                MULTI_FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
+            "multi_flush_work",
+        );
+    }
+    flush_system_workqueue();
+    let multi_flush_done = MULTI_FLUSH_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+        multi_flush_done, 6,
+        "multi-item flush should execute all work items"
+    );
+    log::info!("WORKQUEUE_TEST: multi-item flush passed");
+
+    // Test 6: Shutdown test
+    log::info!("WORKQUEUE_TEST: Testing workqueue shutdown...");
+    static SHUTDOWN_WORK_DONE: AtomicBool = AtomicBool::new(false);
+    SHUTDOWN_WORK_DONE.store(false, Ordering::SeqCst);
+    let wq = Workqueue::new("test_shutdown_wq", WorkqueueFlags::default());
+    let shutdown_work = Work::new(
+        || {
+            SHUTDOWN_WORK_DONE.store(true, Ordering::SeqCst);
+        },
+        "shutdown_work",
+    );
+    let shutdown_queued = wq.queue(Arc::clone(&shutdown_work));
+    assert!(shutdown_queued, "shutdown work should be queued");
+    wq.destroy();
+    let shutdown_done = SHUTDOWN_WORK_DONE.load(Ordering::SeqCst);
+    assert!(
+        shutdown_done,
+        "workqueue destroy should complete pending work"
+    );
+    log::info!("WORKQUEUE_TEST: shutdown test passed");
+
+    // Test 7: Error path test
+    log::info!("WORKQUEUE_TEST: Testing error path re-queue...");
+    static ERROR_PATH_BLOCK: AtomicBool = AtomicBool::new(false);
+    ERROR_PATH_BLOCK.store(false, Ordering::SeqCst);
+    let error_work = Work::new(
+        || {
+            while !ERROR_PATH_BLOCK.load(Ordering::Acquire) {
+                x86_64::instructions::hlt();
+            }
+        },
+        "error_path_work",
+    );
+    let first_schedule = schedule_work(Arc::clone(&error_work));
+    assert!(first_schedule, "schedule_work should accept idle work");
+    let second_schedule = schedule_work(Arc::clone(&error_work));
+    assert!(
+        !second_schedule,
+        "schedule_work should reject re-queue while work is pending"
+    );
+    ERROR_PATH_BLOCK.store(true, Ordering::Release);
+    error_work.wait();
+    log::info!("WORKQUEUE_TEST: error path test passed");
+
+    x86_64::instructions::interrupts::disable();
+    log::info!("WORKQUEUE_TEST: all tests passed");
+    log::info!("=== WORKQUEUE TEST: Completed ===");
 }
 
 /// Stress test for kthreads - creates 100+ kthreads and rapidly starts/stops them.
