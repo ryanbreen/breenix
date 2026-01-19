@@ -33,7 +33,6 @@ use spin::Mutex;
 
 use super::kthread::{kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadHandle};
 use super::scheduler;
-use super::thread::ThreadState;
 
 /// Work states
 const WORK_IDLE: u8 = 0;
@@ -90,27 +89,18 @@ impl Work {
     /// Wait for this work item to complete (blocking).
     ///
     /// If the work is already complete, returns immediately.
-    /// Otherwise, blocks until the worker thread signals completion.
-    ///
-    /// This uses a proper block/unblock pattern like kthread_park() - the thread
-    /// is marked Blocked and removed from the ready queue, then execute()'s
-    /// unblock() call will wake it. This avoids relying on slow timer interrupts.
+    /// Otherwise, yields in a loop until the worker thread completes the work.
     pub fn wait(&self) {
         // Fast path: already completed
         if self.completed.load(Ordering::Acquire) {
             return;
         }
 
-        // Register ourselves as waiter
+        // Register ourselves as waiter (for potential future optimization)
         let tid = scheduler::current_thread_id().unwrap_or(0);
-        if tid == 0 {
-            // No valid thread ID (early boot?) - fall back to spin loop
-            while !self.completed.load(Ordering::Acquire) {
-                core::hint::spin_loop();
-            }
-            return;
+        if tid != 0 {
+            self.waiter.store(tid, Ordering::Release);
         }
-        self.waiter.store(tid, Ordering::Release);
 
         // Check again after registering (handles race with completion)
         if self.completed.load(Ordering::Acquire) {
@@ -118,34 +108,18 @@ impl Work {
             return;
         }
 
-        // Wait for completion using proper block/unblock pattern (like kthread_park)
+        // Simple yield loop - let the scheduler run other threads (including worker)
+        // We use a hybrid approach: yield to give other threads a chance, then
+        // spin_loop to avoid HLT delays in CI/TCG environments where timer
+        // interrupts are slow.
+        let mut spin_count = 0u32;
         while !self.completed.load(Ordering::Acquire) {
-            // CRITICAL: Disable interrupts while updating scheduler state to prevent
-            // race where execute() completes between our check and blocking
-            x86_64::instructions::interrupts::without_interrupts(|| {
-                // Re-check completed under interrupt disable to handle race with execute()
-                if self.completed.load(Ordering::Acquire) {
-                    return; // Already done, don't block
-                }
-
-                // Mark thread as Blocked and remove from ready queue
-                // This allows execute()'s unblock() call to actually wake us
-                scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.state = ThreadState::Blocked;
-                    }
-                    sched.remove_from_ready_queue(tid);
-                });
-            });
-
-            // Check again after critical section - execute() might have completed
-            if self.completed.load(Ordering::Acquire) {
-                break;
+            // Yield every 1000 spins to let scheduler switch threads
+            if spin_count % 1000 == 0 {
+                scheduler::yield_current();
             }
-
-            // Yield and wait for unblock from execute()
-            scheduler::yield_current();
-            x86_64::instructions::hlt();
+            spin_count = spin_count.wrapping_add(1);
+            core::hint::spin_loop();
         }
 
         // Clear waiter
