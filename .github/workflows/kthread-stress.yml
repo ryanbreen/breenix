@@ -1,0 +1,62 @@
+name: Kthread Stress Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  kthread-stress:
+    name: Kthread Stress Test (100+ threads)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2025-06-24
+          override: true
+          target: x86_64-unknown-none
+          components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            ovmf \
+            nasm
+          qemu-system-x86_64 --version
+          nasm --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-stress-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run kthread stress test
+        run: cargo run -p xtask -- kthread-stress
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kthread-stress-output-${{ github.run_number }}
+          path: |
+            target/kthread_stress_output.txt
+            logs/*.log
+          if-no-files-found: warn

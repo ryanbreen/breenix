@@ -502,19 +502,34 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         loop { x86_64::instructions::hlt(); }
     }
 
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only")))]
+    // In kthread_stress_test mode, run stress test and exit
+    #[cfg(feature = "kthread_stress_test")]
+    {
+        test_kthread_stress();
+        log::info!("=== KTHREAD_STRESS_TEST: All stress tests passed ===");
+        log::info!("KTHREAD_STRESS_TEST_COMPLETE");
+        unsafe {
+            use x86_64::instructions::port::Port;
+            let mut port = Port::new(0xf4);
+            port.write(0x00u32);
+        }
+        loop { x86_64::instructions::hlt(); }
+    }
+
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
     test_kthread_exit_code();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
     test_kthread_park_unpark();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
     test_kthread_double_stop();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
     test_kthread_should_stop_non_kthread();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
     test_kthread_stop_after_exit();
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
+    #[cfg(not(feature = "kthread_stress_test"))]
     kernel_main_continue();
 }
 
@@ -1729,6 +1744,193 @@ fn test_kthread_stop_after_exit() {
 
     x86_64::instructions::interrupts::disable();
     log::info!("=== KTHREAD STOP AFTER EXIT TEST: Completed ===");
+}
+
+/// Stress test for kthreads - creates 100+ kthreads and rapidly starts/stops them.
+/// This tests:
+/// 1. The race condition fix in kthread_park() (checking should_stop after setting parked)
+/// 2. The kthread_stop() always calling kthread_unpark() fix
+/// 3. Scheduler stability under high thread churn
+/// 4. Memory management with many concurrent threads
+#[cfg(feature = "kthread_stress_test")]
+fn test_kthread_stress() {
+    use crate::task::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop};
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    const KTHREAD_COUNT: usize = 100;
+    const RAPID_STOP_COUNT: usize = 50;
+
+    log::info!("=== KTHREAD STRESS TEST: Starting ===");
+    log::info!("KTHREAD_STRESS: Creating {} kthreads", KTHREAD_COUNT);
+
+    static STARTED_COUNT: AtomicU32 = AtomicU32::new(0);
+    static STOPPED_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    // Reset counters
+    STARTED_COUNT.store(0, Ordering::SeqCst);
+    STOPPED_COUNT.store(0, Ordering::SeqCst);
+
+    // Phase 1: Create many kthreads that use kthread_park()
+    log::info!("KTHREAD_STRESS: Phase 1 - Creating {} parking kthreads", KTHREAD_COUNT);
+    let mut handles = Vec::with_capacity(KTHREAD_COUNT);
+
+    for i in 0..KTHREAD_COUNT {
+        let handle = kthread_run(
+            move || {
+                x86_64::instructions::interrupts::enable();
+                STARTED_COUNT.fetch_add(1, Ordering::SeqCst);
+
+                // Use kthread_park() to wait - this tests the race condition fix
+                while !kthread_should_stop() {
+                    kthread_park();
+                }
+
+                STOPPED_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
+            "stress_kthread",
+        )
+        .expect("Failed to create stress kthread");
+
+        handles.push(handle);
+
+        // Log progress every 25 threads
+        if (i + 1) % 25 == 0 {
+            log::info!("KTHREAD_STRESS: Created {}/{} kthreads", i + 1, KTHREAD_COUNT);
+        }
+    }
+
+    // Enable interrupts to let kthreads run
+    x86_64::instructions::interrupts::enable();
+
+    // Wait for all kthreads to start
+    log::info!("KTHREAD_STRESS: Waiting for kthreads to start...");
+    for _ in 0..5000 {
+        if STARTED_COUNT.load(Ordering::SeqCst) >= KTHREAD_COUNT as u32 {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    let started = STARTED_COUNT.load(Ordering::SeqCst);
+    log::info!("KTHREAD_STRESS: {}/{} kthreads started", started, KTHREAD_COUNT);
+    assert!(
+        started == KTHREAD_COUNT as u32,
+        "All {} kthreads should have started, but only {} started",
+        KTHREAD_COUNT,
+        started
+    );
+
+    // Phase 2: Rapidly stop all kthreads (tests the race condition fix)
+    log::info!("KTHREAD_STRESS: Phase 2 - Stopping all kthreads rapidly");
+    let mut stop_errors = 0u32;
+    for (i, handle) in handles.iter().enumerate() {
+        if let Err(e) = kthread_stop(handle) {
+            log::error!("KTHREAD_STRESS: kthread_stop failed for thread {}: {:?}", i, e);
+            stop_errors += 1;
+        }
+    }
+    assert!(
+        stop_errors == 0,
+        "All kthread_stop calls should succeed, but {} failed",
+        stop_errors
+    );
+
+    // Wait for all kthreads to stop
+    log::info!("KTHREAD_STRESS: Waiting for kthreads to stop...");
+    for _ in 0..5000 {
+        if STOPPED_COUNT.load(Ordering::SeqCst) >= started {
+            break;
+        }
+        x86_64::instructions::hlt();
+    }
+    let stopped = STOPPED_COUNT.load(Ordering::SeqCst);
+    log::info!("KTHREAD_STRESS: {}/{} kthreads stopped cleanly", stopped, started);
+    assert!(
+        stopped == started,
+        "All {} started kthreads should have stopped, but only {} stopped",
+        started,
+        stopped
+    );
+
+    // Phase 3: Join all kthreads to ensure clean exit
+    log::info!("KTHREAD_STRESS: Phase 3 - Joining all kthreads");
+    let mut join_success = 0u32;
+    for (i, handle) in handles.iter().enumerate() {
+        match kthread_join(handle) {
+            Ok(exit_code) => {
+                assert_eq!(exit_code, 0, "kthread {} should exit with code 0, got {}", i, exit_code);
+                join_success += 1;
+            }
+            Err(e) => log::warn!("KTHREAD_STRESS: kthread_join failed for thread {}: {:?}", i, e),
+        }
+    }
+    log::info!("KTHREAD_STRESS: {}/{} kthreads joined successfully", join_success, KTHREAD_COUNT);
+    assert!(
+        join_success == KTHREAD_COUNT as u32,
+        "All {} kthreads should join successfully, but only {} joined",
+        KTHREAD_COUNT,
+        join_success
+    );
+
+    // Phase 4: Rapid create-stop-join cycle (tests memory/scheduling pressure)
+    log::info!("KTHREAD_STRESS: Phase 4 - Rapid create/stop/join cycle ({} iterations)", RAPID_STOP_COUNT);
+    STARTED_COUNT.store(0, Ordering::SeqCst);
+    STOPPED_COUNT.store(0, Ordering::SeqCst);
+
+    for i in 0..RAPID_STOP_COUNT {
+        let handle = kthread_run(
+            || {
+                x86_64::instructions::interrupts::enable();
+                STARTED_COUNT.fetch_add(1, Ordering::SeqCst);
+                // Immediately park - kthread_stop() should wake us
+                while !kthread_should_stop() {
+                    kthread_park();
+                }
+                STOPPED_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
+            "rapid_kthread",
+        )
+        .expect("Failed to create rapid kthread");
+
+        // Give minimal time for kthread to start, then immediately stop
+        for _ in 0..10 {
+            x86_64::instructions::hlt();
+        }
+
+        // Stop and join immediately
+        kthread_stop(&handle).expect("rapid kthread_stop should not fail");
+        kthread_join(&handle).expect("rapid kthread_join should not fail");
+
+        if (i + 1) % 10 == 0 {
+            log::info!("KTHREAD_STRESS: Rapid cycle {}/{} complete", i + 1, RAPID_STOP_COUNT);
+        }
+    }
+
+    let rapid_started = STARTED_COUNT.load(Ordering::SeqCst);
+    let rapid_stopped = STOPPED_COUNT.load(Ordering::SeqCst);
+    log::info!("KTHREAD_STRESS: Rapid cycle results: {}/{} started, {}/{} stopped",
+        rapid_started, RAPID_STOP_COUNT, rapid_stopped, RAPID_STOP_COUNT);
+    assert!(
+        rapid_started == RAPID_STOP_COUNT as u32,
+        "All {} rapid kthreads should have started, but only {} started",
+        RAPID_STOP_COUNT,
+        rapid_started
+    );
+    assert!(
+        rapid_stopped == RAPID_STOP_COUNT as u32,
+        "All {} rapid kthreads should have stopped, but only {} stopped",
+        RAPID_STOP_COUNT,
+        rapid_stopped
+    );
+
+    x86_64::instructions::interrupts::disable();
+
+    log::info!("KTHREAD_STRESS: All phases complete");
+    log::info!("KTHREAD_STRESS: Phase 1 - {} kthreads created and parked", KTHREAD_COUNT);
+    log::info!("KTHREAD_STRESS: Phase 2 - {} kthreads stopped", stopped);
+    log::info!("KTHREAD_STRESS: Phase 3 - {} kthreads joined", join_success);
+    log::info!("KTHREAD_STRESS: Phase 4 - {} rapid create/stop/join cycles", RAPID_STOP_COUNT);
+    log::info!("=== KTHREAD STRESS TEST: Completed ===");
 }
 
 /// Test basic threading functionality
