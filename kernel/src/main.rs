@@ -1867,8 +1867,9 @@ fn test_workqueue() {
     REQUEUE_BLOCK.store(false, Ordering::SeqCst);
     let requeue_work = schedule_work_fn(
         || {
+            // Use spin_loop instead of HLT - HLT waits for interrupts which is slow in CI
             while !REQUEUE_BLOCK.load(Ordering::Acquire) {
-                x86_64::instructions::hlt();
+                core::hint::spin_loop();
             }
         },
         "requeue_work",
@@ -1930,8 +1931,9 @@ fn test_workqueue() {
     ERROR_PATH_BLOCK.store(false, Ordering::SeqCst);
     let error_work = Work::new(
         || {
+            // Use spin_loop instead of HLT - HLT waits for interrupts which is slow in CI
             while !ERROR_PATH_BLOCK.load(Ordering::Acquire) {
-                x86_64::instructions::hlt();
+                core::hint::spin_loop();
             }
         },
         "error_path_work",
