@@ -108,8 +108,11 @@ impl Work {
             return;
         }
 
-        // Wait for completion using HLT (allows timer interrupts)
+        // Wait for completion - yield to scheduler so worker thread can run
         while !self.completed.load(Ordering::Acquire) {
+            // Signal scheduler to switch to another thread (like the worker)
+            scheduler::yield_current();
+            // HLT waits for next timer interrupt which performs context switch
             x86_64::instructions::hlt();
         }
 
