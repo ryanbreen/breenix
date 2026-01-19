@@ -1857,7 +1857,10 @@ fn test_kthread_stress() {
     let mut join_success = 0u32;
     for (i, handle) in handles.iter().enumerate() {
         match kthread_join(handle) {
-            Ok(_) => join_success += 1,
+            Ok(exit_code) => {
+                assert_eq!(exit_code, 0, "kthread {} should exit with code 0, got {}", i, exit_code);
+                join_success += 1;
+            }
             Err(e) => log::warn!("KTHREAD_STRESS: kthread_join failed for thread {}: {:?}", i, e),
         }
     }
