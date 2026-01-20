@@ -165,7 +165,12 @@ impl Scheduler {
             } else {
                 // Idle is the only runnable thread - keep running it.
                 // No context switch needed.
-                self.ready_queue.push_back(next_thread_id);
+                // NOTE: Do NOT push idle to ready_queue here! Idle came from
+                // the fallback (line 129), not from pop_front. The ready_queue
+                // should remain empty. Pushing idle here would accumulate idle
+                // entries in the queue, causing incorrect scheduling when new
+                // threads are spawned (the queue would contain both idle AND the
+                // new thread, when it should only contain the new thread).
                 if debug_log {
                     log_serial_println!(
                         "Idle thread {} is alone, continuing (no switch needed)",
