@@ -32,7 +32,6 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
 use super::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadHandle};
-use super::scheduler;
 
 /// Work states
 const WORK_IDLE: u8 = 0;
@@ -88,32 +87,30 @@ impl Work {
     /// If the work is already complete, returns immediately.
     /// Otherwise, spins with HLT to allow the worker thread to run until completion.
     ///
-    /// This uses a simple spin-wait pattern like kthread_join():
-    /// - Check completion flag
+    /// This uses the exact same pattern as kthread_join():
+    /// - Check completion flag with SeqCst ordering
     /// - HLT to wait for timer interrupt (allows context switch to worker)
     /// - Repeat until complete
     ///
-    /// We intentionally avoid the complex blocking pattern because:
-    /// 1. The idle thread (which often calls wait()) has special handling in the scheduler
-    /// 2. kthread_join() proves that simple HLT-based waiting works reliably
-    /// 3. The blocking pattern has subtle races with idle thread handling
+    /// We intentionally avoid yield_current() because:
+    /// 1. kthread_join() works reliably without it
+    /// 2. HLT alone allows the timer interrupt to trigger rescheduling
+    /// 3. yield_current() may interact badly with certain thread states
     pub fn wait(&self) {
         // Fast path: already completed
-        if self.completed.load(Ordering::Acquire) {
+        // Use SeqCst to match kthread_join() pattern
+        if self.completed.load(Ordering::SeqCst) {
             return;
         }
 
-        // Simple spin-wait with HLT, like kthread_join()
+        // Simple spin-wait with HLT, exactly like kthread_join()
         // This works because:
         // 1. HLT waits for the next interrupt (timer)
         // 2. Timer interrupt triggers scheduler
         // 3. Scheduler can switch to worker thread
         // 4. Worker executes our work and sets completed=true
         // 5. Eventually we get scheduled again and see completed=true
-        while !self.completed.load(Ordering::Acquire) {
-            // Hint that we want to reschedule
-            scheduler::yield_current();
-            // Wait for timer interrupt to allow context switch
+        while !self.completed.load(Ordering::SeqCst) {
             x86_64::instructions::hlt();
         }
     }
@@ -144,10 +141,10 @@ impl Work {
         }
 
         // Mark complete and transition back to Idle
-        // The Release ordering ensures the function's effects are visible
-        // before completed is set to true (synchronizes with wait()'s Acquire load)
+        // Use SeqCst for completed to match wait()'s SeqCst load,
+        // providing a total order like kthread's exited flag pattern
         self.state.store(WORK_IDLE, Ordering::Release);
-        self.completed.store(true, Ordering::Release);
+        self.completed.store(true, Ordering::SeqCst);
     }
 }
 
