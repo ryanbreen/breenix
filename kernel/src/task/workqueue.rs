@@ -129,21 +129,20 @@ impl Work {
         // Register as waiter so execute() can wake us via unblock()
         self.waiter.store(tid, Ordering::Release);
 
-        // Block/wake loop - proper Linux-style blocking
-        loop {
+        // Block/wake loop - follows the kthread_park() pattern exactly
+        while !self.completed.load(Ordering::Acquire) {
             // CRITICAL: Disable interrupts for the check-and-block sequence.
             // This prevents the race where:
             //   1. We check completed (false)
             //   2. Worker sets completed=true and calls unblock()
             //   3. We mark ourselves Blocked (missed wakeup!)
-            let completed = x86_64::instructions::interrupts::without_interrupts(|| {
-                // Check if completed while interrupts disabled
+            x86_64::instructions::interrupts::without_interrupts(|| {
+                // Re-check completed while interrupts disabled
                 if self.completed.load(Ordering::Acquire) {
-                    return true;
+                    return; // Already completed, don't block
                 }
 
                 // Not complete - mark ourselves as Blocked
-                // The scheduler will see this and switch to another thread
                 scheduler::with_scheduler(|sched| {
                     if let Some(thread) = sched.current_thread_mut() {
                         thread.state = super::thread::ThreadState::Blocked;
@@ -151,26 +150,18 @@ impl Work {
                     // Remove from ready queue (we're blocked, not runnable)
                     sched.remove_from_ready_queue(tid);
                 });
-
-                false
             });
 
-            if completed {
+            // Check again after critical section - might have completed during context switch
+            if self.completed.load(Ordering::Acquire) {
                 break;
             }
 
-            // Now we're Blocked and removed from ready queue.
-            // Atomically enable interrupts and halt - this is critical!
-            // If we enabled then halted separately, an interrupt could fire
-            // between them and we'd miss it.
-            //
-            // When timer fires, can_schedule() sees we're Blocked and allows
-            // scheduling. schedule() picks the worker thread. Worker runs,
-            // completes work, calls unblock(tid) which sets us Ready and
-            // adds us back to ready queue. Eventually we get scheduled again.
-            x86_64::instructions::interrupts::enable_and_hlt();
+            // Set need_resched so scheduler knows to try switching threads
+            scheduler::yield_current();
 
-            // We've been woken up - loop back and check if completed
+            // HLT waits for the next interrupt (timer) which will perform context switch
+            x86_64::instructions::hlt();
         }
 
         // Clear waiter
