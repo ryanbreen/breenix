@@ -416,6 +416,10 @@ fn save_kthread_context(
             thread.context.rsp
         );
     });
+
+    // Hardware memory fence to ensure all context saves are visible before
+    // we switch to a different thread. This is critical for TCG mode.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 /// Switch to a different thread
@@ -834,10 +838,12 @@ fn setup_kernel_thread_return(
             crate::memory::process_memory::switch_to_kernel_page_table();
         }
 
-        // Memory fence to ensure all writes to interrupt frame and saved_regs
+        // Hardware memory fence to ensure all writes to interrupt frame and saved_regs
         // are visible before IRETQ reads them. This is critical for TCG mode
         // where software emulation may have different memory ordering semantics.
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        // Using a full fence (mfence) rather than just compiler fence to force
+        // actual CPU store completion.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     } else {
         log::error!("KTHREAD_SWITCH: Failed to get thread info for thread {}", thread_id);
     }
