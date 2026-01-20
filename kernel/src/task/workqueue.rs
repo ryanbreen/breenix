@@ -40,6 +40,10 @@ const WORK_IDLE: u8 = 0;
 const WORK_PENDING: u8 = 1;
 const WORK_RUNNING: u8 = 2;
 
+/// Sentinel value indicating no waiter.
+/// We use u64::MAX instead of 0 because TID 0 is valid (it's the idle/boot thread).
+const NO_WAITER: u64 = u64::MAX;
+
 /// A unit of deferred work.
 ///
 /// Work items are created with a closure that will be executed by a worker thread.
@@ -51,7 +55,7 @@ pub struct Work {
     state: AtomicU8,
     /// Set to true after func returns
     completed: AtomicBool,
-    /// Thread ID waiting for completion (0 = no waiter)
+    /// Thread ID waiting for completion (NO_WAITER = no waiter)
     waiter: AtomicU64,
     /// Debug name for this work item
     name: &'static str,
@@ -76,7 +80,7 @@ impl Work {
             func: UnsafeCell::new(Some(Box::new(func))),
             state: AtomicU8::new(WORK_IDLE),
             completed: AtomicBool::new(false),
-            waiter: AtomicU64::new(0),
+            waiter: AtomicU64::new(NO_WAITER),
             name,
         })
     }
@@ -117,7 +121,7 @@ impl Work {
 
         // Check again after registering (handles race with completion)
         if self.completed.load(Ordering::Acquire) {
-            self.waiter.store(0, Ordering::Release);
+            self.waiter.store(NO_WAITER, Ordering::Release);
             return;
         }
 
@@ -152,7 +156,7 @@ impl Work {
         }
 
         // Clear waiter
-        self.waiter.store(0, Ordering::Release);
+        self.waiter.store(NO_WAITER, Ordering::Release);
     }
 
     /// Get the debug name of this work item.
@@ -184,9 +188,9 @@ impl Work {
         self.state.store(WORK_IDLE, Ordering::Release);
         self.completed.store(true, Ordering::Release);
 
-        // Wake waiter if any
+        // Wake waiter if any (NO_WAITER means no one is waiting)
         let waiter = self.waiter.load(Ordering::Acquire);
-        if waiter != 0 {
+        if waiter != NO_WAITER {
             scheduler::with_scheduler(|sched| {
                 sched.unblock(waiter);
             });
