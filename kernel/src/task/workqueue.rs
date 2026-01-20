@@ -85,26 +85,21 @@ impl Work {
     /// Wait for this work item to complete.
     ///
     /// If the work is already complete, returns immediately.
-    /// Otherwise, yields and HLTs in a loop to allow the worker thread to run.
+    /// Otherwise, halts in a loop to allow the worker thread to run.
     ///
-    /// This uses a yield_current() + HLT pattern similar to kthread_park():
+    /// This uses plain hlt() matching kthread_join():
     /// - Check completion flag with SeqCst ordering
-    /// - yield_current() to set need_resched flag (triggers immediate reschedule)
-    /// - HLT to wait for timer interrupt (performs actual context switch)
+    /// - HLT waits for timer interrupt (with interrupts enabled)
+    /// - Timer decrements quantum; when it expires, sets need_resched
+    /// - Context switch to worker thread
     /// - Repeat until complete
-    ///
-    /// The key difference from plain HLT loop: yield_current() ensures need_resched
-    /// is set, which causes the scheduler to immediately consider switching to the
-    /// newly spawned worker thread. Without yield_current(), the scheduler might not
-    /// switch until the full quantum expires, giving the worker time to run.
     ///
     /// CRITICAL: Do NOT use yield_current() here! Unlike kthread_park() which is
     /// called by sleeping kthreads, wait() is called by the main thread waiting
     /// for a just-spawned worker. In TCG (software emulation), yield_current()
     /// causes pathological ping-pong switching that prevents the worker from
-    /// getting enough cycles to complete. Plain hlt() lets the timer's natural
-    /// quantum management decide when to switch, matching kthread_join() which
-    /// works reliably.
+    /// getting enough cycles. Plain hlt() lets the timer's natural quantum
+    /// management decide when to switch, matching kthread_join() which works.
     pub fn wait(&self) {
         // Fast path: already completed
         // Use SeqCst to match kthread_join() pattern

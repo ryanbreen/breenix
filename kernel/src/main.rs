@@ -1773,7 +1773,7 @@ fn test_kthread_stop_after_exit() {
 #[cfg(feature = "testing")]
 fn test_workqueue() {
     use alloc::sync::Arc;
-    use crate::task::workqueue::{flush_system_workqueue, schedule_work, schedule_work_fn, Work, Workqueue, WorkqueueFlags};
+    use crate::task::workqueue::{flush_system_workqueue, schedule_work, schedule_work_fn, Work};
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     static EXEC_COUNT: AtomicU32 = AtomicU32::new(0);

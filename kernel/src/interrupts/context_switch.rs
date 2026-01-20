@@ -260,6 +260,13 @@ pub extern "C" fn check_need_resched_and_switch(
         // Pass the process_manager_guard so we don't try to re-acquire the lock
         switch_to_thread(new_thread_id, saved_regs, interrupt_frame, process_manager_guard.take());
 
+        // Log that we're about to return to the new thread (IRETQ)
+        log::info!(
+            "SWITCH_COMPLETE: returning to thread {} (iret to RIP={:#x})",
+            new_thread_id,
+            interrupt_frame.instruction_pointer.as_u64()
+        );
+
         // CRITICAL: Clear PREEMPT_ACTIVE after context switch completes
         // PREEMPT_ACTIVE (bit 28) is set in syscall/entry.asm to protect register
         // restoration during syscall return. When we switch to a different thread,
@@ -818,12 +825,14 @@ fn setup_kernel_thread_return(
             saved_regs.r15 = context.r15;
         }
 
-        log::trace!(
-            "KTHREAD_RESTORE: thread {} '{}' RIP={:#x} RSP={:#x}",
+        // Use INFO level so we can see this in CI
+        log::info!(
+            "KTHREAD_RESTORE: thread {} '{}' RIP={:#x} RSP={:#x} RFLAGS={:#x}",
             thread_id,
             name,
             context.rip,
-            context.rsp
+            context.rsp,
+            context.rflags
         );
 
         // Switch to master kernel PML4 for running kernel threads
