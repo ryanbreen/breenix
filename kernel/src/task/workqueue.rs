@@ -85,17 +85,18 @@ impl Work {
     /// Wait for this work item to complete.
     ///
     /// If the work is already complete, returns immediately.
-    /// Otherwise, spins with HLT to allow the worker thread to run until completion.
+    /// Otherwise, yields and HLTs in a loop to allow the worker thread to run.
     ///
-    /// This uses the exact same pattern as kthread_join():
+    /// This uses a yield_current() + HLT pattern similar to kthread_park():
     /// - Check completion flag with SeqCst ordering
-    /// - HLT to wait for timer interrupt (allows context switch to worker)
+    /// - yield_current() to set need_resched flag (triggers immediate reschedule)
+    /// - HLT to wait for timer interrupt (performs actual context switch)
     /// - Repeat until complete
     ///
-    /// We intentionally avoid yield_current() because:
-    /// 1. kthread_join() works reliably without it
-    /// 2. HLT alone allows the timer interrupt to trigger rescheduling
-    /// 3. yield_current() may interact badly with certain thread states
+    /// The key difference from plain HLT loop: yield_current() ensures need_resched
+    /// is set, which causes the scheduler to immediately consider switching to the
+    /// newly spawned worker thread. Without yield_current(), the scheduler might not
+    /// switch until the full quantum expires (10ms under TCG), which is too slow.
     pub fn wait(&self) {
         // Fast path: already completed
         // Use SeqCst to match kthread_join() pattern
@@ -103,14 +104,15 @@ impl Work {
             return;
         }
 
-        // Simple spin-wait with HLT, exactly like kthread_join()
-        // This works because:
-        // 1. HLT waits for the next interrupt (timer)
-        // 2. Timer interrupt triggers scheduler
-        // 3. Scheduler can switch to worker thread
-        // 4. Worker executes our work and sets completed=true
-        // 5. Eventually we get scheduled again and see completed=true
+        // Yield + HLT loop, similar to kthread_park()
+        // 1. yield_current() sets need_resched flag
+        // 2. HLT waits for timer interrupt
+        // 3. Timer interrupt triggers check_need_resched_and_switch()
+        // 4. Since need_resched is set, scheduler can switch to worker thread
+        // 5. Worker executes our work and sets completed=true
+        // 6. Eventually we get scheduled again and see completed=true
         while !self.completed.load(Ordering::SeqCst) {
+            super::scheduler::yield_current();
             x86_64::instructions::hlt();
         }
     }
