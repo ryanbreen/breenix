@@ -2888,6 +2888,15 @@ fn kthread_stress() -> Result<()> {
 fn kthread_stress_ci() -> Result<()> {
     println!("=== Kthread Stress Test (CI mode) ===\n");
 
+    // Build std test binaries BEFORE creating the test disk
+    // This ensures hello_std_real is available to be included
+    build_std_test_binaries()?;
+
+    // Create the test disk with all userspace binaries
+    // Required since kthread_stress_test now includes external_test_bins
+    test_disk::create_test_disk()?;
+    println!();
+
     // COM1 (user output) and COM2 (kernel logs) - stress test markers go to COM2
     let user_output_file = "target/kthread_stress_user.txt";
     let serial_output_file = "target/kthread_stress_output.txt";
