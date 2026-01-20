@@ -72,8 +72,27 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
+    // Check if current thread is blocked or terminated - we MUST switch away in that case
+    let current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
+        if let Some(current) = sched.current_thread_mut() {
+            matches!(
+                current.state,
+                crate::task::thread::ThreadState::Blocked
+                    | crate::task::thread::ThreadState::BlockedOnSignal
+                    | crate::task::thread::ThreadState::BlockedOnChildExit
+                    | crate::task::thread::ThreadState::Terminated
+            )
+        } else {
+            false
+        }
+    })
+    .unwrap_or(false);
+
     // Check if reschedule is needed
-    if !scheduler::check_and_clear_need_resched() {
+    // CRITICAL: If current thread is blocked/terminated, we MUST schedule regardless of need_resched.
+    // A blocked thread cannot continue running - we must switch to another thread.
+    let need_resched = scheduler::check_and_clear_need_resched();
+    if !need_resched && !current_thread_blocked_or_terminated {
         // No reschedule needed, but check for pending signals before returning to userspace
         if from_userspace {
             check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);

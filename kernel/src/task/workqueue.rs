@@ -31,7 +31,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use spin::Mutex;
 
-use super::kthread::{kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadHandle};
+use super::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadHandle};
 use super::scheduler;
 
 /// Work states
@@ -50,7 +50,7 @@ pub struct Work {
     state: AtomicU8,
     /// Set to true after func returns
     completed: AtomicBool,
-    /// Thread ID waiting for completion (0 = no waiter)
+    /// Thread ID waiting for completion (NO_WAITER = u64::MAX means no waiter)
     waiter: AtomicU64,
     /// Debug name for this work item
     name: &'static str,
@@ -65,6 +65,10 @@ unsafe impl Send for Work {}
 // - All other fields are atomic or immutable
 unsafe impl Sync for Work {}
 
+/// Sentinel value for "no waiter" - u64::MAX instead of 0
+/// because TID 0 is a valid thread ID (the idle thread)
+const NO_WAITER: u64 = u64::MAX;
+
 impl Work {
     /// Create a new work item with the given function and debug name.
     pub fn new<F>(func: F, name: &'static str) -> Arc<Work>
@@ -75,7 +79,7 @@ impl Work {
             func: UnsafeCell::new(Some(Box::new(func))),
             state: AtomicU8::new(WORK_IDLE),
             completed: AtomicBool::new(false),
-            waiter: AtomicU64::new(0),
+            waiter: AtomicU64::new(NO_WAITER),
             name,
         })
     }
@@ -86,35 +90,56 @@ impl Work {
         self.completed.load(Ordering::Acquire)
     }
 
-    /// Wait for this work item to complete (blocking).
+    /// Wait for this work item to complete.
     ///
     /// If the work is already complete, returns immediately.
-    /// Otherwise, blocks until the worker thread signals completion.
+    /// Otherwise, yields to allow the worker thread to run until completion.
+    ///
+    /// This uses a spin-yield pattern similar to kthread_park():
+    /// - Set need_resched flag to hint scheduler
+    /// - HLT to wait for timer interrupt (allows context switch)
+    /// - Check completion after each wakeup
+    ///
+    /// Note: We deliberately don't mark ourselves as Blocked because:
+    /// 1. The idle thread is often the caller, and blocking idle has complex interactions
+    /// 2. A spin-yield loop is simpler and still allows progress via timer interrupts
+    /// 3. This matches how kthread_park() handles waiting
     pub fn wait(&self) {
         // Fast path: already completed
         if self.completed.load(Ordering::Acquire) {
             return;
         }
 
-        // Register ourselves as waiter
-        let tid = scheduler::current_thread_id().unwrap_or(0);
-        if tid != 0 {
-            self.waiter.store(tid, Ordering::Release);
-        }
+        // Get our thread ID - handle early boot case where scheduler isn't ready
+        let tid = match scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                // No scheduler yet (early boot): spin loop is acceptable
+                while !self.completed.load(Ordering::Acquire) {
+                    core::hint::spin_loop();
+                }
+                return;
+            }
+        };
 
-        // Check again after registering (handles race with completion)
-        if self.completed.load(Ordering::Acquire) {
-            self.waiter.store(0, Ordering::Release);
-            return;
-        }
+        // Register as waiter so execute() can wake us up if needed
+        // (For future optimization - currently we just poll)
+        self.waiter.store(tid, Ordering::Release);
 
-        // Wait for completion using HLT (allows timer interrupts)
+        // Spin-yield loop: yield CPU and wait for timer interrupt
         while !self.completed.load(Ordering::Acquire) {
+            // Set need_resched so scheduler knows to try switching threads
+            scheduler::yield_current();
+
+            // HLT waits for next interrupt (timer). When timer fires,
+            // scheduler will run and may switch to worker thread.
+            // After worker completes the work, we'll eventually get
+            // scheduled again and see completed=true.
             x86_64::instructions::hlt();
         }
 
         // Clear waiter
-        self.waiter.store(0, Ordering::Release);
+        self.waiter.store(NO_WAITER, Ordering::Release);
     }
 
     /// Get the debug name of this work item.
@@ -147,8 +172,9 @@ impl Work {
         self.completed.store(true, Ordering::Release);
 
         // Wake waiter if any
+        // Use NO_WAITER (u64::MAX) as sentinel since TID 0 is valid
         let waiter = self.waiter.load(Ordering::Acquire);
-        if waiter != 0 {
+        if waiter != NO_WAITER {
             scheduler::with_scheduler(|sched| {
                 sched.unblock(waiter);
             });
@@ -225,16 +251,21 @@ impl Workqueue {
     ///
     /// All pending work will be completed before destruction.
     pub fn destroy(&self) {
+        // First, flush all pending work to ensure completion
+        self.flush();
+
         // Signal shutdown
         self.shutdown.store(true, Ordering::Release);
 
         // Stop worker thread
         let worker = self.worker.lock().take();
         if let Some(handle) = worker {
-            // Wake worker so it sees shutdown
+            // Wake worker so it sees shutdown flag
             kthread_unpark(&handle);
             // Signal stop
             let _ = kthread_stop(&handle);
+            // Wait for worker thread to actually exit
+            let _ = kthread_join(&handle);
         }
     }
 
