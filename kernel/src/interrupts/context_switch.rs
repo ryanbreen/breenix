@@ -202,11 +202,9 @@ pub extern "C" fn check_need_resched_and_switch(
         // preempt_active is false (otherwise we would have returned early).
 
         // Check if current thread is blocked in syscall (pause/waitpid)
-        log::debug!("CTX_SWITCH_1: checking blocked_in_syscall for thread {}", old_thread_id);
         let blocked_in_syscall = scheduler::with_thread_mut(old_thread_id, |thread| {
             thread.blocked_in_syscall
         }).unwrap_or(false);
-        log::debug!("CTX_SWITCH_2: blocked_in_syscall={} from_userspace={}", blocked_in_syscall, from_userspace);
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
@@ -255,23 +253,14 @@ pub extern "C" fn check_need_resched_and_switch(
             // Pure kernel thread (like kthread) being preempted - save its context
             // This is NOT a userspace thread and NOT blocked in syscall - it's a
             // kernel thread running its own code (e.g., kthread_entry -> user function)
-            log::debug!("CTX_SWITCH_3: saving kthread context for {}", old_thread_id);
             save_kthread_context(old_thread_id, saved_regs, interrupt_frame);
-            log::debug!("CTX_SWITCH_4: kthread context saved");
         }
 
         // Switch to the new thread
         // Pass the process_manager_guard so we don't try to re-acquire the lock
-        log::debug!("CTX_SWITCH_5: calling switch_to_thread({})", new_thread_id);
         switch_to_thread(new_thread_id, saved_regs, interrupt_frame, process_manager_guard.take());
-        log::debug!("CTX_SWITCH_6: switch_to_thread returned");
 
-        // Log that we're about to return to the new thread (IRETQ)
-        log::info!(
-            "SWITCH_COMPLETE: returning to thread {} (iret to RIP={:#x})",
-            new_thread_id,
-            interrupt_frame.instruction_pointer.as_u64()
-        );
+        // NOTE: Don't log here - this is on the hot path and can affect timing
 
         // CRITICAL: Clear PREEMPT_ACTIVE after context switch completes
         // PREEMPT_ACTIVE (bit 28) is set in syscall/entry.asm to protect register
@@ -831,14 +820,12 @@ fn setup_kernel_thread_return(
             saved_regs.r15 = context.r15;
         }
 
-        // Use INFO level so we can see this in CI
-        log::info!(
-            "KTHREAD_RESTORE: thread {} '{}' RIP={:#x} RSP={:#x} RFLAGS={:#x}",
+        log::trace!(
+            "KTHREAD_RESTORE: thread {} '{}' RIP={:#x} RSP={:#x}",
             thread_id,
             name,
             context.rip,
-            context.rsp,
-            context.rflags
+            context.rsp
         );
 
         // Switch to master kernel PML4 for running kernel threads
