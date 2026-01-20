@@ -490,6 +490,20 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     #[cfg(feature = "testing")]
     test_workqueue();
 
+    // In workqueue_test_only mode, exit immediately after workqueue tests
+    #[cfg(feature = "workqueue_test_only")]
+    {
+        log::info!("=== WORKQUEUE_TEST_ONLY: All workqueue tests passed ===");
+        log::info!("WORKQUEUE_TEST_ONLY_COMPLETE");
+        // Exit QEMU with success code
+        unsafe {
+            use x86_64::instructions::port::Port;
+            let mut port = Port::new(0xf4);
+            port.write(0x00u32);  // This causes QEMU to exit
+        }
+        loop { x86_64::instructions::hlt(); }
+    }
+
     // In kthread_test_only mode, exit immediately after join test
     #[cfg(feature = "kthread_test_only")]
     {
@@ -521,20 +535,20 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
         loop { x86_64::instructions::hlt(); }
     }
 
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
     test_kthread_exit_code();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
     test_kthread_park_unpark();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
     test_kthread_double_stop();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
     test_kthread_should_stop_non_kthread();
-    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test")))]
+    #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
     test_kthread_stop_after_exit();
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
-    #[cfg(not(feature = "kthread_stress_test"))]
+    #[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only")))]
     kernel_main_continue();
 }
 
