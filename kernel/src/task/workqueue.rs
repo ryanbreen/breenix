@@ -27,7 +27,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use spin::Mutex;
 
@@ -50,8 +50,6 @@ pub struct Work {
     state: AtomicU8,
     /// Set to true after func returns
     completed: AtomicBool,
-    /// Thread ID waiting for completion (NO_WAITER = u64::MAX means no waiter)
-    waiter: AtomicU64,
     /// Debug name for this work item
     name: &'static str,
 }
@@ -65,10 +63,6 @@ unsafe impl Send for Work {}
 // - All other fields are atomic or immutable
 unsafe impl Sync for Work {}
 
-/// Sentinel value for "no waiter" - u64::MAX instead of 0
-/// because TID 0 is a valid thread ID (the idle thread)
-const NO_WAITER: u64 = u64::MAX;
-
 impl Work {
     /// Create a new work item with the given function and debug name.
     pub fn new<F>(func: F, name: &'static str) -> Arc<Work>
@@ -79,7 +73,6 @@ impl Work {
             func: UnsafeCell::new(Some(Box::new(func))),
             state: AtomicU8::new(WORK_IDLE),
             completed: AtomicBool::new(false),
-            waiter: AtomicU64::new(NO_WAITER),
             name,
         })
     }
@@ -93,79 +86,36 @@ impl Work {
     /// Wait for this work item to complete.
     ///
     /// If the work is already complete, returns immediately.
-    /// Otherwise, yields to allow the worker thread to run until completion.
+    /// Otherwise, spins with HLT to allow the worker thread to run until completion.
     ///
-    /// This uses a spin-yield pattern similar to kthread_park():
-    /// - Set need_resched flag to hint scheduler
-    /// - HLT to wait for timer interrupt (allows context switch)
-    /// - Check completion after each wakeup
+    /// This uses a simple spin-wait pattern like kthread_join():
+    /// - Check completion flag
+    /// - HLT to wait for timer interrupt (allows context switch to worker)
+    /// - Repeat until complete
     ///
-    /// Wait for this work item to complete using proper block/wake semantics.
-    ///
-    /// This follows the Linux wait_for_completion() pattern:
-    /// 1. Register as waiter
-    /// 2. Check condition under interrupt lock
-    /// 3. If not complete: mark Blocked, remove from ready queue
-    /// 4. Atomically enable interrupts and halt
-    /// 5. When woken by execute()'s unblock(), check condition again
+    /// We intentionally avoid the complex blocking pattern because:
+    /// 1. The idle thread (which often calls wait()) has special handling in the scheduler
+    /// 2. kthread_join() proves that simple HLT-based waiting works reliably
+    /// 3. The blocking pattern has subtle races with idle thread handling
     pub fn wait(&self) {
         // Fast path: already completed
         if self.completed.load(Ordering::Acquire) {
             return;
         }
 
-        // Get our thread ID - handle early boot case where scheduler isn't ready
-        let tid = match scheduler::current_thread_id() {
-            Some(id) => id,
-            None => {
-                // No scheduler yet (early boot): spin loop is acceptable
-                while !self.completed.load(Ordering::Acquire) {
-                    core::hint::spin_loop();
-                }
-                return;
-            }
-        };
-
-        // Register as waiter so execute() can wake us via unblock()
-        self.waiter.store(tid, Ordering::Release);
-
-        // Block/wake loop - follows the kthread_park() pattern exactly
+        // Simple spin-wait with HLT, like kthread_join()
+        // This works because:
+        // 1. HLT waits for the next interrupt (timer)
+        // 2. Timer interrupt triggers scheduler
+        // 3. Scheduler can switch to worker thread
+        // 4. Worker executes our work and sets completed=true
+        // 5. Eventually we get scheduled again and see completed=true
         while !self.completed.load(Ordering::Acquire) {
-            // CRITICAL: Disable interrupts for the check-and-block sequence.
-            // This prevents the race where:
-            //   1. We check completed (false)
-            //   2. Worker sets completed=true and calls unblock()
-            //   3. We mark ourselves Blocked (missed wakeup!)
-            x86_64::instructions::interrupts::without_interrupts(|| {
-                // Re-check completed while interrupts disabled
-                if self.completed.load(Ordering::Acquire) {
-                    return; // Already completed, don't block
-                }
-
-                // Not complete - mark ourselves as Blocked
-                scheduler::with_scheduler(|sched| {
-                    if let Some(thread) = sched.current_thread_mut() {
-                        thread.state = super::thread::ThreadState::Blocked;
-                    }
-                    // Remove from ready queue (we're blocked, not runnable)
-                    sched.remove_from_ready_queue(tid);
-                });
-            });
-
-            // Check again after critical section - might have completed during context switch
-            if self.completed.load(Ordering::Acquire) {
-                break;
-            }
-
-            // Set need_resched so scheduler knows to try switching threads
+            // Hint that we want to reschedule
             scheduler::yield_current();
-
-            // HLT waits for the next interrupt (timer) which will perform context switch
+            // Wait for timer interrupt to allow context switch
             x86_64::instructions::hlt();
         }
-
-        // Clear waiter
-        self.waiter.store(NO_WAITER, Ordering::Release);
     }
 
     /// Get the debug name of this work item.
@@ -194,17 +144,10 @@ impl Work {
         }
 
         // Mark complete and transition back to Idle
+        // The Release ordering ensures the function's effects are visible
+        // before completed is set to true (synchronizes with wait()'s Acquire load)
         self.state.store(WORK_IDLE, Ordering::Release);
         self.completed.store(true, Ordering::Release);
-
-        // Wake waiter if any
-        // Use NO_WAITER (u64::MAX) as sentinel since TID 0 is valid
-        let waiter = self.waiter.load(Ordering::Acquire);
-        if waiter != NO_WAITER {
-            scheduler::with_scheduler(|sched| {
-                sched.unblock(waiter);
-            });
-        }
     }
 }
 
