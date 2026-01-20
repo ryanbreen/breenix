@@ -96,7 +96,15 @@ impl Work {
     /// The key difference from plain HLT loop: yield_current() ensures need_resched
     /// is set, which causes the scheduler to immediately consider switching to the
     /// newly spawned worker thread. Without yield_current(), the scheduler might not
-    /// switch until the full quantum expires (10ms under TCG), which is too slow.
+    /// switch until the full quantum expires, giving the worker time to run.
+    ///
+    /// CRITICAL: Do NOT use yield_current() here! Unlike kthread_park() which is
+    /// called by sleeping kthreads, wait() is called by the main thread waiting
+    /// for a just-spawned worker. In TCG (software emulation), yield_current()
+    /// causes pathological ping-pong switching that prevents the worker from
+    /// getting enough cycles to complete. Plain hlt() lets the timer's natural
+    /// quantum management decide when to switch, matching kthread_join() which
+    /// works reliably.
     pub fn wait(&self) {
         // Fast path: already completed
         // Use SeqCst to match kthread_join() pattern
@@ -104,15 +112,13 @@ impl Work {
             return;
         }
 
-        // Yield + HLT loop, similar to kthread_park()
-        // 1. yield_current() sets need_resched flag
-        // 2. HLT waits for timer interrupt
-        // 3. Timer interrupt triggers check_need_resched_and_switch()
-        // 4. Since need_resched is set, scheduler can switch to worker thread
-        // 5. Worker executes our work and sets completed=true
-        // 6. Eventually we get scheduled again and see completed=true
+        // Plain HLT loop, exactly like kthread_join()
+        // 1. HLT waits for timer interrupt (with interrupts enabled)
+        // 2. Timer decrements quantum; when it expires, sets need_resched
+        // 3. Context switch to worker thread
+        // 4. Worker executes our work and sets completed=true
+        // 5. Eventually we get scheduled again and see completed=true
         while !self.completed.load(Ordering::SeqCst) {
-            super::scheduler::yield_current();
             x86_64::instructions::hlt();
         }
     }
