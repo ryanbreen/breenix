@@ -100,10 +100,14 @@ impl Work {
     /// - HLT to wait for timer interrupt (allows context switch)
     /// - Check completion after each wakeup
     ///
-    /// Note: We deliberately don't mark ourselves as Blocked because:
-    /// 1. The idle thread is often the caller, and blocking idle has complex interactions
-    /// 2. A spin-yield loop is simpler and still allows progress via timer interrupts
-    /// 3. This matches how kthread_park() handles waiting
+    /// Wait for this work item to complete using proper block/wake semantics.
+    ///
+    /// This follows the Linux wait_for_completion() pattern:
+    /// 1. Register as waiter
+    /// 2. Check condition under interrupt lock
+    /// 3. If not complete: mark Blocked, remove from ready queue
+    /// 4. Atomically enable interrupts and halt
+    /// 5. When woken by execute()'s unblock(), check condition again
     pub fn wait(&self) {
         // Fast path: already completed
         if self.completed.load(Ordering::Acquire) {
@@ -122,20 +126,51 @@ impl Work {
             }
         };
 
-        // Register as waiter so execute() can wake us up if needed
-        // (For future optimization - currently we just poll)
+        // Register as waiter so execute() can wake us via unblock()
         self.waiter.store(tid, Ordering::Release);
 
-        // Spin-yield loop: yield CPU and wait for timer interrupt
-        while !self.completed.load(Ordering::Acquire) {
-            // Set need_resched so scheduler knows to try switching threads
-            scheduler::yield_current();
+        // Block/wake loop - proper Linux-style blocking
+        loop {
+            // CRITICAL: Disable interrupts for the check-and-block sequence.
+            // This prevents the race where:
+            //   1. We check completed (false)
+            //   2. Worker sets completed=true and calls unblock()
+            //   3. We mark ourselves Blocked (missed wakeup!)
+            let completed = x86_64::instructions::interrupts::without_interrupts(|| {
+                // Check if completed while interrupts disabled
+                if self.completed.load(Ordering::Acquire) {
+                    return true;
+                }
 
-            // HLT waits for next interrupt (timer). When timer fires,
-            // scheduler will run and may switch to worker thread.
-            // After worker completes the work, we'll eventually get
-            // scheduled again and see completed=true.
-            x86_64::instructions::hlt();
+                // Not complete - mark ourselves as Blocked
+                // The scheduler will see this and switch to another thread
+                scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.state = super::thread::ThreadState::Blocked;
+                    }
+                    // Remove from ready queue (we're blocked, not runnable)
+                    sched.remove_from_ready_queue(tid);
+                });
+
+                false
+            });
+
+            if completed {
+                break;
+            }
+
+            // Now we're Blocked and removed from ready queue.
+            // Atomically enable interrupts and halt - this is critical!
+            // If we enabled then halted separately, an interrupt could fire
+            // between them and we'd miss it.
+            //
+            // When timer fires, can_schedule() sees we're Blocked and allows
+            // scheduling. schedule() picks the worker thread. Worker runs,
+            // completes work, calls unblock(tid) which sets us Ready and
+            // adds us back to ready queue. Eventually we get scheduled again.
+            x86_64::instructions::interrupts::enable_and_hlt();
+
+            // We've been woken up - loop back and check if completed
         }
 
         // Clear waiter
