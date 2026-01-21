@@ -1767,6 +1767,67 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Workqueue error path test failed - schedule_work accepted re-queue",
             check_hint: "Check Work::try_set_pending() and Workqueue::queue() in kernel/src/task/workqueue.rs",
         },
+        // === Softirq subsystem ===
+        BootStage {
+            name: "Softirq system initialized",
+            marker: "SOFTIRQ_INIT: Softirq subsystem initialized",
+            failure_meaning: "Softirq initialization failed - ksoftirqd not spawned",
+            check_hint: "Check init_softirq() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq handler registration test passed",
+            marker: "SOFTIRQ_TEST: handler registration passed",
+            failure_meaning: "Softirq handler registration test failed",
+            check_hint: "Check register_softirq_handler() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq Timer test passed",
+            marker: "SOFTIRQ_TEST: Timer softirq passed",
+            failure_meaning: "Timer softirq test failed - handler not called",
+            check_hint: "Check raise_softirq() and do_softirq() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq NetRx test passed",
+            marker: "SOFTIRQ_TEST: NetRx softirq passed",
+            failure_meaning: "NetRx softirq test failed - handler not called",
+            check_hint: "Check raise_softirq() and do_softirq() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq multiple test passed",
+            marker: "SOFTIRQ_TEST: multiple softirqs passed",
+            failure_meaning: "Multiple softirq test failed - handlers not all called",
+            check_hint: "Check do_softirq() iteration in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq priority order test passed",
+            marker: "SOFTIRQ_TEST: priority order passed",
+            failure_meaning: "Priority order test failed - lower priority softirq executed before higher priority",
+            check_hint: "Check trailing_zeros() priority order in do_softirq() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq nested interrupt rejection test passed",
+            marker: "SOFTIRQ_TEST: nested interrupt rejection passed",
+            failure_meaning: "Nested interrupt rejection failed - do_softirq() should return false in interrupt context",
+            check_hint: "Check in_interrupt() check at start of do_softirq() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq iteration limit test passed",
+            marker: "SOFTIRQ_TEST: iteration limit passed",
+            failure_meaning: "Iteration limit test failed - ksoftirqd did not process deferred softirqs",
+            check_hint: "Check MAX_SOFTIRQ_RESTART limit and wakeup_ksoftirqd() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq ksoftirqd verification passed",
+            marker: "SOFTIRQ_TEST: ksoftirqd verification passed",
+            failure_meaning: "ksoftirqd verification failed - thread not initialized",
+            check_hint: "Check is_initialized() and ksoftirqd_fn() in kernel/src/task/softirqd.rs",
+        },
+        BootStage {
+            name: "Softirq all tests passed",
+            marker: "SOFTIRQ_TEST: all tests passed",
+            failure_meaning: "Softirq test suite failed",
+            check_hint: "Check test_softirq() in kernel/src/main.rs",
+        },
         // === Graphics syscalls ===
         // Tests that the FbInfo syscall (410) works correctly
         BootStage {

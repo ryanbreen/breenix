@@ -28,6 +28,13 @@ pub struct KthreadHandle {
     inner: Arc<Kthread>,
 }
 
+impl KthreadHandle {
+    /// Get the thread ID of this kthread
+    pub fn tid(&self) -> u64 {
+        self.inner.tid
+    }
+}
+
 #[derive(Debug)]
 pub enum KthreadError {
     SpawnFailed,
@@ -163,6 +170,11 @@ pub fn kthread_unpark(handle: &KthreadHandle) {
     scheduler::with_scheduler(|sched| {
         sched.unblock(handle.inner.tid);
     });
+    // CRITICAL: Set need_resched to ensure a context switch happens soon.
+    // Without this, the unparked thread won't run until the current thread's
+    // quantum expires (up to 50ms). This matches spawn()'s behavior of setting
+    // need_resched after adding a thread to ready_queue.
+    scheduler::set_need_resched();
 }
 
 /// Wait for kthread to exit and return its exit code
