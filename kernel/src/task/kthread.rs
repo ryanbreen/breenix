@@ -228,13 +228,13 @@ pub fn current_kthread() -> Option<KthreadHandle> {
 }
 
 extern "C" fn kthread_entry(arg: u64) -> ! {
-    // Debug: confirm we entered the kthread entry point
-    log::info!("KTHREAD_ENTRY: kthread_entry called with arg={:#x}", arg);
+    // NOTE: No logging in kthread_entry - log statements can cause deadlocks
+    // when timer interrupts fire while holding the logger lock. Use raw serial
+    // output for debugging only. The KTHREAD_CREATE marker in kthread_run() is
+    // sufficient for boot stage verification.
 
     let start = unsafe { Box::from_raw(arg as *mut KthreadStart) };
-    let KthreadStart { kthread, func } = *start;
-
-    log::info!("KTHREAD_ENTRY: Kthread '{}' starting", kthread.name);
+    let KthreadStart { kthread: _, func } = *start;
 
     if let Some(func) = func {
         func();

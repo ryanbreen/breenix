@@ -314,6 +314,8 @@ The following files are on the **prohibited modifications list**. Agents MUST NO
 |------|--------|
 | `kernel/src/interrupts/context_switch.rs` | Context switch path - timing sensitive |
 | `kernel/src/interrupts/mod.rs` | Interrupt dispatch - timing sensitive |
+| `kernel/src/task/kthread.rs` | kthread_entry runs with interrupts enabled - log deadlocks |
+| `kernel/src/task/workqueue.rs` | worker_thread_fn runs with interrupts - log deadlocks |
 | `kernel/src/gdt.rs` | GDT/TSS - rarely needs changes |
 | `kernel/src/per_cpu.rs` | Per-CPU data - used in hot paths |
 
@@ -373,6 +375,48 @@ If assembly code calls logging functions that were removed, provide empty `#[no_
 2. **GDB breakpoints**: `BREENIX_GDB=1` enables GDB server
 3. **Post-mortem analysis**: Analyze logs after crashes, not during execution
 4. **Dedicated diagnostic threads**: Run diagnostics in separate threads with proper scheduling
+5. **raw_serial_char()**: Lock-free single-character output for critical paths (see below)
+
+### 🔴 CRITICAL: raw_serial_char() is the ONLY Acceptable Logging in Critical Paths
+
+**The standard logging infrastructure (`log::*`, `serial_println!`) CANNOT be used in:**
+- Context switch code (`context_switch.rs`)
+- Kernel thread entry (`kthread_entry` in `kthread.rs`)
+- Workqueue worker threads (`worker_thread_fn` in `workqueue.rs`)
+- Any code that runs with interrupts enabled where timer interrupts could fire
+
+**Why:** The logger uses locks. If a timer interrupt fires while holding the logger lock, and the interrupt handler (or context switch path) tries to log, you get a **deadlock**. This manifests as:
+- New kthreads never executing (they hang in kthread_entry trying to log)
+- Workqueue workers hanging on their first log statement
+- System appearing frozen with only the idle thread running
+
+**The ONLY acceptable debugging output in these paths is `raw_serial_char()`:**
+
+```rust
+/// Raw serial debug output - single character, no locks, no allocations.
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port: Port<u8> = Port::new(0x3F8); // COM1 data port
+        port.write(c);
+    }
+}
+
+// Usage: Mark execution points with single characters
+raw_serial_char(b'A');  // Entered function
+raw_serial_char(b'B');  // Passed checkpoint
+raw_serial_char(b'X');  // Error path
+```
+
+**Rules for raw_serial_char():**
+- Single characters only (no strings, no formatting)
+- No locks, no allocations, no function calls that might allocate
+- Use letters/numbers as breadcrumbs to trace execution flow
+- Check output in `target/xtask_user_output.txt` (COM1) not boot_stages (COM2)
+- Remove or keep as comments after debugging - they have ~zero overhead
+
+**Real-world example (January 2025):** Adding `log::info!()` to `kthread_entry()` caused all newly-spawned kthreads to deadlock. The workqueue shutdown test hung because the worker thread never started executing. Root cause: timer interrupt fired while kthread_entry held the logger lock, context switch tried to log, deadlock. Fix: remove all log statements, use raw_serial_char() markers instead.
 
 ### Code Review Checklist
 
