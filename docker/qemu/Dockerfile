@@ -1,5 +1,5 @@
 # Dockerfile for running Breenix tests in isolated QEMU
-# This ensures each test run is completely isolated from others
+# Includes tools for keyboard input testing via QEMU monitor
 
 FROM ubuntu:24.04
 
@@ -7,6 +7,7 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
     qemu-system-x86 \
     ovmf \
+    expect \
     && rm -rf /var/lib/apt/lists/*
 
 # Create working directory

@@ -536,7 +536,9 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Spawn render thread for deferred framebuffer rendering (interactive mode only)
     // This must be done after kthread infrastructure is ready
     #[cfg(feature = "interactive")]
-    graphics::render_task::spawn_render_thread();
+    if let Err(e) = graphics::render_task::spawn_render_thread() {
+        log::error!("Failed to spawn render thread: {}", e);
+    }
 
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
@@ -1252,14 +1254,6 @@ fn kernel_main_continue() -> ! {
     let mut executor = task::executor::Executor::new();
     executor.spawn(task::Task::new(keyboard::keyboard_task()));
     executor.spawn(task::Task::new(serial::command::serial_command_task()));
-
-    // Spawn render thread for deferred framebuffer rendering (interactive mode only)
-    // This is a kernel thread with its own 1MB stack, not an async task.
-    // The deep font rendering call stack (~500KB) requires this isolation.
-    #[cfg(feature = "interactive")]
-    if let Err(e) = graphics::render_task::spawn_render_thread() {
-        log::error!("Failed to spawn render thread: {}", e);
-    }
 
     // Don't run tests automatically - let the user trigger them manually
     #[cfg(feature = "testing")]
