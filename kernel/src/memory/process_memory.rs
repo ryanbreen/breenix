@@ -40,6 +40,7 @@ pub fn is_cow_page(flags: PageTableFlags) -> bool {
 /// Removes WRITABLE and adds COW_FLAG to mark the page as CoW-shared.
 /// Used when setting up page sharing during fork().
 #[inline]
+#[allow(dead_code)]
 pub fn make_cow_flags(original_flags: PageTableFlags) -> PageTableFlags {
     let mut flags = original_flags;
     flags.remove(PageTableFlags::WRITABLE);

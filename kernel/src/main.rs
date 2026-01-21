@@ -34,6 +34,8 @@ mod framebuffer;
 mod fs;
 #[cfg(feature = "interactive")]
 mod graphics;
+#[cfg(feature = "interactive")]
+mod terminal_emulator;
 mod gdt;
 mod net;
 #[cfg(feature = "testing")]
@@ -180,30 +182,77 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     #[cfg(feature = "interactive")]
     logger::upgrade_to_double_buffer();
 
-    // Run graphics demo to showcase the graphics stack
+    // Initialize multi-terminal split-screen mode:
+    // - Left side: Graphics demo (static)
+    // - Right side: Tabbed terminals (Shell, Logs)
+    // - F1/F2 to switch between terminals
     #[cfg(feature = "interactive")]
     {
-        log::info!("Running graphics demo...");
+        log::info!("Initializing multi-terminal display...");
         if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
             let mut fb_guard = fb.lock();
-            graphics::demo::run_demo(&mut *fb_guard);
-            // Flush the demo to screen (access double buffer directly)
+
+            use crate::graphics::primitives::Canvas;
+            let width = Canvas::width(&*fb_guard);
+            let height = Canvas::height(&*fb_guard);
+
+            // Calculate layout: 50% left for demo, 50% right for terminals
+            let divider_x = width / 2;
+            let divider_width = 4;
+            let right_x = divider_x + divider_width;
+            let right_width = width.saturating_sub(right_x);
+
+            // Clear entire screen with dark background
+            graphics::primitives::fill_rect(
+                &mut *fb_guard,
+                graphics::primitives::Rect {
+                    x: 0,
+                    y: 0,
+                    width: width as u32,
+                    height: height as u32,
+                },
+                graphics::primitives::Color::rgb(20, 30, 50),
+            );
+
+            // Draw graphics demo on left pane
+            let left_region = graphics::split_screen::ClippedRegion {
+                offset_x: 0,
+                offset_y: 0,
+                width: divider_x as u32,
+                height: height as u32,
+            };
+            graphics::demo::run_demo_in_region(&mut *fb_guard, &left_region);
+
+            // Draw vertical divider
+            for i in 0..divider_width {
+                graphics::primitives::draw_vline(
+                    &mut *fb_guard,
+                    (divider_x + i) as i32,
+                    0,
+                    height as i32 - 1,
+                    graphics::primitives::Color::rgb(60, 80, 100),
+                );
+            }
+
+            // Initialize terminal manager for right side
+            graphics::terminal_manager::init_terminal_manager(right_x, 0, right_width, height);
+
+            // Initialize the terminal manager (draws tabs and welcome messages)
+            if let Some(mut manager_guard) = graphics::terminal_manager::TERMINAL_MANAGER.try_lock() {
+                if let Some(ref mut manager) = *manager_guard {
+                    manager.init(&mut *fb_guard);
+                }
+            }
+
+            // Initialize the render queue for deferred framebuffer rendering
+            graphics::render_queue::init();
+
+            // Flush to screen
             if let Some(db) = fb_guard.double_buffer_mut() {
                 db.flush_full();
             }
-            log::info!("Graphics demo complete - display showing for 3 seconds");
-        }
-        // Wait 3 seconds so user can see the demo
-        for _ in 0..30 {
-            // Simple delay loop (approximately 100ms each iteration)
-            for _ in 0..10_000_000 {
-                core::hint::spin_loop();
-            }
-        }
-        // Clear and continue to normal boot
-        if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
-            let mut fb_guard = fb.lock();
-            fb_guard.clear();
+
+            log::info!("Multi-terminal display ready - F1: Shell, F2: Logs");
         }
     }
 
@@ -1203,6 +1252,14 @@ fn kernel_main_continue() -> ! {
     let mut executor = task::executor::Executor::new();
     executor.spawn(task::Task::new(keyboard::keyboard_task()));
     executor.spawn(task::Task::new(serial::command::serial_command_task()));
+
+    // Spawn render thread for deferred framebuffer rendering (interactive mode only)
+    // This is a kernel thread with its own 1MB stack, not an async task.
+    // The deep font rendering call stack (~500KB) requires this isolation.
+    #[cfg(feature = "interactive")]
+    if let Err(e) = graphics::render_task::spawn_render_thread() {
+        log::error!("Failed to spawn render thread: {}", e);
+    }
 
     // Don't run tests automatically - let the user trigger them manually
     #[cfg(feature = "testing")]

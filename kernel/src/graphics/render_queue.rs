@@ -1,215 +1,267 @@
-//! Lock-free ring buffer for deferred framebuffer rendering.
+//! Deferred framebuffer rendering queue.
 //!
-//! This module provides a static ring buffer that decouples byte production
-//! (from keyboard IRQ, TTY driver, etc.) from rendering (on a dedicated kthread).
+//! This module provides a ring buffer for queueing text output that will be
+//! rendered to the framebuffer by a dedicated kernel task. This architecture
+//! solves the kernel stack overflow problem: the deep call stack through
+//! terminal_manager → terminal_pane → font rendering (500KB+) now runs on
+//! the render task's own stack, not on syscall/interrupt stacks.
 //!
-//! The ring buffer is designed to be interrupt-safe:
-//! - No locks (uses atomics for head/tail)
-//! - O(1) enqueue operation
-//! - Single producer assumed (keyboard IRQ context)
-//! - Single consumer assumed (render kthread)
+//! ## Architecture
+//!
+//! ```text
+//! Syscall/IRQ context          Render task (own stack)
+//! ──────────────────           ──────────────────────
+//!        │                              │
+//!  queue_byte()  ──────────────►  drain_and_render()
+//!  (shallow stack)               (deep stack OK)
+//!        │                              │
+//!   Ring Buffer ◄──────────────────────►│
+//! ```
+//!
+//! ## Implementation Notes
+//!
+//! Uses a lock-free single-producer approach for the hot path (queue_byte).
+//! The buffer is a static array accessed via raw pointers to avoid any
+//! mutex overhead that was causing stack issues.
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// Ring buffer size (16KB should handle bursts of input)
-const BUFFER_SIZE: usize = 16 * 1024;
+/// Size of the render queue in bytes.
+/// 16KB is enough for several screens of text.
+const QUEUE_SIZE: usize = 16 * 1024;
 
-/// Static ring buffer for queued bytes
-static BUFFER: RenderQueue = RenderQueue::new();
+/// The render queue ring buffer - static array, no mutex.
+/// Safety: Only modified by queue_byte (producer) and drain_and_render (consumer).
+/// Producer only writes at tail, consumer only reads from head.
+static mut QUEUE_BUFFER: [u8; QUEUE_SIZE] = [0u8; QUEUE_SIZE];
 
-/// Flag indicating the render system is ready to accept bytes
-static RENDER_READY: AtomicBool = AtomicBool::new(false);
+/// Head index (where to read from) - only modified by consumer.
+static QUEUE_HEAD: AtomicUsize = AtomicUsize::new(0);
 
-/// Lock-free single-producer single-consumer ring buffer.
-struct RenderQueue {
-    /// The actual buffer storage
-    data: [AtomicU8; BUFFER_SIZE],
-    /// Write position (producer increments)
-    head: AtomicUsize,
-    /// Read position (consumer increments)
-    tail: AtomicUsize,
+/// Tail index (where to write to) - only modified by producer.
+static QUEUE_TAIL: AtomicUsize = AtomicUsize::new(0);
+
+/// Flag indicating the queue is initialized and ready.
+static QUEUE_READY: AtomicBool = AtomicBool::new(false);
+
+/// Flag to wake the render task when data is available.
+static RENDER_WAKE: AtomicBool = AtomicBool::new(false);
+
+/// Simple spinlock for producer synchronization (multiple producers possible).
+static PRODUCER_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Initialize the render queue.
+/// Called during kernel initialization.
+pub fn init() {
+    QUEUE_READY.store(true, Ordering::SeqCst);
+    log::info!("Render queue initialized ({}KB buffer)", QUEUE_SIZE / 1024);
 }
 
-/// Atomic u8 wrapper for the buffer elements
-struct AtomicU8(core::cell::UnsafeCell<u8>);
-
-// SAFETY: AtomicU8 uses atomic operations for all access
-unsafe impl Sync for AtomicU8 {}
-
-impl AtomicU8 {
-    const fn new(val: u8) -> Self {
-        Self(core::cell::UnsafeCell::new(val))
-    }
-
-    #[inline]
-    fn store(&self, val: u8) {
-        // SAFETY: Single producer ensures no concurrent writes
-        unsafe { *self.0.get() = val; }
-    }
-
-    #[inline]
-    fn load(&self) -> u8 {
-        // SAFETY: Store completes before head is updated, load happens after tail check
-        unsafe { *self.0.get() }
-    }
+/// Check if the render queue is ready.
+#[inline]
+pub fn is_ready() -> bool {
+    QUEUE_READY.load(Ordering::Relaxed)
 }
 
-impl RenderQueue {
-    const fn new() -> Self {
-        // Initialize all elements to 0
-        const ZERO: AtomicU8 = AtomicU8::new(0);
-        Self {
-            data: [ZERO; BUFFER_SIZE],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-        }
-    }
-
-    /// Enqueue a byte. Returns true if successful, false if buffer is full.
-    #[inline]
-    fn push(&self, byte: u8) -> bool {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-
-        let next_head = (head + 1) % BUFFER_SIZE;
-
-        // Check if buffer is full
-        if next_head == tail {
-            return false;
-        }
-
-        // Store the byte
-        self.data[head].store(byte);
-
-        // Update head with release ordering so consumer sees the write
-        self.head.store(next_head, Ordering::Release);
-
-        true
-    }
-
-    /// Dequeue a byte. Returns None if buffer is empty.
-    #[inline]
-    fn pop(&self) -> Option<u8> {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Acquire);
-
-        // Check if buffer is empty
-        if tail == head {
-            return None;
-        }
-
-        // Load the byte
-        let byte = self.data[tail].load();
-
-        // Update tail with release ordering
-        let next_tail = (tail + 1) % BUFFER_SIZE;
-        self.tail.store(next_tail, Ordering::Release);
-
-        Some(byte)
-    }
-
-    /// Check if there's pending data without consuming it.
-    #[inline]
-    fn has_data(&self) -> bool {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let head = self.head.load(Ordering::Acquire);
-        tail != head
-    }
-
-    /// Get approximate number of bytes in buffer.
-    #[inline]
-    fn len(&self) -> usize {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        if head >= tail {
-            head - tail
-        } else {
-            BUFFER_SIZE - tail + head
-        }
-    }
+/// Try to acquire producer lock. Returns true if acquired.
+#[inline]
+fn try_lock_producer() -> bool {
+    PRODUCER_LOCK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
+/// Release producer lock.
+#[inline]
+fn unlock_producer() {
+    PRODUCER_LOCK.store(false, Ordering::Release);
+}
 
-/// Queue a byte for deferred rendering.
+/// Queue a single byte for rendering.
+/// Returns true if queued, false if queue is full or not ready.
 ///
-/// This is O(1) and safe to call from interrupt context.
-/// If the render system isn't ready yet, the byte is silently dropped.
-/// If the buffer is full, the byte is silently dropped.
+/// This function is designed to be very cheap - just a buffer write.
 #[inline]
 pub fn queue_byte(byte: u8) -> bool {
-    if !RENDER_READY.load(Ordering::Acquire) {
+    if !is_ready() {
         return false;
     }
-    BUFFER.push(byte)
-}
 
-/// Queue a string for deferred rendering.
-///
-/// Queues each byte of the string. Safe to call from interrupt context.
-pub fn queue_str(s: &str) {
-    for byte in s.bytes() {
-        queue_byte(byte);
+    // Try to get producer lock, don't block
+    if !try_lock_producer() {
+        return false;
     }
+
+    let head = QUEUE_HEAD.load(Ordering::Acquire);
+    let tail = QUEUE_TAIL.load(Ordering::Relaxed);
+    let next_tail = (tail + 1) % QUEUE_SIZE;
+
+    if next_tail == head {
+        // Queue is full
+        unlock_producer();
+        return false;
+    }
+
+    // Safety: We hold the producer lock, and only write at tail index
+    unsafe {
+        QUEUE_BUFFER[tail] = byte;
+    }
+    QUEUE_TAIL.store(next_tail, Ordering::Release);
+
+    // Signal that data is available
+    RENDER_WAKE.store(true, Ordering::Release);
+
+    unlock_producer();
+    true
 }
 
-/// Check if there's pending data to render.
+/// Queue multiple bytes for rendering.
+/// Returns the number of bytes actually queued.
+pub fn queue_bytes(bytes: &[u8]) -> usize {
+    if !is_ready() || bytes.is_empty() {
+        return 0;
+    }
+
+    // Try to get producer lock, don't block
+    if !try_lock_producer() {
+        return 0;
+    }
+
+    let head = QUEUE_HEAD.load(Ordering::Acquire);
+    let mut tail = QUEUE_TAIL.load(Ordering::Relaxed);
+    let mut queued = 0;
+
+    for &byte in bytes {
+        let next_tail = (tail + 1) % QUEUE_SIZE;
+        if next_tail == head {
+            // Queue is full
+            break;
+        }
+        // Safety: We hold the producer lock
+        unsafe {
+            QUEUE_BUFFER[tail] = byte;
+        }
+        tail = next_tail;
+        queued += 1;
+    }
+
+    if queued > 0 {
+        QUEUE_TAIL.store(tail, Ordering::Release);
+        RENDER_WAKE.store(true, Ordering::Release);
+    }
+
+    unlock_producer();
+    queued
+}
+
+/// Check if there's data waiting to be rendered.
 #[inline]
 pub fn has_pending_data() -> bool {
-    BUFFER.has_data()
+    let head = QUEUE_HEAD.load(Ordering::Acquire);
+    let tail = QUEUE_TAIL.load(Ordering::Acquire);
+    head != tail
 }
 
-/// Get approximate number of bytes pending.
+/// Check and clear the wake flag.
+/// Returns true if the render task should wake up.
 #[inline]
-pub fn pending_count() -> usize {
-    BUFFER.len()
+pub fn check_and_clear_wake() -> bool {
+    RENDER_WAKE.swap(false, Ordering::AcqRel)
 }
 
-/// Drain all pending bytes and render them.
+/// Drain the queue and render to framebuffer.
+/// This is called by the render task.
 ///
-/// This should only be called from the render kthread.
 /// Returns the number of bytes rendered.
 pub fn drain_and_render() -> usize {
-    use crate::logger::SHELL_FRAMEBUFFER;
+    if !is_ready() {
+        return 0;
+    }
 
-    let mut count = 0;
+    // Read current indices
+    let head = QUEUE_HEAD.load(Ordering::Acquire);
+    let tail = QUEUE_TAIL.load(Ordering::Acquire);
 
-    // Get the framebuffer - we're on the render thread so we can wait for the lock
-    let fb = match SHELL_FRAMEBUFFER.get() {
-        Some(fb) => fb,
-        None => return 0,
+    if head == tail {
+        return 0; // Nothing to render
+    }
+
+    // Calculate how many bytes to render
+    let count = if tail > head {
+        tail - head
+    } else {
+        QUEUE_SIZE - head + tail
     };
 
-    // Lock the framebuffer for the duration of rendering
-    let mut guard = fb.lock();
+    // Copy data out and render in small batches
+    const BATCH_SIZE: usize = 256;
+    let mut local_buffer = [0u8; BATCH_SIZE];
+    let mut rendered = 0;
+    let mut current_head = head;
 
-    // Drain all pending bytes
-    while let Some(byte) = BUFFER.pop() {
-        guard.write_char(byte as char);
-        count += 1;
+    while rendered < count {
+        let batch_count = core::cmp::min(BATCH_SIZE, count - rendered);
+
+        // Copy batch from ring buffer
+        // Safety: Consumer only reads from head, producer only writes at tail.
+        // The indices are managed by atomic operations.
+        for i in 0..batch_count {
+            unsafe {
+                local_buffer[i] = QUEUE_BUFFER[(current_head + i) % QUEUE_SIZE];
+            }
+        }
+
+        // Update head to release the buffer space
+        current_head = (current_head + batch_count) % QUEUE_SIZE;
+        QUEUE_HEAD.store(current_head, Ordering::Release);
+
+        // Now render this batch
+        render_batch(&local_buffer[..batch_count]);
+
+        rendered += batch_count;
     }
 
-    // Flush if we rendered anything
-    if count > 0 {
-        if let Some(db) = guard.double_buffer_mut() {
-            db.flush_if_dirty();
+    rendered
+}
+
+/// Render a batch of bytes to the framebuffer.
+/// This is where the deep call stack happens, but it's on the render task's stack.
+fn render_batch(bytes: &[u8]) {
+    // Use terminal manager if active
+    if crate::graphics::terminal_manager::is_terminal_manager_active() {
+        for &byte in bytes {
+            let _ = crate::graphics::terminal_manager::write_char_to_shell(byte as char);
+        }
+        return;
+    }
+
+    // Fallback to split-screen mode
+    if crate::graphics::split_screen::is_split_screen_active() {
+        for &byte in bytes {
+            let _ = crate::graphics::split_screen::write_char_to_terminal(byte as char);
+        }
+        return;
+    }
+
+    // Fallback to direct framebuffer
+    if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+        if let Some(mut guard) = fb.try_lock() {
+            for &byte in bytes {
+                guard.write_char(byte as char);
+            }
         }
     }
-
-    count
 }
 
-/// Mark the render system as ready to accept bytes.
-///
-/// Called by the render task after initialization.
-pub fn set_ready() {
-    RENDER_READY.store(true, Ordering::Release);
-    log::info!("RENDER_QUEUE: Ready to accept bytes");
-}
-
-/// Check if render system is ready.
-pub fn is_ready() -> bool {
-    RENDER_READY.load(Ordering::Acquire)
+/// Get queue statistics for debugging.
+#[allow(dead_code)]
+pub fn stats() -> (usize, usize, usize) {
+    let head = QUEUE_HEAD.load(Ordering::Relaxed);
+    let tail = QUEUE_TAIL.load(Ordering::Relaxed);
+    let used = if tail >= head {
+        tail - head
+    } else {
+        QUEUE_SIZE - head + tail
+    };
+    (used, QUEUE_SIZE - used, QUEUE_SIZE)
 }

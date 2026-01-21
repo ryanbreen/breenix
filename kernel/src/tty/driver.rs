@@ -324,26 +324,22 @@ impl TtyDevice {
 
     /// Write a character to the terminal output
     ///
-    /// This writes directly to the serial port for now.
-    /// In the future, this could go through an output queue.
+    /// This writes to serial immediately and queues for deferred framebuffer rendering.
+    /// The render queue is drained by a dedicated kernel task with its own stack,
+    /// avoiding the stack overflow that occurred with direct framebuffer calls.
     pub fn output_char(&self, c: u8) {
         // Handle NL -> CR-NL translation if ONLCR is set
         let termios = self.ldisc.lock().termios().clone();
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
             crate::serial::write_byte(b'\r');
-            // Also write CR to framebuffer in interactive mode
+            // Queue CR for deferred framebuffer rendering
             #[cfg(feature = "interactive")]
-            {
-                crate::logger::write_char_to_framebuffer(b'\r');
-            }
+            let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
         crate::serial::write_byte(c);
-
-        // Also echo to framebuffer in interactive mode so user sees their input
+        // Queue for deferred framebuffer rendering
         #[cfg(feature = "interactive")]
-        {
-            crate::logger::write_char_to_framebuffer(c);
-        }
+        let _ = crate::graphics::render_queue::queue_byte(c);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -352,15 +348,26 @@ impl TtyDevice {
     /// settings once and processes all bytes with those settings. This avoids
     /// the lock acquire/release overhead per character that output_char() has.
     ///
+    /// Framebuffer rendering is deferred to a separate kernel task via the
+    /// render queue, avoiding the stack overflow from deep rendering call stacks.
+    ///
     /// # Arguments
     /// * `buf` - Buffer of bytes to write
     pub fn write_bytes(&self, buf: &[u8]) {
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
+        let do_onlcr = termios.is_opost() && termios.is_onlcr();
 
-        // Process each byte with the cached termios settings
+        // Write to serial and queue for deferred framebuffer rendering
         for &c in buf {
-            self.output_byte_with_termios(c, &termios);
+            if do_onlcr && c == b'\n' {
+                crate::serial::write_byte(b'\r');
+                #[cfg(feature = "interactive")]
+                let _ = crate::graphics::render_queue::queue_byte(b'\r');
+            }
+            crate::serial::write_byte(c);
+            #[cfg(feature = "interactive")]
+            let _ = crate::graphics::render_queue::queue_byte(c);
         }
     }
 
@@ -368,22 +375,20 @@ impl TtyDevice {
     ///
     /// This is the inner loop for write_bytes - no locking is done here,
     /// the caller must provide the termios settings.
+    ///
+    /// Framebuffer rendering is deferred via the render queue.
+    #[allow(dead_code)]
     #[inline]
     fn output_byte_with_termios(&self, c: u8, termios: &Termios) {
         // Handle NL -> CR-NL translation if OPOST and ONLCR are set
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
             crate::serial::write_byte(b'\r');
             #[cfg(feature = "interactive")]
-            {
-                crate::logger::write_char_to_framebuffer(b'\r');
-            }
+            let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
         crate::serial::write_byte(c);
-
         #[cfg(feature = "interactive")]
-        {
-            crate::logger::write_char_to_framebuffer(c);
-        }
+        let _ = crate::graphics::render_queue::queue_byte(c);
     }
 
     /// Write a character to the terminal output (non-blocking)
@@ -398,20 +403,14 @@ impl TtyDevice {
 
             if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
                 crate::serial::write_byte(b'\r');
-                // Also write CR to framebuffer in interactive mode
                 #[cfg(feature = "interactive")]
-                {
-                    crate::logger::write_char_to_framebuffer(b'\r');
-                }
+                let _ = crate::graphics::render_queue::queue_byte(b'\r');
             }
         }
         crate::serial::write_byte(c);
-
-        // Also echo to framebuffer in interactive mode so user sees their input
+        // Queue for deferred framebuffer rendering
         #[cfg(feature = "interactive")]
-        {
-            crate::logger::write_char_to_framebuffer(c);
-        }
+        let _ = crate::graphics::render_queue::queue_byte(c);
     }
 
     /// Send a signal to the foreground process group

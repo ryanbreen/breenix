@@ -430,6 +430,21 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
+    // Handle terminal switching keys (F1/F2) in interactive mode
+    // These are intercepted before normal keyboard processing
+    #[cfg(feature = "interactive")]
+    {
+        if crate::graphics::terminal_manager::handle_terminal_key(scancode) {
+            // Key was consumed by terminal manager, skip normal processing
+            unsafe {
+                PICS.lock()
+                    .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
+            }
+            crate::per_cpu::irq_exit();
+            return;
+        }
+    }
+
     // Process scancode immediately in the interrupt handler.
     // This is necessary because the async executor may not get CPU time
     // when userspace processes are running, so keyboard input would never be processed.

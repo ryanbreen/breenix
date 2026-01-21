@@ -118,6 +118,7 @@ pub fn copy_user_pages(
 /// overhead since they can never be written.
 ///
 /// Returns the number of pages set up for sharing.
+#[allow(dead_code)]
 pub fn setup_cow_pages(
     parent_page_table: &mut ProcessPageTable,
     child_page_table: &mut ProcessPageTable,
@@ -307,6 +308,7 @@ fn copy_stack_state(
 /// This is used when the child has a separate stack allocation from the parent.
 /// The stack pages need to be copied separately from the main copy_user_pages
 /// because they may be at different virtual addresses.
+#[allow(dead_code)]
 pub fn copy_stack_contents(
     parent_thread: &Thread,
     child_thread: &mut Thread,

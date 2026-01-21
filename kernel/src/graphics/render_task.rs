@@ -1,129 +1,114 @@
-//! Render task - dedicated kernel thread for framebuffer rendering.
+//! Framebuffer render thread.
 //!
-//! This module spawns a kernel thread with a large stack (1MB) specifically
-//! for handling the deep call stack of framebuffer rendering operations.
+//! This module provides a kernel thread that drains the render queue and
+//! draws to the framebuffer. By running rendering on a dedicated thread with
+//! its own large stack (1MB), we avoid stack overflow in syscall/interrupt context.
 //!
-//! The rendering call chain can be 500KB+ deep:
-//! ```text
-//! drain_and_render()
-//!   → write_char()
-//!     → terminal_pane::write_char()
-//!       → draw_char()
-//!         → draw_glyph()
-//!           → font bitmap rendering
-//!             → pixel-by-pixel framebuffer writes
-//! ```
-//!
-//! By running this on a dedicated thread with a 1MB stack, we avoid
-//! stack overflow on the main kernel stack (512KB) or IRQ stacks.
-
-use crate::task::kthread::{kthread_run, kthread_should_stop, kthread_park, KthreadHandle};
-use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex;
+//! The deep call stack through terminal_manager → terminal_pane → font rendering
+//! requires approximately 500KB of stack space. Running this on a separate thread
+//! isolates this from the main kernel stack.
 
 use super::render_queue;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-/// Handle to the render thread (for shutdown)
-static RENDER_THREAD: Mutex<Option<KthreadHandle>> = Mutex::new(None);
+/// Stack size for the render thread (1MB - enough for deep font rendering)
+const RENDER_STACK_SIZE: usize = 1024 * 1024;
 
-/// Flag indicating render task is initialized
-static RENDER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// Flag indicating if the render thread is running
+static RENDER_THREAD_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Flag to signal the render thread to check for work
+static RENDER_WAKE: AtomicBool = AtomicBool::new(false);
 
 /// Spawn the render thread.
 ///
-/// This creates a dedicated kernel thread for framebuffer rendering.
-/// The thread has a 1MB stack to handle the deep rendering call chain.
-///
-/// # Panics
-/// Panics if called more than once.
-pub fn spawn_render_thread() {
-    if RENDER_INITIALIZED.swap(true, Ordering::AcqRel) {
-        log::warn!("RENDER_TASK: Already initialized");
-        return;
+/// This should be called during kernel initialization when interactive mode is enabled.
+/// Returns Ok(thread_id) on success, or Err if the thread couldn't be spawned.
+pub fn spawn_render_thread() -> Result<u64, &'static str> {
+    if RENDER_THREAD_RUNNING.load(Ordering::SeqCst) {
+        return Err("Render thread already running");
     }
 
-    log::info!("RENDER_TASK: Spawning render thread...");
+    // Spawn with a large stack
+    let stack = crate::memory::stack::allocate_stack_with_privilege(
+        RENDER_STACK_SIZE,
+        crate::task::thread::ThreadPrivilege::Kernel,
+    )?;
 
-    match kthread_run(render_thread_main, "render") {
-        Ok(handle) => {
-            log::info!("RENDER_TASK: Render thread spawned successfully");
-            *RENDER_THREAD.lock() = Some(handle);
-        }
-        Err(e) => {
-            log::error!("RENDER_TASK: Failed to spawn render thread: {:?}", e);
-            RENDER_INITIALIZED.store(false, Ordering::Release);
-        }
-    }
+    let tls_block = {
+        let thread_id = crate::tls::allocate_thread_tls()
+            .map_err(|_| "Failed to allocate TLS for render thread")?;
+        crate::tls::get_thread_tls_block(thread_id)
+            .ok_or("Failed to get TLS block for render thread")?
+    };
+
+    let thread = alloc::boxed::Box::new(crate::task::thread::Thread::new(
+        alloc::string::String::from("render"),
+        render_thread_main,
+        stack.top(),
+        stack.bottom(),
+        tls_block,
+        crate::task::thread::ThreadPrivilege::Kernel,
+    ));
+
+    let tid = thread.id();
+
+    // Leak the stack to keep it alive for the thread's lifetime
+    core::mem::forget(stack);
+
+    // Add to scheduler
+    crate::task::scheduler::spawn(thread);
+
+    RENDER_THREAD_RUNNING.store(true, Ordering::SeqCst);
+    log::info!(
+        "Render thread spawned with ID {} ({}KB stack)",
+        tid,
+        RENDER_STACK_SIZE / 1024
+    );
+
+    Ok(tid)
 }
 
 /// Main function for the render thread.
 ///
-/// This runs in a loop, checking for pending render data and processing it.
-/// The thread parks itself when there's no work, and is woken by producers.
+/// This runs forever, polling the render queue and rendering to framebuffer.
 fn render_thread_main() {
-    log::info!("RENDER_TASK: Render thread started on dedicated stack");
+    log::info!("Render thread started on dedicated 1MB stack");
 
-    // Enable interrupts so we can be scheduled
-    x86_64::instructions::interrupts::enable();
-
-    // Mark render system as ready to accept bytes
-    render_queue::set_ready();
-
-    while !kthread_should_stop() {
-        // Check for pending render data
+    loop {
+        // Check if there's work to do
         if render_queue::has_pending_data() {
-            // Drain and render all pending bytes
+            // Drain and render - this is where the deep stack usage happens
+            // But we're on our own 1MB stack, so it's safe
             let rendered = render_queue::drain_and_render();
-
             if rendered > 0 {
-                // Log occasionally for debugging (not every render to avoid spam)
-                static RENDER_COUNT: core::sync::atomic::AtomicU64 =
-                    core::sync::atomic::AtomicU64::new(0);
-                let count = RENDER_COUNT.fetch_add(rendered as u64, Ordering::Relaxed);
-                if count % 1000 == 0 && count > 0 {
-                    log::debug!("RENDER_TASK: Total bytes rendered: {}", count + rendered as u64);
-                }
+                // Flush the framebuffer if we rendered anything
+                flush_framebuffer();
             }
-        } else {
-            // No work - park until woken
-            // Use a short yield instead of full park to be responsive
-            // The kthread will be scheduled again on next timer tick
-            crate::task::scheduler::yield_current();
-            x86_64::instructions::hlt();
         }
-    }
 
-    log::info!("RENDER_TASK: Render thread stopping");
+        // Clear the wake flag
+        RENDER_WAKE.store(false, Ordering::SeqCst);
+
+        // Yield to let other threads run
+        // The scheduler will come back to us eventually
+        crate::task::scheduler::yield_current();
+    }
 }
 
-/// Shutdown the render thread.
-#[allow(dead_code)]
-pub fn shutdown_render_thread() {
-    if !RENDER_INITIALIZED.load(Ordering::Acquire) {
-        return;
-    }
-
-    log::info!("RENDER_TASK: Shutting down render thread");
-
-    if let Some(handle) = RENDER_THREAD.lock().take() {
-        let _ = crate::task::kthread::kthread_stop(&handle);
-        let _ = crate::task::kthread::kthread_join(&handle);
-    }
-
-    RENDER_INITIALIZED.store(false, Ordering::Release);
-}
-
-/// Check if render task is initialized.
-pub fn is_initialized() -> bool {
-    RENDER_INITIALIZED.load(Ordering::Acquire)
-}
-
-/// Wake the render thread if it's parked.
-///
-/// Called by producers after queuing data to ensure timely rendering.
+/// Signal the render thread to wake up and check for work.
 #[allow(dead_code)]
 pub fn wake_render_thread() {
-    if let Some(ref handle) = *RENDER_THREAD.lock() {
-        crate::task::kthread::kthread_unpark(handle);
+    RENDER_WAKE.store(true, Ordering::Release);
+}
+
+/// Flush the framebuffer's double buffer if present.
+fn flush_framebuffer() {
+    if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+        if let Some(mut guard) = fb.try_lock() {
+            if let Some(db) = guard.double_buffer_mut() {
+                db.flush_if_dirty();
+            }
+        }
     }
 }
