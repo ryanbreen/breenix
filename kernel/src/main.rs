@@ -1958,6 +1958,14 @@ fn test_workqueue() {
         log::info!("WORKQUEUE_TEST: Destroying workqueue...");
         test_wq.destroy();
 
+        // Test idempotent destroy - calling destroy() twice should be safe
+        test_wq.destroy(); // Second call - should be no-op, not panic or hang
+        log::info!("WORKQUEUE_TEST: idempotent destroy passed");
+
+        // Test flush after destroy - should return immediately, not hang
+        test_wq.flush();
+        log::info!("WORKQUEUE_TEST: flush after destroy passed");
+
         log::info!("WORKQUEUE_TEST: shutdown test passed");
     }
 
