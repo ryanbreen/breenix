@@ -72,8 +72,15 @@ pub fn init() {
 
 /// Set up TLS for the kernel thread (thread 0)
 fn setup_kernel_tls() -> Result<(), &'static str> {
-    // Allocate TLS block for kernel
+    // Allocate TLS block for kernel (doesn't acquire TLS_MANAGER lock)
     let tls_block = allocate_tls_block()?;
+
+    // Register the TLS block with the manager
+    // NOTE: TLS_MANAGER was just initialized and we're single-threaded here,
+    // so this lock acquisition is safe (no interrupts enabled yet).
+    if let Some(ref mut manager) = *TLS_MANAGER.lock() {
+        manager.tls_blocks.push(tls_block);
+    }
 
     // Create TCB for kernel thread
     let tcb = ThreadControlBlock::new(0, VirtAddr::new(0));
@@ -94,18 +101,23 @@ fn setup_kernel_tls() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Allocate a new TLS block
+/// Allocate a new TLS block (just the memory, caller handles registration)
+///
+/// NOTE: This function does NOT lock TLS_MANAGER or register the block.
+/// The caller must handle registration if needed (e.g., via register_thread_tls
+/// or by holding the TLS_MANAGER lock and pushing to tls_blocks directly).
 fn allocate_tls_block() -> Result<VirtAddr, &'static str> {
     use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::layout::KERNEL_TLS_REGION_BASE;
     use crate::memory::paging;
     use x86_64::structures::paging::{Mapper, Page, PageTableFlags, Size4KiB};
 
     // Allocate a frame for TLS
     let frame = allocate_frame().ok_or("Failed to allocate frame for TLS")?;
 
-    // Find a virtual address for TLS (use high memory area)
-    // TLS blocks start at 0xFFFF_8000_0000_0000
-    static mut NEXT_TLS_ADDR: u64 = 0xFFFF_8000_0000_0000;
+    // Find a virtual address for TLS (use dedicated TLS region)
+    // TLS blocks start at KERNEL_TLS_REGION_BASE (0xffffc90040000000)
+    static mut NEXT_TLS_ADDR: u64 = KERNEL_TLS_REGION_BASE;
 
     let virt_addr = unsafe {
         let addr = VirtAddr::new(NEXT_TLS_ADDR);
@@ -127,10 +139,9 @@ fn allocate_tls_block() -> Result<VirtAddr, &'static str> {
             .flush();
     }
 
-    // Store the TLS block address
-    if let Some(ref mut manager) = *TLS_MANAGER.lock() {
-        manager.tls_blocks.push(virt_addr);
-    }
+    // NOTE: We no longer lock TLS_MANAGER here to avoid recursive locking.
+    // The caller (allocate_thread_tls_with_stack) already holds the lock
+    // and will push to tls_blocks directly.
 
     Ok(virt_addr)
 }
@@ -180,48 +191,58 @@ pub fn allocate_thread_tls() -> Result<u64, &'static str> {
 /// Allocate TLS for a new thread with a specific stack pointer
 #[allow(dead_code)]
 pub fn allocate_thread_tls_with_stack(stack_pointer: VirtAddr) -> Result<u64, &'static str> {
-    let mut manager_lock = TLS_MANAGER.lock();
-    let manager = manager_lock.as_mut().ok_or("TLS manager not initialized")?;
+    // Disable interrupts to prevent deadlock with timer interrupt handler
+    // that might access scheduler/TLS during our allocation
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut manager_lock = TLS_MANAGER.lock();
+        let manager = manager_lock.as_mut().ok_or("TLS manager not initialized")?;
 
-    // Allocate TLS block
-    let tls_block = allocate_tls_block()?;
+        // Allocate TLS block (doesn't lock TLS_MANAGER - we already hold it)
+        let tls_block = allocate_tls_block()?;
 
-    // Get thread ID
-    let thread_id = manager.next_thread_id;
-    manager.next_thread_id += 1;
+        // Register the TLS block with the manager
+        manager.tls_blocks.push(tls_block);
 
-    // Create and write TCB
-    let tcb = ThreadControlBlock::new(thread_id, stack_pointer);
-    unsafe {
-        let tcb_ptr = tls_block.as_mut_ptr::<ThreadControlBlock>();
-        tcb_ptr.write(tcb);
-        (*tcb_ptr).self_ptr = tcb_ptr;
-    }
+        // Get thread ID
+        let thread_id = manager.next_thread_id;
+        manager.next_thread_id += 1;
 
-    log::info!("Allocated TLS for thread {} at {:#x}", thread_id, tls_block);
+        // Create and write TCB
+        let tcb = ThreadControlBlock::new(thread_id, stack_pointer);
+        unsafe {
+            let tcb_ptr = tls_block.as_mut_ptr::<ThreadControlBlock>();
+            tcb_ptr.write(tcb);
+            (*tcb_ptr).self_ptr = tcb_ptr;
+        }
 
-    Ok(thread_id)
+        log::info!("Allocated TLS for thread {} at {:#x}", thread_id, tls_block);
+
+        Ok(thread_id)
+    })
 }
 
 /// Register a thread with a specific TLS block
 pub fn register_thread_tls(thread_id: u64, tls_block: VirtAddr) -> Result<(), &'static str> {
-    let mut manager_lock = TLS_MANAGER.lock();
-    let manager = manager_lock.as_mut().ok_or("TLS manager not initialized")?;
+    // Disable interrupts to prevent deadlock with context switch TLS access
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut manager_lock = TLS_MANAGER.lock();
+        let manager = manager_lock.as_mut().ok_or("TLS manager not initialized")?;
 
-    // Ensure the tls_blocks vector is large enough
-    while manager.tls_blocks.len() <= thread_id as usize {
-        manager.tls_blocks.push(VirtAddr::new(0)); // Add placeholder entries
-    }
+        // Ensure the tls_blocks vector is large enough
+        while manager.tls_blocks.len() <= thread_id as usize {
+            manager.tls_blocks.push(VirtAddr::new(0)); // Add placeholder entries
+        }
 
-    // Set the TLS block for this thread
-    manager.tls_blocks[thread_id as usize] = tls_block;
+        // Set the TLS block for this thread
+        manager.tls_blocks[thread_id as usize] = tls_block;
 
-    log::debug!(
-        "Registered thread {} with TLS block {:#x}",
-        thread_id,
-        tls_block
-    );
-    Ok(())
+        log::debug!(
+            "Registered thread {} with TLS block {:#x}",
+            thread_id,
+            tls_block
+        );
+        Ok(())
+    })
 }
 
 /// Switch to a different thread's TLS
@@ -235,23 +256,29 @@ pub fn switch_tls(thread_id: u64) -> Result<(), &'static str> {
         set_fs_base(VirtAddr::new(0))?;
         return Ok(());
     }
-    let manager_lock = TLS_MANAGER.lock();
-    let manager = manager_lock.as_ref().ok_or("TLS manager not initialized")?;
 
-    // Check if thread is registered
-    if thread_id >= manager.tls_blocks.len() as u64 {
-        return Err("Invalid thread ID");
-    }
+    // Disable interrupts to prevent deadlock. This function may be called from
+    // both normal context and interrupt context (during context switch).
+    // without_interrupts is safe in both cases - it saves/restores the IF flag.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let manager_lock = TLS_MANAGER.lock();
+        let manager = manager_lock.as_ref().ok_or("TLS manager not initialized")?;
 
-    let tls_block = manager.tls_blocks[thread_id as usize];
-    if tls_block.is_null() {
-        return Err("Thread has no TLS block allocated");
-    }
+        // Check if thread is registered
+        if thread_id >= manager.tls_blocks.len() as u64 {
+            return Err("Invalid thread ID");
+        }
 
-    // CRITICAL: Use FS for user TLS, preserving GS for per-CPU kernel data
-    set_fs_base(tls_block)?;
+        let tls_block = manager.tls_blocks[thread_id as usize];
+        if tls_block.is_null() {
+            return Err("Thread has no TLS block allocated");
+        }
 
-    Ok(())
+        // CRITICAL: Use FS for user TLS, preserving GS for per-CPU kernel data
+        set_fs_base(tls_block)?;
+
+        Ok(())
+    })
 }
 
 /// Get the current thread's TCB
@@ -348,15 +375,19 @@ pub unsafe fn write_tls_u32(offset: usize, value: u32) {
 /// Get the TLS block address for a specific thread
 #[allow(dead_code)]
 pub fn get_thread_tls_block(thread_id: u64) -> Option<VirtAddr> {
-    let manager_lock = TLS_MANAGER.lock();
-    let manager = manager_lock.as_ref()?;
+    // Disable interrupts to prevent deadlock with timer interrupt
+    // that might call switch_tls during context switch
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let manager_lock = TLS_MANAGER.lock();
+        let manager = manager_lock.as_ref()?;
 
-    // Check if thread_id is valid
-    if thread_id >= manager.tls_blocks.len() as u64 {
-        return None;
-    }
+        // Check if thread_id is valid
+        if thread_id >= manager.tls_blocks.len() as u64 {
+            return None;
+        }
 
-    Some(manager.tls_blocks[thread_id as usize])
+        Some(manager.tls_blocks[thread_id as usize])
+    })
 }
 
 /// Get the current thread's TLS base address
