@@ -44,8 +44,7 @@ static QUEUE_TAIL: AtomicUsize = AtomicUsize::new(0);
 /// Flag indicating the queue is initialized and ready.
 static QUEUE_READY: AtomicBool = AtomicBool::new(false);
 
-/// Flag to wake the render task when data is available.
-static RENDER_WAKE: AtomicBool = AtomicBool::new(false);
+// Note: Wake flag is in render_task module, not here. See wake_render_thread().
 
 /// Simple spinlock for producer synchronization (multiple producers possible).
 static PRODUCER_LOCK: AtomicBool = AtomicBool::new(false);
@@ -108,8 +107,8 @@ pub fn queue_byte(byte: u8) -> bool {
     }
     QUEUE_TAIL.store(next_tail, Ordering::Release);
 
-    // Signal that data is available
-    RENDER_WAKE.store(true, Ordering::Release);
+    // Wake the render thread to process the new data
+    super::render_task::wake_render_thread();
 
     unlock_producer();
     true
@@ -147,7 +146,8 @@ pub fn queue_bytes(bytes: &[u8]) -> usize {
 
     if queued > 0 {
         QUEUE_TAIL.store(tail, Ordering::Release);
-        RENDER_WAKE.store(true, Ordering::Release);
+        // Wake the render thread to process the new data
+        super::render_task::wake_render_thread();
     }
 
     unlock_producer();
@@ -162,12 +162,7 @@ pub fn has_pending_data() -> bool {
     head != tail
 }
 
-/// Check and clear the wake flag.
-/// Returns true if the render task should wake up.
-#[inline]
-pub fn check_and_clear_wake() -> bool {
-    RENDER_WAKE.swap(false, Ordering::AcqRel)
-}
+// Note: Wake is now handled via kthread_park/unpark in render_task.rs
 
 /// Drain the queue and render to framebuffer.
 /// This is called by the render task.
