@@ -484,6 +484,11 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
 
+    // Spawn render thread for deferred framebuffer rendering (interactive mode only)
+    // This must be done after kthread infrastructure is ready
+    #[cfg(feature = "interactive")]
+    graphics::render_task::spawn_render_thread();
+
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]

@@ -947,9 +947,19 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
 ///
 /// This writes directly to the SHELL_FRAMEBUFFER, bypassing the logging system.
 /// Shell output appears on the QEMU window without log prefixes.
+///
+/// When the render thread is active, bytes are queued for deferred rendering
+/// to avoid deep stack usage in interrupt context.
 #[cfg(feature = "interactive")]
 #[allow(dead_code)] // Public API - available for shell output bypass
 pub fn write_to_framebuffer(s: &str) {
+    // If render queue is ready, use deferred rendering
+    if crate::graphics::render_queue::is_ready() {
+        crate::graphics::render_queue::queue_str(s);
+        return;
+    }
+
+    // Fall back to direct rendering during early boot
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {
             guard.write_str(s);
@@ -958,8 +968,18 @@ pub fn write_to_framebuffer(s: &str) {
 }
 
 /// Write a single character to framebuffer console (for keyboard echo in interactive mode)
+///
+/// When the render thread is active, the byte is queued for deferred rendering
+/// to avoid deep stack usage in interrupt context (keyboard IRQ → TTY echo → render).
 #[cfg(feature = "interactive")]
 pub fn write_char_to_framebuffer(byte: u8) {
+    // If render queue is ready, use deferred rendering
+    if crate::graphics::render_queue::is_ready() {
+        crate::graphics::render_queue::queue_byte(byte);
+        return;
+    }
+
+    // Fall back to direct rendering during early boot
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {
             guard.write_char(byte as char);
