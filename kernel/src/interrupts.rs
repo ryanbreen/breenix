@@ -214,6 +214,18 @@ pub fn init_pic() {
         let mut port1: Port<u8> = Port::new(0x21); // PIC1 data port
         let mask1 = port1.read() & !0b00010011; // Clear bit 0 (timer), bit 1 (keyboard), and bit 4 (serial)
         port1.write(mask1);
+
+        // Drain any pending keyboard data to reset the controller state
+        // This ensures the keyboard interrupt line is ready for new interrupts
+        let mut kb_status: Port<u8> = Port::new(0x64);
+        let mut kb_data: Port<u8> = Port::new(0x60);
+        for _ in 0..10 {
+            if (kb_status.read() & 0x01) != 0 {
+                let _ = kb_data.read(); // Drain pending data
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -424,18 +436,33 @@ extern "x86-interrupt" fn double_fault_handler(
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
 
+    // DEBUG: Print "KEY:XX " on EVERY keyboard interrupt (raw serial, no locks)
+    let scancode: u8;
+    unsafe {
+        // Read scancode from keyboard controller
+        let mut kb_port: Port<u8> = Port::new(0x60);
+        scancode = kb_port.read();
+
+        // Print to serial: "KEY:XX "
+        let mut serial_port: Port<u8> = Port::new(0x3F8);
+        serial_port.write(b'K');
+        serial_port.write(b'E');
+        serial_port.write(b'Y');
+        serial_port.write(b':');
+        let hi = (scancode >> 4) & 0x0F;
+        let lo = scancode & 0x0F;
+        serial_port.write(if hi < 10 { b'0' + hi } else { b'A' + hi - 10 });
+        serial_port.write(if lo < 10 { b'0' + lo } else { b'A' + lo - 10 });
+        serial_port.write(b' ');
+    }
+
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
-
     // Handle terminal switching keys (F1/F2) in interactive mode
-    // These are intercepted before normal keyboard processing
     #[cfg(feature = "interactive")]
     {
         if crate::graphics::terminal_manager::handle_terminal_key(scancode) {
-            // Key was consumed by terminal manager, skip normal processing
             unsafe {
                 PICS.lock()
                     .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
@@ -445,55 +472,20 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         }
     }
 
-    // Process scancode immediately in the interrupt handler.
-    // This is necessary because the async executor may not get CPU time
-    // when userspace processes are running, so keyboard input would never be processed.
-    //
-    // IMPORTANT: We do NOT add scancodes to the async queue anymore.
-    // Previously, both the interrupt handler AND the async keyboard_task would
-    // call process_scancode() on the same scancodes. This caused modifier state
-    // corruption: by the time the async task processed a key press, the Ctrl key
-    // might have been released (processed by a later interrupt), causing Ctrl+C
-    // to produce 'c' instead of 0x03.
-    //
-    // The fix: Only process scancodes in ONE place - the interrupt handler.
-    // All keyboard input now goes through TTY for proper signal handling.
+    // Process scancode to get key event
     if let Some(event) = crate::keyboard::process_scancode(scancode) {
         if let Some(character) = event.character {
             let c = character as u8;
-
-            // Route ALL keyboard input through TTY line discipline.
-            // This is the ONLY path for keyboard input to reach userspace.
-            //
-            // The TTY line discipline handles:
-            // - Echo (character display to terminal)
-            // - Signal generation (Ctrl+C -> SIGINT, Ctrl+\ -> SIGQUIT, etc.)
-            // - Line editing (backspace, kill line, word erase, etc.)
-            // - Canonical mode buffering (accumulate until newline, then send to stdin)
-            // - Raw mode passthrough (send each character immediately to stdin)
-            //
-            // IMPORTANT: We do NOT push directly to stdin here. The TTY line discipline
-            // is responsible for transferring data to stdin when appropriate:
-            // - In canonical mode: complete line transferred after newline
-            // - In raw mode: each character transferred immediately
-            //
-            // If TTY lock is busy, the character is dropped. This is acceptable because
-            // keyboard input during heavy TTY usage is rare and can be retried by the user.
+            // Route through TTY
             let _ = crate::tty::driver::push_char_nonblock(c);
         }
     }
-
-    // NOTE: We intentionally do NOT call crate::keyboard::add_scancode(scancode) here.
-    // The async keyboard_task used to process these scancodes, but that caused
-    // duplicate processing and modifier state corruption. All keyboard processing
-    // now happens in this interrupt handler.
 
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }
 
-    // Exit hardware IRQ context
     crate::per_cpu::irq_exit();
 }
 

@@ -855,10 +855,10 @@ impl Log for CombinedLogger {
                         );
                     }
 
-                    // Queue log output for deferred framebuffer rendering
-                    // Only queue if render queue is ready (implies heap is initialized)
+                    // Route log output to Logs terminal (F2) in interactive mode
+                    // This uses the terminal_manager's proper routing to the Logs pane
                     #[cfg(feature = "interactive")]
-                    if crate::graphics::render_queue::is_ready() {
+                    if crate::graphics::terminal_manager::is_terminal_manager_active() {
                         let msg = if timestamp > 0 {
                             alloc::format!(
                                 "{} - [{:>5}] {}: {}\n",
@@ -875,7 +875,8 @@ impl Log for CombinedLogger {
                                 record.args()
                             )
                         };
-                        let _ = crate::graphics::render_queue::queue_bytes(msg.as_bytes());
+                        // Route to Logs terminal (F2) - not Shell (F1)
+                        write_to_logs_terminal(&msg);
                     }
 
                     // In non-interactive mode, also write to framebuffer
@@ -970,7 +971,7 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
 pub fn write_to_framebuffer(s: &str) {
     // If render queue is ready, use deferred rendering
     if crate::graphics::render_queue::is_ready() {
-        crate::graphics::render_queue::queue_str(s);
+        crate::graphics::render_queue::queue_bytes(s.as_bytes());
         return;
     }
 
@@ -987,6 +988,7 @@ pub fn write_to_framebuffer(s: &str) {
 /// In terminal manager mode, this routes to the shell terminal.
 /// Otherwise falls back to split-screen mode or full framebuffer.
 #[cfg(feature = "interactive")]
+#[allow(dead_code)]
 pub fn write_char_to_framebuffer(byte: u8) {
     // Try terminal manager first (multi-terminal mode)
     if crate::graphics::terminal_manager::write_char_to_shell(byte as char) {
@@ -1014,6 +1016,7 @@ pub fn write_char_to_framebuffer(byte: u8) {
 /// In terminal manager mode, routes to the shell terminal using batched string write.
 /// Otherwise falls back to split-screen mode or full framebuffer.
 #[cfg(feature = "interactive")]
+#[allow(dead_code)]
 pub fn write_bytes_to_framebuffer(bytes: &[u8]) {
     // Try terminal manager first (multi-terminal mode) - uses batched write
     if crate::graphics::terminal_manager::write_bytes_to_shell(bytes) {

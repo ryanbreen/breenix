@@ -445,6 +445,7 @@ pub fn write_str_to_shell(s: &str) -> bool {
 ///
 /// This is more efficient than calling write_char_to_shell per character
 /// as it acquires locks once for the entire buffer.
+#[allow(dead_code)]
 pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
     if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return false;
