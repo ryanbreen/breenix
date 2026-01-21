@@ -205,6 +205,12 @@ impl Workqueue {
 
     /// Wait for all pending work to complete (flush the queue).
     pub fn flush(&self) {
+        // Only flush if we have a worker to process the sentinel
+        // (avoid blocking forever if worker is already stopped)
+        if self.worker.lock().is_none() {
+            return;
+        }
+
         // Create a sentinel work item
         let sentinel = Work::new(|| {}, "flush_sentinel");
 
@@ -221,21 +227,25 @@ impl Workqueue {
     /// All pending work will be completed before destruction.
     pub fn destroy(&self) {
         // First, flush all pending work to ensure completion
+        // (flush needs the worker to still be in self.worker for wake_worker to work)
         self.flush();
 
-        // Signal shutdown
-        self.shutdown.store(true, Ordering::Release);
-
-        // Stop worker thread
+        // Now take the worker - this makes the operation idempotent
+        // since subsequent calls will get None
         let worker = self.worker.lock().take();
+
         if let Some(handle) = worker {
-            // Wake worker so it sees shutdown flag
+            // Signal shutdown
+            self.shutdown.store(true, Ordering::Release);
+
+            // Wake worker so it sees shutdown flag and exits
             kthread_unpark(&handle);
             // Signal stop
             let _ = kthread_stop(&handle);
             // Wait for worker thread to actually exit
             let _ = kthread_join(&handle);
         }
+        // If worker was already taken (second destroy call), nothing to do
     }
 
     /// Ensure worker thread exists, creating it if needed.
@@ -285,7 +295,9 @@ fn worker_thread_fn(wq: Arc<Workqueue>) {
     // Enable interrupts for preemption
     x86_64::instructions::interrupts::enable();
 
-    log::debug!("workqueue({}): worker thread started", wq.name);
+    // NOTE: No logging here - log statements in kernel threads can cause deadlocks
+    // when timer interrupts fire while holding the logger lock. The KWORKER_SPAWN
+    // marker in create_workqueue_worker() is sufficient for boot stage verification.
 
     while !wq.shutdown.load(Ordering::Acquire) && !kthread_should_stop() {
         // Try to get work from queue
@@ -293,7 +305,7 @@ fn worker_thread_fn(wq: Arc<Workqueue>) {
 
         match work {
             Some(work) => {
-                log::debug!("workqueue({}): executing work '{}'", wq.name, work.name);
+                // Execute work without logging (avoid deadlock on timer interrupt)
                 work.execute();
             }
             None => {
@@ -303,7 +315,7 @@ fn worker_thread_fn(wq: Arc<Workqueue>) {
         }
     }
 
-    log::debug!("workqueue({}): worker thread exiting", wq.name);
+    // NOTE: No logging on exit path either - same deadlock risk
 }
 
 // =============================================================================

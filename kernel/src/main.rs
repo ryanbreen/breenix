@@ -1920,16 +1920,46 @@ fn test_workqueue() {
     );
     log::info!("WORKQUEUE_TEST: multi-item flush passed");
 
-    // Test 6: Shutdown test
-    // NOTE: This test creates a new workqueue (spawns a new kworker thread).
-    // In TCG (software CPU emulation used in CI), context switching to newly
-    // spawned kthreads after the scheduler has been running for a while has
-    // issues. The system workqueue (created early in boot) works fine.
-    // Skip this test for now and log as passed. The workqueue shutdown logic
-    // itself is tested indirectly when the system workqueue is destroyed during
-    // kernel shutdown.
-    // TODO: Investigate why new kthreads don't start properly in TCG mode.
-    log::info!("WORKQUEUE_TEST: shutdown test passed (skipped - TCG timing issue)");
+    // Test 6: Shutdown test - creates a NEW workqueue (not system workqueue)
+    // This tests that new kthreads created later in boot can execute
+    log::info!("WORKQUEUE_TEST: Testing shutdown with new workqueue...");
+    {
+        use crate::task::workqueue::{Workqueue, WorkqueueFlags};
+
+        static SHUTDOWN_WORK_DONE: AtomicBool = AtomicBool::new(false);
+        SHUTDOWN_WORK_DONE.store(false, Ordering::SeqCst);
+
+        // Create a NEW workqueue (not the system workqueue)
+        let test_wq = Workqueue::new("test_wq", WorkqueueFlags::default());
+        log::info!("WORKQUEUE_TEST: Created new workqueue 'test_wq'");
+
+        // Queue work to it - this will spawn a NEW kworker thread
+        let work = Work::new(
+            || {
+                log::info!("WORKQUEUE_TEST: shutdown work executing!");
+                SHUTDOWN_WORK_DONE.store(true, Ordering::SeqCst);
+            },
+            "shutdown_work",
+        );
+
+        log::info!("WORKQUEUE_TEST: Queuing work to new workqueue...");
+        let queued = test_wq.queue(Arc::clone(&work));
+        assert!(queued, "work should be queued successfully");
+
+        // Wait for the work to complete
+        log::info!("WORKQUEUE_TEST: Waiting for work completion...");
+        work.wait();
+
+        // Verify work executed
+        let done = SHUTDOWN_WORK_DONE.load(Ordering::SeqCst);
+        assert!(done, "shutdown work should have executed");
+
+        // Destroy the workqueue (tests clean shutdown)
+        log::info!("WORKQUEUE_TEST: Destroying workqueue...");
+        test_wq.destroy();
+
+        log::info!("WORKQUEUE_TEST: shutdown test passed");
+    }
 
     // Test 7: Error path test
     log::info!("WORKQUEUE_TEST: Testing error path re-queue...");
