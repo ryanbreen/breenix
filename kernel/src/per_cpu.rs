@@ -539,14 +539,11 @@ pub fn softirq_exit() {
         hal_percpu::X86PerCpu::softirq_exit();
     }
 
-    // Check if we should schedule on softirq exit (similar to IRQ exit)
-    // Only if we're returning to preemptible context
-
-    let new_count = hal_percpu::X86PerCpu::preempt_count();
-    if new_count == 0 && need_resched() {
-        log::info!("softirq_exit: Triggering preempt_schedule_irq");
-        crate::task::scheduler::preempt_schedule_irq();
-    }
+    // Note: We intentionally do NOT call preempt_schedule_irq() or try_schedule() here.
+    // The need_resched flag is checked by the assembly interrupt return path,
+    // which handles both the schedule() call and the actual context switch atomically.
+    // Calling schedule() from Rust code without an immediate context switch
+    // would desync scheduler state from reality (see scheduler.rs ARCHITECTURAL CONSTRAINT).
 }
 
 /// Get the idle thread from per-CPU data
@@ -738,33 +735,35 @@ pub fn clear_softirq(nr: u32) {
 
 /// Process pending softirqs
 /// This is called from irq_exit() when returning to non-interrupt context
+///
+/// Delegates to the softirqd subsystem if initialized, otherwise uses a
+/// basic fallback that just clears pending bits.
 pub fn do_softirq() {
     // Don't process softirqs if we're in interrupt context (nested)
     if in_interrupt() {
         return;
     }
-    
-    // Enter softirq context
+
+    // Delegate to softirqd if initialized (has proper handler dispatch)
+    if crate::task::softirqd::is_initialized() {
+        crate::task::softirqd::do_softirq();
+        return;
+    }
+
+    // Fallback: basic implementation before softirqd is ready
+    // Just clear the pending bits without calling handlers
     softirq_enter();
-    
-    // Process pending softirqs
+
     let pending = softirq_pending();
     if pending != 0 {
-        log::debug!("do_softirq: Processing pending softirqs (bitmap={:#x})", pending);
-        
-        // Process each pending softirq
-        // In a real implementation, we'd have an array of softirq handlers
-        // For now, we just clear them and log
+        // NOTE: No logging here - this runs in interrupt exit path
         for nr in 0..32 {
             if (pending & (1 << nr)) != 0 {
                 clear_softirq(nr);
-                // log::trace!("  Processing softirq {}", nr);  // Disabled to avoid deadlock
-                // softirq_handlers[nr]() would be called here
             }
         }
     }
-    
-    // Exit softirq context
+
     softirq_exit();
 }
 

@@ -465,32 +465,34 @@ pub fn schedule() -> Option<(u64, u64)> {
 /// Special scheduling point called from IRQ exit path
 /// This is safe to call from IRQ context when returning to user or idle
 pub fn preempt_schedule_irq() {
-    // This is the Linux-style preempt_schedule_irq equivalent
-    // It's called from irq_exit when:
-    // 1. HARDIRQ count is going to 0
-    // 2. need_resched is set
-    // 3. We're about to return to a preemptible context
-    
-    // Linux-style loop: keep scheduling while need_resched is set
-    // This prevents lost wakeups
-    loop {
-        // Check need_resched at the start of each iteration
-        if !crate::per_cpu::need_resched() {
-            break;
-        }
-        
-        // Clear need_resched only AFTER checking it
-        crate::per_cpu::set_need_resched(false);
-        
-        // Try non-blocking schedule since we're in IRQ exit path
-        // Note: Logging removed here to avoid timing issues in hot path
-        let _ = try_schedule();
-        
-        // Loop will check need_resched again in case it was set during scheduling
-    }
+    // IMPORTANT: This function must NOT call schedule()!
+    //
+    // The schedule() function updates scheduler.current_thread, but the actual
+    // context switch only happens on the assembly IRETQ path. Calling schedule()
+    // here would desync scheduler state from reality:
+    //   1. Thread A is running
+    //   2. preempt_schedule_irq calls schedule(), sets current_thread = B
+    //   3. We return through softirq_exit -> irq_exit -> timer ISR -> IRETQ
+    //   4. IRETQ returns to thread A's context (no switch happened)
+    //   5. Scheduler thinks B is running, but A is actually running
+    //   6. Next schedule() saves A's regs to B's context -> corruption
+    //
+    // Instead, we leave need_resched set. The assembly interrupt return path
+    // (check_need_resched_and_switch) will:
+    //   1. Check need_resched
+    //   2. Call schedule() to decide what to switch to
+    //   3. Perform the actual context switch before IRETQ
+    //
+    // See also: yield_current() which similarly just sets need_resched
+    // and the ARCHITECTURAL CONSTRAINT comment near schedule().
+
+    // No-op: Let the assembly IRETQ path handle context switching
 }
 
 /// Non-blocking scheduling attempt (for interrupt context). Returns None if lock is busy.
+/// Note: Currently unused - the assembly interrupt return path handles scheduling.
+/// Kept as part of public API for potential future use in SMP context.
+#[allow(dead_code)]
 pub fn try_schedule() -> Option<(u64, u64)> {
     // Do not disable interrupts; we only attempt a non-blocking lock here
     if let Some(mut scheduler_lock) = SCHEDULER.try_lock() {

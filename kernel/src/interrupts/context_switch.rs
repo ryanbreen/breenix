@@ -16,7 +16,7 @@ use x86_64::VirtAddr;
 /// Use this for debugging context switch paths where any allocation/locking
 /// could perturb timing or cause deadlocks.
 #[inline(always)]
-fn raw_serial_char(c: u8) {
+pub fn raw_serial_char(c: u8) {
     unsafe {
         use x86_64::instructions::port::Port;
         let mut port: Port<u8> = Port::new(0x3F8); // COM1 data port
