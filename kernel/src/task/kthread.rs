@@ -1,6 +1,6 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
@@ -13,8 +13,6 @@ use super::thread::Thread;
 pub struct Kthread {
     /// Thread ID (same as regular thread)
     pub tid: u64,
-    /// Thread name for debugging
-    pub name: String,
     /// Stop flag - thread should check this and exit
     should_stop: AtomicBool,
     /// Exit code set by thread
@@ -39,7 +37,6 @@ pub enum KthreadError {
 }
 
 struct KthreadStart {
-    kthread: Arc<Kthread>,
     func: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
@@ -56,7 +53,6 @@ where
     let tid = thread.id;
     let kthread = Arc::new(Kthread {
         tid,
-        name: name.to_string(),
         should_stop: AtomicBool::new(false),
         exit_code: AtomicI32::new(0),
         exited: AtomicBool::new(false),
@@ -64,7 +60,6 @@ where
     });
 
     let start = Box::new(KthreadStart {
-        kthread: Arc::clone(&kthread),
         func: Some(Box::new(func)),
     });
     thread.context.rdi = Box::into_raw(start) as u64;
@@ -234,7 +229,7 @@ extern "C" fn kthread_entry(arg: u64) -> ! {
     // sufficient for boot stage verification.
 
     let start = unsafe { Box::from_raw(arg as *mut KthreadStart) };
-    let KthreadStart { kthread: _, func } = *start;
+    let KthreadStart { func } = *start;
 
     if let Some(func) = func {
         func();
