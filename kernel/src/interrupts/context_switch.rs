@@ -72,8 +72,27 @@ pub extern "C" fn check_need_resched_and_switch(
         return;
     }
 
+    // Check if current thread is blocked or terminated - we MUST switch away in that case
+    let current_thread_blocked_or_terminated = scheduler::with_scheduler(|sched| {
+        if let Some(current) = sched.current_thread_mut() {
+            matches!(
+                current.state,
+                crate::task::thread::ThreadState::Blocked
+                    | crate::task::thread::ThreadState::BlockedOnSignal
+                    | crate::task::thread::ThreadState::BlockedOnChildExit
+                    | crate::task::thread::ThreadState::Terminated
+            )
+        } else {
+            false
+        }
+    })
+    .unwrap_or(false);
+
     // Check if reschedule is needed
-    if !scheduler::check_and_clear_need_resched() {
+    // CRITICAL: If current thread is blocked/terminated, we MUST schedule regardless of need_resched.
+    // A blocked thread cannot continue running - we must switch to another thread.
+    let need_resched = scheduler::check_and_clear_need_resched();
+    if !need_resched && !current_thread_blocked_or_terminated {
         // No reschedule needed, but check for pending signals before returning to userspace
         if from_userspace {
             check_and_deliver_signals_for_current_thread(saved_regs, interrupt_frame);
@@ -241,6 +260,8 @@ pub extern "C" fn check_need_resched_and_switch(
         // Pass the process_manager_guard so we don't try to re-acquire the lock
         switch_to_thread(new_thread_id, saved_regs, interrupt_frame, process_manager_guard.take());
 
+        // NOTE: Don't log here - this is on the hot path and can affect timing
+
         // CRITICAL: Clear PREEMPT_ACTIVE after context switch completes
         // PREEMPT_ACTIVE (bit 28) is set in syscall/entry.asm to protect register
         // restoration during syscall return. When we switch to a different thread,
@@ -395,6 +416,10 @@ fn save_kthread_context(
             thread.context.rsp
         );
     });
+
+    // Hardware memory fence to ensure all context saves are visible before
+    // we switch to a different thread. This is critical for TCG mode.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 /// Switch to a different thread
@@ -812,6 +837,13 @@ fn setup_kernel_thread_return(
         unsafe {
             crate::memory::process_memory::switch_to_kernel_page_table();
         }
+
+        // Hardware memory fence to ensure all writes to interrupt frame and saved_regs
+        // are visible before IRETQ reads them. This is critical for TCG mode
+        // where software emulation may have different memory ordering semantics.
+        // Using a full fence (mfence) rather than just compiler fence to force
+        // actual CPU store completion.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     } else {
         log::error!("KTHREAD_SWITCH: Failed to get thread info for thread {}", thread_id);
     }
