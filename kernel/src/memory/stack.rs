@@ -1,11 +1,17 @@
-use crate::memory::layout::{USER_STACK_REGION_START, USER_STACK_REGION_END};
+use crate::memory::layout::{
+    PERCPU_STACK_REGION_BASE, PERCPU_STACK_REGION_SIZE, USER_STACK_REGION_END,
+    USER_STACK_REGION_START,
+};
 use crate::task::thread::ThreadPrivilege;
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 use x86_64::VirtAddr;
 
 /// Base address for kernel stack allocation area
 /// Must be in kernel space (high canonical addresses)
-pub const KERNEL_STACK_ALLOC_START: u64 = 0xFFFF_C900_0000_0000;
+/// This is placed AFTER the per-CPU stack region to avoid conflicts.
+/// Per-CPU stacks use 0xFFFF_C900_0000_0000 + (256 CPUs * 2 MiB stride) = 512 MiB.
+pub const KERNEL_STACK_ALLOC_START: u64 =
+    PERCPU_STACK_REGION_BASE + PERCPU_STACK_REGION_SIZE as u64;
 
 /// Stack with guard page protection
 pub struct GuardedStack {

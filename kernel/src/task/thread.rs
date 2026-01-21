@@ -442,18 +442,23 @@ impl Thread {
 /// Thread entry point trampoline
 /// This function is called when a thread starts for the first time
 extern "C" fn thread_entry_trampoline() -> ! {
-    // Get current thread from TLS
-    let thread_id = crate::tls::current_thread_id();
+    // Get current thread from per-CPU data
+    let entry_point = crate::per_cpu::current_thread()
+        .and_then(|t| t.entry_point.take());
 
-    log::debug!("Thread {} starting execution", thread_id);
+    if let Some(entry_fn) = entry_point {
+        log::debug!("Thread starting execution via trampoline");
 
-    // TODO: Get thread entry point from thread structure
-    // For now, we'll need to store it somewhere accessible
+        // Call the actual entry point
+        entry_fn();
 
-    // Call the actual entry point
-    // thread.entry_point();
+        // If the entry point returns, the thread is done
+        log::debug!("Thread entry point returned");
+    } else {
+        log::error!("Thread has no entry point!");
+    }
 
-    // Thread finished, call exit syscall
+    // Thread finished (or had no entry point), call exit
     let _ = crate::syscall::handlers::sys_exit(0);
 
     // Should never reach here
