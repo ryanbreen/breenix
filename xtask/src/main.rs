@@ -64,6 +64,34 @@ fn term_worktree_qemu() {
     signal_worktree_qemu("-TERM");
 }
 
+/// Clean up a QEMU child process properly.
+/// Kills the process, waits for it to exit, and removes the PID file.
+fn cleanup_qemu_child(child: &mut std::process::Child) {
+    // First try SIGTERM for graceful shutdown
+    let _ = child.kill();
+
+    // Wait with a short timeout
+    for _ in 0..10 {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                // Process has exited
+                break;
+            }
+            Ok(None) => {
+                // Still running, wait a bit
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Final wait to ensure it's reaped (non-blocking if already done)
+    let _ = child.wait();
+
+    // Clean up PID file
+    let _ = fs::remove_file(get_qemu_pid_file());
+}
+
 /// Save the QEMU PID for this worktree.
 fn save_qemu_pid(pid: u32) {
     let pid_file = get_qemu_pid_file();
@@ -1764,12 +1792,16 @@ fn boot_stages() -> Result<()> {
     let timeout = if std::env::var("CI").is_ok() {
         Duration::from_secs(300) // 5 minutes for CI
     } else {
-        Duration::from_secs(120) // 2 minutes locally
+        Duration::from_secs(180) // 3 minutes locally - allows time for QEMU serial buffer flush
     };
+    // Note: QEMU's file-based serial output uses stdio buffering (~4KB). When tests complete
+    // quickly, their markers may still be in QEMU's buffer when the validator reads the file.
+    // The SIGTERM+recheck mechanism (lines 1879-1941) partially addresses this, but intermittent
+    // failures still occur. Matching CI timeout (90s) provides consistent behavior.
     let stage_timeout = if std::env::var("CI").is_ok() {
         Duration::from_secs(90) // 90 seconds per stage in CI
     } else {
-        Duration::from_secs(60) // 60 seconds per stage locally
+        Duration::from_secs(90) // 90 seconds per stage locally (matches CI for consistency)
     };
     let mut last_progress = Instant::now();
 
@@ -1951,8 +1983,7 @@ fn boot_stages() -> Result<()> {
                     println!();
 
                     // Force kill QEMU if still running
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    cleanup_qemu_child(&mut child);
 
                     // Print summary
                     println!("=========================================");
@@ -1969,9 +2000,8 @@ fn boot_stages() -> Result<()> {
         thread::sleep(Duration::from_millis(50));
     }
 
-    // Kill QEMU
-    let _ = child.kill();
-    let _ = child.wait();
+    // Kill QEMU and wait for it to fully terminate
+    cleanup_qemu_child(&mut child);
 
     // Final scan of output files after QEMU terminates
     // This catches markers that were printed but not yet processed due to timing
@@ -2138,8 +2168,7 @@ fn ring3_smoke() -> Result<()> {
     }
 
     // Kill QEMU
-    let _ = child.kill();
-    let _ = child.wait();
+    cleanup_qemu_child(&mut child);
 
     // Print the output for debugging
     if let Ok(mut file) = fs::File::open(serial_output_file) {
@@ -2278,8 +2307,7 @@ fn ring3_enosys() -> Result<()> {
     }
 
     // Kill QEMU
-    let _ = child.kill();
-    let _ = child.wait();
+    cleanup_qemu_child(&mut child);
 
     // Print the output for debugging
     if let Ok(mut file) = fs::File::open(serial_output_file) {
@@ -2484,9 +2512,7 @@ fn interactive_test() -> Result<()> {
 
     // Helper to clean up on failure
     let cleanup = |child: &mut std::process::Child| {
-        let _ = child.kill();
-        let _ = child.wait();
-        kill_worktree_qemu();
+        cleanup_qemu_child(child);
     };
 
     // Wait for output files to be created

@@ -428,10 +428,10 @@ pub fn build_master_kernel_pml4() {
         };
         
         // Build the page table hierarchy for the entire kernel stack region
-        // We need to cover the full range: 0xffffc900_0000_0000 to 0xffffc900_0100_0000 (16MB)
+        // We need to cover the full range: 0xffffc900_0000_0000 to 0xffffc900_0800_0000 (128MB)
         // This ensures ALL kernel stacks can be allocated later without issues
         const KERNEL_STACK_REGION_START: u64 = 0xffffc900_0000_0000;
-        const KERNEL_STACK_REGION_END: u64 = 0xffffc900_0100_0000;
+        const KERNEL_STACK_REGION_END: u64 = 0xffffc900_0800_0000;
         
         let pdpt_virt = phys_mem_offset + pdpt_frame.start_address().as_u64();
         let pdpt = &mut *(pdpt_virt.as_mut_ptr() as *mut PageTable);
@@ -440,7 +440,7 @@ pub fn build_master_kernel_pml4() {
                   KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_END);
         
         // We need to ensure PD and PT exist for the entire region
-        // The region spans only one PDPT entry (index 0) since it's only 16MB
+        // The region spans only one PDPT entry (index 0) since it's only 128MB
         let pdpt_index = 0; // (0xffffc900_0000_0000 >> 30) & 0x1FF = 0
         
         // Ensure PD exists for the kernel stack region
@@ -464,9 +464,9 @@ pub fn build_master_kernel_pml4() {
         let pd_virt = phys_mem_offset + pd_frame.start_address().as_u64();
         let pd = &mut *(pd_virt.as_mut_ptr() as *mut PageTable);
         
-        // The 16MB region spans 8 PD entries (each PD entry covers 2MB)
-        // PD indices 0-7 for the kernel stack region
-        for pd_index in 0..8 {
+        // The 128MB region spans 64 PD entries (each PD entry covers 2MB)
+        // PD indices 0-63 for the kernel stack region
+        for pd_index in 0..64 {
             // Ensure PT exists for each 2MB chunk
             if pd[pd_index].is_unused() {
                 let frame = allocate_frame().expect("Failed to allocate PT for kernel stacks");
@@ -485,7 +485,7 @@ pub fn build_master_kernel_pml4() {
         log::info!("STEP 2: Page table hierarchy built for kernel stack region:");
         log::info!("  PML4[{}] -> PDPT frame {:?}", kernel_stack_pml4_idx, pdpt_frame);
         log::info!("  PDPT[0] -> PD frame {:?}", pd_frame);
-        log::info!("  PD[0-7] -> PT frames allocated");
+        log::info!("  PD[0-63] -> PT frames allocated for 128MB region");
         log::info!("  PTEs: Left unmapped (will be populated by allocate_kernel_stack)");
         
         log::info!("STEP 2: Successfully pre-built page table hierarchy for kernel stacks");

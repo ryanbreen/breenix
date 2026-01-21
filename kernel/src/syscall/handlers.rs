@@ -187,12 +187,9 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     use crate::ipc::FdKind;
 
-    log::info!(
-        "USERSPACE: sys_write called: fd={}, buf_ptr={:#x}, count={}",
-        fd,
-        buf_ptr,
-        count
-    );
+    // Note: Logging removed from hot path to prevent stack overflow.
+    // Each log call in interactive mode writes to the Logs terminal,
+    // which adds significant stack depth during syscall handling.
 
     // Validate buffer pointer and count
     if buf_ptr == 0 || count == 0 {
@@ -200,14 +197,9 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     }
 
     // Copy data from userspace
-    log::info!("sys_write: About to call copy_from_user for {} bytes at {:#x}", count, buf_ptr);
     let buffer = match copy_from_user(buf_ptr, count as usize) {
-        Ok(buf) => {
-            log::info!("sys_write: copy_from_user succeeded, got {} bytes", buf.len());
-            buf
-        },
-        Err(e) => {
-            log::error!("sys_write: Failed to copy from user: {}", e);
+        Ok(buf) => buf,
+        Err(_e) => {
             return SyscallResult::Err(14); // EFAULT
         }
     };
@@ -239,7 +231,6 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     let fd_entry = match process.fd_table.get(fd as i32) {
         Some(entry) => entry,
         None => {
-            log::error!("sys_write: Bad fd {}", fd);
             return SyscallResult::Err(9); // EBADF
         }
     };
@@ -1049,6 +1040,8 @@ pub fn sys_fork() -> SyscallResult {
 /// Returns: Never returns on success (frame is modified to jump to new program)
 /// Returns: Error code on failure
 #[allow(dead_code)]
+#[allow(unused_variables)]
+#[allow(unreachable_code)]
 pub fn sys_exec_with_frame(
     frame: &mut super::handler::SyscallFrame,
     program_name_ptr: u64,
@@ -1313,6 +1306,7 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
 ///
 /// Returns: Never returns on success (frame is modified to jump to new program)
 /// Returns: Error code on failure
+#[allow(unused_variables)]
 pub fn sys_execv_with_frame(
     frame: &mut super::handler::SyscallFrame,
     program_name_ptr: u64,

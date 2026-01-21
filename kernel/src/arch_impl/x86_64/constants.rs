@@ -226,8 +226,11 @@ pub const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
 // Stack Sizes
 // ============================================================================
 
-/// Default kernel stack size (64 KiB).
-pub const KERNEL_STACK_SIZE: usize = 64 * 1024;
+/// Default kernel stack size (512 KiB).
+/// Increased to 512KB to handle interactive mode's deep call stacks.
+/// The keyboard interrupt handler triggers deep framebuffer rendering,
+/// and help command processing adds additional call depth.
+pub const KERNEL_STACK_SIZE: usize = 512 * 1024;
 
 /// IST stack size for double fault handler.
 pub const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;

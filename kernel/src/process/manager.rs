@@ -1114,7 +1114,9 @@ impl ProcessManager {
         child_process.cwd = parent_cwd;
 
         // Extract parent heap bounds before we drop the parent borrow
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_start = parent.heap_start;
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_end = parent.heap_end;
 
         // Verify parent has a page table
@@ -1126,7 +1128,7 @@ impl ProcessManager {
         log::debug!("fork_process: About to create child page table");
         let child_page_table_result = crate::memory::process_memory::ProcessPageTable::new();
         log::debug!("fork_process: ProcessPageTable::new() returned");
-        #[cfg_attr(not(feature = "testing"), allow(unused_mut))]
+        #[cfg_attr(not(feature = "testing"), allow(unused_mut, unused_variables))]
         let mut child_page_table =
             Box::new(child_page_table_result.map_err(|_| "Failed to create child page table")?);
         log::debug!("fork_process: Child page table created successfully");
@@ -1668,6 +1670,7 @@ impl ProcessManager {
     /// - argv: Array of argument strings (argv[0] is typically the program name)
     ///
     /// Returns: (entry_point, stack_pointer) on success
+    #[allow(dead_code)]
     pub fn exec_process_with_argv(
         &mut self,
         pid: ProcessId,
@@ -1895,6 +1898,7 @@ impl ProcessManager {
     /// - argv: Array of argument strings (each must be null-terminated)
     ///
     /// Returns: The initial RSP value (pointing to argc)
+    #[allow(dead_code)]
     fn setup_argv_on_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
@@ -1992,6 +1996,7 @@ impl ProcessManager {
     }
 
     /// Write a single byte to the stack via physical address translation
+    #[allow(dead_code)]
     fn write_byte_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,
@@ -2017,6 +2022,7 @@ impl ProcessManager {
     }
 
     /// Write a u64 to the stack via physical address translation
+    #[allow(dead_code)]
     fn write_u64_to_stack(
         &self,
         page_table: &crate::memory::process_memory::ProcessPageTable,

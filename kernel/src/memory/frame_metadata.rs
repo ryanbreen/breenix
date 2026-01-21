@@ -28,6 +28,7 @@ struct FrameMetadata {
 }
 
 impl FrameMetadata {
+    #[allow(dead_code)]
     fn new(initial_count: u32) -> Self {
         Self {
             refcount: AtomicU32::new(initial_count),
@@ -37,6 +38,7 @@ impl FrameMetadata {
 
 /// Increment reference count for a frame
 /// Called when fork() shares a page between parent and child
+#[allow(dead_code)]
 pub fn frame_incref(frame: PhysFrame) {
     let addr = frame.start_address().as_u64();
     let mut metadata = FRAME_METADATA.lock();
