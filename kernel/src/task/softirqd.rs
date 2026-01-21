@@ -230,6 +230,19 @@ fn wakeup_ksoftirqd() {
 /// ksoftirqd kernel thread function
 /// Processes softirqs that were deferred due to high load
 fn ksoftirqd_fn() {
+    // Raw serial output - no locks, safe in kthread context
+    fn raw_char(c: u8) {
+        unsafe {
+            use x86_64::instructions::port::Port;
+            let mut port: Port<u8> = Port::new(0x3F8);
+            port.write(c);
+        }
+    }
+
+    raw_char(b'K'); // K = ksoftirqd starting
+    raw_char(b'S');
+    raw_char(b' ');
+
     log::info!("KSOFTIRQD_SPAWN: ksoftirqd/0 started");
 
     // Enable interrupts so timer can preempt us and switch to other threads
@@ -240,6 +253,8 @@ fn ksoftirqd_fn() {
         let pending = per_cpu::softirq_pending();
 
         if pending != 0 {
+            raw_char(b'W'); // W = got work
+
             // Process softirqs (no iteration limit in thread context)
             // We still use softirq_enter/exit for proper context tracking
             per_cpu::softirq_enter();
@@ -255,6 +270,8 @@ fn ksoftirqd_fn() {
 
                 let handler_ptr = SOFTIRQ_HANDLERS[nr as usize].load(Ordering::Acquire);
                 if !handler_ptr.is_null() {
+                    raw_char(b'H'); // H = calling handler
+
                     let handler: SoftirqHandler = unsafe {
                         core::mem::transmute(handler_ptr)
                     };
@@ -271,8 +288,10 @@ fn ksoftirqd_fn() {
             // After processing, check if we should continue or park
             // This handles handlers that re-raised softirqs
         } else {
+            raw_char(b'P'); // P = parking (no work)
             // No work - park until woken by wakeup_ksoftirqd()
             kthread_park();
+            raw_char(b'U'); // U = unparked
         }
     }
 }
