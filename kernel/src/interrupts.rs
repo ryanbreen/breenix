@@ -436,25 +436,11 @@ extern "x86-interrupt" fn double_fault_handler(
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
 
-    // DEBUG: Print "KEY:XX " on EVERY keyboard interrupt (raw serial, no locks)
-    let scancode: u8;
-    unsafe {
-        // Read scancode from keyboard controller
+    // Read scancode from keyboard controller
+    let scancode: u8 = unsafe {
         let mut kb_port: Port<u8> = Port::new(0x60);
-        scancode = kb_port.read();
-
-        // Print to serial: "KEY:XX "
-        let mut serial_port: Port<u8> = Port::new(0x3F8);
-        serial_port.write(b'K');
-        serial_port.write(b'E');
-        serial_port.write(b'Y');
-        serial_port.write(b':');
-        let hi = (scancode >> 4) & 0x0F;
-        let lo = scancode & 0x0F;
-        serial_port.write(if hi < 10 { b'0' + hi } else { b'A' + hi - 10 });
-        serial_port.write(if lo < 10 { b'0' + lo } else { b'A' + lo - 10 });
-        serial_port.write(b' ');
-    }
+        kb_port.read()
+    };
 
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();

@@ -216,6 +216,10 @@ impl TerminalPane {
             }
         }
 
+        // Mark the ENTIRE terminal region as dirty so it gets flushed to the framebuffer
+        // (both the copied region and the cleared line)
+        canvas.mark_dirty_region(self.x, self.y, self.width, self.height);
+
         // Clear the last line
         let clear_y = self.y + copy_height;
         fill_rect(

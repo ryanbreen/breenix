@@ -624,6 +624,18 @@ impl Canvas for ShellFrameBuffer {
             unsafe { core::slice::from_raw_parts(self.buffer_ptr, self.buffer_len) }
         }
     }
+
+    fn mark_dirty_region(&mut self, x: usize, y: usize, width: usize, height: usize) {
+        if let Some(db) = &mut self.double_buffer {
+            let bpp = self.info.bytes_per_pixel;
+            let x_start = x * bpp;
+            let x_end = (x + width) * bpp;
+            // Mark each row in the region as dirty
+            for row in y..y + height {
+                db.mark_region_dirty(row, x_start, x_end);
+            }
+        }
+    }
 }
 
 #[cfg(feature = "interactive")]

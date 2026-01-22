@@ -211,10 +211,10 @@ pub unsafe fn map_kernel_page(
     let page_frame = PhysFrame::containing_address(phys);
     pt[pt_index as usize].set_frame(page_frame, flags);
 
-    // Log detailed mapping for kernel/IST stacks
+    // Log detailed mapping for kernel/IST stacks (trace level to avoid spam)
     if pml4_index == 402 || pml4_index == 403 {
-        crate::serial_println!(
-            "🗺️ map_kernel_page: PML4[{}] virt={:#x} -> phys={:#x}, PT frame={:#x}, PT[{}]",
+        log::trace!(
+            "map_kernel_page: PML4[{}] virt={:#x} -> phys={:#x}, PT frame={:#x}, PT[{}]",
             pml4_index, virt.as_u64(), phys.as_u64(), pt_frame.start_address().as_u64(), pt_index
         );
     }

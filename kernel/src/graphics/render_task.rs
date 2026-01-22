@@ -59,31 +59,10 @@ pub fn spawn_render_thread() -> Result<u64, &'static str> {
 /// CRITICAL: No logging allowed in this function! The render thread processes
 /// the render queue which routes to terminal_manager. If we log here, we'd try
 /// to write to the logs terminal while the render thread holds locks, causing
-/// a deadlock via IN_TERMINAL_CALL. Use raw serial output for debugging only.
+/// a deadlock via IN_TERMINAL_CALL.
 fn render_thread_main_kthread() {
-    // Raw serial character output - NO LOCKS
-    use x86_64::instructions::port::Port;
-    fn raw_char(c: u8) {
-        unsafe {
-            let mut port: Port<u8> = Port::new(0x3F8);
-            port.write(c);
-        }
-    }
-
-    // DEBUG: R = render thread started
-    raw_char(b'R');
-    raw_char(b'1');
-    raw_char(b' ');
-
     // Main rendering loop - runs until kthread_stop() is called
-    let mut iter_count = 0u32;
     while !kthread_should_stop() {
-        // DEBUG: every 1000 iterations, print 'L'
-        iter_count = iter_count.wrapping_add(1);
-        if iter_count % 10000 == 0 {
-            raw_char(b'L');
-        }
-
         // Process all pending data before yielding to ensure responsive UI
         // This batches multiple render operations per scheduling quantum
         let mut total_rendered = 0;
@@ -97,7 +76,6 @@ fn render_thread_main_kthread() {
 
         // Flush the framebuffer if we rendered anything
         if total_rendered > 0 {
-            raw_char(b'F'); // DEBUG: F = flushing
             flush_framebuffer();
             // Yield after doing work to give other threads a chance
             crate::task::scheduler::yield_current();
@@ -105,23 +83,31 @@ fn render_thread_main_kthread() {
             // No work - park until woken by wake_render_thread()
             // This prevents busy-polling which would starve other kthreads like ksoftirqd
             RENDER_WAKE.store(false, Ordering::SeqCst);
-            raw_char(b'P'); // DEBUG: P = parking
             crate::task::kthread::kthread_park();
-            raw_char(b'U'); // DEBUG: U = unparked
         }
     }
 
-    raw_char(b'X'); // DEBUG: X = shutting down
     RENDER_THREAD_RUNNING.store(false, Ordering::SeqCst);
 }
 
 /// Signal the render thread to wake up and check for work.
+/// Uses compare-exchange to avoid redundant wake calls - only wakes
+/// if the thread was previously marked as not-awake.
 pub fn wake_render_thread() {
-    RENDER_WAKE.store(true, Ordering::Release);
-    // Unpark the render thread if it's parked
-    if let Some(ref handle) = *RENDER_KTHREAD.lock() {
-        crate::task::kthread::kthread_unpark(handle);
+    // Only proceed if we're transitioning from false->true
+    // This avoids expensive lock acquisition and unpark calls when
+    // the render thread is already awake and processing
+    if RENDER_WAKE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+    {
+        // Thread was parked (RENDER_WAKE was false), need to unpark it
+        if let Some(ref handle) = *RENDER_KTHREAD.lock() {
+            crate::task::kthread::kthread_unpark(handle);
+        }
     }
+    // If compare_exchange failed, RENDER_WAKE was already true,
+    // meaning the thread is awake and will see our queued data
 }
 
 /// Flush the framebuffer's double buffer if present.
