@@ -9,6 +9,7 @@ use super::primitives::{
     draw_circle, draw_line, draw_rect, draw_text, fill_circle, fill_rect, Canvas, Color, Rect,
     TextStyle,
 };
+use super::split_screen::ClippedRegion;
 
 /// Format resolution as "WIDTHxHEIGHT" string
 fn format_resolution(width: usize, height: usize) -> String {
@@ -19,6 +20,7 @@ fn format_resolution(width: usize, height: usize) -> String {
 /// Run a graphics demonstration on the given canvas.
 ///
 /// This draws various shapes and text to showcase the graphics stack.
+#[allow(dead_code)]
 pub fn run_demo(canvas: &mut impl Canvas) {
     let width = canvas.width() as i32;
     let height = canvas.height() as i32;
@@ -210,6 +212,187 @@ pub fn run_demo(canvas: &mut impl Canvas) {
             y: 70,
             width: (width - 20) as u32,
             height: (height - 120) as u32,
+        },
+        Color::rgb(60, 100, 140),
+    );
+}
+
+/// Run a graphics demonstration within a bounded region.
+///
+/// This is used for split-screen mode where the demo only occupies
+/// part of the screen.
+pub fn run_demo_in_region(canvas: &mut impl Canvas, region: &ClippedRegion) {
+    let width = region.width as i32;
+    let height = region.height as i32;
+    let ox = region.offset_x;
+    let oy = region.offset_y;
+
+    // Clear to a dark blue background
+    fill_rect(
+        canvas,
+        Rect {
+            x: ox,
+            y: oy,
+            width: region.width,
+            height: region.height,
+        },
+        Color::rgb(20, 30, 50),
+    );
+
+    // Draw a header banner
+    fill_rect(
+        canvas,
+        Rect {
+            x: ox,
+            y: oy,
+            width: region.width,
+            height: 50,
+        },
+        Color::rgb(40, 80, 120),
+    );
+
+    // Title text
+    let title_style = TextStyle::new()
+        .with_color(Color::WHITE)
+        .with_font(Font::default_font());
+
+    draw_text(canvas, ox + 15, oy + 15, "Graphics Demo", &title_style);
+
+    // Resolution info
+    let res_style = TextStyle::new().with_color(Color::rgb(180, 220, 255));
+    let res_text = format_resolution(region.width as usize, region.height as usize);
+    draw_text(canvas, ox + width - 120, oy + 15, &res_text, &res_style);
+
+    // Draw colorful rectangles (scaled to fit region)
+    let colors = [
+        Color::RED,
+        Color::GREEN,
+        Color::BLUE,
+        Color::rgb(255, 255, 0),   // Yellow
+        Color::rgb(255, 0, 255),   // Magenta
+        Color::rgb(0, 255, 255),   // Cyan
+    ];
+
+    let box_width = 60;
+    let box_height = 45;
+    let start_x = ox + 30;
+    let start_y = oy + 70;
+
+    for (i, &color) in colors.iter().enumerate() {
+        let x = start_x + (i as i32 % 3) * (box_width + 15);
+        let y = start_y + (i as i32 / 3) * (box_height + 15);
+
+        // Filled rectangle
+        fill_rect(
+            canvas,
+            Rect {
+                x,
+                y,
+                width: box_width as u32,
+                height: box_height as u32,
+            },
+            color,
+        );
+
+        // White border
+        draw_rect(
+            canvas,
+            Rect {
+                x: x - 2,
+                y: y - 2,
+                width: (box_width + 4) as u32,
+                height: (box_height + 4) as u32,
+            },
+            Color::WHITE,
+        );
+    }
+
+    // Draw circles section
+    let circle_y = start_y + 140;
+    let circle_text_style = TextStyle::new().with_color(Color::rgb(200, 200, 200));
+
+    draw_text(canvas, ox + 30, circle_y, "Circles:", &circle_text_style);
+
+    // Filled circles (smaller for region)
+    fill_circle(canvas, ox + 60, circle_y + 45, 20, Color::rgb(255, 100, 100));
+    fill_circle(canvas, ox + 120, circle_y + 45, 16, Color::rgb(100, 255, 100));
+    fill_circle(canvas, ox + 170, circle_y + 45, 12, Color::rgb(100, 100, 255));
+
+    // Circle outlines
+    draw_circle(canvas, ox + 240, circle_y + 45, 25, Color::WHITE);
+    draw_circle(canvas, ox + 240, circle_y + 45, 18, Color::rgb(255, 200, 0));
+    draw_circle(canvas, ox + 240, circle_y + 45, 10, Color::rgb(255, 100, 0));
+
+    // Draw lines section
+    let lines_y = circle_y + 100;
+    draw_text(canvas, ox + 30, lines_y, "Lines:", &circle_text_style);
+
+    // Draw radiating lines (smaller)
+    let center_x = ox + 100;
+    let center_y = lines_y + 45;
+    let radius = 35i32;
+
+    let directions: [(i32, i32); 12] = [
+        (100, 0),    // 0°
+        (87, 50),    // 30°
+        (50, 87),    // 60°
+        (0, 100),    // 90°
+        (-50, 87),   // 120°
+        (-87, 50),   // 150°
+        (-100, 0),   // 180°
+        (-87, -50),  // 210°
+        (-50, -87),  // 240°
+        (0, -100),   // 270°
+        (50, -87),   // 300°
+        (87, -50),   // 330°
+    ];
+
+    for (i, (dx, dy)) in directions.iter().enumerate() {
+        let end_x = center_x + (radius * dx) / 100;
+        let end_y = center_y + (radius * dy) / 100;
+        let intensity = ((i as u32 * 255) / 12) as u8;
+        let color = Color::rgb(255, intensity, 255 - intensity);
+        draw_line(canvas, center_x, center_y, end_x, end_y, color);
+    }
+
+    // Draw diagonal lines
+    for i in 0..8 {
+        let x1 = ox + 200 + i * 6;
+        let color = Color::rgb(50 + i as u8 * 20, 100 + i as u8 * 15, 200);
+        draw_line(canvas, x1, lines_y + 15, x1 + 45, lines_y + 75, color);
+    }
+
+    // Text rendering showcase
+    let text_y = lines_y + 100;
+    draw_text(canvas, ox + 30, text_y, "Text:", &circle_text_style);
+
+    // Different colored text
+    let red_style = TextStyle::new().with_color(Color::RED);
+    let green_style = TextStyle::new().with_color(Color::GREEN);
+    let blue_style = TextStyle::new().with_color(Color::BLUE);
+
+    draw_text(canvas, ox + 30, text_y + 25, "Red", &red_style);
+    draw_text(canvas, ox + 90, text_y + 25, "Green", &green_style);
+    draw_text(canvas, ox + 170, text_y + 25, "Blue", &blue_style);
+
+    // Footer
+    let footer_style = TextStyle::new().with_color(Color::rgb(100, 100, 100));
+    draw_text(
+        canvas,
+        ox + 30,
+        oy + height - 30,
+        "Phase 6: Split-Screen",
+        &footer_style,
+    );
+
+    // Draw a decorative border
+    draw_rect(
+        canvas,
+        Rect {
+            x: ox + 8,
+            y: oy + 55,
+            width: (width - 16) as u32,
+            height: (height - 95) as u32,
         },
         Color::rgb(60, 100, 140),
     );

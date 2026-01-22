@@ -89,6 +89,16 @@ pub const MAX_CPUS: usize = 256;
 /// Total size of virtual address space reserved for all CPU stacks
 pub const PERCPU_STACK_REGION_SIZE: usize = MAX_CPUS * PERCPU_STACK_STRIDE;
 
+/// Base address for kernel TLS (Thread-Local Storage) allocation
+/// This is placed within the same PML4 entry AND same PDPT entry as per-CPU stacks.
+/// Using offset 768 MiB keeps us within PDPT[0] (0-1GiB range) where page tables
+/// already exist from stack allocation.
+/// Layout within PML4[402], PDPT[0]:
+/// - 0x00000000..0x20000000 (512 MiB): Per-CPU stacks (256 CPUs * 2 MiB)
+/// - 0x20000000..0x30000000 (256 MiB): Dynamic kernel stacks
+/// - 0x30000000..0x40000000 (256 MiB): TLS blocks
+pub const KERNEL_TLS_REGION_BASE: u64 = PERCPU_STACK_REGION_BASE + 0x3000_0000; // +768 MiB
+
 /// Calculate the virtual address for a specific CPU's stack region
 /// 
 /// Returns the base address of the stack region for the given CPU.

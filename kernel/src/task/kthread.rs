@@ -240,6 +240,15 @@ extern "C" fn kthread_entry(arg: u64) -> ! {
     // output for debugging only. The KTHREAD_CREATE marker in kthread_run() is
     // sufficient for boot stage verification.
 
+    // CRITICAL: Enable interrupts for kernel threads!
+    // Kernel threads are initialized with RFLAGS = 0x002 (IF=0, interrupts disabled)
+    // to prevent preemption during initial setup. Now that we're in the entry point,
+    // we need to enable interrupts so timer interrupts can preempt us and the
+    // scheduler can switch between threads.
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+
     let start = unsafe { Box::from_raw(arg as *mut KthreadStart) };
     let KthreadStart { func } = *start;
 

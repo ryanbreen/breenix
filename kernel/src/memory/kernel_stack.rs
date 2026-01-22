@@ -1,7 +1,7 @@
 //! Kernel stack allocator with bitmap management
 //!
-//! Reserves VA range 0xffffc900_0000_0000 – 0xffffc900_00ff_ffff for kernel stacks.
-//! Each stack gets 8 KiB RW page + 4 KiB guard page (total 12 KiB per stack).
+//! Reserves VA range 0xffffc900_0000_0000 – 0xffffc900_07ff_ffff (128 MiB) for kernel stacks.
+//! Each stack gets 512 KiB usable space + 4 KiB guard page (total 516 KiB per slot).
 
 use crate::memory::frame_allocator::allocate_frame;
 use spin::Mutex;
@@ -10,13 +10,19 @@ use x86_64::{structures::paging::PageTableFlags, VirtAddr};
 /// Base address for kernel stack allocation
 const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
 
-/// End address for kernel stack allocation (16 MiB total space)
-const KERNEL_STACK_END: u64 = 0xffffc900_0100_0000;
+/// End address for kernel stack allocation (128 MiB total space)
+/// Increased to 128 MiB to support 512KB stacks (kernel stacks are leaked,
+/// not freed, so we need enough slots for all processes created during tests)
+const KERNEL_STACK_END: u64 = 0xffffc900_0800_0000;
 
-/// Size of each kernel stack (64 KiB) - increased from 16KB to handle deep call stacks
-/// Process creation involves deeply nested function calls and page table manipulation
-/// TODO: Investigate stack usage and potentially reduce back to 16KB after optimization
-const KERNEL_STACK_SIZE: u64 = 64 * 1024;
+/// Size of each kernel stack (512 KiB)
+/// Increased to 512KB to handle interactive mode's deep call stacks.
+/// The keyboard interrupt handler path triggers framebuffer echo rendering:
+/// keyboard_interrupt → push_char_nonblock → input_char_nonblock → output_char_nonblock
+/// → write_char_to_framebuffer → terminal_manager → terminal_pane → font rendering
+/// This path can use 300KB+ of stack when combined with interrupt frame overhead
+/// and nested help command processing with terminal output formatting.
+const KERNEL_STACK_SIZE: u64 = 512 * 1024;
 
 /// Size of guard page (4 KiB)
 const GUARD_PAGE_SIZE: u64 = 4 * 1024;

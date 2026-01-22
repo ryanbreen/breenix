@@ -464,6 +464,7 @@ pub fn schedule() -> Option<(u64, u64)> {
 
 /// Special scheduling point called from IRQ exit path
 /// This is safe to call from IRQ context when returning to user or idle
+#[allow(dead_code)]
 pub fn preempt_schedule_irq() {
     // IMPORTANT: This function must NOT call schedule()!
     //

@@ -855,12 +855,28 @@ impl Log for CombinedLogger {
                         );
                     }
 
-                    // In interactive mode, kernel logs go to COM2 ONLY (not framebuffer)
-                    // Shell output uses SHELL_FRAMEBUFFER directly
+                    // Route log output to Logs terminal (F2) in interactive mode
+                    // This uses the terminal_manager's proper routing to the Logs pane
                     #[cfg(feature = "interactive")]
-                    {
-                        // Kernel logs skip the framebuffer entirely in interactive mode
-                        // This keeps the QEMU screen clean for shell output only
+                    if crate::graphics::terminal_manager::is_terminal_manager_active() {
+                        let msg = if timestamp > 0 {
+                            alloc::format!(
+                                "{} - [{:>5}] {}: {}\n",
+                                timestamp,
+                                record.level(),
+                                record.target(),
+                                record.args()
+                            )
+                        } else {
+                            alloc::format!(
+                                "[{:>5}] {}: {}\n",
+                                record.level(),
+                                record.target(),
+                                record.args()
+                            )
+                        };
+                        // Route to Logs terminal (F2) - not Shell (F1)
+                        write_to_logs_terminal(&msg);
                     }
 
                     // In non-interactive mode, also write to framebuffer
@@ -947,9 +963,19 @@ pub fn init_framebuffer(buffer: &'static mut [u8], info: bootloader_api::info::F
 ///
 /// This writes directly to the SHELL_FRAMEBUFFER, bypassing the logging system.
 /// Shell output appears on the QEMU window without log prefixes.
+///
+/// When the render thread is active, bytes are queued for deferred rendering
+/// to avoid deep stack usage in interrupt context.
 #[cfg(feature = "interactive")]
 #[allow(dead_code)] // Public API - available for shell output bypass
 pub fn write_to_framebuffer(s: &str) {
+    // If render queue is ready, use deferred rendering
+    if crate::graphics::render_queue::is_ready() {
+        crate::graphics::render_queue::queue_bytes(s.as_bytes());
+        return;
+    }
+
+    // Fall back to direct rendering during early boot
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {
             guard.write_str(s);
@@ -958,11 +984,61 @@ pub fn write_to_framebuffer(s: &str) {
 }
 
 /// Write a single character to framebuffer console (for keyboard echo in interactive mode)
+///
+/// In terminal manager mode, this routes to the shell terminal.
+/// Otherwise falls back to split-screen mode or full framebuffer.
 #[cfg(feature = "interactive")]
+#[allow(dead_code)]
 pub fn write_char_to_framebuffer(byte: u8) {
+    // Try terminal manager first (multi-terminal mode)
+    if crate::graphics::terminal_manager::write_char_to_shell(byte as char) {
+        return;
+    }
+
+    // Try split-screen mode as fallback
+    if crate::graphics::split_screen::write_char_to_terminal(byte as char) {
+        return;
+    }
+
+    // Fallback to full framebuffer
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {
             guard.write_char(byte as char);
+        }
+    }
+}
+
+/// Write a byte slice to framebuffer console (batched version for efficient output)
+///
+/// This is more efficient than calling write_char_to_framebuffer per character
+/// as it acquires locks once for the entire buffer and uses a shallower call stack.
+///
+/// In terminal manager mode, routes to the shell terminal using batched string write.
+/// Otherwise falls back to split-screen mode or full framebuffer.
+#[cfg(feature = "interactive")]
+#[allow(dead_code)]
+pub fn write_bytes_to_framebuffer(bytes: &[u8]) {
+    // Try terminal manager first (multi-terminal mode) - uses batched write
+    if crate::graphics::terminal_manager::write_bytes_to_shell(bytes) {
+        return;
+    }
+
+    // Try split-screen mode as fallback
+    if crate::graphics::split_screen::is_split_screen_active() {
+        for &byte in bytes {
+            if !crate::graphics::split_screen::write_char_to_terminal(byte as char) {
+                break;
+            }
+        }
+        return;
+    }
+
+    // Fallback to full framebuffer
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        if let Some(mut guard) = fb.try_lock() {
+            for &byte in bytes {
+                guard.write_char(byte as char);
+            }
         }
     }
 }
@@ -971,13 +1047,38 @@ pub fn write_char_to_framebuffer(byte: u8) {
 ///
 /// This is called from the timer interrupt at ~500ms intervals to create
 /// a blinking cursor effect. Uses try_lock to avoid blocking in interrupt context.
+///
+/// In terminal manager mode, this toggles the active terminal's cursor.
 #[cfg(feature = "interactive")]
 pub fn toggle_cursor_blink() {
+    // Try terminal manager first (multi-terminal mode)
+    if crate::graphics::terminal_manager::is_terminal_manager_active() {
+        crate::graphics::terminal_manager::toggle_cursor();
+        return;
+    }
+
+    // Try split-screen mode as fallback
+    if crate::graphics::split_screen::is_split_screen_active() {
+        crate::graphics::split_screen::toggle_terminal_cursor();
+        return;
+    }
+
+    // Fallback to full framebuffer cursor
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {
             guard.toggle_cursor();
         }
     }
+}
+
+/// Write a log message to the logs terminal (interactive mode only)
+///
+/// This is called by the logger to route kernel log output to the
+/// Logs terminal pane in multi-terminal mode.
+#[cfg(feature = "interactive")]
+#[allow(dead_code)]
+pub fn write_to_logs_terminal(s: &str) {
+    let _ = crate::graphics::terminal_manager::write_str_to_logs(s);
 }
 
 /// Upgrade the shell framebuffer to double-buffered mode.

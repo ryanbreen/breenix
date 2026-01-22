@@ -36,6 +36,13 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
+    // DEBUG: Print 'T' every 1000 timer interrupts to show function is called
+    static TIMER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if count % 1000 == 0 {
+        raw_serial_char(b'T');
+    }
+
     // NOTE: No logging in interrupt handlers per CLAUDE.md - causes timer to fire
     // faster than userspace can execute, creating infinite kernel loops.
     // Serial I/O takes thousands of cycles, causing timer interrupts to fire faster
@@ -43,7 +50,19 @@ pub extern "C" fn check_need_resched_and_switch(
 
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
+        // DEBUG: Print 'n' every 1000 times can_schedule returns false
+        static NO_SCHED_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let c = NO_SCHED_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if c % 1000 == 0 {
+            raw_serial_char(b'n');
+        }
         return;
+    }
+    // DEBUG: 'S' = can_schedule returned true (every 100 times)
+    static SCHED_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let sc = SCHED_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    if sc % 100 == 0 {
+        raw_serial_char(b'S');
     }
 
     // NOTE: Context is saved ONLY when actually switching threads (see line ~135).

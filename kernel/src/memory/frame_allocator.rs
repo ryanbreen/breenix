@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(feature = "testing")]
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
