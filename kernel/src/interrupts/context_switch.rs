@@ -16,6 +16,7 @@ use x86_64::VirtAddr;
 /// Use this for debugging context switch paths where any allocation/locking
 /// could perturb timing or cause deadlocks.
 #[inline(always)]
+#[allow(dead_code)]
 pub fn raw_serial_char(c: u8) {
     unsafe {
         use x86_64::instructions::port::Port;
@@ -36,33 +37,9 @@ pub extern "C" fn check_need_resched_and_switch(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // DEBUG: Print 'T' every 1000 timer interrupts to show function is called
-    static TIMER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-    let count = TIMER_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if count % 1000 == 0 {
-        raw_serial_char(b'T');
-    }
-
-    // NOTE: No logging in interrupt handlers per CLAUDE.md - causes timer to fire
-    // faster than userspace can execute, creating infinite kernel loops.
-    // Serial I/O takes thousands of cycles, causing timer interrupts to fire faster
-    // than userspace can execute, resulting in infinite kernel loops.
-
     // CRITICAL: Only schedule when returning to userspace with preempt_count == 0
     if !crate::per_cpu::can_schedule(interrupt_frame.code_segment.0 as u64) {
-        // DEBUG: Print 'n' every 1000 times can_schedule returns false
-        static NO_SCHED_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-        let c = NO_SCHED_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if c % 1000 == 0 {
-            raw_serial_char(b'n');
-        }
         return;
-    }
-    // DEBUG: 'S' = can_schedule returned true (every 100 times)
-    static SCHED_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-    let sc = SCHED_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    if sc % 100 == 0 {
-        raw_serial_char(b'S');
     }
 
     // NOTE: Context is saved ONLY when actually switching threads (see line ~135).
@@ -223,16 +200,10 @@ pub extern "C" fn check_need_resched_and_switch(
         // to prevent scheduler state corruption. If we reach here from userspace, we know
         // preempt_active is false (otherwise we would have returned early).
 
-        // DEBUG: '2' = about to check blocked_in_syscall
-        raw_serial_char(b'2');
-
         // Check if current thread is blocked in syscall (pause/waitpid)
         let blocked_in_syscall = scheduler::with_thread_mut(old_thread_id, |thread| {
             thread.blocked_in_syscall
         }).unwrap_or(false);
-
-        // DEBUG: '3' = got blocked_in_syscall, about to branch
-        raw_serial_char(b'3');
 
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
@@ -278,18 +249,11 @@ pub extern "C" fn check_need_resched_and_switch(
                 return;
             }
         } else if !from_userspace {
-            // DEBUG: '4' = entering pure kernel thread branch
-            raw_serial_char(b'4');
             // Pure kernel thread (like kthread) being preempted - save its context
             // This is NOT a userspace thread and NOT blocked in syscall - it's a
             // kernel thread running its own code (e.g., kthread_entry -> user function)
             save_kthread_context(old_thread_id, saved_regs, interrupt_frame);
-            // DEBUG: '5' = finished save_kthread_context
-            raw_serial_char(b'5');
         }
-
-        // DEBUG: '6' = about to call switch_to_thread
-        raw_serial_char(b'6');
 
         // Switch to the new thread
         // Pass the process_manager_guard so we don't try to re-acquire the lock
@@ -464,9 +428,6 @@ fn switch_to_thread(
     interrupt_frame: &mut InterruptStackFrame,
     process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
 ) {
-    // DEBUG: 'A' = entered switch_to_thread
-    raw_serial_char(b'A');
-
     // Update per-CPU current thread and TSS.RSP0
     scheduler::with_thread_mut(thread_id, |thread| {
         // Update per-CPU current thread pointer
@@ -505,9 +466,6 @@ fn switch_to_thread(
         thread.blocked_in_syscall
     }).unwrap_or(false);
 
-    // DEBUG: 'B' = completed checks, about to branch
-    raw_serial_char(b'B');
-
     if is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop), restore that context
@@ -526,8 +484,6 @@ fn switch_to_thread(
             setup_idle_return(interrupt_frame);
         }
     } else if is_kernel_thread {
-        // DEBUG: 'C' = entering kernel thread branch
-        raw_serial_char(b'C');
         // Set up to return to kernel thread
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
     } else if blocked_in_syscall {
@@ -831,9 +787,6 @@ fn setup_kernel_thread_return(
     saved_regs: &mut SavedRegisters,
     interrupt_frame: &mut InterruptStackFrame,
 ) {
-    // DEBUG: 'D' = entered setup_kernel_thread_return
-    raw_serial_char(b'D');
-
     // Get thread info - restore ALL saved registers, not just a few
     let thread_info = scheduler::with_thread_mut(thread_id, |thread| {
         (
@@ -842,12 +795,7 @@ fn setup_kernel_thread_return(
         )
     });
 
-    // DEBUG: 'E' = got thread info
-    raw_serial_char(b'E');
-
     if let Some((_name, context)) = thread_info {
-        // DEBUG: 'F' = thread info is Some, about to update frame
-        raw_serial_char(b'F');
 
         unsafe {
             interrupt_frame.as_mut().update(|frame| {
@@ -876,9 +824,6 @@ fn setup_kernel_thread_return(
             saved_regs.r15 = context.r15;
         }
 
-        // DEBUG: 'G' = updated frame and regs, about to switch page table
-        raw_serial_char(b'G');
-
         // Switch to master kernel PML4 for running kernel threads
         // This ensures kernel threads have access to all kernel mappings
         unsafe {
@@ -891,14 +836,7 @@ fn setup_kernel_thread_return(
         // Using a full fence (mfence) rather than just compiler fence to force
         // actual CPU store completion.
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-        // DEBUG: 'H' = setup complete, returning to assembly for IRETQ
-        raw_serial_char(b'H');
-        raw_serial_char(b'\n');
     } else {
-        // DEBUG: 'X' = failed to get thread info (should never happen)
-        raw_serial_char(b'X');
-        raw_serial_char(b'\n');
         log::error!("KTHREAD_SWITCH: Failed to get thread info for thread {}", thread_id);
     }
 }

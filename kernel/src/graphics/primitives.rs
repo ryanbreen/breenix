@@ -114,6 +114,13 @@ pub trait Canvas {
 
     /// Get buffer for read access.
     fn buffer(&self) -> &[u8];
+
+    /// Mark a rectangular region as dirty (for double-buffered canvases).
+    /// This should be called after direct buffer manipulation (e.g., copy_within).
+    /// Default implementation is a no-op for canvases without double buffering.
+    fn mark_dirty_region(&mut self, _x: usize, _y: usize, _width: usize, _height: usize) {
+        // Default: no-op
+    }
 }
 
 fn to_i32_clamped(value: u32) -> i32 {
