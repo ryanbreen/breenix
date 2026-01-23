@@ -48,6 +48,7 @@ impl DirtyRect {
     }
 
     /// Reset to empty.
+    #[allow(dead_code)] // Used for testing DirtyRect in isolation
     pub fn clear(&mut self) {
         *self = Self::new();
     }
@@ -135,6 +136,30 @@ impl DirtyRegionTracker {
         self.insert(new_rect);
     }
 
+    /// Mark an entire rectangular region as dirty in one operation.
+    /// Much more efficient than calling mark_dirty() for each row.
+    pub fn mark_rect_dirty(&mut self, y_start: usize, y_end: usize, x_start: usize, x_end: usize) {
+        if x_start >= x_end || y_start >= y_end {
+            return;
+        }
+
+        let mut new_rect = DirtyRect {
+            x_start,
+            x_end,
+            y_start,
+            y_end,
+        };
+
+        self.absorb_merges(&mut new_rect);
+
+        if self.count == MAX_DIRTY_RECTS {
+            self.merge_closest_pair();
+            self.absorb_merges(&mut new_rect);
+        }
+
+        self.insert(new_rect);
+    }
+
     fn absorb_merges(&mut self, rect: &mut DirtyRect) {
         loop {
             let mut merged_any = false;
@@ -143,7 +168,7 @@ impl DirtyRegionTracker {
                     if existing.should_merge(rect) {
                         *rect = existing.union(rect);
                         *slot = None;
-                        self.count = self.count.saturating_sub(1);
+                        self.count -= 1;
                         merged_any = true;
                     }
                 }
@@ -194,7 +219,7 @@ impl DirtyRegionTracker {
             if let (Some(rect_i), Some(rect_j)) = (self.rects[i], self.rects[j]) {
                 self.rects[i] = Some(rect_i.union(&rect_j));
                 self.rects[j] = None;
-                self.count = self.count.saturating_sub(1);
+                self.count -= 1;
             }
         }
     }
@@ -285,16 +310,32 @@ impl DoubleBufferedFrameBuffer {
                 continue;
             }
 
+            // Fast path: if dirty rect spans full width, copy entire block at once
+            if x_start == 0 && x_end == self.stride {
+                let start_offset = y_start * self.stride;
+                let total_len = (y_end - y_start) * self.stride;
+                if start_offset + total_len <= max_len {
+                    // SAFETY: hardware_ptr is valid for hardware_len bytes (from bootloader),
+                    // shadow_buffer is valid for its length, and we copy the minimum of both.
+                    unsafe {
+                        let src = self.shadow_buffer.as_ptr().add(start_offset);
+                        let dst = self.hardware_ptr.add(start_offset);
+                        ptr::copy_nonoverlapping(src, dst, total_len);
+                    }
+                    continue;
+                }
+            }
+
+            // Slow path: partial width, need per-row copies
+            let row_len = x_end - x_start;
+            if row_len == 0 {
+                continue;
+            }
+
             for y in y_start..y_end {
                 let row_offset = y * self.stride;
                 let src_start = row_offset + x_start;
-                let src_end = row_offset + x_end;
-                if src_end > max_len {
-                    continue;
-                }
-
-                let len = x_end - x_start;
-                if len == 0 {
+                if src_start + row_len > max_len {
                     continue;
                 }
 
@@ -303,7 +344,7 @@ impl DoubleBufferedFrameBuffer {
                 unsafe {
                     let src = self.shadow_buffer.as_ptr().add(src_start);
                     let dst = self.hardware_ptr.add(src_start);
-                    ptr::copy_nonoverlapping(src, dst, len);
+                    ptr::copy_nonoverlapping(src, dst, row_len);
                 }
             }
         }
@@ -329,6 +370,13 @@ impl DoubleBufferedFrameBuffer {
     pub fn mark_region_dirty(&mut self, y: usize, x_start: usize, x_end: usize) {
         self.dirty = true;
         self.dirty_regions.mark_dirty(y, x_start, x_end);
+    }
+
+    /// Mark an entire rectangular region as dirty in one operation.
+    /// Much more efficient than calling mark_region_dirty() for each row.
+    pub fn mark_region_dirty_rect(&mut self, y_start: usize, y_end: usize, x_start: usize, x_end: usize) {
+        self.dirty = true;
+        self.dirty_regions.mark_rect_dirty(y_start, y_end, x_start, x_end);
     }
 
     /// Flush only if the buffer has been modified since the last flush.
@@ -421,6 +469,17 @@ mod tests {
         let rect = tracker.rects().next().unwrap();
         assert_eq!(rect.x_start, 0);
         assert_eq!(rect.x_end, MERGE_PROXIMITY / 2 + 4);
+    }
+
+    #[test]
+    fn dirty_region_tracker_merges_overlapping_rects() {
+        let mut tracker = DirtyRegionTracker::new();
+        tracker.mark_dirty(0, 0, 6);
+        tracker.mark_dirty(0, 4, 10);
+        assert_eq!(tracker.rects().count(), 1);
+        let rect = tracker.rects().next().unwrap();
+        assert_eq!(rect.x_start, 0);
+        assert_eq!(rect.x_end, 10);
     }
 
     #[test]

@@ -466,10 +466,9 @@ impl ShellFrameBuffer {
                 return;
             }
             let x_start = x * bpp;
-            let x_end = x_end * bpp;
-            for row in y..y_end {
-                db.mark_region_dirty(row, x_start, x_end);
-            }
+            let x_end_bytes = x_end * bpp;
+            // Mark entire rectangle in one operation (much faster than per-row)
+            db.mark_region_dirty_rect(y, y_end, x_start, x_end_bytes);
         }
     }
 
