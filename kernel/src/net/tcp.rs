@@ -1026,12 +1026,34 @@ pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'stati
     Ok(read_len)
 }
 
-/// Check if a connection is established
+/// Check if a connection is established (or was established before remote close)
+///
+/// Returns true for:
+/// - Established: Connection is fully open
+/// - CloseWait: Remote closed, but handshake completed (read data, then close)
+/// - FinWait1/FinWait2: We closed, but handshake completed
+/// - Closing/LastAck/TimeWait: Connection closing but was established
+///
+/// Returns false for:
+/// - SynSent: Still waiting for SYN-ACK
+/// - SynReceived: Server still completing handshake
+/// - Closed/Listen: Not connected
 pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
     let connections = TCP_CONNECTIONS.lock();
     if let Some(conn) = connections.get(conn_id) {
-        let is_established = conn.state == TcpState::Established;
-        if !is_established {
+        // Connection is "established" for connect() purposes if handshake completed.
+        // This includes states where one or both sides have initiated close.
+        let is_connected = matches!(
+            conn.state,
+            TcpState::Established
+                | TcpState::CloseWait
+                | TcpState::FinWait1
+                | TcpState::FinWait2
+                | TcpState::Closing
+                | TcpState::LastAck
+                | TcpState::TimeWait
+        );
+        if !is_connected {
             log::debug!(
                 "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} found but state={:?}",
                 conn_id.local_ip[3], conn_id.local_port,
@@ -1039,7 +1061,7 @@ pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
                 conn.state
             );
         }
-        is_established
+        is_connected
     } else {
         // Log the conn_id we're looking for and what's actually in the map
         log::warn!(
