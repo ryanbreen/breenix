@@ -21,6 +21,7 @@
 ///
 /// IMPORTANT: This test runs BEFORE interrupts are enabled, so we cannot wait
 /// for ticks to increment. Instead, we validate the conversion math is correct.
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn test_timer_resolution() {
     log::info!("=== TIMER RESOLUTION TEST ===");
 

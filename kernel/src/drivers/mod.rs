@@ -42,7 +42,10 @@ pub fn init() -> usize {
     match e1000::init() {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");
-            // TODO: Enable E1000 IRQ when interrupt handler is wired up
+
+            // Enable E1000 IRQ now that driver is initialized
+            // E1000 uses IRQ 10 in QEMU's PCI configuration
+            crate::interrupts::enable_irq10();
         }
         Err(e) => {
             log::warn!("E1000 network driver initialization failed: {}", e);

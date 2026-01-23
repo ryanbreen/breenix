@@ -15,7 +15,9 @@
 //! ```
 
 use crate::io::close;
+use crate::process::yield_now;
 use crate::socket::{bind, recvfrom, sendto, socket, SockAddrIn, AF_INET, SOCK_DGRAM};
+use crate::time::now_monotonic;
 
 // ============================================================================
 // Constants
@@ -508,13 +510,19 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
         return Err(DnsError::SendError);
     }
 
-    // Receive response (with retry)
+    // Receive response with 5-second timeout
     let mut resp_buf = [0u8; DNS_BUF_SIZE];
     let mut received = false;
     let mut resp_len = 0;
 
-    // Try up to 5 times with spin-wait
-    for _ in 0..5 {
+    // Network packets arrive via interrupt → softirq → process_rx().
+    // We poll recvfrom() with yield_now() between attempts.
+    // DNS resolution via QEMU SLIRP forwards to host DNS, which can take time.
+    const TIMEOUT_SECS: u64 = 5;
+    let start = now_monotonic();
+    let deadline_secs = start.tv_sec as u64 + TIMEOUT_SECS;
+
+    loop {
         match recvfrom(fd, &mut resp_buf, None) {
             Ok(len) if len > 0 => {
                 resp_len = len;
@@ -522,10 +530,13 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
                 break;
             }
             _ => {
-                // Brief delay before retry (spin loop)
-                for _ in 0..200000 {
-                    core::hint::spin_loop();
+                // Check timeout
+                let now = now_monotonic();
+                if now.tv_sec as u64 >= deadline_secs {
+                    break; // Timeout
                 }
+                // Yield to scheduler - allows timer interrupt to fire and process softirqs
+                yield_now();
             }
         }
     }

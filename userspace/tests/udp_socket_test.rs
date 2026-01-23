@@ -19,7 +19,7 @@
 use core::panic::PanicInfo;
 use libbreenix::io;
 use libbreenix::process;
-use libbreenix::socket::{socket, bind, sendto, recvfrom, SockAddrIn, AF_INET, SOCK_DGRAM};
+use libbreenix::socket::{socket, bind, sendto, recvfrom, SockAddrIn, AF_INET, SOCK_DGRAM, SOCK_NONBLOCK};
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -278,7 +278,7 @@ pub extern "C" fn _start() -> ! {
     // EAGAIN = 11 (Linux)
     const EAGAIN: i32 = 11;
 
-    let eagain_fd = match socket(AF_INET, SOCK_DGRAM, 0) {
+    let eagain_fd = match socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0) {
         Ok(fd) => fd,
         Err(e) => {
             io::print("UDP EAGAIN Test: FAILED to create socket, errno=");

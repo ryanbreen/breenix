@@ -135,6 +135,13 @@ impl crate::arch_impl::traits::SyscallFrame for SyscallFrame {
 // Static flag to track first Ring 3 syscall
 static RING3_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
+/// Returns true if userspace has started (first Ring 3 syscall received).
+/// Used by scheduler to determine if idle thread should use idle_loop or
+/// restore saved context from boot.
+pub fn is_ring3_confirmed() -> bool {
+    RING3_CONFIRMED.load(Ordering::Relaxed)
+}
+
 /// Main syscall handler called from assembly
 ///
 /// CRITICAL: This is a hot path. NO logging, NO serial output, NO allocations.
@@ -351,4 +358,54 @@ extern "C" {
 pub extern "C" fn trace_iretq_to_ring3(_frame_ptr: *const u64) {
     // Intentionally empty - diagnostics were causing timer to preempt before
     // userspace could execute. See commit history for the original diagnostic code.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that is_ring3_confirmed() returns false initially (before any Ring 3 syscalls)
+    ///
+    /// NOTE: This test can only verify the initial state. Once RING3_CONFIRMED is set
+    /// to true by a real syscall, it cannot be reset (by design - it's a one-way flag).
+    /// The actual state change from false->true is tested implicitly by the kernel
+    /// boot process and verified by the RING3_CONFIRMED marker in serial output.
+    #[test]
+    fn test_is_ring3_confirmed_initial_state() {
+        // In a test context, RING3_CONFIRMED starts as false.
+        // NOTE: If other tests in this test run have already triggered a syscall,
+        // this test may see true. The important behavior is the one-way transition.
+        let initial = RING3_CONFIRMED.load(Ordering::Relaxed);
+
+        // If it's false, verify is_ring3_confirmed() returns false
+        if !initial {
+            assert!(!is_ring3_confirmed());
+        }
+        // If it's already true (from another test), that's also valid - the flag
+        // should never go back to false once set.
+    }
+
+    /// Test the atomic swap behavior of RING3_CONFIRMED
+    ///
+    /// The key property: swap(true) returns the previous value, allowing
+    /// exactly-once detection of the first Ring 3 syscall.
+    #[test]
+    fn test_ring3_confirmed_swap_behavior() {
+        // Get current state
+        let was_confirmed = RING3_CONFIRMED.load(Ordering::Relaxed);
+
+        // Swap to true
+        let prev = RING3_CONFIRMED.swap(true, Ordering::SeqCst);
+
+        // If it wasn't confirmed before, swap should return false
+        // If it was confirmed, swap returns true
+        assert_eq!(prev, was_confirmed);
+
+        // After swap, should always be true
+        assert!(is_ring3_confirmed());
+
+        // Second swap should return true (idempotent)
+        let second = RING3_CONFIRMED.swap(true, Ordering::SeqCst);
+        assert!(second);
+    }
 }

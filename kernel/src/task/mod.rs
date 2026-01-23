@@ -39,22 +39,26 @@ pub use softirqd::{
     SoftirqType,
 };
 
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(u64);
 
 impl TaskId {
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn new() -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
     }
 }
 
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub struct Task {
     id: TaskId,
     future: Pin<Box<dyn Future<Output = ()>>>,
 }
 
 impl Task {
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     pub fn new(future: impl Future<Output = ()> + 'static) -> Task {
         Task {
             id: TaskId::new(),
@@ -62,6 +66,7 @@ impl Task {
         }
     }
 
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn poll(&mut self, context: &mut Context) -> Poll<()> {
         self.future.as_mut().poll(context)
     }

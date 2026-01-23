@@ -30,6 +30,9 @@ pub const SOCK_STREAM: i32 = 1;
 /// Socket type: Datagram (UDP)
 pub const SOCK_DGRAM: i32 = 2;
 
+/// Socket flag: Non-blocking
+pub const SOCK_NONBLOCK: i32 = 0x800;
+
 /// Shutdown how: Stop receiving
 pub const SHUT_RD: i32 = 0;
 

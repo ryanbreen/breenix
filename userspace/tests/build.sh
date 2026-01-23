@@ -48,6 +48,8 @@ BINARIES=(
     "signal_return_test"
     "signal_regs_test"
     "udp_socket_test"
+    "blocking_recv_test"
+    "nonblock_eagain_test"
     "tcp_socket_test"
     "tcp_client_test"
     "dns_test"

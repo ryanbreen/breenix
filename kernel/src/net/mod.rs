@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::drivers::e1000;
+use crate::task::softirqd::{register_softirq_handler, SoftirqType};
 
 /// Network interface configuration
 #[derive(Clone, Copy, Debug)]
@@ -98,8 +99,24 @@ pub fn drain_loopback_queue() {
     }
 }
 
+/// Softirq handler for network RX processing
+/// Called from softirq context when NetRx softirq is raised by e1000 interrupt handler
+fn net_rx_softirq_handler(_softirq: SoftirqType) {
+    process_rx();
+}
+
+/// Re-register the network softirq handler.
+/// This is needed after tests that override the handler for testing purposes.
+pub fn register_net_softirq() {
+    register_softirq_handler(SoftirqType::NetRx, net_rx_softirq_handler);
+}
+
 /// Initialize the network stack
 pub fn init() {
+    // Register NET_RX softirq handler FIRST - before any network operations
+    // This ensures the handler is ready before e1000 can raise the softirq
+    register_softirq_handler(SoftirqType::NetRx, net_rx_softirq_handler);
+
     log::info!("NET: Initializing network stack...");
 
     if let Some(mac) = e1000::mac_address() {

@@ -25,6 +25,19 @@ pub fn raw_serial_char(c: u8) {
     }
 }
 
+/// Raw serial string output - no locks, no allocations.
+/// Use for boot markers in context switch path where locking would deadlock.
+#[inline(always)]
+fn raw_serial_str(s: &str) {
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port: Port<u8> = Port::new(0x3F8);
+        for byte in s.bytes() {
+            port.write(byte);
+        }
+    }
+}
+
 // REMOVED: NEXT_PAGE_TABLE is no longer needed since CR3 switching happens
 // immediately during context switch, not deferred to interrupt return
 
@@ -49,6 +62,18 @@ pub extern "C" fn check_need_resched_and_switch(
     // only when switching away.
     let from_userspace = (interrupt_frame.code_segment.0 & 3) == 3;
 
+    // CRITICAL: Check if preemption is enabled before attempting context switch.
+    // Syscalls call preempt_disable() at entry, so if preempt_count > 0, we must NOT
+    // switch away. The bits 0-27 hold the actual count, bit 28 is PREEMPT_ACTIVE.
+    let preempt_count = crate::per_cpu::preempt_count();
+    let preempt_count_value = preempt_count & 0x0FFFFFFF; // Mask out PREEMPT_ACTIVE bit
+    if preempt_count_value > 0 && !from_userspace {
+        // Preemption disabled while in kernel - don't context switch.
+        // The thread is executing a syscall or other non-preemptible kernel code.
+        // Leave need_resched set so we try again after preempt_enable().
+        return;
+    }
+
     // CRITICAL FIX: Check PREEMPT_ACTIVE early, BEFORE calling schedule().
     // PREEMPT_ACTIVE (bit 28) is set in syscall/entry.asm during syscall return
     // to protect the register restoration sequence. If set, we're in the middle
@@ -63,20 +88,17 @@ pub extern "C" fn check_need_resched_and_switch(
     let preempt_count = crate::per_cpu::preempt_count();
     let preempt_active = (preempt_count & 0x10000000) != 0; // Bit 28
 
-    if from_userspace && preempt_active {
-        // We're in syscall return path - the registers in saved_regs are KERNEL values!
-        // Do NOT attempt a context switch. Re-set need_resched for next opportunity.
-        static EARLY_PREEMPT_ACTIVE_COUNT: core::sync::atomic::AtomicU64 =
-            core::sync::atomic::AtomicU64::new(0);
-        let count = EARLY_PREEMPT_ACTIVE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if count < 10 {
-            log::info!(
-                "check_need_resched_and_switch: PREEMPT_ACTIVE set (count={:#x}), deferring context switch",
-                preempt_count
-            );
-        }
-        // Don't clear need_resched - it will be checked on the next timer interrupt
-        // after the syscall return completes
+    if preempt_active {
+        // PREEMPT_ACTIVE is set during syscall return while registers are being restored.
+        // We must NOT context switch during this critical window, regardless of whether
+        // the interrupt frame shows userspace or kernel CS.
+        //
+        // Previously this only checked `from_userspace && preempt_active`, which missed
+        // the case where we're in kernel mode (CS=0x08) but PREEMPT_ACTIVE is set because
+        // we're in the middle of setting up the interrupt frame for userspace return.
+        // In that case, doing a context switch would corrupt partially-restored registers.
+        //
+        // NOTE: No logging here - we're in IRQ context and logging can deadlock.
         return;
     }
 
@@ -142,11 +164,12 @@ pub extern "C" fn check_need_resched_and_switch(
     let schedule_result = scheduler::schedule();
 
     // One-time boot stage marker (only fires once to satisfy boot-stages test)
+    // CRITICAL: Use raw serial to avoid deadlock in IRQ context
     static SCHEDULE_MARKER_EMITTED: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
     if !SCHEDULE_MARKER_EMITTED.load(core::sync::atomic::Ordering::Relaxed) {
         SCHEDULE_MARKER_EMITTED.store(true, core::sync::atomic::Ordering::Relaxed);
-        log::info!("scheduler::schedule() returned: {:?} (boot marker)", schedule_result);
+        raw_serial_str("[ INFO] scheduler::schedule() returned (boot marker)\n");
     }
 
     if schedule_result.is_none() {
@@ -179,15 +202,14 @@ pub extern "C" fn check_need_resched_and_switch(
         // to a newly created kthread. Use raw_serial_char() for debugging only.
 
         // Emit canonical ring3 marker on the FIRST entry to userspace (for CI)
+        // CRITICAL: Use raw serial output without locks to prevent deadlock in IRQ context
         if from_userspace {
             static mut EMITTED_RING3_MARKER: bool = false;
             unsafe {
                 if !EMITTED_RING3_MARKER {
                     EMITTED_RING3_MARKER = true;
-                    crate::serial_println!("RING3_ENTER: CS=0x33");
-                    crate::serial_println!(
-                        "[ OK ] RING3_SMOKE: userspace executed + syscall path verified"
-                    );
+                    raw_serial_str("RING3_ENTER: CS=0x33\n");
+                    raw_serial_str("[ OK ] RING3_SMOKE: userspace executed + syscall path verified\n");
                 }
             }
         }
@@ -208,6 +230,8 @@ pub extern "C" fn check_need_resched_and_switch(
         if from_userspace {
             // Use the already-held guard to save context (prevents TOCTOU race)
             if let Some(ref mut guard) = process_manager_guard {
+                // Debug marker: saving userspace context (raw serial, no locks)
+                raw_serial_str("<S>");
                 if !save_current_thread_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard) {
                     log::error!(
                         "Context switch aborted: failed to save thread {} context. \
@@ -226,12 +250,7 @@ pub extern "C" fn check_need_resched_and_switch(
             // Thread is blocked inside a syscall (pause/waitpid) and was interrupted
             // in kernel mode (in the HLT loop). Save the KERNEL context so we can
             // resume the thread at the correct kernel location.
-            log::info!(
-                "Saving kernel context for thread {} blocked in syscall: RIP={:#x}, RSP={:#x}",
-                old_thread_id,
-                interrupt_frame.instruction_pointer.as_u64(),
-                interrupt_frame.stack_pointer.as_u64()
-            );
+            // NOTE: No logging here - this is a hot path during blocking I/O
             let save_succeeded = if let Some(ref mut guard) = process_manager_guard {
                 save_kernel_context_with_guard(old_thread_id, saved_regs, interrupt_frame, guard);
                 true
@@ -428,6 +447,8 @@ fn switch_to_thread(
     interrupt_frame: &mut InterruptStackFrame,
     process_manager_guard: Option<spin::MutexGuard<'static, Option<crate::process::ProcessManager>>>,
 ) {
+    // Debug marker: entering switch_to_thread (raw serial, no locks)
+    raw_serial_str("[SW]");
     // Update per-CPU current thread and TSS.RSP0
     scheduler::with_thread_mut(thread_id, |thread| {
         // Update per-CPU current thread pointer
@@ -453,6 +474,8 @@ fn switch_to_thread(
             log::error!("Failed to switch TLS for thread {}: {}", thread_id, e);
             return;
         }
+        // Debug marker: TLS switch completed (raw serial, no locks)
+        raw_serial_str("<T>");
     }
 
     // Check if this is the idle thread
@@ -469,24 +492,44 @@ fn switch_to_thread(
     if is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop), restore that context
-        let has_saved_context = scheduler::with_thread_mut(thread_id, |thread| {
-            let idle_loop_addr = idle_loop as *const () as u64;
-            // Has saved context if RIP is non-zero AND not pointing to idle_loop
-            thread.context.rip != 0 && thread.context.rip != idle_loop_addr
-        }).unwrap_or(false);
+        //
+        // CRITICAL: After userspace starts (RING3_CONFIRMED), always go to idle_loop.
+        // Idle's saved context from boot may contain RIP values in kernel init code
+        // that cause hangs when restored during userspace operation.
+        let userspace_started = crate::syscall::handler::is_ring3_confirmed();
+
+        let has_saved_context = if userspace_started {
+            // After userspace starts, idle should always return to idle_loop
+            false
+        } else {
+            // During boot, may need to restore kernel init progress
+            scheduler::with_thread_mut(thread_id, |thread| {
+                let idle_loop_addr = idle_loop as *const () as u64;
+                // Has saved context if RIP is non-zero AND not pointing to idle_loop
+                thread.context.rip != 0 && thread.context.rip != idle_loop_addr
+            }).unwrap_or(false)
+        };
 
         if has_saved_context {
             // Restore idle thread's saved context (like a kthread)
+            // Debug marker: idle with saved context (raw serial, no locks)
+            raw_serial_str("<1>");
             log::trace!("Restoring idle thread's saved context");
             setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
         } else {
             // No saved context or was in idle_loop - go to idle loop
+            // Debug marker: switching to idle (raw serial, no locks)
+            raw_serial_str("<I>");
             setup_idle_return(interrupt_frame);
         }
     } else if is_kernel_thread {
         // Set up to return to kernel thread
+        // Debug marker: kernel thread (raw serial, no locks)
+        raw_serial_str("<K>");
         setup_kernel_thread_return(thread_id, saved_regs, interrupt_frame);
     } else if blocked_in_syscall {
+        // Debug marker: blocked in syscall (raw serial, no locks)
+        raw_serial_str("<B>");
         // CRITICAL: Thread was blocked inside a syscall (like pause() or waitpid()).
         // We need to check if there are pending signals. If so, deliver them using
         // the saved userspace context. Otherwise, resume at the kernel HLT loop.
@@ -735,6 +778,8 @@ fn switch_to_thread(
         }
     } else {
         // Restore userspace thread context
+        // Debug marker: userspace restore path (raw serial, no locks)
+        raw_serial_str("<U>");
         // Pass the process_manager_guard to avoid double-lock
         restore_userspace_thread_context(thread_id, saved_regs, interrupt_frame, process_manager_guard);
     }
@@ -886,8 +931,9 @@ fn restore_userspace_thread_context(
             if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                 if let Some(ref mut thread) = process.main_thread {
                     if thread.privilege == ThreadPrivilege::User {
+                        // Debug marker: restoring userspace context (raw serial, no locks)
+                        raw_serial_str("<R>");
                         restore_userspace_context(thread, interrupt_frame, saved_regs);
-                        log::trace!("Restored context for thread {}", thread_id);
 
                         // CRITICAL: Defer CR3 switch to timer_entry.asm before IRETQ
                         // We do NOT switch CR3 here because:

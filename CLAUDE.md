@@ -16,84 +16,99 @@ docs/planning/   # Numbered phase directories (00-15)
 
 ## Build & Run
 
-### Standard Workflow: Boot Stages Testing
+## 🚨 CRITICAL: QEMU MUST RUN INSIDE DOCKER ONLY 🚨
 
-For normal development, use the boot stages test to verify kernel health:
+**NEVER run QEMU directly on the host.** This is an absolute, inviolable requirement.
 
+Running QEMU directly on macOS causes **system-wide instability**:
+- Hypervisor.framework resource leaks when QEMU is killed
+- GPU driver destabilization affecting ALL GPU-accelerated apps
+- Crashes in terminals (Ghostty), browsers (Chrome/Brave), and Electron apps (Slack)
+- Memory pressure cascades from orphaned QEMU processes
+
+**The ONLY acceptable ways to run QEMU:**
+1. `./docker/qemu/run-boot-parallel.sh N` - Run N parallel boot tests
+2. `./docker/qemu/run-kthread-parallel.sh N` - Run N parallel kthread tests
+3. `./docker/qemu/run-kthread-test.sh` - Run single kthread test
+4. `./docker/qemu/run-dns-test.sh` - Run DNS resolution test
+5. `./docker/qemu/run-keyboard-test.sh` - Run keyboard input test
+6. `./docker/qemu/run-interactive.sh` - Interactive session with VNC display
+
+**For interactive use (framebuffer + keyboard):**
 ```bash
-# Run boot stages test - verifies kernel progresses through all checkpoints
+./docker/qemu/run-interactive.sh
+# Then connect with TigerVNC:
+open '/Applications/TigerVNC Viewer 1.15.0.app'
+# Enter: localhost:5900
+```
+
+**PROHIBITED commands (will destabilize the host system):**
+```bash
+# ❌ NEVER DO THIS:
 cargo run -p xtask -- boot-stages
-
-# Build only (no execution)
-cargo build --release --features testing,external_test_bins --bin qemu-uefi
-```
-
-The boot stages test (`xtask boot-stages`) monitors serial output for expected markers at each boot phase. Add new stages to `xtask/src/main.rs` when adding new subsystems.
-
-### GDB Debugging (For Deep Technical Issues)
-
-Use GDB when you need to understand **why** something is failing, not just **that** it failed. GDB is the right tool when:
-- You need to examine register state or memory at a specific point
-- A panic occurs and you need to inspect the call stack
-- You're debugging timing-sensitive issues that log output can't capture
-- You need to step through code instruction-by-instruction
-
-**Do NOT use GDB** for routine testing or to avoid writing proper boot stage markers. If you find yourself adding debug log statements in a loop, that's a sign you should use GDB instead.
-
-```bash
-# Start interactive GDB session
+cargo run -p xtask -- dns-test
+cargo run --release --bin qemu-uefi
 ./breenix-gdb-chat/scripts/gdb_session.sh start
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::kernel_main"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers"
-./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
-./breenix-gdb-chat/scripts/gdb_session.sh serial
-./breenix-gdb-chat/scripts/gdb_session.sh stop
+qemu-system-x86_64 ...
 ```
 
-### Logs
-All runs are logged to `logs/breenix_YYYYMMDD_HHMMSS.log`
+### One-Time Docker Setup
 
-```bash
-# View latest log
-ls -t logs/*.log | head -1 | xargs less
-```
-
-### Docker-Based Testing (Recommended for Parallel Execution)
-
-For isolated, parallel test execution, use Docker containers. Each container runs its own QEMU instance with no host interference.
-
-**One-time setup - build the Docker image:**
+Before running any tests, build the Docker image:
 ```bash
 cd docker/qemu
 docker build -t breenix-qemu .
 ```
 
-**Parallel kthread-only tests (fast - focused testing):**
-```bash
-# Build the kthread_test_only kernel (runs only kthread tests, then exits)
-cargo build --release --features kthread_test_only --bin qemu-uefi
+### Standard Workflow: Docker-Based Testing
 
-# Run 10 parallel tests
-./docker/qemu/run-kthread-parallel.sh 10
-```
+For normal development, use Docker-based boot tests:
 
-**Parallel full boot tests:**
 ```bash
-# Build full test kernel
+# Build the kernel first
 cargo build --release --features testing,external_test_bins --bin qemu-uefi
 
-# Run 5 parallel full boot tests
+# Run boot tests in Docker (isolated, safe)
+./docker/qemu/run-boot-parallel.sh 1
+
+# Run multiple parallel tests for stress testing
 ./docker/qemu/run-boot-parallel.sh 5
 ```
 
-**Why Docker?**
-- Each container is fully isolated - no lock contention on disk images
-- Can run N tests in parallel without QEMU process conflicts
-- Containers clean up automatically with `--rm`
-- Uses TCG (software emulation) - slower than native but reliable
+For kthread-focused testing:
+```bash
+# Build kthread-only kernel
+cargo build --release --features kthread_test_only --bin qemu-uefi
 
-**Note:** Docker tests use software CPU emulation (TCG) rather than hardware virtualization, so they run slower than native QEMU with Hypervisor.framework. Use Docker for parallel stress testing; use native QEMU for interactive debugging.
+# Run kthread tests in Docker
+./docker/qemu/run-kthread-parallel.sh 1
+```
+
+**Why Docker is mandatory:**
+- Complete isolation from host Hypervisor.framework
+- No GPU driver interaction (uses software rendering)
+- Clean container lifecycle - no orphaned processes
+- No risk of destabilizing user's system
+- Containers auto-cleanup with `--rm`
+
+### Logs
+Docker test output goes to `/tmp/breenix_boot_N/` or `/tmp/breenix_kthread_N/`:
+```bash
+# View kernel log from test 1
+cat /tmp/breenix_boot_1/serial_kernel.txt
+
+# View user output from test 1
+cat /tmp/breenix_boot_1/serial_user.txt
+```
+
+### GDB Debugging - DISABLED
+
+GDB debugging requires native QEMU which is prohibited. For debugging:
+1. Add strategic `log::info!()` statements
+2. Run in Docker and examine serial output
+3. Use QEMU's `-d` flags for CPU/interrupt tracing (inside Docker)
+
+If you absolutely must use GDB for a critical issue, **ask the user first** and explain why Docker-based debugging is insufficient.
 
 ## Development Workflow
 
@@ -602,36 +617,27 @@ log::debug!("clock_gettime called");  # This changes timing!
 ./breenix-gdb-chat/scripts/gdb_session.sh stop
 ```
 
-## QEMU Process Cleanup - MANDATORY
+## Docker Container Cleanup
 
-**Agents MUST clean up stray QEMU processes.** This is non-negotiable.
+**Docker containers auto-cleanup with `--rm`, but if needed:**
 
-QEMU processes frequently get orphaned during testing, debugging, or when agents are interrupted. These orphaned processes:
-- Hold locks on disk images, preventing new QEMU instances from starting
-- Consume system resources
-- Cause confusing errors like "Failed to get write lock"
+```bash
+# Kill any running breenix-qemu containers
+docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
 
-### Cleanup Requirements
+# Verify no containers running
+docker ps --filter ancestor=breenix-qemu
+```
 
-1. **Before handing control back to the user**: Always run QEMU cleanup
-2. **Before running any QEMU command**: Kill any existing QEMU processes first
-3. **When debugging fails or times out**: Clean up QEMU before reporting results
+### If You See Orphaned Host QEMU Processes
 
-### Cleanup Command
+If you see `qemu-system-x86_64` processes running directly on the host (not in Docker), this means someone violated the Docker-only rule. Clean them up:
 
 ```bash
 pkill -9 qemu-system-x86_64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
 ```
 
-**CRITICAL: QEMU will ALWAYS hang beyond the bounds of a run.** You MUST kill the previous QEMU before running any test, or it will fail due to disk image lock contention.
-
-### When to Clean Up
-
-- **BEFORE every test run** - This is mandatory, not optional
-- After any `xtask boot-stages` or `xtask interactive` run
-- After GDB debugging sessions
-- When the user reports "cannot acquire lock" errors
-- When handing results back to the user after kernel work
+**Then investigate how they got there** - all QEMU execution must go through Docker.
 
 This is the agent's responsibility - do not wait for the user to ask.
 

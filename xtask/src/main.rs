@@ -190,6 +190,8 @@ enum Cmd {
     InteractiveTest,
     /// Run kthread stress test (100+ kthreads, rapid create/stop cycles).
     KthreadStress,
+    /// Run focused DNS test only (faster iteration for network debugging).
+    DnsTest,
 }
 
 fn main() -> Result<()> {
@@ -201,6 +203,7 @@ fn main() -> Result<()> {
         Cmd::Interactive => interactive(),
         Cmd::InteractiveTest => interactive_test(),
         Cmd::KthreadStress => kthread_stress(),
+        Cmd::DnsTest => dns_test(),
     }
 }
 
@@ -1867,6 +1870,228 @@ fn get_boot_stages() -> Vec<BootStage> {
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
     ]
+}
+
+/// Get DNS-specific boot stages for focused testing with dns_test_only feature
+fn get_dns_stages() -> Vec<BootStage> {
+    vec![
+        // DNS_TEST_ONLY mode markers
+        BootStage {
+            name: "DNS test only mode started",
+            marker: "DNS_TEST_ONLY: Starting minimal DNS test",
+            failure_meaning: "Kernel didn't enter dns_test_only mode",
+            check_hint: "Check kernel/src/main.rs dns_test_only_main() is being called",
+        },
+        BootStage {
+            name: "DNS test process created",
+            marker: "DNS_TEST_ONLY: Created dns_test process",
+            failure_meaning: "Failed to create dns_test process",
+            check_hint: "Check kernel/src/main.rs dns_test_only_main() create_user_process",
+        },
+        // DNS test userspace markers (go to COM1)
+        BootStage {
+            name: "DNS test starting",
+            marker: "DNS Test: Starting",
+            failure_meaning: "DNS test binary did not start executing",
+            check_hint: "Check scheduler is running userspace, check userspace/tests/dns_test.rs",
+        },
+        BootStage {
+            name: "DNS google resolve",
+            marker: "DNS_TEST: google_resolve OK",
+            failure_meaning: "DNS resolution of www.google.com failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket/softirq path",
+        },
+        BootStage {
+            name: "DNS example resolve",
+            marker: "DNS_TEST: example_resolve OK",
+            failure_meaning: "DNS resolution of example.com failed",
+            check_hint: "Check libs/libbreenix/src/dns.rs - may be DNS server or parsing issue",
+        },
+        BootStage {
+            name: "DNS test completed",
+            marker: "DNS Test: All tests passed",
+            failure_meaning: "DNS test did not complete all tests",
+            check_hint: "Check userspace/tests/dns_test.rs for which step failed",
+        },
+    ]
+}
+
+/// Focused DNS test - only checks DNS-related boot stages
+/// Much faster iteration than full boot_stages when debugging network issues
+fn dns_test() -> Result<()> {
+    let stages = get_dns_stages();
+    let total_stages = stages.len();
+
+    println!("DNS Test - {} stages to check", total_stages);
+    println!("=========================================\n");
+
+    // Build std test binaries BEFORE creating the test disk
+    build_std_test_binaries()?;
+
+    // Create the test disk with all userspace binaries
+    test_disk::create_test_disk()?;
+    println!();
+
+    // COM2 (log output) - this is where all test markers go
+    let serial_output_file = "target/xtask_dns_test_output.txt";
+    // COM1 (user output) - raw userspace output
+    let user_output_file = "target/xtask_dns_user_output.txt";
+
+    // Remove old output files
+    let _ = fs::remove_file(serial_output_file);
+    let _ = fs::remove_file(user_output_file);
+
+    // Kill any existing QEMU for THIS worktree only
+    kill_worktree_qemu();
+    thread::sleep(Duration::from_millis(500));
+
+    println!("Starting QEMU for DNS test...\n");
+
+    // Start QEMU with dns_test_only feature (skips all other tests)
+    let mut child = Command::new("cargo")
+        .args(&[
+            "run",
+            "--release",
+            "-p",
+            "breenix",
+            "--features",
+            "dns_test_only",  // Uses minimal boot path
+            "--bin",
+            "qemu-uefi",
+            "--",
+            "-serial",
+            &format!("file:{}", user_output_file),
+            "-serial",
+            &format!("file:{}", serial_output_file),
+            "-display",
+            "none",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn QEMU: {}", e))?;
+
+    save_qemu_pid(child.id());
+
+    // Wait for output file to be created
+    let start = Instant::now();
+    let file_creation_timeout = Duration::from_secs(60);
+
+    while !std::path::Path::new(serial_output_file).exists() {
+        if start.elapsed() > file_creation_timeout {
+            cleanup_qemu_child(&mut child);
+            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Track which stages have passed
+    let mut stages_passed = 0;
+    let mut last_content_len = 0;
+    let mut checked_stages: Vec<bool> = vec![false; total_stages];
+
+    let test_start = Instant::now();
+    // With dns_test_only feature, only essential boot + DNS test runs
+    // Should complete in under 30 seconds
+    let timeout = Duration::from_secs(60);
+
+    loop {
+        // Check timeout
+        if test_start.elapsed() > timeout {
+            cleanup_qemu_child(&mut child);
+            println!("\n=========================================");
+            println!("Result: {}/{} stages passed (TIMEOUT after {}s)", stages_passed, total_stages, timeout.as_secs());
+            if stages_passed < total_stages {
+                // Find first unpassed stage
+                for (i, passed) in checked_stages.iter().enumerate() {
+                    if !passed {
+                        println!("\nFirst failed stage: [{}] {}", i + 1, stages[i].name);
+                        println!("  Meaning: {}", stages[i].failure_meaning);
+                        println!("  Check:   {}", stages[i].check_hint);
+                        break;
+                    }
+                }
+                bail!("DNS test incomplete - timeout");
+            }
+            break;
+        }
+
+        // Check if QEMU exited
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // QEMU exited - do final check of both output files
+                thread::sleep(Duration::from_millis(100));
+                let kernel_content = fs::read_to_string(serial_output_file).unwrap_or_default();
+                let user_content = fs::read_to_string(user_output_file).unwrap_or_default();
+                for (i, stage) in stages.iter().enumerate() {
+                    if !checked_stages[i] {
+                        if kernel_content.contains(stage.marker) || user_content.contains(stage.marker) {
+                            checked_stages[i] = true;
+                            stages_passed += 1;
+                            println!("[{}/{}] {}... PASS", i + 1, total_stages, stage.name);
+                        }
+                    }
+                }
+                println!("\n=========================================");
+                if stages_passed == total_stages {
+                    println!("Result: ALL {}/{} stages passed (total: {:.2}s)", stages_passed, total_stages, test_start.elapsed().as_secs_f64());
+                    return Ok(());
+                } else {
+                    println!("Result: {}/{} stages passed (QEMU exit code: {:?})", stages_passed, total_stages, status.code());
+                    for (i, passed) in checked_stages.iter().enumerate() {
+                        if !passed {
+                            println!("\nFirst failed stage: [{}] {}", i + 1, stages[i].name);
+                            println!("  Meaning: {}", stages[i].failure_meaning);
+                            println!("  Check:   {}", stages[i].check_hint);
+                            break;
+                        }
+                    }
+                    bail!("DNS test failed");
+                }
+            }
+            Ok(None) => {
+                // Still running
+            }
+            Err(e) => {
+                bail!("Failed to check QEMU status: {}", e);
+            }
+        }
+
+        // Read and check for markers from BOTH output files
+        // - COM2 (kernel log): ARP and softirq markers
+        // - COM1 (user output): DNS test markers (userspace prints to stdout -> COM1)
+        let kernel_content = fs::read_to_string(serial_output_file).unwrap_or_default();
+        let user_content = fs::read_to_string(user_output_file).unwrap_or_default();
+        let combined_len = kernel_content.len() + user_content.len();
+
+        if combined_len > last_content_len {
+            last_content_len = combined_len;
+
+            // Check all stages against both output sources
+            for (i, stage) in stages.iter().enumerate() {
+                if !checked_stages[i] {
+                    if kernel_content.contains(stage.marker) || user_content.contains(stage.marker) {
+                        checked_stages[i] = true;
+                        stages_passed += 1;
+                        println!("[{}/{}] {}... PASS", i + 1, total_stages, stage.name);
+                    }
+                }
+            }
+
+            // If all stages passed, we're done
+            if stages_passed == total_stages {
+                cleanup_qemu_child(&mut child);
+                println!("\n=========================================");
+                println!("Result: ALL {}/{} stages passed (total: {:.2}s)", stages_passed, total_stages, test_start.elapsed().as_secs_f64());
+                return Ok(());
+            }
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    Ok(())
 }
 
 /// Boot kernel once and validate each stage with real-time output

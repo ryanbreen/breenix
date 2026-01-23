@@ -8,6 +8,7 @@ pub struct KeyEvent {
 
 /// Convert a letter to its control character equivalent
 /// 'a' -> 0x01, 'b' -> 0x02, ..., 'z' -> 0x1A
+#[allow(dead_code)] // Used by is_ctrl_key (conditionally compiled)
 fn letter_to_ctrl_char(letter: char) -> char {
     // Handle both lowercase and uppercase
     let lower = if letter.is_ascii_uppercase() {
@@ -49,6 +50,7 @@ impl KeyEvent {
     }
 
     /// Check if this is Ctrl+T (time debug)
+    #[allow(dead_code)] // Used in keyboard_task (conditionally compiled)
     pub fn is_ctrl_t(&self) -> bool {
         // Ctrl+T produces 0x14
         self.ctrl && self.character == Some('\x14')
@@ -70,6 +72,7 @@ impl KeyEvent {
 
     /// Generic Ctrl+key check for letters a-z
     /// Accepts the letter (e.g., 'c') and checks if the character is the control equivalent (0x03)
+    #[allow(dead_code)] // Used in keyboard_task (conditionally compiled)
     pub fn is_ctrl_key(&self, key: char) -> bool {
         if !self.ctrl {
             return false;

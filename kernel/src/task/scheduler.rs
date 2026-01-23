@@ -116,7 +116,10 @@ impl Scheduler {
                     };
 
                 // Put non-terminated, non-blocked threads back in ready queue
-                if !is_terminated && !is_blocked {
+                // CRITICAL: Check for duplicates! If unblock() already added this thread
+                // (e.g., packet arrived during blocking recvfrom), don't add it again.
+                // Duplicates cause schedule() to spin when same thread keeps getting selected.
+                if !is_terminated && !is_blocked && !self.ready_queue.contains(&current_id) {
                     self.ready_queue.push_back(current_id);
                 }
             }
@@ -619,6 +622,85 @@ pub fn switch_to_idle() {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use alloc::boxed::Box;
+    use alloc::string::String;
+    use crate::task::thread::{Thread, ThreadPrivilege, ThreadState};
+    use x86_64::VirtAddr;
+
+    fn dummy_entry() {}
+
+    fn make_thread(id: u64, state: ThreadState) -> Box<Thread> {
+        let mut thread = Thread::new_with_id(
+            id,
+            String::from("scheduler-test-thread"),
+            dummy_entry,
+            VirtAddr::new(0x2000),
+            VirtAddr::new(0x1000),
+            VirtAddr::new(0),
+            ThreadPrivilege::Kernel,
+        );
+        thread.state = state;
+        Box::new(thread)
+    }
+
+    pub fn test_unblock_does_not_duplicate_ready_queue() {
+        log::info!("=== TEST: unblock avoids duplicate ready_queue entries ===");
+
+        let idle_thread = make_thread(1, ThreadState::Ready);
+        let mut scheduler = Scheduler::new(idle_thread);
+
+        let blocked_thread_id = 2;
+        let blocked_thread = make_thread(blocked_thread_id, ThreadState::Blocked);
+        scheduler.add_thread(blocked_thread);
+        if let Some(thread) = scheduler.get_thread_mut(blocked_thread_id) {
+            thread.state = ThreadState::Blocked;
+        }
+        scheduler.remove_from_ready_queue(blocked_thread_id);
+
+        scheduler.unblock(blocked_thread_id);
+        scheduler.unblock(blocked_thread_id);
+
+        let count = scheduler
+            .ready_queue
+            .iter()
+            .filter(|&&id| id == blocked_thread_id)
+            .count();
+        assert_eq!(count, 1);
+
+        log::info!("=== TEST PASSED: unblock avoids duplicate ready_queue entries ===");
+    }
+
+    pub fn test_schedule_does_not_duplicate_ready_queue() {
+        log::info!("=== TEST: schedule avoids duplicate ready_queue entries ===");
+
+        let idle_thread = make_thread(1, ThreadState::Ready);
+        let mut scheduler = Scheduler::new(idle_thread);
+
+        let current_thread_id = 2;
+        let current_thread = make_thread(current_thread_id, ThreadState::Running);
+        scheduler.add_thread(current_thread);
+
+        let other_thread_id = 3;
+        let other_thread = make_thread(other_thread_id, ThreadState::Ready);
+        scheduler.add_thread(other_thread);
+
+        scheduler.current_thread = Some(current_thread_id);
+        if let Some(thread) = scheduler.get_thread_mut(current_thread_id) {
+            thread.state = ThreadState::Running;
+        }
+
+        let scheduled = scheduler.schedule();
+        assert_eq!(scheduled.is_some(), true);
+
+        let count = scheduler
+            .ready_queue
+            .iter()
+            .filter(|&&id| id == current_thread_id)
+            .count();
+        assert_eq!(count, 1);
+
+        log::info!("=== TEST PASSED: schedule avoids duplicate ready_queue entries ===");
+    }
 
     /// Test that yield_current() does NOT modify scheduler.current_thread.
     ///

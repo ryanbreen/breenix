@@ -651,7 +651,8 @@ pub fn handle_interrupt() {
         driver.handle_interrupt();
     }
 
-    // Process any received packets
-    // Note: This is done outside the driver lock to avoid holding it too long
-    crate::net::process_rx();
+    // Defer RX processing to softirq context
+    // This allows packet processing to run with interrupts enabled,
+    // preventing interrupt latency issues from long packet processing
+    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
 }
