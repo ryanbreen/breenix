@@ -994,6 +994,13 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         return SyscallResult::Err(EINPROGRESS as u64);
     }
 
+    // Log the conn_id we'll be checking
+    log::info!(
+        "TCP connect: blocking for conn_id={{local={}:{}, remote={}:{}}}",
+        conn_id.local_ip[3], conn_id.local_port,
+        conn_id.remote_ip[3], conn_id.remote_port
+    );
+
     // Blocking connect loop - wait for handshake to complete
     loop {
         // Register as waiter FIRST to avoid race condition

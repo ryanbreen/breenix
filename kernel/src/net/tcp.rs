@@ -503,7 +503,11 @@ fn handle_tcp_for_connection(
                     conn.send_unack = header.ack_num;
                     conn.state = TcpState::Established;
 
-                    log::info!("TCP: Connection established (client)");
+                    log::info!(
+                        "TCP: Connection established (client) conn_id={{local={}:{}, remote={}:{}}}",
+                        conn.id.local_ip[3], conn.id.local_port,
+                        conn.id.remote_ip[3], conn.id.remote_port
+                    );
 
                     // Send ACK
                     send_tcp_packet(
@@ -1024,8 +1028,33 @@ pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'stati
 pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
     let connections = TCP_CONNECTIONS.lock();
     if let Some(conn) = connections.get(conn_id) {
-        conn.state == TcpState::Established
+        let is_established = conn.state == TcpState::Established;
+        if !is_established {
+            log::debug!(
+                "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} found but state={:?}",
+                conn_id.local_ip[3], conn_id.local_port,
+                conn_id.remote_ip[3], conn_id.remote_port,
+                conn.state
+            );
+        }
+        is_established
     } else {
+        // Log the conn_id we're looking for and what's actually in the map
+        log::warn!(
+            "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} NOT FOUND (total connections: {})",
+            conn_id.local_ip[3], conn_id.local_port,
+            conn_id.remote_ip[3], conn_id.remote_port,
+            connections.len()
+        );
+        // Also log what connections DO exist for debugging
+        for (k, v) in connections.iter() {
+            log::warn!(
+                "  existing: local={}:{}, remote={}:{}, state={:?}",
+                k.local_ip[3], k.local_port,
+                k.remote_ip[3], k.remote_port,
+                v.state
+            );
+        }
         false
     }
 }
