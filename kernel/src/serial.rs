@@ -290,11 +290,13 @@ use core::{
 };
 use futures_util::stream::Stream;
 
+#[allow(dead_code)] // Used in serial_command_task (conditionally compiled)
 pub struct SerialInputStream {
     _private: (),
 }
 
 impl SerialInputStream {
+    #[allow(dead_code)] // Used in serial_command_task (conditionally compiled)
     pub fn new() -> Self {
         // Ensure queue is initialized
         let _ = SERIAL_INPUT_QUEUE.try_init_once(|| ArrayQueue::new(256));

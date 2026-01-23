@@ -52,6 +52,7 @@ impl InterruptIndex {
         self as u8
     }
 
+    #[allow(dead_code)] // Part of public API
     pub fn as_usize(self) -> usize {
         usize::from(self.as_u8())
     }
@@ -1558,6 +1559,7 @@ pub fn get_idt_info() -> (u64, u16) {
 
 /// Validate that the IDT entry for the timer interrupt is properly configured
 /// Returns (is_valid, handler_address, description)
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn validate_timer_idt_entry() -> (bool, u64, &'static str) {
     // Read the IDT entry for vector 32 (timer interrupt)
     if let Some(idt) = IDT.get() {
@@ -1603,12 +1605,14 @@ pub fn validate_timer_idt_entry() -> (bool, u64, &'static str) {
 }
 
 /// Check if interrupts are currently enabled
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn are_interrupts_enabled() -> bool {
     x86_64::instructions::interrupts::are_enabled()
 }
 
 /// Validate that the PIC has IRQ0 (timer) unmasked
 /// Returns (is_unmasked, mask_value, description)
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn validate_pic_irq0_unmasked() -> (bool, u8, &'static str) {
     unsafe {
         use x86_64::instructions::port::Port;

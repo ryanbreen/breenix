@@ -13,6 +13,7 @@ type CommandHandler = fn();
 // Registry for custom command handlers
 static COMMAND_REGISTRY: Once<CommandRegistry> = Once::new();
 
+#[allow(dead_code)] // Used by serial_command_task (conditionally compiled)
 struct CommandRegistry {
     ps_handler: Option<CommandHandler>,
     mem_handler: Option<CommandHandler>,
@@ -41,6 +42,7 @@ pub fn register_handlers(
 }
 
 /// Handle serial input with line editing and command processing
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub async fn serial_command_task() {
     log::info!("Serial command task started");
 
@@ -101,12 +103,14 @@ pub async fn serial_command_task() {
     }
 }
 
+#[allow(dead_code)] // Used by serial_command_task (conditionally compiled)
 fn print_prompt() {
     // Simple prompt
     write_byte(b'>');
     write_byte(b' ');
 }
 
+#[allow(dead_code)] // Used by serial_command_task (conditionally compiled)
 fn process_command(command: &str) {
     let trimmed = command.trim();
 

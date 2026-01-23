@@ -3,6 +3,7 @@ use alloc::{collections::BTreeMap, sync::Arc, task::Wake};
 use core::task::{Context, Poll, Waker};
 use crossbeam_queue::ArrayQueue;
 
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub struct Executor {
     tasks: BTreeMap<TaskId, Task>,
     task_queue: Arc<ArrayQueue<TaskId>>,
@@ -10,6 +11,7 @@ pub struct Executor {
 }
 
 impl Executor {
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     pub fn new() -> Self {
         Executor {
             tasks: BTreeMap::new(),
@@ -18,6 +20,7 @@ impl Executor {
         }
     }
 
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     pub fn spawn(&mut self, task: Task) {
         let task_id = task.id;
         if self.tasks.insert(task.id, task).is_some() {
@@ -26,6 +29,7 @@ impl Executor {
         self.task_queue.push(task_id).expect("queue full");
     }
 
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn run_ready_tasks(&mut self) {
         // destructure `self` to avoid borrow checker errors
         let Self {
@@ -54,6 +58,7 @@ impl Executor {
         }
     }
 
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn sleep_if_idle(&self) {
         use x86_64::instructions::interrupts;
 
@@ -66,6 +71,7 @@ impl Executor {
         }
     }
 
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     pub fn run(&mut self) -> ! {
         loop {
             self.run_ready_tasks();
@@ -74,12 +80,14 @@ impl Executor {
     }
 }
 
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 struct TaskWaker {
     task_id: TaskId,
     task_queue: Arc<ArrayQueue<TaskId>>,
 }
 
 impl TaskWaker {
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn new(task_id: TaskId, task_queue: Arc<ArrayQueue<TaskId>>) -> Waker {
         Waker::from(Arc::new(TaskWaker {
             task_id,
@@ -87,6 +95,7 @@ impl TaskWaker {
         }))
     }
 
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn wake_task(&self) {
         self.task_queue.push(self.task_id).expect("task_queue full");
     }

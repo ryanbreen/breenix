@@ -97,6 +97,7 @@ pub fn get_monotonic_time_ns() -> (u64, u64) {
 
 /// Validate that the PIT hardware is configured and counting
 /// Returns (is_counting, count1, count2, description)
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
     unsafe {
         let mut ch0: Port<u8> = Port::new(PIT_CHANNEL0_PORT);

@@ -61,6 +61,7 @@ pub fn current_unix_time() -> i64 {
 }
 
 /// Display comprehensive time debug information
+#[allow(dead_code)] // Used in keyboard_task (conditionally compiled)
 pub fn debug_time_info() {
     log::info!("=== Time Debug Information ===");
 

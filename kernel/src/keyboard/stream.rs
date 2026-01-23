@@ -37,11 +37,13 @@ pub(crate) fn add_scancode(scancode: u8) {
     }
 }
 
+#[allow(dead_code)] // Used by keyboard_task (conditionally compiled)
 pub struct ScancodeStream {
     _private: (),
 }
 
 impl ScancodeStream {
+    #[allow(dead_code)] // Used by keyboard_task (conditionally compiled)
     pub fn new() -> Self {
         // Try to initialize, but it's ok if it's already initialized
         let _ = SCANCODE_QUEUE.try_init_once(|| ArrayQueue::new(100));

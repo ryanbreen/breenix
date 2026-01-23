@@ -670,6 +670,7 @@ fn dns_test_only_main() -> ! {
 }
 
 /// Continue kernel initialization after setting up threading
+#[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only")))]
 fn kernel_main_continue() -> ! {
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]

@@ -174,6 +174,7 @@ impl UdpSocket {
     }
 
     /// Set non-blocking mode for this socket
+    #[allow(dead_code)] // Public API for future fcntl O_NONBLOCK support
     pub fn set_nonblocking(&mut self, nonblocking: bool) {
         self.nonblocking = nonblocking;
     }

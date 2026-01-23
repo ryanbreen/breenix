@@ -121,6 +121,7 @@ impl TtyDevice {
     ///
     /// This method acquires locks and should not be called from interrupt context
     /// without care. For interrupt context, use `input_char_nonblock`.
+    #[allow(dead_code)] // Used by push_char in keyboard_task (conditionally compiled)
     pub fn input_char(&self, c: u8) {
         let mut ldisc = self.ldisc.lock();
 
@@ -327,6 +328,7 @@ impl TtyDevice {
     /// This writes to serial immediately and queues for deferred framebuffer rendering.
     /// The render queue is drained by a dedicated kernel task with its own stack,
     /// avoiding the stack overflow that occurred with direct framebuffer calls.
+    #[allow(dead_code)] // Used by input_char (conditionally compiled)
     pub fn output_char(&self, c: u8) {
         // Handle NL -> CR-NL translation if ONLCR is set
         let termios = self.ldisc.lock().termios().clone();
@@ -417,6 +419,7 @@ impl TtyDevice {
     ///
     /// This is called when the line discipline generates a signal
     /// (e.g., SIGINT from Ctrl+C).
+    #[allow(dead_code)] // Used by input_char (conditionally compiled) and tests
     pub fn send_signal_to_foreground(&self, sig: u32) {
         let pgrp = match *self.foreground_pgrp.lock() {
             Some(pgrp) => pgrp,
@@ -476,6 +479,7 @@ impl TtyDevice {
     }
 
     /// Send a signal to a specific process
+    #[allow(dead_code)] // Used by send_signal_to_foreground (conditionally compiled) and tests
     fn send_signal_to_process(pid: ProcessId, sig: u32) {
         // In test mode, record the signal delivery attempt
         #[cfg(test)]
@@ -607,6 +611,7 @@ impl TtyDevice {
     /// Wake all blocked readers
     ///
     /// This is called when new input is available.
+    #[allow(dead_code)] // Used by input_char (conditionally compiled)
     fn wake_blocked_readers() {
         let mut readers = BLOCKED_READERS.lock();
         while let Some(thread_id) = readers.pop_front() {
@@ -657,6 +662,7 @@ pub fn console() -> Option<Arc<TtyDevice>> {
 ///
 /// This is the main entry point for keyboard input.
 /// It processes the character through the line discipline.
+#[allow(dead_code)] // Used by keyboard_task (conditionally compiled)
 pub fn push_char(c: u8) {
     if let Some(tty) = console() {
         tty.input_char(c);

@@ -116,6 +116,7 @@ pub fn process_scancode(scancode: u8) -> Option<KeyEvent> {
 /// - Line editing, echo, and signal generation
 ///
 /// Regular characters are pushed to the TTY layer for processing.
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub async fn keyboard_task() {
     log::info!(
         "Keyboard ready! Type to see characters (Ctrl+T/M/U/P/F/E/X/H for special actions)"

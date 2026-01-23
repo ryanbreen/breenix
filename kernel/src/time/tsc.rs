@@ -40,12 +40,14 @@ pub fn calibrate() {
 
 /// Check if TSC has been calibrated
 #[inline]
+#[allow(dead_code)] // Used in tests and debug_time_info (conditionally compiled)
 pub fn is_calibrated() -> bool {
     hal_timer::is_calibrated()
 }
 
 /// Get TSC frequency in Hz
 #[inline]
+#[allow(dead_code)] // Used in tests and debug_time_info (conditionally compiled)
 pub fn frequency_hz() -> u64 {
     hal_timer::frequency_hz()
 }
@@ -55,6 +57,7 @@ pub fn frequency_hz() -> u64 {
 /// This provides nanosecond-precision monotonic time based on TSC.
 /// Returns None if TSC hasn't been calibrated yet.
 #[inline]
+#[allow(dead_code)] // Used in debug_time_info (conditionally compiled)
 pub fn nanoseconds_since_base() -> Option<u64> {
     hal_timer::nanoseconds_since_base()
 }

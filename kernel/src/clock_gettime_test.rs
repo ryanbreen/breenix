@@ -32,6 +32,8 @@ use crate::syscall::ErrorCode;
 use crate::time::tsc;
 use crate::time::DateTime;
 
+/// In-kernel test for clock_gettime - only called in certain build configurations.
+#[allow(dead_code)]
 pub fn test_clock_gettime() {
     log::info!("=== CLOCK_GETTIME TEST ===");
 
