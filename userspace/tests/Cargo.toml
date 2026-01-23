@@ -167,6 +167,10 @@ name = "blocking_recv_test"
 path = "blocking_recv_test.rs"
 
 [[bin]]
+name = "concurrent_recv_stress"
+path = "concurrent_recv_stress.rs"
+
+[[bin]]
 name = "nonblock_eagain_test"
 path = "nonblock_eagain_test.rs"
 

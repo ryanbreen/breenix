@@ -317,10 +317,72 @@ pub fn sys_sendto(
 ///
 /// Returns: bytes received on success, negative errno on error
 ///
-/// Blocking behavior:
-///   By default, UDP sockets are blocking. If no data is available, the calling
-///   thread will block until a packet arrives. For non-blocking sockets (set via
-///   fcntl O_NONBLOCK), EAGAIN is returned immediately when no data is available.
+/// # Blocking Behavior
+///
+/// By default, UDP sockets are blocking. If no data is available, the calling
+/// thread will block until a packet arrives. For non-blocking sockets (set via
+/// fcntl O_NONBLOCK), EAGAIN is returned immediately when no data is available.
+///
+/// # Race Condition Handling (Double-Check Pattern)
+///
+/// The blocking path uses a double-check pattern to prevent a race condition
+/// where a packet arrives between checking for data and entering the blocked state:
+///
+/// ```text
+/// 1. Register as waiter (BEFORE checking for data)
+/// 2. Check for data → if found, unregister and return it
+/// 3. Set thread state to Blocked
+/// 4. Double-check for data → if found, unblock and retry
+/// 5. Enter HLT loop (actually blocked)
+/// ```
+///
+/// The double-check at step 4 catches packets that arrived during the race window
+/// between steps 2-3. Without this, the thread could block forever even though
+/// a packet is available.
+///
+/// This pattern cannot be unit tested under controlled conditions because it
+/// requires precise timing of concurrent events (packet arrival during the
+/// microsecond window between check and block). The pattern is verified by:
+/// - Code review (this documentation)
+/// - Integration tests (blocking_recv_test.rs, concurrent_recv_stress.rs)
+/// - The fact that DNS resolution works reliably in practice
+///
+/// # Interrupt Safety
+///
+/// This function acquires socket locks. The `enqueue_packet()` function on
+/// UdpSocket is called from softirq context when packets arrive via the NIC.
+/// To prevent deadlock:
+///
+/// ```text
+/// SYSCALL PATH: Disables interrupts before acquiring locks
+///   x86_64::instructions::interrupts::without_interrupts(|| {
+///       socket_ref.lock().register_waiter(thread_id);
+///   });
+///
+/// SOFTIRQ PATH: Uses regular lock (interrupts already managed by softirq framework)
+///   let mut waiting = self.waiting_threads.lock();
+/// ```
+///
+/// By disabling interrupts in the syscall path, we guarantee that softirq cannot
+/// run while we hold the lock, preventing the deadlock scenario.
+///
+/// # Packet Delivery Paths
+///
+/// Packets can arrive via two paths:
+///
+/// 1. **Real NIC path**: NIC interrupt → softirq → `process_rx()` → `enqueue_packet()`
+///    This path runs in softirq context and wakes blocked threads.
+///
+/// 2. **Loopback path**: `sendto()` → `drain_loopback_queue()` → `enqueue_packet()`
+///    This path runs synchronously in syscall context. We call `drain_loopback_queue()`
+///    at the start of recvfrom and after blocking to ensure loopback packets are delivered.
+///
+/// # Spurious Wakeups
+///
+/// When multiple threads wait on the same socket and a packet arrives, ALL waiting
+/// threads are woken. Only one will successfully receive the packet; others will
+/// find no data and must re-block. The retry loop handles this correctly by
+/// re-registering as waiter and re-blocking if no data is available after waking.
 pub fn sys_recvfrom(
     fd: u64,
     buf_ptr: u64,
