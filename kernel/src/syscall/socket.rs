@@ -2,7 +2,7 @@
 //!
 //! Implements socket, bind, sendto, recvfrom syscalls for UDP and TCP.
 
-use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINPROGRESS, EINVAL, ENETUNREACH, ENOTSOCK, EADDRINUSE, ENOTCONN, EISCONN, EOPNOTSUPP, ECONNREFUSED};
+use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINPROGRESS, EINVAL, ENETUNREACH, ENOTSOCK, EADDRINUSE, ENOTCONN, EISCONN, EOPNOTSUPP, ECONNREFUSED, ETIMEDOUT};
 use super::{ErrorCode, SyscallResult};
 use crate::socket::types::{AF_INET, SOCK_DGRAM, SOCK_STREAM, SockAddrIn};
 use crate::socket::udp::UdpSocket;
@@ -1015,8 +1015,20 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         conn_id.remote_ip[3], conn_id.remote_port
     );
 
+    // Timeout for connect: ~10 seconds (timer fires at 200Hz, so 2000 iterations ≈ 10s)
+    // This prevents blocking forever on unreachable hosts
+    const MAX_CONNECT_ITERATIONS: u32 = 2000;
+    let mut connect_iterations: u32 = 0;
+
     // Blocking connect loop - wait for handshake to complete
     loop {
+        // Check for timeout
+        connect_iterations += 1;
+        if connect_iterations > MAX_CONNECT_ITERATIONS {
+            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+            log::warn!("TCP connect: timed out after {} iterations", connect_iterations);
+            return SyscallResult::Err(ETIMEDOUT as u64);
+        }
         // Register as waiter FIRST to avoid race condition
         crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
 
