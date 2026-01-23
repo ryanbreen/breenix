@@ -48,6 +48,24 @@ pub extern "C" fn _start() -> ! {
             io::print(":");
             print_num(src_addr.port_host() as u64);
             io::print("\n");
+
+            let expected = b"wakeup";
+            let mut matches = bytes >= expected.len();
+            if matches {
+                for i in 0..expected.len() {
+                    if recv_buf[i] != expected[i] {
+                        matches = false;
+                        break;
+                    }
+                }
+            }
+
+            if matches {
+                io::print("BLOCKING_RECV_TEST: data verified\n");
+            } else {
+                io::print("BLOCKING_RECV_TEST: data mismatch\n");
+                process::exit(4);
+            }
         }
         Err(e) => {
             io::print("BLOCKING_RECV_TEST: recvfrom failed, errno=");

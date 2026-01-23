@@ -931,6 +931,17 @@ mod tests {
         assert_eq!(EINVAL, 22);
     }
 
+    /// Test that EBADF constant is correct for invalid fd error
+    #[test]
+    fn test_recvfrom_ebadf_constant() {
+        // EBADF (Bad file descriptor) should be returned when recvfrom
+        // is called with an invalid fd. Since sys_recvfrom requires a
+        // process context, we verify the constant is correct.
+        // The actual error path is tested by nonblock_eagain_test.rs
+        // userspace integration test.
+        assert_eq!(EBADF, 9);
+    }
+
     /// Test SockAddrIn structure layout and conversion
     #[test]
     fn test_sockaddr_in_structure() {
