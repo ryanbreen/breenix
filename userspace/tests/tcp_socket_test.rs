@@ -33,9 +33,12 @@
 #![allow(unused_assignments)]  // Some failed += 1 before exit() are intentional for consistency
 
 use core::panic::PanicInfo;
-use libbreenix::io;
+use libbreenix::io::{self, fcntl_setfl, fcntl_getfl};
 use libbreenix::process;
 use libbreenix::socket::{accept, bind, connect, listen, shutdown, socket, SockAddrIn, AF_INET, SHUT_RD, SHUT_WR, SHUT_RDWR, SOCK_STREAM};
+
+// File status flags for fcntl
+const O_NONBLOCK: i32 = 2048;
 
 // Expected errno values
 const EAGAIN: i32 = 11;
@@ -1008,6 +1011,12 @@ pub extern "C" fn _start() -> ! {
     backlog_clients[2] = client3;
 
     // NOW accept connections and see how many are in the queue
+    // Set server socket to non-blocking so accept returns EAGAIN when queue is empty
+    let flags = fcntl_getfl(backlog_server_fd as u64);
+    if flags >= 0 {
+        fcntl_setfl(backlog_server_fd as u64, (flags as i32) | O_NONBLOCK);
+    }
+
     let mut accepted_count = 0;
     let mut accepted_fds = [0i32; 3];
     for _attempt in 0..3 {
