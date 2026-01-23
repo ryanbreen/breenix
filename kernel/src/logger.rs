@@ -199,7 +199,6 @@ impl ShellFrameBuffer {
         let scroll_bytes = line_height * row_bytes;
 
         if let Some(db) = &mut self.double_buffer {
-            db.flush_if_dirty();
             let buffer_len = db.buffer_mut().len();
             if scroll_bytes < buffer_len {
                 {
@@ -382,9 +381,10 @@ impl ShellFrameBuffer {
         // Fill entire framebuffer with background color (black)
         for y in 0..self.height() {
             for x in 0..self.width() {
-                self.write_pixel(x, y, 0x00);
+                self.write_pixel_no_mark(x, y, 0x00);
             }
         }
+        self.mark_dirty_rect(0, 0, self.width(), self.height());
         // Reset cursor position
         self.x_pos = BORDER_PADDING;
         self.y_pos = BORDER_PADDING;
@@ -393,25 +393,40 @@ impl ShellFrameBuffer {
     /// Clear from cursor to end of line
     fn clear_to_eol(&mut self) {
         let char_height = shell_font::CHAR_RASTER_HEIGHT.val();
-        for y in self.y_pos..(self.y_pos + char_height) {
-            for x in self.x_pos..self.width() {
-                self.write_pixel(x, y, 0x00);
+        let y_start = self.y_pos;
+        let y_end = (self.y_pos + char_height).min(self.height());
+        let x_start = self.x_pos;
+        let x_end = self.width();
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                self.write_pixel_no_mark(x, y, 0x00);
             }
         }
+        self.mark_dirty_rect(
+            x_start,
+            y_start,
+            x_end.saturating_sub(x_start),
+            y_end.saturating_sub(y_start),
+        );
     }
 
     /// Write a rendered character to the framebuffer
     fn write_rendered_char(&mut self, rendered_char: RasterizedChar) {
+        let char_x = self.x_pos;
+        let char_y = self.y_pos;
         for (y, row) in rendered_char.raster().iter().enumerate() {
             for (x, byte) in row.iter().enumerate() {
-                self.write_pixel(self.x_pos + x, self.y_pos + y, *byte);
+                self.write_pixel_no_mark(char_x + x, char_y + y, *byte);
             }
         }
-        self.x_pos += rendered_char.width() + LETTER_SPACING;
+        let char_width = rendered_char.width();
+        let char_height = shell_font::CHAR_RASTER_HEIGHT.val();
+        self.mark_dirty_rect(char_x, char_y, char_width, char_height);
+        self.x_pos += char_width + LETTER_SPACING;
     }
 
-    /// Write a pixel at the specified coordinates
-    fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {
+    /// Write a pixel at the specified coordinates without marking dirty (for batched operations)
+    fn write_pixel_no_mark(&mut self, x: usize, y: usize, intensity: u8) {
         let pixel_offset = y * self.info.stride + x;
         let color = match self.info.pixel_format {
             PixelFormat::Rgb => [intensity, intensity, intensity / 2, 0],
@@ -424,7 +439,6 @@ impl ShellFrameBuffer {
         };
         let bytes_per_pixel = self.info.bytes_per_pixel;
         let byte_offset = pixel_offset * bytes_per_pixel;
-        let x_byte_offset = x * bytes_per_pixel;
 
         if let Some(db) = &mut self.double_buffer {
             let buffer = db.buffer_mut();
@@ -432,11 +446,6 @@ impl ShellFrameBuffer {
                 for (i, &byte) in color[..bytes_per_pixel].iter().enumerate() {
                     buffer[byte_offset + i] = byte;
                 }
-                db.mark_region_dirty(
-                    y,
-                    x_byte_offset,
-                    x_byte_offset + bytes_per_pixel,
-                );
             }
         } else if byte_offset + bytes_per_pixel <= self.buffer_len {
             unsafe {
@@ -445,6 +454,21 @@ impl ShellFrameBuffer {
                     dest.add(i).write_volatile(byte);
                 }
             }
+        }
+    }
+
+    fn mark_dirty_rect(&mut self, x: usize, y: usize, width: usize, height: usize) {
+        if let Some(db) = &mut self.double_buffer {
+            let bpp = self.info.bytes_per_pixel;
+            let x_end = (x + width).min(self.info.width);
+            let y_end = (y + height).min(self.info.height);
+            if x >= x_end || y >= y_end {
+                return;
+            }
+            let x_start = x * bpp;
+            let x_end_bytes = x_end * bpp;
+            // Mark entire rectangle in one operation (much faster than per-row)
+            db.mark_region_dirty_rect(y, y_end, x_start, x_end_bytes);
         }
     }
 
@@ -468,12 +492,14 @@ impl ShellFrameBuffer {
         // The cursor is drawn at the bottom of the character cell
         let cursor_height = 2; // 2 pixels tall
         let cursor_y = self.y_pos + shell_font::CHAR_RASTER_HEIGHT.val() - cursor_height;
+        let cursor_x = self.x_pos;
 
         for dy in 0..cursor_height {
             for dx in 0..shell_font::CHAR_RASTER_WIDTH {
-                self.write_pixel(self.x_pos + dx, cursor_y + dy, intensity);
+                self.write_pixel_no_mark(cursor_x + dx, cursor_y + dy, intensity);
             }
         }
+        self.mark_dirty_rect(cursor_x, cursor_y, shell_font::CHAR_RASTER_WIDTH, cursor_height);
     }
 
     /// Toggle the cursor visibility (for blinking effect)
@@ -570,8 +596,9 @@ impl Canvas for ShellFrameBuffer {
                 for (i, &byte) in pixel_bytes[..bytes_per_pixel].iter().enumerate() {
                     buffer[byte_offset + i] = byte;
                 }
-                let x_byte_offset = x * bytes_per_pixel;
-                db.mark_region_dirty(y, x_byte_offset, x_byte_offset + bytes_per_pixel);
+                // Note: We do NOT mark dirty here per-pixel. Higher-level functions
+                // (draw_glyph, fill_rect, etc.) call mark_dirty_region() once for
+                // the entire operation to avoid O(n) dirty marking overhead.
             }
         } else if byte_offset + bytes_per_pixel <= self.buffer_len {
             unsafe {

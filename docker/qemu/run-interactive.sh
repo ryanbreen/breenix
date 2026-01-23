@@ -16,6 +16,13 @@ if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
+# Kill any existing breenix-qemu containers (prevents port conflicts)
+EXISTING=$(docker ps -q --filter ancestor="$IMAGE_NAME" 2>/dev/null)
+if [ -n "$EXISTING" ]; then
+    echo "Stopping existing breenix-qemu containers..."
+    docker kill $EXISTING 2>/dev/null || true
+fi
+
 # Find the UEFI image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
 if [ -z "$UEFI_IMG" ]; then
