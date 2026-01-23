@@ -46,10 +46,13 @@ impl ProcessScheduler {
                             pid.as_u64()
                         );
 
-                        // Wake up the parent thread if it's blocked on waitpid
+                        // Wake up the parent thread if it's blocked on waitpid or pause()
                         if let Some(parent_tid) = parent_thread_id {
                             scheduler::with_scheduler(|sched| {
+                                // Wake if blocked on waitpid (BlockedOnChildExit)
                                 sched.unblock_for_child_exit(parent_tid);
+                                // Also wake if blocked on pause() or other signal wait (BlockedOnSignal)
+                                sched.unblock_for_signal(parent_tid);
                             });
                         }
                     }
