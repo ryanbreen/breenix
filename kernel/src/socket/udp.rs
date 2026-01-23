@@ -197,6 +197,10 @@ impl Drop for UdpSocket {
 }
 
 #[cfg(test)]
+/// Unit tests here validate local UDP socket behavior but cannot exercise the
+/// syscall-level blocking path (requires multi-threaded execution). We
+/// simulate blocked threads by manually setting thread state; integration
+/// tests via telnetd and DNS in Docker provide full path coverage.
 pub mod tests {
     use super::*;
     use alloc::boxed::Box;
@@ -236,6 +240,21 @@ pub mod tests {
         log::info!("=== TEST PASSED: register_waiter adds thread ID ===");
     }
 
+    pub fn test_register_waiter_duplicate_prevention() {
+        log::info!("=== TEST: register_waiter prevents duplicates ===");
+
+        let socket = UdpSocket::new();
+        let thread_id = 42;
+
+        socket.register_waiter(thread_id);
+        socket.register_waiter(thread_id);
+
+        let waiting = socket.waiting_threads.lock();
+        assert_eq!(waiting.len(), 1);
+
+        log::info!("=== TEST PASSED: register_waiter prevents duplicates ===");
+    }
+
     pub fn test_unregister_waiter_removes_thread() {
         log::info!("=== TEST: unregister_waiter removes thread ID ===");
 
@@ -253,6 +272,19 @@ pub mod tests {
         assert_eq!(waiting.len(), 1);
 
         log::info!("=== TEST PASSED: unregister_waiter removes thread ID ===");
+    }
+
+    pub fn test_unregister_nonexistent_waiter() {
+        log::info!("=== TEST: unregister_waiter ignores missing thread ID ===");
+
+        let socket = UdpSocket::new();
+
+        socket.unregister_waiter(999);
+
+        let waiting = socket.waiting_threads.lock();
+        assert_eq!(waiting.len(), 0);
+
+        log::info!("=== TEST PASSED: unregister_waiter ignores missing thread ID ===");
     }
 
     pub fn test_has_data_after_enqueue_packet() {
@@ -311,6 +343,55 @@ pub mod tests {
         assert_eq!(state_ready, Some(true));
 
         log::info!("=== TEST PASSED: enqueue_packet wakes blocked threads ===");
+    }
+
+    pub fn test_blocking_recvfrom_blocks_and_wakes() {
+        log::info!("=== TEST: blocking recvfrom blocks and wakes ===");
+
+        let socket = UdpSocket::new();
+        let idle_thread = make_thread(1, ThreadState::Ready);
+        scheduler::init(idle_thread);
+
+        // This test simulates blocking by manually marking a thread as blocked.
+        // True syscall-level blocking needs multi-threaded execution and is
+        // covered by telnetd and DNS integration tests in Docker. This test
+        // verifies the WAKE path, not the BLOCK path.
+        let blocked_thread_id = 2;
+        let blocked_thread = make_thread(blocked_thread_id, ThreadState::Blocked);
+        let added = scheduler::with_scheduler(|sched| {
+            sched.add_thread(blocked_thread);
+            if let Some(thread) = sched.get_thread_mut(blocked_thread_id) {
+                thread.state = ThreadState::Blocked;
+                thread.blocked_in_syscall = true;
+            }
+            sched.remove_from_ready_queue(blocked_thread_id);
+        });
+        assert_eq!(added.is_some(), true);
+
+        socket.register_waiter(blocked_thread_id);
+
+        let state_blocked = scheduler::with_scheduler(|sched| {
+            sched.get_thread(blocked_thread_id).map(|thread| {
+                thread.state == ThreadState::Blocked && thread.blocked_in_syscall
+            })
+        });
+        assert_eq!(state_blocked, Some(Some(true)));
+
+        let packet = UdpPacket {
+            src_addr: [10, 0, 2, 15],
+            src_port: 4321,
+            data: alloc::vec![0xaa],
+        };
+        socket.enqueue_packet(packet);
+
+        assert_eq!(socket.waiting_threads.lock().is_empty(), true);
+
+        let state_ready = scheduler::with_scheduler(|sched| {
+            sched.get_thread(blocked_thread_id).map(|thread| thread.state == ThreadState::Ready)
+        });
+        assert_eq!(state_ready, Some(Some(true)));
+
+        log::info!("=== TEST PASSED: blocking recvfrom blocks and wakes ===");
     }
 
     /// Test that multiple blocked threads are all woken when packet arrives
@@ -372,6 +453,7 @@ pub mod tests {
         // Set to nonblocking
         socket.set_nonblocking(true);
         assert_eq!(socket.nonblocking, true);
+        assert!(socket.recv_from().is_none());
 
         // Set back to blocking
         socket.set_nonblocking(false);
@@ -425,19 +507,14 @@ pub mod tests {
         log::info!("=== TEST PASSED: recv_from dequeues packets in FIFO order ===");
     }
 
-    /// Test race condition scenario: has_data() check after setting Blocked state
+    /// Test has_data() reflects receive queue state.
     ///
-    /// This tests the critical race condition fix in sys_recvfrom where we check
-    /// for data AFTER setting the thread to Blocked state. The scenario is:
-    /// 1. Thread checks for data (none)
-    /// 2. Thread sets itself to Blocked
-    /// 3. [RACE] Packet arrives and tries to wake (but thread wasn't blocked yet)
-    /// 4. Thread checks has_data() again (the fix!)
-    ///
-    /// This test verifies has_data() correctly reflects state even when called
-    /// in the "double-check" position after setting Blocked.
-    pub fn test_race_condition_double_check() {
-        log::info!("=== TEST: race condition double-check pattern ===");
+    /// This checks has_data() tracks queue state for the blocking recvfrom path.
+    /// True concurrent race testing would require multi-threaded execution, which
+    /// is not feasible in kernel unit tests. The actual race protection relies on
+    /// sys_recvfrom implementing the double-check pattern correctly.
+    pub fn test_has_data_reflects_queue_state() {
+        log::info!("=== TEST: has_data reflects queue state ===");
 
         let socket = UdpSocket::new();
 
@@ -463,7 +540,7 @@ pub mod tests {
         assert!(received.is_some());
         assert_eq!(received.unwrap().data, alloc::vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
-        log::info!("=== TEST PASSED: race condition double-check pattern ===");
+        log::info!("=== TEST PASSED: has_data reflects queue state ===");
     }
 
     /// Test RX queue overflow behavior (drops oldest packet)
@@ -472,8 +549,9 @@ pub mod tests {
 
         let socket = UdpSocket::new();
 
-        // Fill queue to MAX_RX_QUEUE_SIZE (16)
-        for i in 0..16u8 {
+        // Fill queue to MAX_RX_QUEUE_SIZE (32)
+        for i in 0..MAX_RX_QUEUE_SIZE {
+            let i = i as u8;
             let packet = UdpPacket {
                 src_addr: [10, 0, 0, i],
                 src_port: i as u16,
@@ -482,7 +560,7 @@ pub mod tests {
             socket.enqueue_packet(packet);
         }
 
-        assert_eq!(socket.rx_queue.lock().len(), 16);
+        assert_eq!(socket.rx_queue.lock().len(), MAX_RX_QUEUE_SIZE);
 
         // Add one more - should drop oldest (i=0)
         let packet = UdpPacket {
@@ -492,8 +570,8 @@ pub mod tests {
         };
         socket.enqueue_packet(packet);
 
-        // Still 16 packets
-        assert_eq!(socket.rx_queue.lock().len(), 16);
+        // Still MAX_RX_QUEUE_SIZE packets
+        assert_eq!(socket.rx_queue.lock().len(), MAX_RX_QUEUE_SIZE);
 
         // First packet should now be i=1 (i=0 was dropped)
         let first = socket.recv_from().unwrap();

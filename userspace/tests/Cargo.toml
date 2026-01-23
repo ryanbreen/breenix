@@ -163,6 +163,10 @@ name = "udp_socket_test"
 path = "udp_socket_test.rs"
 
 [[bin]]
+name = "blocking_recv_test"
+path = "blocking_recv_test.rs"
+
+[[bin]]
 name = "tcp_socket_test"
 path = "tcp_socket_test.rs"
 

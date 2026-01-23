@@ -612,12 +612,16 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
-    #[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only")))]
+    #[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test")))]
     kernel_main_continue();
 
     // DNS_TEST_ONLY mode: Skip all other tests, just run dns_test
     #[cfg(feature = "dns_test_only")]
     dns_test_only_main();
+
+    // BLOCKING_RECV_TEST mode: Skip all other tests, just run blocking_recv_test
+    #[cfg(feature = "blocking_recv_test")]
+    blocking_recv_test_main();
 }
 
 /// DNS test only mode - minimal boot, just run DNS test and exit
@@ -669,8 +673,68 @@ fn dns_test_only_main() -> ! {
     }
 }
 
+/// Blocking recvfrom test only mode - minimal boot, just run blocking_recv_test and exit
+#[cfg(feature = "blocking_recv_test")]
+fn blocking_recv_test_main() -> ! {
+    use alloc::string::String;
+
+    log::info!("=== BLOCKING_RECV_TEST: Starting minimal blocking recv test ===");
+
+    // Create blocking_recv_test process
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        serial_println!("BLOCKING_RECV_TEST: Loading blocking_recv_test binary");
+        let elf = match userspace_test::load_test_binary_from_disk("blocking_recv_test") {
+            Ok(elf) => elf,
+            Err(e) => {
+                log::error!("BLOCKING_RECV_TEST: Failed to load blocking_recv_test: {}", e);
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    let mut port = Port::new(0xf4);
+                    port.write(0x01u32);
+                }
+                return;
+            }
+        };
+        match process::create_user_process(String::from("blocking_recv_test"), &elf) {
+            Ok(pid) => {
+                log::info!(
+                    "BLOCKING_RECV_TEST: Created blocking_recv_test process with PID {}",
+                    pid.as_u64()
+                );
+            }
+            Err(e) => {
+                log::error!("BLOCKING_RECV_TEST: Failed to create blocking_recv_test: {}", e);
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    let mut port = Port::new(0xf4);
+                    port.write(0x01u32);
+                }
+            }
+        }
+    });
+
+    // Enable interrupts so blocking_recv_test can run
+    log::info!("BLOCKING_RECV_TEST: Enabling interrupts");
+    x86_64::instructions::interrupts::enable();
+
+    // Enter idle loop - blocking_recv_test will run via scheduler
+    log::info!("BLOCKING_RECV_TEST: Entering idle loop (blocking_recv_test running via scheduler)");
+    loop {
+        x86_64::instructions::interrupts::enable_and_hlt();
+
+        // Yield to give scheduler a chance
+        task::scheduler::yield_current();
+
+        // Poll for received packets (workaround for softirq timing)
+        net::process_rx();
+
+        // Drain loopback queue for localhost packets
+        net::drain_loopback_queue();
+    }
+}
+
 /// Continue kernel initialization after setting up threading
-#[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only")))]
+#[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test")))]
 fn kernel_main_continue() -> ! {
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]

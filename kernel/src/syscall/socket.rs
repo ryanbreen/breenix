@@ -8,6 +8,8 @@ use crate::socket::types::{AF_INET, SOCK_DGRAM, SOCK_STREAM, SockAddrIn};
 use crate::socket::udp::UdpSocket;
 use crate::ipc::fd::FdKind;
 
+const SOCK_NONBLOCK: u64 = 0x800;
+
 /// sys_socket - Create a new socket
 ///
 /// Arguments:
@@ -51,11 +53,18 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
         }
     };
 
+    let nonblocking = (sock_type & SOCK_NONBLOCK) != 0;
+    let base_type = sock_type & !SOCK_NONBLOCK;
+
     // Create socket based on type
-    let fd_kind = match sock_type as u16 {
+    let fd_kind = match base_type as u16 {
         SOCK_DGRAM => {
             // Create UDP socket wrapped in Arc<Mutex<>> for sharing
-            let socket = alloc::sync::Arc::new(spin::Mutex::new(UdpSocket::new()));
+            let mut socket = UdpSocket::new();
+            if nonblocking {
+                socket.set_nonblocking(true);
+            }
+            let socket = alloc::sync::Arc::new(spin::Mutex::new(socket));
             FdKind::UdpSocket(socket)
         }
         SOCK_STREAM => {
@@ -63,7 +72,7 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
             FdKind::TcpSocket(0)
         }
         _ => {
-            log::debug!("sys_socket: unsupported type {}", sock_type);
+            log::debug!("sys_socket: unsupported type {}", base_type);
             return SyscallResult::Err(EINVAL as u64);
         }
     };
@@ -71,7 +80,7 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
     // Allocate file descriptor in process
     match process.fd_table.alloc(fd_kind) {
         Ok(num) => {
-            let kind_str = if sock_type as u16 == SOCK_STREAM { "TCP" } else { "UDP" };
+            let kind_str = if base_type as u16 == SOCK_STREAM { "TCP" } else { "UDP" };
             log::info!("{}: Socket created fd={}", kind_str, num);
             log::debug!("{} socket: returning to userspace fd={}", kind_str, num);
             SyscallResult::Ok(num as u64)

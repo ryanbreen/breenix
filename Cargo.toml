@@ -10,6 +10,7 @@ kthread_test_only = ["kernel/kthread_test_only"]  # Run only kthread tests and e
 kthread_stress_test = ["kernel/kthread_stress_test"]  # Run kthread stress test (100+ kthreads) and exit
 workqueue_test_only = ["kernel/workqueue_test_only"]  # Run only workqueue tests and exit
 dns_test_only = ["kernel/dns_test_only"]  # Run only DNS test and exit (fast network debugging)
+blocking_recv_test = ["kernel/blocking_recv_test"]  # Run only blocking recvfrom test and exit
 test_divide_by_zero = ["kernel/test_divide_by_zero"]
 test_invalid_opcode = ["kernel/test_invalid_opcode"]
 test_page_fault = ["kernel/test_page_fault"]
