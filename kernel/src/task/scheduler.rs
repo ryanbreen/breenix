@@ -4,7 +4,7 @@
 
 use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
-use alloc::{boxed::Box, collections::VecDeque};
+use alloc::{boxed::Box, collections::VecDeque, format};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
@@ -99,27 +99,39 @@ impl Scheduler {
         if let Some(current_id) = self.current_thread {
             if current_id != self.idle_thread {
                 // Check the state and determine what to do
-                let (is_terminated, is_blocked) =
+                let (is_terminated, is_blocked, state_str) =
                     if let Some(current) = self.get_thread_mut(current_id) {
                         let was_terminated = current.state == ThreadState::Terminated;
                         // Check for any blocked state
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
                             || current.state == ThreadState::BlockedOnChildExit;
+                        let state = format!("{:?}", current.state);
                         // Only set to Ready if not terminated AND not blocked
                         if !was_terminated && !was_blocked {
                             current.set_ready();
                         }
-                        (was_terminated, was_blocked)
+                        (was_terminated, was_blocked, state)
                     } else {
-                        (true, false)
+                        (true, false, "NOT_FOUND".into())
                     };
 
                 // Put non-terminated, non-blocked threads back in ready queue
                 // CRITICAL: Check for duplicates! If unblock() already added this thread
                 // (e.g., packet arrived during blocking recvfrom), don't add it again.
                 // Duplicates cause schedule() to spin when same thread keeps getting selected.
-                if !is_terminated && !is_blocked && !self.ready_queue.contains(&current_id) {
+                let in_queue = self.ready_queue.contains(&current_id);
+                let will_add = !is_terminated && !is_blocked && !in_queue;
+
+                // Always log for thread 18 (TCP test) to diagnose CI failure
+                if current_id == 18 {
+                    log_serial_println!(
+                        "SCHED_DIAG: thread={} state={} terminated={} blocked={} in_queue={} will_add={}",
+                        current_id, state_str, is_terminated, is_blocked, in_queue, will_add
+                    );
+                }
+
+                if will_add {
                     self.ready_queue.push_back(current_id);
                 }
             }
@@ -187,6 +199,14 @@ impl Scheduler {
         // If current is idle and we have a real next thread, allow switch even if idle
         let old_thread_id = self.current_thread.unwrap_or(self.idle_thread);
         self.current_thread = Some(next_thread_id);
+
+        // Always log when Thread 18 (TCP test) is being switched to/from
+        if old_thread_id == 18 || next_thread_id == 18 {
+            log_serial_println!(
+                "SCHED_DIAG: Switching from {} to {}, ready_queue={:?}",
+                old_thread_id, next_thread_id, self.ready_queue
+            );
+        }
 
         if debug_log {
             log_serial_println!(

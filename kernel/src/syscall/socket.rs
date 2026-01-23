@@ -1014,7 +1014,7 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
             // Drain loopback one more time to deliver the ACK to the server
             crate::net::drain_loopback_queue();
-            log::info!("TCP: Connection established");
+            log::info!("TCP connect: thread={} - Connection established, returning success", thread_id);
             return SyscallResult::Ok(0);
         }
 
@@ -1026,7 +1026,7 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         }
 
         // Not yet established - block
-        log::debug!("TCP connect: entering blocking path, thread={}", thread_id);
+        log::info!("TCP connect: thread={} entering blocking path", thread_id);
 
         // Block the current thread
         crate::task::scheduler::with_scheduler(|sched| {
@@ -1036,8 +1036,17 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             }
         });
 
+        log::info!("TCP connect: thread={} blocked, checking for race", thread_id);
+
         // Double-check for state change after setting Blocked state
-        if crate::net::tcp::tcp_is_established(&conn_id) || crate::net::tcp::tcp_is_failed(&conn_id) {
+        let is_established = crate::net::tcp::tcp_is_established(&conn_id);
+        let is_failed = crate::net::tcp::tcp_is_failed(&conn_id);
+        log::info!(
+            "TCP connect: thread={} double-check: established={}, failed={}",
+            thread_id, is_established, is_failed
+        );
+
+        if is_established || is_failed {
             log::info!("TCP: Thread {} caught race - state changed during block setup", thread_id);
             crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
@@ -1086,6 +1095,8 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
         // Drain loopback again before retrying
         crate::net::drain_loopback_queue();
+
+        log::info!("TCP connect: thread={} looping back to check connection", thread_id);
     }
 }
 
