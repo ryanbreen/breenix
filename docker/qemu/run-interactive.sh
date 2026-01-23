@@ -16,11 +16,14 @@ if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     docker build -t "$IMAGE_NAME" "$SCRIPT_DIR"
 fi
 
+# Build kernel with interactive feature (split-screen graphics demo + shell)
+echo "Building interactive kernel..."
+cargo build --release --features interactive --bin qemu-uefi
+
 # Find the UEFI image
 UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
 if [ -z "$UEFI_IMG" ]; then
-    echo "Error: UEFI image not found. Build with:"
-    echo "  cargo build --release --features interactive --bin qemu-uefi"
+    echo "Error: UEFI image not found."
     exit 1
 fi
 
