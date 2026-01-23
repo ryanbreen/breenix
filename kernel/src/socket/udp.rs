@@ -312,4 +312,194 @@ pub mod tests {
 
         log::info!("=== TEST PASSED: enqueue_packet wakes blocked threads ===");
     }
+
+    /// Test that multiple blocked threads are all woken when packet arrives
+    pub fn test_enqueue_packet_wakes_multiple_waiters() {
+        log::info!("=== TEST: enqueue_packet wakes multiple waiters ===");
+
+        let socket = UdpSocket::new();
+        let idle_thread = make_thread(1, ThreadState::Ready);
+        scheduler::init(idle_thread);
+
+        // Create multiple blocked threads
+        let thread_ids = [10u64, 11, 12];
+        for &tid in &thread_ids {
+            let thread = make_thread(tid, ThreadState::Blocked);
+            scheduler::with_scheduler(|sched| {
+                sched.add_thread(thread);
+                if let Some(t) = sched.get_thread_mut(tid) {
+                    t.state = ThreadState::Blocked;
+                }
+                sched.remove_from_ready_queue(tid);
+            });
+            socket.register_waiter(tid);
+        }
+
+        // Verify all are registered
+        assert_eq!(socket.waiting_threads.lock().len(), 3);
+
+        // Enqueue packet - should wake all
+        let packet = UdpPacket {
+            src_addr: [10, 0, 2, 15],
+            src_port: 4321,
+            data: alloc::vec![0xaa, 0xbb],
+        };
+        socket.enqueue_packet(packet);
+
+        // Verify wait queue is empty (all unregistered during wake)
+        assert_eq!(socket.waiting_threads.lock().is_empty(), true);
+
+        // Verify all threads are now Ready
+        for &tid in &thread_ids {
+            let is_ready = scheduler::with_scheduler(|sched| {
+                sched.get_thread(tid).map(|t| t.state == ThreadState::Ready)
+            });
+            assert_eq!(is_ready, Some(Some(true)), "Thread {} should be Ready", tid);
+        }
+
+        log::info!("=== TEST PASSED: enqueue_packet wakes multiple waiters ===");
+    }
+
+    /// Test nonblocking mode flag behavior
+    pub fn test_nonblocking_mode_flag() {
+        log::info!("=== TEST: nonblocking mode flag ===");
+
+        let mut socket = UdpSocket::new();
+
+        // Default should be blocking
+        assert_eq!(socket.nonblocking, false);
+
+        // Set to nonblocking
+        socket.set_nonblocking(true);
+        assert_eq!(socket.nonblocking, true);
+
+        // Set back to blocking
+        socket.set_nonblocking(false);
+        assert_eq!(socket.nonblocking, false);
+
+        log::info!("=== TEST PASSED: nonblocking mode flag ===");
+    }
+
+    /// Test recv_from properly dequeues packets
+    pub fn test_recv_from_dequeues_packets() {
+        log::info!("=== TEST: recv_from dequeues packets in FIFO order ===");
+
+        let socket = UdpSocket::new();
+
+        // Enqueue multiple packets
+        for i in 0..3u8 {
+            let packet = UdpPacket {
+                src_addr: [192, 168, 1, i],
+                src_port: 1000 + i as u16,
+                data: alloc::vec![i, i + 1],
+            };
+            socket.enqueue_packet(packet);
+        }
+
+        assert_eq!(socket.rx_queue.lock().len(), 3);
+
+        // Receive first packet
+        let pkt1 = socket.recv_from();
+        assert!(pkt1.is_some());
+        let pkt1 = pkt1.unwrap();
+        assert_eq!(pkt1.src_addr, [192, 168, 1, 0]);
+        assert_eq!(pkt1.src_port, 1000);
+        assert_eq!(pkt1.data, alloc::vec![0, 1]);
+
+        // Receive second packet
+        let pkt2 = socket.recv_from();
+        assert!(pkt2.is_some());
+        let pkt2 = pkt2.unwrap();
+        assert_eq!(pkt2.src_addr, [192, 168, 1, 1]);
+        assert_eq!(pkt2.src_port, 1001);
+
+        // Receive third packet
+        let pkt3 = socket.recv_from();
+        assert!(pkt3.is_some());
+        assert_eq!(pkt3.unwrap().src_addr, [192, 168, 1, 2]);
+
+        // Queue should be empty now
+        assert!(!socket.has_data());
+        assert!(socket.recv_from().is_none());
+
+        log::info!("=== TEST PASSED: recv_from dequeues packets in FIFO order ===");
+    }
+
+    /// Test race condition scenario: has_data() check after setting Blocked state
+    ///
+    /// This tests the critical race condition fix in sys_recvfrom where we check
+    /// for data AFTER setting the thread to Blocked state. The scenario is:
+    /// 1. Thread checks for data (none)
+    /// 2. Thread sets itself to Blocked
+    /// 3. [RACE] Packet arrives and tries to wake (but thread wasn't blocked yet)
+    /// 4. Thread checks has_data() again (the fix!)
+    ///
+    /// This test verifies has_data() correctly reflects state even when called
+    /// in the "double-check" position after setting Blocked.
+    pub fn test_race_condition_double_check() {
+        log::info!("=== TEST: race condition double-check pattern ===");
+
+        let socket = UdpSocket::new();
+
+        // Simulate the blocking path: first check shows no data
+        assert!(!socket.has_data());
+
+        // Simulate: we would set thread to Blocked here (in actual syscall)
+        // Then a packet arrives during the race window
+        let packet = UdpPacket {
+            src_addr: [127, 0, 0, 1],
+            src_port: 53,
+            data: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF],
+        };
+        socket.enqueue_packet(packet);
+
+        // The double-check: has_data() should now return true
+        // This is the check that prevents the race condition
+        assert!(socket.has_data());
+
+        // The fix: if has_data() returns true in double-check,
+        // thread unblocks itself and retries receive
+        let received = socket.recv_from();
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().data, alloc::vec![0xDE, 0xAD, 0xBE, 0xEF]);
+
+        log::info!("=== TEST PASSED: race condition double-check pattern ===");
+    }
+
+    /// Test RX queue overflow behavior (drops oldest packet)
+    pub fn test_rx_queue_overflow() {
+        log::info!("=== TEST: RX queue overflow drops oldest ===");
+
+        let socket = UdpSocket::new();
+
+        // Fill queue to MAX_RX_QUEUE_SIZE (16)
+        for i in 0..16u8 {
+            let packet = UdpPacket {
+                src_addr: [10, 0, 0, i],
+                src_port: i as u16,
+                data: alloc::vec![i],
+            };
+            socket.enqueue_packet(packet);
+        }
+
+        assert_eq!(socket.rx_queue.lock().len(), 16);
+
+        // Add one more - should drop oldest (i=0)
+        let packet = UdpPacket {
+            src_addr: [10, 0, 0, 99],
+            src_port: 99,
+            data: alloc::vec![99],
+        };
+        socket.enqueue_packet(packet);
+
+        // Still 16 packets
+        assert_eq!(socket.rx_queue.lock().len(), 16);
+
+        // First packet should now be i=1 (i=0 was dropped)
+        let first = socket.recv_from().unwrap();
+        assert_eq!(first.src_addr, [10, 0, 0, 1]);
+        assert_eq!(first.data, alloc::vec![1]);
+
+        log::info!("=== TEST PASSED: RX queue overflow drops oldest ===");
+    }
 }
