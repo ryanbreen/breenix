@@ -612,7 +612,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
-    #[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test")))]
+    #[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")))]
     kernel_main_continue();
 
     // DNS_TEST_ONLY mode: Skip all other tests, just run dns_test
@@ -622,6 +622,10 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // BLOCKING_RECV_TEST mode: Skip all other tests, just run blocking_recv_test
     #[cfg(feature = "blocking_recv_test")]
     blocking_recv_test_main();
+
+    // NONBLOCK_EAGAIN_TEST mode: Skip all other tests, just run nonblock_eagain_test
+    #[cfg(feature = "nonblock_eagain_test")]
+    nonblock_eagain_test_main();
 }
 
 /// DNS test only mode - minimal boot, just run DNS test and exit
@@ -733,8 +737,69 @@ fn blocking_recv_test_main() -> ! {
     }
 }
 
+/// Nonblock EAGAIN test only mode - minimal boot, just run nonblock_eagain_test and exit
+#[cfg(feature = "nonblock_eagain_test")]
+fn nonblock_eagain_test_main() -> ! {
+    use alloc::string::String;
+
+    log::info!("=== NONBLOCK_EAGAIN_TEST: Starting minimal nonblock EAGAIN test ===");
+
+    // Create nonblock_eagain_test process
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        serial_println!("NONBLOCK_EAGAIN_TEST: Loading nonblock_eagain_test binary");
+        let elf = match userspace_test::load_test_binary_from_disk("nonblock_eagain_test") {
+            Ok(elf) => elf,
+            Err(e) => {
+                log::error!("NONBLOCK_EAGAIN_TEST: Failed to load nonblock_eagain_test: {}", e);
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    let mut port = Port::new(0xf4);
+                    port.write(0x01u32);
+                }
+                return;
+            }
+        };
+        match process::create_user_process(String::from("nonblock_eagain_test"), &elf) {
+            Ok(pid) => {
+                log::info!(
+                    "NONBLOCK_EAGAIN_TEST: Created nonblock_eagain_test process with PID {}",
+                    pid.as_u64()
+                );
+            }
+            Err(e) => {
+                log::error!("NONBLOCK_EAGAIN_TEST: Failed to create nonblock_eagain_test: {}", e);
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    let mut port = Port::new(0xf4);
+                    port.write(0x01u32);
+                }
+            }
+        }
+    });
+
+    // Enable interrupts so nonblock_eagain_test can run
+    log::info!("NONBLOCK_EAGAIN_TEST: Enabling interrupts");
+    x86_64::instructions::interrupts::enable();
+
+    // Enter idle loop - nonblock_eagain_test will run via scheduler
+    // This test should complete quickly since it just verifies EAGAIN return
+    log::info!("NONBLOCK_EAGAIN_TEST: Entering idle loop (nonblock_eagain_test running via scheduler)");
+    loop {
+        x86_64::instructions::interrupts::enable_and_hlt();
+
+        // Yield to give scheduler a chance
+        task::scheduler::yield_current();
+
+        // Poll for received packets (workaround for softirq timing)
+        net::process_rx();
+
+        // Drain loopback queue for localhost packets
+        net::drain_loopback_queue();
+    }
+}
+
 /// Continue kernel initialization after setting up threading
-#[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test")))]
+#[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")))]
 fn kernel_main_continue() -> ! {
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]
