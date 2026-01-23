@@ -16,7 +16,7 @@
 
 use crate::io::close;
 use crate::process::yield_now;
-use crate::socket::{bind, recvfrom, sendto, socket, SockAddrIn, AF_INET, SOCK_DGRAM};
+use crate::socket::{bind, recvfrom, sendto, socket, SockAddrIn, AF_INET, SOCK_DGRAM, SOCK_NONBLOCK};
 use crate::time::now_monotonic;
 
 // ============================================================================
@@ -481,8 +481,10 @@ pub fn resolve(hostname: &str, dns_server: [u8; 4]) -> Result<DnsResult, DnsErro
         return Err(DnsError::HostnameTooLong);
     }
 
-    // Create UDP socket
-    let fd = socket(AF_INET, SOCK_DGRAM, 0).map_err(|_| DnsError::SocketError)?;
+    // Create UDP socket with non-blocking mode
+    // CRITICAL: Must use SOCK_NONBLOCK because UDP recvfrom now blocks by default.
+    // Without this, the DNS resolver would hang forever waiting for a response.
+    let fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0).map_err(|_| DnsError::SocketError)?;
 
     // Bind to ephemeral port (port 0 = kernel assigns)
     let local_addr = SockAddrIn::new([0, 0, 0, 0], 0);
