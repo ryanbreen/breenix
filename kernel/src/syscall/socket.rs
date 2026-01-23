@@ -597,6 +597,9 @@ pub fn sys_recvfrom(
                 thread.blocked_in_syscall = false;
             }
         });
+        // Reset quantum to prevent immediate preemption after long blocking wait
+        crate::interrupts::timer::reset_quantum();
+        crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
         x86_64::instructions::interrupts::without_interrupts(|| {
@@ -860,6 +863,9 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
                 thread.blocked_in_syscall = false;
             }
         });
+        // Reset quantum to prevent immediate preemption after long blocking wait
+        crate::interrupts::timer::reset_quantum();
+        crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
         crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
@@ -1089,6 +1095,9 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                 thread.blocked_in_syscall = false;
             }
         });
+        // Reset quantum to prevent immediate preemption after long blocking wait
+        crate::interrupts::timer::reset_quantum();
+        crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
         crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
