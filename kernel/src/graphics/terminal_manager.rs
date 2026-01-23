@@ -17,7 +17,7 @@ const TAB_HEIGHT: usize = 24;
 const TAB_PADDING: usize = 12;
 
 /// Maximum log lines to keep in buffer
-const LOG_BUFFER_SIZE: usize = 200;
+const LOG_BUFFER_SIZE: usize = 50; // Reduced from 200 for faster tab switching
 
 /// Terminal identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,7 +151,13 @@ impl TerminalManager {
             }
             TerminalId::Logs => {
                 // Logs: replay from buffer
-                for line in self.log_buffer.iter() {
+                // Optimization: only replay lines that will be visible
+                // Skip early lines that would scroll off, avoiding expensive scroll operations
+                let visible_rows = self.terminal_pane.rows();
+                let total_lines = self.log_buffer.lines.len();
+                let skip_count = total_lines.saturating_sub(visible_rows);
+
+                for line in self.log_buffer.lines.iter().skip(skip_count) {
                     self.terminal_pane.write_str(canvas, line);
                     self.terminal_pane.write_str(canvas, "\r\n");
                 }
@@ -568,7 +574,8 @@ pub fn switch_terminal(id: TerminalId) {
         manager.switch_to(id, &mut *fb_guard);
 
         if let Some(db) = fb_guard.double_buffer_mut() {
-            db.flush_full();
+            // Only flush dirty regions, not entire 8MB buffer
+            db.flush();
         }
         Some(())
     })();
