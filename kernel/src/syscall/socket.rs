@@ -839,6 +839,11 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 
         // HLT loop - wait for SYN to arrive
         loop {
+            // Drain loopback queue - essential for single-threaded tests where
+            // no other thread processes packets. This may wake other threads'
+            // connections but that's OK - they'll re-check and re-block if needed.
+            crate::net::drain_loopback_queue();
+
             crate::task::scheduler::yield_current();
             x86_64::instructions::interrupts::enable_and_hlt();
 
@@ -1071,6 +1076,11 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
         // HLT loop - wait for SYN+ACK to arrive
         loop {
+            // Drain loopback queue - essential for single-threaded tests where
+            // no other thread processes packets. This may wake other threads'
+            // connections but that's OK - they'll re-check and re-block if needed.
+            crate::net::drain_loopback_queue();
+
             crate::task::scheduler::yield_current();
             x86_64::instructions::interrupts::enable_and_hlt();
 
