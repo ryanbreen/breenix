@@ -612,8 +612,61 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
-    #[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only")))]
+    #[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only")))]
     kernel_main_continue();
+
+    // DNS_TEST_ONLY mode: Skip all other tests, just run dns_test
+    #[cfg(feature = "dns_test_only")]
+    dns_test_only_main();
+}
+
+/// DNS test only mode - minimal boot, just run DNS test and exit
+#[cfg(feature = "dns_test_only")]
+fn dns_test_only_main() -> ! {
+    use alloc::string::String;
+
+    log::info!("=== DNS_TEST_ONLY: Starting minimal DNS test ===");
+
+    // Create dns_test process
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        serial_println!("DNS_TEST_ONLY: Loading dns_test binary");
+        let elf = userspace_test::get_test_binary("dns_test");
+        match process::create_user_process(String::from("dns_test"), &elf) {
+            Ok(pid) => {
+                log::info!("DNS_TEST_ONLY: Created dns_test process with PID {}", pid.as_u64());
+            }
+            Err(e) => {
+                log::error!("DNS_TEST_ONLY: Failed to create dns_test: {}", e);
+                // Exit with error
+                unsafe {
+                    use x86_64::instructions::port::Port;
+                    let mut port = Port::new(0xf4);
+                    port.write(0x01u32);  // Error exit
+                }
+            }
+        }
+    });
+
+    // Enable interrupts so dns_test can run
+    log::info!("DNS_TEST_ONLY: Enabling interrupts");
+    x86_64::instructions::interrupts::enable();
+
+    // Enter idle loop - dns_test will run via scheduler
+    // The test harness watches for "DNS Test: All tests passed" marker
+    // and kills QEMU when it appears
+    log::info!("DNS_TEST_ONLY: Entering idle loop (dns_test running via scheduler)");
+    loop {
+        x86_64::instructions::interrupts::enable_and_hlt();
+
+        // Yield to give scheduler a chance
+        task::scheduler::yield_current();
+
+        // Poll for received packets (workaround for softirq timing)
+        net::process_rx();
+
+        // Drain loopback queue for localhost packets
+        net::drain_loopback_queue();
+    }
 }
 
 /// Continue kernel initialization after setting up threading
@@ -2286,6 +2339,13 @@ fn test_softirq() {
     log::info!("SOFTIRQ_TEST: ksoftirqd verification passed");
 
     log::info!("SOFTIRQ_TEST: all tests passed");
+
+    // CRITICAL: Restore the real network softirq handler!
+    // The tests above registered test handlers that override the real ones.
+    // Without this, network packets won't be processed after the tests.
+    crate::net::register_net_softirq();
+    log::info!("SOFTIRQ_TEST: Restored network softirq handler");
+
     log::info!("=== SOFTIRQ TEST: Completed ===");
 }
 

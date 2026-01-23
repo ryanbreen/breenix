@@ -30,7 +30,9 @@ pub enum InterruptIndex {
     Keyboard,
     // Skip COM2 (IRQ3)
     Serial = PIC_1_OFFSET + 4, // COM1 is IRQ4
-    // IRQ 11 is shared by VirtIO block and E1000 network devices (on PIC2)
+    // IRQ 10 is used by E1000 network and some VirtIO devices (on PIC2)
+    Irq10 = PIC_2_OFFSET + 2, // IRQ 10 = 40 + 2 = 42
+    // IRQ 11 is used by some VirtIO block devices (on PIC2)
     Irq11 = PIC_2_OFFSET + 3, // IRQ 11 = 40 + 3 = 43
 }
 
@@ -130,6 +132,7 @@ pub fn init_idt() {
         }
         idt[InterruptIndex::Keyboard.as_u8()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::Serial.as_u8()].set_handler_fn(serial_interrupt_handler);
+        idt[InterruptIndex::Irq10.as_u8()].set_handler_fn(irq10_handler);
         idt[InterruptIndex::Irq11.as_u8()].set_handler_fn(irq11_handler);
 
         // System call handler (INT 0x80)
@@ -177,6 +180,7 @@ pub fn init_idt() {
             if i != InterruptIndex::Timer.as_u8()
                 && i != InterruptIndex::Keyboard.as_u8()
                 && i != InterruptIndex::Serial.as_u8()
+                && i != InterruptIndex::Irq10.as_u8()
                 && i != InterruptIndex::Irq11.as_u8()
                 && i != SYSCALL_INTERRUPT_ID
             {
@@ -229,7 +233,30 @@ pub fn init_pic() {
     }
 }
 
-/// Enable IRQ 11 (shared by VirtIO block and E1000 network)
+/// Enable IRQ 10 (used by E1000 network and some VirtIO devices)
+///
+/// IMPORTANT: Only call this AFTER devices using IRQ 10 have been initialized.
+/// Calling earlier will cause hangs due to interrupt handler accessing
+/// uninitialized driver state.
+pub fn enable_irq10() {
+    unsafe {
+        use x86_64::instructions::port::Port;
+
+        // Unmask IRQ 10 (bit 2 on PIC2)
+        let mut port2: Port<u8> = Port::new(0xA1); // PIC2 data port
+        let mask2 = port2.read() & !0b00000100; // Clear bit 2 (IRQ 10 = 8 + 2)
+        port2.write(mask2);
+
+        // Ensure cascade (IRQ2) is unmasked on PIC1
+        let mut port1: Port<u8> = Port::new(0x21); // PIC1 data port
+        let mask1_cascade = port1.read() & !0b00000100; // Clear bit 2 (cascade)
+        port1.write(mask1_cascade);
+
+        log::debug!("IRQ 10 enabled (E1000)");
+    }
+}
+
+/// Enable IRQ 11 (used by some VirtIO block devices)
 ///
 /// IMPORTANT: Only call this AFTER devices using IRQ 11 have been initialized.
 /// Calling earlier will cause hangs due to interrupt handler accessing
@@ -504,7 +531,28 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
 }
 
 
-/// Shared IRQ 11 handler for VirtIO block and E1000 network devices
+/// IRQ 10 handler for E1000 network device
+///
+/// CRITICAL: This handler must be extremely fast. No logging, no allocations.
+/// Target: <1000 cycles total.
+extern "x86-interrupt" fn irq10_handler(_stack_frame: InterruptStackFrame) {
+    // Enter hardware IRQ context
+    crate::per_cpu::irq_enter();
+
+    // Dispatch to E1000 network if initialized
+    crate::drivers::e1000::handle_interrupt();
+
+    // Send EOI to both PICs (IRQ 10 is on PIC2)
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(InterruptIndex::Irq10.as_u8());
+    }
+
+    // Exit hardware IRQ context
+    crate::per_cpu::irq_exit();
+}
+
+/// IRQ 11 handler for VirtIO block devices
 ///
 /// CRITICAL: This handler must be extremely fast. No logging, no allocations.
 /// Target: <1000 cycles total.
@@ -517,7 +565,7 @@ extern "x86-interrupt" fn irq11_handler(_stack_frame: InterruptStackFrame) {
         device.handle_interrupt();
     }
 
-    // Dispatch to E1000 network if initialized
+    // Also check E1000 on IRQ 11 - some QEMU configurations route E1000 here
     crate::drivers::e1000::handle_interrupt();
 
     // Send EOI to both PICs (IRQ 11 is on PIC2)

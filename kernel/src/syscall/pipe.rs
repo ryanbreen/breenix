@@ -211,6 +211,7 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     log::debug!("sys_close: Closed PTY slave fd={} (pty {})", fd, pty_num);
                 }
             }
+            log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)
         }
         Err(e) => {

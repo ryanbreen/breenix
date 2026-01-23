@@ -21,6 +21,7 @@ testing = []
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 kthread_stress_test = ["testing"]  # Run kthread stress test (100+ kthreads) and exit
 workqueue_test_only = ["testing"]  # Run only workqueue tests and exit
+dns_test_only = ["testing", "external_test_bins"]  # Run only DNS test and exit (fast network debugging)
 test_divide_by_zero = []
 test_invalid_opcode = []
 test_page_fault = []

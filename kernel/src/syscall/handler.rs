@@ -135,6 +135,13 @@ impl crate::arch_impl::traits::SyscallFrame for SyscallFrame {
 // Static flag to track first Ring 3 syscall
 static RING3_CONFIRMED: AtomicBool = AtomicBool::new(false);
 
+/// Returns true if userspace has started (first Ring 3 syscall received).
+/// Used by scheduler to determine if idle thread should use idle_loop or
+/// restore saved context from boot.
+pub fn is_ring3_confirmed() -> bool {
+    RING3_CONFIRMED.load(Ordering::Relaxed)
+}
+
 /// Main syscall handler called from assembly
 ///
 /// CRITICAL: This is a hot path. NO logging, NO serial output, NO allocations.
