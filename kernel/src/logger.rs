@@ -596,8 +596,9 @@ impl Canvas for ShellFrameBuffer {
                 for (i, &byte) in pixel_bytes[..bytes_per_pixel].iter().enumerate() {
                     buffer[byte_offset + i] = byte;
                 }
-                let x_byte_offset = x * bytes_per_pixel;
-                db.mark_region_dirty(y, x_byte_offset, x_byte_offset + bytes_per_pixel);
+                // Note: We do NOT mark dirty here per-pixel. Higher-level functions
+                // (draw_glyph, fill_rect, etc.) call mark_dirty_region() once for
+                // the entire operation to avoid O(n) dirty marking overhead.
             }
         } else if byte_offset + bytes_per_pixel <= self.buffer_len {
             unsafe {

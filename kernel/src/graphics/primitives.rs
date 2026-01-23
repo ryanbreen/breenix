@@ -326,6 +326,14 @@ pub fn fill_rect(canvas: &mut impl Canvas, rect: Rect, color: Color) {
             chunk.copy_from_slice(&pixel[..bpp]);
         }
     }
+
+    // Mark the entire filled rectangle dirty once (not per-pixel)
+    canvas.mark_dirty_region(
+        clipped.x as usize,
+        clipped.y as usize,
+        clipped.width as usize,
+        clipped.height as usize,
+    );
 }
 
 /// Draw circle outline using midpoint circle algorithm.
@@ -509,6 +517,11 @@ fn draw_glyph(canvas: &mut impl Canvas, x: i32, y: i32, glyph: &Glyph, style: &T
         };
 
         canvas.set_pixel(px, py, color);
+    }
+
+    // Mark the entire glyph bounding box dirty once (not per-pixel)
+    if x >= 0 && y >= 0 {
+        canvas.mark_dirty_region(x as usize, y as usize, glyph.width(), glyph.height());
     }
 }
 
