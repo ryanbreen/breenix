@@ -736,7 +736,9 @@ fn handle_syn_for_listener(
     config: &super::NetConfig,
 ) {
     if listener.pending.len() >= listener.backlog {
-        log::warn!("TCP: Backlog full, dropping SYN");
+        log::warn!("TCP: Backlog full, sending RST for port {}", header.dst_port);
+        // Send RST to tell client the connection was refused
+        send_rst(config, src_ip, header);
         return;
     }
 
