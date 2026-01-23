@@ -844,9 +844,8 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
             // connections but that's OK - they'll re-check and re-block if needed.
             crate::net::drain_loopback_queue();
 
-            crate::task::scheduler::yield_current();
-            x86_64::instructions::interrupts::enable_and_hlt();
-
+            // Check if we were woken by the drain (e.g., SYN arrived and woke us)
+            // IMPORTANT: Check BEFORE HLT to avoid unnecessary waiting
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.state == crate::task::thread::ThreadState::Blocked
@@ -860,6 +859,10 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
                 log::info!("TCP_BLOCK: Thread {} woken from accept blocking", thread_id);
                 break;
             }
+
+            // Still blocked - yield and wait for interrupt (timer or NIC)
+            crate::task::scheduler::yield_current();
+            x86_64::instructions::interrupts::enable_and_hlt();
         }
 
         // Clear blocked_in_syscall
@@ -1081,9 +1084,8 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             // connections but that's OK - they'll re-check and re-block if needed.
             crate::net::drain_loopback_queue();
 
-            crate::task::scheduler::yield_current();
-            x86_64::instructions::interrupts::enable_and_hlt();
-
+            // Check if we were woken by the drain (e.g., SYN+ACK arrived and woke us)
+            // IMPORTANT: Check BEFORE HLT to avoid unnecessary waiting
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
                     thread.state == crate::task::thread::ThreadState::Blocked
@@ -1097,6 +1099,10 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                 log::info!("TCP_BLOCK: Thread {} woken from connect blocking", thread_id);
                 break;
             }
+
+            // Still blocked - yield and wait for interrupt (timer or NIC)
+            crate::task::scheduler::yield_current();
+            x86_64::instructions::interrupts::enable_and_hlt();
         }
 
         // Clear blocked_in_syscall
