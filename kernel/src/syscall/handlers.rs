@@ -773,26 +773,106 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             SyscallResult::Err(super::errno::ENOTCONN as u64)
         }
         FdKind::TcpConnection(conn_id) => {
-            // Read from TCP connection
+            // Read from TCP connection with blocking
+            // Clone conn_id so we can drop the manager_guard before blocking
+            let conn_id = *conn_id;
+            drop(manager_guard);
+
             // Drain loopback queue for localhost connections (127.x.x.x, own IP).
-            // Hardware-received packets arrive via interrupt → softirq → process_rx().
             crate::net::drain_loopback_queue();
+
             let mut user_buf = alloc::vec![0u8; count as usize];
-            match crate::net::tcp::tcp_recv(conn_id, &mut user_buf) {
-                Ok(n) => {
-                    if n > 0 {
-                        // Copy to userspace
+
+            // Blocking read loop
+            loop {
+                // Register as waiter FIRST to avoid race condition
+                crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
+
+                // Drain loopback queue in case data arrived
+                crate::net::drain_loopback_queue();
+
+                // Try to receive
+                match crate::net::tcp::tcp_recv(&conn_id, &mut user_buf) {
+                    Ok(n) if n > 0 => {
+                        // Data received - unregister and return
+                        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
                         if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
                             return SyscallResult::Err(14); // EFAULT
                         }
+                        log::debug!("sys_read: Received {} bytes from TCP connection", n);
+                        return SyscallResult::Ok(n as u64);
                     }
-                    log::debug!("sys_read: Received {} bytes from TCP connection", n);
-                    SyscallResult::Ok(n as u64)
+                    Ok(0) => {
+                        // EOF (connection closed)
+                        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+                        return SyscallResult::Ok(0);
+                    }
+                    Err(_) => {
+                        // No data available - block
+                    }
+                    _ => unreachable!(),
                 }
-                Err(_) => {
-                    // No data available - return EAGAIN (would block)
-                    SyscallResult::Err(11) // EAGAIN
+
+                // No data - block the thread
+                log::debug!("TCP recv: entering blocking path, thread={}", thread_id);
+
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.block_current();
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = true;
+                    }
+                });
+
+                // Double-check for data after setting Blocked state
+                if crate::net::tcp::tcp_has_data(&conn_id) {
+                    log::info!("TCP: Thread {} caught race - data arrived during block setup", thread_id);
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+                    continue;
                 }
+
+                // Re-enable preemption before HLT loop
+                crate::per_cpu::preempt_enable();
+
+                log::info!("TCP_BLOCK: Thread {} entering blocked state for recv", thread_id);
+
+                // HLT loop - wait for data to arrive
+                loop {
+                    crate::task::scheduler::yield_current();
+                    x86_64::instructions::interrupts::enable_and_hlt();
+
+                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.state == crate::task::thread::ThreadState::Blocked
+                        } else {
+                            false
+                        }
+                    }).unwrap_or(false);
+
+                    if !still_blocked {
+                        crate::per_cpu::preempt_disable();
+                        log::info!("TCP_BLOCK: Thread {} woken from recv blocking", thread_id);
+                        break;
+                    }
+                }
+
+                // Clear blocked_in_syscall
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                    }
+                });
+
+                // Unregister from wait queue (will re-register at top of loop)
+                crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+
+                // Drain loopback again before retrying
+                crate::net::drain_loopback_queue();
             }
         }
         FdKind::PtyMaster(pty_num) => {

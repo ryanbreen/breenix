@@ -52,6 +52,7 @@ BINARIES=(
     "nonblock_eagain_test"
     "tcp_socket_test"
     "tcp_client_test"
+    "tcp_blocking_test"
     "dns_test"
     "http_test"
     "pipe_test"
