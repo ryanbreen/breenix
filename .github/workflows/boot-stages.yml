@@ -69,5 +69,6 @@ jobs:
           name: boot-stages-output-${{ github.run_number }}
           path: |
             target/xtask_boot_stages_output.txt
+            target/xtask_user_output.txt
             logs/*.log
           if-no-files-found: warn

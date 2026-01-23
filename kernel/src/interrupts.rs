@@ -10,7 +10,7 @@ use crate::arch_impl::PageTableOps;
 use crate::arch_impl::current::paging::X86PageTableOps;
 
 pub(crate) mod context_switch;
-mod timer;
+pub mod timer;
 
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;

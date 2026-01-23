@@ -179,6 +179,10 @@ name = "tcp_socket_test"
 path = "tcp_socket_test.rs"
 
 [[bin]]
+name = "tcp_blocking_test"
+path = "tcp_blocking_test.rs"
+
+[[bin]]
 name = "pipe_test"
 path = "pipe_test.rs"
 

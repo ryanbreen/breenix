@@ -87,13 +87,17 @@ pub const ENETUNREACH: i32 = 101;
 /// Connection refused
 pub const ECONNREFUSED: i32 = 111;
 
+/// Operation now in progress (used for non-blocking connect)
+pub const EINPROGRESS: i32 = 115;
+
 /// Transport endpoint is already connected
 pub const EISCONN: i32 = 106;
 
 /// Transport endpoint is not connected (part of network API)
 pub const ENOTCONN: i32 = 107;
 
-/// Connection timed out
+/// Connection timed out (POSIX errno, used for network timeouts)
+#[allow(dead_code)]
 pub const ETIMEDOUT: i32 = 110;
 
 /// Operation not supported

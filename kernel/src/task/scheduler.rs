@@ -119,7 +119,10 @@ impl Scheduler {
                 // CRITICAL: Check for duplicates! If unblock() already added this thread
                 // (e.g., packet arrived during blocking recvfrom), don't add it again.
                 // Duplicates cause schedule() to spin when same thread keeps getting selected.
-                if !is_terminated && !is_blocked && !self.ready_queue.contains(&current_id) {
+                let in_queue = self.ready_queue.contains(&current_id);
+                let will_add = !is_terminated && !is_blocked && !in_queue;
+
+                if will_add {
                     self.ready_queue.push_back(current_id);
                 }
             }

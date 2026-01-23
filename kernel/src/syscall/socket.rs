@@ -2,7 +2,7 @@
 //!
 //! Implements socket, bind, sendto, recvfrom syscalls for UDP and TCP.
 
-use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINVAL, ENETUNREACH, ENOTSOCK, EADDRINUSE, ENOTCONN, EISCONN, EOPNOTSUPP, ECONNREFUSED, ETIMEDOUT};
+use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINPROGRESS, EINVAL, ENETUNREACH, ENOTSOCK, EADDRINUSE, ENOTCONN, EISCONN, EOPNOTSUPP, ECONNREFUSED, ETIMEDOUT};
 use super::{ErrorCode, SyscallResult};
 use crate::socket::types::{AF_INET, SOCK_DGRAM, SOCK_STREAM, SockAddrIn};
 use crate::socket::udp::UdpSocket;
@@ -597,6 +597,9 @@ pub fn sys_recvfrom(
                 thread.blocked_in_syscall = false;
             }
         });
+        // Reset quantum to prevent immediate preemption after long blocking wait
+        crate::interrupts::timer::reset_quantum();
+        crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
         x86_64::instructions::interrupts::without_interrupts(|| {
@@ -689,15 +692,20 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
 ///   addrlen: Pointer to address length (can be NULL)
 ///
 /// Returns: new socket fd on success, negative errno on error
+///
+/// # Blocking Behavior
+///
+/// TCP accept() blocks until a connection is available. When no pending
+/// connections exist, the calling thread blocks until a SYN arrives.
+/// The blocking pattern follows the same double-check approach as UDP recvfrom.
 pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     log::debug!("sys_accept: fd={}", fd);
 
     // Drain loopback queue for localhost connections (127.x.x.x, own IP).
-    // Hardware-received packets arrive via interrupt → softirq → process_rx().
     crate::net::drain_loopback_queue();
 
-    // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
+    // Get current thread ID for blocking
+    let thread_id = match crate::per_cpu::current_thread() {
         Some(thread) => thread.id,
         None => {
             log::error!("sys_accept: No current thread in per-CPU data!");
@@ -705,60 +713,173 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
         }
     };
 
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+    // Extract port and status_flags from fd, then release manager lock
+    let (port, is_nonblocking) = {
+        let mut manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref mut m) => m,
+            None => {
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!("sys_accept: No process found for thread_id={}", thread_id);
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        // Get the socket from fd table
+        let fd_entry = match process.fd_table.get(fd as i32) {
+            Some(e) => e.clone(),
+            None => return SyscallResult::Err(EBADF as u64),
+        };
+
+        // Check O_NONBLOCK status flag
+        let nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+
+        // Must be a TCP listener
+        let listener_port = match &fd_entry.kind {
+            FdKind::TcpListener(p) => *p,
+            _ => return SyscallResult::Err(EOPNOTSUPP as u64),
+        };
+        (listener_port, nonblocking)
+        // manager_guard dropped here
+    };
+
+    // Blocking accept loop
+    loop {
+        // Register as waiter FIRST to avoid race condition
+        crate::net::tcp::tcp_register_accept_waiter(port, thread_id);
+
+        // Drain loopback queue in case connections arrived
+        crate::net::drain_loopback_queue();
+
+        // Try to accept a pending connection
+        if let Some(conn_id) = crate::net::tcp::tcp_accept(port) {
+            // Got a connection - unregister and complete
+            crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
+
+            // Write client address if requested
+            if addr_ptr != 0 && addrlen_ptr != 0 {
+                let client_addr = SockAddrIn::new(conn_id.remote_ip, conn_id.remote_port);
+                let addr_bytes = client_addr.to_bytes();
+                unsafe {
+                    let addrlen = *(addrlen_ptr as *const u32);
+                    let copy_addr_len = core::cmp::min(addrlen as usize, addr_bytes.len());
+                    let addr_buf = core::slice::from_raw_parts_mut(addr_ptr as *mut u8, copy_addr_len);
+                    addr_buf.copy_from_slice(&addr_bytes[..copy_addr_len]);
+                    *(addrlen_ptr as *mut u32) = addr_bytes.len() as u32;
+                }
+            }
+
+            // Create new fd for the connection (need to re-acquire manager lock)
+            let mut manager_guard = crate::process::manager();
+            let manager = match *manager_guard {
+                Some(ref mut m) => m,
+                None => {
+                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+                }
+            };
+
+            let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
+                Some(p) => p,
+                None => {
+                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+                }
+            };
+
+            return match process.fd_table.alloc(FdKind::TcpConnection(conn_id)) {
+                Ok(new_fd) => {
+                    log::info!("TCP: Accepted connection on fd {}, new fd {}", fd, new_fd);
+                    SyscallResult::Ok(new_fd as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            };
         }
-    };
 
-    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!("sys_accept: No process found for thread_id={}", current_thread_id);
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        // No pending connection
+        // If non-blocking mode, return EAGAIN immediately
+        if is_nonblocking {
+            log::debug!("TCP accept: fd={} is non-blocking, returning EAGAIN", fd);
+            crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
+            return SyscallResult::Err(EAGAIN as u64);
         }
-    };
 
-    // Get the socket from fd table
-    let fd_entry = match process.fd_table.get(fd as i32) {
-        Some(e) => e.clone(),
-        None => return SyscallResult::Err(EBADF as u64),
-    };
+        // Blocking mode - block the thread
+        log::debug!("TCP accept: fd={} entering blocking path, thread={}", fd, thread_id);
 
-    // Must be a TCP listener
-    let port = match &fd_entry.kind {
-        FdKind::TcpListener(p) => *p,
-        _ => return SyscallResult::Err(EOPNOTSUPP as u64),
-    };
+        // Block the current thread
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current();
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.blocked_in_syscall = true;
+            }
+        });
 
-    // Try to accept a pending connection
-    let conn_id = match crate::net::tcp::tcp_accept(port) {
-        Some(id) => id,
-        None => return SyscallResult::Err(EAGAIN as u64), // No pending connections
-    };
-
-    // Write client address if requested
-    if addr_ptr != 0 && addrlen_ptr != 0 {
-        let client_addr = SockAddrIn::new(conn_id.remote_ip, conn_id.remote_port);
-        let addr_bytes = client_addr.to_bytes();
-        unsafe {
-            let addrlen = *(addrlen_ptr as *const u32);
-            let copy_addr_len = core::cmp::min(addrlen as usize, addr_bytes.len());
-            let addr_buf = core::slice::from_raw_parts_mut(addr_ptr as *mut u8, copy_addr_len);
-            addr_buf.copy_from_slice(&addr_bytes[..copy_addr_len]);
-            *(addrlen_ptr as *mut u32) = addr_bytes.len() as u32;
+        // Double-check for pending connection after setting Blocked state
+        if crate::net::tcp::tcp_has_pending(port) {
+            log::info!("TCP: Thread {} caught race - connection arrived during block setup", thread_id);
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = false;
+                    thread.set_ready();
+                }
+            });
+            crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
+            continue;
         }
-    }
 
-    // Create new fd for the connection
-    match process.fd_table.alloc(FdKind::TcpConnection(conn_id)) {
-        Ok(new_fd) => {
-            log::info!("TCP: Accepted connection on fd {}, new fd {}", fd, new_fd);
-            SyscallResult::Ok(new_fd as u64)
+        // Re-enable preemption before HLT loop
+        crate::per_cpu::preempt_enable();
+
+        log::info!("TCP_BLOCK: Thread {} entering blocked state for accept on port {}", thread_id, port);
+
+        // HLT loop - wait for SYN to arrive
+        loop {
+            // Drain loopback queue - essential for single-threaded tests where
+            // no other thread processes packets. This may wake other threads'
+            // connections but that's OK - they'll re-check and re-block if needed.
+            crate::net::drain_loopback_queue();
+
+            // Check if we were woken by the drain (e.g., SYN arrived and woke us)
+            // IMPORTANT: Check BEFORE HLT to avoid unnecessary waiting
+            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.state == crate::task::thread::ThreadState::Blocked
+                } else {
+                    false
+                }
+            }).unwrap_or(false);
+
+            if !still_blocked {
+                crate::per_cpu::preempt_disable();
+                log::info!("TCP_BLOCK: Thread {} woken from accept blocking", thread_id);
+                break;
+            }
+
+            // Still blocked - yield and wait for interrupt (timer or NIC)
+            crate::task::scheduler::yield_current();
+            x86_64::instructions::interrupts::enable_and_hlt();
         }
-        Err(e) => SyscallResult::Err(e as u64),
+
+        // Clear blocked_in_syscall
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.blocked_in_syscall = false;
+            }
+        });
+        // Reset quantum to prevent immediate preemption after long blocking wait
+        crate::interrupts::timer::reset_quantum();
+        crate::task::scheduler::check_and_clear_need_resched();
+
+        // Unregister from wait queue (will re-register at top of loop)
+        crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
+
+        // Drain loopback again before retrying
+        crate::net::drain_loopback_queue();
     }
 }
 
@@ -770,6 +891,12 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 ///   addrlen: Length of address structure
 ///
 /// Returns: 0 on success, negative errno on error
+///
+/// # Blocking Behavior
+///
+/// TCP connect() blocks until the connection is established or fails.
+/// Instead of busy-polling, the thread is properly blocked until the
+/// SYN+ACK arrives and the 3-way handshake completes.
 pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     log::debug!("sys_connect: fd={}", fd);
 
@@ -795,8 +922,8 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         return SyscallResult::Err(EAFNOSUPPORT as u64);
     }
 
-    // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
+    // Get current thread ID for blocking
+    let thread_id = match crate::per_cpu::current_thread() {
         Some(thread) => thread.id,
         None => {
             log::error!("sys_connect: No current thread in per-CPU data!");
@@ -804,100 +931,209 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         }
     };
 
-    let mut manager_guard = crate::process::manager();
-    let manager = match *manager_guard {
-        Some(ref mut m) => m,
-        None => {
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
-        Some(p) => p,
-        None => {
-            log::error!("sys_connect: No process found for thread_id={}", current_thread_id);
-            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
-        }
-    };
-
-    // Get the socket from fd table
-    let fd_entry = match process.fd_table.get(fd as i32) {
-        Some(e) => e.clone(),
-        None => return SyscallResult::Err(EBADF as u64),
-    };
-
-    // Handle connect based on socket type
-    match &fd_entry.kind {
-        FdKind::TcpSocket(local_port) => {
-            // Assign ephemeral port if not bound
-            let port = if *local_port == 0 {
-                // Use a simple ephemeral port allocation
-                static EPHEMERAL_PORT: core::sync::atomic::AtomicU16 =
-                    core::sync::atomic::AtomicU16::new(49152);
-                EPHEMERAL_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
-            } else {
-                *local_port
-            };
-
-            // Initiate connection
-            let conn_id = match crate::net::tcp::tcp_connect(
-                port,
-                addr.addr,
-                addr.port_host(),
-                pid,
-            ) {
-                Ok(id) => id,
-                Err(_) => return SyscallResult::Err(ECONNREFUSED as u64),
-            };
-
-            // Update fd to TcpConnection
-            if let Some(entry) = process.fd_table.get_mut(fd as i32) {
-                entry.kind = FdKind::TcpConnection(conn_id);
+    // Initiate connection and get conn_id and nonblocking flag, then release manager lock
+    let (conn_id, is_nonblocking) = {
+        let mut manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref mut m) => m,
+            None => {
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
             }
+        };
 
-            log::info!("TCP: Connect initiated to {}.{}.{}.{}:{}",
-                addr.addr[0], addr.addr[1], addr.addr[2], addr.addr[3],
-                addr.port_host());
+        let (pid, process) = match manager.find_process_by_thread_mut(thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!("sys_connect: No process found for thread_id={}", thread_id);
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
 
-            // Drop manager lock before waiting
-            drop(manager_guard);
+        // Get the socket from fd table
+        let fd_entry = match process.fd_table.get(fd as i32) {
+            Some(e) => e.clone(),
+            None => return SyscallResult::Err(EBADF as u64),
+        };
 
-            // Wait for connection to establish (poll with yields)
-            // SYN-ACK packets arrive via interrupt → softirq → process_rx().
-            // yield_current() triggers scheduling, which allows softirqs to run.
-            const MAX_WAIT_ITERATIONS: u32 = 1000;
-            for i in 0..MAX_WAIT_ITERATIONS {
-                // Drain loopback queue for localhost connections (127.x.x.x, own IP)
-                crate::net::drain_loopback_queue();
+        // Check O_NONBLOCK status flag
+        let nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
 
-                // Check if connected
-                if crate::net::tcp::tcp_is_established(&conn_id) {
-                    // Drain loopback one more time to deliver the ACK to the server
-                    // This ensures the server's pending connection has ack_received = true
-                    crate::net::drain_loopback_queue();
-                    log::info!("TCP: Connection established after {} iterations", i);
-                    return SyscallResult::Ok(0);
+        // Handle connect based on socket type
+        match &fd_entry.kind {
+            FdKind::TcpSocket(local_port) => {
+                // Assign ephemeral port if not bound
+                let port = if *local_port == 0 {
+                    static EPHEMERAL_PORT: core::sync::atomic::AtomicU16 =
+                        core::sync::atomic::AtomicU16::new(49152);
+                    EPHEMERAL_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+                } else {
+                    *local_port
+                };
+
+                // Initiate connection
+                let conn_id = match crate::net::tcp::tcp_connect(
+                    port,
+                    addr.addr,
+                    addr.port_host(),
+                    pid,
+                ) {
+                    Ok(id) => id,
+                    Err(_) => return SyscallResult::Err(ECONNREFUSED as u64),
+                };
+
+                // Update fd to TcpConnection
+                if let Some(entry) = process.fd_table.get_mut(fd as i32) {
+                    entry.kind = FdKind::TcpConnection(conn_id);
                 }
 
-                // Check if connection failed
-                if crate::net::tcp::tcp_is_failed(&conn_id) {
-                    log::warn!("TCP: Connection failed");
-                    return SyscallResult::Err(ECONNREFUSED as u64);
-                }
+                log::info!("TCP: Connect initiated to {}.{}.{}.{}:{}",
+                    addr.addr[0], addr.addr[1], addr.addr[2], addr.addr[3],
+                    addr.port_host());
 
-                // Yield to allow other processing
-                crate::task::scheduler::yield_current();
+                (conn_id, nonblocking)
+            }
+            FdKind::TcpConnection(_) => {
+                // Already connected
+                return SyscallResult::Err(EISCONN as u64);
+            }
+            _ => return SyscallResult::Err(EOPNOTSUPP as u64),
+        }
+        // manager_guard dropped here
+    };
+
+    // For non-blocking sockets, return EINPROGRESS immediately
+    // The connection is in progress but not yet established
+    if is_nonblocking {
+        log::debug!("TCP connect: fd={} is non-blocking, returning EINPROGRESS", fd);
+        return SyscallResult::Err(EINPROGRESS as u64);
+    }
+
+    // Log the conn_id we'll be checking
+    log::info!(
+        "TCP connect: blocking for conn_id={{local={}:{}, remote={}:{}}}",
+        conn_id.local_ip[3], conn_id.local_port,
+        conn_id.remote_ip[3], conn_id.remote_port
+    );
+
+    // Timeout for connect: ~10 seconds (timer fires at 200Hz, so 2000 iterations ≈ 10s)
+    // This prevents blocking forever on unreachable hosts
+    const MAX_CONNECT_ITERATIONS: u32 = 2000;
+    let mut connect_iterations: u32 = 0;
+
+    // Blocking connect loop - wait for handshake to complete
+    loop {
+        // Check for timeout
+        connect_iterations += 1;
+        if connect_iterations > MAX_CONNECT_ITERATIONS {
+            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+            log::warn!("TCP connect: timed out after {} iterations", connect_iterations);
+            return SyscallResult::Err(ETIMEDOUT as u64);
+        }
+        // Register as waiter FIRST to avoid race condition
+        crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
+
+        // Drain loopback queue for localhost connections
+        crate::net::drain_loopback_queue();
+
+        // Check if connected
+        if crate::net::tcp::tcp_is_established(&conn_id) {
+            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+            // Drain loopback one more time to deliver the ACK to the server
+            crate::net::drain_loopback_queue();
+            log::info!("TCP connect: thread={} - Connection established, returning success", thread_id);
+            return SyscallResult::Ok(0);
+        }
+
+        // Check if connection failed
+        if crate::net::tcp::tcp_is_failed(&conn_id) {
+            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+            log::warn!("TCP: Connection failed");
+            return SyscallResult::Err(ECONNREFUSED as u64);
+        }
+
+        // Not yet established - block
+        log::info!("TCP connect: thread={} entering blocking path", thread_id);
+
+        // Block the current thread
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current();
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.blocked_in_syscall = true;
+            }
+        });
+
+        log::info!("TCP connect: thread={} blocked, checking for race", thread_id);
+
+        // Double-check for state change after setting Blocked state
+        let is_established = crate::net::tcp::tcp_is_established(&conn_id);
+        let is_failed = crate::net::tcp::tcp_is_failed(&conn_id);
+        log::info!(
+            "TCP connect: thread={} double-check: established={}, failed={}",
+            thread_id, is_established, is_failed
+        );
+
+        if is_established || is_failed {
+            log::info!("TCP: Thread {} caught race - state changed during block setup", thread_id);
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = false;
+                    thread.set_ready();
+                }
+            });
+            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+            continue;
+        }
+
+        // Re-enable preemption before HLT loop
+        crate::per_cpu::preempt_enable();
+
+        log::info!("TCP_BLOCK: Thread {} entering blocked state for connect", thread_id);
+
+        // HLT loop - wait for SYN+ACK to arrive
+        loop {
+            // Drain loopback queue - essential for single-threaded tests where
+            // no other thread processes packets. This may wake other threads'
+            // connections but that's OK - they'll re-check and re-block if needed.
+            crate::net::drain_loopback_queue();
+
+            // Check if we were woken by the drain (e.g., SYN+ACK arrived and woke us)
+            // IMPORTANT: Check BEFORE HLT to avoid unnecessary waiting
+            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.state == crate::task::thread::ThreadState::Blocked
+                } else {
+                    false
+                }
+            }).unwrap_or(false);
+
+            if !still_blocked {
+                crate::per_cpu::preempt_disable();
+                log::info!("TCP_BLOCK: Thread {} woken from connect blocking", thread_id);
+                break;
             }
 
-            // Timeout
-            log::warn!("TCP: Connect timed out waiting for handshake");
-            SyscallResult::Err(ETIMEDOUT as u64)
+            // Still blocked - yield and wait for interrupt (timer or NIC)
+            crate::task::scheduler::yield_current();
+            x86_64::instructions::interrupts::enable_and_hlt();
         }
-        FdKind::TcpConnection(_) => {
-            // Already connected
-            SyscallResult::Err(EISCONN as u64)
-        }
-        _ => SyscallResult::Err(EOPNOTSUPP as u64),
+
+        // Clear blocked_in_syscall
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.blocked_in_syscall = false;
+            }
+        });
+        // Reset quantum to prevent immediate preemption after long blocking wait
+        crate::interrupts::timer::reset_quantum();
+        crate::task::scheduler::check_and_clear_need_resched();
+
+        // Unregister from wait queue (will re-register at top of loop)
+        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+
+        // Drain loopback again before retrying
+        crate::net::drain_loopback_queue();
+
+        log::info!("TCP connect: thread={} looping back to check connection", thread_id);
     }
 }
 

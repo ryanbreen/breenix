@@ -298,6 +298,8 @@ pub struct TcpConnection {
     pub recv_shutdown: bool,
     /// Reference count for fork() support - connection is only closed when last fd is closed
     pub refcount: core::sync::atomic::AtomicUsize,
+    /// Threads waiting for recv data or connection state change (connect/recv blocking)
+    pub waiting_threads: Mutex<Vec<u64>>,
 }
 
 impl TcpConnection {
@@ -324,6 +326,7 @@ impl TcpConnection {
             send_shutdown: false,
             recv_shutdown: false,
             refcount: core::sync::atomic::AtomicUsize::new(1),
+            waiting_threads: Mutex::new(Vec::new()),
         }
     }
 
@@ -356,6 +359,7 @@ impl TcpConnection {
             send_shutdown: false,
             recv_shutdown: false,
             refcount: core::sync::atomic::AtomicUsize::new(1),
+            waiting_threads: Mutex::new(Vec::new()),
         }
     }
 }
@@ -383,6 +387,8 @@ pub struct ListenSocket {
     pub backlog: usize,
     pub pending: VecDeque<PendingConnection>,
     pub owner_pid: crate::process::process::ProcessId,
+    /// Threads waiting for incoming connections (accept() blocking)
+    pub waiting_threads: Mutex<Vec<u64>>,
 }
 
 /// Global TCP connection table
@@ -497,7 +503,11 @@ fn handle_tcp_for_connection(
                     conn.send_unack = header.ack_num;
                     conn.state = TcpState::Established;
 
-                    log::info!("TCP: Connection established (client)");
+                    log::info!(
+                        "TCP: Connection established (client) conn_id={{local={}:{}, remote={}:{}}}",
+                        conn.id.local_ip[3], conn.id.local_port,
+                        conn.id.remote_ip[3], conn.id.remote_port
+                    );
 
                     // Send ACK
                     send_tcp_packet(
@@ -511,10 +521,15 @@ fn handle_tcp_for_connection(
                         conn.recv_window,
                         &[],
                     );
+
+                    // Wake threads blocked in connect()
+                    wake_connection_waiters(conn);
                 }
             } else if header.flags.rst {
                 log::info!("TCP: Connection refused (RST received)");
                 conn.state = TcpState::Closed;
+                // Wake threads blocked in connect() so they see the failure
+                wake_connection_waiters(conn);
             }
         }
         TcpState::SynReceived => {
@@ -556,6 +571,9 @@ fn handle_tcp_for_connection(
                     conn.recv_window,
                     &[],
                 );
+
+                // Wake threads blocked in recv()
+                wake_connection_waiters(conn);
             }
 
             // Handle FIN
@@ -577,11 +595,16 @@ fn handle_tcp_for_connection(
                     conn.recv_window,
                     &[],
                 );
+
+                // Wake threads blocked in recv() so they see EOF
+                wake_connection_waiters(conn);
             }
 
             if header.flags.rst {
                 log::info!("TCP: Connection reset by peer");
                 conn.state = TcpState::Closed;
+                // Wake threads blocked in recv() so they see the error
+                wake_connection_waiters(conn);
             }
         }
         TcpState::FinWait1 => {
@@ -613,6 +636,9 @@ fn handle_tcp_for_connection(
                     conn.recv_window,
                     &[],
                 );
+
+                // Wake threads blocked in recv()
+                wake_connection_waiters(conn);
             }
 
             // Handle FIN from peer (simultaneous close or peer closing after we did)
@@ -632,6 +658,9 @@ fn handle_tcp_for_connection(
                     conn.recv_window,
                     &[],
                 );
+
+                // Wake threads blocked in recv() so they see EOF
+                wake_connection_waiters(conn);
             }
         }
         TcpState::FinWait2 => {
@@ -655,6 +684,9 @@ fn handle_tcp_for_connection(
                     conn.recv_window,
                     &[],
                 );
+
+                // Wake threads blocked in recv()
+                wake_connection_waiters(conn);
             }
 
             // Handle FIN from peer
@@ -674,6 +706,9 @@ fn handle_tcp_for_connection(
                     conn.recv_window,
                     &[],
                 );
+
+                // Wake threads blocked in recv() so they see EOF
+                wake_connection_waiters(conn);
             }
         }
         TcpState::CloseWait => {
@@ -701,7 +736,9 @@ fn handle_syn_for_listener(
     config: &super::NetConfig,
 ) {
     if listener.pending.len() >= listener.backlog {
-        log::warn!("TCP: Backlog full, dropping SYN");
+        log::warn!("TCP: Backlog full, sending RST for port {}", header.dst_port);
+        // Send RST to tell client the connection was refused
+        send_rst(config, src_ip, header);
         return;
     }
 
@@ -732,6 +769,9 @@ fn handle_syn_for_listener(
         65535,
         &[],
     );
+
+    // Wake threads blocked in accept() - connection is now pending
+    wake_accept_waiters(listener);
 }
 
 /// Send a RST packet
@@ -860,6 +900,7 @@ pub fn tcp_listen(
         backlog,
         pending: VecDeque::new(),
         owner_pid,
+        waiting_threads: Mutex::new(Vec::new()),
     });
 
     log::info!("TCP: Listening on port {}", local_port);
@@ -985,12 +1026,59 @@ pub fn tcp_recv(conn_id: &ConnectionId, buf: &mut [u8]) -> Result<usize, &'stati
     Ok(read_len)
 }
 
-/// Check if a connection is established
+/// Check if a connection is established (or was established before remote close)
+///
+/// Returns true for:
+/// - Established: Connection is fully open
+/// - CloseWait: Remote closed, but handshake completed (read data, then close)
+/// - FinWait1/FinWait2: We closed, but handshake completed
+/// - Closing/LastAck/TimeWait: Connection closing but was established
+///
+/// Returns false for:
+/// - SynSent: Still waiting for SYN-ACK
+/// - SynReceived: Server still completing handshake
+/// - Closed/Listen: Not connected
 pub fn tcp_is_established(conn_id: &ConnectionId) -> bool {
     let connections = TCP_CONNECTIONS.lock();
     if let Some(conn) = connections.get(conn_id) {
-        conn.state == TcpState::Established
+        // Connection is "established" for connect() purposes if handshake completed.
+        // This includes states where one or both sides have initiated close.
+        let is_connected = matches!(
+            conn.state,
+            TcpState::Established
+                | TcpState::CloseWait
+                | TcpState::FinWait1
+                | TcpState::FinWait2
+                | TcpState::Closing
+                | TcpState::LastAck
+                | TcpState::TimeWait
+        );
+        if !is_connected {
+            log::debug!(
+                "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} found but state={:?}",
+                conn_id.local_ip[3], conn_id.local_port,
+                conn_id.remote_ip[3], conn_id.remote_port,
+                conn.state
+            );
+        }
+        is_connected
     } else {
+        // Log the conn_id we're looking for and what's actually in the map
+        log::warn!(
+            "TCP_IS_ESTABLISHED: conn_id={{local={}:{}, remote={}:{}}} NOT FOUND (total connections: {})",
+            conn_id.local_ip[3], conn_id.local_port,
+            conn_id.remote_ip[3], conn_id.remote_port,
+            connections.len()
+        );
+        // Also log what connections DO exist for debugging
+        for (k, v) in connections.iter() {
+            log::warn!(
+                "  existing: local={}:{}, remote={}:{}, state={:?}",
+                k.local_ip[3], k.local_port,
+                k.remote_ip[3], k.remote_port,
+                v.state
+            );
+        }
         false
     }
 }
@@ -1121,4 +1209,94 @@ pub fn tcp_has_pending(local_port: u16) -> bool {
 pub fn tcp_get_state(conn_id: &ConnectionId) -> Option<TcpState> {
     let connections = TCP_CONNECTIONS.lock();
     connections.get(conn_id).map(|c| c.state)
+}
+
+// ============================================================================
+// Blocking I/O support - waiter registration and wakeup
+// ============================================================================
+
+/// Register a thread as waiting for incoming connections on a listening socket (accept)
+pub fn tcp_register_accept_waiter(local_port: u16, thread_id: u64) {
+    let listeners = TCP_LISTENERS.lock();
+    if let Some(listener) = listeners.get(&local_port) {
+        let mut waiting = listener.waiting_threads.lock();
+        if !waiting.contains(&thread_id) {
+            waiting.push(thread_id);
+            log::trace!("TCP: Thread {} registered as accept waiter on port {}", thread_id, local_port);
+        }
+    }
+}
+
+/// Unregister a thread from waiting for incoming connections
+pub fn tcp_unregister_accept_waiter(local_port: u16, thread_id: u64) {
+    let listeners = TCP_LISTENERS.lock();
+    if let Some(listener) = listeners.get(&local_port) {
+        let mut waiting = listener.waiting_threads.lock();
+        waiting.retain(|&id| id != thread_id);
+    }
+}
+
+/// Register a thread as waiting for data/state change on a connection (recv/connect)
+pub fn tcp_register_recv_waiter(conn_id: &ConnectionId, thread_id: u64) {
+    let connections = TCP_CONNECTIONS.lock();
+    if let Some(conn) = connections.get(conn_id) {
+        let mut waiting = conn.waiting_threads.lock();
+        if !waiting.contains(&thread_id) {
+            waiting.push(thread_id);
+            log::trace!("TCP: Thread {} registered as recv waiter", thread_id);
+        }
+    }
+}
+
+/// Unregister a thread from waiting for data on a connection
+pub fn tcp_unregister_recv_waiter(conn_id: &ConnectionId, thread_id: u64) {
+    let connections = TCP_CONNECTIONS.lock();
+    if let Some(conn) = connections.get(conn_id) {
+        let mut waiting = conn.waiting_threads.lock();
+        waiting.retain(|&id| id != thread_id);
+    }
+}
+
+/// Check if a connection has data available for recv
+pub fn tcp_has_data(conn_id: &ConnectionId) -> bool {
+    let connections = TCP_CONNECTIONS.lock();
+    connections.get(conn_id)
+        .map(|c| !c.rx_buffer.is_empty())
+        .unwrap_or(false)
+}
+
+/// Wake all threads waiting on a listening socket (called when SYN arrives)
+fn wake_accept_waiters(listener: &ListenSocket) {
+    let readers: Vec<u64> = {
+        let mut waiting = listener.waiting_threads.lock();
+        waiting.drain(..).collect()
+    };
+
+    if !readers.is_empty() {
+        crate::task::scheduler::with_scheduler(|sched| {
+            for thread_id in &readers {
+                sched.unblock(*thread_id);
+            }
+        });
+        crate::task::scheduler::set_need_resched();
+        log::debug!("TCP: Woke {} accept waiters", readers.len());
+    }
+}
+
+/// Wake all threads waiting on a connection (called when data arrives or state changes)
+fn wake_connection_waiters(conn: &TcpConnection) {
+    let readers: Vec<u64> = {
+        let mut waiting = conn.waiting_threads.lock();
+        waiting.drain(..).collect()
+    };
+
+    if !readers.is_empty() {
+        crate::task::scheduler::with_scheduler(|sched| {
+            for thread_id in &readers {
+                sched.unblock(*thread_id);
+            }
+        });
+        crate::task::scheduler::set_need_resched();
+        log::debug!("TCP: Woke {} connection waiters", readers.len());
+    }
 }

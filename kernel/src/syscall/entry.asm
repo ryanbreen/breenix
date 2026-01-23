@@ -104,10 +104,15 @@ syscall_entry:
     ; Linux keeps interrupts disabled throughout the entire syscall return path.
     cli
 
+    ; CRITICAL FIX Part 2: Keep PREEMPT_ACTIVE set while we're in syscall return.
+    ; It must be set BEFORE the reschedule check so we don't preempt with kernel
+    ; registers still live on the stack.
+    or dword [gs:32], 0x10000000    ; Set bit 28 (PREEMPT_ACTIVE)
+
     ; Check if we need to reschedule before returning to userspace.
     ; This is safe because:
     ; 1. cli was executed above, so no timer interrupts can fire
-    ; 2. PREEMPT_ACTIVE mechanism protects against saving kernel registers as userspace
+    ; 2. PREEMPT_ACTIVE is already set to protect this syscall return path
     ; 3. This is critical for sys_exit to work - it sets need_resched expecting us to schedule
     ;
     ; NOTE: The previous comment about "RDI corruption" is now fixed by the cli above
@@ -135,8 +140,8 @@ syscall_entry:
     ; bit 28 (PREEMPT_ACTIVE) to indicate "in syscall return path".
     ; Linux uses PREEMPT_ACTIVE=0x10000000 (bit 28).
     ;
-    ; Set PREEMPT_ACTIVE before restoring registers:
-    or dword [gs:32], 0x10000000    ; Set bit 28 (PREEMPT_ACTIVE)
+    ; PREEMPT_ACTIVE was set above before the reschedule check and remains set until
+    ; after registers are restored.
 
     ; Restore all general purpose registers in reverse push order
     pop r15    ; Last pushed, first popped
