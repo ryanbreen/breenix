@@ -334,6 +334,21 @@ impl TerminalManager {
         }
     }
 
+    /// Write bytes to the shell terminal (batched version for efficient output).
+    ///
+    /// This is more efficient than calling write_char_to_shell per character
+    /// as it hides/shows cursor once for the entire batch.
+    pub fn write_bytes_to_shell(&mut self, canvas: &mut impl Canvas, bytes: &[u8]) {
+        if self.active_idx == TerminalId::Shell as usize {
+            // Hide cursor ONCE at the start
+            self.terminal_pane.draw_cursor(canvas, false);
+            // Write all bytes
+            self.terminal_pane.write_bytes(canvas, bytes);
+            // Show cursor ONCE at the end
+            self.terminal_pane.draw_cursor(canvas, self.cursor_visible);
+        }
+    }
+
     /// Add a log line to the logs buffer and display if Logs is active.
     pub fn add_log_line(&mut self, canvas: &mut impl Canvas, line: &str) {
         // Store in buffer
@@ -444,9 +459,29 @@ pub fn write_str_to_shell(s: &str) -> bool {
 /// Write bytes to the shell terminal (batched version for efficient output).
 ///
 /// This is more efficient than calling write_char_to_shell per character
-/// as it acquires locks once for the entire buffer.
+/// as it acquires locks once for the entire buffer and batches cursor operations.
 #[allow(dead_code)]
 pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
+    if !write_bytes_to_shell_internal(bytes) {
+        return false;
+    }
+
+    // Flush after writing
+    if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+        if let Some(mut fb_guard) = fb.try_lock() {
+            if let Some(db) = fb_guard.double_buffer_mut() {
+                db.flush_if_dirty();
+            }
+        }
+    }
+    true
+}
+
+/// Write bytes to the shell terminal without flushing.
+///
+/// Internal version for use by render thread which handles its own flushing.
+/// This avoids double-flushing when the render thread batches work.
+pub fn write_bytes_to_shell_internal(bytes: &[u8]) -> bool {
     if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return false;
     }
@@ -457,15 +492,9 @@ pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
         let fb = crate::logger::SHELL_FRAMEBUFFER.get()?;
         let mut fb_guard = fb.try_lock()?;
 
-        // Only write to shell if it's the active terminal
-        if manager.active_idx == 0 {
-            // Write all bytes at once
-            manager.terminal_pane.write_bytes(&mut *fb_guard, bytes);
-        }
+        // Use the batched method which hides cursor once, writes all, shows cursor once
+        manager.write_bytes_to_shell(&mut *fb_guard, bytes);
 
-        if let Some(db) = fb_guard.double_buffer_mut() {
-            db.flush_if_dirty();
-        }
         Some(())
     })()
     .is_some();

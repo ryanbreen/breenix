@@ -222,10 +222,11 @@ pub fn drain_and_render() -> usize {
 /// Render a batch of bytes to the framebuffer.
 /// This is where the deep call stack happens, but it's on the render task's stack.
 fn render_batch(bytes: &[u8]) {
-    // Use terminal manager if active - use batched write for efficiency
+    // Use terminal manager if active - use internal (non-flushing) version
+    // since the render thread handles flushing after drain_and_render()
     if crate::graphics::terminal_manager::is_terminal_manager_active() {
-        // write_bytes_to_shell acquires locks once for the entire batch
-        let _ = crate::graphics::terminal_manager::write_bytes_to_shell(bytes);
+        // write_bytes_to_shell_internal does NOT flush - render thread flushes once after all batches
+        let _ = crate::graphics::terminal_manager::write_bytes_to_shell_internal(bytes);
         return;
     }
 
