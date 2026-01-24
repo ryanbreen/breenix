@@ -299,6 +299,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Unlink) => super::fs::sys_unlink(args.0),
         Some(SyscallNumber::Symlink) => super::fs::sys_symlink(args.0, args.1),
         Some(SyscallNumber::Readlink) => super::fs::sys_readlink(args.0, args.1, args.2),
+        Some(SyscallNumber::Mknod) => super::fifo::sys_mknod(args.0, args.1 as u32, args.2),
         Some(SyscallNumber::CowStats) => super::handlers::sys_cow_stats(args.0),
         Some(SyscallNumber::SimulateOom) => super::handlers::sys_simulate_oom(args.0),
         // PTY syscalls

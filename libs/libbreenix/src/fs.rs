@@ -22,6 +22,8 @@ pub const O_CREAT: u32 = 0x40;
 pub const O_EXCL: u32 = 0x80;
 pub const O_TRUNC: u32 = 0x200;
 pub const O_APPEND: u32 = 0x400;
+/// O_NONBLOCK - non-blocking I/O (important for FIFOs)
+pub const O_NONBLOCK: u32 = 0x800;
 /// O_DIRECTORY - must be a directory
 pub const O_DIRECTORY: u32 = 0x10000;
 
@@ -662,4 +664,44 @@ pub fn readlink(pathname: &str, buf: &mut [u8]) -> Result<usize, Errno> {
         ) as i64
     };
     Errno::from_syscall(ret).map(|n| n as usize)
+}
+
+/// Create a FIFO (named pipe)
+///
+/// Creates a special file that provides pipe-like IPC through a filesystem path.
+/// FIFOs allow unrelated processes to communicate by opening the same path.
+///
+/// # Arguments
+/// * `pathname` - Path where the FIFO should be created (null-terminated string)
+/// * `mode` - Permission bits for the FIFO (e.g., 0o644)
+///
+/// # Returns
+/// * `Ok(())` - FIFO created successfully
+/// * `Err(errno)` - Error occurred
+///
+/// # Errors
+/// * `EEXIST` - Path already exists
+/// * `ENOENT` - Parent directory does not exist
+/// * `ENOSPC` - No space left on device
+///
+/// # Example
+/// ```ignore
+/// // Create a FIFO at /tmp/myfifo
+/// mkfifo("/tmp/myfifo\0", 0o644)?;
+///
+/// // Now other processes can open it for read/write
+/// let fd = open("/tmp/myfifo\0", O_RDONLY)?;
+/// ```
+#[inline]
+pub fn mkfifo(pathname: &str, mode: u32) -> Result<(), Errno> {
+    // mkfifo is implemented via mknod with S_IFIFO mode
+    let ret = unsafe {
+        raw::syscall3(
+            nr::MKNOD,
+            pathname.as_ptr() as u64,
+            (S_IFIFO | (mode & 0o777)) as u64,
+            0, // dev number (unused for FIFOs)
+        ) as i64
+    };
+    Errno::from_syscall(ret).map(|_| ())
 }

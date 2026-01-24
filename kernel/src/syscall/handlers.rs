@@ -279,6 +279,36 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't write to read end of pipe
             SyscallResult::Err(9) // EBADF
         }
+        FdKind::FifoWrite(_path, pipe_buffer) => {
+            // FIFO write - same as pipe write
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+
+            let mut pipe = pipe_buffer.lock();
+            match pipe.write(&buffer) {
+                Ok(n) => {
+                    log::debug!("sys_write: Wrote {} bytes to FIFO", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(11) => {
+                    if is_nonblocking {
+                        log::debug!("sys_write: FIFO full, O_NONBLOCK set - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    } else {
+                        // TODO: Implement blocking FIFO writes
+                        log::debug!("sys_write: FIFO full, blocking not implemented - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    }
+                }
+                Err(e) => {
+                    log::debug!("sys_write: FIFO write error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
+        }
+        FdKind::FifoRead(_, _) => {
+            // Can't write to read end of FIFO
+            SyscallResult::Err(9) // EBADF
+        }
         FdKind::UdpSocket(_) => {
             // Can't write to UDP socket - must use sendto
             log::error!("sys_write: Cannot write to UDP socket, use sendto instead");
@@ -686,6 +716,42 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::PipeWrite(_) => {
             // Can't read from write end of pipe
+            SyscallResult::Err(9) // EBADF
+        }
+        FdKind::FifoRead(_path, pipe_buffer) => {
+            // FIFO read - same as pipe read
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+            let mut pipe = pipe_buffer.lock();
+            match pipe.read(&mut user_buf) {
+                Ok(n) => {
+                    if n > 0 {
+                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                            return SyscallResult::Err(14); // EFAULT
+                        }
+                    }
+                    log::debug!("sys_read: Read {} bytes from FIFO", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(11) => {
+                    if is_nonblocking {
+                        log::debug!("sys_read: FIFO empty, O_NONBLOCK set - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    } else {
+                        // TODO: Implement blocking FIFO reads
+                        log::debug!("sys_read: FIFO empty, blocking not implemented - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    }
+                }
+                Err(e) => {
+                    log::debug!("sys_read: FIFO read error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
+        }
+        FdKind::FifoWrite(_, _) => {
+            // Can't read from write end of FIFO
             SyscallResult::Err(9) // EBADF
         }
         FdKind::UdpSocket(_) => {

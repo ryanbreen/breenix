@@ -1094,6 +1094,41 @@ pub fn test_unix_named_socket() {
     }
 }
 
+/// Test FIFO (named pipe) syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "FIFO test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates FIFO operations
+///   - Marker: "FIFO_TEST_PASSED"
+///   - This PROVES FIFO creation, open, read/write, and close all work
+pub fn test_fifo() {
+    log::info!("Testing FIFO (named pipe) syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let fifo_test_elf_buf = crate::userspace_test::get_test_binary("fifo_test");
+    #[cfg(feature = "testing")]
+    let fifo_test_elf: &[u8] = &fifo_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let fifo_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("fifo_test"),
+        fifo_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created fifo_test process with PID {:?}", pid);
+            log::info!("FIFO test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (FIFO_TEST_...)");
+        }
+        Err(e) => {
+            log::error!("Failed to create fifo_test process: {}", e);
+            log::error!("FIFO test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test pipe syscall functionality
 ///
 /// TWO-STAGE VALIDATION PATTERN:

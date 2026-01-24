@@ -55,6 +55,7 @@ BINARIES=(
     "tcp_blocking_test"
     "unix_socket_test"
     "unix_named_socket_test"
+    "fifo_test"
     "dns_test"
     "http_test"
     "pipe_test"

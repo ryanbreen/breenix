@@ -7,6 +7,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 pub(crate) mod dispatcher;
 pub mod errno;
+pub mod fifo;
 pub mod fs;
 pub mod graphics;
 pub mod handler;
@@ -80,6 +81,7 @@ pub enum SyscallNumber {
     Unlink = 87,        // Linux syscall number for unlink
     Symlink = 88,       // Linux syscall number for symlink
     Readlink = 89,      // Linux syscall number for readlink
+    Mknod = 133,        // Linux syscall number for mknod (used for mkfifo)
     Open = 257,         // Breenix: filesystem open syscall
     Lseek = 258,        // Breenix: filesystem lseek syscall
     Fstat = 259,        // Breenix: filesystem fstat syscall
@@ -154,6 +156,7 @@ impl SyscallNumber {
             87 => Some(Self::Unlink),
             88 => Some(Self::Symlink),
             89 => Some(Self::Readlink),
+            133 => Some(Self::Mknod),
             257 => Some(Self::Open),
             258 => Some(Self::Lseek),
             259 => Some(Self::Fstat),

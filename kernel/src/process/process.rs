@@ -303,6 +303,18 @@ impl Process {
                         // Unix listener socket cleanup handled by Arc refcount
                         log::debug!("Process::close_all_fds() - released Unix listener fd {}", fd);
                     }
+                    FdKind::FifoRead(path, buffer) => {
+                        // Close FIFO read end
+                        crate::ipc::fifo::close_fifo_read(&path);
+                        buffer.lock().close_read();
+                        log::debug!("Process::close_all_fds() - closed FIFO read fd {} ({})", fd, path);
+                    }
+                    FdKind::FifoWrite(path, buffer) => {
+                        // Close FIFO write end
+                        crate::ipc::fifo::close_fifo_write(&path);
+                        buffer.lock().close_write();
+                        log::debug!("Process::close_all_fds() - closed FIFO write fd {} ({})", fd, path);
+                    }
                 }
             }
         }

@@ -266,6 +266,38 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             }
         }
+        FdKind::FifoRead(_path, buffer) => {
+            // FIFO read end - same as pipe read
+            let pipe = buffer.lock();
+
+            // Check for data available
+            if (events & events::POLLIN) != 0 {
+                if pipe.available() > 0 {
+                    revents |= events::POLLIN;
+                }
+            }
+
+            // Check for write end closed (HUP)
+            if !pipe.has_writers() {
+                revents |= events::POLLHUP;
+            }
+        }
+        FdKind::FifoWrite(_path, buffer) => {
+            // FIFO write end - same as pipe write
+            let pipe = buffer.lock();
+
+            // Check for space available
+            if (events & events::POLLOUT) != 0 {
+                if pipe.space() > 0 && pipe.has_readers() {
+                    revents |= events::POLLOUT;
+                }
+            }
+
+            // Check for read end closed (error condition for writers)
+            if !pipe.has_readers() {
+                revents |= events::POLLERR;
+            }
+        }
     }
 
     revents
