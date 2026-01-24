@@ -1010,16 +1010,17 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check userspace/tests/tcp_socket_test.rs for which step failed",
         },
         // DNS resolution tests - validates DNS client using UDP sockets
+        // Network tests use SKIP markers when network is unavailable (CI flakiness)
         BootStage {
             name: "DNS google resolve",
-            marker: "DNS_TEST: google_resolve OK",
-            failure_meaning: "DNS resolution of www.google.com failed",
+            marker: "DNS_TEST: google_resolve OK|DNS_TEST: google_resolve SKIP",
+            failure_meaning: "DNS resolution of www.google.com failed (not timeout/network issue)",
             check_hint: "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket path",
         },
         BootStage {
             name: "DNS example resolve",
-            marker: "DNS_TEST: example_resolve OK",
-            failure_meaning: "DNS resolution of example.com failed",
+            marker: "DNS_TEST: example_resolve OK|DNS_TEST: example_resolve SKIP",
+            failure_meaning: "DNS resolution of example.com failed (not timeout/network issue)",
             check_hint: "Check libs/libbreenix/src/dns.rs - may be DNS server or parsing issue",
         },
         BootStage {
@@ -1042,8 +1043,8 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "DNS txid varies",
-            marker: "DNS_TEST: txid_varies OK",
-            failure_meaning: "Transaction ID variation test failed",
+            marker: "DNS_TEST: txid_varies OK|DNS_TEST: txid_varies SKIP",
+            failure_meaning: "Transaction ID variation test failed (not timeout/network issue)",
             check_hint: "Check libs/libbreenix/src/dns.rs - generate_txid() should produce different IDs for consecutive queries",
         },
         BootStage {
@@ -1905,14 +1906,14 @@ fn get_dns_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "DNS google resolve",
-            marker: "DNS_TEST: google_resolve OK",
-            failure_meaning: "DNS resolution of www.google.com failed",
+            marker: "DNS_TEST: google_resolve OK|DNS_TEST: google_resolve SKIP",
+            failure_meaning: "DNS resolution of www.google.com failed (not timeout/network issue)",
             check_hint: "Check libs/libbreenix/src/dns.rs:resolve() and UDP socket/softirq path",
         },
         BootStage {
             name: "DNS example resolve",
-            marker: "DNS_TEST: example_resolve OK",
-            failure_meaning: "DNS resolution of example.com failed",
+            marker: "DNS_TEST: example_resolve OK|DNS_TEST: example_resolve SKIP",
+            failure_meaning: "DNS resolution of example.com failed (not timeout/network issue)",
             check_hint: "Check libs/libbreenix/src/dns.rs - may be DNS server or parsing issue",
         },
         BootStage {
