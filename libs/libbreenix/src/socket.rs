@@ -21,6 +21,12 @@
 
 use crate::syscall::{nr, raw};
 
+/// Address family: Unix (local)
+pub const AF_UNIX: i32 = 1;
+
+/// Address family: Unix (alias)
+pub const AF_LOCAL: i32 = 1;
+
 /// Address family: IPv4
 pub const AF_INET: i32 = 2;
 
@@ -32,6 +38,9 @@ pub const SOCK_DGRAM: i32 = 2;
 
 /// Socket flag: Non-blocking
 pub const SOCK_NONBLOCK: i32 = 0x800;
+
+/// Socket flag: Close-on-exec
+pub const SOCK_CLOEXEC: i32 = 0x80000;
 
 /// Shutdown how: Stop receiving
 pub const SHUT_RD: i32 = 0;
@@ -325,5 +334,33 @@ pub fn shutdown(fd: i32, how: i32) -> Result<(), i32> {
         Err(-(ret as i64) as i32)
     } else {
         Ok(())
+    }
+}
+
+/// Create a pair of connected Unix domain sockets
+///
+/// # Arguments
+/// * `domain` - Address family (must be AF_UNIX)
+/// * `sock_type` - Socket type (SOCK_STREAM, optionally OR'd with SOCK_NONBLOCK, SOCK_CLOEXEC)
+/// * `protocol` - Protocol (must be 0)
+///
+/// # Returns
+/// Tuple of two file descriptors (sv[0], sv[1]) on success, or negative errno on error
+pub fn socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(i32, i32), i32> {
+    let mut sv: [i32; 2] = [0, 0];
+    let ret = unsafe {
+        raw::syscall4(
+            nr::SOCKETPAIR,
+            domain as u64,
+            sock_type as u64,
+            protocol as u64,
+            sv.as_mut_ptr() as u64,
+        )
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok((sv[0], sv[1]))
     }
 }

@@ -460,6 +460,10 @@ path = "echo_argv_test.rs"
 name = "rm_argv_test"
 path = "rm_argv_test.rs"
 
+[[bin]]
+name = "unix_socket_test"
+path = "unix_socket_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

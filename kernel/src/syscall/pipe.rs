@@ -210,6 +210,11 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // PTY slave doesn't own the pair, just log closure
                     log::debug!("sys_close: Closed PTY slave fd={} (pty {})", fd, pty_num);
                 }
+                FdKind::UnixStream(socket) => {
+                    // Close Unix socket endpoint
+                    socket.lock().close();
+                    log::debug!("sys_close: Closed Unix stream socket fd={}", fd);
+                }
             }
             log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)

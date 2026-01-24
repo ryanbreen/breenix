@@ -58,6 +58,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Accept => super::socket::sys_accept(arg1, arg2, arg3),
         SyscallNumber::Listen => super::socket::sys_listen(arg1, arg2),
         SyscallNumber::Shutdown => super::socket::sys_shutdown(arg1, arg2),
+        SyscallNumber::Socketpair => super::socket::sys_socketpair(arg1, arg2, arg3, arg4),
         SyscallNumber::Poll => handlers::sys_poll(arg1, arg2, arg3 as i32),
         SyscallNumber::Select => handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5),
         SyscallNumber::Pipe => super::pipe::sys_pipe(arg1),
@@ -94,6 +95,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Ptsname => super::pty::sys_ptsname(arg1, arg2, arg3),
         // Graphics syscalls (Breenix-specific)
         SyscallNumber::FbInfo => super::graphics::sys_fbinfo(arg1),
+        SyscallNumber::FbDraw => super::graphics::sys_fbdraw(arg1),
         // Testing/diagnostic syscalls (Breenix-specific)
         SyscallNumber::CowStats => super::handlers::sys_cow_stats(arg1),
         SyscallNumber::SimulateOom => super::handlers::sys_simulate_oom(arg1),

@@ -232,6 +232,25 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
+        FdKind::UnixStream(socket_ref) => {
+            let socket = socket_ref.lock();
+            // Check for readable data
+            if (events & events::POLLIN) != 0 {
+                if socket.has_data() {
+                    revents |= events::POLLIN;
+                }
+            }
+            // Check for writable
+            if (events & events::POLLOUT) != 0 {
+                if !socket.peer_closed() {
+                    revents |= events::POLLOUT;
+                }
+            }
+            // Check for peer closed
+            if socket.peer_closed() && !socket.has_data() {
+                revents |= events::POLLHUP;
+            }
+        }
     }
 
     revents

@@ -1203,6 +1203,137 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
     }
 }
 
+/// sys_socketpair - Create a pair of connected Unix domain sockets
+///
+/// Arguments:
+///   domain: Address family (must be AF_UNIX = 1)
+///   sock_type: Socket type (SOCK_STREAM = 1, optionally OR'd with SOCK_NONBLOCK/SOCK_CLOEXEC)
+///   protocol: Protocol (must be 0)
+///   sv_ptr: Pointer to int[2] to receive the file descriptors
+///
+/// Returns: 0 on success, negative errno on error
+pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -> SyscallResult {
+    use crate::socket::types::{AF_UNIX, SOCK_CLOEXEC, SOCK_NONBLOCK};
+    use crate::socket::unix::UnixStreamSocket;
+    use crate::ipc::fd::{FileDescriptor, flags, status_flags};
+
+    log::debug!(
+        "sys_socketpair: domain={}, type={:#x}, protocol={}, sv_ptr={:#x}",
+        domain, sock_type, protocol, sv_ptr
+    );
+
+    // Validate domain - must be AF_UNIX
+    if domain as u16 != AF_UNIX {
+        log::debug!("sys_socketpair: unsupported domain {}", domain);
+        return SyscallResult::Err(EAFNOSUPPORT as u64);
+    }
+
+    // Validate protocol - must be 0
+    if protocol != 0 {
+        log::debug!("sys_socketpair: unsupported protocol {}", protocol);
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Extract flags from sock_type
+    let nonblocking = (sock_type as u32 & SOCK_NONBLOCK) != 0;
+    let cloexec = (sock_type as u32 & SOCK_CLOEXEC) != 0;
+    let base_type = sock_type as u32 & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+    // Validate socket type - only SOCK_STREAM supported for now
+    if base_type != crate::socket::types::SOCK_STREAM as u32 {
+        log::debug!("sys_socketpair: unsupported socket type {}", base_type);
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Validate output pointer
+    if sv_ptr == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Get current thread and process
+    let current_thread_id = match crate::per_cpu::current_thread() {
+        Some(thread) => thread.id,
+        None => {
+            log::error!("sys_socketpair: No current thread in per-CPU data!");
+            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        }
+    };
+
+    let mut manager_guard = crate::process::manager();
+    let manager = match *manager_guard {
+        Some(ref mut m) => m,
+        None => {
+            log::error!("sys_socketpair: No process manager!");
+            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        }
+    };
+
+    let (_pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
+        Some(p) => p,
+        None => {
+            log::error!("sys_socketpair: No process found for thread_id={}", current_thread_id);
+            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        }
+    };
+
+    // Create the socket pair
+    let (socket_a, socket_b) = UnixStreamSocket::new_pair(nonblocking);
+
+    // Create file descriptor entries with appropriate flags
+    let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
+    let fd_status_flags = if nonblocking { status_flags::O_NONBLOCK } else { 0 };
+
+    let fd_entry_a = FileDescriptor::with_flags(
+        FdKind::UnixStream(socket_a),
+        fd_flags,
+        fd_status_flags,
+    );
+    let fd_entry_b = FileDescriptor::with_flags(
+        FdKind::UnixStream(socket_b),
+        fd_flags,
+        fd_status_flags,
+    );
+
+    // Allocate file descriptors
+    let fd_a = match process.fd_table.alloc_with_entry(fd_entry_a) {
+        Ok(fd) => fd,
+        Err(e) => {
+            log::error!("sys_socketpair: Failed to allocate fd_a: {}", e);
+            return SyscallResult::Err(e as u64);
+        }
+    };
+
+    let fd_b = match process.fd_table.alloc_with_entry(fd_entry_b) {
+        Ok(fd) => fd,
+        Err(e) => {
+            // Clean up fd_a on failure
+            let _ = process.fd_table.close(fd_a);
+            log::error!("sys_socketpair: Failed to allocate fd_b: {}", e);
+            return SyscallResult::Err(e as u64);
+        }
+    };
+
+    // Write the file descriptors to userspace sv[0], sv[1]
+    let sv: [i32; 2] = [fd_a, fd_b];
+    unsafe {
+        let sv_user = sv_ptr as *mut [i32; 2];
+        // Validate pointer is in userspace range
+        if sv_ptr < 0x1000 || sv_ptr > 0x7FFFFFFFFFFF {
+            let _ = process.fd_table.close(fd_a);
+            let _ = process.fd_table.close(fd_b);
+            return SyscallResult::Err(EFAULT as u64);
+        }
+        core::ptr::write_volatile(sv_user, sv);
+    }
+
+    log::info!(
+        "sys_socketpair: Created Unix socket pair sv=[{}, {}] nonblocking={} cloexec={}",
+        fd_a, fd_b, nonblocking, cloexec
+    );
+
+    SyscallResult::Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

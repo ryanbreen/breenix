@@ -114,6 +114,8 @@ pub enum FdKind {
     /// Allow unused - constructed when opening /dev/pts/N in Phase 2
     #[allow(dead_code)]
     PtySlave(u32),
+    /// Unix stream socket (AF_UNIX, SOCK_STREAM) - for socketpair IPC
+    UnixStream(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -133,6 +135,10 @@ impl core::fmt::Debug for FdKind {
             FdKind::DevptsDirectory { position } => write!(f, "DevptsDirectory(pos={})", position),
             FdKind::PtyMaster(n) => write!(f, "PtyMaster({})", n),
             FdKind::PtySlave(n) => write!(f, "PtySlave({})", n),
+            FdKind::UnixStream(s) => {
+                let sock = s.lock();
+                write!(f, "UnixStream({:?})", sock.endpoint)
+            }
         }
     }
 }
@@ -496,6 +502,11 @@ impl Drop for FdTable {
                     FdKind::PtySlave(_pty_num) => {
                         // PTY slave doesn't own the pair, just decrement reference
                         log::debug!("FdTable::drop() - released PTY slave fd {}", i);
+                    }
+                    FdKind::UnixStream(socket) => {
+                        // Close the Unix socket endpoint
+                        socket.lock().close();
+                        log::debug!("FdTable::drop() - closed Unix stream socket fd {}", i);
                     }
                 }
             }
