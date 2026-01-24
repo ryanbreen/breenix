@@ -2,30 +2,26 @@
 //!
 //! Implements socket, bind, sendto, recvfrom syscalls for UDP and TCP.
 
-use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINPROGRESS, EINVAL, ENETUNREACH, ENOTSOCK, EADDRINUSE, ENOTCONN, EISCONN, EOPNOTSUPP, ECONNREFUSED, ETIMEDOUT};
+use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINPROGRESS, EINVAL, ENETUNREACH, ENOTSOCK, EADDRINUSE, ENOTCONN, EISCONN, EOPNOTSUPP, ECONNREFUSED, ETIMEDOUT, ENOENT};
 use super::{ErrorCode, SyscallResult};
-use crate::socket::types::{AF_INET, SOCK_DGRAM, SOCK_STREAM, SockAddrIn};
+use crate::socket::types::{AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM, SockAddrIn, SockAddrUn};
 use crate::socket::udp::UdpSocket;
+use crate::socket::unix::UnixSocket;
 use crate::ipc::fd::FdKind;
 
 const SOCK_NONBLOCK: u64 = 0x800;
+const SOCK_CLOEXEC: u64 = 0x80000;
 
 /// sys_socket - Create a new socket
 ///
 /// Arguments:
-///   domain: Address family (AF_INET = 2)
-///   sock_type: Socket type (SOCK_DGRAM = 2 for UDP, SOCK_STREAM = 1 for TCP)
+///   domain: Address family (AF_INET = 2, AF_UNIX = 1)
+///   sock_type: Socket type (SOCK_DGRAM = 2 for UDP, SOCK_STREAM = 1 for TCP/Unix)
 ///   protocol: Protocol (0 = default)
 ///
 /// Returns: file descriptor on success, negative errno on error
 pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult {
     log::debug!("sys_socket: called with domain={}, type={}", domain, sock_type);
-
-    // Validate domain
-    if domain as u16 != AF_INET {
-        log::debug!("sys_socket: unsupported domain {}", domain);
-        return SyscallResult::Err(EAFNOSUPPORT as u64);
-    }
 
     // Get current thread and process
     let current_thread_id = match crate::per_cpu::current_thread() {
@@ -54,33 +50,64 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
     };
 
     let nonblocking = (sock_type & SOCK_NONBLOCK) != 0;
-    let base_type = sock_type & !SOCK_NONBLOCK;
+    let cloexec = (sock_type & SOCK_CLOEXEC) != 0;
+    let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
 
-    // Create socket based on type
-    let fd_kind = match base_type as u16 {
-        SOCK_DGRAM => {
-            // Create UDP socket wrapped in Arc<Mutex<>> for sharing
-            let mut socket = UdpSocket::new();
-            if nonblocking {
-                socket.set_nonblocking(true);
+    // Create socket based on domain and type
+    let (fd_kind, kind_str) = match domain as u16 {
+        AF_INET => {
+            // IPv4 socket
+            match base_type as u16 {
+                SOCK_DGRAM => {
+                    // Create UDP socket wrapped in Arc<Mutex<>> for sharing
+                    let mut socket = UdpSocket::new();
+                    if nonblocking {
+                        socket.set_nonblocking(true);
+                    }
+                    let socket = alloc::sync::Arc::new(spin::Mutex::new(socket));
+                    (FdKind::UdpSocket(socket), "UDP")
+                }
+                SOCK_STREAM => {
+                    // Create TCP socket (initially unbound, port = 0)
+                    (FdKind::TcpSocket(0), "TCP")
+                }
+                _ => {
+                    log::debug!("sys_socket: unsupported type {} for AF_INET", base_type);
+                    return SyscallResult::Err(EINVAL as u64);
+                }
             }
-            let socket = alloc::sync::Arc::new(spin::Mutex::new(socket));
-            FdKind::UdpSocket(socket)
         }
-        SOCK_STREAM => {
-            // Create TCP socket (initially unbound, port = 0)
-            FdKind::TcpSocket(0)
+        AF_UNIX => {
+            // Unix domain socket
+            match base_type as u16 {
+                SOCK_STREAM => {
+                    // Create Unix stream socket (initially unbound)
+                    let socket = UnixSocket::new(nonblocking);
+                    let socket = alloc::sync::Arc::new(spin::Mutex::new(socket));
+                    (FdKind::UnixSocket(socket), "Unix")
+                }
+                _ => {
+                    log::debug!("sys_socket: unsupported type {} for AF_UNIX (only SOCK_STREAM supported)", base_type);
+                    return SyscallResult::Err(EINVAL as u64);
+                }
+            }
         }
         _ => {
-            log::debug!("sys_socket: unsupported type {}", base_type);
-            return SyscallResult::Err(EINVAL as u64);
+            log::debug!("sys_socket: unsupported domain {}", domain);
+            return SyscallResult::Err(EAFNOSUPPORT as u64);
         }
     };
 
+    // Set flags for the file descriptor
+    use crate::ipc::fd::{flags, status_flags, FileDescriptor};
+    let fd_flags = if cloexec { flags::FD_CLOEXEC } else { 0 };
+    let fd_status_flags = if nonblocking { status_flags::O_NONBLOCK } else { 0 };
+
+    let fd_entry = FileDescriptor::with_flags(fd_kind, fd_flags, fd_status_flags);
+
     // Allocate file descriptor in process
-    match process.fd_table.alloc(fd_kind) {
+    match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(num) => {
-            let kind_str = if base_type as u16 == SOCK_STREAM { "TCP" } else { "UDP" };
             log::info!("{}: Socket created fd={}", kind_str, num);
             log::debug!("{} socket: returning to userspace fd={}", kind_str, num);
             SyscallResult::Ok(num as u64)
@@ -96,34 +123,28 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
 ///
 /// Arguments:
 ///   fd: Socket file descriptor
-///   addr: Pointer to sockaddr_in structure
+///   addr: Pointer to sockaddr structure (sockaddr_in for AF_INET, sockaddr_un for AF_UNIX)
 ///   addrlen: Length of address structure
 ///
 /// Returns: 0 on success, negative errno on error
 pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
-    // Validate address length
-    if addrlen < 16 {
+    // Validate address pointer
+    if addr_ptr == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Validate minimum address length (at least 2 bytes for family)
+    if addrlen < 2 {
         return SyscallResult::Err(EINVAL as u64);
     }
 
-    // Read address from userspace
-    let addr = unsafe {
-        if addr_ptr == 0 {
-            return SyscallResult::Err(EFAULT as u64);
-        }
-        let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 16);
-        match SockAddrIn::from_bytes(addr_bytes) {
-            Some(a) => a,
-            None => return SyscallResult::Err(EINVAL as u64),
-        }
+    // Read address family first
+    let family = unsafe {
+        let family_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 2);
+        u16::from_ne_bytes([family_bytes[0], family_bytes[1]])
     };
 
-    // Validate address family
-    if addr.family != AF_INET {
-        return SyscallResult::Err(EAFNOSUPPORT as u64);
-    }
-
-    // Get current thread and process (same pattern as mmap.rs)
+    // Get current thread and process
     let current_thread_id = match crate::per_cpu::current_thread() {
         Some(thread) => thread.id,
         None => {
@@ -154,49 +175,122 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
         None => return SyscallResult::Err(EBADF as u64),
     };
 
-    // Handle bind based on socket type
-    match &fd_entry.kind {
-        FdKind::UdpSocket(s) => {
-            // Bind UDP socket
-            let socket_ref = s.clone();
-            let mut socket = socket_ref.lock();
-            match socket.bind(pid, addr.addr, addr.port_host()) {
-                Ok(actual_port) => {
-                    log::info!("UDP: Socket bound to port {} (requested: {})", actual_port, addr.port_host());
-                    log::debug!("UDP bind: returning to userspace");
-                    SyscallResult::Ok(0)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            }
-        }
-        FdKind::TcpSocket(existing_port) => {
-            // TCP socket binding - update the socket's port
-            if *existing_port != 0 {
-                // Already bound
+    // Handle bind based on address family
+    match family {
+        AF_INET => {
+            // Validate address length for IPv4
+            if addrlen < 16 {
                 return SyscallResult::Err(EINVAL as u64);
             }
 
-            let port = addr.port_host();
+            // Read full IPv4 address from userspace
+            let addr = unsafe {
+                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 16);
+                match SockAddrIn::from_bytes(addr_bytes) {
+                    Some(a) => a,
+                    None => return SyscallResult::Err(EINVAL as u64),
+                }
+            };
 
-            // Check if port is already in use by another TCP listener
-            {
-                let listeners = crate::net::tcp::TCP_LISTENERS.lock();
-                if listeners.contains_key(&port) {
-                    log::debug!("TCP: bind failed, port {} already in use", port);
-                    return SyscallResult::Err(EADDRINUSE as u64);
+            // Handle bind based on socket type
+            match &fd_entry.kind {
+                FdKind::UdpSocket(s) => {
+                    // Bind UDP socket
+                    let socket_ref = s.clone();
+                    let mut socket = socket_ref.lock();
+                    match socket.bind(pid, addr.addr, addr.port_host()) {
+                        Ok(actual_port) => {
+                            log::info!("UDP: Socket bound to port {} (requested: {})", actual_port, addr.port_host());
+                            log::debug!("UDP bind: returning to userspace");
+                            SyscallResult::Ok(0)
+                        }
+                        Err(e) => SyscallResult::Err(e as u64),
+                    }
+                }
+                FdKind::TcpSocket(existing_port) => {
+                    // TCP socket binding - update the socket's port
+                    if *existing_port != 0 {
+                        // Already bound
+                        return SyscallResult::Err(EINVAL as u64);
+                    }
+
+                    let port = addr.port_host();
+
+                    // Check if port is already in use by another TCP listener
+                    {
+                        let listeners = crate::net::tcp::TCP_LISTENERS.lock();
+                        if listeners.contains_key(&port) {
+                            log::debug!("TCP: bind failed, port {} already in use", port);
+                            return SyscallResult::Err(EADDRINUSE as u64);
+                        }
+                    }
+
+                    // Update the fd entry with the bound port
+                    let fd_num = fd as usize;
+                    if let Some(entry) = process.fd_table.get_mut(fd_num as i32) {
+                        entry.kind = FdKind::TcpSocket(port);
+                    }
+
+                    log::info!("TCP: Socket bound to port {}", port);
+                    SyscallResult::Ok(0)
+                }
+                _ => SyscallResult::Err(ENOTSOCK as u64),
+            }
+        }
+        AF_UNIX => {
+            // Validate address length for Unix (need at least family + 1 byte path)
+            if addrlen < 3 {
+                return SyscallResult::Err(EINVAL as u64);
+            }
+
+            // Read Unix socket address from userspace
+            let addr = unsafe {
+                let addr_len = (addrlen as usize).min(110); // family (2) + path (108)
+                let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, addr_len);
+                match SockAddrUn::from_bytes(addr_bytes) {
+                    Some(a) => a,
+                    None => return SyscallResult::Err(EINVAL as u64),
+                }
+            };
+
+            // For now, only support abstract sockets (path starts with '\0')
+            if !addr.is_abstract() {
+                log::debug!("sys_bind: Only abstract Unix sockets supported (path must start with \\0)");
+                return SyscallResult::Err(EINVAL as u64);
+            }
+
+            // Get the path bytes
+            let path = addr.path_bytes().to_vec();
+
+            // Handle bind based on socket type
+            match &fd_entry.kind {
+                FdKind::UnixSocket(s) => {
+                    // Check if path is already bound
+                    if crate::socket::UNIX_SOCKET_REGISTRY.is_bound(&path) {
+                        log::debug!("Unix: bind failed, path already in use");
+                        return SyscallResult::Err(EADDRINUSE as u64);
+                    }
+
+                    // Bind the socket
+                    let socket_ref = s.clone();
+                    let mut socket = socket_ref.lock();
+                    if let Err(e) = socket.bind(path.clone()) {
+                        return SyscallResult::Err(e as u64);
+                    }
+
+                    log::info!("Unix: Socket bound to abstract path (len={})", path.len());
+                    SyscallResult::Ok(0)
+                }
+                _ => {
+                    log::debug!("sys_bind: AF_UNIX bind on non-Unix socket");
+                    SyscallResult::Err(EINVAL as u64)
                 }
             }
-
-            // Update the fd entry with the bound port
-            let fd_num = fd as usize;
-            if let Some(entry) = process.fd_table.get_mut(fd_num as i32) {
-                entry.kind = FdKind::TcpSocket(port);
-            }
-
-            log::info!("TCP: Socket bound to port {}", port);
-            SyscallResult::Ok(0)
         }
-        _ => SyscallResult::Err(ENOTSOCK as u64),
+        _ => {
+            log::debug!("sys_bind: unsupported address family {}", family);
+            SyscallResult::Err(EAFNOSUPPORT as u64)
+        }
     }
 }
 
@@ -613,7 +707,7 @@ pub fn sys_recvfrom(
     }
 }
 
-/// sys_listen - Mark a TCP socket as listening for connections
+/// sys_listen - Mark a socket as listening for connections
 ///
 /// Arguments:
 ///   fd: Socket file descriptor (must be bound)
@@ -654,49 +748,96 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
         None => return SyscallResult::Err(EBADF as u64),
     };
 
-    // Must be a bound TCP socket
-    let port = match &fd_entry.kind {
-        FdKind::TcpSocket(p) => {
-            if *p == 0 {
+    // Handle listen based on socket type
+    match &fd_entry.kind {
+        FdKind::TcpSocket(port) => {
+            if *port == 0 {
                 // Not bound
                 return SyscallResult::Err(EINVAL as u64);
             }
-            *p
+
+            // Start listening
+            if let Err(_) = crate::net::tcp::tcp_listen(*port, backlog as usize, pid) {
+                return SyscallResult::Err(EADDRINUSE as u64);
+            }
+
+            // Update fd to TcpListener
+            if let Some(entry) = process.fd_table.get_mut(fd as i32) {
+                entry.kind = FdKind::TcpListener(*port);
+            }
+
+            log::info!("TCP: Socket now listening on port {}", port);
+            SyscallResult::Ok(0)
         }
         FdKind::TcpListener(_) => {
             // Already listening
-            return SyscallResult::Err(EINVAL as u64);
+            SyscallResult::Err(EINVAL as u64)
         }
-        _ => return SyscallResult::Err(EOPNOTSUPP as u64),
-    };
+        FdKind::UnixSocket(s) => {
+            // Get socket state and path
+            let socket_ref = s.clone();
+            let socket = socket_ref.lock();
 
-    // Start listening
-    if let Err(_) = crate::net::tcp::tcp_listen(port, backlog as usize, pid) {
-        return SyscallResult::Err(EADDRINUSE as u64);
+            // Must be bound
+            let path = match &socket.bound_path {
+                Some(p) => p.clone(),
+                None => {
+                    log::debug!("sys_listen: Unix socket not bound");
+                    return SyscallResult::Err(EINVAL as u64);
+                }
+            };
+
+            drop(socket);
+
+            // Create listener and register in global registry
+            // Note: nonblocking mode is tracked via fd status_flags, not on the listener
+            let listener = crate::socket::unix::UnixListener::new(
+                path.clone(),
+                backlog as usize,
+            );
+            let listener_arc = alloc::sync::Arc::new(spin::Mutex::new(listener));
+
+            // Register in global registry
+            if let Err(e) = crate::socket::UNIX_SOCKET_REGISTRY.bind(path.clone(), listener_arc.clone()) {
+                log::debug!("sys_listen: Failed to register Unix listener: {}", e);
+                return SyscallResult::Err(e as u64);
+            }
+
+            // Update fd to UnixListener
+            if let Some(entry) = process.fd_table.get_mut(fd as i32) {
+                entry.kind = FdKind::UnixListener(listener_arc);
+            }
+
+            log::info!("Unix: Socket now listening (path_len={})", path.len());
+            SyscallResult::Ok(0)
+        }
+        FdKind::UnixListener(_) => {
+            // Already listening
+            SyscallResult::Err(EINVAL as u64)
+        }
+        _ => SyscallResult::Err(EOPNOTSUPP as u64),
     }
+}
 
-    // Update fd to TcpListener
-    if let Some(entry) = process.fd_table.get_mut(fd as i32) {
-        entry.kind = FdKind::TcpListener(port);
-    }
-
-    log::info!("TCP: Socket now listening on port {}", port);
-    SyscallResult::Ok(0)
+/// Internal enum to track listener type for accept
+enum ListenerType {
+    Tcp(u16),
+    Unix(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
 }
 
 /// sys_accept - Accept a connection on a listening socket
 ///
 /// Arguments:
 ///   fd: Listening socket file descriptor
-///   addr: Pointer to sockaddr_in for client address (can be NULL)
+///   addr: Pointer to sockaddr for client address (can be NULL)
 ///   addrlen: Pointer to address length (can be NULL)
 ///
 /// Returns: new socket fd on success, negative errno on error
 ///
 /// # Blocking Behavior
 ///
-/// TCP accept() blocks until a connection is available. When no pending
-/// connections exist, the calling thread blocks until a SYN arrives.
+/// accept() blocks until a connection is available. When no pending
+/// connections exist, the calling thread blocks until a connection arrives.
 /// The blocking pattern follows the same double-check approach as UDP recvfrom.
 pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     log::debug!("sys_accept: fd={}", fd);
@@ -713,8 +854,8 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
         }
     };
 
-    // Extract port and status_flags from fd, then release manager lock
-    let (port, is_nonblocking) = {
+    // Extract listener info and status_flags from fd, then release manager lock
+    let (listener_type, is_nonblocking) = {
         let mut manager_guard = crate::process::manager();
         let manager = match *manager_guard {
             Some(ref mut m) => m,
@@ -740,15 +881,29 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
         // Check O_NONBLOCK status flag
         let nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
 
-        // Must be a TCP listener
-        let listener_port = match &fd_entry.kind {
-            FdKind::TcpListener(p) => *p,
+        // Determine listener type
+        let lt = match &fd_entry.kind {
+            FdKind::TcpListener(p) => ListenerType::Tcp(*p),
+            FdKind::UnixListener(l) => ListenerType::Unix(l.clone()),
             _ => return SyscallResult::Err(EOPNOTSUPP as u64),
         };
-        (listener_port, nonblocking)
+        (lt, nonblocking)
         // manager_guard dropped here
     };
 
+    // Dispatch based on listener type
+    match listener_type {
+        ListenerType::Tcp(port) => {
+            sys_accept_tcp(fd, port, is_nonblocking, thread_id, addr_ptr, addrlen_ptr)
+        }
+        ListenerType::Unix(listener) => {
+            sys_accept_unix(fd, listener, is_nonblocking, thread_id)
+        }
+    }
+}
+
+/// Accept on TCP listener
+fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     // Blocking accept loop
     loop {
         // Register as waiter FIRST to avoid race condition
@@ -883,11 +1038,151 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     }
 }
 
-/// sys_connect - Initiate a TCP connection
+/// Accept on Unix listener
+fn sys_accept_unix(
+    fd: u64,
+    listener: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>,
+    is_nonblocking: bool,
+    thread_id: u64,
+) -> SyscallResult {
+    // Blocking accept loop
+    loop {
+        // Register as waiter FIRST to avoid race condition
+        {
+            let l = listener.lock();
+            l.register_waiter(thread_id);
+        }
+
+        // Try to pop a pending connection
+        let pending_socket = {
+            let mut l = listener.lock();
+            l.pop_pending()
+        };
+
+        if let Some(socket) = pending_socket {
+            // Got a connection - unregister and complete
+            {
+                let l = listener.lock();
+                l.unregister_waiter(thread_id);
+            }
+
+            // Create new fd for the connection
+            let mut manager_guard = crate::process::manager();
+            let manager = match *manager_guard {
+                Some(ref mut m) => m,
+                None => {
+                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+                }
+            };
+
+            let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
+                Some(p) => p,
+                None => {
+                    return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+                }
+            };
+
+            return match process.fd_table.alloc(FdKind::UnixStream(socket)) {
+                Ok(new_fd) => {
+                    log::info!("Unix: Accepted connection on fd {}, new fd {}", fd, new_fd);
+                    SyscallResult::Ok(new_fd as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            };
+        }
+
+        // No pending connection
+        // If non-blocking mode, return EAGAIN immediately
+        if is_nonblocking {
+            log::debug!("Unix accept: fd={} is non-blocking, returning EAGAIN", fd);
+            {
+                let l = listener.lock();
+                l.unregister_waiter(thread_id);
+            }
+            return SyscallResult::Err(EAGAIN as u64);
+        }
+
+        // Blocking mode - block the thread
+        log::debug!("Unix accept: fd={} entering blocking path, thread={}", fd, thread_id);
+
+        // Block the current thread
+        crate::task::scheduler::with_scheduler(|sched| {
+            sched.block_current();
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.blocked_in_syscall = true;
+            }
+        });
+
+        // Double-check for pending connection after setting Blocked state
+        let has_pending = {
+            let l = listener.lock();
+            l.has_pending()
+        };
+        if has_pending {
+            log::info!("Unix: Thread {} caught race - connection arrived during block setup", thread_id);
+            crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = false;
+                    thread.set_ready();
+                }
+            });
+            {
+                let l = listener.lock();
+                l.unregister_waiter(thread_id);
+            }
+            continue;
+        }
+
+        // Re-enable preemption before HLT loop
+        crate::per_cpu::preempt_enable();
+
+        log::info!("Unix_BLOCK: Thread {} entering blocked state for accept", thread_id);
+
+        // HLT loop - wait for connection to arrive
+        loop {
+            // Check if we were woken
+            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.state == crate::task::thread::ThreadState::Blocked
+                } else {
+                    false
+                }
+            }).unwrap_or(false);
+
+            if !still_blocked {
+                crate::per_cpu::preempt_disable();
+                log::info!("Unix_BLOCK: Thread {} woken from accept blocking", thread_id);
+                break;
+            }
+
+            // Still blocked - yield and wait for interrupt
+            crate::task::scheduler::yield_current();
+            x86_64::instructions::interrupts::enable_and_hlt();
+        }
+
+        // Clear blocked_in_syscall
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.blocked_in_syscall = false;
+            }
+        });
+        // Reset quantum to prevent immediate preemption after long blocking wait
+        crate::interrupts::timer::reset_quantum();
+        crate::task::scheduler::check_and_clear_need_resched();
+
+        // Unregister from wait queue (will re-register at top of loop)
+        {
+            let l = listener.lock();
+            l.unregister_waiter(thread_id);
+        }
+    }
+}
+
+/// sys_connect - Connect a socket to a destination address
 ///
 /// Arguments:
 ///   fd: Socket file descriptor
-///   addr: Pointer to destination sockaddr_in
+///   addr: Pointer to destination sockaddr
 ///   addrlen: Length of address structure
 ///
 /// Returns: 0 on success, negative errno on error
@@ -895,32 +1190,52 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 /// # Blocking Behavior
 ///
 /// TCP connect() blocks until the connection is established or fails.
-/// Instead of busy-polling, the thread is properly blocked until the
-/// SYN+ACK arrives and the 3-way handshake completes.
+/// Unix connect() completes immediately if the listener exists.
 pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     log::debug!("sys_connect: fd={}", fd);
 
-    // Validate address length
+    // Validate address pointer
+    if addr_ptr == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Validate minimum address length (at least 2 bytes for family)
+    if addrlen < 2 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Read address family first
+    let family = unsafe {
+        let family_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 2);
+        u16::from_ne_bytes([family_bytes[0], family_bytes[1]])
+    };
+
+    // Dispatch based on address family
+    match family {
+        AF_INET => sys_connect_tcp(fd, addr_ptr, addrlen),
+        AF_UNIX => sys_connect_unix(fd, addr_ptr, addrlen),
+        _ => {
+            log::debug!("sys_connect: unsupported address family {}", family);
+            SyscallResult::Err(EAFNOSUPPORT as u64)
+        }
+    }
+}
+
+/// Connect TCP socket
+fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
+    // Validate address length for IPv4
     if addrlen < 16 {
         return SyscallResult::Err(EINVAL as u64);
     }
 
     // Read address from userspace
     let addr = unsafe {
-        if addr_ptr == 0 {
-            return SyscallResult::Err(EFAULT as u64);
-        }
         let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, 16);
         match SockAddrIn::from_bytes(addr_bytes) {
             Some(a) => a,
             None => return SyscallResult::Err(EINVAL as u64),
         }
     };
-
-    // Validate address family
-    if addr.family != AF_INET {
-        return SyscallResult::Err(EAFNOSUPPORT as u64);
-    }
 
     // Get current thread ID for blocking
     let thread_id = match crate::per_cpu::current_thread() {
@@ -1135,6 +1450,110 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
         log::info!("TCP connect: thread={} looping back to check connection", thread_id);
     }
+}
+
+/// Connect Unix domain socket
+fn sys_connect_unix(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
+    use crate::socket::unix::UnixStreamSocket;
+
+    // Validate address length for Unix (need at least family + 1 byte path)
+    if addrlen < 3 {
+        return SyscallResult::Err(EINVAL as u64);
+    }
+
+    // Read Unix socket address from userspace
+    let addr = unsafe {
+        let addr_len = (addrlen as usize).min(110); // family (2) + path (108)
+        let addr_bytes = core::slice::from_raw_parts(addr_ptr as *const u8, addr_len);
+        match SockAddrUn::from_bytes(addr_bytes) {
+            Some(a) => a,
+            None => return SyscallResult::Err(EINVAL as u64),
+        }
+    };
+
+    // For now, only support abstract sockets (path starts with '\0')
+    if !addr.is_abstract() {
+        log::debug!("sys_connect: Only abstract Unix sockets supported (path must start with \\0)");
+        return SyscallResult::Err(ENOENT as u64);
+    }
+
+    // Get the path bytes
+    let path = addr.path_bytes();
+
+    // Look up the listener in the registry
+    let listener = match crate::socket::UNIX_SOCKET_REGISTRY.lookup(path) {
+        Some(l) => l,
+        None => {
+            log::debug!("sys_connect: No listener found for Unix socket path");
+            return SyscallResult::Err(ECONNREFUSED as u64);
+        }
+    };
+
+    // Get current thread ID
+    let thread_id = match crate::per_cpu::current_thread() {
+        Some(thread) => thread.id,
+        None => {
+            log::error!("sys_connect: No current thread in per-CPU data!");
+            return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+        }
+    };
+
+    // Create a connected pair: client gets socket_a, server gets socket_b
+    let (socket_client, socket_server) = UnixStreamSocket::new_pair(false);
+
+    // Push server socket to listener's pending queue and wake waiters
+    {
+        let mut l = listener.lock();
+        if let Err(e) = l.push_pending(socket_server) {
+            log::debug!("sys_connect: Listener backlog full");
+            return SyscallResult::Err(e as u64);
+        }
+        l.wake_waiters();
+    }
+
+    // Update fd to UnixStream
+    {
+        let mut manager_guard = crate::process::manager();
+        let manager = match *manager_guard {
+            Some(ref mut m) => m,
+            None => {
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        let (_pid, process) = match manager.find_process_by_thread_mut(thread_id) {
+            Some(p) => p,
+            None => {
+                log::error!("sys_connect: No process found for thread_id={}", thread_id);
+                return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
+            }
+        };
+
+        // Get the socket from fd table and verify it's a Unix socket
+        let fd_entry = match process.fd_table.get(fd as i32) {
+            Some(e) => e.clone(),
+            None => return SyscallResult::Err(EBADF as u64),
+        };
+
+        match &fd_entry.kind {
+            FdKind::UnixSocket(_) => {
+                // Update fd to connected stream
+                if let Some(entry) = process.fd_table.get_mut(fd as i32) {
+                    entry.kind = FdKind::UnixStream(socket_client);
+                }
+            }
+            FdKind::UnixStream(_) => {
+                // Already connected
+                return SyscallResult::Err(EISCONN as u64);
+            }
+            _ => {
+                return SyscallResult::Err(EOPNOTSUPP as u64);
+            }
+        }
+    }
+
+    log::info!("Unix: Connected to listener (path_len={})", path.len());
+    SyscallResult::Ok(0)
 }
 
 /// sys_shutdown - Shut down part of a full-duplex connection

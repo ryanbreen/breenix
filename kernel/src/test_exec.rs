@@ -1059,6 +1059,41 @@ pub fn test_unix_socket() {
     }
 }
 
+/// Test Named Unix domain socket (bind/listen/accept/connect)
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Named Unix socket test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates named socket operations
+///   - Marker: "UNIX_NAMED_SOCKET_TEST_PASSED"
+///   - This PROVES bind, listen, connect, accept and bidirectional I/O work
+pub fn test_unix_named_socket() {
+    log::info!("Testing named Unix domain socket (bind/listen/accept/connect) functionality");
+
+    #[cfg(feature = "testing")]
+    let unix_named_socket_test_elf_buf = crate::userspace_test::get_test_binary("unix_named_socket_test");
+    #[cfg(feature = "testing")]
+    let unix_named_socket_test_elf: &[u8] = &unix_named_socket_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let unix_named_socket_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("unix_named_socket_test"),
+        unix_named_socket_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created unix_named_socket_test process with PID {:?}", pid);
+            log::info!("Named Unix socket test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (UNIX_NAMED_SOCKET_TEST_...)");
+        }
+        Err(e) => {
+            log::error!("Failed to create unix_named_socket_test process: {}", e);
+            log::error!("Named Unix socket test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test pipe syscall functionality
 ///
 /// TWO-STAGE VALIDATION PATTERN:

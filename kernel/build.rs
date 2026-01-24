@@ -104,6 +104,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}/clock_gettime_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/udp_socket_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/unix_socket_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/unix_named_socket_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/tty_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/job_control_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/session_test.rs", userspace_tests);

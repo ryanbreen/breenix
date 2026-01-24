@@ -295,6 +295,14 @@ impl Process {
                         socket.lock().close();
                         log::debug!("Process::close_all_fds() - closed Unix stream socket fd {}", fd);
                     }
+                    FdKind::UnixSocket(_) => {
+                        // Unbound/bound Unix socket doesn't need cleanup
+                        log::debug!("Process::close_all_fds() - released Unix socket fd {}", fd);
+                    }
+                    FdKind::UnixListener(_) => {
+                        // Unix listener socket cleanup handled by Arc refcount
+                        log::debug!("Process::close_all_fds() - released Unix listener fd {}", fd);
+                    }
                 }
             }
         }

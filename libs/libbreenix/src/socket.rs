@@ -65,6 +65,83 @@ pub struct SockAddrIn {
     pub zero: [u8; 8],
 }
 
+/// Unix domain socket address structure (matches kernel sockaddr_un)
+#[repr(C)]
+#[derive(Clone)]
+pub struct SockAddrUn {
+    /// Address family (AF_UNIX = 1)
+    pub family: u16,
+    /// Socket path (null-terminated, up to 108 bytes)
+    /// For abstract sockets, path[0] is '\0' and the name follows
+    pub path: [u8; 108],
+}
+
+impl SockAddrUn {
+    /// Maximum path length
+    pub const PATH_MAX: usize = 108;
+
+    /// Create a new abstract Unix socket address
+    ///
+    /// Abstract sockets start with '\0' followed by the name.
+    /// They don't appear in the filesystem and are automatically
+    /// cleaned up when the last reference is closed.
+    pub fn abstract_socket(name: &[u8]) -> Self {
+        let mut addr = SockAddrUn {
+            family: AF_UNIX as u16,
+            path: [0; 108],
+        };
+        // path[0] = 0 for abstract socket
+        let copy_len = name.len().min(Self::PATH_MAX - 1);
+        addr.path[1..1 + copy_len].copy_from_slice(&name[..copy_len]);
+        addr
+    }
+
+    /// Create a new Unix socket address from a path
+    ///
+    /// For filesystem-based sockets (not currently supported).
+    pub fn new(path: &[u8]) -> Self {
+        let mut addr = SockAddrUn {
+            family: AF_UNIX as u16,
+            path: [0; 108],
+        };
+        let copy_len = path.len().min(Self::PATH_MAX);
+        addr.path[..copy_len].copy_from_slice(&path[..copy_len]);
+        addr
+    }
+
+    /// Get the effective length of this address structure for bind/connect
+    ///
+    /// For abstract sockets, includes family (2) + null byte (1) + name length
+    pub fn len(&self) -> usize {
+        if self.path[0] == 0 {
+            // Abstract socket: find end of name after the leading null
+            for i in 1..Self::PATH_MAX {
+                if self.path[i] == 0 {
+                    return 2 + i; // family (2) + path including leading null
+                }
+            }
+            2 + Self::PATH_MAX
+        } else {
+            // Regular path: find null terminator
+            for i in 0..Self::PATH_MAX {
+                if self.path[i] == 0 {
+                    return 2 + i + 1; // family (2) + path + null
+                }
+            }
+            2 + Self::PATH_MAX
+        }
+    }
+}
+
+impl Default for SockAddrUn {
+    fn default() -> Self {
+        SockAddrUn {
+            family: AF_UNIX as u16,
+            path: [0; 108],
+        }
+    }
+}
+
 impl SockAddrIn {
     /// Create a new socket address
     ///
@@ -140,7 +217,7 @@ pub fn socket(domain: i32, sock_type: i32, protocol: i32) -> Result<i32, i32> {
     }
 }
 
-/// Bind a socket to a local address
+/// Bind a socket to a local IPv4 address
 ///
 /// # Arguments
 /// * `fd` - Socket file descriptor
@@ -155,6 +232,31 @@ pub fn bind(fd: i32, addr: &SockAddrIn) -> Result<(), i32> {
             fd as u64,
             addr as *const SockAddrIn as u64,
             core::mem::size_of::<SockAddrIn>() as u64,
+        )
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Bind a Unix domain socket to an address
+///
+/// # Arguments
+/// * `fd` - Socket file descriptor
+/// * `addr` - Unix socket address to bind to
+///
+/// # Returns
+/// 0 on success, or negative errno on error
+pub fn bind_unix(fd: i32, addr: &SockAddrUn) -> Result<(), i32> {
+    let ret = unsafe {
+        raw::syscall3(
+            nr::BIND,
+            fd as u64,
+            addr as *const SockAddrUn as u64,
+            addr.len() as u64,
         )
     };
 
@@ -253,6 +355,31 @@ pub fn connect(fd: i32, addr: &SockAddrIn) -> Result<(), i32> {
             fd as u64,
             addr as *const SockAddrIn as u64,
             core::mem::size_of::<SockAddrIn>() as u64,
+        )
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Connect a Unix domain socket to a server
+///
+/// # Arguments
+/// * `fd` - Socket file descriptor
+/// * `addr` - Unix socket address to connect to
+///
+/// # Returns
+/// 0 on success, or negative errno on error
+pub fn connect_unix(fd: i32, addr: &SockAddrUn) -> Result<(), i32> {
+    let ret = unsafe {
+        raw::syscall3(
+            nr::CONNECT,
+            fd as u64,
+            addr as *const SockAddrUn as u64,
+            addr.len() as u64,
         )
     };
 

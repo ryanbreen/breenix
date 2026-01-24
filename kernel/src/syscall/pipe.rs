@@ -215,6 +215,14 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     socket.lock().close();
                     log::debug!("sys_close: Closed Unix stream socket fd={}", fd);
                 }
+                FdKind::UnixSocket(_) => {
+                    // Unbound/bound Unix socket doesn't need cleanup
+                    log::debug!("sys_close: Closed Unix socket fd={}", fd);
+                }
+                FdKind::UnixListener(_) => {
+                    // Unix listener socket cleanup handled by Arc refcount
+                    log::debug!("sys_close: Closed Unix listener fd={}", fd);
+                }
             }
             log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)

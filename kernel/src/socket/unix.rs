@@ -257,3 +257,152 @@ impl core::fmt::Debug for UnixStreamSocket {
             .finish()
     }
 }
+
+// ============================================================================
+// Named Unix Domain Socket Support
+// ============================================================================
+
+/// State of an unbound Unix socket (before it becomes a connected stream)
+///
+/// Note: Listening and Connected states don't exist here because the socket
+/// transforms into a different type (UnixListener or UnixStream) when
+/// those states are reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnixSocketState {
+    /// Socket created but not bound to any path
+    Unbound,
+    /// Socket bound to a path but not listening
+    Bound,
+}
+
+/// An unbound Unix domain socket
+///
+/// This represents a socket created with socket(AF_UNIX, SOCK_STREAM, 0)
+/// before it has been connected or converted to a listener.
+pub struct UnixSocket {
+    /// Current state of the socket
+    pub state: UnixSocketState,
+    /// Non-blocking mode
+    pub nonblocking: bool,
+    /// Path this socket is bound to (None if unbound)
+    pub bound_path: Option<Vec<u8>>,
+}
+
+impl UnixSocket {
+    /// Create a new unbound Unix socket
+    pub fn new(nonblocking: bool) -> Self {
+        UnixSocket {
+            state: UnixSocketState::Unbound,
+            nonblocking,
+            bound_path: None,
+        }
+    }
+
+    /// Bind this socket to a path
+    pub fn bind(&mut self, path: Vec<u8>) -> Result<(), i32> {
+        if self.state != UnixSocketState::Unbound {
+            return Err(crate::syscall::errno::EINVAL);
+        }
+        self.bound_path = Some(path);
+        self.state = UnixSocketState::Bound;
+        Ok(())
+    }
+}
+
+impl core::fmt::Debug for UnixSocket {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UnixSocket")
+            .field("state", &self.state)
+            .field("nonblocking", &self.nonblocking)
+            .field("bound_path", &self.bound_path.as_ref().map(|p| p.len()))
+            .finish()
+    }
+}
+
+/// A listening Unix domain socket
+///
+/// This represents a socket that has called listen() and is ready
+/// to accept incoming connections.
+///
+/// Note: Non-blocking mode is tracked via status_flags on the FileDescriptor,
+/// not on this struct. Use fd_entry.status_flags & O_NONBLOCK to check.
+pub struct UnixListener {
+    /// Path this listener is bound to
+    pub path: Vec<u8>,
+    /// Maximum pending connections
+    pub backlog: usize,
+    /// Queue of pending connections (server-side of connected pairs)
+    pub pending: VecDeque<Arc<Mutex<UnixStreamSocket>>>,
+    /// Threads waiting in accept()
+    pub waiting_threads: Mutex<Vec<u64>>,
+}
+
+impl UnixListener {
+    /// Create a new listener from a bound socket
+    pub fn new(path: Vec<u8>, backlog: usize) -> Self {
+        UnixListener {
+            path,
+            backlog,
+            pending: VecDeque::with_capacity(backlog.min(128)),
+            waiting_threads: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Check if there are pending connections
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Get the number of pending connections
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Push a new pending connection (server-side socket)
+    /// Returns Err if backlog is full
+    pub fn push_pending(&mut self, socket: Arc<Mutex<UnixStreamSocket>>) -> Result<(), i32> {
+        if self.pending.len() >= self.backlog {
+            return Err(crate::syscall::errno::ECONNREFUSED);
+        }
+        self.pending.push_back(socket);
+        Ok(())
+    }
+
+    /// Pop a pending connection
+    pub fn pop_pending(&mut self) -> Option<Arc<Mutex<UnixStreamSocket>>> {
+        self.pending.pop_front()
+    }
+
+    /// Register a thread as waiting for a connection
+    pub fn register_waiter(&self, thread_id: u64) {
+        let mut waiters = self.waiting_threads.lock();
+        if !waiters.contains(&thread_id) {
+            waiters.push(thread_id);
+        }
+    }
+
+    /// Unregister a thread from waiting
+    pub fn unregister_waiter(&self, thread_id: u64) {
+        self.waiting_threads.lock().retain(|&id| id != thread_id);
+    }
+
+    /// Wake all threads waiting for connections
+    pub fn wake_waiters(&self) {
+        let waiter_ids: Vec<u64> = self.waiting_threads.lock().clone();
+        for thread_id in waiter_ids {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.unblock(thread_id);
+            });
+        }
+    }
+}
+
+impl core::fmt::Debug for UnixListener {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UnixListener")
+            .field("path_len", &self.path.len())
+            .field("backlog", &self.backlog)
+            .field("pending", &self.pending.len())
+            .finish()
+    }
+}
