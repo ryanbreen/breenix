@@ -140,8 +140,6 @@ BINARIES=(
     # Graphics syscall tests
     "fbinfo_test"
     "resolution"
-    "demo"
-    "bounce"
     # Coreutils argv integration tests
     "mkdir_argv_test"
     "cp_mv_argv_test"

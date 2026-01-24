@@ -1,6 +1,6 @@
 //! Graphics syscall wrappers
 //!
-//! Provides userspace API for querying framebuffer information.
+//! Provides userspace API for querying framebuffer information and drawing.
 
 use crate::syscall::{nr, raw};
 
@@ -46,6 +46,11 @@ impl FbInfo {
     pub fn is_grayscale(&self) -> bool {
         self.pixel_format == 2
     }
+
+    /// Get the width of the left (demo) pane
+    pub fn left_pane_width(&self) -> u64 {
+        self.width / 2
+    }
 }
 
 /// Get framebuffer information
@@ -62,4 +67,148 @@ pub fn fbinfo() -> Result<FbInfo, i32> {
     } else {
         Ok(info)
     }
+}
+
+/// Draw command structure for sys_fbdraw.
+/// Must match kernel's FbDrawCmd in syscall/graphics.rs.
+#[repr(C)]
+pub struct FbDrawCmd {
+    /// Operation code
+    pub op: u32,
+    /// First parameter (x, cx, x1, or unused)
+    pub p1: i32,
+    /// Second parameter (y, cy, y1, or unused)
+    pub p2: i32,
+    /// Third parameter (width, radius, x2, or unused)
+    pub p3: i32,
+    /// Fourth parameter (height, y2, or unused)
+    pub p4: i32,
+    /// Color as packed RGB (0x00RRGGBB)
+    pub color: u32,
+}
+
+/// Draw operation codes
+pub mod draw_op {
+    /// Clear the left pane with a color
+    pub const CLEAR: u32 = 0;
+    /// Fill a rectangle: x, y, width, height, color
+    pub const FILL_RECT: u32 = 1;
+    /// Draw rectangle outline: x, y, width, height, color
+    pub const DRAW_RECT: u32 = 2;
+    /// Fill a circle: cx, cy, radius, color
+    pub const FILL_CIRCLE: u32 = 3;
+    /// Draw circle outline: cx, cy, radius, color
+    pub const DRAW_CIRCLE: u32 = 4;
+    /// Draw a line: x1, y1, x2, y2, color
+    pub const DRAW_LINE: u32 = 5;
+    /// Flush the framebuffer (for double-buffering)
+    pub const FLUSH: u32 = 6;
+}
+
+/// Pack RGB color into u32
+#[inline]
+pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+/// Execute a draw command
+fn fbdraw(cmd: &FbDrawCmd) -> Result<(), i32> {
+    let result = unsafe { raw::syscall1(nr::FBDRAW, cmd as *const FbDrawCmd as u64) };
+
+    if (result as i64) < 0 {
+        Err(-(result as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Clear the left pane with a color
+pub fn fb_clear(color: u32) -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::CLEAR,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color,
+    };
+    fbdraw(&cmd)
+}
+
+/// Fill a rectangle on the left pane
+pub fn fb_fill_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::FILL_RECT,
+        p1: x,
+        p2: y,
+        p3: width,
+        p4: height,
+        color,
+    };
+    fbdraw(&cmd)
+}
+
+/// Draw a rectangle outline on the left pane
+pub fn fb_draw_rect(x: i32, y: i32, width: i32, height: i32, color: u32) -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::DRAW_RECT,
+        p1: x,
+        p2: y,
+        p3: width,
+        p4: height,
+        color,
+    };
+    fbdraw(&cmd)
+}
+
+/// Fill a circle on the left pane
+pub fn fb_fill_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::FILL_CIRCLE,
+        p1: cx,
+        p2: cy,
+        p3: radius,
+        p4: 0,
+        color,
+    };
+    fbdraw(&cmd)
+}
+
+/// Draw a circle outline on the left pane
+pub fn fb_draw_circle(cx: i32, cy: i32, radius: i32, color: u32) -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::DRAW_CIRCLE,
+        p1: cx,
+        p2: cy,
+        p3: radius,
+        p4: 0,
+        color,
+    };
+    fbdraw(&cmd)
+}
+
+/// Draw a line on the left pane
+pub fn fb_draw_line(x1: i32, y1: i32, x2: i32, y2: i32, color: u32) -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::DRAW_LINE,
+        p1: x1,
+        p2: y1,
+        p3: x2,
+        p4: y2,
+        color,
+    };
+    fbdraw(&cmd)
+}
+
+/// Flush the framebuffer (sync double buffer to screen)
+pub fn fb_flush() -> Result<(), i32> {
+    let cmd = FbDrawCmd {
+        op: draw_op::FLUSH,
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        color: 0,
+    };
+    fbdraw(&cmd)
 }

@@ -31,7 +31,7 @@ test_userspace = []
 test_all_exceptions = []
 external_test_bins = []
 vmnet = []  # Use vmnet network config (192.168.64.x) instead of SLIRP (10.0.2.x)
-interactive = []  # Boot into init_shell instead of running automated tests
+interactive = ["testing"]  # Boot into init_shell instead of running automated tests
 
 [dependencies]
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", branch = "main" }

@@ -443,6 +443,15 @@ path = "pty_test.rs"
 name = "fbinfo_test"
 path = "fbinfo_test.rs"
 
+# Interactive graphics demos (not included in test builds)
+[[bin]]
+name = "demo"
+path = "demo.rs"
+
+[[bin]]
+name = "bounce"
+path = "bounce.rs"
+
 # Coreutils argv integration tests
 [[bin]]
 name = "mkdir_argv_test"

@@ -58,5 +58,37 @@ pub fn now_monotonic() -> Timespec {
     ts
 }
 
+/// Sleep for the specified number of milliseconds.
+///
+/// This is a busy-wait implementation since we don't have nanosleep yet.
+/// It uses clock_gettime(CLOCK_MONOTONIC) for timing.
+///
+/// # Arguments
+/// * `ms` - Number of milliseconds to sleep
+#[inline]
+pub fn sleep_ms(ms: u64) {
+    let start = now_monotonic();
+    let target_ns = ms * 1_000_000;
+
+    loop {
+        let now = now_monotonic();
+        let elapsed_sec = now.tv_sec - start.tv_sec;
+        let elapsed_nsec = if now.tv_nsec >= start.tv_nsec {
+            now.tv_nsec - start.tv_nsec
+        } else {
+            // Handle nanosecond underflow
+            1_000_000_000 - (start.tv_nsec - now.tv_nsec)
+        };
+
+        let elapsed_ns = (elapsed_sec as u64) * 1_000_000_000 + (elapsed_nsec as u64);
+        if elapsed_ns >= target_ns {
+            break;
+        }
+
+        // Yield to other processes while waiting
+        crate::process::yield_now();
+    }
+}
+
 // Re-export clock constants for convenience
 pub use crate::types::clock::{MONOTONIC as CLOCK_MONOTONIC, REALTIME as CLOCK_REALTIME};
