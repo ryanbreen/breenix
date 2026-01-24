@@ -215,37 +215,41 @@ pub enum FifoOpenResult {
 /// If no writer is present and O_NONBLOCK is not set, this will block.
 /// If O_NONBLOCK is set and no writer is present, returns ENXIO.
 pub fn open_fifo_read(path: &str, nonblock: bool) -> FifoOpenResult {
-    let entry_arc = match FIFO_REGISTRY.get(path) {
-        Some(e) => e,
-        None => return FifoOpenResult::Error(2), // ENOENT
-    };
+    // CRITICAL: Disable interrupts during lock acquisition to prevent
+    // preemption while holding the lock.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let entry_arc = match FIFO_REGISTRY.get(path) {
+            Some(e) => e,
+            None => return FifoOpenResult::Error(2), // ENOENT
+        };
 
-    let mut entry = entry_arc.lock();
+        let mut entry = entry_arc.lock();
 
-    // Get or create the buffer
-    let buffer = entry.get_or_create_buffer();
+        // Get or create the buffer
+        let buffer = entry.get_or_create_buffer();
 
-    // Add ourselves as a reader
-    entry.add_reader();
+        // Add ourselves as a reader
+        entry.add_reader();
 
-    // Increment the pipe buffer's reader count
-    buffer.lock().add_reader();
+        // Increment the pipe buffer's reader count
+        buffer.lock().add_reader();
 
-    // Check if a writer exists
-    if entry.writers > 0 {
-        // Writer exists, ready to go
-        FifoOpenResult::Ready(buffer)
-    } else if nonblock {
-        // No writer and non-blocking - still open but may get EAGAIN on read
-        // POSIX says O_NONBLOCK read-only open succeeds immediately
-        FifoOpenResult::Ready(buffer)
-    } else {
-        // Need to block waiting for writer
-        if let Some(tid) = crate::task::scheduler::current_thread_id() {
-            entry.add_read_waiter(tid);
+        // Check if a writer exists
+        if entry.writers > 0 {
+            // Writer exists, ready to go
+            FifoOpenResult::Ready(buffer)
+        } else if nonblock {
+            // No writer and non-blocking - still open but may get EAGAIN on read
+            // POSIX says O_NONBLOCK read-only open succeeds immediately
+            FifoOpenResult::Ready(buffer)
+        } else {
+            // Need to block waiting for writer
+            if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                entry.add_read_waiter(tid);
+            }
+            FifoOpenResult::Block
         }
-        FifoOpenResult::Block
-    }
+    })
 }
 
 /// Open a FIFO for writing
@@ -253,69 +257,78 @@ pub fn open_fifo_read(path: &str, nonblock: bool) -> FifoOpenResult {
 /// If no reader is present and O_NONBLOCK is not set, this will block.
 /// If O_NONBLOCK is set and no reader is present, returns ENXIO.
 pub fn open_fifo_write(path: &str, nonblock: bool) -> FifoOpenResult {
-    let entry_arc = match FIFO_REGISTRY.get(path) {
-        Some(e) => e,
-        None => return FifoOpenResult::Error(2), // ENOENT
-    };
+    // CRITICAL: Disable interrupts during lock acquisition to prevent
+    // preemption while holding the lock.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let entry_arc = match FIFO_REGISTRY.get(path) {
+            Some(e) => e,
+            None => return FifoOpenResult::Error(2), // ENOENT
+        };
 
-    let mut entry = entry_arc.lock();
+        let mut entry = entry_arc.lock();
 
-    // Check if a reader exists first (for O_NONBLOCK case)
-    if entry.readers == 0 && nonblock {
-        // No reader and non-blocking - POSIX says return ENXIO
-        return FifoOpenResult::Error(6); // ENXIO
-    }
-
-    // Get or create the buffer
-    let buffer = entry.get_or_create_buffer();
-
-    // Add ourselves as a writer
-    entry.add_writer();
-
-    // Increment the pipe buffer's writer count
-    buffer.lock().add_writer();
-
-    // Check if a reader exists
-    if entry.readers > 0 {
-        // Reader exists, ready to go
-        FifoOpenResult::Ready(buffer)
-    } else {
-        // Need to block waiting for reader
-        if let Some(tid) = crate::task::scheduler::current_thread_id() {
-            entry.add_write_waiter(tid);
+        // Check if a reader exists first (for O_NONBLOCK case)
+        if entry.readers == 0 && nonblock {
+            // No reader and non-blocking - POSIX says return ENXIO
+            return FifoOpenResult::Error(6); // ENXIO
         }
-        FifoOpenResult::Block
-    }
+
+        // Get or create the buffer
+        let buffer = entry.get_or_create_buffer();
+
+        // Add ourselves as a writer
+        entry.add_writer();
+
+        // Increment the pipe buffer's writer count
+        buffer.lock().add_writer();
+
+        // Check if a reader exists
+        if entry.readers > 0 {
+            // Reader exists, ready to go
+            FifoOpenResult::Ready(buffer)
+        } else {
+            // Need to block waiting for reader
+            if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                entry.add_write_waiter(tid);
+            }
+            FifoOpenResult::Block
+        }
+    })
 }
 
 /// Complete a blocked FIFO open after being woken
 ///
 /// Returns the buffer if now ready, or Block if still waiting
 pub fn complete_fifo_open(path: &str, for_write: bool) -> FifoOpenResult {
-    let entry_arc = match FIFO_REGISTRY.get(path) {
-        Some(e) => e,
-        None => return FifoOpenResult::Error(2), // ENOENT
-    };
+    // CRITICAL: Disable interrupts during lock acquisition to prevent
+    // preemption while holding the lock. This avoids deadlock when
+    // both parent and child try to access the same FIFO.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let entry_arc = match FIFO_REGISTRY.get(path) {
+            Some(e) => e,
+            None => return FifoOpenResult::Error(2), // ENOENT
+        };
 
-    let entry = entry_arc.lock();
+        let entry = entry_arc.lock();
 
-    // Check if the other end is now present
-    if for_write {
-        if entry.readers > 0 {
-            if let Some(ref buffer) = entry.buffer {
-                return FifoOpenResult::Ready(buffer.clone());
+        // Check if the other end is now present
+        if for_write {
+            if entry.readers > 0 {
+                if let Some(ref buffer) = entry.buffer {
+                    return FifoOpenResult::Ready(buffer.clone());
+                }
+            }
+        } else {
+            if entry.writers > 0 {
+                if let Some(ref buffer) = entry.buffer {
+                    return FifoOpenResult::Ready(buffer.clone());
+                }
             }
         }
-    } else {
-        if entry.writers > 0 {
-            if let Some(ref buffer) = entry.buffer {
-                return FifoOpenResult::Ready(buffer.clone());
-            }
-        }
-    }
 
-    // Still waiting
-    FifoOpenResult::Block
+        // Still waiting
+        FifoOpenResult::Block
+    })
 }
 
 /// Close a FIFO read end

@@ -2531,65 +2531,138 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
         }
         FifoOpenResult::Block => {
             // Need to block waiting for the other end
-            // For now, implement blocking by spinning with yield
-            // TODO: Proper blocking with wait queue
-            log::debug!("handle_fifo_open: blocking for {} end on {}",
-                if for_write { "reader" } else { "writer" }, path);
-
+            // Following the TCP blocking pattern with proper HLT loop
             let path_owned = String::from(path);
-            loop {
-                // Yield to other threads
-                crate::task::scheduler::yield_current();
 
-                // Check if we can complete the open now
+            let thread_id = match crate::task::scheduler::current_thread_id() {
+                Some(tid) => tid,
+                None => return SyscallResult::Err(3), // ESRCH
+            };
+
+            log::debug!("handle_fifo_open: thread {} blocking for {} end on {}",
+                thread_id, if for_write { "reader" } else { "writer" }, path);
+
+            // Block the current thread AND set blocked_in_syscall flag.
+            // CRITICAL: Setting blocked_in_syscall is essential because:
+            // 1. The thread will enter a kernel-mode HLT loop below
+            // 2. If a context switch happens while in HLT, the scheduler sees
+            //    from_userspace=false (kernel mode) but blocked_in_syscall tells
+            //    it to save/restore kernel context, not userspace context
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current();
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = true;
+                }
+            });
+
+            // CRITICAL RACE CONDITION FIX:
+            // Check if other end opened AGAIN after setting Blocked state.
+            // The other end might have opened between:
+            //   - when open_fifo_read/write returned Block
+            //   - when we set thread state to Blocked
+            // If other end opened during that window, add_reader/add_writer
+            // would have tried to wake us but unblock() would have done nothing.
+            let other_end_ready = x86_64::instructions::interrupts::without_interrupts(|| {
                 match complete_fifo_open(&path_owned, for_write) {
-                    FifoOpenResult::Ready(buffer) => {
-                        // Now ready - create fd
-                        let kind = if for_write {
-                            FdKind::FifoWrite(path_owned.clone(), buffer)
+                    FifoOpenResult::Ready(_) => true,
+                    _ => false,
+                }
+            });
+            if other_end_ready {
+                log::debug!("FIFO: Thread {} caught race - other end opened during block setup", thread_id);
+                // Other end opened during the race window - unblock and complete
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.set_ready();
+                    }
+                });
+                // Fall through to complete the open below
+            } else {
+                // CRITICAL: Re-enable preemption before entering blocking loop!
+                // The syscall handler called preempt_disable() at entry, but we need
+                // to allow timer interrupts to schedule other threads while we're blocked.
+                crate::per_cpu::preempt_enable();
+
+                // HLT loop - wait for timer interrupt which will switch to another thread
+                // When other end opens, add_reader/add_writer will call unblock(tid)
+                loop {
+                    crate::task::scheduler::yield_current();
+                    x86_64::instructions::interrupts::enable_and_hlt();
+
+                    // Check if we were unblocked (thread state changed from Blocked)
+                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.state == crate::task::thread::ThreadState::Blocked
                         } else {
-                            FdKind::FifoRead(path_owned.clone(), buffer)
-                        };
-
-                        let mut fd_entry = FileDescriptor::new(kind);
-                        if nonblock {
-                            fd_entry.status_flags |= status_flags::O_NONBLOCK;
+                            false
                         }
+                    }).unwrap_or(false);
 
-                        let thread_id = match crate::task::scheduler::current_thread_id() {
-                            Some(tid) => tid,
-                            None => return SyscallResult::Err(3),
-                        };
+                    if !still_blocked {
+                        // CRITICAL: Disable preemption BEFORE breaking from HLT loop!
+                        crate::per_cpu::preempt_disable();
+                        log::debug!("FIFO: Thread {} woken from blocking", thread_id);
+                        break;
+                    }
+                    // else: still blocked, continue HLT loop
+                }
 
-                        let mut manager_guard = crate::process::manager();
-                        let manager = match manager_guard.as_mut() {
-                            Some(m) => m,
-                            None => return SyscallResult::Err(3),
-                        };
+                // Clear blocked_in_syscall now that we're resuming normal syscall execution
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                    }
+                });
+                // Reset quantum to prevent immediate preemption after long blocking wait
+                crate::interrupts::timer::reset_quantum();
+                crate::task::scheduler::check_and_clear_need_resched();
+            }
 
-                        let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
-                            Some(p) => p,
-                            None => return SyscallResult::Err(3),
-                        };
+            // Now complete the FIFO open
+            match complete_fifo_open(&path_owned, for_write) {
+                FifoOpenResult::Ready(buffer) => {
+                    // Now ready - create fd
+                    let kind = if for_write {
+                        FdKind::FifoWrite(path_owned.clone(), buffer)
+                    } else {
+                        FdKind::FifoRead(path_owned.clone(), buffer)
+                    };
 
-                        match process.fd_table.alloc_with_entry(fd_entry) {
-                            Ok(fd) => {
-                                log::info!("handle_fifo_open: opened FIFO {} as fd {} ({})",
-                                    path_owned, fd, if for_write { "write" } else { "read" });
-                                return SyscallResult::Ok(fd as u64);
-                            }
-                            Err(_) => {
-                                return SyscallResult::Err(EMFILE as u64);
-                            }
+                    let mut fd_entry = FileDescriptor::new(kind);
+                    if nonblock {
+                        fd_entry.status_flags |= status_flags::O_NONBLOCK;
+                    }
+
+                    let mut manager_guard = crate::process::manager();
+                    let manager = match manager_guard.as_mut() {
+                        Some(m) => m,
+                        None => return SyscallResult::Err(3),
+                    };
+
+                    let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
+                        Some(p) => p,
+                        None => return SyscallResult::Err(3),
+                    };
+
+                    match process.fd_table.alloc_with_entry(fd_entry) {
+                        Ok(fd) => {
+                            log::info!("handle_fifo_open: opened FIFO {} as fd {} ({})",
+                                path_owned, fd, if for_write { "write" } else { "read" });
+                            SyscallResult::Ok(fd as u64)
+                        }
+                        Err(_) => {
+                            SyscallResult::Err(EMFILE as u64)
                         }
                     }
-                    FifoOpenResult::Block => {
-                        // Still waiting, continue loop
-                        continue;
-                    }
-                    FifoOpenResult::Error(errno) => {
-                        return SyscallResult::Err(errno as u64);
-                    }
+                }
+                FifoOpenResult::Block => {
+                    // Should not happen after being woken
+                    log::error!("FIFO: Thread {} still blocked after wake!", thread_id);
+                    SyscallResult::Err(11) // EAGAIN
+                }
+                FifoOpenResult::Error(errno) => {
+                    SyscallResult::Err(errno as u64)
                 }
             }
         }
