@@ -456,6 +456,11 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
+        FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
+            // Cannot write to unconnected Unix socket
+            log::error!("sys_write: Cannot write to unconnected Unix socket");
+            SyscallResult::Err(super::errno::ENOTCONN as u64)
+        }
     }
 }
 
@@ -1062,6 +1067,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                 }
             }
+        }
+        FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
+            // Cannot read from unconnected Unix socket
+            log::error!("sys_read: Cannot read from unconnected Unix socket");
+            SyscallResult::Err(super::errno::ENOTCONN as u64)
         }
     }
 }

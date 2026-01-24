@@ -251,6 +251,21 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLHUP;
             }
         }
+        FdKind::UnixSocket(_) => {
+            // Unconnected Unix socket - always writable (for connect attempt)
+            if (events & events::POLLOUT) != 0 {
+                revents |= events::POLLOUT;
+            }
+        }
+        FdKind::UnixListener(listener_ref) => {
+            // Listening socket - check for pending connections
+            if (events & events::POLLIN) != 0 {
+                let listener = listener_ref.lock();
+                if listener.has_pending() {
+                    revents |= events::POLLIN;
+                }
+            }
+        }
     }
 
     revents

@@ -473,6 +473,10 @@ path = "rm_argv_test.rs"
 name = "unix_socket_test"
 path = "unix_socket_test.rs"
 
+[[bin]]
+name = "unix_named_socket_test"
+path = "unix_named_socket_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true

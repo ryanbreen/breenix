@@ -116,6 +116,10 @@ pub enum FdKind {
     PtySlave(u32),
     /// Unix stream socket (AF_UNIX, SOCK_STREAM) - for socketpair IPC
     UnixStream(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>),
+    /// Unix socket (AF_UNIX, SOCK_STREAM) - unbound or bound but not connected/listening
+    UnixSocket(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixSocket>>),
+    /// Unix listener socket (AF_UNIX, SOCK_STREAM) - listening for connections
+    UnixListener(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -138,6 +142,14 @@ impl core::fmt::Debug for FdKind {
             FdKind::UnixStream(s) => {
                 let sock = s.lock();
                 write!(f, "UnixStream({:?})", sock.endpoint)
+            }
+            FdKind::UnixSocket(s) => {
+                let sock = s.lock();
+                write!(f, "UnixSocket({:?})", sock.state)
+            }
+            FdKind::UnixListener(l) => {
+                let listener = l.lock();
+                write!(f, "UnixListener(pending={})", listener.pending_count())
             }
         }
     }
@@ -507,6 +519,22 @@ impl Drop for FdTable {
                         // Close the Unix socket endpoint
                         socket.lock().close();
                         log::debug!("FdTable::drop() - closed Unix stream socket fd {}", i);
+                    }
+                    FdKind::UnixSocket(socket) => {
+                        // Unbind from registry if bound
+                        let sock = socket.lock();
+                        if let Some(path) = &sock.bound_path {
+                            crate::socket::UNIX_SOCKET_REGISTRY.unbind(path);
+                            log::debug!("FdTable::drop() - unbound Unix socket fd {} from path", i);
+                        }
+                        log::debug!("FdTable::drop() - closed Unix socket fd {}", i);
+                    }
+                    FdKind::UnixListener(listener) => {
+                        // Unbind from registry and wake any pending accept waiters
+                        let l = listener.lock();
+                        crate::socket::UNIX_SOCKET_REGISTRY.unbind(&l.path);
+                        l.wake_waiters();
+                        log::debug!("FdTable::drop() - closed Unix listener fd {}", i);
                     }
                 }
             }

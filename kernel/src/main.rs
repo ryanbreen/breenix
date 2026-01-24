@@ -1052,6 +1052,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: Unix domain socket (socketpair) functionality ===");
         test_exec::test_unix_socket();
 
+        // Test Named Unix domain socket (bind/listen/accept/connect)
+        log::info!("=== IPC TEST: Named Unix domain socket (bind/listen/accept/connect) ===");
+        test_exec::test_unix_named_socket();
+
         // NOTE: Pipe + fork and concurrent pipe tests removed to reduce test load.
         // The core pipe functionality is validated by test_pipe() above.
         // These complex multi-process tests cause timing-related timeouts.
