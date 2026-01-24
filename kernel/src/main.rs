@@ -1054,6 +1054,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: Unix domain socket (socketpair + named sockets) ===");
         test_exec::test_unix_socket();
 
+        // Test FIFO (named pipe) functionality
+        log::info!("=== IPC TEST: FIFO (named pipe) functionality ===");
+        test_exec::test_fifo();
+
         // NOTE: Pipe + fork and concurrent pipe tests removed to reduce test load.
         // The core pipe functionality is validated by test_pipe() above.
         // These complex multi-process tests cause timing-related timeouts.

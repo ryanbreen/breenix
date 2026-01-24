@@ -120,6 +120,10 @@ pub enum FdKind {
     UnixSocket(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixSocket>>),
     /// Unix listener socket (AF_UNIX, SOCK_STREAM) - listening for connections
     UnixListener(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
+    /// FIFO (named pipe) read end - path is stored for cleanup on close
+    FifoRead(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
+    /// FIFO (named pipe) write end - path is stored for cleanup on close
+    FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
 }
 
 impl core::fmt::Debug for FdKind {
@@ -151,6 +155,8 @@ impl core::fmt::Debug for FdKind {
                 let listener = l.lock();
                 write!(f, "UnixListener(pending={})", listener.pending_count())
             }
+            FdKind::FifoRead(path, _) => write!(f, "FifoRead({})", path),
+            FdKind::FifoWrite(path, _) => write!(f, "FifoWrite({})", path),
         }
     }
 }
@@ -229,6 +235,20 @@ impl Clone for FdTable {
                 match &fd_entry.kind {
                     FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
                     FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+                    FdKind::FifoRead(path, buffer) => {
+                        // Increment both FIFO entry reader count and pipe buffer reader count
+                        if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
+                            entry.lock().readers += 1;
+                        }
+                        buffer.lock().add_reader();
+                    }
+                    FdKind::FifoWrite(path, buffer) => {
+                        // Increment both FIFO entry writer count and pipe buffer writer count
+                        if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
+                            entry.lock().writers += 1;
+                        }
+                        buffer.lock().add_writer();
+                    }
                     FdKind::PtyMaster(pty_num) => {
                         // Increment PTY master reference count for the clone
                         if let Some(pair) = crate::tty::pty::get(*pty_num) {
@@ -349,14 +369,34 @@ impl FdTable {
             match old_entry.kind {
                 FdKind::PipeRead(buffer) => buffer.lock().close_read(),
                 FdKind::PipeWrite(buffer) => buffer.lock().close_write(),
+                FdKind::FifoRead(ref path, ref buffer) => {
+                    super::fifo::close_fifo_read(path);
+                    buffer.lock().close_read();
+                }
+                FdKind::FifoWrite(ref path, ref buffer) => {
+                    super::fifo::close_fifo_write(path);
+                    buffer.lock().close_write();
+                }
                 _ => {}
             }
         }
 
-        // Increment pipe reference counts for the duplicated fd
+        // Increment pipe/FIFO reference counts for the duplicated fd
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+            FdKind::FifoRead(path, buffer) => {
+                if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
+                    entry.lock().readers += 1;
+                }
+                buffer.lock().add_reader();
+            }
+            FdKind::FifoWrite(path, buffer) => {
+                if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
+                    entry.lock().writers += 1;
+                }
+                buffer.lock().add_writer();
+            }
             _ => {}
         }
 
@@ -386,10 +426,22 @@ impl FdTable {
         // POSIX: dup and F_DUPFD clear FD_CLOEXEC, F_DUPFD_CLOEXEC sets it
         fd_entry.flags = if set_cloexec { flags::FD_CLOEXEC } else { 0 };
 
-        // Increment pipe reference counts for the duplicated fd
+        // Increment pipe/FIFO reference counts for the duplicated fd
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().add_reader(),
             FdKind::PipeWrite(buffer) => buffer.lock().add_writer(),
+            FdKind::FifoRead(path, buffer) => {
+                if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
+                    entry.lock().readers += 1;
+                }
+                buffer.lock().add_reader();
+            }
+            FdKind::FifoWrite(path, buffer) => {
+                if let Some(entry) = super::fifo::FIFO_REGISTRY.get(path) {
+                    entry.lock().writers += 1;
+                }
+                buffer.lock().add_writer();
+            }
             _ => {}
         }
 
@@ -405,6 +457,14 @@ impl FdTable {
         match &fd_entry.kind {
             FdKind::PipeRead(buffer) => buffer.lock().close_read(),
             FdKind::PipeWrite(buffer) => buffer.lock().close_write(),
+            FdKind::FifoRead(path, buffer) => {
+                super::fifo::close_fifo_read(path);
+                buffer.lock().close_read();
+            }
+            FdKind::FifoWrite(path, buffer) => {
+                super::fifo::close_fifo_write(path);
+                buffer.lock().close_write();
+            }
             _ => {}
         }
         Err(24) // EMFILE
@@ -535,6 +595,18 @@ impl Drop for FdTable {
                         crate::socket::UNIX_SOCKET_REGISTRY.unbind(&l.path);
                         l.wake_waiters();
                         log::debug!("FdTable::drop() - closed Unix listener fd {}", i);
+                    }
+                    FdKind::FifoRead(path, buffer) => {
+                        // Decrement FIFO reader count and pipe buffer reader count
+                        super::fifo::close_fifo_read(&path);
+                        buffer.lock().close_read();
+                        log::debug!("FdTable::drop() - closed FIFO read fd {} ({})", i, path);
+                    }
+                    FdKind::FifoWrite(path, buffer) => {
+                        // Decrement FIFO writer count and pipe buffer writer count
+                        super::fifo::close_fifo_write(&path);
+                        buffer.lock().close_write();
+                        log::debug!("FdTable::drop() - closed FIFO write fd {} ({})", i, path);
                     }
                 }
             }

@@ -187,6 +187,11 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         return handle_devfs_open(device_name, flags);
     }
 
+    // Check if this is a FIFO (named pipe)
+    if crate::ipc::fifo::FIFO_REGISTRY.exists(&path) {
+        return handle_fifo_open(&path, flags);
+    }
+
     // Parse flags
     let want_creat = (flags & O_CREAT) != 0;
     let want_excl = (flags & O_EXCL) != 0;
@@ -669,6 +674,16 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFSOCK | 0o755; // Socket with rwxr-xr-x
             stat.st_nlink = 1;
         }
+        FdKind::FifoRead(_, _) | FdKind::FifoWrite(_, _) => {
+            // Named FIFOs
+            static FIFO_INODE_COUNTER: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(6000);
+            stat.st_dev = 0;
+            stat.st_ino = FIFO_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            stat.st_mode = S_IFIFO | 0o644; // FIFO with rw-r--r--
+            stat.st_nlink = 1;
+            stat.st_size = 0; // FIFOs don't have a seekable size
+        }
     }
 
     // Copy stat structure to userspace
@@ -988,14 +1003,41 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
     use super::errno::{EACCES, EIO, EISDIR, ENOENT};
     use super::userptr::copy_cstr_from_user;
     use crate::fs::ext2;
+    use crate::ipc::fifo::FIFO_REGISTRY;
 
     // Copy path from userspace
-    let path = match copy_cstr_from_user(pathname) {
+    let raw_path = match copy_cstr_from_user(pathname) {
         Ok(p) => p,
         Err(errno) => return SyscallResult::Err(errno),
     };
 
+    // Normalize path
+    let path = if raw_path.starts_with('/') {
+        raw_path
+    } else {
+        let cwd = get_current_cwd().unwrap_or_else(|| alloc::string::String::from("/"));
+        let absolute = if cwd.ends_with('/') {
+            alloc::format!("{}{}", cwd, raw_path)
+        } else {
+            alloc::format!("{}/{}", cwd, raw_path)
+        };
+        normalize_path(&absolute)
+    };
+
     log::debug!("sys_unlink: path={:?}", path);
+
+    // Check if this is a FIFO - if so, remove from registry
+    if FIFO_REGISTRY.exists(&path) {
+        match FIFO_REGISTRY.unlink(&path) {
+            Ok(()) => {
+                log::info!("sys_unlink: successfully unlinked FIFO {}", path);
+                return SyscallResult::Ok(0);
+            }
+            Err(errno) => {
+                return SyscallResult::Err(errno as u64);
+            }
+        }
+    }
 
     // Get the root filesystem (with mutable access)
     let mut fs_guard = ext2::root_fs();
@@ -2371,7 +2413,7 @@ pub fn sys_chdir(pathname: u64) -> SyscallResult {
 /// - "/foo/bar/../baz" -> "/foo/baz"
 /// - "/foo/./bar" -> "/foo/bar"
 /// - "/../foo" -> "/foo" (can't go above root)
-fn normalize_path(path: &str) -> alloc::string::String {
+pub fn normalize_path(path: &str) -> alloc::string::String {
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -2403,7 +2445,7 @@ fn normalize_path(path: &str) -> alloc::string::String {
 /// Get the current working directory for the current process
 ///
 /// Returns None if the current thread or process cannot be determined.
-fn get_current_cwd() -> Option<alloc::string::String> {
+pub fn get_current_cwd() -> Option<alloc::string::String> {
     let thread_id = crate::task::scheduler::current_thread_id()?;
     let manager_guard = crate::process::manager();
     match &*manager_guard {
@@ -2411,5 +2453,222 @@ fn get_current_cwd() -> Option<alloc::string::String> {
             .find_process_by_thread(thread_id)
             .map(|(_, p)| p.cwd.clone()),
         None => None,
+    }
+}
+
+/// Handle opening a FIFO (named pipe)
+///
+/// # Arguments
+/// * `path` - Absolute path to the FIFO
+/// * `flags` - Open flags (O_RDONLY, O_WRONLY, O_RDWR, O_NONBLOCK, etc.)
+///
+/// # Returns
+/// File descriptor on success, negative errno on failure
+fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
+    use super::errno::EMFILE;
+    use crate::ipc::fd::{FdKind, FileDescriptor, status_flags};
+    use crate::ipc::fifo::{FifoOpenResult, open_fifo_read, open_fifo_write, complete_fifo_open};
+    use alloc::string::String;
+
+    let access_mode = flags & 3; // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
+    let nonblock = (flags & status_flags::O_NONBLOCK) != 0;
+
+    log::debug!("handle_fifo_open: path={}, access_mode={}, nonblock={}", path, access_mode, nonblock);
+
+    // O_RDWR on a FIFO is not well-defined in POSIX, but we can support it
+    // by opening both read and write ends. For simplicity, treat it as read.
+    let for_write = access_mode == O_WRONLY;
+
+    // Attempt to open the FIFO
+    let result = if for_write {
+        open_fifo_write(path, nonblock)
+    } else {
+        open_fifo_read(path, nonblock)
+    };
+
+    match result {
+        FifoOpenResult::Ready(buffer) => {
+            // FIFO is ready - create fd
+            let kind = if for_write {
+                FdKind::FifoWrite(String::from(path), buffer)
+            } else {
+                FdKind::FifoRead(String::from(path), buffer)
+            };
+
+            let mut fd_entry = FileDescriptor::new(kind);
+            if nonblock {
+                fd_entry.status_flags |= status_flags::O_NONBLOCK;
+            }
+
+            // Allocate fd in current process
+            let thread_id = match crate::task::scheduler::current_thread_id() {
+                Some(tid) => tid,
+                None => return SyscallResult::Err(3), // ESRCH
+            };
+
+            let mut manager_guard = crate::process::manager();
+            let manager = match manager_guard.as_mut() {
+                Some(m) => m,
+                None => return SyscallResult::Err(3), // ESRCH
+            };
+
+            let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
+                Some(p) => p,
+                None => return SyscallResult::Err(3), // ESRCH
+            };
+
+            match process.fd_table.alloc_with_entry(fd_entry) {
+                Ok(fd) => {
+                    log::info!("handle_fifo_open: opened FIFO {} as fd {} ({})",
+                        path, fd, if for_write { "write" } else { "read" });
+                    SyscallResult::Ok(fd as u64)
+                }
+                Err(_) => {
+                    log::error!("handle_fifo_open: too many open files");
+                    SyscallResult::Err(EMFILE as u64)
+                }
+            }
+        }
+        FifoOpenResult::Block => {
+            // Need to block waiting for the other end
+            // Following the TCP blocking pattern with proper HLT loop
+            let path_owned = String::from(path);
+
+            let thread_id = match crate::task::scheduler::current_thread_id() {
+                Some(tid) => tid,
+                None => return SyscallResult::Err(3), // ESRCH
+            };
+
+            log::debug!("handle_fifo_open: thread {} blocking for {} end on {}",
+                thread_id, if for_write { "reader" } else { "writer" }, path);
+
+            // Block the current thread AND set blocked_in_syscall flag.
+            // CRITICAL: Setting blocked_in_syscall is essential because:
+            // 1. The thread will enter a kernel-mode HLT loop below
+            // 2. If a context switch happens while in HLT, the scheduler sees
+            //    from_userspace=false (kernel mode) but blocked_in_syscall tells
+            //    it to save/restore kernel context, not userspace context
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.block_current();
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.blocked_in_syscall = true;
+                }
+            });
+
+            // CRITICAL RACE CONDITION FIX:
+            // Check if other end opened AGAIN after setting Blocked state.
+            // The other end might have opened between:
+            //   - when open_fifo_read/write returned Block
+            //   - when we set thread state to Blocked
+            // If other end opened during that window, add_reader/add_writer
+            // would have tried to wake us but unblock() would have done nothing.
+            let other_end_ready = x86_64::instructions::interrupts::without_interrupts(|| {
+                match complete_fifo_open(&path_owned, for_write) {
+                    FifoOpenResult::Ready(_) => true,
+                    _ => false,
+                }
+            });
+            if other_end_ready {
+                log::debug!("FIFO: Thread {} caught race - other end opened during block setup", thread_id);
+                // Other end opened during the race window - unblock and complete
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.set_ready();
+                    }
+                });
+                // Fall through to complete the open below
+            } else {
+                // CRITICAL: Re-enable preemption before entering blocking loop!
+                // The syscall handler called preempt_disable() at entry, but we need
+                // to allow timer interrupts to schedule other threads while we're blocked.
+                crate::per_cpu::preempt_enable();
+
+                // HLT loop - wait for timer interrupt which will switch to another thread
+                // When other end opens, add_reader/add_writer will call unblock(tid)
+                loop {
+                    crate::task::scheduler::yield_current();
+                    x86_64::instructions::interrupts::enable_and_hlt();
+
+                    // Check if we were unblocked (thread state changed from Blocked)
+                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.state == crate::task::thread::ThreadState::Blocked
+                        } else {
+                            false
+                        }
+                    }).unwrap_or(false);
+
+                    if !still_blocked {
+                        // CRITICAL: Disable preemption BEFORE breaking from HLT loop!
+                        crate::per_cpu::preempt_disable();
+                        log::debug!("FIFO: Thread {} woken from blocking", thread_id);
+                        break;
+                    }
+                    // else: still blocked, continue HLT loop
+                }
+
+                // Clear blocked_in_syscall now that we're resuming normal syscall execution
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                    }
+                });
+                // Reset quantum to prevent immediate preemption after long blocking wait
+                crate::interrupts::timer::reset_quantum();
+                crate::task::scheduler::check_and_clear_need_resched();
+            }
+
+            // Now complete the FIFO open
+            match complete_fifo_open(&path_owned, for_write) {
+                FifoOpenResult::Ready(buffer) => {
+                    // Now ready - create fd
+                    let kind = if for_write {
+                        FdKind::FifoWrite(path_owned.clone(), buffer)
+                    } else {
+                        FdKind::FifoRead(path_owned.clone(), buffer)
+                    };
+
+                    let mut fd_entry = FileDescriptor::new(kind);
+                    if nonblock {
+                        fd_entry.status_flags |= status_flags::O_NONBLOCK;
+                    }
+
+                    let mut manager_guard = crate::process::manager();
+                    let manager = match manager_guard.as_mut() {
+                        Some(m) => m,
+                        None => return SyscallResult::Err(3),
+                    };
+
+                    let (_, process) = match manager.find_process_by_thread_mut(thread_id) {
+                        Some(p) => p,
+                        None => return SyscallResult::Err(3),
+                    };
+
+                    match process.fd_table.alloc_with_entry(fd_entry) {
+                        Ok(fd) => {
+                            log::info!("handle_fifo_open: opened FIFO {} as fd {} ({})",
+                                path_owned, fd, if for_write { "write" } else { "read" });
+                            SyscallResult::Ok(fd as u64)
+                        }
+                        Err(_) => {
+                            SyscallResult::Err(EMFILE as u64)
+                        }
+                    }
+                }
+                FifoOpenResult::Block => {
+                    // Should not happen after being woken
+                    log::error!("FIFO: Thread {} still blocked after wake!", thread_id);
+                    SyscallResult::Err(11) // EAGAIN
+                }
+                FifoOpenResult::Error(errno) => {
+                    SyscallResult::Err(errno as u64)
+                }
+            }
+        }
+        FifoOpenResult::Error(errno) => {
+            log::debug!("handle_fifo_open: error {}", errno);
+            SyscallResult::Err(errno as u64)
+        }
     }
 }

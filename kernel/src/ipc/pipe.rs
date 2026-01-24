@@ -23,6 +23,8 @@ pub struct PipeBuffer {
     readers: usize,
     /// Number of active writers (0 = EOF on read)
     writers: usize,
+    /// Threads waiting to read from this pipe
+    read_waiters: Vec<u64>,
 }
 
 impl PipeBuffer {
@@ -37,6 +39,7 @@ impl PipeBuffer {
             len: 0,
             readers: 1,
             writers: 1,
+            read_waiters: Vec::new(),
         }
     }
 
@@ -101,7 +104,23 @@ impl PipeBuffer {
         }
 
         self.len += written;
+
+        // Wake any threads waiting to read
+        if written > 0 {
+            self.wake_read_waiters();
+        }
+
         Ok(written)
+    }
+
+    /// Wake all threads waiting to read from this pipe
+    fn wake_read_waiters(&mut self) {
+        let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
+        for tid in waiters {
+            crate::task::scheduler::with_scheduler(|sched| {
+                sched.unblock(tid);
+            });
+        }
     }
 
     /// Check if pipe is readable (has data or EOF)
@@ -127,6 +146,10 @@ impl PipeBuffer {
     pub fn close_write(&mut self) {
         if self.writers > 0 {
             self.writers -= 1;
+            // If this was the last writer, wake any readers so they get EOF
+            if self.writers == 0 {
+                self.wake_read_waiters();
+            }
         }
     }
 
@@ -138,6 +161,24 @@ impl PipeBuffer {
     /// Add a writer (used when duplicating pipe write fds)
     pub fn add_writer(&mut self) {
         self.writers += 1;
+    }
+
+    /// Register a thread as waiting to read from this pipe
+    pub fn add_read_waiter(&mut self, tid: u64) {
+        if !self.read_waiters.contains(&tid) {
+            self.read_waiters.push(tid);
+        }
+    }
+
+    /// Unregister a thread from the read wait list
+    #[allow(dead_code)]
+    pub fn remove_read_waiter(&mut self, tid: u64) {
+        self.read_waiters.retain(|&t| t != tid);
+    }
+
+    /// Check if the pipe has data or is at EOF (used for blocking decisions)
+    pub fn has_data_or_eof(&self) -> bool {
+        self.len > 0 || self.writers == 0
     }
 
     /// Get the number of bytes available to read

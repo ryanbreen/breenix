@@ -60,6 +60,7 @@ pub mod nr {
     pub const UNLINK: u64 = 87;       // Linux x86_64 unlink
     pub const SYMLINK: u64 = 88;      // Linux x86_64 symlink
     pub const READLINK: u64 = 89;     // Linux x86_64 readlink
+    pub const MKNOD: u64 = 133;       // Linux x86_64 mknod (used for mkfifo)
     pub const GETTID: u64 = 186;
     pub const CLOCK_GETTIME: u64 = 228;
     pub const OPEN: u64 = 257;        // Breenix: filesystem open syscall

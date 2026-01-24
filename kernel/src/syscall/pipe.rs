@@ -223,6 +223,18 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Unix listener socket cleanup handled by Arc refcount
                     log::debug!("sys_close: Closed Unix listener fd={}", fd);
                 }
+                FdKind::FifoRead(path, buffer) => {
+                    // Close FIFO read end - decrement both FIFO entry and pipe buffer counts
+                    crate::ipc::fifo::close_fifo_read(&path);
+                    buffer.lock().close_read();
+                    log::debug!("sys_close: Closed FIFO read end fd={} ({})", fd, path);
+                }
+                FdKind::FifoWrite(path, buffer) => {
+                    // Close FIFO write end - decrement both FIFO entry and pipe buffer counts
+                    crate::ipc::fifo::close_fifo_write(&path);
+                    buffer.lock().close_write();
+                    log::debug!("sys_close: Closed FIFO write end fd={} ({})", fd, path);
+                }
             }
             log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)

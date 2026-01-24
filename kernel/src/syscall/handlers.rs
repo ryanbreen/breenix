@@ -279,6 +279,41 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Can't write to read end of pipe
             SyscallResult::Err(9) // EBADF
         }
+        FdKind::FifoWrite(_path, pipe_buffer) => {
+            // FIFO write - clone pipe_buffer and drop manager guard before I/O
+            // CRITICAL: Must release process manager lock before write() because
+            // write() may call wake_read_waiters() which acquires scheduler lock.
+            // If timer fires during that, context switch needs process manager lock.
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let pipe_buffer_clone = pipe_buffer.clone();
+            drop(manager_guard); // Release process manager lock BEFORE write!
+
+            let mut pipe = pipe_buffer_clone.lock();
+            match pipe.write(&buffer) {
+                Ok(n) => {
+                    log::debug!("sys_write: Wrote {} bytes to FIFO", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(11) => {
+                    if is_nonblocking {
+                        log::debug!("sys_write: FIFO full, O_NONBLOCK set - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    } else {
+                        // TODO: Implement blocking FIFO writes
+                        log::debug!("sys_write: FIFO full, blocking not implemented - returning EAGAIN");
+                        SyscallResult::Err(11) // EAGAIN
+                    }
+                }
+                Err(e) => {
+                    log::debug!("sys_write: FIFO write error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
+        }
+        FdKind::FifoRead(_, _) => {
+            // Can't write to read end of FIFO
+            SyscallResult::Err(9) // EBADF
+        }
         FdKind::UdpSocket(_) => {
             // Can't write to UDP socket - must use sendto
             log::error!("sys_write: Cannot write to UDP socket, use sendto instead");
@@ -686,6 +721,128 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         }
         FdKind::PipeWrite(_) => {
             // Can't read from write end of pipe
+            SyscallResult::Err(9) // EBADF
+        }
+        FdKind::FifoRead(_path, pipe_buffer) => {
+            // FIFO read - with blocking support
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let pipe_buffer_clone = pipe_buffer.clone();
+
+            // CRITICAL: Release process manager lock before blocking!
+            // If we hold the lock while blocked in the HLT loop, timer interrupts
+            // cannot perform context switches to other threads (like the child
+            // process that needs to write to the FIFO).
+            drop(manager_guard);
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+
+            // Try to read - if empty and blocking, we'll enter blocking path
+            loop {
+                let read_result = {
+                    let mut pipe = pipe_buffer_clone.lock();
+                    pipe.read(&mut user_buf)
+                };
+
+                match read_result {
+                    Ok(n) => {
+                        if n > 0 {
+                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                                return SyscallResult::Err(14); // EFAULT
+                            }
+                        }
+                        log::debug!("sys_read: Read {} bytes from FIFO", n);
+                        return SyscallResult::Ok(n as u64);
+                    }
+                    Err(11) => {
+                        // EAGAIN - buffer empty but writers exist
+                        if is_nonblocking {
+                            log::debug!("sys_read: FIFO empty, O_NONBLOCK set - returning EAGAIN");
+                            return SyscallResult::Err(11); // EAGAIN
+                        }
+
+                        // === BLOCKING PATH ===
+                        let thread_id = match crate::task::scheduler::current_thread_id() {
+                            Some(tid) => tid,
+                            None => return SyscallResult::Err(3), // ESRCH
+                        };
+
+                        log::debug!("sys_read: FIFO empty, thread {} entering blocking path", thread_id);
+
+                        // Register as waiter BEFORE setting blocked state (race condition fix)
+                        {
+                            let mut pipe = pipe_buffer_clone.lock();
+                            pipe.add_read_waiter(thread_id);
+                        }
+
+                        // Block the thread
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.block_current();
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = true;
+                            }
+                        });
+
+                        // Check if data arrived during setup (race condition fix)
+                        let data_ready = {
+                            let pipe = pipe_buffer_clone.lock();
+                            pipe.has_data_or_eof()
+                        };
+
+                        if data_ready {
+                            // Data arrived during setup - unblock and retry immediately
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.blocked_in_syscall = false;
+                                    thread.set_ready();
+                                }
+                            });
+                            continue; // Retry read
+                        }
+
+                        // Enable preemption for HLT loop
+                        crate::per_cpu::preempt_enable();
+
+                        // HLT loop - wait for data or EOF
+                        loop {
+                            crate::task::scheduler::yield_current();
+                            x86_64::instructions::interrupts::enable_and_hlt();
+
+                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.state == crate::task::thread::ThreadState::Blocked
+                                } else {
+                                    false
+                                }
+                            }).unwrap_or(false);
+
+                            if !still_blocked {
+                                crate::per_cpu::preempt_disable();
+                                log::debug!("sys_read: FIFO thread {} woken from blocking", thread_id);
+                                break;
+                            }
+                        }
+
+                        // Clear blocked state
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                            }
+                        });
+                        crate::interrupts::timer::reset_quantum();
+                        crate::task::scheduler::check_and_clear_need_resched();
+
+                        // Continue loop to retry read
+                        continue;
+                    }
+                    Err(e) => {
+                        log::debug!("sys_read: FIFO read error: {}", e);
+                        return SyscallResult::Err(e as u64);
+                    }
+                }
+            }
+        }
+        FdKind::FifoWrite(_, _) => {
+            // Can't read from write end of FIFO
             SyscallResult::Err(9) // EBADF
         }
         FdKind::UdpSocket(_) => {
