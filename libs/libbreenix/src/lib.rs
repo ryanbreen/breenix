@@ -55,4 +55,7 @@ pub mod time;
 pub mod types;
 
 // Re-export commonly used signal functions
-pub use signal::{kill, sigaction, sigprocmask, Sigaction};
+pub use signal::{
+    alarm, getitimer, kill, setitimer, sigaction, sigaltstack, sigpending, sigprocmask,
+    sigsuspend, Itimerval, Sigaction, StackT, Timeval,
+};

@@ -481,6 +481,10 @@ path = "unix_named_socket_test.rs"
 name = "fifo_test"
 path = "fifo_test.rs"
 
+[[bin]]
+name = "alarm_test"
+path = "alarm_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
