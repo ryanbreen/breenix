@@ -90,26 +90,28 @@ pub extern "C" fn _start() -> ! {
 
 /// Print a number to stdout
 unsafe fn print_number(num: u64) {
-    if num == 0 {
-        io::print("0");
-        return;
-    }
-
-    let mut buf = [0u8; 20];
-    let mut i = 0;
+    let mut buffer: [u8; 32] = [0; 32];
     let mut n = num;
+    let mut i = 0;
 
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
+    if n == 0 {
+        buffer[0] = b'0';
+        i = 1;
+    } else {
+        while n > 0 {
+            buffer[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+        }
+        // Reverse the digits
+        for j in 0..i / 2 {
+            let tmp = buffer[j];
+            buffer[j] = buffer[i - j - 1];
+            buffer[i - j - 1] = tmp;
+        }
     }
 
-    // Reverse and print
-    while i > 0 {
-        i -= 1;
-        io::write_char(buf[i] as char);
-    }
+    io::write(libbreenix::types::fd::STDOUT, &buffer[..i]);
 }
 
 #[panic_handler]
