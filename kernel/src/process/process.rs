@@ -290,6 +290,11 @@ impl Process {
                         // PTY slave doesn't own the pair, just decrement reference
                         log::debug!("Process::close_all_fds() - released PTY slave fd {}", fd);
                     }
+                    FdKind::UnixStream(socket) => {
+                        // Close Unix socket endpoint
+                        socket.lock().close();
+                        log::debug!("Process::close_all_fds() - closed Unix stream socket fd {}", fd);
+                    }
                 }
             }
         }

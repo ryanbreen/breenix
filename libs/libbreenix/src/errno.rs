@@ -74,6 +74,8 @@ pub enum Errno {
     ENOSYS = 38,
     /// Directory not empty
     ENOTEMPTY = 39,
+    /// Address family not supported
+    EAFNOSUPPORT = 97,
 }
 
 impl Errno {
@@ -125,6 +127,7 @@ impl Errno {
             32 => Errno::EPIPE,
             38 => Errno::ENOSYS,
             39 => Errno::ENOTEMPTY,
+            97 => Errno::EAFNOSUPPORT,
             _ => Errno::EINVAL, // Unknown error
         }
     }

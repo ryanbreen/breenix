@@ -660,6 +660,15 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             // Major 136 for PTY, minor is pty_num
             stat.st_rdev = make_dev(136, *pty_num as u64);
         }
+        FdKind::UnixStream(_) => {
+            // Unix domain sockets
+            static UNIX_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =
+                core::sync::atomic::AtomicU64::new(5000);
+            stat.st_dev = 0;
+            stat.st_ino = UNIX_SOCKET_INODE_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            stat.st_mode = S_IFSOCK | 0o755; // Socket with rwxr-xr-x
+            stat.st_nlink = 1;
+        }
     }
 
     // Copy stat structure to userspace

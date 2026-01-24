@@ -1,9 +1,11 @@
 //! Graphics-related system calls.
 //!
-//! Provides syscalls for querying framebuffer information.
+//! Provides syscalls for querying and drawing to the framebuffer.
 
 #[cfg(feature = "interactive")]
 use crate::logger::SHELL_FRAMEBUFFER;
+#[cfg(feature = "interactive")]
+use crate::graphics::primitives::{Canvas, Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
 use super::SyscallResult;
 
 /// Framebuffer info structure returned by sys_fbinfo.
@@ -91,5 +93,213 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
 #[cfg(not(feature = "interactive"))]
 pub fn sys_fbinfo(_info_ptr: u64) -> SyscallResult {
     // No framebuffer available in non-interactive mode
+    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
+}
+
+/// Draw command operations for sys_fbdraw
+#[cfg(feature = "interactive")]
+#[repr(u32)]
+#[allow(dead_code)]
+pub enum FbDrawOp {
+    /// Clear the left pane with a color
+    Clear = 0,
+    /// Fill a rectangle: x, y, width, height, color
+    FillRect = 1,
+    /// Draw rectangle outline: x, y, width, height, color
+    DrawRect = 2,
+    /// Fill a circle: cx, cy, radius, color
+    FillCircle = 3,
+    /// Draw circle outline: cx, cy, radius, color
+    DrawCircle = 4,
+    /// Draw a line: x1, y1, x2, y2, color
+    DrawLine = 5,
+    /// Flush the framebuffer (for double-buffering)
+    Flush = 6,
+}
+
+/// Draw command structure passed from userspace.
+/// Must match the FbDrawCmd struct in libbreenix.
+#[cfg(feature = "interactive")]
+#[repr(C)]
+pub struct FbDrawCmd {
+    /// Operation code (FbDrawOp)
+    pub op: u32,
+    /// First parameter (x, cx, x1, or unused)
+    pub p1: i32,
+    /// Second parameter (y, cy, y1, or unused)
+    pub p2: i32,
+    /// Third parameter (width, radius, x2, or unused)
+    pub p3: i32,
+    /// Fourth parameter (height, y2, or unused)
+    pub p4: i32,
+    /// Color as packed RGB (0x00RRGGBB)
+    pub color: u32,
+}
+
+/// Get the width of the left (demo) pane
+#[cfg(feature = "interactive")]
+#[allow(dead_code)]
+fn left_pane_width() -> usize {
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        let fb_guard = fb.lock();
+        fb_guard.width() / 2
+    } else {
+        0
+    }
+}
+
+/// Get the height of the framebuffer
+#[cfg(feature = "interactive")]
+#[allow(dead_code)]
+fn fb_height() -> usize {
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        let fb_guard = fb.lock();
+        fb_guard.height()
+    } else {
+        0
+    }
+}
+
+/// sys_fbdraw - Draw to the left pane of the framebuffer
+///
+/// # Arguments
+/// * `cmd_ptr` - Pointer to userspace FbDrawCmd structure
+///
+/// # Returns
+/// * 0 on success
+/// * -EFAULT if cmd_ptr is invalid
+/// * -ENODEV if no framebuffer is available
+/// * -EINVAL if operation is invalid
+#[cfg(feature = "interactive")]
+pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
+    // Validate pointer
+    if cmd_ptr == 0 || cmd_ptr >= USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    // Validate the entire FbDrawCmd struct fits in userspace
+    let end_ptr = cmd_ptr.saturating_add(core::mem::size_of::<FbDrawCmd>() as u64);
+    if end_ptr > USER_SPACE_MAX {
+        return SyscallResult::Err(super::ErrorCode::Fault as u64);
+    }
+
+    // Read the command from userspace
+    let cmd: FbDrawCmd = unsafe { core::ptr::read(cmd_ptr as *const FbDrawCmd) };
+
+    // Get framebuffer
+    let fb = match SHELL_FRAMEBUFFER.get() {
+        Some(fb) => fb,
+        None => return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64),
+    };
+
+    let mut fb_guard = fb.lock();
+
+    // Get left pane dimensions (half the screen width)
+    let pane_width = fb_guard.width() / 2;
+    let pane_height = fb_guard.height();
+
+    // Parse color
+    let color = Color::rgb(
+        ((cmd.color >> 16) & 0xFF) as u8,
+        ((cmd.color >> 8) & 0xFF) as u8,
+        (cmd.color & 0xFF) as u8,
+    );
+
+    match cmd.op {
+        0 => {
+            // Clear: fill entire left pane with color
+            fill_rect(
+                &mut *fb_guard,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: pane_width as u32,
+                    height: pane_height as u32,
+                },
+                color,
+            );
+        }
+        1 => {
+            // FillRect: x, y, width, height, color
+            // Clip to left pane
+            let x = cmd.p1.max(0) as i32;
+            let y = cmd.p2.max(0) as i32;
+            let w = cmd.p3.max(0) as u32;
+            let h = cmd.p4.max(0) as u32;
+
+            // Only draw if within left pane
+            if (x as usize) < pane_width {
+                let clipped_w = w.min((pane_width as i32 - x) as u32);
+                fill_rect(
+                    &mut *fb_guard,
+                    Rect { x, y, width: clipped_w, height: h },
+                    color,
+                );
+            }
+        }
+        2 => {
+            // DrawRect: x, y, width, height, color
+            let x = cmd.p1.max(0) as i32;
+            let y = cmd.p2.max(0) as i32;
+            let w = cmd.p3.max(0) as u32;
+            let h = cmd.p4.max(0) as u32;
+
+            if (x as usize) < pane_width {
+                draw_rect(
+                    &mut *fb_guard,
+                    Rect { x, y, width: w, height: h },
+                    color,
+                );
+            }
+        }
+        3 => {
+            // FillCircle: cx, cy, radius, color
+            let cx = cmd.p1;
+            let cy = cmd.p2;
+            let radius = cmd.p3.max(0) as u32;
+
+            if (cx as usize) < pane_width {
+                fill_circle(&mut *fb_guard, cx, cy, radius, color);
+            }
+        }
+        4 => {
+            // DrawCircle: cx, cy, radius, color
+            let cx = cmd.p1;
+            let cy = cmd.p2;
+            let radius = cmd.p3.max(0) as u32;
+
+            if (cx as usize) < pane_width {
+                draw_circle(&mut *fb_guard, cx, cy, radius, color);
+            }
+        }
+        5 => {
+            // DrawLine: x1, y1, x2, y2, color
+            let x1 = cmd.p1;
+            let y1 = cmd.p2;
+            let x2 = cmd.p3;
+            let y2 = cmd.p4;
+
+            // Allow lines that start or end in left pane
+            if (x1 as usize) < pane_width || (x2 as usize) < pane_width {
+                draw_line(&mut *fb_guard, x1, y1, x2, y2, color);
+            }
+        }
+        6 => {
+            // Flush: sync double buffer to screen
+            if let Some(db) = fb_guard.double_buffer_mut() {
+                db.flush_full();
+            }
+        }
+        _ => {
+            return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
+        }
+    }
+
+    SyscallResult::Ok(0)
+}
+
+/// sys_fbdraw - Stub for non-interactive mode
+#[cfg(not(feature = "interactive"))]
+pub fn sys_fbdraw(_cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }

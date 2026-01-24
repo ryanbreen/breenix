@@ -1048,6 +1048,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: Pipe syscall functionality ===");
         test_exec::test_pipe();
 
+        // Test Unix domain socket (AF_UNIX) socketpair syscall
+        log::info!("=== IPC TEST: Unix domain socket (socketpair) functionality ===");
+        test_exec::test_unix_socket();
+
         // NOTE: Pipe + fork and concurrent pipe tests removed to reduce test load.
         // The core pipe functionality is validated by test_pipe() above.
         // These complex multi-process tests cause timing-related timeouts.

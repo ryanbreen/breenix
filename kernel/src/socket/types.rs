@@ -2,6 +2,13 @@
 //!
 //! POSIX-compatible socket address structures.
 
+/// Address family: Unix (local)
+pub const AF_UNIX: u16 = 1;
+
+/// Address family: Unix (alias for AF_UNIX)
+#[allow(dead_code)]
+pub const AF_LOCAL: u16 = 1;
+
 /// Address family: IPv4
 pub const AF_INET: u16 = 2;
 
@@ -10,6 +17,12 @@ pub const SOCK_STREAM: u16 = 1;
 
 /// Socket type: Datagram (UDP)
 pub const SOCK_DGRAM: u16 = 2;
+
+/// Socket flag: Non-blocking mode
+pub const SOCK_NONBLOCK: u32 = 0x800;
+
+/// Socket flag: Close-on-exec
+pub const SOCK_CLOEXEC: u32 = 0x80000;
 
 /// IPv4 socket address structure (matches Linux sockaddr_in)
 #[repr(C)]

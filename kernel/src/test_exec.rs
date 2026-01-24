@@ -1024,6 +1024,41 @@ pub fn test_signal_regs() {
     }
 }
 
+/// Test Unix domain socket (AF_UNIX) socketpair syscall
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Unix socket test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates socketpair read/write/close functionality
+///   - Marker: "UNIX_SOCKET_TEST_PASSED"
+///   - This PROVES Unix socket creation, bidirectional IPC, and EOF on close work
+pub fn test_unix_socket() {
+    log::info!("Testing Unix domain socket (socketpair) functionality");
+
+    #[cfg(feature = "testing")]
+    let unix_socket_test_elf_buf = crate::userspace_test::get_test_binary("unix_socket_test");
+    #[cfg(feature = "testing")]
+    let unix_socket_test_elf: &[u8] = &unix_socket_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let unix_socket_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("unix_socket_test"),
+        unix_socket_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created unix_socket_test process with PID {:?}", pid);
+            log::info!("Unix socket test: process scheduled for execution.");
+            log::info!("    -> Emits pass marker on success (UNIX_SOCKET_TEST_...)");
+        }
+        Err(e) => {
+            log::error!("Failed to create unix_socket_test process: {}", e);
+            log::error!("Unix socket test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test pipe syscall functionality
 ///
 /// TWO-STAGE VALIDATION PATTERN:

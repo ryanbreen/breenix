@@ -442,6 +442,20 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
+        FdKind::UnixStream(socket_ref) => {
+            // Write to Unix stream socket
+            let socket = socket_ref.lock();
+            match socket.write(&buffer) {
+                Ok(n) => {
+                    log::debug!("sys_write: Wrote {} bytes to Unix socket", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => {
+                    log::debug!("sys_write: Unix socket write error: {}", e);
+                    SyscallResult::Err(e as u64)
+                }
+            }
+        }
     }
 }
 
@@ -928,6 +942,124 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 None => {
                     log::error!("sys_read: PTY {} not found", pty_num);
                     SyscallResult::Err(super::errno::EIO as u64)
+                }
+            }
+        }
+        FdKind::UnixStream(socket_ref) => {
+            // Read from Unix stream socket
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let socket_clone = socket_ref.clone();
+
+            // Drop manager guard before potentially blocking
+            drop(manager_guard);
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+
+            loop {
+                // Register as waiter FIRST to avoid race condition
+                let socket = socket_clone.lock();
+                socket.register_waiter(thread_id);
+                drop(socket);
+
+                // Try to read
+                let socket = socket_clone.lock();
+                match socket.read(&mut user_buf) {
+                    Ok(n) => {
+                        socket.unregister_waiter(thread_id);
+                        drop(socket);
+
+                        if n > 0 {
+                            // Copy to userspace
+                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                                return SyscallResult::Err(14); // EFAULT
+                            }
+                        }
+                        log::debug!("sys_read: Read {} bytes from Unix socket", n);
+                        return SyscallResult::Ok(n as u64);
+                    }
+                    Err(11) => {
+                        // EAGAIN - no data available
+                        if is_nonblocking {
+                            socket.unregister_waiter(thread_id);
+                            drop(socket);
+                            return SyscallResult::Err(11); // EAGAIN
+                        }
+
+                        // Check if peer closed (EOF case)
+                        if socket.peer_closed() {
+                            socket.unregister_waiter(thread_id);
+                            drop(socket);
+                            return SyscallResult::Ok(0); // EOF
+                        }
+
+                        drop(socket);
+
+                        // Block the thread
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.block_current();
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = true;
+                            }
+                        });
+
+                        // Double-check for data after setting Blocked state
+                        let socket = socket_clone.lock();
+                        if socket.has_data() || socket.peer_closed() {
+                            socket.unregister_waiter(thread_id);
+                            drop(socket);
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.blocked_in_syscall = false;
+                                    thread.set_ready();
+                                }
+                            });
+                            continue;
+                        }
+                        drop(socket);
+
+                        // Re-enable preemption before HLT loop
+                        crate::per_cpu::preempt_enable();
+
+                        // HLT loop
+                        loop {
+                            crate::task::scheduler::yield_current();
+                            x86_64::instructions::interrupts::enable_and_hlt();
+
+                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.state == crate::task::thread::ThreadState::Blocked
+                                } else {
+                                    false
+                                }
+                            }).unwrap_or(false);
+
+                            if !still_blocked {
+                                crate::per_cpu::preempt_disable();
+                                break;
+                            }
+                        }
+
+                        // Clear blocked_in_syscall
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                            }
+                        });
+                        crate::interrupts::timer::reset_quantum();
+                        crate::task::scheduler::check_and_clear_need_resched();
+
+                        // Unregister and retry
+                        let socket = socket_clone.lock();
+                        socket.unregister_waiter(thread_id);
+                        drop(socket);
+                        continue;
+                    }
+                    Err(e) => {
+                        socket.unregister_waiter(thread_id);
+                        drop(socket);
+                        log::debug!("sys_read: Unix socket read error: {}", e);
+                        return SyscallResult::Err(e as u64);
+                    }
                 }
             }
         }

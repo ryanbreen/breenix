@@ -261,6 +261,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Shutdown) => {
             super::socket::sys_shutdown(args.0, args.1)
         }
+        Some(SyscallNumber::Socketpair) => {
+            super::socket::sys_socketpair(args.0, args.1, args.2, args.3)
+        }
         Some(SyscallNumber::Poll) => super::handlers::sys_poll(args.0, args.1, args.2 as i32),
         Some(SyscallNumber::Select) => {
             super::handlers::sys_select(args.0 as i32, args.1, args.2, args.3, args.4)
@@ -305,6 +308,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Ptsname) => super::pty::sys_ptsname(args.0, args.1, args.2),
         // Graphics syscalls
         Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
+        Some(SyscallNumber::FbDraw) => super::graphics::sys_fbdraw(args.0),
         None => {
             log::warn!("Unknown syscall number: {} - returning ENOSYS", syscall_num);
             SyscallResult::Err(super::ErrorCode::NoSys as u64)

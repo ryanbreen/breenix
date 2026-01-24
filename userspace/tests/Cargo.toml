@@ -443,6 +443,15 @@ path = "pty_test.rs"
 name = "fbinfo_test"
 path = "fbinfo_test.rs"
 
+# Interactive graphics demos (not included in test builds)
+[[bin]]
+name = "demo"
+path = "demo.rs"
+
+[[bin]]
+name = "bounce"
+path = "bounce.rs"
+
 # Coreutils argv integration tests
 [[bin]]
 name = "mkdir_argv_test"
@@ -459,6 +468,10 @@ path = "echo_argv_test.rs"
 [[bin]]
 name = "rm_argv_test"
 path = "rm_argv_test.rs"
+
+[[bin]]
+name = "unix_socket_test"
+path = "unix_socket_test.rs"
 
 [profile.release]
 panic = "abort"

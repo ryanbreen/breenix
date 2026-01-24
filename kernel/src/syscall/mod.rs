@@ -58,6 +58,7 @@ pub enum SyscallNumber {
     Shutdown = 48,      // Linux syscall number for shutdown
     Bind = 49,          // Linux syscall number for bind
     Listen = 50,        // Linux syscall number for listen
+    Socketpair = 53,    // Linux syscall number for socketpair
     Exec = 59,          // Linux syscall number for execve
     Wait4 = 61,         // Linux syscall number for wait4/waitpid
     Kill = 62,          // Linux syscall number for kill
@@ -90,6 +91,7 @@ pub enum SyscallNumber {
     Ptsname = 403,      // Breenix: get PTY slave path
     // Graphics syscalls (Breenix-specific)
     FbInfo = 410,       // Breenix: get framebuffer info
+    FbDraw = 411,       // Breenix: draw to framebuffer (left pane)
     CowStats = 500,     // Breenix: get Copy-on-Write statistics (for testing)
     SimulateOom = 501,  // Breenix: enable/disable OOM simulation (for testing)
 }
@@ -130,6 +132,7 @@ impl SyscallNumber {
             48 => Some(Self::Shutdown),
             49 => Some(Self::Bind),
             50 => Some(Self::Listen),
+            53 => Some(Self::Socketpair),
             59 => Some(Self::Exec),
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
@@ -162,6 +165,7 @@ impl SyscallNumber {
             403 => Some(Self::Ptsname),
             // Graphics syscalls
             410 => Some(Self::FbInfo),
+            411 => Some(Self::FbDraw),
             500 => Some(Self::CowStats),
             501 => Some(Self::SimulateOom),
             _ => None,

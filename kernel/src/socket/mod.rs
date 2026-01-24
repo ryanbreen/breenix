@@ -4,6 +4,7 @@
 
 pub mod types;
 pub mod udp;
+pub mod unix;
 
 use spin::Mutex;
 

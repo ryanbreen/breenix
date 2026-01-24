@@ -45,6 +45,7 @@ pub mod nr {
     pub const SHUTDOWN: u64 = 48;
     pub const BIND: u64 = 49;
     pub const LISTEN: u64 = 50;
+    pub const SOCKETPAIR: u64 = 53;  // Linux x86_64 socketpair
     pub const EXEC: u64 = 59;        // Linux x86_64 execve
     pub const WAIT4: u64 = 61;       // Linux x86_64 wait4/waitpid
     pub const KILL: u64 = 62;        // Linux x86_64 kill
@@ -67,6 +68,7 @@ pub mod nr {
     pub const GETDENTS64: u64 = 260;  // Breenix: directory listing syscall
     // Graphics syscalls (Breenix-specific)
     pub const FBINFO: u64 = 410;       // Breenix: get framebuffer info
+    pub const FBDRAW: u64 = 411;       // Breenix: draw to framebuffer
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;   // Breenix: get CoW statistics (for testing)
     pub const SIMULATE_OOM: u64 = 501; // Breenix: enable/disable OOM simulation (for testing)

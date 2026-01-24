@@ -511,6 +511,16 @@ static PROGRAM_REGISTRY: &[ProgramEntry] = &[
         description: "Display spinning animation",
     },
     ProgramEntry {
+        name: "demo",
+        binary_name: b"demo\0",
+        description: "Animated graphics demo on left pane",
+    },
+    ProgramEntry {
+        name: "bounce",
+        binary_name: b"bounce\0",
+        description: "Bouncing balls with collision detection (for Gus!)",
+    },
+    ProgramEntry {
         name: "hello_time",
         binary_name: b"hello_time\0",
         description: "Print hello with timestamp",

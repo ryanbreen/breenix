@@ -103,6 +103,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}/fork_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/clock_gettime_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/udp_socket_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/unix_socket_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/tty_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/job_control_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/session_test.rs", userspace_tests);
@@ -111,6 +112,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}/pipeline_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/sigchld_job_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/cwd_test.rs", userspace_tests);
+            println!("cargo:rerun-if-changed={}/demo.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
         }
     } else {
