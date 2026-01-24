@@ -216,6 +216,17 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Sigprocmask) => {
             super::signal::sys_sigprocmask(args.0 as i32, args.1, args.2, args.3)
         }
+        Some(SyscallNumber::Sigpending) => {
+            super::signal::sys_sigpending(args.0, args.1)
+        }
+        Some(SyscallNumber::Sigsuspend) => {
+            // sigsuspend(mask, sigsetsize) - atomically set mask and wait for signal
+            // Needs frame access like pause() for saving userspace context
+            super::signal::sys_sigsuspend_with_frame(args.0, args.1, frame)
+        }
+        Some(SyscallNumber::Sigaltstack) => {
+            super::signal::sys_sigaltstack(args.0, args.1)
+        }
         Some(SyscallNumber::Sigreturn) => {
             // CRITICAL: sigreturn restores ALL registers including RAX from the signal frame.
             // We must NOT overwrite RAX with the syscall return value after this call!
@@ -275,6 +286,9 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Dup2) => super::handlers::sys_dup2(args.0, args.1),
         Some(SyscallNumber::Fcntl) => super::handlers::sys_fcntl(args.0, args.1, args.2),
         Some(SyscallNumber::Pause) => super::signal::sys_pause_with_frame(frame),
+        Some(SyscallNumber::Getitimer) => super::signal::sys_getitimer(args.0 as i32, args.1),
+        Some(SyscallNumber::Alarm) => super::signal::sys_alarm(args.0),
+        Some(SyscallNumber::Setitimer) => super::signal::sys_setitimer(args.0 as i32, args.1, args.2),
         Some(SyscallNumber::Wait4) => {
             super::handlers::sys_waitpid(args.0 as i64, args.1, args.2 as u32)
         }

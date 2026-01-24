@@ -110,6 +110,12 @@ pub struct Process {
 
     /// File descriptor table for this process
     pub fd_table: FdTable,
+
+    /// Alarm deadline (tick count when SIGALRM should be delivered)
+    pub alarm_deadline: Option<u64>,
+
+    /// Interval timers for setitimer/getitimer (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
+    pub itimers: crate::signal::IntervalTimers,
 }
 
 /// Memory usage tracking
@@ -152,6 +158,8 @@ impl Process {
             mmap_hint: crate::memory::vma::MMAP_REGION_END,
             signals: SignalState::default(),
             fd_table: FdTable::new(),
+            alarm_deadline: None,
+            itimers: crate::signal::IntervalTimers::default(),
         }
     }
 

@@ -35,6 +35,9 @@ pub mod nr {
     pub const DUP: u64 = 32;          // Linux x86_64 dup
     pub const DUP2: u64 = 33;         // Linux x86_64 dup2
     pub const PAUSE: u64 = 34;        // Linux x86_64 pause
+    pub const GETITIMER: u64 = 36;    // Linux x86_64 getitimer
+    pub const ALARM: u64 = 37;        // Linux x86_64 alarm
+    pub const SETITIMER: u64 = 38;    // Linux x86_64 setitimer
     pub const GETPID: u64 = 39;
     pub const FCNTL: u64 = 72;        // Linux x86_64 fcntl
     pub const SOCKET: u64 = 41;
@@ -53,6 +56,9 @@ pub mod nr {
     pub const SETSID: u64 = 112;     // Linux x86_64 setsid
     pub const GETPGID: u64 = 121;    // Linux x86_64 getpgid
     pub const GETSID: u64 = 124;     // Linux x86_64 getsid
+    pub const SIGPENDING: u64 = 127; // Linux x86_64 rt_sigpending
+    pub const SIGSUSPEND: u64 = 130; // Linux x86_64 rt_sigsuspend
+    pub const SIGALTSTACK: u64 = 131; // Linux x86_64 sigaltstack
     pub const RENAME: u64 = 82;       // Linux x86_64 rename
     pub const MKDIR: u64 = 83;        // Linux x86_64 mkdir
     pub const RMDIR: u64 = 84;        // Linux x86_64 rmdir

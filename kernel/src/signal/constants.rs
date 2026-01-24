@@ -54,6 +54,17 @@ pub const SIG_UNBLOCK: i32 = 1;
 /// Set blocked signals to set
 pub const SIG_SETMASK: i32 = 2;
 
+// sigaltstack flags
+/// Currently executing on alternate signal stack
+pub const SS_ONSTACK: u32 = 1;
+/// Alternate signal stack is disabled
+pub const SS_DISABLE: u32 = 2;
+/// Minimum size for alternate signal stack (POSIX standard)
+pub const MINSIGSTKSZ: usize = 2048;
+/// Default/recommended size for alternate signal stack
+#[allow(dead_code)] // Part of POSIX sigaltstack API, used by userspace
+pub const SIGSTKSZ: usize = 8192;
+
 // sigaction flags
 /// Restart interrupted syscalls
 #[allow(dead_code)] // Part of POSIX sigaction API, used by userspace

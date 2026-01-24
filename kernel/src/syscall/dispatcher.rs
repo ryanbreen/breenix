@@ -48,6 +48,13 @@ pub fn dispatch_syscall(
         SyscallNumber::Kill => super::signal::sys_kill(arg1 as i64, arg2 as i32),
         SyscallNumber::Sigaction => super::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4),
         SyscallNumber::Sigprocmask => super::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4),
+        SyscallNumber::Sigpending => super::signal::sys_sigpending(arg1, arg2),
+        SyscallNumber::Sigsuspend => {
+            // sigsuspend requires frame access - must use handler.rs path
+            log::warn!("sigsuspend called without frame access - use handler.rs path");
+            SyscallResult::Err(38) // ENOSYS
+        }
+        SyscallNumber::Sigaltstack => super::signal::sys_sigaltstack(arg1, arg2),
         SyscallNumber::Sigreturn => super::signal::sys_sigreturn(),
         SyscallNumber::Ioctl => super::ioctl::sys_ioctl(arg1, arg2, arg3),
         SyscallNumber::Socket => super::socket::sys_socket(arg1, arg2, arg3),
@@ -68,6 +75,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Dup2 => handlers::sys_dup2(arg1, arg2),
         SyscallNumber::Fcntl => handlers::sys_fcntl(arg1, arg2, arg3),
         SyscallNumber::Pause => super::signal::sys_pause(),
+        SyscallNumber::Getitimer => super::signal::sys_getitimer(arg1 as i32, arg2),
+        SyscallNumber::Alarm => super::signal::sys_alarm(arg1),
+        SyscallNumber::Setitimer => super::signal::sys_setitimer(arg1 as i32, arg2, arg3),
         SyscallNumber::Wait4 => handlers::sys_waitpid(arg1 as i64, arg2, arg3 as u32),
         SyscallNumber::SetPgid => super::session::sys_setpgid(arg1 as i32, arg2 as i32),
         SyscallNumber::SetSid => super::session::sys_setsid(),

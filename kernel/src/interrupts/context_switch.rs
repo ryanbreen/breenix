@@ -540,6 +540,9 @@ fn switch_to_thread(
             if let Some(ref mut manager) = *manager_guard {
                 if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
                     // Check if there are pending signals to deliver
+                    crate::signal::delivery::check_and_fire_alarm(process);
+                    crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
                     let has_pending_signals = crate::signal::delivery::has_deliverable_signals(process);
                     let has_saved_context = process.main_thread.as_ref()
                         .map(|t| t.saved_userspace_context.is_some())
@@ -985,6 +988,9 @@ fn restore_userspace_thread_context(
                         // SIGNAL DELIVERY: Check for pending signals before returning to userspace
                         // This is the correct point to deliver signals - after context is restored
                         // but before we actually return to userspace
+                        crate::signal::delivery::check_and_fire_alarm(process);
+                        crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
                         if crate::signal::delivery::has_deliverable_signals(process) {
                             log::debug!(
                                 "Signal delivery check: process {} (thread {}) has deliverable signals",
@@ -1216,6 +1222,9 @@ fn check_and_deliver_signals_for_current_thread(
         // Find the process for this thread
         if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
             // Note: Debug logging removed from hot path - use GDB if debugging is needed
+            crate::signal::delivery::check_and_fire_alarm(process);
+            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
             if crate::signal::delivery::has_deliverable_signals(process) {
                 // Switch to process's page table for signal delivery
                 if let Some(ref page_table) = process.page_table {

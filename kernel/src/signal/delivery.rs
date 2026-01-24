@@ -423,3 +423,52 @@ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification>
         child_pid: process.id,
     })
 }
+
+/// Check if a process has an expired ITIMER_REAL and queue SIGALRM if needed
+///
+/// This function is called before signal delivery to tick the process's
+/// interval timer. If the timer expires, it queues SIGALRM for delivery.
+/// The timer automatically rearms if it has an interval set.
+///
+/// Returns true if SIGALRM was queued.
+#[inline]
+pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> bool {
+    if process.itimers.real.is_active() {
+        if process.itimers.real.tick(elapsed_usec) {
+            // Timer expired - queue SIGALRM
+            process.signals.set_pending(SIGALRM);
+            log::debug!(
+                "ITIMER_REAL fired for process {} (elapsed {} usec)",
+                process.id.as_u64(),
+                elapsed_usec
+            );
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if a process has an expired alarm and queue SIGALRM if needed
+///
+/// This function is called before signal delivery to check if the process's
+/// alarm timer has expired. If so, it queues SIGALRM for delivery.
+///
+/// Returns true if SIGALRM was queued.
+#[inline]
+pub fn check_and_fire_alarm(process: &mut Process) -> bool {
+    if let Some(deadline) = process.alarm_deadline {
+        let current_ticks = crate::time::get_ticks();
+        if current_ticks >= deadline {
+            // Alarm expired - clear it and queue SIGALRM
+            process.alarm_deadline = None;
+            process.signals.set_pending(SIGALRM);
+            log::debug!(
+                "Alarm fired for process {} at tick {}",
+                process.id.as_u64(),
+                current_ticks
+            );
+            return true;
+        }
+    }
+    false
+}

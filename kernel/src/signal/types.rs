@@ -2,6 +2,51 @@
 
 use super::constants::*;
 
+/// Alternate signal stack configuration (matches Linux stack_t)
+///
+/// This structure represents the alternate signal stack that can be
+/// configured per-process for handling signals like SIGSEGV that may
+/// occur due to stack overflow.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct StackT {
+    /// Base address of the alternate stack
+    pub ss_sp: u64,
+    /// Flags (SS_ONSTACK, SS_DISABLE)
+    pub ss_flags: i32,
+    /// Padding for alignment
+    pub _pad: i32,
+    /// Size of the alternate stack in bytes
+    pub ss_size: usize,
+}
+
+impl Default for StackT {
+    fn default() -> Self {
+        StackT {
+            ss_sp: 0,
+            ss_flags: SS_DISABLE as i32,
+            _pad: 0,
+            ss_size: 0,
+        }
+    }
+}
+
+/// Per-process alternate signal stack state
+///
+/// Stores the configured alternate stack and whether we're currently
+/// executing on it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AltStack {
+    /// Base address of the alternate stack
+    pub base: u64,
+    /// Size of the alternate stack in bytes
+    pub size: usize,
+    /// Flags (SS_DISABLE if disabled)
+    pub flags: u32,
+    /// True if currently executing a signal handler on this stack
+    pub on_stack: bool,
+}
+
 /// Default action for a signal
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalDefaultAction {
@@ -103,6 +148,8 @@ pub struct SignalState {
     /// Signal handlers (one per signal, indices 0-63 for signals 1-64)
     /// Boxed to avoid stack overflow - 64 * 32 bytes = 2KB
     handlers: alloc::boxed::Box<[SignalAction; 64]>,
+    /// Alternate signal stack configuration
+    pub alt_stack: AltStack,
 }
 
 impl Default for SignalState {
@@ -111,6 +158,7 @@ impl Default for SignalState {
             pending: 0,
             blocked: 0,
             handlers: alloc::boxed::Box::new([SignalAction::default(); 64]),
+            alt_stack: AltStack::default(),
         }
     }
 }
@@ -220,13 +268,14 @@ impl SignalState {
 
     /// Fork the signal state for a child process
     ///
-    /// Pending signals are NOT inherited, but handlers and mask are
+    /// Pending signals are NOT inherited, but handlers, mask, and alt stack are
     #[allow(dead_code)] // Will be used when fork() implementation is complete
     pub fn fork(&self) -> Self {
         SignalState {
             pending: 0, // Child starts with no pending signals
             blocked: self.blocked,
             handlers: self.handlers.clone(),
+            alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
         }
     }
 
@@ -301,4 +350,189 @@ impl SignalFrame {
     /// Magic number for frame integrity validation
     /// This prevents privilege escalation via forged signal frames
     pub const MAGIC: u64 = 0xDEAD_BEEF_CAFE_BABE;
+}
+
+// ============================================================================
+// Interval Timer Types (for setitimer/getitimer)
+// ============================================================================
+
+/// Interval timer types (which parameter to setitimer/getitimer)
+pub mod itimer {
+    /// Real time timer - decrements in real time, delivers SIGALRM
+    pub const ITIMER_REAL: i32 = 0;
+
+    /// Virtual timer - decrements in process virtual time, delivers SIGVTALRM
+    /// Only counts time when process is executing in user mode
+    pub const ITIMER_VIRTUAL: i32 = 1;
+
+    /// Profiling timer - decrements in process time, delivers SIGPROF
+    /// Counts time when process is executing in user or kernel mode
+    pub const ITIMER_PROF: i32 = 2;
+}
+
+/// Time value structure for interval timers (matches POSIX struct timeval)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Timeval {
+    /// Seconds
+    pub tv_sec: i64,
+    /// Microseconds (must be < 1,000,000)
+    pub tv_usec: i64,
+}
+
+impl Timeval {
+    /// Create a zero timeval (represents "no time" or "timer disabled")
+    pub const fn zero() -> Self {
+        Timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        }
+    }
+
+    /// Check if this timeval represents zero time
+    pub fn is_zero(&self) -> bool {
+        self.tv_sec == 0 && self.tv_usec == 0
+    }
+
+    /// Convert to microseconds
+    pub fn to_micros(&self) -> u64 {
+        if self.tv_sec < 0 || self.tv_usec < 0 {
+            return 0;
+        }
+        (self.tv_sec as u64) * 1_000_000 + (self.tv_usec as u64)
+    }
+
+    /// Create from microseconds
+    pub fn from_micros(micros: u64) -> Self {
+        Timeval {
+            tv_sec: (micros / 1_000_000) as i64,
+            tv_usec: (micros % 1_000_000) as i64,
+        }
+    }
+}
+
+/// Interval timer value structure (matches POSIX struct itimerval)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Itimerval {
+    /// Timer interval for periodic timers (zero = one-shot)
+    pub it_interval: Timeval,
+    /// Time until next expiration (zero = timer disabled)
+    pub it_value: Timeval,
+}
+
+impl Itimerval {
+    /// Create an empty/disabled timer
+    pub const fn empty() -> Self {
+        Itimerval {
+            it_interval: Timeval::zero(),
+            it_value: Timeval::zero(),
+        }
+    }
+
+    /// Check if timer is disabled (it_value is zero)
+    pub fn is_disabled(&self) -> bool {
+        self.it_value.is_zero()
+    }
+}
+
+/// Per-process interval timer state
+///
+/// This tracks a single interval timer with remaining time and repeat interval.
+/// The kernel decrements remaining time on timer ticks and fires the appropriate
+/// signal when it expires. If interval is non-zero, the timer automatically rearms.
+#[derive(Debug, Clone)]
+pub struct IntervalTimer {
+    /// Time remaining until expiration in microseconds
+    /// Zero means timer is disabled
+    remaining_usec: u64,
+    /// Repeat interval in microseconds
+    /// Zero means one-shot (timer stops after firing once)
+    interval_usec: u64,
+}
+
+impl Default for IntervalTimer {
+    fn default() -> Self {
+        IntervalTimer {
+            remaining_usec: 0,
+            interval_usec: 0,
+        }
+    }
+}
+
+impl IntervalTimer {
+    /// Create a new disabled timer
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if timer is active (has remaining time)
+    pub fn is_active(&self) -> bool {
+        self.remaining_usec > 0
+    }
+
+    /// Get the current timer value as Itimerval
+    pub fn get_value(&self) -> Itimerval {
+        Itimerval {
+            it_interval: Timeval::from_micros(self.interval_usec),
+            it_value: Timeval::from_micros(self.remaining_usec),
+        }
+    }
+
+    /// Set the timer from an Itimerval
+    ///
+    /// Returns the old value before setting
+    pub fn set_value(&mut self, new_value: &Itimerval) -> Itimerval {
+        let old = self.get_value();
+
+        self.interval_usec = new_value.it_interval.to_micros();
+        self.remaining_usec = new_value.it_value.to_micros();
+
+        old
+    }
+
+    /// Decrement the timer by elapsed microseconds
+    ///
+    /// Returns true if the timer expired (and should fire its signal).
+    /// If the timer has an interval, it automatically rearms.
+    pub fn tick(&mut self, elapsed_usec: u64) -> bool {
+        if self.remaining_usec == 0 {
+            return false;
+        }
+
+        if elapsed_usec >= self.remaining_usec {
+            // Timer expired
+            if self.interval_usec > 0 {
+                // Periodic timer - rearm with interval
+                // Account for any overrun by subtracting the elapsed time
+                // from the interval (but don't go negative)
+                let overrun = elapsed_usec - self.remaining_usec;
+                if overrun >= self.interval_usec {
+                    // Multiple intervals elapsed - just reset to interval
+                    self.remaining_usec = self.interval_usec;
+                } else {
+                    self.remaining_usec = self.interval_usec - overrun;
+                }
+            } else {
+                // One-shot timer - disable
+                self.remaining_usec = 0;
+            }
+            true
+        } else {
+            // Timer still running
+            self.remaining_usec -= elapsed_usec;
+            false
+        }
+    }
+}
+
+/// Collection of per-process interval timers
+#[derive(Debug, Clone, Default)]
+pub struct IntervalTimers {
+    /// ITIMER_REAL - counts real (wall clock) time, fires SIGALRM
+    pub real: IntervalTimer,
+    /// ITIMER_VIRTUAL - counts user CPU time, fires SIGVTALRM
+    #[allow(dead_code)] pub virtual_timer: IntervalTimer,
+    /// ITIMER_PROF - counts user + system CPU time, fires SIGPROF
+    #[allow(dead_code)] pub prof: IntervalTimer,
 }

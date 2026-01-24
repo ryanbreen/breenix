@@ -49,6 +49,9 @@ pub enum SyscallNumber {
     Dup = 32,           // Linux syscall number for dup
     Dup2 = 33,          // Linux syscall number for dup2
     Pause = 34,         // Linux syscall number for pause
+    Getitimer = 36,     // Linux syscall number for getitimer
+    Alarm = 37,         // Linux syscall number for alarm
+    Setitimer = 38,     // Linux syscall number for setitimer
     Fcntl = 72,         // Linux syscall number for fcntl
     GetPid = 39,        // Linux syscall number for getpid
     Socket = 41,        // Linux syscall number for socket
@@ -67,6 +70,9 @@ pub enum SyscallNumber {
     SetSid = 112,       // Linux syscall number for setsid
     GetPgid = 121,      // Linux syscall number for getpgid
     GetSid = 124,       // Linux syscall number for getsid
+    Sigpending = 127,   // Linux syscall number for rt_sigpending
+    Sigsuspend = 130,   // Linux syscall number for rt_sigsuspend
+    Sigaltstack = 131,  // Linux syscall number for sigaltstack
     GetTid = 186,       // Linux syscall number for gettid
     ClockGetTime = 228, // Linux syscall number for clock_gettime
     Pipe2 = 293,        // Linux syscall number for pipe2
@@ -124,6 +130,9 @@ impl SyscallNumber {
             32 => Some(Self::Dup),
             33 => Some(Self::Dup2),
             34 => Some(Self::Pause),
+            36 => Some(Self::Getitimer),
+            37 => Some(Self::Alarm),
+            38 => Some(Self::Setitimer),
             39 => Some(Self::GetPid),
             72 => Some(Self::Fcntl),
             41 => Some(Self::Socket),
@@ -142,6 +151,9 @@ impl SyscallNumber {
             112 => Some(Self::SetSid),
             121 => Some(Self::GetPgid),
             124 => Some(Self::GetSid),
+            127 => Some(Self::Sigpending),
+            130 => Some(Self::Sigsuspend),
+            131 => Some(Self::Sigaltstack),
             186 => Some(Self::GetTid),
             228 => Some(Self::ClockGetTime),
             293 => Some(Self::Pipe2),

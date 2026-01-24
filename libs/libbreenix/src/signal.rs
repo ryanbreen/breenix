@@ -8,7 +8,13 @@ use crate::syscall::raw;
 pub const SYS_SIGACTION: u64 = 13;
 pub const SYS_SIGPROCMASK: u64 = 14;
 pub const SYS_SIGRETURN: u64 = 15;
+pub const SYS_GETITIMER: u64 = 36;
+pub const SYS_ALARM: u64 = 37;
+pub const SYS_SETITIMER: u64 = 38;
 pub const SYS_KILL: u64 = 62;
+pub const SYS_SIGPENDING: u64 = 127;
+pub const SYS_SIGSUSPEND: u64 = 130;
+pub const SYS_SIGALTSTACK: u64 = 131;
 
 // Signal numbers (must match kernel/src/signal/constants.rs)
 pub const SIGHUP: i32 = 1;
@@ -59,6 +65,17 @@ pub const SA_SIGINFO: u64 = 0x00000004;
 pub const SA_ONSTACK: u64 = 0x08000000;
 pub const SA_RESTORER: u64 = 0x04000000;
 
+// sigaltstack flags
+pub const SS_ONSTACK: i32 = 1;
+pub const SS_DISABLE: i32 = 2;
+pub const MINSIGSTKSZ: usize = 2048;
+pub const SIGSTKSZ: usize = 8192;
+
+// Interval timer types
+pub const ITIMER_REAL: i32 = 0;
+pub const ITIMER_VIRTUAL: i32 = 1;
+pub const ITIMER_PROF: i32 = 2;
+
 /// Signal action structure (must match kernel layout)
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -108,6 +125,48 @@ impl Sigaction {
     /// Create a signal action with default behavior
     pub fn default_action() -> Self {
         Sigaction::default()
+    }
+}
+
+/// Time value structure for interval timers
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Timeval {
+    /// Seconds
+    pub tv_sec: i64,
+    /// Microseconds
+    pub tv_usec: i64,
+}
+
+/// Interval timer value structure
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct Itimerval {
+    /// Time until next expiration
+    pub it_interval: Timeval,
+    /// Current value
+    pub it_value: Timeval,
+}
+
+/// Alternate signal stack structure
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StackT {
+    /// Stack base pointer
+    pub ss_sp: u64,
+    /// Flags (SS_ONSTACK, SS_DISABLE)
+    pub ss_flags: i32,
+    /// Stack size in bytes
+    pub ss_size: usize,
+}
+
+impl Default for StackT {
+    fn default() -> Self {
+        StackT {
+            ss_sp: 0,
+            ss_flags: SS_DISABLE,
+            ss_size: 0,
+        }
     }
 }
 
@@ -302,5 +361,149 @@ pub fn signame(sig: i32) -> &'static str {
         SIGPWR => "SIGPWR",
         SIGSYS => "SIGSYS",
         _ => "UNKNOWN",
+    }
+}
+
+/// Get the set of pending signals
+///
+/// Returns the set of signals that are pending for delivery to the calling
+/// process (i.e., signals that have been raised while blocked).
+///
+/// # Arguments
+/// * `set` - Where to store the pending signal set
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(errno)` on failure
+pub fn sigpending(set: &mut u64) -> Result<(), i32> {
+    let ret = unsafe {
+        raw::syscall2(SYS_SIGPENDING, set as *mut u64 as u64, 8)
+    };
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Wait for a signal, temporarily replacing the signal mask
+///
+/// Temporarily replaces the signal mask with the given mask and suspends
+/// execution until a signal is delivered. The original mask is restored
+/// when the function returns.
+///
+/// # Arguments
+/// * `mask` - Signal mask to use while suspended
+///
+/// # Returns
+/// * Always returns -EINTR (interrupted by signal)
+pub fn sigsuspend(mask: &u64) -> i64 {
+    unsafe {
+        raw::syscall2(SYS_SIGSUSPEND, mask as *const u64 as u64, 8) as i64
+    }
+}
+
+/// Set or get the alternate signal stack
+///
+/// # Arguments
+/// * `ss` - New alternate signal stack, or None to query only
+/// * `old_ss` - Where to store the old stack, or None
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(errno)` on failure
+pub fn sigaltstack(ss: Option<&StackT>, old_ss: Option<&mut StackT>) -> Result<(), i32> {
+    let ss_ptr = ss.map_or(0, |s| s as *const _ as u64);
+    let old_ss_ptr = old_ss.map_or(0, |s| s as *mut _ as u64);
+
+    let ret = unsafe {
+        raw::syscall2(SYS_SIGALTSTACK, ss_ptr, old_ss_ptr)
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Schedule a SIGALRM signal to be delivered
+///
+/// Sets a timer to deliver SIGALRM after the specified number of seconds.
+/// Setting seconds to 0 cancels any pending alarm.
+///
+/// # Arguments
+/// * `seconds` - Seconds until SIGALRM is delivered
+///
+/// # Returns
+/// * The number of seconds remaining from a previous alarm (0 if none)
+pub fn alarm(seconds: u32) -> u32 {
+    unsafe {
+        raw::syscall1(SYS_ALARM, seconds as u64) as u32
+    }
+}
+
+/// Get the value of an interval timer
+///
+/// # Arguments
+/// * `which` - Timer type (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
+/// * `curr_value` - Where to store the current timer value
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(errno)` on failure
+pub fn getitimer(which: i32, curr_value: &mut Itimerval) -> Result<(), i32> {
+    let ret = unsafe {
+        raw::syscall2(SYS_GETITIMER, which as u64, curr_value as *mut _ as u64)
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
+    }
+}
+
+/// Set an interval timer
+///
+/// Sets the timer specified by `which` to the value in `new_value`.
+/// If `old_value` is not None, the previous value is stored there.
+///
+/// # Arguments
+/// * `which` - Timer type (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
+/// * `new_value` - New timer value
+/// * `old_value` - Where to store the old timer value, or None
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(errno)` on failure
+///
+/// # Example
+/// ```ignore
+/// // Set a one-shot timer for 2.5 seconds
+/// let new_value = Itimerval {
+///     it_interval: Timeval { tv_sec: 0, tv_usec: 0 },
+///     it_value: Timeval { tv_sec: 2, tv_usec: 500000 },
+/// };
+/// setitimer(ITIMER_REAL, &new_value, None)?;
+///
+/// // Set a repeating timer that fires every 1 second
+/// let repeating = Itimerval {
+///     it_interval: Timeval { tv_sec: 1, tv_usec: 0 },
+///     it_value: Timeval { tv_sec: 1, tv_usec: 0 },
+/// };
+/// setitimer(ITIMER_REAL, &repeating, None)?;
+/// ```
+pub fn setitimer(which: i32, new_value: &Itimerval, old_value: Option<&mut Itimerval>) -> Result<(), i32> {
+    let old_ptr = old_value.map_or(0, |v| v as *mut _ as u64);
+
+    let ret = unsafe {
+        raw::syscall3(SYS_SETITIMER, which as u64, new_value as *const _ as u64, old_ptr)
+    };
+
+    if (ret as i64) < 0 {
+        Err(-(ret as i64) as i32)
+    } else {
+        Ok(())
     }
 }
