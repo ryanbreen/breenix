@@ -498,10 +498,21 @@ fn test_blocking_read() -> bool {
         match open(path, O_WRONLY) {
             Ok(fd) => {
                 let data = b"from_child";
-                let _ = write(fd, data);
+                let ret = write(fd, data);
+                if ret < 0 {
+                    io::print("  Child: write failed with error ");
+                    print_num(-ret);
+                    io::print("\n");
+                    process::exit(1);
+                }
                 let _ = close(fd);
             }
-            Err(_) => {}
+            Err(e) => {
+                io::print("  Child: open for write failed with error ");
+                print_num(errno_code(e));
+                io::print("\n");
+                process::exit(1);
+            }
         }
         process::exit(0);
     }
@@ -556,11 +567,14 @@ fn test_blocking_read() -> bool {
     let _ = process::waitpid(pid as i32, core::ptr::null_mut(), 0);
     let _ = unlink(path);
 
-    if total >= 10 {
+    // Child writes exactly "from_child" (10 bytes), verify exact count
+    if total == 10 {
         io::print("Phase 7: PASSED\n");
         true
     } else {
-        io::print("  ERROR: expected at least 10 bytes from child\n");
+        io::print("  ERROR: expected exactly 10 bytes from child, got ");
+        print_num(total);
+        io::print("\n");
         false
     }
 }
@@ -640,18 +654,18 @@ fn test_eof() -> bool {
     let _ = close(read_fd);
     let _ = unlink(path);
 
-    // EOF should return 0, not EAGAIN
+    // EOF MUST return 0 - POSIX requires this when all writers close
+    // EAGAIN is NOT acceptable as it means "try again" not "end of file"
     if ret2 == 0 {
+        io::print("  Got expected EOF (0)\n");
         io::print("Phase 8: PASSED\n");
         true
     } else if ret2 < 0 && -ret2 == EAGAIN {
-        // This is acceptable for O_NONBLOCK - empty buffer returns EAGAIN
-        // The EOF behavior is more complex with non-blocking
-        io::print("  Note: O_NONBLOCK returns EAGAIN (acceptable)\n");
-        io::print("Phase 8: PASSED (O_NONBLOCK behavior)\n");
-        true
+        io::print("  ERROR: Got EAGAIN instead of EOF!\n");
+        io::print("  FIFO must return 0 (EOF) when all writers close, not EAGAIN\n");
+        false
     } else {
-        io::print("  ERROR: expected EOF (0) or EAGAIN, got ");
+        io::print("  ERROR: expected EOF (0), got ");
         print_num(ret2);
         io::print("\n");
         false
@@ -730,17 +744,18 @@ fn test_epipe() -> bool {
     let _ = close(write_fd);
     let _ = unlink(path);
 
-    // EPIPE is errno 32
+    // EPIPE is errno 32 - MUST be returned when writing to pipe with no readers
+    // If write succeeds after reader closes, that's a data loss bug
     const EPIPE: i64 = 32;
     if ret2 < 0 && -ret2 == EPIPE {
         io::print("  Got expected EPIPE\n");
         io::print("Phase 9: PASSED\n");
         true
     } else if ret2 >= 0 {
-        // Write succeeded - this might happen if buffer hasn't detected closed reader yet
-        io::print("  Note: write succeeded (buffer may delay EPIPE detection)\n");
-        io::print("Phase 9: PASSED (deferred EPIPE)\n");
-        true
+        io::print("  ERROR: Write succeeded after reader closed!\n");
+        io::print("  FIFO must return EPIPE when all readers close, not accept data\n");
+        io::print("  This would cause data loss in real applications\n");
+        false
     } else {
         io::print("  ERROR: expected EPIPE (32), got ");
         print_num(-ret2);
