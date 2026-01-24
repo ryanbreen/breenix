@@ -1112,6 +1112,14 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "pipe() syscall test failed - pipe creation, read/write, or close broken",
             check_hint: "Check kernel/src/syscall/pipe.rs and kernel/src/ipc/pipe.rs - verify pipe creation, fd allocation, and read/write operations",
         },
+        // Unix domain socket test - validates socketpair AND named sockets (bind/listen/accept/connect)
+        // Combined into single binary to avoid scheduler contention from multiple test processes
+        BootStage {
+            name: "Unix socket test passed",
+            marker: "UNIX_SOCKET_TEST_PASSED",
+            failure_meaning: "Unix domain socket test failed - socketpair or bind/listen/accept/connect broken",
+            check_hint: "Check kernel/src/syscall/socket.rs Unix socket handling and kernel/src/socket/unix.rs",
+        },
         // NOTE: Pipe + fork test and Pipe concurrent test removed.
         // These tests require complex process coordination and timing that
         // can cause spurious timeouts. The core pipe functionality is validated

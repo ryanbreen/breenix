@@ -1048,15 +1048,11 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: Pipe syscall functionality ===");
         test_exec::test_pipe();
 
-        // Test Unix domain socket (AF_UNIX) socketpair syscall
-        log::info!("=== IPC TEST: Unix domain socket (socketpair) functionality ===");
+        // Test Unix domain socket (AF_UNIX) - socketpair AND bind/listen/accept/connect
+        // The combined test (unix_socket_test) runs both socketpair tests (phases 1-12) and
+        // named socket tests (phases 13-18) in a single process to avoid scheduler contention.
+        log::info!("=== IPC TEST: Unix domain socket (socketpair + named sockets) ===");
         test_exec::test_unix_socket();
-
-        // NOTE: Named Unix socket test (bind/listen/accept/connect) removed to reduce test load.
-        // The core named socket functionality is validated by unix_socket_test (socketpair) above.
-        // The full bind/listen/accept/connect test is available as unix_named_socket_test binary
-        // but running it in the automated suite causes timing-related timeouts like the
-        // pipe+fork tests mentioned below.
 
         // NOTE: Pipe + fork and concurrent pipe tests removed to reduce test load.
         // The core pipe functionality is validated by test_pipe() above.

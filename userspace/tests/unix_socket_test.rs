@@ -9,11 +9,21 @@ use core::panic::PanicInfo;
 use libbreenix::errno::Errno;
 use libbreenix::io::{self, close, fcntl_getfd, fd_flags};
 use libbreenix::process;
-use libbreenix::socket::{socketpair, AF_UNIX, AF_INET, SOCK_STREAM, SOCK_DGRAM, SOCK_NONBLOCK, SOCK_CLOEXEC};
+use libbreenix::socket::{
+    socketpair, socket, listen, accept, bind_unix, connect_unix,
+    SockAddrUn, AF_UNIX, AF_INET, SOCK_STREAM, SOCK_DGRAM, SOCK_NONBLOCK, SOCK_CLOEXEC,
+};
 use libbreenix::syscall::{nr, raw};
 
 // Buffer size (must match kernel's UNIX_SOCKET_BUFFER_SIZE)
 const UNIX_SOCKET_BUFFER_SIZE: usize = 65536;
+
+// Error codes for named socket tests
+const EAGAIN_RAW: i32 = 11;
+const EOPNOTSUPP: i32 = 95;
+const EADDRINUSE: i32 = 98;
+const EISCONN: i32 = 106;
+const ECONNREFUSED: i32 = 111;
 
 /// Helper to write a file descriptor using raw syscall (to test sockets directly)
 fn write_fd(fd: i32, data: &[u8]) -> Result<usize, Errno> {
@@ -498,10 +508,377 @@ pub extern "C" fn _start() -> ! {
     close(sv_cloexec0 as u64);
     close(sv_cloexec1 as u64);
 
+    // ============================================================
+    // Named Unix Socket Tests (bind/listen/accept/connect)
+    // These tests verify the full socket lifecycle beyond socketpair
+    // ============================================================
+
+    io::print("\n=== Named Unix Socket Tests ===\n");
+
+    // Phase 13: Basic server-client communication with bind/listen/accept/connect
+    io::print("Phase 13: Basic server-client (bind/listen/accept/connect)...\n");
+    test_named_basic_server_client();
+    io::print("  Phase 13 PASSED\n");
+
+    // Phase 14: Test ECONNREFUSED on non-existent path
+    io::print("Phase 14: ECONNREFUSED on non-existent path...\n");
+    test_named_econnrefused();
+    io::print("  Phase 14 PASSED\n");
+
+    // Phase 15: Test EADDRINUSE on duplicate bind
+    io::print("Phase 15: EADDRINUSE on duplicate bind...\n");
+    test_named_eaddrinuse();
+    io::print("  Phase 15 PASSED\n");
+
+    // Phase 16: Test non-blocking accept returns EAGAIN
+    io::print("Phase 16: Non-blocking accept (EAGAIN)...\n");
+    test_named_nonblock_accept();
+    io::print("  Phase 16 PASSED\n");
+
+    // Phase 17: Test EISCONN on already-connected socket
+    io::print("Phase 17: EISCONN on already-connected socket...\n");
+    test_named_eisconn();
+    io::print("  Phase 17 PASSED\n");
+
+    // Phase 18: Test accept on non-listener socket
+    io::print("Phase 18: Accept on non-listener socket...\n");
+    test_named_accept_non_listener();
+    io::print("  Phase 18 PASSED\n");
+
     // All tests passed
     io::print("=== Unix Socket Test PASSED ===\n");
     io::print("UNIX_SOCKET_TEST_PASSED\n");
     process::exit(0);
+}
+
+// ============================================================
+// Named Unix Socket Test Functions
+// ============================================================
+
+/// Test basic server-client communication with bind/listen/accept/connect
+fn test_named_basic_server_client() {
+    // Create server socket
+    let server_fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(e) => {
+            io::print("  socket() failed: ");
+            print_num(e as i64);
+            io::print("\n");
+            fail("socket() for server failed");
+        }
+    };
+
+    // Create abstract socket address
+    let addr = SockAddrUn::abstract_socket(b"combined_test_1");
+
+    // Bind server socket
+    if let Err(e) = bind_unix(server_fd, &addr) {
+        io::print("  bind() failed: ");
+        print_num(e as i64);
+        io::print("\n");
+        close(server_fd as u64);
+        fail("bind() failed");
+    }
+
+    // Listen for connections
+    if let Err(e) = listen(server_fd, 5) {
+        io::print("  listen() failed: ");
+        print_num(e as i64);
+        io::print("\n");
+        close(server_fd as u64);
+        fail("listen() failed");
+    }
+
+    // Create client socket and connect
+    let client_fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            close(server_fd as u64);
+            fail("socket() for client failed");
+        }
+    };
+
+    if let Err(e) = connect_unix(client_fd, &addr) {
+        io::print("  connect() failed: ");
+        print_num(e as i64);
+        io::print("\n");
+        close(client_fd as u64);
+        close(server_fd as u64);
+        fail("connect() failed");
+    }
+
+    // Accept connection on server
+    let accepted_fd = match accept(server_fd, None) {
+        Ok(fd) => fd,
+        Err(e) => {
+            io::print("  accept() failed: ");
+            print_num(e as i64);
+            io::print("\n");
+            close(client_fd as u64);
+            close(server_fd as u64);
+            fail("accept() failed");
+        }
+    };
+
+    // Test bidirectional I/O - client to server
+    let test_data = b"Hello from client!";
+    if let Err(e) = write_fd(client_fd, test_data) {
+        io::print("  client write() failed: ");
+        print_num(-(e as i64));
+        io::print("\n");
+        fail("client write failed");
+    }
+
+    let mut buf = [0u8; 64];
+    match read_fd(accepted_fd, &mut buf) {
+        Ok(n) => {
+            if &buf[..n] != test_data {
+                fail("Data mismatch: client -> server");
+            }
+        }
+        Err(e) => {
+            io::print("  server read() failed: ");
+            print_num(-(e as i64));
+            io::print("\n");
+            fail("server read failed");
+        }
+    }
+
+    // Server to client
+    let reply_data = b"Hello from server!";
+    if let Err(e) = write_fd(accepted_fd, reply_data) {
+        io::print("  server write() failed: ");
+        print_num(-(e as i64));
+        io::print("\n");
+        fail("server write failed");
+    }
+
+    let mut buf2 = [0u8; 64];
+    match read_fd(client_fd, &mut buf2) {
+        Ok(n) => {
+            if &buf2[..n] != reply_data {
+                fail("Data mismatch: server -> client");
+            }
+        }
+        Err(e) => {
+            io::print("  client read() failed: ");
+            print_num(-(e as i64));
+            io::print("\n");
+            fail("client read failed");
+        }
+    }
+
+    io::print("  Bidirectional I/O works!\n");
+
+    // Clean up
+    close(accepted_fd as u64);
+    close(client_fd as u64);
+    close(server_fd as u64);
+}
+
+/// Test ECONNREFUSED when connecting to non-existent path
+fn test_named_econnrefused() {
+    let client_fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => fail("socket() failed"),
+    };
+
+    let addr = SockAddrUn::abstract_socket(b"nonexistent_combined");
+
+    match connect_unix(client_fd, &addr) {
+        Ok(_) => {
+            close(client_fd as u64);
+            fail("connect() should have failed with ECONNREFUSED");
+        }
+        Err(e) => {
+            if e != ECONNREFUSED {
+                io::print("  Expected ECONNREFUSED, got: ");
+                print_num(e as i64);
+                io::print("\n");
+                close(client_fd as u64);
+                fail("Expected ECONNREFUSED");
+            }
+        }
+    }
+
+    close(client_fd as u64);
+}
+
+/// Test EADDRINUSE when binding same path twice
+fn test_named_eaddrinuse() {
+    let fd1 = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => fail("socket() failed"),
+    };
+
+    let addr = SockAddrUn::abstract_socket(b"combined_addrinuse");
+
+    if let Err(_) = bind_unix(fd1, &addr) {
+        close(fd1 as u64);
+        fail("First bind() failed");
+    }
+
+    if let Err(_) = listen(fd1, 5) {
+        close(fd1 as u64);
+        fail("listen() failed");
+    }
+
+    // Create second socket and try to bind to same path
+    let fd2 = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            close(fd1 as u64);
+            fail("socket() failed");
+        }
+    };
+
+    match bind_unix(fd2, &addr) {
+        Ok(_) => {
+            close(fd1 as u64);
+            close(fd2 as u64);
+            fail("Second bind() should have failed with EADDRINUSE");
+        }
+        Err(e) => {
+            if e != EADDRINUSE {
+                io::print("  Expected EADDRINUSE, got: ");
+                print_num(e as i64);
+                io::print("\n");
+                close(fd1 as u64);
+                close(fd2 as u64);
+                fail("Expected EADDRINUSE");
+            }
+        }
+    }
+
+    close(fd1 as u64);
+    close(fd2 as u64);
+}
+
+/// Test non-blocking accept returns EAGAIN
+fn test_named_nonblock_accept() {
+    let server_fd = match socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0) {
+        Ok(fd) => fd,
+        Err(_) => fail("socket() failed"),
+    };
+
+    let addr = SockAddrUn::abstract_socket(b"combined_nonblock");
+
+    if let Err(_) = bind_unix(server_fd, &addr) {
+        close(server_fd as u64);
+        fail("bind() failed");
+    }
+
+    if let Err(_) = listen(server_fd, 5) {
+        close(server_fd as u64);
+        fail("listen() failed");
+    }
+
+    // Try to accept without any pending connections
+    match accept(server_fd, None) {
+        Ok(_) => {
+            close(server_fd as u64);
+            fail("accept() should have returned EAGAIN");
+        }
+        Err(e) => {
+            if e != EAGAIN_RAW {
+                io::print("  Expected EAGAIN, got: ");
+                print_num(e as i64);
+                io::print("\n");
+                close(server_fd as u64);
+                fail("Expected EAGAIN");
+            }
+        }
+    }
+
+    close(server_fd as u64);
+}
+
+/// Test EISCONN when connecting an already-connected socket
+fn test_named_eisconn() {
+    let server_fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => fail("socket() for server failed"),
+    };
+
+    let addr = SockAddrUn::abstract_socket(b"combined_eisconn");
+
+    if let Err(_) = bind_unix(server_fd, &addr) {
+        close(server_fd as u64);
+        fail("bind() failed");
+    }
+
+    if let Err(_) = listen(server_fd, 5) {
+        close(server_fd as u64);
+        fail("listen() failed");
+    }
+
+    let client_fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            close(server_fd as u64);
+            fail("socket() for client failed");
+        }
+    };
+
+    // First connect should succeed
+    if let Err(e) = connect_unix(client_fd, &addr) {
+        io::print("  First connect failed: ");
+        print_num(e as i64);
+        io::print("\n");
+        close(client_fd as u64);
+        close(server_fd as u64);
+        fail("First connect should succeed");
+    }
+
+    // Second connect on same socket should fail with EISCONN
+    match connect_unix(client_fd, &addr) {
+        Ok(_) => {
+            close(client_fd as u64);
+            close(server_fd as u64);
+            fail("Second connect() should have failed with EISCONN");
+        }
+        Err(e) => {
+            if e != EISCONN {
+                io::print("  Expected EISCONN, got: ");
+                print_num(e as i64);
+                io::print("\n");
+                close(client_fd as u64);
+                close(server_fd as u64);
+                fail("Expected EISCONN");
+            }
+        }
+    }
+
+    close(client_fd as u64);
+    close(server_fd as u64);
+}
+
+/// Test accept on a non-listener socket returns error
+fn test_named_accept_non_listener() {
+    // Create an unbound socket (not listening)
+    let fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => fail("socket() failed"),
+    };
+
+    // Try to accept on a socket that's not listening - should return EOPNOTSUPP
+    match accept(fd, None) {
+        Ok(_) => {
+            close(fd as u64);
+            fail("accept() on non-listener should have failed");
+        }
+        Err(e) => {
+            if e != EOPNOTSUPP {
+                io::print("  Expected EOPNOTSUPP, got: ");
+                print_num(e as i64);
+                io::print("\n");
+                close(fd as u64);
+                fail("Expected EOPNOTSUPP");
+            }
+        }
+    }
+
+    close(fd as u64);
 }
 
 #[panic_handler]

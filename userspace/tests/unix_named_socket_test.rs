@@ -77,7 +77,9 @@ fn fail(msg: &str) -> ! {
 // Error codes
 const EAGAIN: i32 = 11;
 const EINVAL: i32 = 22;
+const EOPNOTSUPP: i32 = 95;
 const EADDRINUSE: i32 = 98;
+const EISCONN: i32 = 106;
 const ECONNREFUSED: i32 = 111;
 
 #[no_mangle]
@@ -112,6 +114,16 @@ pub extern "C" fn _start() -> ! {
     // Phase 6: Test backlog full returns ECONNREFUSED
     io::print("Phase 6: Backlog full returns ECONNREFUSED...\n");
     test_backlog_full();
+    io::print("  PASSED\n");
+
+    // Phase 7: Test EISCONN on already-connected socket
+    io::print("Phase 7: EISCONN on already-connected socket...\n");
+    test_eisconn();
+    io::print("  PASSED\n");
+
+    // Phase 8: Test accept on non-listener socket
+    io::print("Phase 8: Accept on non-listener socket...\n");
+    test_accept_non_listener();
     io::print("  PASSED\n");
 
     // All tests passed
@@ -502,6 +514,136 @@ fn test_backlog_full() {
     close(client2_fd as u64);
     close(client1_fd as u64);
     close(server_fd as u64);
+}
+
+/// Test EISCONN when connecting an already-connected socket
+fn test_eisconn() {
+    // Create server socket
+    let server_fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => fail("socket() for server failed"),
+    };
+
+    let addr = SockAddrUn::abstract_socket(b"test_eisconn");
+
+    if let Err(_) = bind_unix(server_fd, &addr) {
+        close(server_fd as u64);
+        fail("bind() failed");
+    }
+
+    if let Err(_) = listen(server_fd, 5) {
+        close(server_fd as u64);
+        fail("listen() failed");
+    }
+
+    // Create client socket and connect
+    let client_fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            close(server_fd as u64);
+            fail("socket() for client failed");
+        }
+    };
+
+    if let Err(e) = connect_unix(client_fd, &addr) {
+        io::print("  First connect failed: ");
+        print_num(e as i64);
+        io::print("\n");
+        close(client_fd as u64);
+        close(server_fd as u64);
+        fail("First connect should succeed");
+    }
+    io::print("  Client connected to server\n");
+
+    // Try to connect again - should fail with EISCONN
+    match connect_unix(client_fd, &addr) {
+        Ok(_) => {
+            close(client_fd as u64);
+            close(server_fd as u64);
+            fail("Second connect() should have failed with EISCONN");
+        }
+        Err(e) => {
+            io::print("  Second connect() returned: ");
+            print_num(e as i64);
+            io::print("\n");
+            if e != EISCONN {
+                close(client_fd as u64);
+                close(server_fd as u64);
+                fail("Expected EISCONN");
+            }
+        }
+    }
+
+    close(client_fd as u64);
+    close(server_fd as u64);
+}
+
+/// Test accept on a non-listener socket returns error
+fn test_accept_non_listener() {
+    // Create an unbound socket (not listening)
+    let fd = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => fail("socket() failed"),
+    };
+
+    // Try to accept on a socket that's not listening
+    // Should return EOPNOTSUPP (operation not supported) since it's not a listener
+    match accept(fd, None) {
+        Ok(_) => {
+            close(fd as u64);
+            fail("accept() on non-listener should have failed");
+        }
+        Err(e) => {
+            io::print("  accept() on non-listener returned: ");
+            print_num(e as i64);
+            io::print("\n");
+            // EOPNOTSUPP is returned because the socket is not a listener type
+            if e != EOPNOTSUPP {
+                close(fd as u64);
+                fail("Expected EOPNOTSUPP");
+            }
+        }
+    }
+
+    // Also test on a bound but non-listening socket
+    let fd2 = match socket(AF_UNIX, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            close(fd as u64);
+            fail("socket() failed");
+        }
+    };
+
+    let addr = SockAddrUn::abstract_socket(b"test_accept_nonlistener");
+
+    if let Err(_) = bind_unix(fd2, &addr) {
+        close(fd as u64);
+        close(fd2 as u64);
+        fail("bind() failed");
+    }
+
+    // Socket is bound but not listening - accept should fail
+    match accept(fd2, None) {
+        Ok(_) => {
+            close(fd as u64);
+            close(fd2 as u64);
+            fail("accept() on bound-but-not-listening should have failed");
+        }
+        Err(e) => {
+            io::print("  accept() on bound socket returned: ");
+            print_num(e as i64);
+            io::print("\n");
+            // Should also be EOPNOTSUPP since it's still not a listener
+            if e != EOPNOTSUPP {
+                close(fd as u64);
+                close(fd2 as u64);
+                fail("Expected EOPNOTSUPP");
+            }
+        }
+    }
+
+    close(fd as u64);
+    close(fd2 as u64);
 }
 
 #[panic_handler]
