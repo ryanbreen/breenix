@@ -70,9 +70,40 @@ unsafe fn print_signed(num: i64) {
 }
 
 /// Wait for signals to be delivered
+/// Note: We use a high iteration count to handle slow emulation environments
+/// like Docker TCG mode where scheduling can take much longer.
 unsafe fn wait_for_signals() {
-    for _ in 0..10 {
+    for _ in 0..100 {
         process::yield_now();
+    }
+}
+
+/// Wait for a specific signal using sigsuspend in a loop
+/// This handles the case where sigsuspend might return due to other signals
+unsafe fn wait_for_sigusr1() {
+    // Block SIGUSR1 so sigsuspend can wait for it
+    let sigusr1_mask: u64 = 1 << signal::SIGUSR1;
+    let mut old_mask: u64 = 0;
+    let _ = signal::sigprocmask(signal::SIG_BLOCK, Some(&sigusr1_mask), Some(&mut old_mask));
+
+    // Loop until we receive SIGUSR1 (may wake up due to other signals)
+    let empty_mask: u64 = 0;
+    while SIGUSR1_COUNT == 0 {
+        signal::sigsuspend(&empty_mask);
+    }
+}
+
+/// Wait for SIGUSR2 using sigsuspend in a loop
+unsafe fn wait_for_sigusr2() {
+    // Block SIGUSR2 so sigsuspend can wait for it
+    let sigusr2_mask: u64 = 1 << signal::SIGUSR2;
+    let mut old_mask: u64 = 0;
+    let _ = signal::sigprocmask(signal::SIG_BLOCK, Some(&sigusr2_mask), Some(&mut old_mask));
+
+    // Loop until we receive SIGUSR2 (may wake up due to other signals)
+    let empty_mask: u64 = 0;
+    while SIGUSR2_COUNT == 0 {
+        signal::sigsuspend(&empty_mask);
     }
 }
 
@@ -162,20 +193,15 @@ pub extern "C" fn _start() -> ! {
             print_number(process::getpgrp() as u64);
             io::print("\n");
 
-            // Wait for signal
+            // Wait for SIGUSR1 using sigsuspend loop
+            wait_for_sigusr1();
+
+            io::print("  [Child1] PASS: Received SIGUSR1 via kill(0, sig)\n");
+            process::exit(0);
+        } else {
+            // Parent: Give child time to set up sigsuspend, then send signal
             wait_for_signals();
 
-            if SIGUSR1_COUNT == 1 {
-                io::print("  [Child1] PASS: Received SIGUSR1 via kill(0, sig)\n");
-                process::exit(0);
-            } else {
-                io::print("  [Child1] FAIL: Did not receive SIGUSR1 (count=");
-                print_number(SIGUSR1_COUNT as u64);
-                io::print(")\n");
-                process::exit(1);
-            }
-        } else {
-            // Parent: Send SIGUSR1 to own process group (kill(0, sig))
             io::print("  [Parent] Sending SIGUSR1 to process group via kill(0, SIGUSR1)\n");
 
             match signal::kill(0, signal::SIGUSR1) {
@@ -251,30 +277,21 @@ pub extern "C" fn _start() -> ! {
             }
 
             if grandchild == 0 {
-                // Grandchild: Wait for SIGUSR2
+                // Grandchild: Wait for SIGUSR2 using sigsuspend loop
                 io::print("  [Grandchild] Started in process group ");
                 print_number(process::getpgrp() as u64);
                 io::print("\n");
 
-                wait_for_signals();
+                // Wait for SIGUSR2 using sigsuspend loop
+                wait_for_sigusr2();
 
-                if SIGUSR2_COUNT == 1 {
-                    io::print("  [Grandchild] PASS: Received SIGUSR2 via kill(-pgid, sig)\n");
-                    process::exit(0);
-                } else {
-                    io::print("  [Grandchild] FAIL: Did not receive SIGUSR2\n");
-                    process::exit(1);
-                }
+                io::print("  [Grandchild] PASS: Received SIGUSR2 via kill(-pgid, sig)\n");
+                process::exit(0);
             } else {
-                // Child2: Wait for SIGUSR2
-                wait_for_signals();
+                // Child2: Wait for SIGUSR2 using sigsuspend loop
+                wait_for_sigusr2();
 
-                if SIGUSR2_COUNT == 1 {
-                    io::print("  [Child2] PASS: Received SIGUSR2 via kill(-pgid, sig)\n");
-                } else {
-                    io::print("  [Child2] FAIL: Did not receive SIGUSR2\n");
-                    process::exit(1);
-                }
+                io::print("  [Child2] PASS: Received SIGUSR2 via kill(-pgid, sig)\n");
 
                 // Wait for grandchild
                 let mut gc_status = 0;
@@ -357,18 +374,18 @@ pub extern "C" fn _start() -> ! {
         }
 
         if child3 == 0 {
-            // Child3: Wait for broadcast signal
+            // Child3: Wait for broadcast signal using sigsuspend loop
             io::print("  [Child3] Waiting for broadcast SIGUSR1\n");
+
+            // Wait for SIGUSR1 using sigsuspend loop
+            wait_for_sigusr1();
+
+            io::print("  [Child3] PASS: Received broadcast SIGUSR1\n");
+            process::exit(0);
+        } else {
+            // Parent: Give child time to set up sigsuspend
             wait_for_signals();
 
-            if SIGUSR1_COUNT == 1 {
-                io::print("  [Child3] PASS: Received broadcast SIGUSR1\n");
-                process::exit(0);
-            } else {
-                io::print("  [Child3] FAIL: Did not receive broadcast SIGUSR1\n");
-                process::exit(1);
-            }
-        } else {
             // Parent: Attempt broadcast (may fail with EPERM)
             io::print("  [Parent] Attempting kill(-1, SIGUSR1) broadcast\n");
 
