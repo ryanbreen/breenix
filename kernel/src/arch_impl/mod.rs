@@ -9,10 +9,17 @@
 //! - `x86_64`: Full support (current primary target)
 //! - `aarch64`: Planned (ARM64 for Apple Silicon VMs)
 
-// Currently we only support x86_64, so export unconditionally.
-// When ARM64 support is added, we'll use cfg to select the appropriate module.
+// Select the implementation with cfg; x86_64 is the current primary target
+// while aarch64 remains planned.
+#[cfg(target_arch = "x86_64")]
 pub mod x86_64;
+#[cfg(target_arch = "x86_64")]
 pub use x86_64 as current;
+
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
+#[cfg(target_arch = "aarch64")]
+pub use aarch64 as current;
 
 pub mod traits;
 pub use traits::*;
