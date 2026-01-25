@@ -549,6 +549,7 @@ fn switch_to_thread(
                         .unwrap_or(false);
 
                     if has_pending_signals && has_saved_context {
+                        raw_serial_char(b'S'); // Signal delivery path entered
                         // SIGNAL DELIVERY PATH: Use saved userspace context for signal delivery
                         log::info!(
                             "Thread {} has pending signals - delivering via saved userspace context",
@@ -638,6 +639,7 @@ fn switch_to_thread(
                             interrupt_frame,
                             saved_regs,
                         );
+                        raw_serial_char(b'D'); // Signal delivered
 
                         // Handle signal result
                         match signal_result {

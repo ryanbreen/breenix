@@ -214,6 +214,7 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                 crate::task::scheduler::with_scheduler(|sched| {
                     sched.unblock_for_signal(thread_id);
                 });
+                // NOTE: set_need_resched() is now called inside unblock_for_signal
                 return SyscallResult::Ok(0);
             } else {
                 log::warn!(
@@ -853,6 +854,7 @@ const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 /// - Ensures saved_rsp points to userspace (prevents using kernel stack)
 /// - Sanitizes saved_rflags (prevents disabling interrupts, changing IOPL)
 pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> SyscallResult {
+    crate::interrupts::context_switch::raw_serial_char(b'R'); // Sigreturn called
     use crate::signal::types::SignalFrame;
 
     // The signal frame is at RSP - 8
@@ -960,6 +962,7 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         signal_frame.saved_rsp
     );
 
+    crate::interrupts::context_switch::raw_serial_char(b'X'); // Sigreturn complete
     // Return value is ignored - the original RAX was restored above
     // But return 0 to indicate success in case anything checks
     SyscallResult::Ok(0)
