@@ -2,39 +2,19 @@
 //!
 //! This module implements real threads with preemptive scheduling,
 //! building on top of the existing async executor infrastructure.
+//!
+//! Architecture-specific details:
+//! - x86_64: Uses RIP, RSP, RFLAGS, and general purpose registers (RAX-R15)
+//! - AArch64: Uses PC (ELR_EL1), SP, SPSR, and general purpose registers (X0-X30)
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
+// Use the shared arch_stub VirtAddr for non-x86_64 architectures
 #[cfg(not(target_arch = "x86_64"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtAddr(u64);
-
-#[cfg(not(target_arch = "x86_64"))]
-impl VirtAddr {
-    pub const fn new(addr: u64) -> Self {
-        Self(addr)
-    }
-
-    pub const fn as_u64(self) -> u64 {
-        self.0
-    }
-
-    pub const fn is_null(self) -> bool {
-        self.0 == 0
-    }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-impl core::ops::Sub<u64> for VirtAddr {
-    type Output = VirtAddr;
-
-    fn sub(self, rhs: u64) -> VirtAddr {
-        VirtAddr(self.0 - rhs)
-    }
-}
+pub use crate::memory::arch_stub::VirtAddr;
 
 /// Global thread ID counter
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is reserved for kernel thread
@@ -71,7 +51,12 @@ pub enum ThreadPrivilege {
     User,
 }
 
-/// CPU context saved during context switch
+// =============================================================================
+// x86_64 CPU Context
+// =============================================================================
+
+/// CPU context saved during context switch (x86_64)
+#[cfg(target_arch = "x86_64")]
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct CpuContext {
@@ -99,11 +84,12 @@ pub struct CpuContext {
     /// CPU flags
     pub rflags: u64,
 
-    /// Segment registers (for future userspace support)
+    /// Segment registers (for userspace support)
     pub cs: u64,
     pub ss: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl CpuContext {
     /// Create a CpuContext from a syscall frame (captures actual register values at syscall time)
     pub fn from_syscall_frame(frame: &crate::syscall::handler::SyscallFrame) -> Self {
@@ -175,6 +161,102 @@ impl CpuContext {
                 ThreadPrivilege::Kernel => 0x10, // Kernel data segment
                 ThreadPrivilege::User => 0x2b,   // User data segment (based on GDT log)
             },
+        }
+    }
+}
+
+// =============================================================================
+// AArch64 CPU Context
+// =============================================================================
+
+/// CPU context saved during context switch (AArch64)
+///
+/// ARM64 calling convention (AAPCS64):
+/// - X0-X7: Arguments/results (caller-saved)
+/// - X8: Indirect result (caller-saved)
+/// - X9-X15: Temporaries (caller-saved)
+/// - X16-X17: Intra-procedure call (caller-saved)
+/// - X18: Platform register (reserved)
+/// - X19-X28: Callee-saved registers
+/// - X29: Frame pointer (FP)
+/// - X30: Link register (LR) - return address
+/// - SP: Stack pointer
+/// - PC: Program counter (stored in ELR_EL1 for exceptions)
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug, Clone)]
+#[repr(C)]
+pub struct CpuContext {
+    // Callee-saved registers (must be preserved across calls)
+    pub x19: u64,
+    pub x20: u64,
+    pub x21: u64,
+    pub x22: u64,
+    pub x23: u64,
+    pub x24: u64,
+    pub x25: u64,
+    pub x26: u64,
+    pub x27: u64,
+    pub x28: u64,
+    pub x29: u64,  // Frame pointer (FP)
+    pub x30: u64,  // Link register (LR) - return address for context switch
+
+    /// Stack pointer
+    pub sp: u64,
+
+    // For userspace threads:
+    /// User stack pointer (SP_EL0)
+    pub sp_el0: u64,
+    /// Exception return address (user PC)
+    pub elr_el1: u64,
+    /// Saved program status (includes EL0 mode bits)
+    pub spsr_el1: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl CpuContext {
+    /// Create a new CPU context for a thread entry point
+    pub fn new(entry_point: VirtAddr, stack_pointer: VirtAddr, privilege: ThreadPrivilege) -> Self {
+        match privilege {
+            ThreadPrivilege::Kernel => Self::new_kernel_thread(entry_point.as_u64(), stack_pointer.as_u64()),
+            ThreadPrivilege::User => Self::new_user_thread(entry_point.as_u64(), stack_pointer.as_u64(), 0),
+        }
+    }
+
+    /// Create a context for a new kernel thread.
+    ///
+    /// The thread will start executing at `entry_point` with the given stack.
+    pub fn new_kernel_thread(entry_point: u64, stack_top: u64) -> Self {
+        Self {
+            x19: 0, x20: 0, x21: 0, x22: 0,
+            x23: 0, x24: 0, x25: 0, x26: 0,
+            x27: 0, x28: 0, x29: 0,
+            x30: entry_point,  // LR = entry point (ret will jump here)
+            sp: stack_top,
+            sp_el0: 0,
+            elr_el1: 0,
+            // SPSR with EL1h mode, interrupts masked initially
+            spsr_el1: 0x3c5, // EL1h, DAIF masked
+        }
+    }
+
+    /// Create a context for a new userspace thread.
+    ///
+    /// The thread will start executing at `entry_point` in EL0 with the given
+    /// user stack. Kernel stack is used for exception handling.
+    pub fn new_user_thread(
+        entry_point: u64,
+        user_stack_top: u64,
+        kernel_stack_top: u64,
+    ) -> Self {
+        Self {
+            x19: 0, x20: 0, x21: 0, x22: 0,
+            x23: 0, x24: 0, x25: 0, x26: 0,
+            x27: 0, x28: 0, x29: 0, x30: 0,
+            sp: kernel_stack_top,      // Kernel SP for exceptions
+            sp_el0: user_stack_top,    // User stack pointer
+            elr_el1: entry_point,      // Where to jump in userspace
+            // SPSR for EL0: mode=0 (EL0t), DAIF clear (interrupts enabled)
+            spsr_el1: 0x0,             // EL0t with interrupts enabled
         }
     }
 }
@@ -258,7 +340,14 @@ impl Clone for Thread {
 }
 
 impl Thread {
-    /// Create a new kernel thread with an argument
+    // =========================================================================
+    // x86_64-specific constructors
+    // =========================================================================
+
+    /// Create a new kernel thread with an argument (x86_64)
+    ///
+    /// On x86_64, the argument is passed in RDI per System V ABI.
+    #[cfg(target_arch = "x86_64")]
     pub fn new_kernel(
         name: alloc::string::String,
         entry_point: extern "C" fn(u64) -> !,
@@ -307,7 +396,61 @@ impl Thread {
         })
     }
 
-    /// Create a new thread
+    /// Create a new kernel thread with an argument (AArch64)
+    ///
+    /// On AArch64, the argument is passed in X0 per AAPCS64.
+    #[cfg(target_arch = "aarch64")]
+    pub fn new_kernel(
+        name: alloc::string::String,
+        entry_point: extern "C" fn(u64) -> !,
+        arg: u64,
+    ) -> Result<Self, &'static str> {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+
+        // Allocate a kernel stack
+        const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16 KiB
+        let stack = crate::memory::alloc_kernel_stack(KERNEL_STACK_SIZE)
+            .ok_or("Failed to allocate kernel stack")?;
+
+        let stack_top = stack.top();
+        let stack_bottom = stack.bottom();
+
+        // Set up initial context for kernel thread
+        // For AArch64, we create a context where the entry point is in X30 (LR)
+        // and the argument will be passed in X0 when we set up a proper trampoline
+        let mut context = CpuContext::new_kernel_thread(entry_point as u64, stack_top.as_u64());
+
+        // ARM64: We can't directly set X0 in callee-saved context.
+        // For kernel threads with arguments, we need the assembly trampoline
+        // to load the argument from somewhere. For now, store it in x19 (callee-saved)
+        // and have the entry point read it from there.
+        context.x19 = arg;
+
+        // Kernel threads don't need TLS
+        let tls_block = VirtAddr::new(0);
+
+        Ok(Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: Some(stack_top),
+            kernel_stack_allocation: Some(stack),
+            tls_block,
+            priority: 64,
+            time_slice: 20,
+            entry_point: None,
+            privilege: ThreadPrivilege::Kernel,
+            has_started: false,
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
+        })
+    }
+
+    /// Create a new thread (x86_64)
+    #[cfg(target_arch = "x86_64")]
     pub fn new(
         name: alloc::string::String,
         entry_point: fn(),
@@ -346,7 +489,51 @@ impl Thread {
         }
     }
 
-    /// Create a new userspace thread
+    /// Create a new thread (AArch64)
+    ///
+    /// Note: Thread entry trampolines are not yet implemented for AArch64.
+    /// This is a stub for future implementation.
+    #[cfg(target_arch = "aarch64")]
+    #[allow(dead_code)]
+    pub fn new(
+        name: alloc::string::String,
+        entry_point: fn(),
+        stack_top: VirtAddr,
+        stack_bottom: VirtAddr,
+        tls_block: VirtAddr,
+        privilege: ThreadPrivilege,
+    ) -> Self {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+
+        // Set up initial context - entry point goes directly in X30 (LR)
+        let context = CpuContext::new(
+            VirtAddr::new(entry_point as u64),
+            stack_top,
+            privilege,
+        );
+
+        Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: None,
+            kernel_stack_allocation: None,
+            tls_block,
+            priority: 128,
+            time_slice: 10,
+            entry_point: Some(entry_point),
+            privilege,
+            has_started: false,
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
+        }
+    }
+
+    /// Create a new userspace thread (x86_64)
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     pub fn new_userspace(
         name: alloc::string::String,
@@ -397,6 +584,53 @@ impl Thread {
         }
     }
 
+    /// Create a new userspace thread (AArch64)
+    ///
+    /// Note: TLS support is not yet implemented for AArch64.
+    #[cfg(target_arch = "aarch64")]
+    #[allow(dead_code)]
+    pub fn new_userspace(
+        name: alloc::string::String,
+        entry_point: VirtAddr,
+        stack_top: VirtAddr,
+        tls_block: VirtAddr,
+    ) -> Self {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::SeqCst);
+
+        // For AArch64, use a simple TLS placeholder
+        let actual_tls_block = if tls_block.is_null() {
+            VirtAddr::new(0x10000 + id * 0x1000)
+        } else {
+            tls_block
+        };
+
+        // Calculate stack bottom (stack grows down)
+        const USER_STACK_SIZE: usize = 128 * 1024;
+        let stack_bottom = stack_top - USER_STACK_SIZE as u64;
+
+        // Set up initial context for userspace
+        let context = CpuContext::new(entry_point, stack_top, ThreadPrivilege::User);
+
+        Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: None,
+            kernel_stack_allocation: None,
+            tls_block: actual_tls_block,
+            priority: 128,
+            time_slice: 10,
+            entry_point: None,
+            privilege: ThreadPrivilege::User,
+            has_started: false,
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
+        }
+    }
+
     /// Get the thread ID
     pub fn id(&self) -> u64 {
         self.id
@@ -430,7 +664,8 @@ impl Thread {
         self.state = ThreadState::Terminated;
     }
 
-    /// Create a new thread with a specific ID (used for fork)
+    /// Create a new thread with a specific ID (used for fork) - x86_64 only
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     pub fn new_with_id(
         id: u64,
@@ -467,10 +702,52 @@ impl Thread {
             saved_userspace_context: None,
         }
     }
+
+    /// Create a new thread with a specific ID (used for fork) - AArch64
+    #[cfg(target_arch = "aarch64")]
+    #[allow(dead_code)]
+    pub fn new_with_id(
+        id: u64,
+        name: alloc::string::String,
+        entry_point: fn(),
+        stack_top: VirtAddr,
+        stack_bottom: VirtAddr,
+        tls_block: VirtAddr,
+        privilege: ThreadPrivilege,
+    ) -> Self {
+        // Set up initial context - entry point goes directly in X30 (LR)
+        let context = CpuContext::new(
+            VirtAddr::new(entry_point as u64),
+            stack_top,
+            privilege,
+        );
+
+        Self {
+            id,
+            name,
+            state: ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: None,
+            kernel_stack_allocation: None,
+            tls_block,
+            priority: 128,
+            time_slice: 10,
+            entry_point: Some(entry_point),
+            privilege,
+            has_started: false,
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
+        }
+    }
 }
 
-/// Thread entry point trampoline
-/// This function is called when a thread starts for the first time
+/// Thread entry point trampoline (x86_64)
+///
+/// This function is called when a thread starts for the first time.
+/// It retrieves the actual entry point from per-CPU data and calls it.
+#[cfg(target_arch = "x86_64")]
 extern "C" fn thread_entry_trampoline() -> ! {
     // Get current thread from per-CPU data
     let entry_point = crate::per_cpu::current_thread()

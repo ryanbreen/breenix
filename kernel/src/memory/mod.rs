@@ -63,15 +63,18 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     // CRITICAL: Update kernel_cr3 in per-CPU data to the new master PML4
     // per_cpu::init() already ran and set kernel_cr3 to the bootloader's CR3
     // Now that we've switched to the master PML4, we must update it
+    #[cfg(target_arch = "x86_64")]
     {
-        #[cfg(target_arch = "x86_64")]
         use x86_64::registers::control::Cr3;
-        #[cfg(not(target_arch = "x86_64"))]
-        use crate::memory::arch_stub::Cr3;
         let (current_frame, _) = Cr3::read();
         let master_cr3 = current_frame.start_address().as_u64();
         log::info!("CRITICAL: Updating kernel_cr3 to master PML4: {:#x}", master_cr3);
         crate::per_cpu::set_kernel_cr3(master_cr3);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 uses TTBR0/TTBR1 for page tables; kernel pages are in TTBR1
+        log::info!("ARM64: Page table setup handled by boot.S TTBR configuration");
     }
 
     // Migrate any existing processes (though there shouldn't be any yet)
@@ -85,11 +88,22 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
 
     // CRITICAL: Recreate mapper after CR3 switch to master PML4
     // The old mapper pointed to bootloader's PML4, which is now stale
+    #[cfg(target_arch = "x86_64")]
     let mapper = unsafe { paging::init(physical_memory_offset) };
+    #[cfg(not(target_arch = "x86_64"))]
+    let _mapper = unsafe { paging::init(physical_memory_offset) };
 
     // Initialize heap
-    log::info!("Initializing heap allocator...");
-    heap::init(&mapper).expect("heap initialization failed");
+    // For ARM64, the heap is initialized in main_aarch64.rs with a simple bump allocator
+    #[cfg(target_arch = "x86_64")]
+    {
+        log::info!("Initializing heap allocator...");
+        heap::init(&mapper).expect("heap initialization failed");
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        log::info!("ARM64: Using bump allocator from main_aarch64.rs");
+    }
 
     // Initialize stack allocation system
     log::info!("Initializing stack allocation system...");

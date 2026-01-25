@@ -10,7 +10,9 @@
 //! `interrupts/context_switch.rs`.
 
 pub mod constants;
+#[cfg(target_arch = "x86_64")]
 pub mod delivery;
+#[cfg(target_arch = "x86_64")]
 pub mod trampoline;
 pub mod types;
 

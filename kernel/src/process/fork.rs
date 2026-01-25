@@ -8,6 +8,11 @@
 //!
 //! 2. **Full Copy** - `copy_user_pages()`: Immediately copies all pages. Used
 //!    as fallback and for testing.
+//!
+//! Note: This module is currently x86_64-only due to heavy use of x86_64-specific
+//! paging structures and TLB operations.
+
+#![cfg(target_arch = "x86_64")]
 
 use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::frame_metadata::frame_incref;

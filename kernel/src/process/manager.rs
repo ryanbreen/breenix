@@ -1,4 +1,9 @@
 //! Process manager - handles process lifecycle and scheduling
+//!
+//! Note: This module is currently x86_64-only due to heavy use of x86_64-specific
+//! paging structures and page table operations.
+
+#![cfg(target_arch = "x86_64")]
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

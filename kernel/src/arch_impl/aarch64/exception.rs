@@ -9,6 +9,13 @@ use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
 use crate::arch_impl::traits::SyscallFrame;
 
+/// ARM64 syscall result type (mirrors x86_64 version)
+#[derive(Debug)]
+pub enum SyscallResult {
+    Ok(u64),
+    Err(u64),
+}
+
 /// Exception Syndrome Register (ESR_EL1) exception class values
 mod exception_class {
     pub const UNKNOWN: u32 = 0b000000;
@@ -84,23 +91,35 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
     }
 }
 
+/// Syscall numbers (Linux/Breenix ABI compatible)
+mod syscall_nums {
+    // Core syscalls
+    pub const EXIT: u64 = 0;
+    pub const WRITE: u64 = 1;
+    pub const READ: u64 = 2;
+    pub const YIELD: u64 = 3;        // Breenix: sched_yield
+    pub const GET_TIME: u64 = 4;     // Breenix: get_time (deprecated)
+    pub const CLOSE: u64 = 6;        // Breenix: close
+    pub const BRK: u64 = 12;         // Linux: brk
+
+    // Process syscalls
+    pub const GETPID: u64 = 39;
+    pub const GETTID: u64 = 186;
+    pub const CLOCK_GETTIME: u64 = 228;
+}
+
 /// Handle a syscall from userspace (or kernel for testing)
 ///
 /// Uses the SyscallFrame trait to extract arguments in an arch-agnostic way.
+/// ARM64-native implementation handles syscalls directly.
 fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
     let syscall_num = frame.syscall_number();
     let arg1 = frame.arg1();
     let arg2 = frame.arg2();
     let arg3 = frame.arg3();
-    let _arg4 = frame.arg4();
-    let _arg5 = frame.arg5();
-    let _arg6 = frame.arg6();
 
-    // For early boot testing, handle a few basic syscalls directly
-    // This avoids pulling in the full syscall infrastructure which has x86_64 dependencies
-    let result: i64 = match syscall_num {
-        // Exit (syscall 0)
-        0 => {
+    let result = match syscall_num {
+        syscall_nums::EXIT => {
             let exit_code = arg1 as i32;
             crate::serial_println!("[syscall] exit({})", exit_code);
             crate::serial_println!();
@@ -111,73 +130,129 @@ fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
             crate::serial_println!();
 
             // For now, just halt - real implementation would terminate the process
-            // and schedule another task
             loop {
                 unsafe { core::arch::asm!("wfi"); }
             }
         }
 
-        // Write (syscall 1) - write to fd 1 (stdout) or 2 (stderr)
-        1 => {
-            let fd = arg1;
-            let buf = arg2 as *const u8;
-            let count = arg3 as usize;
-
-            if fd == 1 || fd == 2 {
-                // Write to serial console
-                for i in 0..count {
-                    let byte = unsafe { *buf.add(i) };
-                    crate::serial_aarch64::write_byte(byte);
-                }
-                count as i64
-            } else {
-                -9i64 // EBADF
-            }
+        syscall_nums::WRITE => {
+            sys_write(arg1, arg2, arg3)
         }
 
-        // GetPid (syscall 39) - return a dummy PID
-        39 => {
-            1i64 // Return PID 1 for init
+        syscall_nums::READ => {
+            // For now, read is not implemented
+            SyscallResult::Err(38) // ENOSYS
         }
 
-        // GetTid (syscall 186) - return a dummy TID
-        186 => {
-            1i64 // Return TID 1
+        syscall_nums::YIELD => {
+            // Yield does nothing for single-process kernel
+            SyscallResult::Ok(0)
         }
 
-        // ClockGetTime (syscall 228)
-        228 => {
-            let clock_id = arg1 as u32;
-            let timespec_ptr = arg2 as *mut [u64; 2];
-
-            if timespec_ptr.is_null() {
-                -14i64 // EFAULT
-            } else if clock_id > 1 {
-                -22i64 // EINVAL
-            } else {
-                // Use the timer to get monotonic time
-                if let Some((secs, nanos)) = crate::arch_impl::aarch64::timer::monotonic_time() {
-                    unsafe {
-                        (*timespec_ptr)[0] = secs;
-                        (*timespec_ptr)[1] = nanos;
-                    }
-                    0i64
-                } else {
-                    -22i64 // EINVAL - timer not calibrated
-                }
-            }
+        syscall_nums::GET_TIME => {
+            // Legacy get_time syscall - return milliseconds
+            let ms = crate::time::get_monotonic_time();
+            SyscallResult::Ok(ms)
         }
 
-        // Unknown syscall
+        syscall_nums::CLOSE => {
+            // Close syscall - no file descriptors yet, just succeed
+            SyscallResult::Ok(0)
+        }
+
+        syscall_nums::BRK => {
+            // brk syscall - memory management
+            // For now, return success with same address (no-op)
+            SyscallResult::Ok(arg1)
+        }
+
+        syscall_nums::GETPID => {
+            // Return a fixed PID for now (1 = init)
+            SyscallResult::Ok(1)
+        }
+
+        syscall_nums::GETTID => {
+            // Return a fixed TID for now (1 = main thread)
+            SyscallResult::Ok(1)
+        }
+
+        syscall_nums::CLOCK_GETTIME => {
+            sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec)
+        }
+
         _ => {
-            crate::serial_println!("[syscall] unimplemented syscall {} (args: {:#x}, {:#x}, {:#x})",
-                syscall_num, arg1, arg2, arg3);
-            -38i64 // ENOSYS
+            crate::serial_println!("[syscall] ENOSYS for syscall {}", syscall_num);
+            SyscallResult::Err(38) // ENOSYS
         }
     };
 
+    // Convert SyscallResult to i64 return value
+    let return_value: i64 = match result {
+        SyscallResult::Ok(val) => val as i64,
+        SyscallResult::Err(errno) => -(errno as i64),
+    };
+
     // Set return value (negative values indicate errors in Linux convention)
-    frame.set_return_value(result as u64);
+    frame.set_return_value(return_value as u64);
+}
+
+/// Timespec structure for clock_gettime
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Timespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
+}
+
+/// ARM64 sys_write implementation
+fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
+    // Only support stdout (1) and stderr (2) for now
+    if fd != 1 && fd != 2 {
+        return SyscallResult::Err(9); // EBADF
+    }
+
+    // Validate buffer pointer (basic check)
+    if buf == 0 {
+        return SyscallResult::Err(14); // EFAULT
+    }
+
+    // Write each byte to serial
+    for i in 0..count {
+        let byte = unsafe { *((buf + i) as *const u8) };
+        crate::serial_print!("{}", byte as char);
+    }
+
+    SyscallResult::Ok(count)
+}
+
+/// ARM64 sys_clock_gettime implementation
+fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> SyscallResult {
+    // Validate pointer
+    if user_timespec_ptr.is_null() {
+        return SyscallResult::Err(14); // EFAULT
+    }
+
+    // Get time from the arch-agnostic time module
+    let (tv_sec, tv_nsec) = match clock_id {
+        0 => { // CLOCK_REALTIME
+            crate::time::get_real_time_ns()
+        }
+        1 => { // CLOCK_MONOTONIC
+            let (secs, nanos) = crate::time::get_monotonic_time_ns();
+            (secs as i64, nanos as i64)
+        }
+        _ => {
+            return SyscallResult::Err(22); // EINVAL
+        }
+    };
+
+    // Write to userspace
+    unsafe {
+        (*user_timespec_ptr).tv_sec = tv_sec;
+        (*user_timespec_ptr).tv_nsec = tv_nsec;
+    }
+
+    SyscallResult::Ok(0)
 }
 
 /// PL011 UART IRQ number (SPI 1, which is IRQ 33)

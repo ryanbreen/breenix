@@ -16,7 +16,8 @@ use spin::Mutex;
 /// PL011 UART base address for QEMU virt machine.
 const PL011_BASE: usize = 0x0900_0000;
 
-/// PL011 Register offsets
+/// PL011 Register offsets - complete register map for UART configuration
+#[allow(dead_code)]
 mod reg {
     /// Data Register (read/write)
     pub const DR: usize = 0x00;

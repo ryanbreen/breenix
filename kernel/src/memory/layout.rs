@@ -223,27 +223,34 @@ pub fn log_kernel_layout() {
     log_control_structures();
 }
 
-/// Log GDT, IDT, TSS, and per-CPU information
+/// Log GDT, IDT, TSS, and per-CPU information (x86_64 only)
+#[cfg(target_arch = "x86_64")]
 fn log_control_structures() {
     use crate::gdt;
     use crate::interrupts;
     use crate::per_cpu;
-    
+
     // Get GDT info
     let gdt_info = gdt::get_gdt_info();
     log::info!("KLAYOUT: GDT base={:#x} limit={}", gdt_info.0, gdt_info.1);
-    
-    // Get IDT info  
+
+    // Get IDT info
     let idt_info = interrupts::get_idt_info();
     log::info!("KLAYOUT: IDT base={:#x} limit={}", idt_info.0, idt_info.1);
-    
+
     // Get TSS info
     let tss_info = gdt::get_tss_info();
     log::info!("KLAYOUT: TSS base={:#x} RSP0={:#x}", tss_info.0, tss_info.1);
-    
+
     // Get per-CPU info
     let percpu_info = per_cpu::get_percpu_info();
     log::info!("KLAYOUT: Per-CPU base={:#x} size={:#x}", percpu_info.0, percpu_info.1);
+}
+
+/// Log control structures (ARM64 - minimal implementation)
+#[cfg(target_arch = "aarch64")]
+fn log_control_structures() {
+    log::info!("KLAYOUT: ARM64 - using exception vectors and TPIDR_EL1 for per-CPU");
 }
 
 // === User Space Address Validation Functions ===

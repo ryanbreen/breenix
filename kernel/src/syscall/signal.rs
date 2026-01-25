@@ -12,6 +12,13 @@ use super::userptr::{copy_from_user, copy_to_user};
 use crate::process::{manager, ProcessId};
 use crate::signal::constants::*;
 use crate::signal::types::{SignalAction, StackT};
+use crate::arch_impl::traits::CpuOps;
+
+// Architecture-specific CPU type for interrupt control
+#[cfg(target_arch = "x86_64")]
+type Cpu = crate::arch_impl::x86_64::X86Cpu;
+#[cfg(target_arch = "aarch64")]
+type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 /// Process ID of the init process (cannot receive signals from kill -1)
 const INIT_PID: u64 = 1;
@@ -714,7 +721,7 @@ pub fn sys_pause() -> SyscallResult {
     let mut _loop_count = 0u64;
     loop {
         crate::task::scheduler::yield_current();
-        x86_64::instructions::interrupts::enable_and_hlt();
+        Cpu::halt_with_interrupts();
 
         _loop_count += 1;
         let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -806,7 +813,7 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
     let mut loop_count = 0u64;
     loop {
         crate::task::scheduler::yield_current();
-        x86_64::instructions::interrupts::enable_and_hlt();
+        Cpu::halt_with_interrupts();
 
         loop_count += 1;
         if loop_count % 100 == 0 {
@@ -1305,7 +1312,7 @@ pub fn sys_sigsuspend_with_frame(
     let mut loop_count = 0u64;
     loop {
         crate::task::scheduler::yield_current();
-        x86_64::instructions::interrupts::enable_and_hlt();
+        Cpu::halt_with_interrupts();
 
         loop_count += 1;
         if loop_count % 100 == 0 {

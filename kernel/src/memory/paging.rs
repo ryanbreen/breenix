@@ -1,4 +1,7 @@
+#[cfg(target_arch = "x86_64")]
 use crate::task::thread::ThreadPrivilege;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::ThreadPrivilege;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]

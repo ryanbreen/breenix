@@ -1,4 +1,8 @@
 //! ELF64 loader for executing userspace programs
+//!
+//! Note: This module is x86_64-only. ARM64 has its own ELF loader in arch_impl/aarch64/elf.rs
+
+#![cfg(target_arch = "x86_64")]
 
 use core::mem;
 use x86_64::{

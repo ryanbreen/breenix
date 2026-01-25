@@ -64,6 +64,7 @@ impl LogBuffer {
         self.lines.push_back(line);
     }
 
+    #[allow(dead_code)] // Part of LineHistory API for future scrollback
     fn iter(&self) -> impl Iterator<Item = &String> {
         self.lines.iter()
     }
@@ -488,12 +489,14 @@ pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
 
     // Flush after writing
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        #[cfg(target_arch = "x86_64")]
         if let Some(mut fb_guard) = fb.try_lock() {
-            #[cfg(target_arch = "x86_64")]
             if let Some(db) = fb_guard.double_buffer_mut() {
                 db.flush_if_dirty();
             }
-            #[cfg(target_arch = "aarch64")]
+        }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(fb_guard) = fb.try_lock() {
             fb_guard.flush();
         }
     }

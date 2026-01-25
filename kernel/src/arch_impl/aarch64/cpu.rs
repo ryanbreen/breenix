@@ -85,6 +85,41 @@ impl CpuOps for Aarch64Cpu {
             );
         }
     }
+
+    /// Execute a closure with interrupts disabled.
+    ///
+    /// Saves the current DAIF state, disables IRQs, runs the closure,
+    /// and restores the previous DAIF state.
+    #[inline]
+    fn without_interrupts<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        // Save current DAIF state
+        let daif: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack));
+        }
+
+        // Disable IRQs
+        unsafe {
+            core::arch::asm!("msr daifset, #2", options(nomem, nostack));
+        }
+
+        // Execute the closure
+        let result = f();
+
+        // Restore previous DAIF state (only restore IRQ bit to avoid affecting other flags)
+        if (daif & DAIF_IRQ_BIT) == 0 {
+            // IRQs were enabled before, re-enable them
+            unsafe {
+                core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+            }
+        }
+        // If IRQs were disabled, leave them disabled (don't change anything)
+
+        result
+    }
 }
 
 // =============================================================================

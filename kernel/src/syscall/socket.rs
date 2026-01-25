@@ -8,6 +8,13 @@ use crate::socket::types::{AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM, SockAddrIn
 use crate::socket::udp::UdpSocket;
 use crate::socket::unix::UnixSocket;
 use crate::ipc::fd::FdKind;
+use crate::arch_impl::traits::CpuOps;
+
+// Architecture-specific CPU type for interrupt control
+#[cfg(target_arch = "x86_64")]
+type Cpu = crate::arch_impl::x86_64::X86Cpu;
+#[cfg(target_arch = "aarch64")]
+type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 const SOCK_NONBLOCK: u64 = 0x800;
 const SOCK_CLOEXEC: u64 = 0x80000;
@@ -449,7 +456,7 @@ pub fn sys_sendto(
 ///
 /// ```text
 /// SYSCALL PATH: Disables interrupts before acquiring locks
-///   x86_64::instructions::interrupts::without_interrupts(|| {
+///   Cpu::without_interrupts(|| {
 ///       socket_ref.lock().register_waiter(thread_id);
 ///   });
 ///
@@ -546,7 +553,7 @@ pub fn sys_recvfrom(
         // arrives between checking and blocking.
         // CRITICAL: Disable interrupts while holding waiting_threads lock to prevent
         // deadlock with softirq (which runs in irq_exit before returning to us).
-        x86_64::instructions::interrupts::without_interrupts(|| {
+        Cpu::without_interrupts(|| {
             socket_ref.lock().register_waiter(thread_id);
         });
 
@@ -557,12 +564,12 @@ pub fn sys_recvfrom(
         // CRITICAL: Must disable interrupts to prevent deadlock with softirq.
         // If we hold rx_queue lock and NIC interrupt fires, softirq will try to
         // acquire the same lock in enqueue_packet() -> deadlock!
-        let packet_opt = x86_64::instructions::interrupts::without_interrupts(|| {
+        let packet_opt = Cpu::without_interrupts(|| {
             socket_ref.lock().recv_from()
         });
         if let Some(packet) = packet_opt {
             // Data was available - unregister from waiters
-            x86_64::instructions::interrupts::without_interrupts(|| {
+            Cpu::without_interrupts(|| {
                 socket_ref.lock().unregister_waiter(thread_id);
             });
 
@@ -597,7 +604,7 @@ pub fn sys_recvfrom(
 
         // No data available
         if is_nonblocking {
-            x86_64::instructions::interrupts::without_interrupts(|| {
+            Cpu::without_interrupts(|| {
                 socket_ref.lock().unregister_waiter(thread_id);
             });
             return SyscallResult::Err(EAGAIN as u64);
@@ -631,7 +638,7 @@ pub fn sys_recvfrom(
         // to wake us but unblock() would have done nothing (we weren't blocked yet).
         // Now that we're blocked, check if data arrived and unblock ourselves.
         // NOTE: Must disable interrupts - has_data() acquires rx_queue lock, same as enqueue_packet()
-        let data_arrived = x86_64::instructions::interrupts::without_interrupts(|| {
+        let data_arrived = Cpu::without_interrupts(|| {
             socket_ref.lock().has_data()
         });
         if data_arrived {
@@ -643,7 +650,7 @@ pub fn sys_recvfrom(
                     thread.set_ready();
                 }
             });
-            x86_64::instructions::interrupts::without_interrupts(|| {
+            Cpu::without_interrupts(|| {
                 socket_ref.lock().unregister_waiter(thread_id);
             });
             continue; // Retry the receive loop
@@ -658,7 +665,7 @@ pub fn sys_recvfrom(
         // When packet arrives via softirq, enqueue_packet() will unblock us
         loop {
             crate::task::scheduler::yield_current();
-            x86_64::instructions::interrupts::enable_and_hlt();
+            Cpu::halt_with_interrupts();
 
             // Check if we were unblocked (thread state changed from Blocked)
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -696,7 +703,7 @@ pub fn sys_recvfrom(
         crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
-        x86_64::instructions::interrupts::without_interrupts(|| {
+        Cpu::without_interrupts(|| {
             socket_ref.lock().unregister_waiter(thread_id);
         });
 
@@ -1017,7 +1024,7 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
 
             // Still blocked - yield and wait for interrupt (timer or NIC)
             crate::task::scheduler::yield_current();
-            x86_64::instructions::interrupts::enable_and_hlt();
+            Cpu::halt_with_interrupts();
         }
 
         // Clear blocked_in_syscall
@@ -1157,7 +1164,7 @@ fn sys_accept_unix(
 
             // Still blocked - yield and wait for interrupt
             crate::task::scheduler::yield_current();
-            x86_64::instructions::interrupts::enable_and_hlt();
+            Cpu::halt_with_interrupts();
         }
 
         // Clear blocked_in_syscall
@@ -1429,7 +1436,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
             // Still blocked - yield and wait for interrupt (timer or NIC)
             crate::task::scheduler::yield_current();
-            x86_64::instructions::interrupts::enable_and_hlt();
+            Cpu::halt_with_interrupts();
         }
 
         // Clear blocked_in_syscall

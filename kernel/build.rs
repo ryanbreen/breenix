@@ -59,10 +59,13 @@ fn main() {
         println!("cargo:rustc-link-arg={}/breakpoint_entry.o", out_dir);
     }
 
-    // For aarch64, we would assemble ARM64 boot code here
-    // (Currently using inline assembly in Rust instead)
-    
-    // Use our custom linker script
+    // For aarch64, use our custom linker script
+    if target.contains("aarch64") {
+        // Use ARM64-specific linker script
+        println!("cargo:rustc-link-arg=-T{}/src/arch_impl/aarch64/linker.ld", manifest_dir);
+    }
+
+    // Use our custom linker script for x86_64
     // Temporarily disabled to test with bootloader's default
     // println!("cargo:rustc-link-arg=-Tkernel/linker.ld");
     
@@ -71,6 +74,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/breakpoint_entry.asm");
     println!("cargo:rerun-if-changed=linker.ld");
+    println!("cargo:rerun-if-changed=src/arch_impl/aarch64/linker.ld");
     
     // Build userspace test programs with libbreenix
     // Use absolute path derived from CARGO_MANIFEST_DIR (kernel/)

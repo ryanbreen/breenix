@@ -11,16 +11,21 @@
 
 #![no_std]
 #![no_main]
-#![cfg(target_arch = "aarch64")]
 #![feature(alloc_error_handler)]
 
+// On non-aarch64, this binary is a stub. All real code is gated.
+#[cfg(target_arch = "aarch64")]
 extern crate alloc;
+#[cfg(target_arch = "aarch64")]
 extern crate rlibc; // Provides memcpy, memset, etc.
 
+#[cfg(target_arch = "aarch64")]
 use core::panic::PanicInfo;
+#[cfg(target_arch = "aarch64")]
 use core::alloc::{GlobalAlloc, Layout};
 
 // Import the kernel library macros and modules
+#[cfg(target_arch = "aarch64")]
 #[macro_use]
 extern crate kernel;
 
@@ -30,12 +35,16 @@ extern crate kernel;
 // =============================================================================
 
 /// Simple bump allocator that uses a fixed buffer
+#[cfg(target_arch = "aarch64")]
 struct BumpAllocator;
 
 /// 256KB heap buffer for early boot allocations
+#[cfg(target_arch = "aarch64")]
 static mut HEAP: [u8; 256 * 1024] = [0; 256 * 1024];
+#[cfg(target_arch = "aarch64")]
 static mut HEAP_POS: usize = 0;
 
+#[cfg(target_arch = "aarch64")]
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let align = layout.align();
@@ -64,27 +73,41 @@ unsafe impl GlobalAlloc for BumpAllocator {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator;
 
+#[cfg(target_arch = "aarch64")]
 #[alloc_error_handler]
 fn alloc_error_handler(layout: Layout) -> ! {
     panic!("allocation error: {:?}", layout)
 }
 
+#[cfg(target_arch = "aarch64")]
 use kernel::serial;
+#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::mmu;
+#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::timer;
+#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::cpu::Aarch64Cpu;
+#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::gic::Gicv2;
+#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::traits::{CpuOps, InterruptController};
+#[cfg(target_arch = "aarch64")]
 use kernel::graphics::arm64_fb;
+#[cfg(target_arch = "aarch64")]
 use kernel::graphics::primitives::{draw_vline, fill_rect, Canvas, Color, Rect};
+#[cfg(target_arch = "aarch64")]
 use kernel::graphics::terminal_manager;
+#[cfg(target_arch = "aarch64")]
 use kernel::drivers::virtio::input_mmio::{self, event_type};
+#[cfg(target_arch = "aarch64")]
 use kernel::shell::ShellState;
 
 /// Kernel entry point called from assembly boot code.
+#[cfg(target_arch = "aarch64")]
 ///
 /// At this point:
 /// - We're running at EL1 (or need to drop from EL2)
@@ -230,6 +253,8 @@ pub extern "C" fn kernel_main() -> ! {
 
 /// Test syscalls using SVC instruction from kernel mode.
 /// This tests the basic exception handling and syscall dispatch.
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)] // Test function for manual debugging
 fn test_syscalls() {
     // Test write syscall (syscall 1)
     // x8 = syscall number (1 = write)
@@ -313,6 +338,8 @@ fn test_syscalls() {
 ///
 /// This creates a minimal ARM64 program in RAM (user-accessible region)
 /// that immediately makes a syscall back to the kernel.
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)] // Test function for manual debugging
 fn test_userspace() {
     use kernel::arch_impl::aarch64::context;
 
@@ -418,6 +445,7 @@ fn test_userspace() {
 }
 
 /// Read current exception level from CurrentEL register
+#[cfg(target_arch = "aarch64")]
 fn current_exception_level() -> u8 {
     let el: u64;
     unsafe {
@@ -430,6 +458,7 @@ fn current_exception_level() -> u8 {
 ///
 /// This initializes the VirtIO GPU and sets up the split-screen terminal UI
 /// with graphics demo on the left and terminal on the right.
+#[cfg(target_arch = "aarch64")]
 fn init_graphics() -> Result<(), &'static str> {
     // Initialize VirtIO GPU driver
     kernel::drivers::virtio::gpu_mmio::init()?;
@@ -497,6 +526,7 @@ fn init_graphics() -> Result<(), &'static str> {
 }
 
 /// Draw a graphics demo on the left pane
+#[cfg(target_arch = "aarch64")]
 fn draw_graphics_demo(canvas: &mut impl Canvas, x: usize, y: usize, width: usize, height: usize) {
     let padding = 20;
 
@@ -613,6 +643,7 @@ fn draw_graphics_demo(canvas: &mut impl Canvas, x: usize, y: usize, width: usize
 }
 
 /// Panic handler
+#[cfg(target_arch = "aarch64")]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     serial_println!();
@@ -624,5 +655,26 @@ fn panic(info: &PanicInfo) -> ! {
 
     loop {
         unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+    }
+}
+
+
+// =============================================================================
+// Non-aarch64 stub section
+// When building for non-aarch64 targets (e.g., x86_64), this binary is just a stub.
+// The real x86_64 kernel is in main.rs which provides its own lang items.
+// =============================================================================
+
+#[cfg(not(target_arch = "aarch64"))]
+mod non_aarch64_stub {
+    use core::panic::PanicInfo;
+
+    // Stub panic handler for non-aarch64 builds.
+    // The real x86_64 panic handler is in main.rs.
+    // This is needed because Cargo compiles all binaries for the target,
+    // even if they are gated out with cfg.
+    #[panic_handler]
+    fn panic(_info: &PanicInfo) -> ! {
+        loop {}
     }
 }

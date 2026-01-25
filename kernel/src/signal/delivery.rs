@@ -2,6 +2,11 @@
 //!
 //! This module handles delivering pending signals to processes when they
 //! return to userspace from syscalls or interrupts.
+//!
+//! Note: This module is x86_64-only due to use of InterruptStackFrame and
+//! SavedRegisters types.
+
+#![cfg(target_arch = "x86_64")]
 
 use super::constants::*;
 use super::types::*;

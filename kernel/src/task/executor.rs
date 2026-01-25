@@ -73,7 +73,17 @@ impl Executor {
     }
 
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    fn sleep_if_idle(&self) {
+        if self.task_queue.is_empty() {
+            // WFI (Wait For Interrupt) - ARM64 equivalent of x86 HLT
+            // This puts the CPU in low-power mode until an interrupt occurs
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        }
+    }
+
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     fn sleep_if_idle(&self) {
         if self.task_queue.is_empty() {
             core::hint::spin_loop();

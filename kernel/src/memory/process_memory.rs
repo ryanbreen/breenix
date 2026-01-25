@@ -4,6 +4,10 @@
 
 use crate::memory::frame_allocator::{allocate_frame, GlobalFrameAllocator};
 #[cfg(target_arch = "x86_64")]
+use crate::task::thread::ThreadPrivilege;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::ThreadPrivilege;
+#[cfg(target_arch = "x86_64")]
 use x86_64::{
     registers::control::Cr3,
     structures::paging::{
@@ -288,8 +292,17 @@ impl ProcessPageTable {
         
         // Check stack pointer before allocating
         let rsp: u64;
+        #[cfg(target_arch = "x86_64")]
         unsafe {
             core::arch::asm!("mov {}, rsp", out(reg) rsp);
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("mov {}, sp", out(reg) rsp);
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            rsp = 0; // Stub for other architectures
         }
         log::debug!("ProcessPageTable::new() - Current RSP: {:#x}", rsp);
 
@@ -527,8 +540,8 @@ impl ProcessPageTable {
                         // Log critical entries for debugging
                         match i {
                             402 => {
-                                let master_frame = master_pml4[i].frame().unwrap();
-                                let copied_frame = level_4_table[i].frame().unwrap();
+                                let master_frame: PhysFrame<Size4KiB> = master_pml4[i].frame().unwrap();
+                                let copied_frame: PhysFrame<Size4KiB> = level_4_table[i].frame().unwrap();
                                 log::info!("PHASE2: PML4[402] (kernel stacks): master={:?}, copied={:?}", 
                                          master_frame, copied_frame);
                                 if master_frame != copied_frame {
@@ -536,8 +549,8 @@ impl ProcessPageTable {
                                 }
                             },
                             403 => {
-                                let master_frame = master_pml4[i].frame().unwrap();
-                                let copied_frame = level_4_table[i].frame().unwrap();
+                                let master_frame: PhysFrame<Size4KiB> = master_pml4[i].frame().unwrap();
+                                let copied_frame: PhysFrame<Size4KiB> = level_4_table[i].frame().unwrap();
                                 log::info!("PHASE2: PML4[403] (IST stacks): master={:?}, copied={:?}", 
                                          master_frame, copied_frame);
                                 if master_frame != copied_frame {
@@ -546,16 +559,16 @@ impl ProcessPageTable {
                             },
                             510 => {
                                 if !master_pml4[i].is_unused() {
-                                    let master_frame = master_pml4[i].frame().unwrap();
-                                    let copied_frame = level_4_table[i].frame().unwrap();
-                                    log::info!("PHASE2: PML4[510]: master={:?}, copied={:?}", 
+                                    let master_frame: PhysFrame<Size4KiB> = master_pml4[i].frame().unwrap();
+                                    let copied_frame: PhysFrame<Size4KiB> = level_4_table[i].frame().unwrap();
+                                    log::info!("PHASE2: PML4[510]: master={:?}, copied={:?}",
                                              master_frame, copied_frame);
                                 }
                             },
                             511 => {
-                                let master_frame = master_pml4[i].frame().unwrap();
-                                let copied_frame = level_4_table[i].frame().unwrap();
-                                log::info!("PHASE2: PML4[511] (kernel high-half): master={:?}, copied={:?}", 
+                                let master_frame: PhysFrame<Size4KiB> = master_pml4[i].frame().unwrap();
+                                let copied_frame: PhysFrame<Size4KiB> = level_4_table[i].frame().unwrap();
+                                log::info!("PHASE2: PML4[511] (kernel high-half): master={:?}, copied={:?}",
                                          master_frame, copied_frame);
                             },
                             _ => {}
@@ -567,8 +580,8 @@ impl ProcessPageTable {
                 // INVARIANT ASSERTION: Kernel stacks and IST stacks must be in different frames
                 // This catches bugs where PML4[402] and PML4[403] alias to the same PDPT,
                 // which causes stack corruption during exception handling
-                let pml4_402_frame = level_4_table[402].frame();
-                let pml4_403_frame = level_4_table[403].frame();
+                let pml4_402_frame: Result<PhysFrame<Size4KiB>, _> = level_4_table[402].frame();
+                let pml4_403_frame: Result<PhysFrame<Size4KiB>, _> = level_4_table[403].frame();
 
                 if let (Ok(f402), Ok(f403)) = (pml4_402_frame, pml4_403_frame) {
                     assert_ne!(
@@ -1404,7 +1417,7 @@ impl ProcessPageTable {
     pub fn allocate_stack(
         &mut self,
         size: usize,
-        privilege: crate::task::thread::ThreadPrivilege,
+        privilege: ThreadPrivilege,
     ) -> Result<crate::memory::stack::GuardedStack, &'static str> {
         crate::memory::stack::GuardedStack::new(size, &mut self.mapper, privilege)
     }
@@ -1528,11 +1541,21 @@ pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
             current_frame,
             new_frame
         );
-        log::debug!("Current stack pointer: {:#x}", {
+        #[cfg(target_arch = "x86_64")]
+        let stack_ptr: u64 = {
             let mut rsp: u64;
             core::arch::asm!("mov {}, rsp", out(reg) rsp);
             rsp
-        });
+        };
+        #[cfg(target_arch = "aarch64")]
+        let stack_ptr: u64 = {
+            let mut rsp: u64;
+            core::arch::asm!("mov {}, sp", out(reg) rsp);
+            rsp
+        };
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let stack_ptr: u64 = 0;
+        log::debug!("Current stack pointer: {:#x}", stack_ptr);
 
         // Verify that kernel mappings are present in the new page table
         let phys_offset = crate::memory::physical_memory_offset();

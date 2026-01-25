@@ -2,25 +2,47 @@
 //!
 //! This module implements the system call interface using INT 0x80 (Linux-style).
 //! System calls are the primary interface between userspace and the kernel.
+//!
+//! On ARM64, syscalls are handled via SVC instruction in arch_impl/aarch64/exception.rs
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::idt::InterruptStackFrame;
 
-pub(crate) mod dispatcher;
+// Architecture-independent modules
 pub mod errno;
+
+// x86_64-specific syscall handling modules
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod dispatcher;
+#[cfg(target_arch = "x86_64")]
 pub mod fifo;
+#[cfg(target_arch = "x86_64")]
 pub mod fs;
+#[cfg(target_arch = "x86_64")]
 pub mod graphics;
+#[cfg(target_arch = "x86_64")]
 pub mod handler;
+#[cfg(target_arch = "x86_64")]
 pub mod handlers;
+#[cfg(target_arch = "x86_64")]
 pub mod ioctl;
+#[cfg(target_arch = "x86_64")]
 pub mod memory;
+#[cfg(target_arch = "x86_64")]
 pub mod mmap;
+#[cfg(target_arch = "x86_64")]
 pub mod pipe;
+#[cfg(target_arch = "x86_64")]
 pub mod pty;
+#[cfg(target_arch = "x86_64")]
 pub mod session;
+#[cfg(target_arch = "x86_64")]
 pub mod signal;
+#[cfg(target_arch = "x86_64")]
 pub mod socket;
+#[cfg(target_arch = "x86_64")]
 pub mod time;
+#[cfg(target_arch = "x86_64")]
 pub mod userptr;
 
 /// System call numbers following Linux conventions
@@ -216,12 +238,14 @@ pub enum SyscallResult {
     Err(u64),
 }
 
-/// Storage for syscall results  
+/// Storage for syscall results
+#[cfg(target_arch = "x86_64")]
 pub static mut SYSCALL_RESULT: i64 = 0;
 
 /// INT 0x80 handler for system calls
 ///
 /// Note: This is replaced by assembly entry point for proper register handling
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
     // Log that we received a syscall
@@ -269,6 +293,7 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
 }
 
 /// Initialize the system call infrastructure
+#[cfg(target_arch = "x86_64")]
 pub fn init() {
     log::info!("Initializing system call infrastructure");
 

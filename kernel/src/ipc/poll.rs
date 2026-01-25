@@ -89,6 +89,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::UdpSocket(_socket) => {
             // For UDP sockets: we don't implement poll properly yet
             // Just mark as always writable for now
@@ -97,6 +98,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
             }
             // TODO: Check socket RX queue for POLLIN
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::RegularFile(_file) => {
             // Regular files are always readable/writable (for now)
             if (events & events::POLLIN) != 0 {
@@ -106,12 +108,14 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLOUT;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::Directory(_dir) => {
             // Directories are always "readable" for getdents purposes
             if (events & events::POLLIN) != 0 {
                 revents |= events::POLLIN;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::Device(device_type) => {
             // Device files have different poll behavior based on type
             use crate::fs::devfs::DeviceType;
@@ -143,24 +147,28 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::DevfsDirectory { .. } => {
             // Devfs directory is always "readable" for getdents purposes
             if (events & events::POLLIN) != 0 {
                 revents |= events::POLLIN;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::DevptsDirectory { .. } => {
             // Devpts directory is always "readable" for getdents purposes
             if (events & events::POLLIN) != 0 {
                 revents |= events::POLLIN;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::TcpSocket(_) => {
             // Unconnected TCP socket - always writable (for connect attempt)
             if (events & events::POLLOUT) != 0 {
                 revents |= events::POLLOUT;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::TcpListener(port) => {
             // Listening socket - check for pending connections
             if (events & events::POLLIN) != 0 {
@@ -169,6 +177,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::TcpConnection(conn_id) => {
             // Connected socket - check for data and connection state
             let connections = crate::net::tcp::TCP_CONNECTIONS.lock();
@@ -195,6 +204,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::PtyMaster(pty_num) => {
             // PTY master - check slave_to_master buffer for readable data
             if let Some(pair) = crate::tty::pty::get(*pty_num) {
@@ -212,6 +222,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::PtySlave(pty_num) => {
             // PTY slave - check line discipline for readable data
             if let Some(pair) = crate::tty::pty::get(*pty_num) {
@@ -232,6 +243,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::UnixStream(socket_ref) => {
             let socket = socket_ref.lock();
             // Check for readable data
@@ -251,12 +263,14 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLHUP;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::UnixSocket(_) => {
             // Unconnected Unix socket - always writable (for connect attempt)
             if (events & events::POLLOUT) != 0 {
                 revents |= events::POLLOUT;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::UnixListener(listener_ref) => {
             // Listening socket - check for pending connections
             if (events & events::POLLIN) != 0 {
@@ -266,6 +280,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::FifoRead(_path, buffer) => {
             // FIFO read end - same as pipe read
             let pipe = buffer.lock();
@@ -282,6 +297,7 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLHUP;
             }
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::FifoWrite(_path, buffer) => {
             // FIFO write end - same as pipe write
             let pipe = buffer.lock();

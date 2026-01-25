@@ -9,15 +9,29 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{compiler_fence, AtomicU32, Ordering};
 use crate::arch_impl::traits::PerCpuOps;
 use crate::arch_impl::aarch64::constants::{
     PERCPU_CPU_ID_OFFSET,
     PERCPU_CURRENT_THREAD_OFFSET,
     PERCPU_KERNEL_STACK_TOP_OFFSET,
+    PERCPU_IDLE_THREAD_OFFSET,
     PERCPU_PREEMPT_COUNT_OFFSET,
+    PERCPU_NEED_RESCHED_OFFSET,
+    PERCPU_USER_RSP_SCRATCH_OFFSET,
+    PERCPU_TSS_OFFSET,
+    PERCPU_SOFTIRQ_PENDING_OFFSET,
+    PERCPU_NEXT_CR3_OFFSET,
+    PERCPU_KERNEL_CR3_OFFSET,
+    PERCPU_SAVED_PROCESS_CR3_OFFSET,
+    PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET,
     HARDIRQ_MASK,
     SOFTIRQ_MASK,
+    NMI_MASK,
+    HARDIRQ_SHIFT,
+    SOFTIRQ_SHIFT,
+    NMI_SHIFT,
+    PREEMPT_ACTIVE,
 };
 
 pub struct Aarch64PerCpu;
@@ -174,6 +188,262 @@ impl PerCpuOps for Aarch64PerCpu {
     #[inline]
     fn can_schedule() -> bool {
         Self::preempt_count() == 0
+    }
+}
+
+// =============================================================================
+// Additional ARM64-specific per-CPU helpers (matching x86_64 API)
+// =============================================================================
+
+/// Read a u8 from per-CPU data at the given offset
+#[inline(always)]
+fn percpu_read_u8(offset: usize) -> u8 {
+    let base = read_tpidr_el1();
+    if base == 0 {
+        return 0;
+    }
+    unsafe {
+        core::ptr::read_volatile((base as *const u8).add(offset))
+    }
+}
+
+/// Write a u8 to per-CPU data at the given offset
+#[inline(always)]
+unsafe fn percpu_write_u8(offset: usize, val: u8) {
+    let base = read_tpidr_el1();
+    if base == 0 {
+        return;
+    }
+    core::ptr::write_volatile((base as *mut u8).add(offset), val);
+}
+
+/// Write a u32 to per-CPU data at the given offset
+#[inline(always)]
+unsafe fn percpu_write_u32(offset: usize, val: u32) {
+    let base = read_tpidr_el1();
+    if base == 0 {
+        return;
+    }
+    core::ptr::write_volatile((base as *mut u8).add(offset) as *mut u32, val);
+}
+
+impl Aarch64PerCpu {
+    /// Get preempt count (forwarding to trait impl)
+    #[inline(always)]
+    pub fn preempt_count() -> u32 {
+        <Self as PerCpuOps>::preempt_count()
+    }
+
+    /// Get the need_resched flag.
+    #[inline(always)]
+    pub fn need_resched() -> bool {
+        percpu_read_u8(PERCPU_NEED_RESCHED_OFFSET) != 0
+    }
+
+    /// Set the need_resched flag.
+    #[inline(always)]
+    pub unsafe fn set_need_resched(need: bool) {
+        percpu_write_u8(PERCPU_NEED_RESCHED_OFFSET, if need { 1 } else { 0 });
+    }
+
+    /// Get the next TTBR0 value (for context switching).
+    /// On ARM64 this is the equivalent of x86's next_cr3.
+    #[inline(always)]
+    pub fn next_cr3() -> u64 {
+        percpu_read_u64(PERCPU_NEXT_CR3_OFFSET)
+    }
+
+    /// Set the next TTBR0 value.
+    #[inline(always)]
+    pub unsafe fn set_next_cr3(val: u64) {
+        percpu_write_u64(PERCPU_NEXT_CR3_OFFSET, val);
+    }
+
+    /// Get the saved process TTBR0.
+    #[inline(always)]
+    pub fn saved_process_cr3() -> u64 {
+        percpu_read_u64(PERCPU_SAVED_PROCESS_CR3_OFFSET)
+    }
+
+    /// Set the saved process TTBR0.
+    #[inline(always)]
+    pub unsafe fn set_saved_process_cr3(val: u64) {
+        percpu_write_u64(PERCPU_SAVED_PROCESS_CR3_OFFSET, val);
+    }
+
+    /// Get the kernel TTBR0 (used by interrupt/syscall entry).
+    #[inline(always)]
+    pub fn kernel_cr3() -> u64 {
+        percpu_read_u64(PERCPU_KERNEL_CR3_OFFSET)
+    }
+
+    /// Set the kernel TTBR0.
+    #[inline(always)]
+    pub unsafe fn set_kernel_cr3(val: u64) {
+        percpu_write_u64(PERCPU_KERNEL_CR3_OFFSET, val);
+    }
+
+    /// Enter hard IRQ context (increment HARDIRQ count).
+    #[inline(always)]
+    pub unsafe fn irq_enter() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_add(1 << HARDIRQ_SHIFT, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    /// Exit hard IRQ context (decrement HARDIRQ count).
+    #[inline(always)]
+    pub unsafe fn irq_exit() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_sub(1 << HARDIRQ_SHIFT, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    /// Set the PREEMPT_ACTIVE flag.
+    #[inline(always)]
+    pub unsafe fn set_preempt_active() {
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_or(PREEMPT_ACTIVE, Ordering::Relaxed);
+        }
+    }
+
+    /// Clear the PREEMPT_ACTIVE flag.
+    #[inline(always)]
+    pub unsafe fn clear_preempt_active() {
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_and(!PREEMPT_ACTIVE, Ordering::Relaxed);
+        }
+    }
+
+    /// Get the idle thread pointer.
+    #[inline(always)]
+    pub fn idle_thread_ptr() -> *mut u8 {
+        percpu_read_u64(PERCPU_IDLE_THREAD_OFFSET) as *mut u8
+    }
+
+    /// Set the idle thread pointer.
+    #[inline(always)]
+    pub unsafe fn set_idle_thread_ptr(ptr: *mut u8) {
+        percpu_write_u64(PERCPU_IDLE_THREAD_OFFSET, ptr as u64);
+    }
+
+    /// Get the TSS/equivalent pointer.
+    /// On ARM64 this might point to an exception-handling context structure.
+    #[inline(always)]
+    pub fn tss_ptr() -> *mut u8 {
+        percpu_read_u64(PERCPU_TSS_OFFSET) as *mut u8
+    }
+
+    /// Set the TSS/equivalent pointer.
+    #[inline(always)]
+    pub unsafe fn set_tss_ptr(ptr: *mut u8) {
+        percpu_write_u64(PERCPU_TSS_OFFSET, ptr as u64);
+    }
+
+    /// Get the user SP scratch value.
+    #[inline(always)]
+    pub fn user_rsp_scratch() -> u64 {
+        percpu_read_u64(PERCPU_USER_RSP_SCRATCH_OFFSET)
+    }
+
+    /// Set the user SP scratch value.
+    #[inline(always)]
+    pub unsafe fn set_user_rsp_scratch(sp: u64) {
+        percpu_write_u64(PERCPU_USER_RSP_SCRATCH_OFFSET, sp);
+    }
+
+    /// Get the softirq pending bitmap.
+    #[inline(always)]
+    pub fn softirq_pending() -> u32 {
+        percpu_read_u32(PERCPU_SOFTIRQ_PENDING_OFFSET)
+    }
+
+    /// Set a softirq pending bit.
+    #[inline(always)]
+    pub unsafe fn raise_softirq(nr: u32) {
+        debug_assert!(nr < 32, "Invalid softirq number");
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_SOFTIRQ_PENDING_OFFSET) {
+            atomic.fetch_or(1 << nr, Ordering::Relaxed);
+        }
+    }
+
+    /// Clear a softirq pending bit.
+    #[inline(always)]
+    pub unsafe fn clear_softirq(nr: u32) {
+        debug_assert!(nr < 32, "Invalid softirq number");
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_SOFTIRQ_PENDING_OFFSET) {
+            atomic.fetch_and(!(1 << nr), Ordering::Relaxed);
+        }
+    }
+
+    /// Get exception cleanup context flag.
+    #[inline(always)]
+    pub fn exception_cleanup_context() -> bool {
+        percpu_read_u8(PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET) != 0
+    }
+
+    /// Set exception cleanup context flag.
+    #[inline(always)]
+    pub unsafe fn set_exception_cleanup_context(value: bool) {
+        percpu_write_u8(PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET, if value { 1 } else { 0 });
+    }
+
+    /// Enter softirq context.
+    #[inline(always)]
+    pub unsafe fn softirq_enter() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_add(1 << SOFTIRQ_SHIFT, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    /// Exit softirq context.
+    #[inline(always)]
+    pub unsafe fn softirq_exit() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_sub(1 << SOFTIRQ_SHIFT, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    /// Enter NMI context (on ARM64, this is FIQ or equivalent).
+    #[inline(always)]
+    pub unsafe fn nmi_enter() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_add(1 << NMI_SHIFT, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    /// Exit NMI context.
+    #[inline(always)]
+    pub unsafe fn nmi_exit() {
+        compiler_fence(Ordering::Acquire);
+        if let Some(atomic) = percpu_atomic_u32(PERCPU_PREEMPT_COUNT_OFFSET) {
+            atomic.fetch_sub(1 << NMI_SHIFT, Ordering::Relaxed);
+        }
+        compiler_fence(Ordering::Release);
+    }
+
+    /// Check if in softirq context.
+    #[inline(always)]
+    pub fn in_softirq() -> bool {
+        let count = Self::preempt_count();
+        (count & SOFTIRQ_MASK) != 0
+    }
+
+    /// Check if in NMI context.
+    #[inline(always)]
+    pub fn in_nmi() -> bool {
+        let count = Self::preempt_count();
+        (count & NMI_MASK) != 0
     }
 }
 

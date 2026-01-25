@@ -1,10 +1,9 @@
+#[cfg(target_arch = "x86_64")]
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
-#[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB, VirtAddr};
 
 pub const HEAP_START: u64 = 0x_4444_4444_0000;
 
@@ -33,7 +32,8 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 /// are freed, so memory accumulates across the entire test run.
 pub const HEAP_SIZE: u64 = 32 * 1024 * 1024;
 
-/// A simple bump allocator
+/// A simple bump allocator (x86_64 only - ARM64 uses allocator in main_aarch64.rs)
+#[cfg(target_arch = "x86_64")]
 struct BumpAllocator {
     heap_start: u64,
     heap_end: u64,
@@ -41,6 +41,7 @@ struct BumpAllocator {
     allocations: usize,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl BumpAllocator {
     /// Creates a new bump allocator
     pub const fn new() -> Self {
@@ -60,9 +61,11 @@ impl BumpAllocator {
     }
 }
 
-/// Wrapper for the global allocator
+/// Wrapper for the global allocator (x86_64 only)
+#[cfg(target_arch = "x86_64")]
 pub struct GlobalAllocator(Mutex<BumpAllocator>);
 
+#[cfg(target_arch = "x86_64")]
 unsafe impl core::alloc::GlobalAlloc for GlobalAllocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         let mut allocator = self.0.lock();
@@ -94,10 +97,14 @@ unsafe impl core::alloc::GlobalAlloc for GlobalAllocator {
 }
 
 /// Global allocator instance
+/// Only defined for x86_64 - ARM64 defines its own allocator in main_aarch64.rs
+#[cfg(target_arch = "x86_64")]
 #[global_allocator]
 static ALLOCATOR: GlobalAllocator = GlobalAllocator(Mutex::new(BumpAllocator::new()));
 
 /// Initialize the heap allocator
+/// Only for x86_64 - ARM64 uses a simple bump allocator in main_aarch64.rs
+#[cfg(target_arch = "x86_64")]
 pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
     let heap_start = VirtAddr::new(HEAP_START);
     let heap_end = heap_start + HEAP_SIZE;
@@ -149,11 +156,14 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 }
 
 /// Align the given address upwards to the given alignment
+#[cfg(target_arch = "x86_64")]
 fn align_up(addr: u64, align: u64) -> u64 {
     (addr + align - 1) & !(align - 1)
 }
 
 /// Handle allocation errors
+/// Only defined for x86_64 - ARM64 defines its own handler in main_aarch64.rs
+#[cfg(target_arch = "x86_64")]
 #[alloc_error_handler]
 fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
     panic!("allocation error: {:?}", layout)

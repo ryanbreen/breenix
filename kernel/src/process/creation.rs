@@ -5,6 +5,10 @@
 //! - No kernel-to-user transitions via spawn threads
 //! - Direct creation of user threads in Ring 3 mode
 //! - Proper integration with the new minimal timer interrupt system
+//!
+//! Note: This module is currently x86_64-only due to use of tty and TTY handling.
+
+#![cfg(target_arch = "x86_64")]
 
 use crate::process::ProcessId;
 use alloc::boxed::Box;

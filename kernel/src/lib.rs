@@ -15,7 +15,6 @@ pub mod serial_aarch64;
 #[cfg(target_arch = "aarch64")]
 pub use serial_aarch64 as serial;
 pub mod drivers;
-#[cfg(target_arch = "x86_64")]
 pub mod memory;
 pub mod arch_impl;
 #[cfg(target_arch = "x86_64")]
@@ -24,17 +23,19 @@ pub mod gdt;
 pub mod interrupts;
 #[cfg(target_arch = "x86_64")]
 pub mod per_cpu;
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "aarch64")]
+pub mod per_cpu_aarch64;
+#[cfg(target_arch = "aarch64")]
+pub use per_cpu_aarch64 as per_cpu;
 pub mod process;
-#[cfg(target_arch = "x86_64")]
 pub mod task;
-#[cfg(target_arch = "x86_64")]
 pub mod signal;
 #[cfg(target_arch = "x86_64")]
 pub mod tls;
 #[cfg(target_arch = "x86_64")]
 pub mod elf;
-#[cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "aarch64")]
+pub use arch_impl::aarch64::elf;
 pub mod ipc;
 #[cfg(target_arch = "x86_64")]
 pub mod keyboard;
@@ -51,7 +52,6 @@ pub mod socket;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;
 pub mod time;
-#[cfg(target_arch = "x86_64")]
 pub mod net;
 #[cfg(target_arch = "x86_64")]
 pub mod block;

@@ -203,24 +203,22 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<(), &'static str> {
     device.set_queue_num(actual_size as u32);
 
     // Setup the event queue
-    unsafe {
-        let queue_addr = &raw const QUEUE_MEM as *const _ as u64;
-        let desc_addr = queue_addr;
-        let avail_addr = queue_addr + core::mem::offset_of!(QueueMemory, avail_flags) as u64;
-        let used_addr = queue_addr + core::mem::offset_of!(QueueMemory, used_flags) as u64;
+    let queue_addr = &raw const QUEUE_MEM as *const _ as u64;
+    let desc_addr = queue_addr;
+    let avail_addr = queue_addr + core::mem::offset_of!(QueueMemory, avail_flags) as u64;
+    let used_addr = queue_addr + core::mem::offset_of!(QueueMemory, used_flags) as u64;
 
-        if version == 1 {
-            // Legacy: use PFN-based setup
-            let pfn = (queue_addr >> 12) as u32;
-            device.set_queue_align(4096);
-            device.set_queue_pfn(pfn);
-        } else {
-            // Modern: use separate addresses
-            device.set_queue_desc(desc_addr);
-            device.set_queue_avail(avail_addr);
-            device.set_queue_used(used_addr);
-            device.set_queue_ready(true);
-        }
+    if version == 1 {
+        // Legacy: use PFN-based setup
+        let pfn = (queue_addr >> 12) as u32;
+        device.set_queue_align(4096);
+        device.set_queue_pfn(pfn);
+    } else {
+        // Modern: use separate addresses
+        device.set_queue_desc(desc_addr);
+        device.set_queue_avail(avail_addr);
+        device.set_queue_used(used_addr);
+        device.set_queue_ready(true);
     }
 
     // Post event buffers to the queue
