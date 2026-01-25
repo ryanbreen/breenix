@@ -1,3 +1,5 @@
+#![cfg(target_arch = "x86_64")]
+
 use conquer_once::spin::OnceCell;
 use core::fmt;
 use crossbeam_queue::ArrayQueue;

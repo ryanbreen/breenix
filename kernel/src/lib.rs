@@ -8,34 +8,64 @@
 
 extern crate alloc;
 
+#[cfg(target_arch = "x86_64")]
 pub mod serial;
+#[cfg(target_arch = "aarch64")]
+pub mod serial_aarch64;
+#[cfg(target_arch = "aarch64")]
+pub use serial_aarch64 as serial;
 pub mod drivers;
+#[cfg(target_arch = "x86_64")]
 pub mod memory;
 pub mod arch_impl;
+#[cfg(target_arch = "x86_64")]
 pub mod gdt;
+#[cfg(target_arch = "x86_64")]
 pub mod interrupts;
+#[cfg(target_arch = "x86_64")]
 pub mod per_cpu;
+#[cfg(target_arch = "x86_64")]
 pub mod process;
+#[cfg(target_arch = "x86_64")]
 pub mod task;
+#[cfg(target_arch = "x86_64")]
 pub mod signal;
+#[cfg(target_arch = "x86_64")]
 pub mod tls;
+#[cfg(target_arch = "x86_64")]
 pub mod elf;
+#[cfg(target_arch = "x86_64")]
 pub mod ipc;
+#[cfg(target_arch = "x86_64")]
 pub mod keyboard;
+#[cfg(target_arch = "x86_64")]
 pub mod tty;
+#[cfg(target_arch = "x86_64")]
 pub mod irq_log;
+#[cfg(target_arch = "x86_64")]
 pub mod userspace_test;
+#[cfg(target_arch = "x86_64")]
 pub mod syscall;
+#[cfg(target_arch = "x86_64")]
 pub mod socket;
+#[cfg(target_arch = "x86_64")]
 pub mod test_exec;
 pub mod time;
+#[cfg(target_arch = "x86_64")]
 pub mod net;
+#[cfg(target_arch = "x86_64")]
 pub mod block;
+#[cfg(target_arch = "x86_64")]
 pub mod fs;
 pub mod logger;
+#[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
-#[cfg(feature = "interactive")]
+// Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
+#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 pub mod graphics;
+// Shell module: ARM64-only for now (kernel-mode shell)
+#[cfg(target_arch = "aarch64")]
+pub mod shell;
 
 #[cfg(test)]
 use bootloader_api::{entry_point, BootInfo};
@@ -81,15 +111,24 @@ pub enum QemuExitCode {
 }
 
 pub fn exit_qemu(exit_code: QemuExitCode) {
-    use x86_64::instructions::port::Port;
-    
-    unsafe {
-        let mut port = Port::new(0xf4);
-        port.write(exit_code as u32);
+    #[cfg(target_arch = "x86_64")]
+    {
+        use x86_64::instructions::port::Port;
+        unsafe {
+            let mut port = Port::new(0xf4);
+            port.write(exit_code as u32);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64: Use semihosting or PSCI for VM exit
+        // For now, just halt
+        let _ = exit_code;
     }
 }
 
-// Re-export x86_64 for tests
+// Re-export x86_64 for tests (x86_64 only)
+#[cfg(target_arch = "x86_64")]
 pub use x86_64;
 
 #[cfg(test)]
@@ -100,9 +139,18 @@ pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {
     hlt_loop();
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn hlt_loop() -> ! {
     loop {
         x86_64::instructions::hlt();
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn hlt_loop() -> ! {
+    loop {
+        // WFI (Wait For Interrupt) is ARM64 equivalent of HLT
+        unsafe { core::arch::asm!("wfi"); }
     }
 }
 

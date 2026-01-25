@@ -1,14 +1,23 @@
 use crate::task::thread::ThreadPrivilege;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{
     Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
 };
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, VirtAddr,
+};
 
 // Import HAL page table operations for CR3/TLB operations
 use crate::arch_impl::PageTableOps;
+#[cfg(target_arch = "x86_64")]
 use crate::arch_impl::current::paging::X86PageTableOps;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::arch_impl::current::paging::Aarch64PageTableOps as X86PageTableOps;
 
 /// The global page table mapper
 static PAGE_TABLE_MAPPER: OnceCell<Mutex<OffsetPageTable<'static>>> = OnceCell::uninit();
@@ -126,6 +135,7 @@ pub unsafe fn map_page(
 ///
 /// # Safety
 /// Should be called after kernel page tables are set up but before userspace processes start.
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn enable_global_pages() {
     use crate::arch_impl::current::paging;
 
@@ -139,3 +149,6 @@ pub unsafe fn enable_global_pages() {
     paging::enable_global_pages();
     log::info!("PHASE2: Enabled global pages support (CR4.PGE)");
 }
+
+#[cfg(not(target_arch = "x86_64"))]
+pub unsafe fn enable_global_pages() {}

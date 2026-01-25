@@ -1,3 +1,9 @@
+//! Logging infrastructure for Breenix kernel.
+//!
+//! This module is currently x86_64-only due to bootloader dependencies.
+
+#![cfg(target_arch = "x86_64")]
+
 use crate::log_serial_println;
 #[cfg(feature = "interactive")]
 use crate::graphics::DoubleBufferedFrameBuffer;

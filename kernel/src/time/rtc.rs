@@ -1,20 +1,34 @@
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
 
+#[cfg(target_arch = "x86_64")]
 const RTC_ADDR_PORT: u16 = 0x70;
+#[cfg(target_arch = "x86_64")]
 const RTC_DATA_PORT: u16 = 0x71;
 
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_SECONDS: u8 = 0x00;
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_MINUTES: u8 = 0x02;
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_HOURS: u8 = 0x04;
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_DAY: u8 = 0x07;
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_MONTH: u8 = 0x08;
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_YEAR: u8 = 0x09;
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_STATUS_A: u8 = 0x0A;
+#[cfg(target_arch = "x86_64")]
 const RTC_REG_STATUS_B: u8 = 0x0B;
 
+#[cfg(target_arch = "x86_64")]
 const RTC_UPDATE_IN_PROGRESS: u8 = 0x80;
+#[cfg(target_arch = "x86_64")]
 const RTC_24HOUR_FORMAT: u8 = 0x02;
+#[cfg(target_arch = "x86_64")]
 const RTC_BINARY_FORMAT: u8 = 0x04;
 
 /// Unix timestamp at boot time
@@ -41,6 +55,7 @@ struct RTCTime {
     year: u16,
 }
 
+#[cfg(target_arch = "x86_64")]
 fn read_rtc_register(reg: u8) -> u8 {
     unsafe {
         let mut addr_port = Port::new(RTC_ADDR_PORT);
@@ -51,6 +66,7 @@ fn read_rtc_register(reg: u8) -> u8 {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn rtc_update_in_progress() -> bool {
     read_rtc_register(RTC_REG_STATUS_A) & RTC_UPDATE_IN_PROGRESS != 0
 }
@@ -60,11 +76,12 @@ pub(super) fn bcd_to_binary(value: u8) -> u8 {
     ((value & 0xF0) >> 4) * 10 + (value & 0x0F)
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_arch = "x86_64"))]
 fn bcd_to_binary(value: u8) -> u8 {
     ((value & 0xF0) >> 4) * 10 + (value & 0x0F)
 }
 
+#[cfg(target_arch = "x86_64")]
 fn read_rtc_raw() -> RTCTime {
     while rtc_update_in_progress() {
         core::hint::spin_loop();
@@ -237,6 +254,7 @@ fn rtc_time_to_datetime(rtc: &RTCTime) -> DateTime {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn read_rtc_time() -> Result<u64, &'static str> {
     let time1 = read_rtc_raw();
     let time2 = read_rtc_raw();
@@ -255,6 +273,7 @@ pub fn read_rtc_time() -> Result<u64, &'static str> {
 }
 
 /// Read the current date and time from the RTC
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub fn read_datetime() -> DateTime {
     let time = read_rtc_raw();
@@ -262,6 +281,7 @@ pub fn read_datetime() -> DateTime {
 }
 
 /// Initialize RTC and cache boot time
+#[cfg(target_arch = "x86_64")]
 pub fn init() {
     match read_rtc_time() {
         Ok(timestamp) => {
@@ -283,6 +303,24 @@ pub fn init() {
             BOOT_WALL_TIME.store(0, Ordering::Relaxed);
         }
     }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn read_rtc_time() -> Result<u64, &'static str> {
+    Err("RTC not supported on this architecture")
+}
+
+/// Read the current date and time from the RTC
+#[cfg(not(target_arch = "x86_64"))]
+#[allow(dead_code)]
+pub fn read_datetime() -> DateTime {
+    DateTime::from_unix_timestamp(0)
+}
+
+/// Initialize RTC and cache boot time
+#[cfg(not(target_arch = "x86_64"))]
+pub fn init() {
+    BOOT_WALL_TIME.store(0, Ordering::Relaxed);
 }
 
 /// Get the cached boot wall time

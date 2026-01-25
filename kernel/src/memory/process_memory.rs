@@ -3,13 +3,22 @@
 //! This module provides per-process page tables and address space isolation.
 
 use crate::memory::frame_allocator::{allocate_frame, GlobalFrameAllocator};
+#[cfg(target_arch = "x86_64")]
 use x86_64::{
     registers::control::Cr3,
     structures::paging::{
-        mapper::TranslateResult, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags,
-        PhysFrame, Size4KiB, Translate,
+        mapper::TranslateResult,
+        page_table::PageTableEntry,
+        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
     PhysAddr, VirtAddr,
+};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    mapper::TranslateResult,
+    Cr3,
+    Mapper, OffsetPageTable, Page, PageTable, PageTableEntry, PageTableFlags, PhysAddr, PhysFrame,
+    Size4KiB, Translate, VirtAddr,
 };
 
 // ============================================================================
@@ -75,7 +84,7 @@ impl ProcessPageTable {
     /// ensuring that each process has its own isolated page tables.
     #[allow(dead_code)]
     fn deep_copy_pml4_entry(
-        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        source_entry: &PageTableEntry,
         entry_index: usize,
         phys_offset: VirtAddr,
     ) -> Result<PhysFrame, &'static str> {
@@ -146,7 +155,7 @@ impl ProcessPageTable {
     /// Deep copy an L3 entry, creating independent L2/L1 tables
     #[allow(dead_code)]
     fn deep_copy_l3_entry(
-        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        source_entry: &PageTableEntry,
         entry_index: usize,
         phys_offset: VirtAddr,
     ) -> Result<PhysFrame, &'static str> {
@@ -227,7 +236,7 @@ impl ProcessPageTable {
     /// Deep copy an L2 entry, creating independent L1 tables
     #[allow(dead_code)]
     fn deep_copy_l2_entry(
-        source_entry: &x86_64::structures::paging::page_table::PageTableEntry,
+        source_entry: &PageTableEntry,
         _entry_index: usize,
         phys_offset: VirtAddr,
     ) -> Result<PhysFrame, &'static str> {
@@ -1097,7 +1106,10 @@ impl ProcessPageTable {
                 }
                 Err(e) => {
                     // Enhanced error logging to understand map_to failures
+                    #[cfg(target_arch = "x86_64")]
                     use x86_64::structures::paging::mapper::MapToError;
+                    #[cfg(not(target_arch = "x86_64"))]
+                    use crate::memory::arch_stub::mapper::MapToError;
                     let error_msg = match e {
                         MapToError::FrameAllocationFailed => {
                             log::error!("map_to failed: Frame allocation failed - OUT OF MEMORY!");
@@ -1289,7 +1301,7 @@ impl ProcessPageTable {
                         let phys_offset = crate::memory::physical_memory_offset();
                         let l4_table = {
                             let virt = phys_offset + self.level_4_frame.start_address().as_u64();
-                            &*(virt.as_ptr() as *const x86_64::structures::paging::PageTable)
+                            &*(virt.as_ptr() as *const PageTable)
                         };
 
                         // Calculate which L4 entry this address uses
@@ -1310,7 +1322,7 @@ impl ProcessPageTable {
                             let l3_phys = l4_entry.addr();
                             let l3_virt = phys_offset + l3_phys.as_u64();
                             let l3_table = &*(l3_virt.as_ptr()
-                                as *const x86_64::structures::paging::PageTable);
+                                as *const PageTable);
 
                             let l3_index = (addr.as_u64() >> 30) & 0x1ff;
                             let l3_entry = &l3_table[l3_index as usize];
@@ -1329,7 +1341,7 @@ impl ProcessPageTable {
                                 let l2_phys = l3_entry.addr();
                                 let l2_virt = phys_offset + l2_phys.as_u64();
                                 let l2_table = &*(l2_virt.as_ptr()
-                                    as *const x86_64::structures::paging::PageTable);
+                                    as *const PageTable);
 
                                 let l2_index = (addr.as_u64() >> 21) & 0x1ff;
                                 let l2_entry = &l2_table[l2_index as usize];
@@ -1351,7 +1363,7 @@ impl ProcessPageTable {
                                     let l1_phys = l2_entry.addr();
                                     let l1_virt = phys_offset + l1_phys.as_u64();
                                     let l1_table = &*(l1_virt.as_ptr()
-                                        as *const x86_64::structures::paging::PageTable);
+                                        as *const PageTable);
 
                                     let l1_index = (addr.as_u64() >> 12) & 0x1ff;
                                     let l1_entry = &l1_table[l1_index as usize];

@@ -1,3 +1,5 @@
+#![cfg(target_arch = "x86_64")]
+
 use conquer_once::spin::OnceCell;
 use core::sync::atomic::{AtomicPtr, Ordering};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};

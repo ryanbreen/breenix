@@ -1,5 +1,12 @@
+//! Kernel entry point and initialization.
+//!
+//! This file contains the x86_64-specific kernel entry point.
+//! For ARM64, this file is gated out and the entry point will be
+//! implemented separately.
+
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
+#![cfg(target_arch = "x86_64")]
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 #![feature(never_type)]

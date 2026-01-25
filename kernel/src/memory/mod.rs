@@ -10,12 +10,18 @@ pub mod process_memory;
 pub mod stack;
 pub mod tlb;
 pub mod vma;
+#[cfg(not(target_arch = "x86_64"))]
+pub mod arch_stub;
 
 use bootloader_api::info::MemoryRegions;
 use conquer_once::spin::OnceCell;
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
+#[cfg(target_arch = "x86_64")]
 use x86_64::{PhysAddr, VirtAddr};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, PhysAddr, VirtAddr};
 
 /// Global physical memory offset for use throughout the kernel
 static PHYSICAL_MEMORY_OFFSET: OnceCell<VirtAddr> = OnceCell::uninit();
@@ -58,7 +64,10 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     // per_cpu::init() already ran and set kernel_cr3 to the bootloader's CR3
     // Now that we've switched to the master PML4, we must update it
     {
+        #[cfg(target_arch = "x86_64")]
         use x86_64::registers::control::Cr3;
+        #[cfg(not(target_arch = "x86_64"))]
+        use crate::memory::arch_stub::Cr3;
         let (current_frame, _) = Cr3::read();
         let master_cr3 = current_frame.start_address().as_u64();
         log::info!("CRITICAL: Updating kernel_cr3 to master PML4: {:#x}", master_cr3);
@@ -294,8 +303,14 @@ impl PhysAddrWrapper {
 
         // For heap and other mapped regions, use the page table entry directly
         // We can't use translate_addr because it adds the offset back when reading PTEs
+        #[cfg(target_arch = "x86_64")]
         use x86_64::registers::control::Cr3;
+        #[cfg(not(target_arch = "x86_64"))]
+        use crate::memory::arch_stub::Cr3;
+        #[cfg(target_arch = "x86_64")]
         use x86_64::structures::paging::PageTable;
+        #[cfg(not(target_arch = "x86_64"))]
+        use crate::memory::arch_stub::PageTable;
 
         let virt_addr = VirtAddr::new(virt as u64);
 
@@ -315,7 +330,7 @@ impl PhysAddrWrapper {
         let pml4 = unsafe { &*(pml4_virt as *const PageTable) };
 
         let p4_entry = &pml4[p4_idx as usize];
-        if !p4_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+        if !p4_entry.flags().contains(PageTableFlags::PRESENT) {
             log::error!("PhysAddrWrapper: PML4[{}] not present for virt {:#x}", p4_idx, virt);
             return virt as u64;
         }
@@ -326,13 +341,13 @@ impl PhysAddrWrapper {
         let pdpt = unsafe { &*(pdpt_virt as *const PageTable) };
 
         let p3_entry = &pdpt[p3_idx as usize];
-        if !p3_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+        if !p3_entry.flags().contains(PageTableFlags::PRESENT) {
             log::error!("PhysAddrWrapper: PDPT[{}] not present for virt {:#x}", p3_idx, virt);
             return virt as u64;
         }
 
         // Check for 1GB huge page
-        if p3_entry.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+        if p3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
             let phys = p3_entry.addr().as_u64() + (virt_addr.as_u64() & 0x3FFFFFFF);
             return phys;
         }
@@ -343,13 +358,13 @@ impl PhysAddrWrapper {
         let pd = unsafe { &*(pd_virt as *const PageTable) };
 
         let p2_entry = &pd[p2_idx as usize];
-        if !p2_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+        if !p2_entry.flags().contains(PageTableFlags::PRESENT) {
             log::error!("PhysAddrWrapper: PD[{}] not present for virt {:#x}", p2_idx, virt);
             return virt as u64;
         }
 
         // Check for 2MB huge page
-        if p2_entry.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+        if p2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
             let phys = p2_entry.addr().as_u64() + (virt_addr.as_u64() & 0x1FFFFF);
             return phys;
         }
@@ -360,7 +375,7 @@ impl PhysAddrWrapper {
         let pt = unsafe { &*(pt_virt as *const PageTable) };
 
         let p1_entry = &pt[p1_idx as usize];
-        if !p1_entry.flags().contains(x86_64::structures::paging::PageTableFlags::PRESENT) {
+        if !p1_entry.flags().contains(PageTableFlags::PRESENT) {
             log::error!("PhysAddrWrapper: PT[{}] not present for virt {:#x}", p1_idx, virt);
             return virt as u64;
         }

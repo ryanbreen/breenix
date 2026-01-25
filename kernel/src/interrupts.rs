@@ -1,3 +1,5 @@
+#![cfg(target_arch = "x86_64")]
+
 use crate::gdt;
 
 use pic8259::ChainedPics;

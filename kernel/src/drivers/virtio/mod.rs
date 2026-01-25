@@ -1,9 +1,10 @@
 //! VirtIO Transport Layer
 //!
-//! Implements the VirtIO legacy I/O port interface for device communication.
-//! This module provides the base device abstraction used by specific VirtIO drivers.
+//! Provides VirtIO device communication via platform-specific transports:
+//! - x86_64: Legacy I/O port interface (PCI-based)
+//! - ARM64: MMIO interface (memory-mapped)
 //!
-//! # VirtIO Legacy Interface
+//! # VirtIO Legacy Interface (x86_64)
 //!
 //! The legacy interface uses I/O ports for device configuration:
 //! - Device features, guest features at offsets 0x00-0x07
@@ -11,10 +12,29 @@
 //! - Device status at offset 0x12
 //! - ISR status at offset 0x13
 //! - Device-specific config at offset 0x14+
+//!
+//! # VirtIO MMIO Interface (ARM64)
+//!
+//! The MMIO interface uses memory-mapped registers at fixed addresses.
+//! QEMU virt machine provides devices at 0x0a000000+.
 
+#[cfg(target_arch = "x86_64")]
 pub mod block;
+#[cfg(target_arch = "x86_64")]
 pub mod queue;
 
+#[cfg(target_arch = "aarch64")]
+pub mod mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod block_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod net_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod gpu_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod input_mmio;
+
+#[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
 
 /// VirtIO device status bits
@@ -31,7 +51,8 @@ pub mod status {
     pub const FAILED: u8 = 128;
 }
 
-/// VirtIO legacy register offsets
+/// VirtIO legacy register offsets (x86_64 I/O port interface)
+#[cfg(target_arch = "x86_64")]
 mod regs {
     pub const DEVICE_FEATURES: u16 = 0x00;
     pub const GUEST_FEATURES: u16 = 0x04;
@@ -45,9 +66,11 @@ mod regs {
     pub const DEVICE_CONFIG: u16 = 0x14;
 }
 
-/// VirtIO device abstraction
+/// VirtIO device abstraction (x86_64 legacy I/O port interface)
 ///
 /// Provides access to the VirtIO legacy I/O port interface.
+/// This is only available on x86_64. ARM64 uses VirtIO MMIO instead.
+#[cfg(target_arch = "x86_64")]
 pub struct VirtioDevice {
     /// Base I/O port address (from PCI BAR0)
     io_base: u16,
@@ -57,6 +80,7 @@ pub struct VirtioDevice {
     driver_features: u32,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl VirtioDevice {
     /// Create a new VirtIO device from a PCI BAR0 I/O port address
     pub fn new(io_base: u16) -> Self {

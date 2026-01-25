@@ -4,7 +4,37 @@
 //! building on top of the existing async executor infrastructure.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+
+#[cfg(not(target_arch = "x86_64"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VirtAddr(u64);
+
+#[cfg(not(target_arch = "x86_64"))]
+impl VirtAddr {
+    pub const fn new(addr: u64) -> Self {
+        Self(addr)
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    pub const fn is_null(self) -> bool {
+        self.0 == 0
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+impl core::ops::Sub<u64> for VirtAddr {
+    type Output = VirtAddr;
+
+    fn sub(self, rhs: u64) -> VirtAddr {
+        VirtAddr(self.0 - rhs)
+    }
+}
 
 /// Global thread ID counter
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1); // 0 is reserved for kernel thread

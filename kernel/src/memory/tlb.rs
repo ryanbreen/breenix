@@ -5,8 +5,12 @@
 //! flushed when page table entries are modified to ensure the CPU sees
 //! the updated mappings.
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::instructions::tlb;
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{tlb, VirtAddr};
 
 /// Flush a single page from the TLB
 ///

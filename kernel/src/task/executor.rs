@@ -2,6 +2,8 @@ use super::{Task, TaskId};
 use alloc::{collections::BTreeMap, sync::Arc, task::Wake};
 use core::task::{Context, Poll, Waker};
 use crossbeam_queue::ArrayQueue;
+#[cfg(target_arch = "x86_64")]
+use x86_64::instructions::interrupts;
 
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub struct Executor {
@@ -59,15 +61,22 @@ impl Executor {
     }
 
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
+    #[cfg(target_arch = "x86_64")]
     fn sleep_if_idle(&self) {
-        use x86_64::instructions::interrupts;
-
         interrupts::disable();
         if self.task_queue.is_empty() {
             interrupts::enable();
             x86_64::instructions::hlt();
         } else {
             interrupts::enable();
+        }
+    }
+
+    #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
+    #[cfg(not(target_arch = "x86_64"))]
+    fn sleep_if_idle(&self) {
+        if self.task_queue.is_empty() {
+            core::hint::spin_loop();
         }
     }
 

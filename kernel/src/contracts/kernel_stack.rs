@@ -2,7 +2,9 @@
 //!
 //! Verifies invariants related to kernel stack mapping and TSS RSP0.
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{PageTable, PageTableFlags};
 
 /// Contract: Kernel stack at given address must be mapped with correct flags
