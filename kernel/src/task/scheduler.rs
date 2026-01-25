@@ -246,8 +246,41 @@ impl Scheduler {
     /// is still physically running the syscall. The schedule() function
     /// will check the thread state and not put it back in ready queue.
     pub fn block_current_for_signal(&mut self) {
+        self.block_current_for_signal_with_context(None)
+    }
+
+    /// Block current thread until a signal is delivered, saving userspace context
+    /// Used by the pause() syscall
+    ///
+    /// CRITICAL: This version atomically saves the userspace context AND sets
+    /// blocked_in_syscall=true under the same scheduler lock. This prevents
+    /// a race condition where a signal could arrive after the context is saved
+    /// to process.main_thread but before blocked_in_syscall is set.
+    ///
+    /// The saved_userspace_context on the SCHEDULER's Thread is the single source
+    /// of truth for signal delivery - context_switch.rs reads from here, not from
+    /// process.main_thread.
+    ///
+    /// NOTE: This does NOT set current_thread to None because the thread
+    /// is still physically running the syscall. The schedule() function
+    /// will check the thread state and not put it back in ready queue.
+    pub fn block_current_for_signal_with_context(
+        &mut self,
+        userspace_context: Option<super::thread::CpuContext>,
+    ) {
         if let Some(current_id) = self.current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
+                // CRITICAL: Save userspace context FIRST, THEN set state.
+                // This ensures that when unblock_for_signal() is called,
+                // the context is already saved and ready for signal delivery.
+                if let Some(ctx) = userspace_context {
+                    thread.saved_userspace_context = Some(ctx);
+                    log_serial_println!(
+                        "Thread {} saving userspace context: RIP={:#x}",
+                        current_id,
+                        thread.saved_userspace_context.as_ref().unwrap().rip
+                    );
+                }
                 thread.state = ThreadState::BlockedOnSignal;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
@@ -266,6 +299,10 @@ impl Scheduler {
 
     /// Unblock a thread that was waiting for a signal
     /// Called when a signal is delivered to a blocked thread
+    ///
+    /// NOTE: This function sets the need_resched flag when a thread is successfully
+    /// unblocked to ensure it gets scheduled promptly. This is critical for pause()
+    /// to wake up in a timely manner when a signal arrives.
     pub fn unblock_for_signal(&mut self, thread_id: u64) {
         log_serial_println!(
             "unblock_for_signal: Checking thread {} (current={:?}, ready_queue={:?})",
@@ -298,6 +335,11 @@ impl Scheduler {
                         thread_id
                     );
                 }
+                // CRITICAL: Request reschedule so the unblocked thread can run promptly.
+                // Without this, the thread is added to ready queue but the scheduler
+                // doesn't know to switch to it, causing pause() to timeout waiting for
+                // the next timer tick instead of waking up immediately.
+                set_need_resched();
             } else {
                 log_serial_println!(
                     "unblock_for_signal: Thread {} not BlockedOnSignal, state={:?}",
@@ -337,6 +379,10 @@ impl Scheduler {
 
     /// Unblock a thread that was waiting for a child to exit
     /// Called when a child process terminates
+    ///
+    /// NOTE: This function sets the need_resched flag when a thread is successfully
+    /// unblocked to ensure it gets scheduled promptly. This is critical for waitpid()
+    /// to wake up in a timely manner when a child exits.
     pub fn unblock_for_child_exit(&mut self, thread_id: u64) {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::BlockedOnChildExit {
@@ -345,6 +391,10 @@ impl Scheduler {
                     self.ready_queue.push_back(thread_id);
                     log_serial_println!("Thread {} unblocked by child exit", thread_id);
                 }
+                // CRITICAL: Request reschedule so the unblocked thread can run promptly.
+                // Without this, the thread is added to ready queue but the scheduler
+                // doesn't know to switch to it, causing waitpid() to hang.
+                set_need_resched();
             }
         }
     }

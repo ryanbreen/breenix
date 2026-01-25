@@ -224,37 +224,77 @@ fn deliver_to_user_handler(
     action: &SignalAction,
 ) -> bool {
     // Get current user stack pointer from interrupt frame
-    let user_rsp = interrupt_frame.stack_pointer.as_u64();
+    let current_rsp = interrupt_frame.stack_pointer.as_u64();
 
-    // Calculate space needed for trampoline and signal frame
-    let frame_size = SignalFrame::SIZE as u64;
-    let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
+    // Check if we should use the alternate signal stack
+    // SA_ONSTACK flag means use alt stack if one is configured and enabled
+    let use_alt_stack = (action.flags & SA_ONSTACK) != 0
+        && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
+        && process.signals.alt_stack.size > 0
+        && !process.signals.alt_stack.on_stack; // Don't nest on alt stack
 
-    // Allocate space for both trampoline and signal frame on user stack
-    // Stack layout (grows down):
-    //   [signal frame] <- frame_rsp (16-byte aligned)
-    //   [trampoline code] <- trampoline_rsp
-    let total_size = frame_size + trampoline_size;
-    let frame_rsp = (user_rsp - total_size) & !0xF; // 16-byte align
-    let trampoline_rsp = frame_rsp + frame_size;
-
-    // Write trampoline code to user stack first
-    // SAFETY: We're writing to user memory that should be valid stack space
-    unsafe {
-        let trampoline_ptr = trampoline_rsp as *mut u8;
-        core::ptr::copy_nonoverlapping(
-            super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
-            trampoline_ptr,
-            super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
+    let user_rsp = if use_alt_stack {
+        // Use alternate stack - stack grows down, so start at top (base + size)
+        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+        log::debug!(
+            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
+            process.signals.alt_stack.base,
+            process.signals.alt_stack.size,
+            alt_top
         );
-    }
+        // Mark that we're now on the alternate stack
+        process.signals.alt_stack.on_stack = true;
+        alt_top
+    } else {
+        current_rsp
+    };
+
+    // Calculate space needed for signal frame (and optionally trampoline)
+    let frame_size = SignalFrame::SIZE as u64;
+
+    // Check if the handler provides a restorer function (SA_RESTORER flag)
+    // If so, use it instead of writing trampoline to the stack.
+    // This is essential for signals delivered on alternate stacks where the
+    // stack may not be executable (NX bit set).
+    let use_restorer = (action.flags & super::constants::SA_RESTORER) != 0 && action.restorer != 0;
+
+    let (frame_rsp, return_addr) = if use_restorer {
+        // Use the restorer function provided by the application/libc
+        // Only allocate space for the signal frame (no trampoline needed)
+        let frame_rsp = (user_rsp - frame_size) & !0xF; // 16-byte align
+        log::debug!(
+            "Using SA_RESTORER: restorer={:#x}",
+            action.restorer
+        );
+        (frame_rsp, action.restorer)
+    } else {
+        // Fall back to writing trampoline on the stack
+        // This works when the stack is executable (main stack without NX)
+        let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
+        let total_size = frame_size + trampoline_size;
+        let frame_rsp = (user_rsp - total_size) & !0xF; // 16-byte align
+        let trampoline_rsp = frame_rsp + frame_size;
+
+        // Write trampoline code to user stack
+        // SAFETY: We're writing to user memory that should be valid stack space
+        unsafe {
+            let trampoline_ptr = trampoline_rsp as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
+                trampoline_ptr,
+                super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
+            );
+        }
+
+        (frame_rsp, trampoline_rsp)
+    };
 
     // Build signal frame with saved context
     let signal_frame = SignalFrame {
-        // Return address points to trampoline code on stack
-        // When the handler does 'ret', it will pop this and jump to the trampoline
+        // Return address: either restorer function or trampoline on stack
+        // When the handler does 'ret', it will pop this and jump there
         // MUST BE AT OFFSET 0 in the struct - verified by struct definition
-        trampoline_addr: trampoline_rsp,
+        trampoline_addr: return_addr,
 
         // Magic number for integrity validation
         magic: SignalFrame::MAGIC,
@@ -320,14 +360,25 @@ fn deliver_to_user_handler(
     saved_regs.rsi = 0;                     // Second argument: siginfo_t* (not implemented)
     saved_regs.rdx = 0;                     // Third argument: ucontext_t* (not implemented)
 
-    log::info!(
-        "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, trampoline={:#x}",
-        sig,
-        handler_addr,
-        user_rsp,
-        frame_rsp,
-        trampoline_rsp
-    );
+    if use_alt_stack {
+        log::info!(
+            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, RSP={:#x}->{:#x}, return={:#x}",
+            sig,
+            handler_addr,
+            user_rsp,
+            frame_rsp,
+            return_addr
+        );
+    } else {
+        log::info!(
+            "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, return={:#x}",
+            sig,
+            handler_addr,
+            user_rsp,
+            frame_rsp,
+            return_addr
+        );
+    }
 
     true
 }
@@ -422,4 +473,53 @@ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification>
         parent_pid,
         child_pid: process.id,
     })
+}
+
+/// Check if a process has an expired ITIMER_REAL and queue SIGALRM if needed
+///
+/// This function is called before signal delivery to tick the process's
+/// interval timer. If the timer expires, it queues SIGALRM for delivery.
+/// The timer automatically rearms if it has an interval set.
+///
+/// Returns true if SIGALRM was queued.
+#[inline]
+pub fn check_and_fire_itimer_real(process: &mut Process, elapsed_usec: u64) -> bool {
+    if process.itimers.real.is_active() {
+        if process.itimers.real.tick(elapsed_usec) {
+            // Timer expired - queue SIGALRM
+            process.signals.set_pending(SIGALRM);
+            log::debug!(
+                "ITIMER_REAL fired for process {} (elapsed {} usec)",
+                process.id.as_u64(),
+                elapsed_usec
+            );
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if a process has an expired alarm and queue SIGALRM if needed
+///
+/// This function is called before signal delivery to check if the process's
+/// alarm timer has expired. If so, it queues SIGALRM for delivery.
+///
+/// Returns true if SIGALRM was queued.
+#[inline]
+pub fn check_and_fire_alarm(process: &mut Process) -> bool {
+    if let Some(deadline) = process.alarm_deadline {
+        let current_ticks = crate::time::get_ticks();
+        if current_ticks >= deadline {
+            // Alarm expired - clear it and queue SIGALRM
+            process.alarm_deadline = None;
+            process.signals.set_pending(SIGALRM);
+            log::debug!(
+                "Alarm fired for process {} at tick {}",
+                process.id.as_u64(),
+                current_ticks
+            );
+            return true;
+        }
+    }
+    false
 }

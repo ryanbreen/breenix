@@ -159,6 +159,10 @@ name = "signal_regs_test"
 path = "signal_regs_test.rs"
 
 [[bin]]
+name = "sigaltstack_test"
+path = "sigaltstack_test.rs"
+
+[[bin]]
 name = "udp_socket_test"
 path = "udp_socket_test.rs"
 
@@ -237,6 +241,10 @@ path = "signal_exec_check.rs"
 [[bin]]
 name = "pause_test"
 path = "pause_test.rs"
+
+[[bin]]
+name = "kill_process_group_test"
+path = "kill_process_group_test.rs"
 
 [[bin]]
 name = "dup_test"
@@ -480,6 +488,18 @@ path = "unix_named_socket_test.rs"
 [[bin]]
 name = "fifo_test"
 path = "fifo_test.rs"
+
+[[bin]]
+name = "alarm_test"
+path = "alarm_test.rs"
+
+[[bin]]
+name = "sigsuspend_test"
+path = "sigsuspend_test.rs"
+
+[[bin]]
+name = "itimer_test"
+path = "itimer_test.rs"
 
 [profile.release]
 panic = "abort"

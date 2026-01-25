@@ -1075,6 +1075,18 @@ fn kernel_main_continue() -> ! {
         log::info!("=== SIGNAL TEST: pause() syscall functionality ===");
         test_exec::test_pause();
 
+        // Test process group kill semantics (kill(0, sig), kill(-pgid, sig), kill(-1, sig))
+        log::info!("=== SIGNAL TEST: process group kill semantics ===");
+        test_exec::test_kill_process_group();
+
+        // Test sigsuspend() syscall - atomic mask replacement and suspend
+        log::info!("=== SIGNAL TEST: sigsuspend() syscall functionality ===");
+        test_exec::test_sigsuspend();
+
+        // Test sigaltstack() syscall - alternate signal stack
+        log::info!("=== SIGNAL TEST: sigaltstack() syscall functionality ===");
+        test_exec::test_sigaltstack();
+
         // Test dup() syscall
         log::info!("=== IPC TEST: dup() syscall functionality ===");
         test_exec::test_dup();

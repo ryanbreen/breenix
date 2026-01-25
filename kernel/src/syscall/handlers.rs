@@ -212,289 +212,200 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             return write_to_stdio(fd, &buffer);
         }
     };
-    let manager_guard = crate::process::manager();
-    let process = match &*manager_guard {
-        Some(manager) => match manager.find_process_by_thread(thread_id) {
-            Some((_pid, p)) => p,
+
+    // Determine the fd kind while holding the manager lock, then release it
+    // before doing slow I/O operations. This prevents blocking signal delivery
+    // to other processes while we're doing serial writes.
+    enum WriteOperation {
+        StdIo,
+        Pipe { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
+        Fifo { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
+        UnixStream { socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>> },
+        RegularFile { file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>> },
+        TcpConnection { conn_id: crate::net::tcp::ConnectionId },
+        Device { device_type: crate::fs::devfs::DeviceType },
+        Ebadf,
+        Enotconn,  // Socket not connected
+        Eisdir,    // Is a directory
+        Eopnotsupp, // Operation not supported
+    }
+
+    let write_op = {
+        let manager_guard = crate::process::manager();
+        let process = match &*manager_guard {
+            Some(manager) => match manager.find_process_by_thread(thread_id) {
+                Some((_pid, p)) => p,
+                None => {
+                    // Fall back to stdio behavior for kernel threads
+                    return write_to_stdio(fd, &buffer);
+                }
+            },
             None => {
                 // Fall back to stdio behavior for kernel threads
                 return write_to_stdio(fd, &buffer);
             }
-        },
-        None => {
-            // Fall back to stdio behavior for kernel threads
-            return write_to_stdio(fd, &buffer);
+        };
+
+        // Look up the file descriptor
+        let fd_entry = match process.fd_table.get(fd as i32) {
+            Some(entry) => entry,
+            None => {
+                return SyscallResult::Err(9); // EBADF
+            }
+        };
+
+        match &fd_entry.kind {
+            FdKind::StdIo(n) if *n == 1 || *n == 2 => WriteOperation::StdIo,
+            FdKind::StdIo(_) => WriteOperation::Ebadf, // stdin - can't write
+            FdKind::PipeWrite(pipe_buffer) => {
+                WriteOperation::Pipe { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
+            }
+            FdKind::PipeRead(_) => WriteOperation::Ebadf,
+            FdKind::FifoWrite(_path, pipe_buffer) => {
+                WriteOperation::Fifo { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
+            }
+            FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
+            FdKind::TcpSocket(_) => WriteOperation::Enotconn,  // Unconnected TCP socket
+            FdKind::TcpListener(_) => WriteOperation::Enotconn, // Listener can't write
+            FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
+            FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp, // UDP must use sendto
+            FdKind::UnixStream(socket) => WriteOperation::UnixStream { socket: socket.clone() },
+            FdKind::UnixSocket(_) => WriteOperation::Enotconn,  // Unconnected Unix socket
+            FdKind::UnixListener(_) => WriteOperation::Enotconn, // Listener can't write
+            FdKind::RegularFile(file) => WriteOperation::RegularFile { file: file.clone() },
+            FdKind::Directory(_) => WriteOperation::Eisdir,
+            FdKind::Device(device_type) => WriteOperation::Device { device_type: device_type.clone() },
+            FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
+            FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
+            FdKind::PtyMaster(_) | FdKind::PtySlave(_) => {
+                // PTY write not implemented yet
+                WriteOperation::Eopnotsupp
+            }
         }
+        // manager_guard dropped here, releasing the lock before I/O
     };
 
-    // Look up the file descriptor
-    let fd_entry = match process.fd_table.get(fd as i32) {
-        Some(entry) => entry,
-        None => {
-            return SyscallResult::Err(9); // EBADF
-        }
-    };
-
-    match &fd_entry.kind {
-        FdKind::StdIo(n) if *n == 1 || *n == 2 => {
-            // stdout or stderr - write to serial
-            write_to_stdio(fd, &buffer)
-        }
-        FdKind::StdIo(_) => {
-            // stdin - can't write
-            SyscallResult::Err(9) // EBADF
-        }
-        FdKind::PipeWrite(pipe_buffer) => {
-            // Check O_NONBLOCK status flag
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-
-            // Write to pipe
+    // Now perform the actual I/O operation without holding the manager lock
+    match write_op {
+        WriteOperation::StdIo => write_to_stdio(fd, &buffer),
+        WriteOperation::Ebadf => SyscallResult::Err(9), // EBADF
+        WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
+        WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
+        WriteOperation::Eopnotsupp => SyscallResult::Err(95), // EOPNOTSUPP
+        WriteOperation::Pipe { pipe_buffer, is_nonblocking } => {
             let mut pipe = pipe_buffer.lock();
             match pipe.write(&buffer) {
                 Ok(n) => {
                     log::debug!("sys_write: Wrote {} bytes to pipe", n);
                     SyscallResult::Ok(n as u64)
                 }
-                Err(11) => {
-                    // EAGAIN - pipe buffer is full
-                    if is_nonblocking {
-                        // O_NONBLOCK set: return EAGAIN immediately
-                        log::debug!("sys_write: Pipe full, O_NONBLOCK set - returning EAGAIN");
-                        SyscallResult::Err(11) // EAGAIN
-                    } else {
-                        // O_NONBLOCK not set: should block, but blocking for pipes not implemented
-                        // For now, return EAGAIN (same as nonblocking behavior)
-                        // TODO: Implement blocking pipe writes
-                        log::debug!("sys_write: Pipe full, blocking not implemented - returning EAGAIN");
-                        SyscallResult::Err(11) // EAGAIN
-                    }
+                Err(11) if !is_nonblocking => {
+                    // Blocking pipe write not implemented, return EAGAIN
+                    log::debug!("sys_write: Pipe full, blocking not implemented - returning EAGAIN");
+                    SyscallResult::Err(11) // EAGAIN
                 }
-                Err(e) => {
-                    log::debug!("sys_write: Pipe write error: {}", e);
-                    SyscallResult::Err(e as u64)
-                }
+                Err(e) => SyscallResult::Err(e as u64),
             }
         }
-        FdKind::PipeRead(_) => {
-            // Can't write to read end of pipe
-            SyscallResult::Err(9) // EBADF
-        }
-        FdKind::FifoWrite(_path, pipe_buffer) => {
-            // FIFO write - clone pipe_buffer and drop manager guard before I/O
-            // CRITICAL: Must release process manager lock before write() because
-            // write() may call wake_read_waiters() which acquires scheduler lock.
-            // If timer fires during that, context switch needs process manager lock.
-            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
-            let pipe_buffer_clone = pipe_buffer.clone();
-            drop(manager_guard); // Release process manager lock BEFORE write!
-
-            let mut pipe = pipe_buffer_clone.lock();
+        WriteOperation::Fifo { pipe_buffer, is_nonblocking } => {
+            let mut pipe = pipe_buffer.lock();
             match pipe.write(&buffer) {
                 Ok(n) => {
                     log::debug!("sys_write: Wrote {} bytes to FIFO", n);
                     SyscallResult::Ok(n as u64)
                 }
-                Err(11) => {
-                    if is_nonblocking {
-                        log::debug!("sys_write: FIFO full, O_NONBLOCK set - returning EAGAIN");
-                        SyscallResult::Err(11) // EAGAIN
-                    } else {
-                        // TODO: Implement blocking FIFO writes
-                        log::debug!("sys_write: FIFO full, blocking not implemented - returning EAGAIN");
-                        SyscallResult::Err(11) // EAGAIN
-                    }
+                Err(11) if !is_nonblocking => {
+                    log::debug!("sys_write: FIFO full, blocking not implemented - returning EAGAIN");
+                    SyscallResult::Err(11) // EAGAIN
                 }
-                Err(e) => {
-                    log::debug!("sys_write: FIFO write error: {}", e);
-                    SyscallResult::Err(e as u64)
-                }
+                Err(e) => SyscallResult::Err(e as u64),
             }
         }
-        FdKind::FifoRead(_, _) => {
-            // Can't write to read end of FIFO
-            SyscallResult::Err(9) // EBADF
-        }
-        FdKind::UdpSocket(_) => {
-            // Can't write to UDP socket - must use sendto
-            log::error!("sys_write: Cannot write to UDP socket, use sendto instead");
-            SyscallResult::Err(95) // EOPNOTSUPP
-        }
-        FdKind::RegularFile(file_ref) => {
-            // Write to ext2 regular file
-            //
-            // Get file info under the lock, then drop lock before filesystem operations
-            let (inode_num, position, flags) = {
-                let file = file_ref.lock();
-                (file.inode_num, file.position, file.flags)
-            };
-
-            // Handle O_APPEND flag - seek to end before writing
-            let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
-                // Get file size from filesystem
-                let root_fs = crate::fs::ext2::root_fs();
-                let fs = match root_fs.as_ref() {
-                    Some(fs) => fs,
-                    None => {
-                        log::error!("sys_write: ext2 filesystem not mounted");
-                        return SyscallResult::Err(super::errno::ENOSYS as u64);
-                    }
-                };
-                let inode = match fs.read_inode(inode_num as u32) {
-                    Ok(inode) => inode,
-                    Err(e) => {
-                        log::error!("sys_write: Failed to read inode {}: {}", inode_num, e);
-                        return SyscallResult::Err(super::errno::EIO as u64);
-                    }
-                };
-                inode.size()
-            } else {
-                position
-            };
-
-            // Access the mounted ext2 filesystem
-            let mut root_fs = crate::fs::ext2::root_fs();
-            let fs = match root_fs.as_mut() {
-                Some(fs) => fs,
-                None => {
-                    log::error!("sys_write: ext2 filesystem not mounted");
-                    return SyscallResult::Err(super::errno::ENOSYS as u64);
-                }
-            };
-
-            // Write the data
-            let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
-                Ok(n) => n,
-                Err(e) => {
-                    log::error!("sys_write: Failed to write file data: {}", e);
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
-            };
-
-            // Drop the filesystem lock before updating file position
-            drop(root_fs);
-
-            // Update file position
-            {
-                let mut file = file_ref.lock();
-                file.position = write_offset + bytes_written as u64;
-            }
-
-            log::debug!("sys_write: Wrote {} bytes to regular file (inode {})", bytes_written, inode_num);
-            SyscallResult::Ok(bytes_written as u64)
-        }
-        FdKind::Directory(_) => {
-            // Cannot write to a directory
-            log::error!("sys_write: Cannot write to directory");
-            SyscallResult::Err(super::errno::EISDIR as u64)
-        }
-        FdKind::Device(device_type) => {
-            // Write to devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
-            match crate::fs::devfs::device_write(*device_type, &buffer) {
+        WriteOperation::UnixStream { socket } => {
+            let sock = socket.lock();
+            match sock.write(&buffer) {
                 Ok(n) => {
-                    log::debug!("sys_write: Wrote {} bytes to device {:?}", n, device_type);
+                    log::debug!("sys_write: Wrote {} bytes to Unix socket", n);
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        WriteOperation::TcpConnection { conn_id } => {
+            // Write to established TCP connection
+            match crate::net::tcp::tcp_send(&conn_id, &buffer) {
+                Ok(n) => {
+                    log::debug!("sys_write: Wrote {} bytes to TCP connection", n);
                     SyscallResult::Ok(n as u64)
                 }
                 Err(e) => {
-                    log::debug!("sys_write: Device write error: {}", e);
-                    SyscallResult::Err((-e) as u64)
-                }
-            }
-        }
-        FdKind::DevfsDirectory { .. } => {
-            // Cannot write to a directory
-            log::error!("sys_write: Cannot write to /dev directory");
-            SyscallResult::Err(super::errno::EISDIR as u64)
-        }
-        FdKind::DevptsDirectory { .. } => {
-            // Cannot write to a directory
-            log::error!("sys_write: Cannot write to /dev/pts directory");
-            SyscallResult::Err(super::errno::EISDIR as u64)
-        }
-        FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
-            // Cannot write to unconnected TCP socket
-            log::error!("sys_write: Cannot write to unconnected TCP socket");
-            SyscallResult::Err(super::errno::ENOTCONN as u64)
-        }
-        FdKind::TcpConnection(conn_id) => {
-            // Write to TCP connection
-            match crate::net::tcp::tcp_send(conn_id, &buffer) {
-                Ok(n) => {
-                    log::debug!("sys_write: Sent {} bytes on TCP connection", n);
-                    // Drain loopback queue so data is delivered for localhost connections
-                    crate::net::drain_loopback_queue();
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(e) => {
+                    log::debug!("sys_write: TCP write error: {}", e);
+                    // Return EPIPE if the connection was shutdown for writing
                     if e.contains("shutdown") {
-                        log::error!("sys_write: TCP send failed - connection shutdown");
                         SyscallResult::Err(super::errno::EPIPE as u64)
                     } else {
-                        log::error!("sys_write: TCP send failed - {}", e);
                         SyscallResult::Err(super::errno::EIO as u64)
                     }
                 }
             }
         }
-        FdKind::PtyMaster(pty_num) => {
-            // Write to PTY master (goes to slave's input via line discipline)
-            match crate::tty::pty::get(*pty_num) {
-                Some(pair) => {
-                    match pair.master_write(&buffer) {
-                        Ok(n) => {
-                            log::debug!("sys_write: Wrote {} bytes to PTY master {}", n, pty_num);
-                            SyscallResult::Ok(n as u64)
-                        }
-                        Err(e) => {
-                            log::debug!("sys_write: PTY master write error: {}", e);
-                            SyscallResult::Err(e as u64)
-                        }
-                    }
+        WriteOperation::Device { device_type } => {
+            use crate::fs::devfs::DeviceType;
+            match device_type {
+                DeviceType::Null | DeviceType::Zero => {
+                    // /dev/null, /dev/zero - discard all data
+                    SyscallResult::Ok(buffer.len() as u64)
                 }
-                None => {
-                    log::error!("sys_write: PTY {} not found", pty_num);
-                    SyscallResult::Err(super::errno::EIO as u64)
+                DeviceType::Console | DeviceType::Tty => {
+                    // Write to console/tty
+                    write_to_stdio(fd, &buffer)
                 }
             }
         }
-        FdKind::PtySlave(pty_num) => {
-            // Write from PTY slave (goes to master's read buffer)
-            match crate::tty::pty::get(*pty_num) {
-                Some(pair) => {
-                    match pair.slave_write(&buffer) {
-                        Ok(n) => {
-                            log::debug!("sys_write: Wrote {} bytes from PTY slave {}", n, pty_num);
-                            SyscallResult::Ok(n as u64)
-                        }
-                        Err(e) => {
-                            log::debug!("sys_write: PTY slave write error: {}", e);
-                            SyscallResult::Err(e as u64)
-                        }
-                    }
+        WriteOperation::RegularFile { file } => {
+            // Write to ext2 regular file
+            let (inode_num, position, flags) = {
+                let file_guard = file.lock();
+                (file_guard.inode_num, file_guard.position, file_guard.flags)
+            };
+
+            // Handle O_APPEND flag - seek to end before writing
+            let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                let root_fs = crate::fs::ext2::root_fs();
+                let fs = match root_fs.as_ref() {
+                    Some(fs) => fs,
+                    None => return SyscallResult::Err(super::errno::ENOSYS as u64),
+                };
+                match fs.read_inode(inode_num as u32) {
+                    Ok(inode) => inode.size(),
+                    Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
                 }
-                None => {
-                    log::error!("sys_write: PTY {} not found", pty_num);
-                    SyscallResult::Err(super::errno::EIO as u64)
-                }
+            } else {
+                position
+            };
+
+            // Write the data
+            let mut root_fs = crate::fs::ext2::root_fs();
+            let fs = match root_fs.as_mut() {
+                Some(fs) => fs,
+                None => return SyscallResult::Err(super::errno::ENOSYS as u64),
+            };
+
+            let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
+                Ok(n) => n,
+                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+            };
+
+            drop(root_fs);
+
+            // Update file position
+            {
+                let mut file_guard = file.lock();
+                file_guard.position = write_offset + bytes_written as u64;
             }
-        }
-        FdKind::UnixStream(socket_ref) => {
-            // Write to Unix stream socket
-            let socket = socket_ref.lock();
-            match socket.write(&buffer) {
-                Ok(n) => {
-                    log::debug!("sys_write: Wrote {} bytes to Unix socket", n);
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(e) => {
-                    log::debug!("sys_write: Unix socket write error: {}", e);
-                    SyscallResult::Err(e as u64)
-                }
-            }
-        }
-        FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
-            // Cannot write to unconnected Unix socket
-            log::error!("sys_write: Cannot write to unconnected Unix socket");
-            SyscallResult::Err(super::errno::ENOTCONN as u64)
+
+            log::debug!("sys_write: Wrote {} bytes to regular file (inode {})", bytes_written, inode_num);
+            SyscallResult::Ok(bytes_written as u64)
         }
     }
 }
