@@ -224,7 +224,30 @@ fn deliver_to_user_handler(
     action: &SignalAction,
 ) -> bool {
     // Get current user stack pointer from interrupt frame
-    let user_rsp = interrupt_frame.stack_pointer.as_u64();
+    let current_rsp = interrupt_frame.stack_pointer.as_u64();
+
+    // Check if we should use the alternate signal stack
+    // SA_ONSTACK flag means use alt stack if one is configured and enabled
+    let use_alt_stack = (action.flags & SA_ONSTACK) != 0
+        && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
+        && process.signals.alt_stack.size > 0
+        && !process.signals.alt_stack.on_stack; // Don't nest on alt stack
+
+    let user_rsp = if use_alt_stack {
+        // Use alternate stack - stack grows down, so start at top (base + size)
+        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+        log::debug!(
+            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
+            process.signals.alt_stack.base,
+            process.signals.alt_stack.size,
+            alt_top
+        );
+        // Mark that we're now on the alternate stack
+        process.signals.alt_stack.on_stack = true;
+        alt_top
+    } else {
+        current_rsp
+    };
 
     // Calculate space needed for trampoline and signal frame
     let frame_size = SignalFrame::SIZE as u64;

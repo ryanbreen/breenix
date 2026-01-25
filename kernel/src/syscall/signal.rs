@@ -964,6 +964,13 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
                 process.signals.set_blocked(signal_frame.saved_blocked);
                 log::debug!("sigreturn: restored signal mask to {:#x}", signal_frame.saved_blocked);
+
+                // Clear the on_stack flag - we're leaving the signal handler
+                // This allows the alternate stack to be used for future signals
+                if process.signals.alt_stack.on_stack {
+                    process.signals.alt_stack.on_stack = false;
+                    log::debug!("sigreturn: cleared alt_stack.on_stack flag");
+                }
             }
         }
     }
