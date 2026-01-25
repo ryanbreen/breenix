@@ -14,8 +14,8 @@ pub mod thread;
 #[cfg(target_arch = "x86_64")]
 pub mod context;
 
-// Scheduler and preemption - requires per_cpu which is x86_64 only for now
-#[cfg(target_arch = "x86_64")]
+// Scheduler and preemption - works on both x86_64 and aarch64
+// (requires architecture-specific interrupt control, provided by arch_impl)
 pub mod scheduler;
 
 // Kernel threads and workqueues - depend on scheduler
@@ -27,7 +27,8 @@ pub mod workqueue;
 pub mod softirqd;
 
 // Process-related modules - depend on process module which is x86_64 only
-#[cfg(target_arch = "x86_64")]
+// Note: process_context is available for both architectures as SavedRegisters
+// is architecture-specific but needed for signal delivery on both
 pub mod process_context;
 #[cfg(target_arch = "x86_64")]
 pub mod process_task;

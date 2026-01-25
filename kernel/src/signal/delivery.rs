@@ -3,10 +3,9 @@
 //! This module handles delivering pending signals to processes when they
 //! return to userspace from syscalls or interrupts.
 //!
-//! Note: This module is x86_64-only due to use of InterruptStackFrame and
-//! SavedRegisters types.
-
-#![cfg(target_arch = "x86_64")]
+//! Architecture support:
+//! - x86_64: Uses InterruptStackFrame and SavedRegisters (RAX-R15)
+//! - AArch64: Uses Aarch64ExceptionFrame and SavedRegisters (X0-X30, SP, ELR, SPSR)
 
 use super::constants::*;
 use super::types::*;
@@ -30,7 +29,11 @@ pub enum SignalDeliveryResult {
     Terminated(ParentNotification),
 }
 
-/// Deliver pending signals to a process
+// =============================================================================
+// x86_64 Signal Delivery
+// =============================================================================
+
+/// Deliver pending signals to a process (x86_64)
 ///
 /// Called from check_need_resched_and_switch() before returning to userspace.
 ///
@@ -44,6 +47,7 @@ pub enum SignalDeliveryResult {
 ///
 /// IMPORTANT: If `Terminated` is returned, the caller MUST call
 /// `notify_parent_of_termination_deferred` AFTER releasing the process manager lock!
+#[cfg(target_arch = "x86_64")]
 pub fn deliver_pending_signals(
     process: &mut Process,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
@@ -93,7 +97,7 @@ pub fn deliver_pending_signals(
             handler_addr => {
                 // User-defined handler - set up signal frame and return
                 // Only one user handler can be delivered at a time
-                if deliver_to_user_handler(process, interrupt_frame, saved_regs, sig, handler_addr, &action) {
+                if deliver_to_user_handler_x86_64(process, interrupt_frame, saved_regs, sig, handler_addr, &action) {
                     return SignalDeliveryResult::Delivered;
                 }
                 return SignalDeliveryResult::NoAction;
@@ -101,6 +105,87 @@ pub fn deliver_pending_signals(
         }
     }
 }
+
+// =============================================================================
+// ARM64 Signal Delivery
+// =============================================================================
+
+/// Deliver pending signals to a process (ARM64)
+///
+/// Called from check_need_resched_and_switch() before returning to userspace.
+///
+/// # Arguments
+/// * `process` - The process to deliver signals to
+/// * `exception_frame` - The exception frame that will be used to return to userspace
+/// * `saved_regs` - The saved general-purpose registers
+///
+/// # Returns
+/// * `SignalDeliveryResult` indicating what action was taken
+///
+/// IMPORTANT: If `Terminated` is returned, the caller MUST call
+/// `notify_parent_of_termination_deferred` AFTER releasing the process manager lock!
+#[cfg(target_arch = "aarch64")]
+pub fn deliver_pending_signals(
+    process: &mut Process,
+    exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+) -> SignalDeliveryResult {
+    // Process all deliverable signals in a loop (avoids unbounded recursion)
+    loop {
+        // Get next deliverable signal
+        let sig = match process.signals.next_deliverable_signal() {
+            Some(s) => s,
+            None => return SignalDeliveryResult::NoAction,
+        };
+
+        // Clear pending flag for this signal
+        process.signals.clear_pending(sig);
+
+        // Get the handler for this signal
+        let action = *process.signals.get_handler(sig);
+
+        log::debug!(
+            "Delivering signal {} ({}) to process {}, handler={:#x}",
+            sig,
+            signal_name(sig),
+            process.id.as_u64(),
+            action.handler
+        );
+
+        match action.handler {
+            SIG_DFL => {
+                // Default action may terminate/stop the process
+                match deliver_default_action(process, sig) {
+                    DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
+                    DeliverResult::Terminated(notification) => return SignalDeliveryResult::Terminated(notification),
+                    DeliverResult::Ignored => {
+                        // Continue loop to check for more signals
+                    }
+                }
+            }
+            SIG_IGN => {
+                log::debug!(
+                    "Signal {} ignored by process {}",
+                    sig,
+                    process.id.as_u64()
+                );
+                // Signal ignored - continue loop to check for more signals
+            }
+            handler_addr => {
+                // User-defined handler - set up signal frame and return
+                // Only one user handler can be delivered at a time
+                if deliver_to_user_handler_aarch64(process, exception_frame, saved_regs, sig, handler_addr, &action) {
+                    return SignalDeliveryResult::Delivered;
+                }
+                return SignalDeliveryResult::NoAction;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Common Signal Delivery Logic
+// =============================================================================
 
 /// Result of delivering a signal's default action
 pub enum DeliverResult {
@@ -216,11 +301,16 @@ fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
     }
 }
 
-/// Set up user stack and registers to call a user-defined signal handler
+// =============================================================================
+// x86_64 User Handler Delivery
+// =============================================================================
+
+/// Set up user stack and registers to call a user-defined signal handler (x86_64)
 ///
 /// This modifies the interrupt frame so that when we return to userspace,
 /// we jump to the signal handler instead of the interrupted code.
-fn deliver_to_user_handler(
+#[cfg(target_arch = "x86_64")]
+fn deliver_to_user_handler_x86_64(
     process: &mut Process,
     interrupt_frame: &mut x86_64::structures::idt::InterruptStackFrame,
     saved_regs: &mut crate::task::process_context::SavedRegisters,
@@ -388,6 +478,196 @@ fn deliver_to_user_handler(
     true
 }
 
+// =============================================================================
+// ARM64 User Handler Delivery
+// =============================================================================
+
+/// Set up user stack and registers to call a user-defined signal handler (ARM64)
+///
+/// This modifies the exception frame so that when we return to userspace,
+/// we jump to the signal handler instead of the interrupted code.
+///
+/// Key differences from x86_64:
+/// - User stack is accessed via SP_EL0, not from the exception frame
+/// - Return address goes in X30 (link register), not pushed on stack
+/// - PSTATE is used instead of RFLAGS
+/// - Signal trampoline uses `mov x8, #15; svc #0` for sigreturn
+#[cfg(target_arch = "aarch64")]
+fn deliver_to_user_handler_aarch64(
+    process: &mut Process,
+    exception_frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+    saved_regs: &mut crate::task::process_context::SavedRegisters,
+    sig: u32,
+    handler_addr: u64,
+    action: &SignalAction,
+) -> bool {
+    // Get current user stack pointer from saved registers
+    // On ARM64, user SP is in SP_EL0, which we save in saved_regs.sp
+    let current_sp = saved_regs.sp;
+
+    // Check if we should use the alternate signal stack
+    // SA_ONSTACK flag means use alt stack if one is configured and enabled
+    let use_alt_stack = (action.flags & SA_ONSTACK) != 0
+        && (process.signals.alt_stack.flags & super::constants::SS_DISABLE as u32) == 0
+        && process.signals.alt_stack.size > 0
+        && !process.signals.alt_stack.on_stack; // Don't nest on alt stack
+
+    let user_sp = if use_alt_stack {
+        // Use alternate stack - stack grows down, so start at top (base + size)
+        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+        log::debug!(
+            "Using alternate signal stack: base={:#x}, size={}, top={:#x}",
+            process.signals.alt_stack.base,
+            process.signals.alt_stack.size,
+            alt_top
+        );
+        // Mark that we're now on the alternate stack
+        process.signals.alt_stack.on_stack = true;
+        alt_top
+    } else {
+        current_sp
+    };
+
+    // Calculate space needed for signal frame (and optionally trampoline)
+    let frame_size = SignalFrame::SIZE as u64;
+
+    // Check if the handler provides a restorer function (SA_RESTORER flag)
+    // If so, use it instead of writing trampoline to the stack.
+    let use_restorer = (action.flags & super::constants::SA_RESTORER) != 0 && action.restorer != 0;
+
+    let (frame_sp, return_addr) = if use_restorer {
+        // Use the restorer function provided by the application/libc
+        // Only allocate space for the signal frame (no trampoline needed)
+        let frame_sp = (user_sp - frame_size) & !0xF; // 16-byte align
+        log::debug!(
+            "Using SA_RESTORER: restorer={:#x}",
+            action.restorer
+        );
+        (frame_sp, action.restorer)
+    } else {
+        // Fall back to writing trampoline on the stack
+        // This works when the stack is executable (main stack without NX)
+        let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
+        let total_size = frame_size + trampoline_size;
+        let frame_sp = (user_sp - total_size) & !0xF; // 16-byte align
+        let trampoline_sp = frame_sp + frame_size;
+
+        // Write trampoline code to user stack
+        // SAFETY: We're writing to user memory that should be valid stack space
+        unsafe {
+            let trampoline_ptr = trampoline_sp as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
+                trampoline_ptr,
+                super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
+            );
+        }
+
+        (frame_sp, trampoline_sp)
+    };
+
+    // Build signal frame with saved context
+    // Copy all X registers to the saved_x array
+    let saved_x: [u64; 31] = [
+        saved_regs.x0, saved_regs.x1, saved_regs.x2, saved_regs.x3,
+        saved_regs.x4, saved_regs.x5, saved_regs.x6, saved_regs.x7,
+        saved_regs.x8, saved_regs.x9, saved_regs.x10, saved_regs.x11,
+        saved_regs.x12, saved_regs.x13, saved_regs.x14, saved_regs.x15,
+        saved_regs.x16, saved_regs.x17, saved_regs.x18, saved_regs.x19,
+        saved_regs.x20, saved_regs.x21, saved_regs.x22, saved_regs.x23,
+        saved_regs.x24, saved_regs.x25, saved_regs.x26, saved_regs.x27,
+        saved_regs.x28, saved_regs.x29, saved_regs.x30,
+    ];
+
+    let signal_frame = SignalFrame {
+        // Return address stored in x30/lr on ARM64
+        trampoline_addr: return_addr,
+
+        // Magic number for integrity validation
+        magic: SignalFrame::MAGIC,
+
+        // Signal info
+        signal: sig as u64,
+        siginfo_ptr: 0, // Not implemented yet
+        ucontext_ptr: 0, // Not implemented yet
+
+        // Save current execution state (ARM64 specific)
+        saved_pc: saved_regs.elr,      // Program counter (ELR_EL1)
+        saved_sp: user_sp,              // Stack pointer
+        saved_pstate: saved_regs.spsr,  // Processor state (SPSR_EL1)
+
+        // Save all general-purpose registers (X0-X30)
+        saved_x,
+
+        // Save signal mask to restore after handler
+        saved_blocked: process.signals.blocked,
+    };
+
+    // Write signal frame to user stack
+    // SAFETY: We're writing to user memory that should be valid stack space
+    unsafe {
+        let frame_ptr = frame_sp as *mut SignalFrame;
+        core::ptr::write_volatile(frame_ptr, signal_frame);
+    }
+
+    // Block signals during handler execution
+    if (action.flags & SA_NODEFER) == 0 {
+        // Block this signal while handler runs (prevents recursive delivery)
+        process.signals.block_signals(sig_mask(sig));
+    }
+    // Also block any signals specified in the handler's mask
+    process.signals.block_signals(action.mask);
+
+    // Modify exception frame to jump to signal handler
+    // Set PC (ELR_EL1) to handler address
+    exception_frame.elr = handler_addr;
+
+    // Set X30 (link register) to the return address (trampoline or restorer)
+    // When the handler returns (via RET instruction), it will jump to x30
+    exception_frame.x30 = return_addr;
+    saved_regs.x30 = return_addr;
+
+    // Update stack pointer in saved registers
+    // The actual SP_EL0 update happens on exception return
+    saved_regs.sp = frame_sp;
+    saved_regs.elr = handler_addr;
+
+    // Set up arguments for signal handler (ARM64 ABI: X0-X2)
+    // void handler(int signum, siginfo_t *info, void *ucontext)
+    exception_frame.x0 = sig as u64;        // First argument: signal number
+    exception_frame.x1 = 0;                  // Second argument: siginfo_t* (not implemented)
+    exception_frame.x2 = 0;                  // Third argument: ucontext_t* (not implemented)
+    saved_regs.x0 = sig as u64;
+    saved_regs.x1 = 0;
+    saved_regs.x2 = 0;
+
+    if use_alt_stack {
+        log::info!(
+            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, SP={:#x}->{:#x}, return={:#x}",
+            sig,
+            handler_addr,
+            user_sp,
+            frame_sp,
+            return_addr
+        );
+    } else {
+        log::info!(
+            "Signal {} delivered to handler at {:#x}, SP={:#x}->{:#x}, return={:#x}",
+            sig,
+            handler_addr,
+            user_sp,
+            frame_sp,
+            return_addr
+        );
+    }
+
+    true
+}
+
+// =============================================================================
+// Parent Notification (Architecture-Independent)
+// =============================================================================
+
 /// Store information about parent notification that needs to happen after lock is released
 ///
 /// This is used to defer parent notification until after the process manager lock is released,
@@ -479,6 +759,10 @@ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification>
         child_pid: process.id,
     })
 }
+
+// =============================================================================
+// Timer Functions (Architecture-Independent)
+// =============================================================================
 
 /// Check if a process has an expired ITIMER_REAL and queue SIGALRM if needed
 ///

@@ -85,11 +85,34 @@ impl CpuContext {
 }
 
 // Context switch is implemented in global_asm below
+//
+// CpuContext layout (all fields are u64, 8 bytes each):
+//   Offset   Field
+//   0        x19
+//   8        x20
+//   16       x21
+//   24       x22
+//   32       x23
+//   40       x24
+//   48       x25
+//   56       x26
+//   64       x27
+//   72       x28
+//   80       x29 (frame pointer)
+//   88       x30 (link register)
+//   96       sp
+//   104      sp_el0 (user stack pointer)
+//   112      elr_el1 (exception return address)
+//   120      spsr_el1 (saved program status)
 core::arch::global_asm!(r#"
 .global switch_context
 .type switch_context, @function
 switch_context:
+    // switch_context(old: *mut CpuContext, new: *const CpuContext)
     // x0 = old context pointer, x1 = new context pointer
+    //
+    // This function saves the current context to 'old' and loads context from 'new'.
+    // Used for kernel-to-kernel context switches.
 
     // Save callee-saved registers to old context
     stp x19, x20, [x0, #0]
@@ -113,15 +136,127 @@ switch_context:
 
     // Return to new context (x30 has the return address)
     ret
+
+.global switch_to_thread
+.type switch_to_thread, @function
+switch_to_thread:
+    // switch_to_thread(context: *const CpuContext) -> !
+    // x0 = new context pointer
+    //
+    // One-way switch: loads context without saving current state.
+    // Used for initial thread startup (new threads that haven't run yet).
+
+    // Load callee-saved registers from new context
+    ldp x19, x20, [x0, #0]
+    ldp x21, x22, [x0, #16]
+    ldp x23, x24, [x0, #32]
+    ldp x25, x26, [x0, #48]
+    ldp x27, x28, [x0, #64]
+    ldp x29, x30, [x0, #80]
+    ldr x2, [x0, #96]
+    mov sp, x2
+
+    // Return to new context entry point (x30 has the entry address)
+    ret
+
+.global switch_to_user
+.type switch_to_user, @function
+switch_to_user:
+    // switch_to_user(context: *const CpuContext) -> !
+    // x0 = context pointer
+    //
+    // Switch to userspace using ERET. This is used for returning to userspace
+    // after a syscall or exception, or for initial user thread startup.
+    //
+    // Prerequisites:
+    //   - context->elr_el1: userspace entry point (or return address)
+    //   - context->sp_el0: userspace stack pointer
+    //   - context->spsr_el1: saved program status (typically 0 for EL0t)
+
+    // Load callee-saved registers (for restored context after signals, etc.)
+    ldp x19, x20, [x0, #0]
+    ldp x21, x22, [x0, #16]
+    ldp x23, x24, [x0, #32]
+    ldp x25, x26, [x0, #48]
+    ldp x27, x28, [x0, #64]
+    ldp x29, x30, [x0, #80]
+
+    // Set up kernel stack pointer (for next exception)
+    ldr x2, [x0, #96]
+    mov sp, x2
+
+    // Set up user stack pointer (SP_EL0)
+    ldr x2, [x0, #104]
+    msr sp_el0, x2
+
+    // Set exception return address (ELR_EL1)
+    ldr x2, [x0, #112]
+    msr elr_el1, x2
+
+    // Set saved program status (SPSR_EL1)
+    ldr x2, [x0, #120]
+    msr spsr_el1, x2
+
+    // Clear caller-saved registers for security (prevent kernel data leaks)
+    // x0-x7: argument/result registers
+    mov x0, #0
+    mov x1, #0
+    mov x2, #0
+    mov x3, #0
+    mov x4, #0
+    mov x5, #0
+    mov x6, #0
+    mov x7, #0
+    // x8: indirect result register
+    mov x8, #0
+    // x9-x15: temporaries
+    mov x9, #0
+    mov x10, #0
+    mov x11, #0
+    mov x12, #0
+    mov x13, #0
+    mov x14, #0
+    mov x15, #0
+    // x16-x17: intra-procedure call scratch
+    mov x16, #0
+    mov x17, #0
+    // x18: platform register (some platforms reserve it)
+    mov x18, #0
+
+    // Exception return - jumps to EL0 at ELR_EL1
+    eret
 "#);
 
 extern "C" {
     /// Switch from the current context to a new context.
     ///
+    /// Saves callee-saved registers (X19-X30, SP) to `old` and loads them from `new`.
+    /// Returns via the new context's X30 (link register).
+    ///
     /// # Safety
     ///
     /// Both contexts must be valid and properly initialized.
     pub fn switch_context(old: *mut CpuContext, new: *const CpuContext);
+
+    /// Switch to a thread for the first time (doesn't save current context).
+    ///
+    /// Loads callee-saved registers (X19-X30, SP) from `context` and returns via X30.
+    /// Used for initial thread startup.
+    ///
+    /// # Safety
+    ///
+    /// The context must be valid and properly initialized with a valid entry point in X30.
+    pub fn switch_to_thread(context: *const CpuContext) -> !;
+
+    /// Switch to userspace via ERET.
+    ///
+    /// Sets up ELR_EL1, SPSR_EL1, and SP_EL0 from the context, clears caller-saved
+    /// registers for security, then executes ERET to jump to EL0.
+    ///
+    /// # Safety
+    ///
+    /// The context must have valid userspace addresses in elr_el1 and sp_el0.
+    pub fn switch_to_user(context: *const CpuContext) -> !;
 }
 
 /// Return to userspace from the current kernel context.
@@ -258,4 +393,43 @@ pub fn read_sp_el0() -> u64 {
 #[inline]
 pub unsafe fn write_sp_el0(sp: u64) {
     asm!("msr sp_el0, {}", in(reg) sp, options(nomem, nostack));
+}
+
+/// Perform a context switch between two threads.
+///
+/// Saves the current thread's context to `old_context` and loads `new_context`.
+///
+/// # Safety
+///
+/// Both context pointers must be valid and properly aligned.
+#[allow(dead_code)]
+pub unsafe fn perform_context_switch(old_context: &mut CpuContext, new_context: &CpuContext) {
+    switch_context(
+        old_context as *mut CpuContext,
+        new_context as *const CpuContext,
+    );
+}
+
+/// Switch to a thread for the first time.
+///
+/// Loads the context without saving the current state. Used for initial thread startup.
+///
+/// # Safety
+///
+/// The context must be valid and properly initialized with a valid entry point.
+#[allow(dead_code)]
+pub unsafe fn perform_initial_switch(new_context: &CpuContext) -> ! {
+    switch_to_thread(new_context as *const CpuContext);
+}
+
+/// Perform a switch to userspace via ERET.
+///
+/// Sets up the exception return state from the context and performs ERET.
+///
+/// # Safety
+///
+/// The context must have valid userspace addresses.
+#[allow(dead_code)]
+pub unsafe fn perform_user_switch(context: &CpuContext) -> ! {
+    switch_to_user(context as *const CpuContext);
 }

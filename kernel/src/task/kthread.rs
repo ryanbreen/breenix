@@ -9,6 +9,35 @@ use spin::Mutex;
 use super::scheduler;
 use super::thread::Thread;
 
+// Architecture-specific interrupt control and halt
+#[cfg(target_arch = "x86_64")]
+use x86_64::instructions::interrupts::without_interrupts;
+
+#[cfg(target_arch = "aarch64")]
+use crate::arch_impl::aarch64::cpu::without_interrupts;
+
+/// Architecture-specific halt instruction
+#[inline(always)]
+fn arch_halt() {
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::hlt();
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack));
+    }
+}
+
+/// Architecture-specific enable interrupts
+#[inline(always)]
+unsafe fn arch_enable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::interrupts::enable();
+
+    #[cfg(target_arch = "aarch64")]
+    core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+}
+
 /// Kernel thread control block
 pub struct Kthread {
     /// Thread ID (same as regular thread)
@@ -75,7 +104,7 @@ where
     // a race where the timer interrupt schedules the new thread before we've finished
     // setting up. The new thread's kthread_entry calls current_kthread() which needs
     // the registry entry to exist.
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    without_interrupts(|| {
         KTHREAD_REGISTRY.lock().insert(tid, Arc::clone(&kthread));
         scheduler::spawn(Box::new(thread));
     });
@@ -135,7 +164,7 @@ pub fn kthread_park() {
     while handle.inner.parked.load(Ordering::Acquire) {
         // CRITICAL: Disable interrupts while updating scheduler state to prevent
         // race where timer interrupt fires between marking blocked and removing from queue
-        x86_64::instructions::interrupts::without_interrupts(|| {
+        without_interrupts(|| {
             // Re-check parked under interrupt disable to handle race with unpark
             if !handle.inner.parked.load(Ordering::Acquire) {
                 return; // Already unparked, don't block
@@ -159,8 +188,8 @@ pub fn kthread_park() {
         // Set need_resched so context switch happens
         scheduler::yield_current();
 
-        // HLT waits for the next interrupt (timer) which will perform the actual context switch
-        x86_64::instructions::hlt();
+        // HLT/WFI waits for the next interrupt (timer) which will perform the actual context switch
+        arch_halt();
     }
 }
 
@@ -186,10 +215,10 @@ pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {
         return Ok(handle.inner.exit_code.load(Ordering::Acquire));
     }
 
-    // Wait for thread to exit using HLT to allow timer interrupts
+    // Wait for thread to exit using HLT/WFI to allow timer interrupts
     // This lets the scheduler run the kthread to completion
     while !handle.inner.exited.load(Ordering::SeqCst) {
-        x86_64::instructions::hlt();
+        arch_halt();
     }
 
     // The SeqCst load above synchronizes with kthread_exit()'s SeqCst store,
@@ -219,8 +248,8 @@ pub fn kthread_exit(code: i32) -> ! {
     scheduler::set_need_resched();
 
     loop {
-        x86_64::instructions::interrupts::enable();
-        x86_64::instructions::hlt();
+        unsafe { arch_enable_interrupts(); }
+        arch_halt();
     }
 }
 
@@ -242,11 +271,12 @@ extern "C" fn kthread_entry(arg: u64) -> ! {
 
     // CRITICAL: Enable interrupts for kernel threads!
     // Kernel threads are initialized with RFLAGS = 0x002 (IF=0, interrupts disabled)
-    // to prevent preemption during initial setup. Now that we're in the entry point,
-    // we need to enable interrupts so timer interrupts can preempt us and the
-    // scheduler can switch between threads.
+    // on x86_64, or with DAIF.I=1 (IRQs masked) on ARM64, to prevent preemption
+    // during initial setup. Now that we're in the entry point, we need to enable
+    // interrupts so timer interrupts can preempt us and the scheduler can switch
+    // between threads.
     unsafe {
-        core::arch::asm!("sti", options(nomem, nostack));
+        arch_enable_interrupts();
     }
 
     let start = unsafe { Box::from_raw(arg as *mut KthreadStart) };

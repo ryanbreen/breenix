@@ -182,3 +182,70 @@ pub fn dmb_sy() {
         core::arch::asm!("dmb sy", options(nomem, nostack));
     }
 }
+
+// =============================================================================
+// Module-level interrupt control functions
+// =============================================================================
+//
+// These functions provide a convenient API matching the pattern used by the
+// scheduler. They delegate to the Aarch64Cpu trait implementation but can
+// be called without importing or specifying the trait.
+
+/// Check if IRQ interrupts are currently enabled.
+///
+/// This is a convenience function that delegates to `Aarch64Cpu::interrupts_enabled()`.
+/// Use this in code that needs to check interrupt state without importing traits.
+#[inline]
+pub fn interrupts_enabled() -> bool {
+    Aarch64Cpu::interrupts_enabled()
+}
+
+/// Disable IRQ interrupts.
+///
+/// # Safety
+///
+/// The caller must ensure that disabling interrupts is safe in the current
+/// context and that interrupts are re-enabled appropriately.
+#[inline]
+pub unsafe fn disable_interrupts() {
+    <Aarch64Cpu as CpuOps>::disable_interrupts();
+}
+
+/// Enable IRQ interrupts.
+///
+/// # Safety
+///
+/// The caller must ensure that enabling interrupts is safe in the current
+/// context and that no deadlock conditions exist.
+#[inline]
+pub unsafe fn enable_interrupts() {
+    <Aarch64Cpu as CpuOps>::enable_interrupts();
+}
+
+/// Execute a closure with interrupts disabled, restoring the previous state.
+///
+/// This is the ARM64 equivalent of `x86_64::instructions::interrupts::without_interrupts()`.
+/// It saves the current DAIF state, disables IRQs, executes the closure, and
+/// restores the previous interrupt state.
+///
+/// This is essential for preventing deadlocks when acquiring locks that may also
+/// be acquired in interrupt context (e.g., scheduler locks, socket receive queues).
+///
+/// # Example
+///
+/// ```ignore
+/// use crate::arch_impl::aarch64::cpu::without_interrupts;
+///
+/// without_interrupts(|| {
+///     // Critical section - interrupts are disabled here
+///     scheduler.lock().add_thread(thread);
+/// });
+/// // Interrupts restored to previous state
+/// ```
+#[inline]
+pub fn without_interrupts<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    Aarch64Cpu::without_interrupts(f)
+}

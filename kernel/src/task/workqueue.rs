@@ -33,6 +33,28 @@ use spin::Mutex;
 
 use super::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadHandle};
 
+/// Architecture-specific halt instruction
+#[inline(always)]
+fn arch_halt() {
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::hlt();
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("wfi", options(nomem, nostack));
+    }
+}
+
+/// Architecture-specific enable interrupts
+#[inline(always)]
+unsafe fn arch_enable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::interrupts::enable();
+
+    #[cfg(target_arch = "aarch64")]
+    core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+}
+
 /// Work states
 const WORK_IDLE: u8 = 0;
 const WORK_PENDING: u8 = 1;
@@ -87,9 +109,9 @@ impl Work {
     /// If the work is already complete, returns immediately.
     /// Otherwise, halts in a loop to allow the worker thread to run.
     ///
-    /// This uses plain hlt() matching kthread_join():
+    /// This uses plain hlt()/wfi() matching kthread_join():
     /// - Check completion flag with SeqCst ordering
-    /// - HLT waits for timer interrupt (with interrupts enabled)
+    /// - HLT/WFI waits for timer interrupt (with interrupts enabled)
     /// - Timer decrements quantum; when it expires, sets need_resched
     /// - Context switch to worker thread
     /// - Repeat until complete
@@ -98,7 +120,7 @@ impl Work {
     /// called by sleeping kthreads, wait() is called by the main thread waiting
     /// for a just-spawned worker. In TCG (software emulation), yield_current()
     /// causes pathological ping-pong switching that prevents the worker from
-    /// getting enough cycles. Plain hlt() lets the timer's natural quantum
+    /// getting enough cycles. Plain hlt()/wfi() lets the timer's natural quantum
     /// management decide when to switch, matching kthread_join() which works.
     pub fn wait(&self) {
         // Fast path: already completed
@@ -107,14 +129,14 @@ impl Work {
             return;
         }
 
-        // Plain HLT loop, exactly like kthread_join()
-        // 1. HLT waits for timer interrupt (with interrupts enabled)
+        // Plain HLT/WFI loop, exactly like kthread_join()
+        // 1. HLT/WFI waits for timer interrupt (with interrupts enabled)
         // 2. Timer decrements quantum; when it expires, sets need_resched
         // 3. Context switch to worker thread
         // 4. Worker executes our work and sets completed=true
         // 5. Eventually we get scheduled again and see completed=true
         while !self.completed.load(Ordering::SeqCst) {
-            x86_64::instructions::hlt();
+            arch_halt();
         }
     }
 
@@ -293,7 +315,7 @@ impl Drop for Workqueue {
 /// Worker thread main function.
 fn worker_thread_fn(wq: Arc<Workqueue>) {
     // Enable interrupts for preemption
-    x86_64::instructions::interrupts::enable();
+    unsafe { arch_enable_interrupts(); }
 
     // NOTE: No logging here - log statements in kernel threads can cause deadlocks
     // when timer interrupts fire while holding the logger lock. The KWORKER_SPAWN

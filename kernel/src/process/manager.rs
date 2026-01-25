@@ -1,9 +1,4 @@
 //! Process manager - handles process lifecycle and scheduling
-//!
-//! Note: This module is currently x86_64-only due to heavy use of x86_64-specific
-//! paging structures and page table operations.
-
-#![cfg(target_arch = "x86_64")]
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -11,7 +6,15 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{self, AtomicU64, Ordering};
+
+// Import paging types from appropriate source
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(target_arch = "x86_64")]
+use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
 
 use super::{Process, ProcessId};
 use crate::elf;
@@ -51,6 +54,8 @@ impl ProcessManager {
     }
 
     /// Create a new process from an ELF binary
+    /// Note: Uses x86_64-specific ELF loader
+    #[cfg(target_arch = "x86_64")]
     pub fn create_process(
         &mut self,
         name: String,
@@ -100,6 +105,8 @@ impl ProcessManager {
         // CRITICAL FIX: Re-map kernel low-half after ELF loading
         // The ELF loader may have created new page tables that don't preserve kernel mappings
         // We need to explicitly ensure the kernel code/data remains mapped
+        // Note: This is x86_64-specific due to kernel memory layout differences
+        #[cfg(target_arch = "x86_64")]
         {
             use x86_64::VirtAddr;
             use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
@@ -260,13 +267,15 @@ impl ProcessManager {
     }
 
     /// Create the main thread for a process
+    /// Note: Uses x86_64-specific TLS and thread creation
+    #[cfg(target_arch = "x86_64")]
     fn create_main_thread(
         &mut self,
         process: &mut Process,
-        stack_top: x86_64::VirtAddr,
+        stack_top: VirtAddr,
     ) -> Result<Thread, &'static str> {
         // For now, use a null TLS block (we'll implement TLS later)
-        let _tls_block = x86_64::VirtAddr::new(0);
+        let _tls_block = VirtAddr::new(0);
 
         // Allocate a globally unique thread ID
         // NOTE: While Unix convention is TID = PID for main thread, we need global
@@ -277,7 +286,8 @@ impl ProcessManager {
         // Allocate a TLS block for this thread ID
         let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
 
-        // Register this thread with the TLS system
+        // Register this thread with the TLS system (x86_64 only for now)
+        #[cfg(target_arch = "x86_64")]
         if let Err(e) = crate::tls::register_thread_tls(thread_id, actual_tls_block) {
             log::warn!(
                 "Failed to register thread {} with TLS system: {}",
@@ -551,12 +561,16 @@ impl ProcessManager {
     }
 
     /// Fork a process - create a child process that's a copy of the parent
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn fork_process(&mut self, parent_pid: ProcessId) -> Result<ProcessId, &'static str> {
         self.fork_process_with_context(parent_pid, None)
     }
 
     /// Fork a process with a pre-allocated page table
     /// This version accepts a page table created outside the lock to avoid deadlock
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)] // Part of public fork API - available for deadlock-free fork patterns
     pub fn fork_process_with_page_table(
         &mut self,
@@ -669,6 +683,8 @@ impl ProcessManager {
     /// Fork a process with the ACTUAL parent register state from syscall frame
     /// This is the preferred method as it captures the exact register values at fork time,
     /// not the stale values from the last context switch.
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn fork_process_with_parent_context(
         &mut self,
         parent_pid: ProcessId,
@@ -783,6 +799,8 @@ impl ProcessManager {
     /// Complete the fork operation after page table is created
     /// If `parent_context_override` is provided, it will be used for the child's context
     /// instead of the stale values from `parent_thread.context`.
+    /// Note: Uses architecture-specific register names
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     fn complete_fork(
         &mut self,
@@ -1071,6 +1089,8 @@ impl ProcessManager {
     /// Fork a process with optional userspace context override
     /// NOTE: This method creates the page table while holding the lock, which can cause deadlock
     /// Consider using fork_process_with_page_table instead
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn fork_process_with_context(
         &mut self,
         parent_pid: ProcessId,
@@ -1374,6 +1394,8 @@ impl ProcessManager {
     /// The `program_name` parameter is optional - if provided, it updates the process name
     /// to match the new program. This is critical because fork() uses the process name to
     /// reload the binary from disk.
+    /// Note: Exec requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8], program_name: Option<&str>) -> Result<u64, &'static str> {
         log::info!(
             "exec_process: Replacing process {} with new program",
@@ -1484,15 +1506,15 @@ impl ProcessManager {
 
         // Map stack pages into the NEW process page table
         log::info!("exec_process: Mapping stack pages into new process page table");
-        let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_bottom);
-        let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_top - 1u64);
+        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
         log::info!(
             "exec_process: Stack range: {:#x} - {:#x}",
             stack_bottom.as_u64(),
             stack_top.as_u64()
         );
 
-        for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+        for page in Page::range_inclusive(start_page, end_page) {
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Failed to allocate frame for exec stack")?;
 
@@ -1500,9 +1522,9 @@ impl ProcessManager {
             new_page_table.map_page(
                 page,
                 frame,
-                x86_64::structures::paging::PageTableFlags::PRESENT
-                    | x86_64::structures::paging::PageTableFlags::WRITABLE
-                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
             )?;
         }
 
@@ -1675,6 +1697,8 @@ impl ProcessManager {
     /// - argv: Array of argument strings (argv[0] is typically the program name)
     ///
     /// Returns: (entry_point, stack_pointer) on success
+    /// Note: Exec requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     pub fn exec_process_with_argv(
         &mut self,
@@ -1767,19 +1791,19 @@ impl ProcessManager {
         let stack_top = VirtAddr::new(USER_STACK_TOP);
 
         log::info!("exec_process_with_argv: Mapping stack pages into new process page table");
-        let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_bottom);
-        let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_top - 1u64);
+        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
 
-        for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+        for page in Page::range_inclusive(start_page, end_page) {
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Failed to allocate frame for exec stack")?;
 
             new_page_table.map_page(
                 page,
                 frame,
-                x86_64::structures::paging::PageTableFlags::PRESENT
-                    | x86_64::structures::paging::PageTableFlags::WRITABLE
-                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
             )?;
         }
 

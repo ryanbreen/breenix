@@ -22,6 +22,7 @@ pub mod privilege;
 pub mod timer;
 pub mod mmu;
 pub mod context;
+pub mod syscall_entry;
 
 // Re-export commonly used items
 // These re-exports are part of the complete HAL API
@@ -41,3 +42,15 @@ pub use gic::Gicv2;
 pub use privilege::Aarch64PrivilegeLevel;
 #[allow(unused_imports)]
 pub use timer::Aarch64Timer;
+#[allow(unused_imports)]
+pub use syscall_entry::{is_el0_confirmed, syscall_return_to_userspace_aarch64};
+
+// Re-export interrupt control functions for convenient access
+// These provide the ARM64 equivalent of x86_64::instructions::interrupts::*
+#[allow(unused_imports)]
+pub use cpu::{
+    disable_interrupts,
+    enable_interrupts,
+    interrupts_enabled,
+    without_interrupts,
+};

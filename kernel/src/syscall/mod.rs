@@ -1,17 +1,28 @@
 //! System call infrastructure for Breenix
 //!
-//! This module implements the system call interface using INT 0x80 (Linux-style).
-//! System calls are the primary interface between userspace and the kernel.
+//! This module implements the system call interface:
+//! - x86_64: Uses INT 0x80 (Linux-style)
+//! - ARM64: Uses SVC instruction
 //!
-//! On ARM64, syscalls are handled via SVC instruction in arch_impl/aarch64/exception.rs
+//! Architecture-independent syscall implementations are shared between both
+//! architectures, with only the entry/exit code being architecture-specific.
 
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::idt::InterruptStackFrame;
 
 // Architecture-independent modules
 pub mod errno;
+pub mod time;
+pub mod userptr;
 
-// x86_64-specific syscall handling modules
+// Syscall handler - the main dispatcher
+// x86_64: Full handler with signal delivery and process management
+// ARM64: Handler is in arch_impl/aarch64/syscall_entry.rs
+#[cfg(target_arch = "x86_64")]
+pub mod handler;
+
+// Syscall implementations - most are architecture-independent
+// but some use x86_64-specific paging APIs that need abstraction
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
 #[cfg(target_arch = "x86_64")]
@@ -20,8 +31,6 @@ pub mod fifo;
 pub mod fs;
 #[cfg(target_arch = "x86_64")]
 pub mod graphics;
-#[cfg(target_arch = "x86_64")]
-pub mod handler;
 #[cfg(target_arch = "x86_64")]
 pub mod handlers;
 #[cfg(target_arch = "x86_64")]
@@ -40,10 +49,6 @@ pub mod session;
 pub mod signal;
 #[cfg(target_arch = "x86_64")]
 pub mod socket;
-#[cfg(target_arch = "x86_64")]
-pub mod time;
-#[cfg(target_arch = "x86_64")]
-pub mod userptr;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -8,6 +8,13 @@ use alloc::{boxed::Box, collections::VecDeque};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
+// Architecture-specific interrupt control
+#[cfg(target_arch = "x86_64")]
+use x86_64::instructions::interrupts::{are_enabled, without_interrupts};
+
+#[cfg(target_arch = "aarch64")]
+use crate::arch_impl::aarch64::cpu::{interrupts_enabled as are_enabled, without_interrupts};
+
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
@@ -275,10 +282,17 @@ impl Scheduler {
                 // the context is already saved and ready for signal delivery.
                 if let Some(ctx) = userspace_context {
                     thread.saved_userspace_context = Some(ctx);
+                    #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
                         "Thread {} saving userspace context: RIP={:#x}",
                         current_id,
                         thread.saved_userspace_context.as_ref().unwrap().rip
+                    );
+                    #[cfg(target_arch = "aarch64")]
+                    log_serial_println!(
+                        "Thread {} saving userspace context: ELR={:#x}",
+                        current_id,
+                        thread.saved_userspace_context.as_ref().unwrap().elr_el1
                     );
                 }
                 thread.state = ThreadState::BlockedOnSignal;
@@ -476,14 +490,16 @@ pub fn init_with_current(current_thread: Box<Thread>) {
 /// Add a thread to the scheduler
 pub fn spawn(thread: Box<Thread>) {
     // Disable interrupts to prevent timer interrupt deadlock
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
         if let Some(scheduler) = scheduler_lock.as_mut() {
             scheduler.add_thread(thread);
             // Ensure a switch happens ASAP (especially in CI smoke runs)
             NEED_RESCHED.store(true, Ordering::Relaxed);
             // Mirror to per-CPU flag so IRQ-exit path sees it
+            #[cfg(target_arch = "x86_64")]
             crate::per_cpu::set_need_resched(true);
+            // TODO: ARM64 per_cpu::set_need_resched when per_cpu module is ported
         } else {
             panic!("Scheduler not initialized");
         }
@@ -493,11 +509,11 @@ pub fn spawn(thread: Box<Thread>) {
 /// Perform scheduling and return threads to switch between
 pub fn schedule() -> Option<(u64, u64)> {
     // Check if interrupts are already disabled (i.e., we're in interrupt context)
-    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
+    let interrupts_were_enabled = are_enabled();
 
-    let result = if interrupts_enabled {
+    let result = if interrupts_were_enabled {
         // Normal case: disable interrupts to prevent deadlock
-        x86_64::instructions::interrupts::without_interrupts(|| {
+        without_interrupts(|| {
             let mut scheduler_lock = SCHEDULER.lock();
             if let Some(scheduler) = scheduler_lock.as_mut() {
                 scheduler.schedule().map(|(old, new)| (old.id(), new.id()))
@@ -566,7 +582,7 @@ pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Scheduler) -> R,
 {
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
         scheduler_lock.as_mut().map(f)
     })
@@ -578,7 +594,7 @@ pub fn with_thread_mut<F, R>(thread_id: u64, f: F) -> Option<R>
 where
     F: FnOnce(&mut super::thread::Thread) -> R,
 {
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
         scheduler_lock
             .as_mut()
@@ -589,7 +605,7 @@ where
 /// Get the current thread ID
 /// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn current_thread_id() -> Option<u64> {
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    without_interrupts(|| {
         let scheduler_lock = SCHEDULER.lock();
         scheduler_lock.as_ref().and_then(|s| s.current_thread)
     })
@@ -630,21 +646,39 @@ pub fn allocate_thread_id() -> Option<u64> {
 /// Set the need_resched flag (called from timer interrupt)
 pub fn set_need_resched() {
     NEED_RESCHED.store(true, Ordering::Relaxed);
+    #[cfg(target_arch = "x86_64")]
     crate::per_cpu::set_need_resched(true);
+    // TODO: ARM64 per_cpu::set_need_resched when per_cpu module is ported
 }
 
 /// Check and clear the need_resched flag (called from interrupt return path)
 pub fn check_and_clear_need_resched() -> bool {
-    let need = crate::per_cpu::need_resched();
-    if need { crate::per_cpu::set_need_resched(false); }
-    let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
-    need
+    #[cfg(target_arch = "x86_64")]
+    {
+        let need = crate::per_cpu::need_resched();
+        if need { crate::per_cpu::set_need_resched(false); }
+        let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
+        need
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // On ARM64, use only the atomic flag until per_cpu is ported
+        NEED_RESCHED.swap(false, Ordering::Relaxed)
+    }
 }
 
 /// Check if the need_resched flag is set (without clearing it)
 /// Used by can_schedule() to determine if kernel threads should be rescheduled
 pub fn is_need_resched() -> bool {
-    crate::per_cpu::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::per_cpu::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // On ARM64, use only the atomic flag until per_cpu is ported
+        NEED_RESCHED.load(Ordering::Relaxed)
+    }
 }
 
 /// Switch to idle thread immediately (for use by exception handlers)
@@ -656,6 +690,7 @@ pub fn switch_to_idle() {
         sched.current_thread = Some(idle_id);
 
         // Also update per-CPU current thread pointer
+        #[cfg(target_arch = "x86_64")]
         if let Some(thread) = sched.get_thread_mut(idle_id) {
             let thread_ptr = thread as *const _ as *mut crate::task::thread::Thread;
             crate::per_cpu::set_current_thread(thread_ptr);
@@ -672,7 +707,8 @@ pub fn switch_to_idle() {
 }
 
 /// Test module for scheduler state invariants
-#[cfg(test)]
+/// These tests use x86_64-specific types (VirtAddr) and are only compiled for x86_64
+#[cfg(all(test, target_arch = "x86_64"))]
 pub mod tests {
     use super::*;
     use alloc::boxed::Box;
@@ -805,6 +841,8 @@ pub mod tests {
 /// Public wrapper for running scheduler tests (callable from kernel main)
 /// This is intentionally available but not automatically called - it can be
 /// invoked manually during debugging to verify scheduler invariants.
+/// Only available on x86_64 since tests use architecture-specific types.
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub fn run_scheduler_tests() {
     #[cfg(test)]

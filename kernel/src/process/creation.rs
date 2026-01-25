@@ -5,10 +5,6 @@
 //! - No kernel-to-user transitions via spawn threads
 //! - Direct creation of user threads in Ring 3 mode
 //! - Proper integration with the new minimal timer interrupt system
-//!
-//! Note: This module is currently x86_64-only due to use of tty and TTY handling.
-
-#![cfg(target_arch = "x86_64")]
 
 use crate::process::ProcessId;
 use alloc::boxed::Box;
@@ -22,6 +18,8 @@ use alloc::string::String;
 ///
 /// This is a thin wrapper around the existing process creation that ensures
 /// the process starts as a user thread without spawn thread transitions.
+/// Note: Uses x86_64-specific ELF loader and process creation
+#[cfg(target_arch = "x86_64")]
 pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
     log::info!(
         "create_user_process: Creating user process '{}' with new model",
@@ -78,6 +76,8 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
 
                         // Set this process as the foreground process group for the console TTY
                         // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
+                        // Note: TTY is only available on x86_64 currently
+                        #[cfg(target_arch = "x86_64")]
                         if let Some(tty) = crate::tty::console() {
                             tty.set_foreground_pgrp(pid.as_u64());
                             log::debug!(
@@ -124,6 +124,8 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
 /// Initialize the first user process (init)
 ///
 /// This creates PID 1 as a proper user process without spawn mechanisms.
+/// Note: Uses x86_64-specific process creation
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub fn init_user_process(elf_data: &[u8]) -> Result<ProcessId, &'static str> {
     log::info!("init_user_process: Creating init process (PID 1)");

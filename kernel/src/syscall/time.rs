@@ -69,12 +69,8 @@ pub fn sys_clock_gettime(clock_id: u32, user_ptr: *mut Timespec) -> SyscallResul
         }
     };
 
-    // Copy result to userspace
-    if let Err(_e) = crate::syscall::handlers::copy_to_user(
-        user_ptr as u64,
-        &ts as *const _ as u64,
-        core::mem::size_of::<Timespec>(),
-    ) {
+    // Copy result to userspace using architecture-independent userptr module
+    if let Err(_e) = crate::syscall::userptr::copy_to_user(user_ptr, &ts) {
         return SyscallResult::Err(ErrorCode::Fault as u64);
     }
 

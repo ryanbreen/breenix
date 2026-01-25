@@ -2,11 +2,16 @@
 //!
 //! These handlers are called from the assembly exception vector table.
 //! They process synchronous exceptions (syscalls, page faults, etc.) and IRQs.
+//!
+//! For syscalls (SVC from EL0), the handler delegates to the dedicated
+//! syscall entry module (`syscall_entry.rs`) which provides preemption
+//! handling, signal delivery, and context switch support.
 
 #![allow(dead_code)]
 
 use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
+use crate::arch_impl::aarch64::syscall_entry::rust_syscall_handler_aarch64;
 use crate::arch_impl::traits::SyscallFrame;
 
 /// ARM64 syscall result type (mirrors x86_64 version)
@@ -50,8 +55,21 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
     match ec {
         exception_class::SVC_AARCH64 => {
             // Syscall - ARM64 ABI: X8=syscall number, X0-X5=args, X0=return
+            // Delegate to the dedicated syscall entry module which handles:
+            // - Preemption counting
+            // - EL0_CONFIRMED marker
+            // - Signal delivery on return
+            // - Context switch checking
             let frame = unsafe { &mut *frame };
-            handle_syscall(frame);
+
+            // Check if from EL0 (userspace) - use full handler with preemption/signals
+            let from_el0 = (frame.spsr & 0xF) == 0;
+            if from_el0 {
+                rust_syscall_handler_aarch64(frame);
+            } else {
+                // From EL1 (kernel) - use simple handler (shouldn't happen normally)
+                handle_syscall(frame);
+            }
         }
 
         exception_class::DATA_ABORT_LOWER | exception_class::DATA_ABORT_SAME => {
