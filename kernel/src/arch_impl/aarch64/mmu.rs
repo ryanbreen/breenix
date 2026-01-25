@@ -116,9 +116,9 @@ fn l2_block_desc_user(base: u64, attr: u64) -> u64 {
 pub fn init() {
     crate::serial_println!("[mmu] Setting up page tables...");
 
-    let l0_addr = unsafe { &raw const L0_TABLE as u64 };
-    let l1_addr = unsafe { &raw const L1_TABLE as u64 };
-    let l2_ram_addr = unsafe { &raw const L2_TABLE_RAM as u64 };
+    let l0_addr = &raw const L0_TABLE as u64;
+    let l1_addr = &raw const L1_TABLE as u64;
+    let l2_ram_addr = &raw const L2_TABLE_RAM as u64;
     crate::serial_println!("[mmu] L0 table at {:#x}", l0_addr);
     crate::serial_println!("[mmu] L1 table at {:#x}", l1_addr);
     crate::serial_println!("[mmu] L2 (RAM) table at {:#x}", l2_ram_addr);

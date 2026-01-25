@@ -60,7 +60,8 @@ pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
-#[cfg(feature = "interactive")]
+// Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
+#[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 pub mod graphics;
 
 #[cfg(test)]

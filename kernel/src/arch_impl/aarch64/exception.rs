@@ -180,21 +180,50 @@ fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
     frame.set_return_value(result as u64);
 }
 
+/// PL011 UART IRQ number (SPI 1, which is IRQ 33)
+const UART0_IRQ: u32 = 33;
+
+/// Raw serial write - no locks, for use in interrupt handlers
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    const PL011_DR: *mut u32 = 0x0900_0000 as *mut u32;
+    unsafe { core::ptr::write_volatile(PL011_DR, c as u32); }
+}
+
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers
 #[no_mangle]
 pub extern "C" fn handle_irq() {
+    // Debug: show we entered IRQ handler
+    raw_serial_char(b'I');
+
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
+        // Debug: show IRQ ID (as hex digit if < 16, else 'X')
+        raw_serial_char(b':');
+        if irq_id < 10 {
+            raw_serial_char(b'0' + irq_id as u8);
+        } else if irq_id < 16 {
+            raw_serial_char(b'a' + (irq_id - 10) as u8);
+        } else if irq_id < 100 {
+            raw_serial_char(b'0' + (irq_id / 10) as u8);
+            raw_serial_char(b'0' + (irq_id % 10) as u8);
+        } else {
+            raw_serial_char(b'X');
+        }
+        raw_serial_char(b' ');
         // Handle the interrupt based on ID
         match irq_id {
             // Virtual timer interrupt (PPI 27, but shows as 27 in IAR)
             27 => {
-                crate::serial_println!("[irq] Timer interrupt");
-                // Clear the timer interrupt by disabling it
-                // (real handler would reschedule)
+                // Timer interrupt - clear it without logging to avoid noise
                 crate::arch_impl::aarch64::timer::disarm_timer();
+            }
+
+            // UART0 receive interrupt (SPI 1 = IRQ 33)
+            UART0_IRQ => {
+                handle_uart_interrupt();
             }
 
             // SGIs (0-15) - Inter-processor interrupts
@@ -216,6 +245,48 @@ pub extern "C" fn handle_irq() {
         // Signal end of interrupt
         gic::end_of_interrupt(irq_id);
     }
+}
+
+/// Handle UART receive interrupt
+///
+/// Read all available bytes from the UART and route them to the terminal.
+fn handle_uart_interrupt() {
+    use crate::serial_aarch64;
+    use crate::graphics::terminal_manager;
+
+    // Debug marker: 'U' for UART interrupt entry
+    raw_serial_char(b'U');
+
+    // Read all available bytes from the UART FIFO
+    while let Some(byte) = serial_aarch64::get_received_byte() {
+        // Debug: echo the byte we received
+        raw_serial_char(b'[');
+        raw_serial_char(byte);
+        raw_serial_char(b']');
+
+        // Handle special keys
+        let c = match byte {
+            // Backspace
+            0x7F | 0x08 => '\x08',
+            // Enter
+            0x0D => '\n',
+            // Tab
+            0x09 => '\t',
+            // Escape sequences start with 0x1B - for now, ignore
+            0x1B => continue,
+            // Regular ASCII
+            b if b >= 0x20 && b < 0x7F => byte as char,
+            // Control characters (Ctrl+C = 0x03, Ctrl+D = 0x04, etc.)
+            b if b < 0x20 => byte as char,
+            _ => continue,
+        };
+
+        // Write to the shell terminal (handles locking internally)
+        terminal_manager::write_char_to_shell(c);
+    }
+
+    // Clear the interrupt
+    serial_aarch64::clear_rx_interrupt();
 }
 
 /// Get exception class name for debugging

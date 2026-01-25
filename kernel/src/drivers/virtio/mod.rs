@@ -25,6 +25,14 @@ pub mod queue;
 
 #[cfg(target_arch = "aarch64")]
 pub mod mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod block_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod net_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod gpu_mmio;
+#[cfg(target_arch = "aarch64")]
+pub mod input_mmio;
 
 #[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;

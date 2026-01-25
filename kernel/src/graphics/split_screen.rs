@@ -10,6 +10,12 @@ use super::primitives::{draw_vline, Canvas, Color, Rect};
 use super::terminal::TerminalPane;
 use spin::Mutex;
 
+// Architecture-specific framebuffer imports
+#[cfg(target_arch = "x86_64")]
+use SHELL_FRAMEBUFFER;
+#[cfg(target_arch = "aarch64")]
+use super::arm64_fb::SHELL_FRAMEBUFFER;
+
 /// Global split-screen state.
 ///
 /// When split-screen mode is active, this holds the terminal pane
@@ -220,17 +226,21 @@ pub fn write_char_to_terminal(c: char) -> bool {
     if let Some(mut guard) = SPLIT_SCREEN_MODE.try_lock() {
         if let Some(ref mut state) = *guard {
             // Get the framebuffer to render to
-            if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+            if let Some(fb) = SHELL_FRAMEBUFFER.get() {
                 if let Some(mut fb_guard) = fb.try_lock() {
                     // Hide cursor, write char, show cursor
                     state.terminal.draw_cursor(&mut *fb_guard, false);
                     state.terminal.write_char(&mut *fb_guard, c);
                     state.terminal.draw_cursor(&mut *fb_guard, state.cursor_visible);
 
-                    // Flush if double buffered
+                    // Flush framebuffer
+                    #[cfg(target_arch = "x86_64")]
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         db.flush_if_dirty();
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    fb_guard.flush();
+
                     return true;
                 }
             }
@@ -245,15 +255,20 @@ pub fn write_char_to_terminal(c: char) -> bool {
 pub fn write_str_to_terminal(s: &str) -> bool {
     if let Some(mut guard) = SPLIT_SCREEN_MODE.try_lock() {
         if let Some(ref mut state) = *guard {
-            if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+            if let Some(fb) = SHELL_FRAMEBUFFER.get() {
                 if let Some(mut fb_guard) = fb.try_lock() {
                     state.terminal.draw_cursor(&mut *fb_guard, false);
                     state.terminal.write_str(&mut *fb_guard, s);
                     state.terminal.draw_cursor(&mut *fb_guard, state.cursor_visible);
 
+                    // Flush framebuffer
+                    #[cfg(target_arch = "x86_64")]
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         db.flush_if_dirty();
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    fb_guard.flush();
+
                     return true;
                 }
             }
@@ -266,14 +281,18 @@ pub fn write_str_to_terminal(s: &str) -> bool {
 pub fn toggle_terminal_cursor() {
     if let Some(mut guard) = SPLIT_SCREEN_MODE.try_lock() {
         if let Some(ref mut state) = *guard {
-            if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+            if let Some(fb) = SHELL_FRAMEBUFFER.get() {
                 if let Some(mut fb_guard) = fb.try_lock() {
                     state.cursor_visible = !state.cursor_visible;
                     state.terminal.draw_cursor(&mut *fb_guard, state.cursor_visible);
 
+                    // Flush framebuffer
+                    #[cfg(target_arch = "x86_64")]
                     if let Some(db) = fb_guard.double_buffer_mut() {
                         db.flush_if_dirty();
                     }
+                    #[cfg(target_arch = "aarch64")]
+                    fb_guard.flush();
                 }
             }
         }
@@ -284,7 +303,10 @@ pub fn toggle_terminal_cursor() {
 pub fn activate_split_screen(terminal: TerminalPane) {
     let mut guard = SPLIT_SCREEN_MODE.lock();
     *guard = Some(SplitScreenState::new(terminal));
+    #[cfg(target_arch = "x86_64")]
     log::info!("Split-screen mode activated");
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_println!("[split-screen] Split-screen mode activated");
 }
 
 #[cfg(test)]

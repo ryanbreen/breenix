@@ -81,6 +81,48 @@ pub fn init() -> usize {
     }
 
     serial_println!("[drivers] Found {} VirtIO MMIO devices", device_count);
+
+    // Initialize VirtIO block driver
+    match virtio::block_mmio::init() {
+        Ok(()) => {
+            serial_println!("[drivers] VirtIO block driver initialized");
+            // Run a quick read test
+            if let Err(e) = virtio::block_mmio::test_read() {
+                serial_println!("[drivers] VirtIO block test failed: {}", e);
+            }
+        }
+        Err(e) => {
+            serial_println!("[drivers] VirtIO block driver init failed: {}", e);
+        }
+    }
+
+    // Initialize VirtIO network driver
+    match virtio::net_mmio::init() {
+        Ok(()) => {
+            serial_println!("[drivers] VirtIO network driver initialized");
+            // Run a quick test
+            if let Err(e) = virtio::net_mmio::test_device() {
+                serial_println!("[drivers] VirtIO network test failed: {}", e);
+            }
+        }
+        Err(e) => {
+            serial_println!("[drivers] VirtIO network driver init failed: {}", e);
+        }
+    }
+
+    // Initialize VirtIO GPU driver
+    match virtio::gpu_mmio::init() {
+        Ok(()) => {
+            serial_println!("[drivers] VirtIO GPU driver initialized");
+            if let Err(e) = virtio::gpu_mmio::test_device() {
+                serial_println!("[drivers] VirtIO GPU test failed: {}", e);
+            }
+        }
+        Err(e) => {
+            serial_println!("[drivers] VirtIO GPU driver init failed: {}", e);
+        }
+    }
+
     serial_println!("[drivers] Driver subsystem initialized");
     device_count
 }

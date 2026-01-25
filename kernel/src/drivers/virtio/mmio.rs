@@ -68,14 +68,19 @@ mod regs {
     pub const DEVICE_FEATURES_SEL: usize = 0x014;
     pub const DRIVER_FEATURES: usize = 0x020;
     pub const DRIVER_FEATURES_SEL: usize = 0x024;
+    // Legacy (v1) registers
+    pub const GUEST_PAGE_SIZE: usize = 0x028;  // v1 only
     pub const QUEUE_SEL: usize = 0x030;
     pub const QUEUE_NUM_MAX: usize = 0x034;
     pub const QUEUE_NUM: usize = 0x038;
-    pub const QUEUE_READY: usize = 0x044;
+    pub const QUEUE_ALIGN: usize = 0x03c;      // v1 only
+    pub const QUEUE_PFN: usize = 0x040;        // v1 only - Page Frame Number
+    pub const QUEUE_READY: usize = 0x044;      // v2 only
     pub const QUEUE_NOTIFY: usize = 0x050;
     pub const INTERRUPT_STATUS: usize = 0x060;
     pub const INTERRUPT_ACK: usize = 0x064;
     pub const STATUS: usize = 0x070;
+    // v2 only registers
     pub const QUEUE_DESC_LOW: usize = 0x080;
     pub const QUEUE_DESC_HIGH: usize = 0x084;
     pub const QUEUE_AVAIL_LOW: usize = 0x090;
@@ -230,6 +235,22 @@ impl VirtioMmioDevice {
     /// Set the size of the selected queue
     pub fn set_queue_num(&self, num: u32) {
         self.write32(regs::QUEUE_NUM, num);
+    }
+
+    /// Set guest page size (v1 only) - must be called before queue setup
+    pub fn set_guest_page_size(&self, size: u32) {
+        self.write32(regs::GUEST_PAGE_SIZE, size);
+    }
+
+    /// Set queue alignment (v1 only)
+    pub fn set_queue_align(&self, align: u32) {
+        self.write32(regs::QUEUE_ALIGN, align);
+    }
+
+    /// Set queue PFN (Page Frame Number) - v1 only
+    /// This is the physical address divided by guest page size
+    pub fn set_queue_pfn(&self, pfn: u32) {
+        self.write32(regs::QUEUE_PFN, pfn);
     }
 
     /// Set queue ready (v2 only)

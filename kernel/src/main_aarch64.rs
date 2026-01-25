@@ -78,6 +78,10 @@ use kernel::arch_impl::aarch64::timer;
 use kernel::arch_impl::aarch64::cpu::Aarch64Cpu;
 use kernel::arch_impl::aarch64::gic::Gicv2;
 use kernel::arch_impl::traits::{CpuOps, InterruptController};
+use kernel::graphics::arm64_fb;
+use kernel::graphics::primitives::{draw_vline, fill_rect, Canvas, Color, Rect};
+use kernel::graphics::terminal_manager;
+use kernel::drivers::virtio::input_mmio::{self, event_type};
 
 /// Kernel entry point called from assembly boot code.
 ///
@@ -120,6 +124,18 @@ pub extern "C" fn kernel_main() -> ! {
     Gicv2::init();
     serial_println!("[boot] GIC initialized");
 
+    // Enable UART receive interrupt (IRQ 33 = SPI 1)
+    serial_println!("[boot] Enabling UART interrupts...");
+
+    // Enable IRQ 33 in GIC (PL011 UART)
+    serial_println!("[boot] Enabling GIC IRQ 33 (UART0)...");
+    Gicv2::enable_irq(33); // UART0 IRQ
+
+    // Enable RX interrupts in PL011
+    serial::enable_rx_interrupt();
+
+    serial_println!("[boot] UART interrupts enabled");
+
     // Enable interrupts
     serial_println!("[boot] Enabling interrupts...");
     unsafe { Aarch64Cpu::enable_interrupts(); }
@@ -131,6 +147,19 @@ pub extern "C" fn kernel_main() -> ! {
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
 
+    // Initialize graphics (if GPU is available)
+    serial_println!("[boot] Initializing graphics...");
+    if let Err(e) = init_graphics() {
+        serial_println!("[boot] Graphics init failed: {} (continuing without graphics)", e);
+    }
+
+    // Initialize VirtIO keyboard
+    serial_println!("[boot] Initializing VirtIO keyboard...");
+    match input_mmio::init() {
+        Ok(()) => serial_println!("[boot] VirtIO keyboard initialized"),
+        Err(e) => serial_println!("[boot] VirtIO keyboard init failed: {}", e),
+    }
+
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Boot Complete!");
@@ -139,36 +168,65 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("Hello from ARM64!");
     serial_println!();
 
-    // Show time passing
-    let start = timer::rdtsc();
-    for i in 0..5 {
-        // Busy wait approximately 1 second
-        let target = start + (i + 1) * freq;
-        while timer::rdtsc() < target {
-            core::hint::spin_loop();
-        }
-        if let Some((secs, nanos)) = timer::monotonic_time() {
-            serial_println!("[{}] Uptime: {}.{:09} seconds", i + 1, secs, nanos);
-        }
-    }
+    // Write welcome message to the terminal (right pane)
+    terminal_manager::write_str_to_shell("Breenix ARM64 Interactive Shell\n");
+    terminal_manager::write_str_to_shell("================================\n\n");
+    terminal_manager::write_str_to_shell("Type on the keyboard to type here!\n");
+    terminal_manager::write_str_to_shell("(Keyboard input via VirtIO)\n\n");
+    terminal_manager::write_str_to_shell("breenix> ");
 
-    // Test syscall mechanism
+    serial_println!("[interactive] Entering interactive mode");
+    serial_println!("[interactive] Input via VirtIO keyboard");
     serial_println!();
-    serial_println!("[test] Testing syscall mechanism...");
-    test_syscalls();
 
-    // Test userspace execution
-    serial_println!();
-    serial_println!("[test] Testing userspace execution...");
-    test_userspace();
-    // Note: test_userspace() never returns - the user program calls exit()
+    // Poll for VirtIO keyboard input
+    let mut shift_pressed = false;
+    let mut tick = 0u64;
 
-    serial_println!();
-    serial_println!("Entering idle loop (WFI)...");
-
-    // Halt loop
     loop {
-        Aarch64Cpu::halt_with_interrupts();
+        tick = tick.wrapping_add(1);
+
+        // Poll VirtIO input device for keyboard events
+        if input_mmio::is_initialized() {
+            for event in input_mmio::poll_events() {
+                // Only process key events (EV_KEY = 1)
+                if event.event_type == event_type::EV_KEY {
+                    let keycode = event.code;
+                    let pressed = event.value != 0;
+
+                    // Track shift key state
+                    if input_mmio::is_shift(keycode) {
+                        shift_pressed = pressed;
+                        continue;
+                    }
+
+                    // Only process key presses (not releases)
+                    if pressed {
+                        // Convert keycode to character
+                        if let Some(c) = input_mmio::keycode_to_char(keycode, shift_pressed) {
+                            serial_println!("[key] code={} char='{}'", keycode, c);
+                            terminal_manager::write_char_to_shell(c);
+                        } else if !input_mmio::is_modifier(keycode) {
+                            // Unknown non-modifier key
+                            serial_println!("[key] code={} (no mapping)", keycode);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Print a heartbeat every ~50 million iterations to show we're alive
+        // Also show VirtIO input ring state for debugging
+        if tick % 50_000_000 == 0 {
+            serial_println!(".");
+            // Debug: show input device state
+            if input_mmio::is_initialized() {
+                let (avail, used, last_seen) = input_mmio::debug_ring_state();
+                serial_println!("[poll] avail={} used={} last_seen={}", avail, used, last_seen);
+            }
+        }
+
+        core::hint::spin_loop();
     }
 }
 
@@ -368,6 +426,192 @@ fn current_exception_level() -> u8 {
         core::arch::asm!("mrs {}, currentel", out(reg) el, options(nomem, nostack));
     }
     ((el >> 2) & 0x3) as u8
+}
+
+/// Initialize graphics subsystem
+///
+/// This initializes the VirtIO GPU and sets up the split-screen terminal UI
+/// with graphics demo on the left and terminal on the right.
+fn init_graphics() -> Result<(), &'static str> {
+    // Initialize VirtIO GPU driver
+    kernel::drivers::virtio::gpu_mmio::init()?;
+
+    // Initialize the shell framebuffer (this is what terminal_manager uses)
+    arm64_fb::init_shell_framebuffer()?;
+
+    // Get framebuffer dimensions
+    let (width, height) = arm64_fb::dimensions().ok_or("Failed to get framebuffer dimensions")?;
+    serial_println!("[graphics] Framebuffer: {}x{}", width, height);
+
+    // Calculate layout: 50/50 split with 4-pixel divider
+    let divider_width = 4usize;
+    let divider_x = width / 2;
+    let left_width = divider_x;
+    let right_x = divider_x + divider_width;
+    let right_width = width.saturating_sub(right_x);
+
+    // Get the framebuffer and draw
+    if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
+        let mut fb_guard = fb.lock();
+
+        // Clear entire screen with dark background
+        fill_rect(
+            &mut *fb_guard,
+            Rect {
+                x: 0,
+                y: 0,
+                width: width as u32,
+                height: height as u32,
+            },
+            Color::rgb(20, 30, 50),
+        );
+
+        // Draw graphics demo on left pane
+        draw_graphics_demo(&mut *fb_guard, 0, 0, left_width, height);
+
+        // Draw vertical divider
+        let divider_color = Color::rgb(60, 80, 100);
+        for i in 0..divider_width {
+            draw_vline(&mut *fb_guard, (divider_x + i) as i32, 0, height as i32 - 1, divider_color);
+        }
+
+        // Flush to display
+        fb_guard.flush();
+    }
+
+    // Initialize terminal manager for the right side
+    terminal_manager::init_terminal_manager(right_x, 0, right_width, height);
+
+    // Initialize the terminal manager UI
+    if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
+        let mut fb_guard = fb.lock();
+        if let Some(mut mgr) = terminal_manager::TERMINAL_MANAGER.try_lock() {
+            if let Some(manager) = mgr.as_mut() {
+                manager.init(&mut *fb_guard);
+            }
+        }
+        // Flush after terminal init
+        fb_guard.flush();
+    }
+
+    serial_println!("[graphics] Split-screen terminal UI initialized");
+    Ok(())
+}
+
+/// Draw a graphics demo on the left pane
+fn draw_graphics_demo(canvas: &mut impl Canvas, x: usize, y: usize, width: usize, height: usize) {
+    let padding = 20;
+
+    // Title area
+    let title_y = y + padding;
+
+    // Draw title background
+    fill_rect(
+        canvas,
+        Rect {
+            x: (x + padding) as i32,
+            y: title_y as i32,
+            width: (width - padding * 2) as u32,
+            height: 40,
+        },
+        Color::rgb(40, 60, 80),
+    );
+
+    // Draw colored rectangles as demo
+    let box_width = 120;
+    let box_height = 80;
+    let box_y = y + 100;
+    let box_spacing = 20;
+
+    // Red box
+    fill_rect(
+        canvas,
+        Rect {
+            x: (x + padding) as i32,
+            y: box_y as i32,
+            width: box_width,
+            height: box_height,
+        },
+        Color::RED,
+    );
+
+    // Green box
+    fill_rect(
+        canvas,
+        Rect {
+            x: (x + padding + box_width as usize + box_spacing) as i32,
+            y: box_y as i32,
+            width: box_width,
+            height: box_height,
+        },
+        Color::GREEN,
+    );
+
+    // Blue box
+    fill_rect(
+        canvas,
+        Rect {
+            x: (x + padding) as i32,
+            y: (box_y + box_height as usize + box_spacing) as i32,
+            width: box_width,
+            height: box_height,
+        },
+        Color::BLUE,
+    );
+
+    // Yellow box
+    fill_rect(
+        canvas,
+        Rect {
+            x: (x + padding + box_width as usize + box_spacing) as i32,
+            y: (box_y + box_height as usize + box_spacing) as i32,
+            width: box_width,
+            height: box_height,
+        },
+        Color::rgb(255, 255, 0), // Yellow
+    );
+
+    // Draw some gradient bars at the bottom
+    let bar_y = y + height - 100;
+    let bar_height = 20;
+    for i in 0..width.saturating_sub(padding * 2) {
+        let intensity = ((i * 255) / (width - padding * 2)) as u8;
+        let color = Color::rgb(intensity, intensity, intensity);
+        fill_rect(
+            canvas,
+            Rect {
+                x: (x + padding + i) as i32,
+                y: bar_y as i32,
+                width: 1,
+                height: bar_height,
+            },
+            color,
+        );
+    }
+
+    // Draw color bars
+    let colors = [
+        Color::RED,
+        Color::GREEN,
+        Color::BLUE,
+        Color::rgb(0, 255, 255),   // Cyan
+        Color::rgb(255, 0, 255),   // Magenta
+        Color::rgb(255, 255, 0),   // Yellow
+    ];
+    let color_bar_y = bar_y + bar_height as usize + 10;
+    let color_bar_width = (width - padding * 2) / colors.len();
+    for (i, &color) in colors.iter().enumerate() {
+        fill_rect(
+            canvas,
+            Rect {
+                x: (x + padding + i * color_bar_width) as i32,
+                y: color_bar_y as i32,
+                width: color_bar_width as u32,
+                height: bar_height,
+            },
+            color,
+        );
+    }
 }
 
 /// Panic handler
