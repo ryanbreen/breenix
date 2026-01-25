@@ -340,7 +340,12 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
                 Err(e) => {
                     log::debug!("sys_write: TCP write error: {}", e);
-                    SyscallResult::Err(super::errno::EIO as u64)
+                    // Return EPIPE if the connection was shutdown for writing
+                    if e.contains("shutdown") {
+                        SyscallResult::Err(super::errno::EPIPE as u64)
+                    } else {
+                        SyscallResult::Err(super::errno::EIO as u64)
+                    }
                 }
             }
         }
