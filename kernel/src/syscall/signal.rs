@@ -962,8 +962,22 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
     if let Some(mut manager_guard) = crate::process::try_manager() {
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                process.signals.set_blocked(signal_frame.saved_blocked);
-                log::debug!("sigreturn: restored signal mask to {:#x}", signal_frame.saved_blocked);
+                // Check if we're returning from a signal that interrupted sigsuspend
+                // If so, restore the original mask that sigsuspend saved, not the
+                // temporary mask from the signal frame
+                if let Some(saved_mask) = process.signals.sigsuspend_saved_mask.take() {
+                    // Restore the original mask from before sigsuspend was called
+                    process.signals.set_blocked(saved_mask);
+                    log::info!(
+                        "sigreturn: restored sigsuspend saved mask to {:#x} (ignoring signal frame mask {:#x})",
+                        saved_mask,
+                        signal_frame.saved_blocked
+                    );
+                } else {
+                    // Normal case - restore from signal frame
+                    process.signals.set_blocked(signal_frame.saved_blocked);
+                    log::debug!("sigreturn: restored signal mask to {:#x}", signal_frame.saved_blocked);
+                }
 
                 // Clear the on_stack flag - we're leaving the signal handler
                 // This allows the alternate stack to be used for future signals
@@ -1313,13 +1327,26 @@ pub fn sys_sigsuspend_with_frame(
         }
     }
 
-    // CRITICAL: Restore the original signal mask before returning
+    // CRITICAL: Do NOT restore the mask here! The signal handler needs to run first
+    // with the temporary mask still in effect. Store the saved mask so sigreturn
+    // can restore it after the handler returns.
+    //
+    // Flow:
+    // 1. sigsuspend sets temporary mask (SIGUSR1 unblocked)
+    // 2. sigsuspend blocks waiting for signal
+    // 3. Signal arrives, thread is unblocked
+    // 4. sigsuspend stores saved_mask in sigsuspend_saved_mask (HERE)
+    // 5. sigsuspend returns -EINTR (signal delivery happens on syscall return)
+    // 6. Signal handler runs (with temporary mask still in effect)
+    // 7. Handler calls sigreturn
+    // 8. sigreturn restores sigsuspend_saved_mask to blocked
     if let Some(mut manager_guard) = crate::process::try_manager() {
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                process.signals.set_blocked(saved_mask);
+                // Store the saved mask for sigreturn to restore after handler returns
+                process.signals.sigsuspend_saved_mask = Some(saved_mask);
                 log::info!(
-                    "sys_sigsuspend: Thread {} restored original mask {:#x}",
+                    "sys_sigsuspend: Thread {} stored saved_mask {:#x} for sigreturn to restore",
                     thread_id,
                     saved_mask
                 );
