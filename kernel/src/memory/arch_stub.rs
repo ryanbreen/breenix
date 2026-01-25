@@ -338,6 +338,12 @@ impl PageTableEntry {
     }
 
     #[inline]
+    pub fn set_addr(&mut self, addr: PhysAddr, flags: PageTableFlags) {
+        self.addr = addr;
+        self.flags = flags;
+    }
+
+    #[inline]
     pub fn frame<S>(&self) -> Option<PhysFrame<S>> {
         if self.is_unused() {
             None
