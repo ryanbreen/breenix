@@ -82,6 +82,7 @@ use kernel::graphics::arm64_fb;
 use kernel::graphics::primitives::{draw_vline, fill_rect, Canvas, Color, Rect};
 use kernel::graphics::terminal_manager;
 use kernel::drivers::virtio::input_mmio::{self, event_type};
+use kernel::shell::ShellState;
 
 /// Kernel entry point called from assembly boot code.
 ///
@@ -171,13 +172,15 @@ pub extern "C" fn kernel_main() -> ! {
     // Write welcome message to the terminal (right pane)
     terminal_manager::write_str_to_shell("Breenix ARM64 Interactive Shell\n");
     terminal_manager::write_str_to_shell("================================\n\n");
-    terminal_manager::write_str_to_shell("Type on the keyboard to type here!\n");
-    terminal_manager::write_str_to_shell("(Keyboard input via VirtIO)\n\n");
+    terminal_manager::write_str_to_shell("Type 'help' for available commands.\n\n");
     terminal_manager::write_str_to_shell("breenix> ");
 
     serial_println!("[interactive] Entering interactive mode");
     serial_println!("[interactive] Input via VirtIO keyboard");
     serial_println!();
+
+    // Create shell state for command processing
+    let mut shell = ShellState::new();
 
     // Poll for VirtIO keyboard input
     let mut shift_pressed = false;
@@ -205,7 +208,8 @@ pub extern "C" fn kernel_main() -> ! {
                         // Convert keycode to character
                         if let Some(c) = input_mmio::keycode_to_char(keycode, shift_pressed) {
                             serial_println!("[key] code={} char='{}'", keycode, c);
-                            terminal_manager::write_char_to_shell(c);
+                            // Pass character to shell for processing
+                            shell.process_char(c);
                         } else if !input_mmio::is_modifier(keycode) {
                             // Unknown non-modifier key
                             serial_println!("[key] code={} (no mapping)", keycode);
@@ -216,14 +220,8 @@ pub extern "C" fn kernel_main() -> ! {
         }
 
         // Print a heartbeat every ~50 million iterations to show we're alive
-        // Also show VirtIO input ring state for debugging
         if tick % 50_000_000 == 0 {
             serial_println!(".");
-            // Debug: show input device state
-            if input_mmio::is_initialized() {
-                let (avail, used, last_seen) = input_mmio::debug_ring_state();
-                serial_println!("[poll] avail={} used={} last_seen={}", avail, used, last_seen);
-            }
         }
 
         core::hint::spin_loop();

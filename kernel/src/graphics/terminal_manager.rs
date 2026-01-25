@@ -613,6 +613,38 @@ pub fn switch_terminal(id: TerminalId) {
     IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 
+/// Clear the shell terminal.
+pub fn clear_shell() {
+    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
+    let _ = (|| {
+        let mut guard = TERMINAL_MANAGER.try_lock()?;
+        let manager = guard.as_mut()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
+        let mut fb_guard = fb.try_lock()?;
+
+        // Only clear if shell is the active terminal
+        if manager.active_idx == TerminalId::Shell as usize {
+            manager.clear_terminal_area(&mut *fb_guard);
+            manager.draw_tab_bar(&mut *fb_guard);
+            manager.terminal_pane.draw_cursor(&mut *fb_guard, manager.cursor_visible);
+        }
+
+        // Flush framebuffer
+        #[cfg(target_arch = "x86_64")]
+        if let Some(db) = fb_guard.double_buffer_mut() {
+            db.flush_if_dirty();
+        }
+        #[cfg(target_arch = "aarch64")]
+        fb_guard.flush();
+        Some(())
+    })();
+
+    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+}
+
 /// Handle keyboard input for terminal switching.
 /// Returns true if the key was handled.
 pub fn handle_terminal_key(scancode: u8) -> bool {

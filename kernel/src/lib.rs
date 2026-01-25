@@ -63,6 +63,9 @@ pub mod framebuffer;
 // Graphics module: available on x86_64 with "interactive" feature, or always on ARM64
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
 pub mod graphics;
+// Shell module: ARM64-only for now (kernel-mode shell)
+#[cfg(target_arch = "aarch64")]
+pub mod shell;
 
 #[cfg(test)]
 use bootloader_api::{entry_point, BootInfo};
