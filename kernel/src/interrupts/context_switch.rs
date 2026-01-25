@@ -534,6 +534,18 @@ fn switch_to_thread(
         // We need to check if there are pending signals. If so, deliver them using
         // the saved userspace context. Otherwise, resume at the kernel HLT loop.
 
+        // CRITICAL FIX: Read saved_userspace_context from the SCHEDULER's Thread,
+        // not from process.main_thread. This fixes a race condition where:
+        // - pause() saves context to process.main_thread THEN blocks in scheduler
+        // - kill() sends signal BETWEEN these two operations
+        // - Signal arrives but context not yet saved in the scheduler's Thread
+        //
+        // By reading from the scheduler's Thread (which is updated atomically with
+        // the BlockedOnSignal state), we ensure consistency.
+        let saved_context_from_scheduler = scheduler::with_thread_mut(thread_id, |thread| {
+            thread.saved_userspace_context.clone()
+        }).flatten();
+
         // Get the process page table and thread context
         let guard_option = process_manager_guard.or_else(|| crate::process::try_manager());
         if let Some(mut manager_guard) = guard_option {
@@ -544,71 +556,86 @@ fn switch_to_thread(
                     crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
 
                     let has_pending_signals = crate::signal::delivery::has_deliverable_signals(process);
-                    let has_saved_context = process.main_thread.as_ref()
-                        .map(|t| t.saved_userspace_context.is_some())
-                        .unwrap_or(false);
+                    // Use context from scheduler's Thread (single source of truth)
+                    // Fall back to process.main_thread for backwards compatibility
+                    let has_saved_context = saved_context_from_scheduler.is_some()
+                        || process.main_thread.as_ref()
+                            .map(|t| t.saved_userspace_context.is_some())
+                            .unwrap_or(false);
 
                     if has_pending_signals && has_saved_context {
-                        raw_serial_char(b'S'); // Signal delivery path entered
                         // SIGNAL DELIVERY PATH: Use saved userspace context for signal delivery
                         log::info!(
                             "Thread {} has pending signals - delivering via saved userspace context",
                             thread_id
                         );
 
+                        // CRITICAL FIX: Use context from scheduler's Thread (single source of truth)
+                        // Fall back to process.main_thread for backwards compatibility
+                        let saved_ctx_option = saved_context_from_scheduler.as_ref()
+                            .or_else(|| process.main_thread.as_ref()
+                                .and_then(|t| t.saved_userspace_context.as_ref()));
+
+                        if let Some(saved_ctx) = saved_ctx_option {
+                            // Restore userspace registers from saved context
+                            // But set RAX = -EINTR for the interrupted syscall
+                            saved_regs.rax = (-4i64) as u64; // -EINTR
+                            saved_regs.rbx = saved_ctx.rbx;
+                            saved_regs.rcx = saved_ctx.rcx;
+                            saved_regs.rdx = saved_ctx.rdx;
+                            saved_regs.rsi = saved_ctx.rsi;
+                            saved_regs.rdi = saved_ctx.rdi;
+                            saved_regs.rbp = saved_ctx.rbp;
+                            saved_regs.r8 = saved_ctx.r8;
+                            saved_regs.r9 = saved_ctx.r9;
+                            saved_regs.r10 = saved_ctx.r10;
+                            saved_regs.r11 = saved_ctx.r11;
+                            saved_regs.r12 = saved_ctx.r12;
+                            saved_regs.r13 = saved_ctx.r13;
+                            saved_regs.r14 = saved_ctx.r14;
+                            saved_regs.r15 = saved_ctx.r15;
+
+                            // Restore interrupt frame with USERSPACE context
+                            unsafe {
+                                interrupt_frame.as_mut().update(|frame| {
+                                    frame.instruction_pointer =
+                                        x86_64::VirtAddr::new(saved_ctx.rip);
+                                    frame.stack_pointer =
+                                        x86_64::VirtAddr::new(saved_ctx.rsp);
+                                    frame.cpu_flags =
+                                        x86_64::registers::rflags::RFlags::from_bits_truncate(
+                                            saved_ctx.rflags,
+                                        );
+                                    // Use userspace code/stack segments
+                                    frame.code_segment = crate::gdt::user_code_selector();
+                                    frame.stack_segment = crate::gdt::user_data_selector();
+                                });
+                            }
+
+                            log::info!(
+                                "Restored userspace context for signal delivery: RIP={:#x} RSP={:#x} RAX=-EINTR",
+                                saved_ctx.rip,
+                                saved_ctx.rsp
+                            );
+                        }
+
+                        // Clear blocked_in_syscall and saved context on BOTH process.main_thread
+                        // AND the scheduler's Thread to keep them in sync
                         if let Some(ref mut thread) = process.main_thread {
-                            if let Some(ref saved_ctx) = thread.saved_userspace_context {
-                                // Restore userspace registers from saved context
-                                // But set RAX = -EINTR for the interrupted syscall
-                                saved_regs.rax = (-4i64) as u64; // -EINTR
-                                saved_regs.rbx = saved_ctx.rbx;
-                                saved_regs.rcx = saved_ctx.rcx;
-                                saved_regs.rdx = saved_ctx.rdx;
-                                saved_regs.rsi = saved_ctx.rsi;
-                                saved_regs.rdi = saved_ctx.rdi;
-                                saved_regs.rbp = saved_ctx.rbp;
-                                saved_regs.r8 = saved_ctx.r8;
-                                saved_regs.r9 = saved_ctx.r9;
-                                saved_regs.r10 = saved_ctx.r10;
-                                saved_regs.r11 = saved_ctx.r11;
-                                saved_regs.r12 = saved_ctx.r12;
-                                saved_regs.r13 = saved_ctx.r13;
-                                saved_regs.r14 = saved_ctx.r14;
-                                saved_regs.r15 = saved_ctx.r15;
+                            thread.blocked_in_syscall = false;
+                            thread.saved_userspace_context = None;
 
-                                // Restore interrupt frame with USERSPACE context
-                                unsafe {
-                                    interrupt_frame.as_mut().update(|frame| {
-                                        frame.instruction_pointer =
-                                            x86_64::VirtAddr::new(saved_ctx.rip);
-                                        frame.stack_pointer =
-                                            x86_64::VirtAddr::new(saved_ctx.rsp);
-                                        frame.cpu_flags =
-                                            x86_64::registers::rflags::RFlags::from_bits_truncate(
-                                                saved_ctx.rflags,
-                                            );
-                                        // Use userspace code/stack segments
-                                        frame.code_segment = crate::gdt::user_code_selector();
-                                        frame.stack_segment = crate::gdt::user_data_selector();
-                                    });
-                                }
-
-                                log::info!(
-                                    "Restored userspace context for signal delivery: RIP={:#x} RSP={:#x} RAX=-EINTR",
-                                    saved_ctx.rip,
-                                    saved_ctx.rsp
-                                );
-
-                                // Clear blocked_in_syscall and saved context
-                                thread.blocked_in_syscall = false;
-                                thread.saved_userspace_context = None;
-
-                                // Update TSS RSP0 for the thread's kernel stack
-                                if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                                    crate::gdt::set_kernel_stack(kernel_stack_top);
-                                }
+                            // Update TSS RSP0 for the thread's kernel stack
+                            if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                                crate::gdt::set_kernel_stack(kernel_stack_top);
                             }
                         }
+
+                        // Also clear on scheduler's Thread
+                        scheduler::with_thread_mut(thread_id, |thread| {
+                            thread.blocked_in_syscall = false;
+                            thread.saved_userspace_context = None;
+                        });
 
                         // CRITICAL: Switch to process CR3 BEFORE delivering signal
                         // Signal delivery writes to user stack memory, which requires
@@ -639,7 +666,6 @@ fn switch_to_thread(
                             interrupt_frame,
                             saved_regs,
                         );
-                        raw_serial_char(b'D'); // Signal delivered
 
                         // Handle signal result
                         match signal_result {

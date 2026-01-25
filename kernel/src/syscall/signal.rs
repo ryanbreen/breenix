@@ -759,12 +759,24 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
     // to set up the signal handler frame (with RAX = -EINTR).
     let userspace_context = crate::task::thread::CpuContext::from_syscall_frame(frame);
 
-    // Save the userspace context to the thread for signal delivery
+    // CRITICAL FIX: Save the userspace context to the SCHEDULER's Thread ATOMICALLY
+    // with setting blocked_in_syscall=true. This prevents a race condition where:
+    // 1. Parent saves context to process.main_thread
+    // 2. Child sends signal (sees thread not in BlockedOnSignal state yet)
+    // 3. Parent sets blocked_in_syscall=true (too late - signal already lost)
+    //
+    // By using block_current_for_signal_with_context(), the context is saved to
+    // the SCHEDULER's Thread under the scheduler lock, and the state transition
+    // is atomic. The context_switch code reads from the scheduler's Thread, ensuring
+    // consistency.
+    //
+    // Also save to process.main_thread for backwards compatibility with code that
+    // reads from there (e.g., some signal delivery paths).
     if let Some(mut manager_guard) = crate::process::try_manager() {
         if let Some(ref mut manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
                 if let Some(ref mut thread) = process.main_thread {
-                    thread.saved_userspace_context = Some(userspace_context);
+                    thread.saved_userspace_context = Some(userspace_context.clone());
                     log::info!(
                         "sys_pause_with_frame: Saved userspace context for thread {}: RIP={:#x}, RSP={:#x}",
                         thread_id,
@@ -777,8 +789,9 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
     }
 
     // Block the current thread until a signal arrives
+    // CRITICAL: This MUST happen ATOMICALLY with saving the context to the scheduler's Thread
     crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal();
+        sched.block_current_for_signal_with_context(Some(userspace_context));
     });
 
     log::info!("sys_pause_with_frame: Thread {} marked BlockedOnSignal, entering HLT loop", thread_id);
@@ -854,7 +867,6 @@ const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 /// - Ensures saved_rsp points to userspace (prevents using kernel stack)
 /// - Sanitizes saved_rflags (prevents disabling interrupts, changing IOPL)
 pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> SyscallResult {
-    crate::interrupts::context_switch::raw_serial_char(b'R'); // Sigreturn called
     use crate::signal::types::SignalFrame;
 
     // The signal frame is at RSP - 8
@@ -962,7 +974,6 @@ pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> Sys
         signal_frame.saved_rsp
     );
 
-    crate::interrupts::context_switch::raw_serial_char(b'X'); // Sigreturn complete
     // Return value is ignored - the original RAX was restored above
     // But return 0 to indicate success in case anything checks
     SyscallResult::Ok(0)
