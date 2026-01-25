@@ -126,6 +126,11 @@ pub extern "C" fn kernel_main() -> ! {
     let irq_enabled = Aarch64Cpu::interrupts_enabled();
     serial_println!("[boot] Interrupts enabled: {}", irq_enabled);
 
+    // Initialize device drivers (VirtIO MMIO enumeration)
+    serial_println!("[boot] Initializing device drivers...");
+    let device_count = kernel::drivers::init();
+    serial_println!("[boot] Found {} devices", device_count);
+
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Boot Complete!");

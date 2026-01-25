@@ -6,15 +6,15 @@
 #[cfg(target_arch = "x86_64")]
 pub mod e1000;
 pub mod pci;
-#[cfg(target_arch = "x86_64")]
-pub mod virtio;
+pub mod virtio;  // Now available on both x86_64 and aarch64
 
 /// Initialize the driver subsystem
 ///
-/// This enumerates PCI devices and initializes any detected devices
+/// This enumerates devices and initializes any detected devices
 /// that have drivers available.
 ///
-/// Returns the number of PCI devices found.
+/// Returns the number of devices found.
+#[cfg(target_arch = "x86_64")]
 pub fn init() -> usize {
     log::info!("Initializing driver subsystem...");
 
@@ -22,7 +22,6 @@ pub fn init() -> usize {
     let device_count = pci::enumerate();
 
     // Initialize VirtIO block driver if device was found
-    #[cfg(target_arch = "x86_64")]
     match virtio::block::init() {
         Ok(()) => {
             log::info!("VirtIO block driver initialized successfully");
@@ -42,7 +41,6 @@ pub fn init() -> usize {
     }
 
     // Initialize E1000 network driver if device was found
-    #[cfg(target_arch = "x86_64")]
     match e1000::init() {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");
@@ -57,5 +55,32 @@ pub fn init() -> usize {
     }
 
     log::info!("Driver subsystem initialized");
+    device_count
+}
+
+/// Initialize the driver subsystem (ARM64 version)
+///
+/// Uses VirtIO MMIO enumeration instead of PCI on QEMU virt machine.
+#[cfg(target_arch = "aarch64")]
+pub fn init() -> usize {
+    use crate::serial_println;
+
+    serial_println!("[drivers] Initializing driver subsystem...");
+
+    // Enumerate VirtIO MMIO devices
+    let mut device_count = 0;
+    for device in virtio::mmio::enumerate_devices() {
+        let type_name = virtio::mmio::device_type_name(device.device_id());
+        serial_println!(
+            "[drivers] Found VirtIO MMIO device: {} (ID={}, version={})",
+            type_name,
+            device.device_id(),
+            device.version()
+        );
+        device_count += 1;
+    }
+
+    serial_println!("[drivers] Found {} VirtIO MMIO devices", device_count);
+    serial_println!("[drivers] Driver subsystem initialized");
     device_count
 }
