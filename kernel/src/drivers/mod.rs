@@ -3,8 +3,10 @@
 //! This module provides the driver infrastructure for Breenix, including
 //! PCI enumeration and device-specific drivers.
 
+#[cfg(target_arch = "x86_64")]
 pub mod e1000;
 pub mod pci;
+#[cfg(target_arch = "x86_64")]
 pub mod virtio;
 
 /// Initialize the driver subsystem
@@ -20,6 +22,7 @@ pub fn init() -> usize {
     let device_count = pci::enumerate();
 
     // Initialize VirtIO block driver if device was found
+    #[cfg(target_arch = "x86_64")]
     match virtio::block::init() {
         Ok(()) => {
             log::info!("VirtIO block driver initialized successfully");
@@ -39,6 +42,7 @@ pub fn init() -> usize {
     }
 
     // Initialize E1000 network driver if device was found
+    #[cfg(target_arch = "x86_64")]
     match e1000::init() {
         Ok(()) => {
             log::info!("E1000 network driver initialized successfully");

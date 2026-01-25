@@ -5,7 +5,10 @@
 //! per-CPU stacks and other kernel regions. This establishes a
 //! production-grade memory layout that all page tables will share.
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 
 // Virtual address layout constants
 pub const KERNEL_LOW_BASE: u64 = 0x100000;           // Current low-half kernel base (1MB)
@@ -152,7 +155,7 @@ pub fn log_layout() {
 /// Check if an address is in the bootstrap stack region
 #[allow(dead_code)]
 #[inline]
-pub fn is_bootstrap_address(addr: x86_64::VirtAddr) -> bool {
+pub fn is_bootstrap_address(addr: VirtAddr) -> bool {
     let pml4_index = (addr.as_u64() >> 39) & 0x1FF;
     pml4_index == BOOTSTRAP_PML4_INDEX
 }

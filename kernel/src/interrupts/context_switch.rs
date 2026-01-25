@@ -4,6 +4,8 @@
 //! interrupts. It's called from assembly code after the interrupt handler
 //! has completed its minimal work.
 
+#![cfg(target_arch = "x86_64")]
+
 use crate::task::process_context::{
     restore_userspace_context, save_userspace_context, SavedRegisters,
 };

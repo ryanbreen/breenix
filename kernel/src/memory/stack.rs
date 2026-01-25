@@ -3,8 +3,14 @@ use crate::memory::layout::{
     USER_STACK_REGION_START,
 };
 use crate::task::thread::ThreadPrivilege;
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB, VirtAddr,
+};
 
 /// Base address for kernel stack allocation area
 /// Must be in kernel space (high canonical addresses)

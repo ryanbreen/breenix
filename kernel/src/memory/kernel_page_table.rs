@@ -10,10 +10,15 @@
 
 use crate::memory::frame_allocator::allocate_frame;
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::{
     registers::control::{Cr3, Cr3Flags},
     structures::paging::{PageTable, PageTableFlags, PhysFrame},
     PhysAddr, VirtAddr,
+};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    Cr3, Cr3Flags, PageTable, PageTableFlags, PhysFrame, PhysAddr, VirtAddr,
 };
 
 /// The global kernel PDPT (L3 page table) frame
@@ -220,7 +225,10 @@ pub unsafe fn map_kernel_page(
     }
 
     // Flush TLB for this specific page
+    #[cfg(target_arch = "x86_64")]
     use x86_64::instructions::tlb;
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::tlb;
     tlb::flush(virt);
 
     log::trace!(
@@ -595,7 +603,11 @@ pub fn build_master_kernel_pml4() {
     log::info!("Switching CR3 to master kernel PML4: {:?}", master_pml4_frame);
     unsafe {
         Cr3::write(master_pml4_frame, Cr3Flags::empty());
-        x86_64::instructions::tlb::flush_all();
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::instructions::tlb;
+        #[cfg(not(target_arch = "x86_64"))]
+        use crate::memory::arch_stub::tlb;
+        tlb::flush_all();
     }
     log::info!("CR3 switched to master PML4");
 

@@ -22,11 +22,17 @@ pub use timer::{get_monotonic_time, get_monotonic_time_ns, get_ticks, timer_inte
 ///
 /// Calibrates TSC against PIT, then initializes PIT for periodic interrupts.
 /// Must be called before interrupts are enabled.
+#[cfg(target_arch = "x86_64")]
 pub fn init() {
     // Calibrate TSC first (uses PIT channel 2, doesn't need interrupts)
     tsc::calibrate();
 
     // Initialize PIT for periodic interrupts (channel 0)
+    timer::init();
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn init() {
     timer::init();
 }
 

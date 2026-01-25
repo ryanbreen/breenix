@@ -15,6 +15,7 @@
 pub mod block;
 pub mod queue;
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
 
 /// VirtIO device status bits

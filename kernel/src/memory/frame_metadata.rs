@@ -11,7 +11,10 @@
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::PhysFrame;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::PhysFrame;
 
 /// Global frame metadata storage
 /// Uses BTreeMap for sparse storage - only frames that need tracking are stored
@@ -128,7 +131,10 @@ pub fn frame_metadata_stats() -> (usize, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "x86_64")]
     use x86_64::PhysAddr;
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::PhysAddr;
 
     fn test_frame(addr: u64) -> PhysFrame {
         PhysFrame::containing_address(PhysAddr::new(addr))

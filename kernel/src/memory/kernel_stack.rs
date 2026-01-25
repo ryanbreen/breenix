@@ -5,7 +5,10 @@
 
 use crate::memory::frame_allocator::allocate_frame;
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::{structures::paging::PageTableFlags, VirtAddr};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{PageTableFlags, VirtAddr};
 
 /// Base address for kernel stack allocation
 const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;

@@ -4,8 +4,12 @@ use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
+#[cfg(target_arch = "x86_64")]
 use x86_64::PhysAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{FrameAllocator, PhysFrame, Size4KiB, PhysAddr};
 
 /// Maximum number of usable memory regions we support
 /// Increased from 32 to 128 to handle UEFI's fragmented memory map

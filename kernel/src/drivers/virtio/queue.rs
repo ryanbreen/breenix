@@ -14,6 +14,7 @@
 
 use crate::memory::frame_allocator;
 use core::sync::atomic::{fence, Ordering};
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::PhysFrame;
 
 /// Descriptor flags

@@ -281,6 +281,7 @@ impl SignalState {
             blocked: self.blocked,
             handlers: self.handlers.clone(),
             alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
+            sigsuspend_saved_mask: None, // Child starts with no saved mask
         }
     }
 

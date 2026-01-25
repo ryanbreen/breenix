@@ -22,6 +22,7 @@
 use alloc::vec::Vec;
 use core::{fmt, sync::atomic::AtomicBool};
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
 
 /// PCI configuration address port
@@ -264,6 +265,7 @@ impl fmt::Debug for Device {
 }
 
 /// Read a 32-bit value from PCI configuration space
+#[cfg(target_arch = "x86_64")]
 fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     // Build the configuration address
     let address: u32 = 0x8000_0000
@@ -281,7 +283,17 @@ fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     }
 }
 
+/// Read a 32-bit value from PCI configuration space (ARM64 stub)
+#[cfg(target_arch = "aarch64")]
+fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    // ARM64: PCI config space is accessed via ECAM (memory-mapped)
+    // TODO: Implement ECAM access
+    let _ = (bus, device, function, offset);
+    0
+}
+
 /// Write a 32-bit value to PCI configuration space
+#[cfg(target_arch = "x86_64")]
 fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
     let address: u32 = 0x8000_0000
         | ((bus as u32) << 16)
@@ -296,6 +308,14 @@ fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: 
         addr_port.write(address);
         data_port.write(value);
     }
+}
+
+/// Write a 32-bit value to PCI configuration space (ARM64 stub)
+#[cfg(target_arch = "aarch64")]
+fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    // ARM64: PCI config space is accessed via ECAM (memory-mapped)
+    // TODO: Implement ECAM access
+    let _ = (bus, device, function, offset, value);
 }
 
 /// Read a 16-bit value from PCI configuration space

@@ -1,6 +1,10 @@
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB, VirtAddr};
 
 pub const HEAP_START: u64 = 0x_4444_4444_0000;
 
