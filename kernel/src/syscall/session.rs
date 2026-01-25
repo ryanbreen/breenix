@@ -276,8 +276,17 @@ pub fn sys_setpgid(pid: i32, pgid: i32) -> SyscallResult {
         return SyscallResult::Err(ESRCH);
     }
 
-    // POSIX: A session leader cannot change its process group
-    if process.sid == target_pid && process.pgid == target_pid {
+    // POSIX: A session leader cannot change its process group to a different one
+    // However, if new_pgid == current pgid, this is a no-op and should succeed.
+    // This allows setpgid(0, 0) to work on processes that are already their own
+    // process group leader, even if they happen to also be session leaders.
+    if process.sid == target_pid && new_pgid != process.pgid {
+        log::debug!(
+            "sys_setpgid: EPERM - session leader {} cannot change pgid from {} to {}",
+            target_pid.as_u64(),
+            process.pgid.as_u64(),
+            new_pgid.as_u64()
+        );
         return SyscallResult::Err(EPERM);
     }
 
