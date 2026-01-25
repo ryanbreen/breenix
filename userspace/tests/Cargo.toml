@@ -497,6 +497,10 @@ path = "alarm_test.rs"
 name = "sigsuspend_test"
 path = "sigsuspend_test.rs"
 
+[[bin]]
+name = "itimer_test"
+path = "itimer_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
