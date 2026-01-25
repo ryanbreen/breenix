@@ -150,6 +150,10 @@ pub struct SignalState {
     handlers: alloc::boxed::Box<[SignalAction; 64]>,
     /// Alternate signal stack configuration
     pub alt_stack: AltStack,
+    /// Saved signal mask from sigsuspend - restored after signal handler returns via sigreturn
+    /// This is set when sigsuspend temporarily changes the mask and a signal is delivered.
+    /// The sigreturn syscall checks this and restores the original mask.
+    pub sigsuspend_saved_mask: Option<u64>,
 }
 
 impl Default for SignalState {
@@ -159,6 +163,7 @@ impl Default for SignalState {
             blocked: 0,
             handlers: alloc::boxed::Box::new([SignalAction::default(); 64]),
             alt_stack: AltStack::default(),
+            sigsuspend_saved_mask: None,
         }
     }
 }
@@ -276,6 +281,7 @@ impl SignalState {
             blocked: self.blocked,
             handlers: self.handlers.clone(),
             alt_stack: self.alt_stack, // Alt stack is inherited per POSIX
+            sigsuspend_saved_mask: None, // Child doesn't inherit sigsuspend state
         }
     }
 
