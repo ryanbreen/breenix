@@ -192,7 +192,7 @@ pub extern "C" fn _start() -> ! {
         // Test 3: Register signal handler with SA_ONSTACK flag
         io::print("\nTest 3: Registering handler with SA_ONSTACK flag\n");
         let mut action = signal::Sigaction::new(handler_on_altstack);
-        action.flags = signal::SA_ONSTACK;  // Use alternate stack
+        action.flags |= signal::SA_ONSTACK;  // Add SA_ONSTACK while keeping SA_RESTORER
 
         match signal::sigaction(signal::SIGUSR1, Some(&action), None) {
             Ok(()) => io::print("  PASS: Signal handler registered with SA_ONSTACK\n"),
