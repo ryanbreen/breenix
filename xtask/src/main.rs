@@ -657,6 +657,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Registers were not properly preserved across signal delivery and return",
             check_hint: "Check signal context save/restore in syscall/signal.rs and sigreturn implementation",
         },
+        BootStage {
+            name: "sigaltstack() syscall verified",
+            marker: "SIGALTSTACK_TEST_PASSED",
+            failure_meaning: "sigaltstack() syscall failed - alternate signal stacks not working",
+            check_hint: "Check syscall/signal.rs:sys_sigaltstack() and signal delivery path for SA_ONSTACK support",
+        },
 
         // UDP Socket tests - validates full userspace->kernel->network path
         BootStage {
@@ -1148,6 +1154,20 @@ fn get_boot_stages() -> Vec<BootStage> {
             marker: "PAUSE_TEST_PASSED",
             failure_meaning: "pause() syscall test failed - pause not blocking or signal not waking process",
             check_hint: "Check kernel/src/syscall/signal.rs:sys_pause() and signal delivery path",
+        },
+        // Sigsuspend syscall test - atomically replace mask and suspend
+        BootStage {
+            name: "Sigsuspend syscall test passed",
+            marker: "SIGSUSPEND_TEST_PASSED",
+            failure_meaning: "sigsuspend() syscall test failed - atomic mask replacement broken, signal not waking process, or original mask not restored",
+            check_hint: "Check kernel/src/syscall/signal.rs:sys_sigsuspend() and signal delivery path - must atomically replace mask, suspend, and restore original mask",
+        },
+        // Process group kill semantics test
+        BootStage {
+            name: "Process group kill semantics test passed",
+            marker: "KILL_PGROUP_TEST_PASSED",
+            failure_meaning: "kill process group test failed - kill(0, sig), kill(-pgid, sig), or kill(-1, sig) not working correctly",
+            check_hint: "Check kernel/src/syscall/signal.rs:sys_kill() and process group signal delivery in kernel/src/signal/delivery.rs",
         },
         // Dup syscall test
         BootStage {

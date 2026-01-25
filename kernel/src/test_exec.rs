@@ -1479,6 +1479,76 @@ pub fn test_pause() {
     }
 }
 
+/// Test process group kill semantics
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Kill process group test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates kill process group behavior
+///   - Marker: "KILL_PGROUP_TEST_PASSED"
+///   - This PROVES kill(0, sig), kill(-pgid, sig), and kill(-1, sig) work correctly
+pub fn test_kill_process_group() {
+    log::info!("Testing process group kill semantics");
+
+    #[cfg(feature = "testing")]
+    let kill_pgroup_test_elf_buf = crate::userspace_test::get_test_binary("kill_process_group_test");
+    #[cfg(feature = "testing")]
+    let kill_pgroup_test_elf: &[u8] = &kill_pgroup_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let kill_pgroup_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("kill_process_group_test"),
+        kill_pgroup_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created kill_process_group_test process with PID {:?}", pid);
+            log::info!("Kill process group test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit KILL_PGROUP_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create kill_process_group_test process: {}", e);
+            log::error!("Kill process group test cannot run without valid userspace process");
+        }
+    }
+}
+
+/// Test sigsuspend() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Sigsuspend test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates sigsuspend behavior
+///   - Marker: "SIGSUSPEND_TEST_PASSED"
+///   - This PROVES sigsuspend() atomically replaces mask, suspends, and restores original mask
+pub fn test_sigsuspend() {
+    log::info!("Testing sigsuspend() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let sigsuspend_test_elf_buf = crate::userspace_test::get_test_binary("sigsuspend_test");
+    #[cfg(feature = "testing")]
+    let sigsuspend_test_elf: &[u8] = &sigsuspend_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let sigsuspend_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("sigsuspend_test"),
+        sigsuspend_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created sigsuspend_test process with PID {:?}", pid);
+            log::info!("Sigsuspend test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit SIGSUSPEND_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create sigsuspend_test process: {}", e);
+            log::error!("Sigsuspend test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test dup() syscall functionality
 ///
 /// TWO-STAGE VALIDATION PATTERN:
