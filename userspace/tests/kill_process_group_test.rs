@@ -196,6 +196,14 @@ pub extern "C" fn _start() -> ! {
             // Wait for SIGUSR1 using sigsuspend loop
             wait_for_sigusr1();
 
+            // Verify signal was delivered exactly once
+            if SIGUSR1_COUNT != 1 {
+                io::print("  [Child1] FAIL: Expected 1 SIGUSR1, got ");
+                print_number(SIGUSR1_COUNT as u64);
+                io::print("\n");
+                process::exit(1);
+            }
+
             io::print("  [Child1] PASS: Received SIGUSR1 via kill(0, sig)\n");
             process::exit(0);
         } else {
@@ -285,11 +293,27 @@ pub extern "C" fn _start() -> ! {
                 // Wait for SIGUSR2 using sigsuspend loop
                 wait_for_sigusr2();
 
+                // Verify signal was delivered exactly once
+                if SIGUSR2_COUNT != 1 {
+                    io::print("  [Grandchild] FAIL: Expected 1 SIGUSR2, got ");
+                    print_number(SIGUSR2_COUNT as u64);
+                    io::print("\n");
+                    process::exit(1);
+                }
+
                 io::print("  [Grandchild] PASS: Received SIGUSR2 via kill(-pgid, sig)\n");
                 process::exit(0);
             } else {
                 // Child2: Wait for SIGUSR2 using sigsuspend loop
                 wait_for_sigusr2();
+
+                // Verify signal was delivered exactly once
+                if SIGUSR2_COUNT != 1 {
+                    io::print("  [Child2] FAIL: Expected 1 SIGUSR2, got ");
+                    print_number(SIGUSR2_COUNT as u64);
+                    io::print("\n");
+                    process::exit(1);
+                }
 
                 io::print("  [Child2] PASS: Received SIGUSR2 via kill(-pgid, sig)\n");
 
@@ -379,6 +403,14 @@ pub extern "C" fn _start() -> ! {
 
             // Wait for SIGUSR1 using sigsuspend loop
             wait_for_sigusr1();
+
+            // Verify signal was delivered exactly once
+            if SIGUSR1_COUNT != 1 {
+                io::print("  [Child3] FAIL: Expected 1 SIGUSR1, got ");
+                print_number(SIGUSR1_COUNT as u64);
+                io::print("\n");
+                process::exit(1);
+            }
 
             io::print("  [Child3] PASS: Received broadcast SIGUSR1\n");
             process::exit(0);
