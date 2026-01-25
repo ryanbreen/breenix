@@ -1246,8 +1246,15 @@ pub fn sys_sigsuspend_with_frame(
                     let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
                     process.signals.set_blocked(sanitized_mask);
 
+                    // CRITICAL: Store saved_mask for sigreturn BEFORE entering HLT loop!
+                    // When a signal is delivered, the handler runs and calls sigreturn.
+                    // sigreturn needs this mask to restore the original blocked state.
+                    // The code AFTER the HLT loop never runs because signal delivery
+                    // modifies the return path to go directly to userspace.
+                    process.signals.sigsuspend_saved_mask = Some(saved_mask);
+
                     log::info!(
-                        "sys_sigsuspend: Thread {} saved mask {:#x}, set temporary mask {:#x}",
+                        "sys_sigsuspend: Thread {} saved mask {:#x}, set temporary mask {:#x}, stored for sigreturn",
                         thread_id,
                         saved_mask,
                         sanitized_mask
@@ -1329,34 +1336,13 @@ pub fn sys_sigsuspend_with_frame(
         }
     }
 
-    // CRITICAL: Do NOT restore the mask here! The signal handler needs to run first
-    // with the temporary mask still in effect. Store the saved mask so sigreturn
-    // can restore it after the handler returns.
-    //
-    // Flow:
-    // 1. sigsuspend sets temporary mask (SIGUSR1 unblocked)
-    // 2. sigsuspend blocks waiting for signal
-    // 3. Signal arrives, thread is unblocked
-    // 4. sigsuspend stores saved_mask in sigsuspend_saved_mask (HERE)
-    // 5. sigsuspend returns -EINTR (signal delivery happens on syscall return)
-    // 6. Signal handler runs (with temporary mask still in effect)
-    // 7. Handler calls sigreturn
-    // 8. sigreturn restores sigsuspend_saved_mask to blocked
-    if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                // Store the saved mask for sigreturn to restore after handler returns
-                process.signals.sigsuspend_saved_mask = Some(saved_mask);
-                log::info!(
-                    "sys_sigsuspend: Thread {} stored saved_mask {:#x} for sigreturn to restore",
-                    thread_id,
-                    saved_mask
-                );
-            }
-        }
-    }
+    // NOTE: When a signal is delivered, this point is never reached!
+    // The signal handler runs (via context_switch modifying the return path)
+    // and then calls sigreturn, which jumps directly to userspace.
+    // The sigsuspend_saved_mask was stored BEFORE the HLT loop for this reason.
 
-    // Clear the blocked_in_syscall flag and saved context
+    // Clear the blocked_in_syscall flag and saved context (for the rare case
+    // where sigsuspend wakes up without signal delivery, e.g., spurious wakeup)
     crate::task::scheduler::with_scheduler(|sched| {
         if let Some(thread) = sched.current_thread_mut() {
             thread.blocked_in_syscall = false;
