@@ -17,6 +17,7 @@
   "code-model": "small",
   "pre-link-args": {
     "gnu-lld": [
+      "-Tkernel/src/arch_impl/aarch64/linker.ld",
       "--fix-cortex-a53-843419"
     ]
   },

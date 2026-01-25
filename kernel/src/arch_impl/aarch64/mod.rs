@@ -5,10 +5,14 @@
 
 #![allow(dead_code)]
 
+// Boot assembly - must be included to link _start and exception vectors
+pub mod boot;
+
 // HAL modules define complete APIs - not all items are used yet
 #[allow(unused_imports)]
 pub mod constants;
 pub mod cpu;
+pub mod exception;
 pub mod exception_frame;
 pub mod paging;
 pub mod percpu;
