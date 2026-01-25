@@ -600,28 +600,42 @@ fn deliver_to_user_handler_syscall(
         current_rsp
     };
 
-    // Calculate space needed for trampoline and signal frame
+    // Calculate space needed for signal frame (and optionally trampoline)
     let frame_size = SignalFrame::SIZE as u64;
-    let trampoline_size = crate::signal::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
 
-    // Allocate space for both trampoline and signal frame on user stack
-    let total_size = frame_size + trampoline_size;
-    let frame_rsp = (user_rsp - total_size) & !0xF; // 16-byte align
-    let trampoline_rsp = frame_rsp + frame_size;
+    // Check if the handler provides a restorer function (SA_RESTORER flag)
+    // If so, use it instead of writing trampoline to the stack.
+    // This is essential for signals delivered on alternate stacks where the
+    // stack may not be executable (NX bit set).
+    let use_restorer = (action.flags & SA_RESTORER) != 0 && action.restorer != 0;
 
-    // Write trampoline code to user stack
-    unsafe {
-        let trampoline_ptr = trampoline_rsp as *mut u8;
-        core::ptr::copy_nonoverlapping(
-            crate::signal::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
-            trampoline_ptr,
-            crate::signal::trampoline::SIGNAL_TRAMPOLINE_SIZE,
-        );
-    }
+    let (frame_rsp, return_addr) = if use_restorer {
+        // Use the restorer function provided by the application/libc
+        let frame_rsp = (user_rsp - frame_size) & !0xF;
+        (frame_rsp, action.restorer)
+    } else {
+        // Fall back to writing trampoline on the stack
+        let trampoline_size = crate::signal::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
+        let total_size = frame_size + trampoline_size;
+        let frame_rsp = (user_rsp - total_size) & !0xF;
+        let trampoline_rsp = frame_rsp + frame_size;
+
+        // Write trampoline code to user stack
+        unsafe {
+            let trampoline_ptr = trampoline_rsp as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                crate::signal::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
+                trampoline_ptr,
+                crate::signal::trampoline::SIGNAL_TRAMPOLINE_SIZE,
+            );
+        }
+
+        (frame_rsp, trampoline_rsp)
+    };
 
     // Build signal frame with saved context
     let signal_frame = SignalFrame {
-        trampoline_addr: trampoline_rsp,
+        trampoline_addr: return_addr,
         magic: SignalFrame::MAGIC,
         signal: sig as u64,
         siginfo_ptr: 0,

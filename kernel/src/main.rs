@@ -1083,6 +1083,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== SIGNAL TEST: sigsuspend() syscall functionality ===");
         test_exec::test_sigsuspend();
 
+        // Test sigaltstack() syscall - alternate signal stack
+        log::info!("=== SIGNAL TEST: sigaltstack() syscall functionality ===");
+        test_exec::test_sigaltstack();
+
         // Test dup() syscall
         log::info!("=== IPC TEST: dup() syscall functionality ===");
         test_exec::test_dup();

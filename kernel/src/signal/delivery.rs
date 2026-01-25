@@ -249,35 +249,52 @@ fn deliver_to_user_handler(
         current_rsp
     };
 
-    // Calculate space needed for trampoline and signal frame
+    // Calculate space needed for signal frame (and optionally trampoline)
     let frame_size = SignalFrame::SIZE as u64;
-    let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
 
-    // Allocate space for both trampoline and signal frame on user stack
-    // Stack layout (grows down):
-    //   [signal frame] <- frame_rsp (16-byte aligned)
-    //   [trampoline code] <- trampoline_rsp
-    let total_size = frame_size + trampoline_size;
-    let frame_rsp = (user_rsp - total_size) & !0xF; // 16-byte align
-    let trampoline_rsp = frame_rsp + frame_size;
+    // Check if the handler provides a restorer function (SA_RESTORER flag)
+    // If so, use it instead of writing trampoline to the stack.
+    // This is essential for signals delivered on alternate stacks where the
+    // stack may not be executable (NX bit set).
+    let use_restorer = (action.flags & super::constants::SA_RESTORER) != 0 && action.restorer != 0;
 
-    // Write trampoline code to user stack first
-    // SAFETY: We're writing to user memory that should be valid stack space
-    unsafe {
-        let trampoline_ptr = trampoline_rsp as *mut u8;
-        core::ptr::copy_nonoverlapping(
-            super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
-            trampoline_ptr,
-            super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
+    let (frame_rsp, return_addr) = if use_restorer {
+        // Use the restorer function provided by the application/libc
+        // Only allocate space for the signal frame (no trampoline needed)
+        let frame_rsp = (user_rsp - frame_size) & !0xF; // 16-byte align
+        log::debug!(
+            "Using SA_RESTORER: restorer={:#x}",
+            action.restorer
         );
-    }
+        (frame_rsp, action.restorer)
+    } else {
+        // Fall back to writing trampoline on the stack
+        // This works when the stack is executable (main stack without NX)
+        let trampoline_size = super::trampoline::SIGNAL_TRAMPOLINE_SIZE as u64;
+        let total_size = frame_size + trampoline_size;
+        let frame_rsp = (user_rsp - total_size) & !0xF; // 16-byte align
+        let trampoline_rsp = frame_rsp + frame_size;
+
+        // Write trampoline code to user stack
+        // SAFETY: We're writing to user memory that should be valid stack space
+        unsafe {
+            let trampoline_ptr = trampoline_rsp as *mut u8;
+            core::ptr::copy_nonoverlapping(
+                super::trampoline::SIGNAL_TRAMPOLINE.as_ptr(),
+                trampoline_ptr,
+                super::trampoline::SIGNAL_TRAMPOLINE_SIZE,
+            );
+        }
+
+        (frame_rsp, trampoline_rsp)
+    };
 
     // Build signal frame with saved context
     let signal_frame = SignalFrame {
-        // Return address points to trampoline code on stack
-        // When the handler does 'ret', it will pop this and jump to the trampoline
+        // Return address: either restorer function or trampoline on stack
+        // When the handler does 'ret', it will pop this and jump there
         // MUST BE AT OFFSET 0 in the struct - verified by struct definition
-        trampoline_addr: trampoline_rsp,
+        trampoline_addr: return_addr,
 
         // Magic number for integrity validation
         magic: SignalFrame::MAGIC,
@@ -343,14 +360,25 @@ fn deliver_to_user_handler(
     saved_regs.rsi = 0;                     // Second argument: siginfo_t* (not implemented)
     saved_regs.rdx = 0;                     // Third argument: ucontext_t* (not implemented)
 
-    log::info!(
-        "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, trampoline={:#x}",
-        sig,
-        handler_addr,
-        user_rsp,
-        frame_rsp,
-        trampoline_rsp
-    );
+    if use_alt_stack {
+        log::info!(
+            "Signal {} delivered to handler at {:#x} on ALTERNATE STACK, RSP={:#x}->{:#x}, return={:#x}",
+            sig,
+            handler_addr,
+            user_rsp,
+            frame_rsp,
+            return_addr
+        );
+    } else {
+        log::info!(
+            "Signal {} delivered to handler at {:#x}, RSP={:#x}->{:#x}, return={:#x}",
+            sig,
+            handler_addr,
+            user_rsp,
+            frame_rsp,
+            return_addr
+        );
+    }
 
     true
 }

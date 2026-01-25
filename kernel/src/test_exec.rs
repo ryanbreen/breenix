@@ -1549,6 +1549,41 @@ pub fn test_sigsuspend() {
     }
 }
 
+/// Test sigaltstack() syscall functionality
+///
+/// TWO-STAGE VALIDATION PATTERN:
+/// - Stage 1 (Checkpoint): Process creation
+///   - Marker: "Sigaltstack test: process scheduled for execution"
+///   - This is a CHECKPOINT confirming process creation succeeded
+/// - Stage 2 (Boot stage): Validates sigaltstack behavior
+///   - Marker: "SIGALTSTACK_TEST_PASSED"
+///   - This PROVES sigaltstack() sets alternate signal stack and SA_ONSTACK works
+pub fn test_sigaltstack() {
+    log::info!("Testing sigaltstack() syscall functionality");
+
+    #[cfg(feature = "testing")]
+    let sigaltstack_test_elf_buf = crate::userspace_test::get_test_binary("sigaltstack_test");
+    #[cfg(feature = "testing")]
+    let sigaltstack_test_elf: &[u8] = &sigaltstack_test_elf_buf;
+    #[cfg(not(feature = "testing"))]
+    let sigaltstack_test_elf = &create_hello_world_elf();
+
+    match crate::process::creation::create_user_process(
+        String::from("sigaltstack_test"),
+        sigaltstack_test_elf,
+    ) {
+        Ok(pid) => {
+            log::info!("Created sigaltstack_test process with PID {:?}", pid);
+            log::info!("Sigaltstack test: process scheduled for execution.");
+            log::info!("    -> Userspace will emit SIGALTSTACK_TEST marker if successful");
+        }
+        Err(e) => {
+            log::error!("Failed to create sigaltstack_test process: {}", e);
+            log::error!("Sigaltstack test cannot run without valid userspace process");
+        }
+    }
+}
+
 /// Test dup() syscall functionality
 ///
 /// TWO-STAGE VALIDATION PATTERN:

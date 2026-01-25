@@ -101,9 +101,48 @@ impl Default for Sigaction {
     }
 }
 
+/// Signal return trampoline (restorer function)
+///
+/// This function is used as the return address for signal handlers.
+/// When the handler does 'ret', it jumps here and we call rt_sigreturn
+/// to restore the pre-signal context.
+///
+/// This MUST be a naked function to avoid any stack frame setup -
+/// we're jumping here from a ret instruction and need to call sigreturn
+/// immediately.
+///
+/// This is required for signals delivered on alternate stacks (sigaltstack)
+/// because the alt stack may be in non-executable memory (NX bit set).
+/// By using SA_RESTORER, the kernel uses this function's address instead
+/// of writing a trampoline to the stack.
+#[unsafe(naked)]
+pub extern "C" fn __restore_rt() -> ! {
+    core::arch::naked_asm!(
+        "mov rax, 15",  // SYS_rt_sigreturn
+        "int 0x80",     // Trigger syscall
+        "ud2",          // Should never reach here
+    )
+}
+
 impl Sigaction {
     /// Create a new signal action with a handler function
+    ///
+    /// This automatically sets SA_RESTORER and uses the libbreenix restorer.
+    /// This is essential for signals delivered on alternate stacks.
     pub fn new(handler: extern "C" fn(i32)) -> Self {
+        Sigaction {
+            handler: handler as u64,
+            mask: 0,
+            flags: SA_RESTORER,
+            restorer: __restore_rt as u64,
+        }
+    }
+
+    /// Create a new signal action without a restorer
+    ///
+    /// This should only be used when signals will only be delivered on the
+    /// main stack (which is executable). For sigaltstack, use `new()` instead.
+    pub fn new_without_restorer(handler: extern "C" fn(i32)) -> Self {
         Sigaction {
             handler: handler as u64,
             mask: 0,
