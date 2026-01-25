@@ -64,6 +64,12 @@ drop_to_el1:
 el1_init:
     // Now running at EL1
 
+    // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11)
+    // This is required because Rust code may use FP/SIMD instructions
+    mov x0, #(3 << 20)      // FPEN = 0b11 (no trapping of FP/SIMD)
+    msr cpacr_el1, x0
+    isb
+
     // Set up stack pointer
     ldr x0, =__stack_top
     mov sp, x0

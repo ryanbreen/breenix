@@ -58,21 +58,53 @@ impl PageTableOps for Aarch64PageTableOps {
     const PAGE_SIZE: usize = 4096;
     const ENTRIES_PER_TABLE: usize = 512;
 
+    #[inline(always)]
     fn read_root() -> u64 {
-        unimplemented!("ARM64: read_root (TTBR0) not yet implemented")
+        let ttbr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr, options(nomem, nostack));
+        }
+        ttbr & 0x0000_FFFF_FFFF_F000
     }
 
+    #[inline(always)]
     unsafe fn write_root(addr: u64) {
-        let _ = addr;
-        unimplemented!("ARM64: write_root (TTBR0) not yet implemented")
+        let aligned = addr & 0x0000_FFFF_FFFF_F000;
+        core::arch::asm!(
+            "dsb ishst",
+            "msr ttbr0_el1, {0}",
+            "dsb ish",
+            "isb",
+            in(reg) aligned,
+            options(nostack)
+        );
     }
 
+    #[inline(always)]
     fn flush_tlb_page(addr: u64) {
-        let _ = addr;
-        unimplemented!("ARM64: flush_tlb_page not yet implemented")
+        let page = addr >> 12;
+        unsafe {
+            core::arch::asm!(
+                "dsb ishst",
+                "tlbi vae1is, {0}",
+                "dsb ish",
+                "isb",
+                in(reg) page,
+                options(nostack)
+            );
+        }
     }
 
+    #[inline(always)]
     fn flush_tlb_all() {
-        unimplemented!("ARM64: flush_tlb_all not yet implemented")
+        unsafe {
+            core::arch::asm!(
+                "dsb ishst",
+                "tlbi vmalle1is",
+                "dsb ish",
+                "isb",
+                options(nostack)
+            );
+        }
     }
 }

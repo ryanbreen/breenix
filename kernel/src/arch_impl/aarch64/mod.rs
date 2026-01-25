@@ -12,6 +12,7 @@ pub mod boot;
 #[allow(unused_imports)]
 pub mod constants;
 pub mod cpu;
+pub mod elf;
 pub mod exception;
 pub mod exception_frame;
 pub mod paging;
@@ -19,6 +20,8 @@ pub mod percpu;
 pub mod gic;
 pub mod privilege;
 pub mod timer;
+pub mod mmu;
+pub mod context;
 
 // Re-export commonly used items
 // These re-exports are part of the complete HAL API

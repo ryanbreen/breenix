@@ -18,7 +18,6 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_PREEMPT_COUNT_OFFSET,
     HARDIRQ_MASK,
     SOFTIRQ_MASK,
-    PREEMPT_MASK,
 };
 
 pub struct Aarch64PerCpu;

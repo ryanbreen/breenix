@@ -25,9 +25,11 @@ use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
 
-/// PCI configuration address port
+/// PCI configuration address port (x86 only - ARM64 uses ECAM)
+#[cfg(target_arch = "x86_64")]
 const CONFIG_ADDRESS: u16 = 0xCF8;
-/// PCI configuration data port
+/// PCI configuration data port (x86 only - ARM64 uses ECAM)
+#[cfg(target_arch = "x86_64")]
 const CONFIG_DATA: u16 = 0xCFC;
 
 /// Maximum number of PCI buses to scan

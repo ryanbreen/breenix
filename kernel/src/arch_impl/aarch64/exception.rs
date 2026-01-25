@@ -6,6 +6,8 @@
 #![allow(dead_code)]
 
 use crate::arch_impl::aarch64::gic;
+use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
+use crate::arch_impl::traits::SyscallFrame;
 
 /// Exception Syndrome Register (ESR_EL1) exception class values
 mod exception_class {
@@ -27,65 +29,22 @@ mod exception_class {
     pub const BRK_AARCH64: u32 = 0b111100;  // BRK instruction
 }
 
-/// Exception frame passed from assembly
-/// Must match the layout in boot.S
-#[repr(C)]
-pub struct ExceptionFrame {
-    pub x0: u64,
-    pub x1: u64,
-    pub x2: u64,
-    pub x3: u64,
-    pub x4: u64,
-    pub x5: u64,
-    pub x6: u64,
-    pub x7: u64,
-    pub x8: u64,
-    pub x9: u64,
-    pub x10: u64,
-    pub x11: u64,
-    pub x12: u64,
-    pub x13: u64,
-    pub x14: u64,
-    pub x15: u64,
-    pub x16: u64,
-    pub x17: u64,
-    pub x18: u64,
-    pub x19: u64,
-    pub x20: u64,
-    pub x21: u64,
-    pub x22: u64,
-    pub x23: u64,
-    pub x24: u64,
-    pub x25: u64,
-    pub x26: u64,
-    pub x27: u64,
-    pub x28: u64,
-    pub x29: u64,  // Frame pointer
-    pub x30: u64,  // Link register
-    pub elr: u64,  // Exception Link Register (return address)
-    pub spsr: u64, // Saved Program Status Register
-}
-
 /// Handle synchronous exceptions (syscalls, page faults, etc.)
 ///
 /// Called from assembly with:
-/// - x0 = pointer to ExceptionFrame
+/// - x0 = pointer to Aarch64ExceptionFrame
 /// - x1 = ESR_EL1 (Exception Syndrome Register)
 /// - x2 = FAR_EL1 (Fault Address Register)
 #[no_mangle]
-pub extern "C" fn handle_sync_exception(frame: *mut ExceptionFrame, esr: u64, far: u64) {
+pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: u64, far: u64) {
     let ec = ((esr >> 26) & 0x3F) as u32;  // Exception Class
     let iss = (esr & 0x1FFFFFF) as u32;    // Instruction Specific Syndrome
 
     match ec {
         exception_class::SVC_AARCH64 => {
-            // Syscall - ISS contains the immediate value from SVC instruction
-            // For Linux ABI: syscall number in X8, args in X0-X5, return in X0
+            // Syscall - ARM64 ABI: X8=syscall number, X0-X5=args, X0=return
             let frame = unsafe { &mut *frame };
-            let syscall_num = frame.x8;
-            crate::serial_println!("[exception] SVC syscall #{} (not yet implemented)", syscall_num);
-            // For now, return -ENOSYS
-            frame.x0 = (-38i64) as u64;  // -ENOSYS
+            handle_syscall(frame);
         }
 
         exception_class::DATA_ABORT_LOWER | exception_class::DATA_ABORT_SAME => {
@@ -123,6 +82,102 @@ pub extern "C" fn handle_sync_exception(frame: *mut ExceptionFrame, esr: u64, fa
             loop { unsafe { core::arch::asm!("wfi"); } }
         }
     }
+}
+
+/// Handle a syscall from userspace (or kernel for testing)
+///
+/// Uses the SyscallFrame trait to extract arguments in an arch-agnostic way.
+fn handle_syscall(frame: &mut Aarch64ExceptionFrame) {
+    let syscall_num = frame.syscall_number();
+    let arg1 = frame.arg1();
+    let arg2 = frame.arg2();
+    let arg3 = frame.arg3();
+    let _arg4 = frame.arg4();
+    let _arg5 = frame.arg5();
+    let _arg6 = frame.arg6();
+
+    // For early boot testing, handle a few basic syscalls directly
+    // This avoids pulling in the full syscall infrastructure which has x86_64 dependencies
+    let result: i64 = match syscall_num {
+        // Exit (syscall 0)
+        0 => {
+            let exit_code = arg1 as i32;
+            crate::serial_println!("[syscall] exit({})", exit_code);
+            crate::serial_println!();
+            crate::serial_println!("========================================");
+            crate::serial_println!("  Userspace Test Complete!");
+            crate::serial_println!("  Exit code: {}", exit_code);
+            crate::serial_println!("========================================");
+            crate::serial_println!();
+
+            // For now, just halt - real implementation would terminate the process
+            // and schedule another task
+            loop {
+                unsafe { core::arch::asm!("wfi"); }
+            }
+        }
+
+        // Write (syscall 1) - write to fd 1 (stdout) or 2 (stderr)
+        1 => {
+            let fd = arg1;
+            let buf = arg2 as *const u8;
+            let count = arg3 as usize;
+
+            if fd == 1 || fd == 2 {
+                // Write to serial console
+                for i in 0..count {
+                    let byte = unsafe { *buf.add(i) };
+                    crate::serial_aarch64::write_byte(byte);
+                }
+                count as i64
+            } else {
+                -9i64 // EBADF
+            }
+        }
+
+        // GetPid (syscall 39) - return a dummy PID
+        39 => {
+            1i64 // Return PID 1 for init
+        }
+
+        // GetTid (syscall 186) - return a dummy TID
+        186 => {
+            1i64 // Return TID 1
+        }
+
+        // ClockGetTime (syscall 228)
+        228 => {
+            let clock_id = arg1 as u32;
+            let timespec_ptr = arg2 as *mut [u64; 2];
+
+            if timespec_ptr.is_null() {
+                -14i64 // EFAULT
+            } else if clock_id > 1 {
+                -22i64 // EINVAL
+            } else {
+                // Use the timer to get monotonic time
+                if let Some((secs, nanos)) = crate::arch_impl::aarch64::timer::monotonic_time() {
+                    unsafe {
+                        (*timespec_ptr)[0] = secs;
+                        (*timespec_ptr)[1] = nanos;
+                    }
+                    0i64
+                } else {
+                    -22i64 // EINVAL - timer not calibrated
+                }
+            }
+        }
+
+        // Unknown syscall
+        _ => {
+            crate::serial_println!("[syscall] unimplemented syscall {} (args: {:#x}, {:#x}, {:#x})",
+                syscall_num, arg1, arg2, arg3);
+            -38i64 // ENOSYS
+        }
+    };
+
+    // Set return value (negative values indicate errors in Linux convention)
+    frame.set_return_value(result as u64);
 }
 
 /// Handle IRQ interrupts
