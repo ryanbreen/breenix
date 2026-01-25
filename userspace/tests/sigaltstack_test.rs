@@ -130,6 +130,7 @@ pub extern "C" fn _start() -> ! {
         let new_ss = signal::StackT {
             ss_sp: alt_stack_base,
             ss_flags: 0,  // Enable the stack (SS_DISABLE would disable it)
+            _pad: 0,
             ss_size: alt_stack_size,
         };
 
@@ -279,6 +280,7 @@ pub extern "C" fn _start() -> ! {
         let disable_ss = signal::StackT {
             ss_sp: 0,
             ss_flags: signal::SS_DISABLE,
+            _pad: 0,
             ss_size: 0,
         };
 
@@ -326,6 +328,7 @@ pub extern "C" fn _start() -> ! {
         let too_small_ss = signal::StackT {
             ss_sp: alt_stack_base,
             ss_flags: 0,
+            _pad: 0,
             ss_size: signal::MINSIGSTKSZ - 1,  // One byte too small
         };
 
@@ -345,6 +348,7 @@ pub extern "C" fn _start() -> ! {
         let min_ss = signal::StackT {
             ss_sp: alt_stack_base,
             ss_flags: 0,
+            _pad: 0,
             ss_size: signal::MINSIGSTKSZ,
         };
 

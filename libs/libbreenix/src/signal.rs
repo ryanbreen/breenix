@@ -149,6 +149,7 @@ pub struct Itimerval {
 }
 
 /// Alternate signal stack structure
+/// Note: This must match the kernel's stack_t layout exactly
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct StackT {
@@ -156,6 +157,8 @@ pub struct StackT {
     pub ss_sp: u64,
     /// Flags (SS_ONSTACK, SS_DISABLE)
     pub ss_flags: i32,
+    /// Padding for alignment (must match kernel layout)
+    pub _pad: i32,
     /// Stack size in bytes
     pub ss_size: usize,
 }
@@ -165,6 +168,7 @@ impl Default for StackT {
         StackT {
             ss_sp: 0,
             ss_flags: SS_DISABLE,
+            _pad: 0,
             ss_size: 0,
         }
     }
