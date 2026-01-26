@@ -582,6 +582,7 @@ fn deliver_to_user_handler_syscall(
 
     // Get current user stack pointer
     let current_rsp = frame.rsp;
+    let original_rsp = current_rsp;
 
     // Check if we should use the alternate signal stack
     let use_alt_stack = (action.flags & SA_ONSTACK) != 0
@@ -640,7 +641,7 @@ fn deliver_to_user_handler_syscall(
         siginfo_ptr: 0,
         ucontext_ptr: 0,
         saved_rip: frame.rip,
-        saved_rsp: user_rsp,
+        saved_rsp: original_rsp,
         saved_rflags: frame.rflags,
         saved_rax: saved_regs.rax,
         saved_rbx: saved_regs.rbx,
