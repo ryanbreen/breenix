@@ -40,6 +40,30 @@ This plan is deliberately frank about gaps found in the current ARM64 code path.
 4. **Memory subsystem parity not reached**
    - ARM64 boot uses hard-coded ranges and a bump allocator in `kernel/src/main_aarch64.rs`.
 
+## AMD64 vs ARM64 Parity Matrix (Frank Status)
+
+This section is deliberately blunt about what is missing on ARM64 compared to AMD64.
+
+| Subsystem | AMD64 status (baseline) | ARM64 current state | Gap / risk | Required work |
+| --- | --- | --- | --- | --- |
+| Boot + MMU | High-half kernel + HHDM stable; CR3 behavior mature | High-half transition in progress; TTBR split booting but still evolving | Wrong mappings or identity-map assumptions break drivers | Finish high-half + HHDM mapping; remove identity-map assumptions |
+| Memory map / discovery | Uses platform-provided memory map | ARM64 uses fixed ranges; no DTB memory map integration | Wrong RAM sizing, allocator bugs | Parse DTB memory map and feed allocator |
+| Kernel heap | Tiered allocator / real heap | ARM64 uses bump allocator | Fragmentation, OOM under load | Enable full allocator on ARM64 |
+| User pointers | Validated for x86_64 layout | ARM64 userptr was unsafe; now partially aligned with high-half | Security risk + EFAULT mismatch | Complete ARM64 userptr validation for new VA layout |
+| Scheduler + preemption | Preemptive scheduling stable | ARM64 preemption not fully validated | Timing bugs, missed signals | Ensure timer IRQ drives scheduler; verify preemption on ARM64 |
+| Signal delivery | AMD64 SA_ONSTACK + sigreturn working | ARM64 delivery path exists but not parity-verified | SA_ONSTACK, sigreturn, mask restore on ARM64 | Validate signal delivery on ARM64 and fix path divergences |
+| Syscall coverage | Broad syscall set for tests/shell | Many ARM64 syscalls return ENOSYS (FS/TTY/PTY/session/pipe/poll/select/ioctl/exec/wait4) | Userspace shell cannot run | Remove ENOSYS stubs, wire to shared implementations |
+| Exec / ELF | Exec from ext2 works; argv supported | ARM64 exec path incomplete | Cannot boot to userspace shell | Implement exec from ext2 for ARM64 |
+| VFS/ext2 | VFS + ext2 stable | ARM64 syscalls stubbed; driver not fully exercised | No filesystem for userspace | Wire syscalls and verify ext2 on ARM64 |
+| devfs / devpts | Working on AMD64 | Not wired on ARM64 | PTY + /dev missing | Enable devfs/devpts mounts on ARM64 |
+| TTY + PTY | Full interactive shell + job control | ARM64 uses kernel shell; PTY syscalls stubbed | No interactive userspace | Implement PTY syscalls + line discipline for ARM64 |
+| VirtIO block | AMD64 stable (PCI) | ARM64 MMIO driver in progress | Storage I/O unreliable | Confirm MMIO queues + IRQs + HHDM DMA |
+| VirtIO net | AMD64 stable | ARM64 MMIO wired but TCP blocked | Networking incomplete | Enable TCP on ARM64; validate RX/TX path |
+| VirtIO GPU/input | AMD64 stable | ARM64 MMIO in progress | No interactive UI | Confirm MMIO registers + input routing |
+| IPC (pipes, sockets) | Pipes, UNIX sockets, UDP/TCP | ARM64 stubs for pipe/select/poll | Userspace blocked | Port IPC syscalls and polling |
+| Userland shell | init_shell + coreutils on ext2 | Kernel shell only | Not parity | Build/install ARM64 userland and boot into init_shell |
+| CI / tests | Boot stages + userspace tests | ARM64 manual workflow only | No parity signal in CI | Add ARM64 parity subsets once core syscalls work |
+
 ## Parity Scope (Definition of Done)
 - Boot into EL0 init_shell from ext2 filesystem image.
 - TTY input + canonical/raw modes + job control, signals, Ctrl-C.
