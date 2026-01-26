@@ -55,9 +55,9 @@ pub mod socket;
 pub mod test_exec;
 pub mod time;
 pub mod net;
-#[cfg(target_arch = "x86_64")]
+// Block and filesystem modules - enabled for both architectures
+// ARM64 uses VirtIO MMIO block driver, x86_64 uses VirtIO PCI
 pub mod block;
-#[cfg(target_arch = "x86_64")]
 pub mod fs;
 pub mod logger;
 #[cfg(target_arch = "x86_64")]

@@ -183,6 +183,21 @@ pub extern "C" fn kernel_main() -> ! {
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
 
+    // Initialize filesystem layer (requires VirtIO block device)
+    serial_println!("[boot] Initializing filesystem...");
+
+    // Initialize ext2 root filesystem (if block device present)
+    match kernel::fs::ext2::init_root_fs() {
+        Ok(()) => serial_println!("[boot] ext2 root filesystem mounted"),
+        Err(e) => serial_println!("[boot] ext2 init: {} (continuing without root fs)", e),
+    }
+
+    // Initialize devfs (/dev virtual filesystem)
+    kernel::fs::devfs::init();
+    serial_println!("[boot] devfs initialized at /dev");
+
+    // Note: devptsfs is x86_64-only (depends on tty module)
+
     // Initialize graphics (if GPU is available)
     serial_println!("[boot] Initializing graphics...");
     if let Err(e) = init_graphics() {

@@ -10,6 +10,8 @@
 #![allow(dead_code)]
 
 pub mod devfs;
+// devptsfs depends on tty module which is x86_64-only
+#[cfg(target_arch = "x86_64")]
 pub mod devptsfs;
 pub mod ext2;
 pub mod vfs;
