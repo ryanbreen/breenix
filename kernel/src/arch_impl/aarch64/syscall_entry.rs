@@ -83,19 +83,21 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     let arg6 = frame.arg6();
 
     // Dispatch to syscall handler
-    // Fork needs special handling because it requires access to the frame
-    let result = if syscall_num == syscall_nums::FORK {
-        sys_fork_aarch64(frame)
-    } else {
-        dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
+    // Some syscalls need special handling because they require access to the frame
+    let result = match syscall_num {
+        syscall_nums::FORK => sys_fork_aarch64(frame),
+        syscall_nums::SIGRETURN => sys_sigreturn_aarch64(frame),
+        syscall_nums::PAUSE => sys_pause_aarch64(frame),
+        syscall_nums::SIGSUSPEND => sys_sigsuspend_aarch64(frame, arg1, arg2),
+        _ => dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6),
     };
 
     // Set return value in X0
     frame.set_return_value(result);
 
-    // TODO: Check for pending signals before returning to userspace
-    // This requires signal infrastructure to be ported to ARM64
-    // check_and_deliver_signals_on_syscall_return_aarch64(frame);
+    // Check for pending signals before returning to userspace
+    // This is required for POSIX compliance - signals must be delivered on syscall return
+    check_and_deliver_signals_on_syscall_return_aarch64(frame);
 
     // Decrement preempt count on syscall exit
     Aarch64PerCpu::preempt_enable();
@@ -162,7 +164,18 @@ mod syscall_nums {
     pub const FORK: u64 = 5;
     pub const CLOSE: u64 = 6;
     pub const BRK: u64 = 12;
+    pub const SIGACTION: u64 = 13;
+    pub const SIGPROCMASK: u64 = 14;
+    pub const SIGRETURN: u64 = 15;
+    pub const PAUSE: u64 = 34;
+    pub const GETITIMER: u64 = 36;
+    pub const ALARM: u64 = 37;
+    pub const SETITIMER: u64 = 38;
     pub const GETPID: u64 = 39;
+    pub const KILL: u64 = 62;
+    pub const SIGPENDING: u64 = 127;
+    pub const SIGSUSPEND: u64 = 130;
+    pub const SIGALTSTACK: u64 = 131;
     pub const GETTID: u64 = 186;
     pub const CLOCK_GETTIME: u64 = 228;
 
@@ -243,6 +256,71 @@ fn dispatch_syscall(
         syscall_nums::CLOCK_GETTIME => {
             // clock_gettime: writes to timespec pointer in arg2
             sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec)
+        }
+
+        // Signal syscalls
+        syscall_nums::KILL => {
+            match crate::syscall::signal::sys_kill(arg1 as i64, arg2 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SIGACTION => {
+            match crate::syscall::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SIGPROCMASK => {
+            match crate::syscall::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SIGPENDING => {
+            match crate::syscall::signal::sys_sigpending(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SIGALTSTACK => {
+            match crate::syscall::signal::sys_sigaltstack(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::ALARM => {
+            match crate::syscall::signal::sys_alarm(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::GETITIMER => {
+            match crate::syscall::signal::sys_getitimer(arg1 as i32, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SETITIMER => {
+            match crate::syscall::signal::sys_setitimer(arg1 as i32, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Note: SIGRETURN, SIGSUSPEND, and PAUSE require frame access
+        // They are handled separately with the frame passed in
+        syscall_nums::SIGRETURN | syscall_nums::SIGSUSPEND | syscall_nums::PAUSE => {
+            // These should not reach here - they need frame access
+            log::warn!("[syscall] {} requires frame access - use rust_syscall_handler_aarch64", num);
+            (-38_i64) as u64 // -ENOSYS
         }
 
         _ => {
@@ -459,6 +537,502 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             (-12_i64) as u64 // -ENOMEM
         }
     })
+}
+
+// =============================================================================
+// Signal-related syscalls for ARM64
+// =============================================================================
+
+/// Userspace address limit - addresses must be below this to be valid userspace
+const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
+
+/// sys_sigreturn for ARM64 - Return from signal handler
+///
+/// This syscall is called by the signal trampoline after a signal handler returns.
+/// It restores the pre-signal execution context from the SignalFrame pushed to
+/// the user stack when the signal was delivered.
+fn sys_sigreturn_aarch64(frame: &mut Aarch64ExceptionFrame) -> u64 {
+    use crate::signal::types::SignalFrame;
+
+    // Read SP_EL0 to find the user stack
+    let user_sp: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) user_sp, options(nomem, nostack));
+    }
+
+    // The signal frame is at SP - 8 (signal handler's 'ret' popped the return address)
+    let signal_frame_ptr = (user_sp - 8) as *const SignalFrame;
+
+    // Read the signal frame from userspace
+    let signal_frame = unsafe { *signal_frame_ptr };
+
+    // Verify magic number
+    if signal_frame.magic != SignalFrame::MAGIC {
+        log::error!(
+            "sys_sigreturn_aarch64: invalid magic {:#x} (expected {:#x})",
+            signal_frame.magic,
+            SignalFrame::MAGIC
+        );
+        return (-14_i64) as u64; // -EFAULT
+    }
+
+    // Validate saved_pc is in userspace
+    if signal_frame.saved_pc >= USER_SPACE_END {
+        log::error!(
+            "sys_sigreturn_aarch64: saved_pc {:#x} is not in userspace",
+            signal_frame.saved_pc
+        );
+        return (-14_i64) as u64; // -EFAULT
+    }
+
+    // Validate saved_sp is in userspace
+    if signal_frame.saved_sp >= USER_SPACE_END {
+        log::error!(
+            "sys_sigreturn_aarch64: saved_sp {:#x} is not in userspace",
+            signal_frame.saved_sp
+        );
+        return (-14_i64) as u64; // -EFAULT
+    }
+
+    log::debug!(
+        "sigreturn_aarch64: restoring context from frame at {:#x}, saved_pc={:#x}",
+        user_sp,
+        signal_frame.saved_pc
+    );
+
+    // Restore the execution context
+    frame.elr = signal_frame.saved_pc;
+    frame.spsr = signal_frame.saved_pstate;
+
+    // Restore SP_EL0
+    unsafe {
+        core::arch::asm!("msr sp_el0, {}", in(reg) signal_frame.saved_sp, options(nomem, nostack));
+    }
+
+    // Restore general-purpose registers (x0-x30)
+    frame.x0 = signal_frame.saved_x[0];
+    frame.x1 = signal_frame.saved_x[1];
+    frame.x2 = signal_frame.saved_x[2];
+    frame.x3 = signal_frame.saved_x[3];
+    frame.x4 = signal_frame.saved_x[4];
+    frame.x5 = signal_frame.saved_x[5];
+    frame.x6 = signal_frame.saved_x[6];
+    frame.x7 = signal_frame.saved_x[7];
+    frame.x8 = signal_frame.saved_x[8];
+    frame.x9 = signal_frame.saved_x[9];
+    frame.x10 = signal_frame.saved_x[10];
+    frame.x11 = signal_frame.saved_x[11];
+    frame.x12 = signal_frame.saved_x[12];
+    frame.x13 = signal_frame.saved_x[13];
+    frame.x14 = signal_frame.saved_x[14];
+    frame.x15 = signal_frame.saved_x[15];
+    frame.x16 = signal_frame.saved_x[16];
+    frame.x17 = signal_frame.saved_x[17];
+    frame.x18 = signal_frame.saved_x[18];
+    frame.x19 = signal_frame.saved_x[19];
+    frame.x20 = signal_frame.saved_x[20];
+    frame.x21 = signal_frame.saved_x[21];
+    frame.x22 = signal_frame.saved_x[22];
+    frame.x23 = signal_frame.saved_x[23];
+    frame.x24 = signal_frame.saved_x[24];
+    frame.x25 = signal_frame.saved_x[25];
+    frame.x26 = signal_frame.saved_x[26];
+    frame.x27 = signal_frame.saved_x[27];
+    frame.x28 = signal_frame.saved_x[28];
+    frame.x29 = signal_frame.saved_x[29];
+    frame.x30 = signal_frame.saved_x[30];
+
+    // Restore the signal mask
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return (-3_i64) as u64, // -ESRCH
+    };
+
+    if let Some(mut manager_guard) = crate::process::try_manager() {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+                // Check if we're returning from a signal that interrupted sigsuspend
+                if let Some(saved_mask) = process.signals.sigsuspend_saved_mask.take() {
+                    process.signals.set_blocked(saved_mask);
+                    log::info!(
+                        "sigreturn_aarch64: restored sigsuspend saved mask to {:#x}",
+                        saved_mask
+                    );
+                } else {
+                    process.signals.set_blocked(signal_frame.saved_blocked);
+                    log::debug!(
+                        "sigreturn_aarch64: restored signal mask to {:#x}",
+                        signal_frame.saved_blocked
+                    );
+                }
+
+                // Clear on_stack flag if we were on alt stack
+                if process.signals.alt_stack.on_stack {
+                    process.signals.alt_stack.on_stack = false;
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "sigreturn_aarch64: restored context, returning to PC={:#x} SP={:#x}",
+        signal_frame.saved_pc,
+        signal_frame.saved_sp
+    );
+
+    0 // Return value is ignored - original x0 was restored above
+}
+
+/// sys_pause for ARM64 - Wait until a signal is delivered
+fn sys_pause_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    log::info!("sys_pause_aarch64: Thread {} blocking until signal arrives", thread_id);
+
+    // Read SP_EL0 for context
+    let user_sp: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) user_sp, options(nomem, nostack));
+    }
+
+    // Save userspace context
+    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
+
+    // Save to process
+    if let Some(mut manager_guard) = crate::process::try_manager() {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                if let Some(ref mut thread) = process.main_thread {
+                    thread.saved_userspace_context = Some(userspace_context.clone());
+                }
+            }
+        }
+    }
+
+    // Block until signal
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal_with_context(Some(userspace_context));
+    });
+
+    // Re-enable preemption for HLT loop
+    Aarch64PerCpu::preempt_enable();
+
+    // Wait loop
+    loop {
+        crate::task::scheduler::yield_current();
+        unsafe { core::arch::asm!("wfi"); }
+
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
+            } else {
+                false
+            }
+        }).unwrap_or(false);
+
+        if !still_blocked {
+            break;
+        }
+    }
+
+    // Clear blocked state
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.saved_userspace_context = None;
+        }
+    });
+
+    // Re-disable preemption
+    Aarch64PerCpu::preempt_disable();
+
+    (-4_i64) as u64 // -EINTR
+}
+
+/// sys_sigsuspend for ARM64 - Atomically set signal mask and wait
+fn sys_sigsuspend_aarch64(frame: &Aarch64ExceptionFrame, mask_ptr: u64, sigsetsize: u64) -> u64 {
+    use crate::signal::constants::UNCATCHABLE_SIGNALS;
+
+    // Validate sigsetsize
+    if sigsetsize != 8 {
+        log::warn!("sys_sigsuspend_aarch64: invalid sigsetsize {}", sigsetsize);
+        return (-22_i64) as u64; // -EINVAL
+    }
+
+    // Read mask from userspace
+    let new_mask: u64 = if mask_ptr != 0 {
+        unsafe { *(mask_ptr as *const u64) }
+    } else {
+        return (-14_i64) as u64; // -EFAULT
+    };
+
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    log::info!(
+        "sys_sigsuspend_aarch64: Thread {} suspending with mask {:#x}",
+        thread_id, new_mask
+    );
+
+    // Read SP_EL0 for context
+    let user_sp: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) user_sp, options(nomem, nostack));
+    }
+
+    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
+
+    // Save mask and context atomically
+    {
+        if let Some(mut manager_guard) = crate::process::try_manager() {
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    let saved_mask = process.signals.blocked;
+                    let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
+                    process.signals.set_blocked(sanitized_mask);
+                    process.signals.sigsuspend_saved_mask = Some(saved_mask);
+
+                    if let Some(ref mut thread) = process.main_thread {
+                        thread.saved_userspace_context = Some(userspace_context.clone());
+                    }
+
+                    log::info!(
+                        "sys_sigsuspend_aarch64: Thread {} saved mask {:#x}, set temp mask {:#x}",
+                        thread_id, saved_mask, sanitized_mask
+                    );
+                } else {
+                    return (-3_i64) as u64; // -ESRCH
+                }
+            } else {
+                return (-3_i64) as u64; // -ESRCH
+            }
+        } else {
+            return (-3_i64) as u64; // -ESRCH
+        }
+    }
+
+    // Block until signal
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal_with_context(Some(userspace_context));
+    });
+
+    // Re-enable preemption for wait loop
+    Aarch64PerCpu::preempt_enable();
+
+    // Wait loop
+    loop {
+        crate::task::scheduler::yield_current();
+        unsafe { core::arch::asm!("wfi"); }
+
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
+            } else {
+                false
+            }
+        }).unwrap_or(false);
+
+        if !still_blocked {
+            break;
+        }
+    }
+
+    // Clear blocked state
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.saved_userspace_context = None;
+        }
+    });
+
+    // Re-disable preemption
+    Aarch64PerCpu::preempt_disable();
+
+    (-4_i64) as u64 // -EINTR
+}
+
+// =============================================================================
+// Signal delivery on syscall return (ARM64)
+// =============================================================================
+
+/// Check for pending signals before returning to userspace (ARM64)
+///
+/// This is critical for POSIX compliance - signals must be delivered on syscall return.
+fn check_and_deliver_signals_on_syscall_return_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    use crate::signal::constants::*;
+    use crate::signal::types::SignalFrame;
+
+    // Get current thread ID
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return,
+    };
+
+    // Thread 0 is idle - no signals
+    if current_thread_id == 0 {
+        return;
+    }
+
+    // Try to acquire process manager lock (non-blocking)
+    let mut manager_guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => return, // Lock held, skip - will happen on next timer interrupt
+    };
+
+    if let Some(ref mut manager) = *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+            // Check interval timers
+            crate::signal::delivery::check_and_fire_alarm(process);
+            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
+            // Check if there are any deliverable signals
+            if !crate::signal::delivery::has_deliverable_signals(process) {
+                return;
+            }
+
+            // Get next deliverable signal
+            let sig = match process.signals.next_deliverable_signal() {
+                Some(s) => s,
+                None => return,
+            };
+
+            // Clear pending flag
+            process.signals.clear_pending(sig);
+
+            // Get the handler
+            let action = *process.signals.get_handler(sig);
+
+            match action.handler {
+                SIG_DFL => {
+                    // Default action - re-queue for timer interrupt to handle
+                    process.signals.set_pending(sig);
+                    return;
+                }
+                SIG_IGN => {
+                    // Signal ignored
+                    return;
+                }
+                handler_addr => {
+                    // User-defined handler - set up signal frame
+                    deliver_signal_to_user_handler_aarch64(
+                        process,
+                        frame,
+                        sig,
+                        handler_addr,
+                        &action,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Deliver a signal to a user-defined handler (ARM64)
+fn deliver_signal_to_user_handler_aarch64(
+    process: &mut crate::process::Process,
+    frame: &mut Aarch64ExceptionFrame,
+    sig: u32,
+    handler_addr: u64,
+    action: &crate::signal::types::SignalAction,
+) {
+    use crate::signal::constants::*;
+    use crate::signal::types::SignalFrame;
+
+    // Read current SP_EL0
+    let current_sp: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) current_sp, options(nomem, nostack));
+    }
+
+    // Check if we should use alternate stack
+    let use_alt_stack = (action.flags & SA_ONSTACK) != 0
+        && (process.signals.alt_stack.flags & SS_DISABLE) == 0
+        && process.signals.alt_stack.size > 0
+        && !process.signals.alt_stack.on_stack;
+
+    let user_sp = if use_alt_stack {
+        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
+        process.signals.alt_stack.on_stack = true;
+        alt_top
+    } else {
+        current_sp
+    };
+
+    // Build signal frame
+    let mut signal_frame = SignalFrame {
+        trampoline_addr: action.restorer,
+        magic: SignalFrame::MAGIC,
+        signal: sig as u64,
+        siginfo_ptr: 0,
+        ucontext_ptr: 0,
+        saved_pc: frame.elr,
+        saved_sp: current_sp,
+        saved_pstate: frame.spsr,
+        saved_x: [0u64; 31],
+        saved_blocked: process.signals.blocked,
+    };
+
+    // Save x0-x30
+    signal_frame.saved_x[0] = frame.x0;
+    signal_frame.saved_x[1] = frame.x1;
+    signal_frame.saved_x[2] = frame.x2;
+    signal_frame.saved_x[3] = frame.x3;
+    signal_frame.saved_x[4] = frame.x4;
+    signal_frame.saved_x[5] = frame.x5;
+    signal_frame.saved_x[6] = frame.x6;
+    signal_frame.saved_x[7] = frame.x7;
+    signal_frame.saved_x[8] = frame.x8;
+    signal_frame.saved_x[9] = frame.x9;
+    signal_frame.saved_x[10] = frame.x10;
+    signal_frame.saved_x[11] = frame.x11;
+    signal_frame.saved_x[12] = frame.x12;
+    signal_frame.saved_x[13] = frame.x13;
+    signal_frame.saved_x[14] = frame.x14;
+    signal_frame.saved_x[15] = frame.x15;
+    signal_frame.saved_x[16] = frame.x16;
+    signal_frame.saved_x[17] = frame.x17;
+    signal_frame.saved_x[18] = frame.x18;
+    signal_frame.saved_x[19] = frame.x19;
+    signal_frame.saved_x[20] = frame.x20;
+    signal_frame.saved_x[21] = frame.x21;
+    signal_frame.saved_x[22] = frame.x22;
+    signal_frame.saved_x[23] = frame.x23;
+    signal_frame.saved_x[24] = frame.x24;
+    signal_frame.saved_x[25] = frame.x25;
+    signal_frame.saved_x[26] = frame.x26;
+    signal_frame.saved_x[27] = frame.x27;
+    signal_frame.saved_x[28] = frame.x28;
+    signal_frame.saved_x[29] = frame.x29;
+    signal_frame.saved_x[30] = frame.x30;
+
+    // Align stack and make room for signal frame
+    let new_sp = (user_sp - SignalFrame::SIZE as u64) & !0xF; // 16-byte align
+
+    // Write signal frame to user stack
+    let frame_ptr = new_sp as *mut SignalFrame;
+    unsafe {
+        *frame_ptr = signal_frame;
+    }
+
+    // Block signals during handler (including the signal being handled)
+    let blocked_during_handler = process.signals.blocked | action.mask | sig_mask(sig);
+    process.signals.set_blocked(blocked_during_handler & !UNCATCHABLE_SIGNALS);
+
+    // Set up registers for signal handler call:
+    // x0 = signal number
+    // x30 (lr) = restorer address (trampoline)
+    // elr = handler address
+    // sp_el0 = new stack pointer with signal frame
+    frame.x0 = sig as u64;
+    frame.x30 = action.restorer;
+    frame.elr = handler_addr;
+
+    // Set new stack pointer
+    unsafe {
+        core::arch::asm!("msr sp_el0, {}", in(reg) new_sp, options(nomem, nostack));
+    }
+
+    log::info!(
+        "signal_aarch64: delivering signal {} to handler {:#x}, restorer={:#x}, sp={:#x}",
+        sig, handler_addr, action.restorer, new_sp
+    );
 }
 
 // =============================================================================
