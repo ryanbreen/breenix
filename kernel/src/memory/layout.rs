@@ -5,7 +5,10 @@
 //! per-CPU stacks and other kernel regions. This establishes a
 //! production-grade memory layout that all page tables will share.
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 
 // Virtual address layout constants
 pub const KERNEL_LOW_BASE: u64 = 0x100000;           // Current low-half kernel base (1MB)
@@ -152,7 +155,7 @@ pub fn log_layout() {
 /// Check if an address is in the bootstrap stack region
 #[allow(dead_code)]
 #[inline]
-pub fn is_bootstrap_address(addr: x86_64::VirtAddr) -> bool {
+pub fn is_bootstrap_address(addr: VirtAddr) -> bool {
     let pml4_index = (addr.as_u64() >> 39) & 0x1FF;
     pml4_index == BOOTSTRAP_PML4_INDEX
 }
@@ -220,27 +223,34 @@ pub fn log_kernel_layout() {
     log_control_structures();
 }
 
-/// Log GDT, IDT, TSS, and per-CPU information
+/// Log GDT, IDT, TSS, and per-CPU information (x86_64 only)
+#[cfg(target_arch = "x86_64")]
 fn log_control_structures() {
     use crate::gdt;
     use crate::interrupts;
     use crate::per_cpu;
-    
+
     // Get GDT info
     let gdt_info = gdt::get_gdt_info();
     log::info!("KLAYOUT: GDT base={:#x} limit={}", gdt_info.0, gdt_info.1);
-    
-    // Get IDT info  
+
+    // Get IDT info
     let idt_info = interrupts::get_idt_info();
     log::info!("KLAYOUT: IDT base={:#x} limit={}", idt_info.0, idt_info.1);
-    
+
     // Get TSS info
     let tss_info = gdt::get_tss_info();
     log::info!("KLAYOUT: TSS base={:#x} RSP0={:#x}", tss_info.0, tss_info.1);
-    
+
     // Get per-CPU info
     let percpu_info = per_cpu::get_percpu_info();
     log::info!("KLAYOUT: Per-CPU base={:#x} size={:#x}", percpu_info.0, percpu_info.1);
+}
+
+/// Log control structures (ARM64 - minimal implementation)
+#[cfg(target_arch = "aarch64")]
+fn log_control_structures() {
+    log::info!("KLAYOUT: ARM64 - using exception vectors and TPIDR_EL1 for per-CPU");
 }
 
 // === User Space Address Validation Functions ===

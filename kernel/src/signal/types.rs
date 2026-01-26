@@ -300,7 +300,7 @@ impl SignalState {
     }
 }
 
-/// Signal frame structure pushed to user stack when delivering a signal
+/// Signal frame structure pushed to user stack when delivering a signal (x86_64)
 ///
 /// This structure contains all state needed to restore execution after
 /// the signal handler returns via sigreturn().
@@ -308,6 +308,7 @@ impl SignalState {
 /// CRITICAL: trampoline_addr MUST be at offset 0!
 /// When the signal handler executes 'ret', it pops from RSP.
 /// RSP points to the start of SignalFrame, so trampoline_addr must be first.
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalFrame {
@@ -349,6 +350,51 @@ pub struct SignalFrame {
     pub saved_blocked: u64,
 }
 
+#[cfg(target_arch = "x86_64")]
+impl SignalFrame {
+    /// Size of the signal frame in bytes
+    pub const SIZE: usize = core::mem::size_of::<Self>();
+
+    /// Magic number for frame integrity validation
+    /// This prevents privilege escalation via forged signal frames
+    pub const MAGIC: u64 = 0xDEAD_BEEF_CAFE_BABE;
+}
+
+/// Signal frame structure pushed to user stack when delivering a signal (ARM64)
+///
+/// This structure contains all state needed to restore execution after
+/// the signal handler returns via sigreturn().
+///
+/// On ARM64, the return address is stored in x30 (link register), not on stack.
+/// The trampoline address is still stored here for the signal delivery code.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SignalFrame {
+    // Return address for signal trampoline (stored in x30/lr on ARM64)
+    pub trampoline_addr: u64,
+
+    // Magic number for integrity checking (prevents privilege escalation)
+    pub magic: u64,
+
+    // Arguments for signal handler
+    pub signal: u64,     // Signal number (also in x0)
+    pub siginfo_ptr: u64, // Pointer to siginfo_t (also in x1) - future
+    pub ucontext_ptr: u64, // Pointer to ucontext_t (also in x2) - future
+
+    // Saved CPU state to restore after handler
+    pub saved_pc: u64,    // Program counter (ELR_EL1)
+    pub saved_sp: u64,    // Stack pointer
+    pub saved_pstate: u64, // Processor state (SPSR_EL1)
+
+    // Saved general-purpose registers (x0-x30)
+    pub saved_x: [u64; 31],
+
+    // Signal state to restore
+    pub saved_blocked: u64,
+}
+
+#[cfg(target_arch = "aarch64")]
 impl SignalFrame {
     /// Size of the signal frame in bytes
     pub const SIZE: usize = core::mem::size_of::<Self>();
@@ -437,6 +483,7 @@ impl Itimerval {
     }
 
     /// Check if timer is disabled (it_value is zero)
+    #[allow(dead_code)] // Part of Itimerval public API, called by user code
     pub fn is_disabled(&self) -> bool {
         self.it_value.is_zero()
     }
@@ -468,6 +515,7 @@ impl Default for IntervalTimer {
 
 impl IntervalTimer {
     /// Create a new disabled timer
+    #[allow(dead_code)] // Part of IntervalTimer public API
     pub fn new() -> Self {
         Self::default()
     }

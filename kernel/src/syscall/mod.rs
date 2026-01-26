@@ -1,27 +1,55 @@
 //! System call infrastructure for Breenix
 //!
-//! This module implements the system call interface using INT 0x80 (Linux-style).
-//! System calls are the primary interface between userspace and the kernel.
+//! This module implements the system call interface:
+//! - x86_64: Uses INT 0x80 (Linux-style)
+//! - ARM64: Uses SVC instruction
+//!
+//! Architecture-independent syscall implementations are shared between both
+//! architectures, with only the entry/exit code being architecture-specific.
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::idt::InterruptStackFrame;
 
-pub(crate) mod dispatcher;
+// Architecture-independent modules (compile for both x86_64 and ARM64)
 pub mod errno;
-pub mod fifo;
-pub mod fs;
-pub mod graphics;
-pub mod handler;
-pub mod handlers;
-pub mod ioctl;
 pub mod memory;
+pub mod memory_common;
 pub mod mmap;
-pub mod pipe;
-pub mod pty;
-pub mod session;
-pub mod signal;
-pub mod socket;
 pub mod time;
 pub mod userptr;
+
+// Syscall handler - the main dispatcher
+// x86_64: Full handler with signal delivery and process management
+// ARM64: Handler is in arch_impl/aarch64/syscall_entry.rs
+#[cfg(target_arch = "x86_64")]
+pub mod handler;
+
+// Syscall implementations - handlers module is architecture-independent
+// Other modules have x86_64-specific dependencies and are being ported
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod dispatcher;
+#[cfg(target_arch = "x86_64")]
+pub mod fifo;
+#[cfg(target_arch = "x86_64")]
+pub mod fs;
+#[cfg(target_arch = "x86_64")]
+pub mod graphics;
+// handlers module has deep dependencies on x86_64-only subsystems
+// ARM64 uses stub handlers in arch_impl/aarch64/syscall_entry.rs
+#[cfg(target_arch = "x86_64")]
+pub mod handlers;
+#[cfg(target_arch = "x86_64")]
+pub mod ioctl;
+#[cfg(target_arch = "x86_64")]
+pub mod pipe;
+#[cfg(target_arch = "x86_64")]
+pub mod pty;
+#[cfg(target_arch = "x86_64")]
+pub mod session;
+pub mod signal;
+// Socket syscalls - enabled for both architectures
+// Unix domain sockets are fully arch-independent
+pub mod socket;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,12 +244,14 @@ pub enum SyscallResult {
     Err(u64),
 }
 
-/// Storage for syscall results  
+/// Storage for syscall results
+#[cfg(target_arch = "x86_64")]
 pub static mut SYSCALL_RESULT: i64 = 0;
 
 /// INT 0x80 handler for system calls
 ///
 /// Note: This is replaced by assembly entry point for proper register handling
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) {
     // Log that we received a syscall
@@ -269,6 +299,7 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
 }
 
 /// Initialize the system call infrastructure
+#[cfg(target_arch = "x86_64")]
 pub fn init() {
     log::info!("Initializing system call infrastructure");
 

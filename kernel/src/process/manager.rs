@@ -5,10 +5,19 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{self, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+// Import paging types from appropriate source
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(target_arch = "x86_64")]
+use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 
 use super::{Process, ProcessId};
+#[cfg(target_arch = "x86_64")]
 use crate::elf;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
@@ -46,6 +55,8 @@ impl ProcessManager {
     }
 
     /// Create a new process from an ELF binary
+    /// Note: Uses x86_64-specific ELF loader
+    #[cfg(target_arch = "x86_64")]
     pub fn create_process(
         &mut self,
         name: String,
@@ -95,6 +106,8 @@ impl ProcessManager {
         // CRITICAL FIX: Re-map kernel low-half after ELF loading
         // The ELF loader may have created new page tables that don't preserve kernel mappings
         // We need to explicitly ensure the kernel code/data remains mapped
+        // Note: This is x86_64-specific due to kernel memory layout differences
+        #[cfg(target_arch = "x86_64")]
         {
             use x86_64::VirtAddr;
             use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
@@ -254,14 +267,159 @@ impl ProcessManager {
         Ok(pid)
     }
 
+    /// Create a new process from an ELF binary (ARM64 version)
+    ///
+    /// This is simpler than the x86_64 version because:
+    /// - ARM64 uses TTBR1 for kernel mappings automatically (no kernel mapping restoration needed)
+    /// - Uses ARM64-specific ELF loader
+    /// - Uses ARM64-specific ProcessPageTable
+    #[cfg(target_arch = "aarch64")]
+    pub fn create_process(
+        &mut self,
+        name: String,
+        elf_data: &[u8],
+    ) -> Result<ProcessId, &'static str> {
+        // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
+        use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
+
+        crate::serial_println!("manager.create_process [ARM64]: ENTRY - name='{}', elf_size={}", name, elf_data.len());
+
+        // Generate a new PID
+        let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        crate::serial_println!("manager.create_process [ARM64]: Generated PID {}", pid.as_u64());
+
+        // Create a new page table for this process
+        // On ARM64, this creates a TTBR0 page table for userspace only
+        // Kernel mappings are handled automatically via TTBR1
+        crate::serial_println!("manager.create_process [ARM64]: Creating ProcessPageTable");
+        let mut page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
+                log::error!(
+                    "ARM64: Failed to create process page table for PID {}: {}",
+                    pid.as_u64(),
+                    e
+                );
+                crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable creation failed: {}", e);
+                "Failed to create process page table"
+            })?,
+        );
+        crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable created");
+
+        // Load the ELF binary into the process's page table
+        // Use the ARM64-specific ELF loader
+        crate::serial_println!("manager.create_process [ARM64]: Loading ELF into page table");
+        let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
+            elf_data,
+            page_table.as_mut(),
+        )?;
+        crate::serial_println!(
+            "manager.create_process [ARM64]: ELF loaded, entry={:#x}",
+            loaded_elf.entry_point
+        );
+
+        // NOTE: On ARM64, we skip kernel mapping restoration because:
+        // - TTBR1_EL1 always holds kernel mappings (upper half addresses: 0xFFFF...)
+        // - TTBR0_EL1 holds userspace mappings (lower half addresses: 0x0000...)
+        // - The hardware automatically selects the correct translation table based on address
+        // This is a key simplification compared to x86_64 where CR3 holds all mappings
+
+        // Create the process
+        crate::serial_println!("manager.create_process [ARM64]: Creating Process struct");
+        let entry_point = VirtAddr::new(loaded_elf.entry_point);
+        let mut process = Process::new(pid, name.clone(), entry_point);
+        process.page_table = Some(page_table);
+
+        // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+        crate::serial_println!(
+            "manager.create_process [ARM64]: Process struct created, heap_start={:#x}",
+            heap_base
+        );
+
+        // Update memory usage
+        process.memory_usage.code_size = elf_data.len();
+
+        // Allocate a stack for the process
+        use crate::memory::stack;
+
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
+        crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
+        let user_stack =
+            stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
+                .map_err(|_| {
+                    crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
+                    "Failed to allocate user stack"
+                })?;
+        crate::serial_println!(
+            "manager.create_process [ARM64]: User stack allocated at {:#x}",
+            user_stack.top().as_u64()
+        );
+
+        let stack_top = user_stack.top();
+        process.memory_usage.stack_size = USER_STACK_SIZE;
+
+        // Store the stack in the process
+        process.stack = Some(Box::new(user_stack));
+
+        // Map the user stack pages into the process page table
+        log::debug!("ARM64: Mapping user stack pages into process page table...");
+        crate::serial_println!("manager.create_process [ARM64]: Mapping user stack into process page table");
+        if let Some(ref mut page_table) = process.page_table {
+            let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
+            crate::memory::process_memory::map_user_stack_to_process(
+                page_table,
+                stack_bottom,
+                stack_top,
+            )
+            .map_err(|e| {
+                log::error!("ARM64: Failed to map user stack to process page table: {}", e);
+                "Failed to map user stack in process page table"
+            })?;
+            log::debug!("ARM64: User stack mapped in process page table");
+            crate::serial_println!("manager.create_process [ARM64]: User stack mapped successfully");
+        } else {
+            return Err("Process page table not available for stack mapping");
+        }
+
+        // Create the main thread
+        crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
+        let thread = self.create_main_thread(&mut process, stack_top)?;
+        crate::serial_println!("manager.create_process [ARM64]: Main thread created");
+        process.set_main_thread(thread);
+        crate::serial_println!("manager.create_process [ARM64]: Main thread set on process");
+
+        // Add to ready queue
+        crate::serial_println!(
+            "manager.create_process [ARM64]: Adding PID {} to ready queue",
+            pid.as_u64()
+        );
+        self.ready_queue.push(pid);
+
+        // Insert into process table
+        crate::serial_println!("manager.create_process [ARM64]: Inserting process into process table");
+        self.processes.insert(pid, process);
+
+        log::info!("ARM64: Created process {} (PID {})", name, pid.as_u64());
+        crate::serial_println!(
+            "manager.create_process [ARM64]: SUCCESS - returning PID {}",
+            pid.as_u64()
+        );
+
+        Ok(pid)
+    }
+
     /// Create the main thread for a process
+    /// Note: Uses x86_64-specific TLS and thread creation
+    #[cfg(target_arch = "x86_64")]
     fn create_main_thread(
         &mut self,
         process: &mut Process,
-        stack_top: x86_64::VirtAddr,
+        stack_top: VirtAddr,
     ) -> Result<Thread, &'static str> {
         // For now, use a null TLS block (we'll implement TLS later)
-        let _tls_block = x86_64::VirtAddr::new(0);
+        let _tls_block = VirtAddr::new(0);
 
         // Allocate a globally unique thread ID
         // NOTE: While Unix convention is TID = PID for main thread, we need global
@@ -272,7 +430,8 @@ impl ProcessManager {
         // Allocate a TLS block for this thread ID
         let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
 
-        // Register this thread with the TLS system
+        // Register this thread with the TLS system (x86_64 only for now)
+        #[cfg(target_arch = "x86_64")]
         if let Err(e) = crate::tls::register_thread_tls(thread_id, actual_tls_block) {
             log::warn!(
                 "Failed to register thread {} with TLS system: {}",
@@ -310,6 +469,72 @@ impl ProcessManager {
         let context = crate::task::thread::CpuContext::new(
             process.entry_point,
             initial_rsp,
+            crate::task::thread::ThreadPrivilege::User,
+        );
+
+        let thread = Thread {
+            id: thread_id,
+            name: String::from(&process.name),
+            state: crate::task::thread::ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: Some(kernel_stack_top),
+            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
+            tls_block: actual_tls_block,
+            priority: 128,
+            time_slice: 10,
+            entry_point: None,
+            privilege: crate::task::thread::ThreadPrivilege::User,
+            has_started: false,
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
+        };
+
+        Ok(thread)
+    }
+
+    /// Create the main thread for a process (ARM64 version)
+    ///
+    /// Note: TLS support is not yet implemented for ARM64.
+    #[cfg(target_arch = "aarch64")]
+    fn create_main_thread(
+        &mut self,
+        process: &mut Process,
+        stack_top: VirtAddr,
+    ) -> Result<Thread, &'static str> {
+        // Allocate a globally unique thread ID
+        let thread_id = crate::task::thread::allocate_thread_id();
+
+        // For ARM64, use a simple TLS placeholder (TLS not yet fully implemented)
+        let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
+
+        // Calculate stack bottom (stack grows down)
+        const USER_STACK_SIZE: usize = 64 * 1024;
+        let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
+
+        // Allocate a kernel stack for exception handling
+        let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
+            log::error!("ARM64: Failed to allocate kernel stack: {}", e);
+            "Failed to allocate kernel stack for thread"
+        })?;
+        let kernel_stack_top = kernel_stack.top();
+
+        log::debug!(
+            "ARM64: Allocated kernel stack at {:#x}",
+            kernel_stack_top.as_u64()
+        );
+
+        // Store the kernel stack - it will be dropped when the thread is destroyed
+        // For now, we'll leak it - TODO: proper cleanup
+        Box::leak(Box::new(kernel_stack));
+
+        // Set up initial context for userspace
+        // On ARM64, SP should be 16-byte aligned
+        let initial_sp = VirtAddr::new(stack_top.as_u64() & !0xF);
+        let context = crate::task::thread::CpuContext::new(
+            process.entry_point,
+            initial_sp,
             crate::task::thread::ThreadPrivilege::User,
         );
 
@@ -546,12 +771,16 @@ impl ProcessManager {
     }
 
     /// Fork a process - create a child process that's a copy of the parent
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn fork_process(&mut self, parent_pid: ProcessId) -> Result<ProcessId, &'static str> {
         self.fork_process_with_context(parent_pid, None)
     }
 
     /// Fork a process with a pre-allocated page table
     /// This version accepts a page table created outside the lock to avoid deadlock
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)] // Part of public fork API - available for deadlock-free fork patterns
     pub fn fork_process_with_page_table(
         &mut self,
@@ -587,7 +816,7 @@ impl ProcessManager {
         };
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -664,6 +893,8 @@ impl ProcessManager {
     /// Fork a process with the ACTUAL parent register state from syscall frame
     /// This is the preferred method as it captures the exact register values at fork time,
     /// not the stale values from the last context switch.
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn fork_process_with_parent_context(
         &mut self,
         parent_pid: ProcessId,
@@ -699,7 +930,7 @@ impl ProcessManager {
         };
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -775,9 +1006,318 @@ impl ProcessManager {
         }
     }
 
+    /// Fork a process on ARM64 with the ACTUAL parent register state from exception frame
+    ///
+    /// This is the ARM64 equivalent of fork_process_with_parent_context. It captures the
+    /// exact register values at fork time from the exception frame.
+    #[cfg(target_arch = "aarch64")]
+    pub fn fork_process_aarch64(
+        &mut self,
+        parent_pid: ProcessId,
+        parent_context: crate::task::thread::CpuContext,
+        mut child_page_table: Box<ProcessPageTable>,
+    ) -> Result<ProcessId, &'static str> {
+        // Get the parent process info
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
+            let parent = self
+                .processes
+                .get(&parent_pid)
+                .ok_or("Parent process not found")?;
+
+            let parent_thread = parent
+                .main_thread
+                .as_ref()
+                .ok_or("Parent process has no main thread")?;
+
+            (
+                parent.name.clone(),
+                parent.entry_point,
+                parent.pgid,
+                parent.sid,
+                parent.cwd.clone(),
+                parent_thread.clone(),
+                parent.heap_start,
+                parent.heap_end,
+            )
+        };
+
+        // Allocate a new PID for the child
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+
+        log::info!(
+            "ARM64 fork: process {} '{}' -> child PID {}",
+            parent_pid.as_u64(),
+            parent_name,
+            child_pid.as_u64()
+        );
+
+        // Create child process name
+        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
+
+        // Create the child process with the same entry point
+        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        child_process.parent = Some(parent_pid);
+        // POSIX: Child inherits parent's process group, session, and working directory
+        child_process.pgid = parent_pgid;
+        child_process.sid = parent_sid;
+        child_process.cwd = parent_cwd.clone();
+
+        // COPY-ON-WRITE FORK: Share pages between parent and child
+        {
+            // Get mutable access to parent's page table for CoW setup
+            let parent = self
+                .processes
+                .get_mut(&parent_pid)
+                .ok_or("Parent process not found during CoW setup")?;
+            let mut parent_page_table = parent
+                .page_table
+                .take()
+                .ok_or("Parent process has no page table")?;
+
+            // Set up Copy-on-Write sharing between parent and child
+            let pages_shared = super::fork::setup_cow_pages(
+                parent_page_table.as_mut(),
+                child_page_table.as_mut(),
+            )?;
+
+            // Put parent's page table back
+            parent.page_table = Some(parent_page_table);
+
+            log::info!(
+                "ARM64 fork: Set up {} pages for CoW sharing",
+                pages_shared
+            );
+
+            // Child inherits parent's heap bounds
+            child_process.heap_start = parent_heap_start;
+            child_process.heap_end = parent_heap_end;
+        }
+
+        child_process.page_table = Some(child_page_table);
+
+        // Complete the fork with ARM64-specific handling
+        self.complete_fork_aarch64(
+            parent_pid,
+            child_pid,
+            &parent_thread_info,
+            parent_context,
+            child_process,
+        )
+    }
+
+    /// Complete the fork operation for ARM64 after page table is created
+    ///
+    /// ARM64 key differences from x86_64:
+    /// - SP_EL0 holds user stack pointer (not RSP)
+    /// - ELR_EL1 holds return address (not RIP)
+    /// - X0 is the return value register (not RAX)
+    /// - 16-byte stack alignment required
+    #[cfg(target_arch = "aarch64")]
+    fn complete_fork_aarch64(
+        &mut self,
+        parent_pid: ProcessId,
+        child_pid: ProcessId,
+        parent_thread: &Thread,
+        parent_context: crate::task::thread::CpuContext,
+        mut child_process: Process,
+    ) -> Result<ProcessId, &'static str> {
+        use crate::memory::arch_stub::{ThreadPrivilege as StackPrivilege, VirtAddr};
+
+        log::info!(
+            "ARM64 complete_fork: Creating child thread for PID {}",
+            child_pid.as_u64()
+        );
+
+        // Create a new stack for the child process (64KB userspace stack)
+        const CHILD_STACK_SIZE: usize = 64 * 1024;
+
+        // Allocate the stack
+        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
+            CHILD_STACK_SIZE,
+            StackPrivilege::User,
+        )
+        .map_err(|_| "Failed to allocate stack for child process")?;
+        let child_stack_top = child_stack.top();
+        let child_stack_bottom = child_stack.bottom();
+
+        // Map the stack pages into the child's page table
+        let child_page_table_ref = child_process
+            .page_table
+            .as_mut()
+            .ok_or("Child process has no page table")?;
+
+        crate::memory::process_memory::map_user_stack_to_process(
+            child_page_table_ref,
+            child_stack_bottom,
+            child_stack_top,
+        )
+        .map_err(|e| {
+            log::error!("ARM64 fork: Failed to map user stack: {}", e);
+            "Failed to map user stack in child's page table"
+        })?;
+
+        // Allocate a globally unique thread ID for the child's main thread
+        let child_thread_id = crate::task::thread::allocate_thread_id();
+
+        // Allocate a TLS block for this thread ID
+        let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
+
+        // Allocate a kernel stack for the child thread
+        let child_kernel_stack_top = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+            let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
+                log::error!("ARM64 fork: Failed to allocate kernel stack: {}", e);
+                "Failed to allocate kernel stack for child thread"
+            })?;
+            let kernel_stack_top = kernel_stack.top();
+
+            log::debug!(
+                "ARM64 fork: Allocated child kernel stack at {:#x}",
+                kernel_stack_top.as_u64()
+            );
+
+            // Store the kernel stack (leak for now - TODO: proper cleanup)
+            Box::leak(Box::new(kernel_stack));
+
+            kernel_stack_top
+        } else {
+            parent_thread.kernel_stack_top.unwrap_or(parent_thread.stack_top)
+        };
+
+        // Create the child's main thread
+        fn dummy_entry() {}
+
+        let mut child_thread = Thread::new(
+            format!("{}_main", child_process.name),
+            dummy_entry,
+            child_stack_top,
+            parent_thread.stack_bottom,
+            child_tls_block,
+            parent_thread.privilege,
+        );
+
+        // Set the ID and kernel stack
+        child_thread.id = child_thread_id;
+        child_thread.kernel_stack_top = Some(child_kernel_stack_top);
+
+        // Copy parent's thread context from the exception frame
+        log::debug!("ARM64 fork: Copying parent context to child");
+        log::debug!(
+            "  Parent: SP_EL0={:#x}, ELR_EL1={:#x}, SPSR={:#x}",
+            parent_context.sp_el0, parent_context.elr_el1, parent_context.spsr_el1
+        );
+
+        child_thread.context = parent_context.clone();
+
+        // CRITICAL: Set has_started=true for forked children
+        child_thread.has_started = true;
+
+        // Calculate the child's stack pointer based on parent's stack usage
+        let parent_sp = parent_context.sp_el0;
+        let parent_stack_used = parent_thread.stack_top.as_u64().saturating_sub(parent_sp);
+        let child_sp = child_stack_top.as_u64().saturating_sub(parent_stack_used);
+        // ARM64 requires 16-byte alignment
+        let child_sp_aligned = child_sp & !0xF;
+        child_thread.context.sp_el0 = child_sp_aligned;
+
+        log::info!(
+            "ARM64 fork: parent_stack_top={:#x}, parent_sp={:#x}, used={:#x}",
+            parent_thread.stack_top.as_u64(),
+            parent_sp,
+            parent_stack_used
+        );
+        log::info!(
+            "ARM64 fork: child_stack_top={:#x}, child_sp={:#x}",
+            child_stack_top.as_u64(),
+            child_sp_aligned
+        );
+
+        // Copy the parent's stack contents to the child's stack
+        if parent_stack_used > 0 && parent_stack_used <= (64 * 1024) {
+            let parent_stack_src = parent_sp as *const u8;
+            let child_stack_dst = child_sp_aligned as *mut u8;
+
+            log::debug!(
+                "ARM64 fork: Copying {} bytes of stack from {:#x} to {:#x}",
+                parent_stack_used,
+                parent_sp,
+                child_sp_aligned
+            );
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    parent_stack_src,
+                    child_stack_dst,
+                    parent_stack_used as usize,
+                );
+            }
+
+            log::info!(
+                "ARM64 fork: Copied {} bytes of stack from parent to child",
+                parent_stack_used
+            );
+        }
+
+        // Set the kernel stack pointer for exception handling
+        child_thread.context.sp = child_kernel_stack_top.as_u64();
+
+        // CRUCIAL: Set the child's return value to 0 in X0
+        // On ARM64, X0 is the return value register (like RAX on x86_64)
+        // The child process must receive 0 from fork(), while the parent gets child_pid
+        child_thread.context.x0 = 0;
+
+        log::info!(
+            "ARM64 fork: Created child thread {} with ELR={:#x}, SP_EL0={:#x}, X0={}",
+            child_thread_id,
+            child_thread.context.elr_el1,
+            child_thread.context.sp_el0,
+            child_thread.context.x0
+        );
+
+        // Set the child process's main thread
+        child_process.main_thread = Some(child_thread);
+
+        // Store the stack in the child process
+        child_process.stack = Some(Box::new(child_stack));
+
+        // Copy all other process state (fd_table, signals, verify pgid/sid)
+        if let Some(parent) = self.processes.get(&parent_pid) {
+            if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
+                log::error!(
+                    "ARM64 fork: Failed to copy process state: {}",
+                    e
+                );
+                return Err(e);
+            }
+        } else {
+            log::error!(
+                "ARM64 fork: Parent {} not found when copying process state!",
+                parent_pid.as_u64()
+            );
+            return Err("Parent process not found during state copy");
+        }
+
+        // Add the child to the parent's children list
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.push(child_pid);
+        }
+
+        // Insert the child process into the process table
+        self.processes.insert(child_pid, child_process);
+
+        log::info!(
+            "ARM64 fork complete: parent {} -> child {}",
+            parent_pid.as_u64(),
+            child_pid.as_u64()
+        );
+
+        Ok(child_pid)
+    }
+
     /// Complete the fork operation after page table is created
     /// If `parent_context_override` is provided, it will be used for the child's context
     /// instead of the stale values from `parent_thread.context`.
+    /// Note: Uses architecture-specific register names
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     fn complete_fork(
         &mut self,
@@ -1066,6 +1606,8 @@ impl ProcessManager {
     /// Fork a process with optional userspace context override
     /// NOTE: This method creates the page table while holding the lock, which can cause deadlock
     /// Consider using fork_process_with_page_table instead
+    /// Note: Fork requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn fork_process_with_context(
         &mut self,
         parent_pid: ProcessId,
@@ -1088,7 +1630,7 @@ impl ProcessManager {
             .clone();
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -1369,6 +1911,8 @@ impl ProcessManager {
     /// The `program_name` parameter is optional - if provided, it updates the process name
     /// to match the new program. This is critical because fork() uses the process name to
     /// reload the binary from disk.
+    /// Note: Exec requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     pub fn exec_process(&mut self, pid: ProcessId, elf_data: &[u8], program_name: Option<&str>) -> Result<u64, &'static str> {
         log::info!(
             "exec_process: Replacing process {} with new program",
@@ -1479,15 +2023,15 @@ impl ProcessManager {
 
         // Map stack pages into the NEW process page table
         log::info!("exec_process: Mapping stack pages into new process page table");
-        let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_bottom);
-        let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_top - 1u64);
+        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
         log::info!(
             "exec_process: Stack range: {:#x} - {:#x}",
             stack_bottom.as_u64(),
             stack_top.as_u64()
         );
 
-        for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+        for page in Page::range_inclusive(start_page, end_page) {
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Failed to allocate frame for exec stack")?;
 
@@ -1495,9 +2039,9 @@ impl ProcessManager {
             new_page_table.map_page(
                 page,
                 frame,
-                x86_64::structures::paging::PageTableFlags::PRESENT
-                    | x86_64::structures::paging::PageTableFlags::WRITABLE
-                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
             )?;
         }
 
@@ -1670,6 +2214,8 @@ impl ProcessManager {
     /// - argv: Array of argument strings (argv[0] is typically the program name)
     ///
     /// Returns: (entry_point, stack_pointer) on success
+    /// Note: Exec requires architecture-specific register manipulation
+    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     pub fn exec_process_with_argv(
         &mut self,
@@ -1762,19 +2308,19 @@ impl ProcessManager {
         let stack_top = VirtAddr::new(USER_STACK_TOP);
 
         log::info!("exec_process_with_argv: Mapping stack pages into new process page table");
-        let start_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_bottom);
-        let end_page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(stack_top - 1u64);
+        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+        let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
 
-        for page in x86_64::structures::paging::Page::range_inclusive(start_page, end_page) {
+        for page in Page::range_inclusive(start_page, end_page) {
             let frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Failed to allocate frame for exec stack")?;
 
             new_page_table.map_page(
                 page,
                 frame,
-                x86_64::structures::paging::PageTableFlags::PRESENT
-                    | x86_64::structures::paging::PageTableFlags::WRITABLE
-                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
             )?;
         }
 
@@ -1875,6 +2421,263 @@ impl ProcessManager {
         }
 
         Ok((new_entry_point, initial_rsp))
+    }
+
+    /// Replace a process's address space with a new program (exec) for ARM64
+    ///
+    /// This implements the exec() family of system calls on ARM64. Unlike fork(), which creates
+    /// a new process, exec() replaces the current process's address space with a new
+    /// program while keeping the same PID.
+    ///
+    /// The `program_name` parameter is optional - if provided, it updates the process name
+    /// to match the new program.
+    ///
+    /// ARM64-specific details:
+    /// - Uses TTBR0_EL1 for userspace page tables (kernel is always in TTBR1)
+    /// - ELR_EL1 holds the entry point (return PC)
+    /// - SP_EL0 holds the user stack pointer
+    /// - SPSR_EL1 = 0x0 for EL0t mode with interrupts enabled
+    /// - X0-X30 are cleared for security
+    #[cfg(target_arch = "aarch64")]
+    pub fn exec_process(
+        &mut self,
+        pid: ProcessId,
+        elf_data: &[u8],
+        program_name: Option<&str>,
+    ) -> Result<u64, &'static str> {
+        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
+
+        log::info!(
+            "exec_process [ARM64]: Replacing process {} with new program",
+            pid.as_u64()
+        );
+
+        // CRITICAL OS-STANDARD CHECK: Is this the current process?
+        let is_current_process = self.current_pid == Some(pid);
+        if is_current_process {
+            log::info!("exec_process [ARM64]: Executing on current process - special handling required");
+        }
+
+        // Get the existing process
+        let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+
+        // For now, assume non-current processes are not actively running
+        let is_scheduled = false;
+
+        // Get the main thread (we need to preserve its ID)
+        let main_thread = process
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?;
+        let thread_id = main_thread.id;
+
+        // Store old page table for proper cleanup
+        let old_page_table = process.page_table.take();
+
+        log::info!(
+            "exec_process [ARM64]: Preserving thread ID {} for process {}",
+            thread_id,
+            pid.as_u64()
+        );
+
+        // Create a new page table for the new program
+        log::info!("exec_process [ARM64]: Creating new page table...");
+        let mut new_page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new()
+                .map_err(|_| "Failed to create new page table for exec")?,
+        );
+        log::info!("exec_process [ARM64]: New page table created successfully");
+
+        // Clear any user mappings that might have been copied from the current page table
+        new_page_table.clear_user_entries();
+
+        // Unmap the old program's pages in common userspace ranges
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000),
+        ) {
+            log::warn!("ARM64: Failed to unmap old user code pages: {}", e);
+        }
+
+        // Also unmap any pages in the BSS/data area (just after code)
+        if let Err(e) =
+            new_page_table.unmap_user_pages(VirtAddr::new(0x10001000), VirtAddr::new(0x10010000))
+        {
+            log::warn!("ARM64: Failed to unmap old user data pages: {}", e);
+        }
+
+        // Unmap the stack region before mapping new stack pages
+        {
+            const STACK_SIZE: usize = 64 * 1024; // 64KB stack
+            const STACK_TOP: u64 = 0x7FFF_FF01_0000;
+            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(STACK_TOP);
+            if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
+                log::warn!("ARM64: Failed to unmap old stack pages: {}", e);
+            }
+        }
+
+        log::info!("exec_process [ARM64]: Cleared potential user mappings from new page table");
+
+        // Load the ELF binary into the new page table using ARM64-specific loader
+        log::info!("exec_process [ARM64]: Loading ELF into new page table...");
+        let loaded_elf =
+            crate::arch_impl::aarch64::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
+        let new_entry_point = loaded_elf.entry_point;
+        log::info!(
+            "exec_process [ARM64]: ELF loaded successfully, entry point: {:#x}",
+            new_entry_point
+        );
+
+        // Allocate and map stack directly into the new process page table
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
+        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
+
+        // Calculate stack range
+        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(USER_STACK_TOP);
+
+        // Map stack pages into the NEW process page table
+        log::info!("exec_process [ARM64]: Mapping stack pages into new process page table");
+        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+        let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(stack_top.as_u64() - 1));
+        log::info!(
+            "exec_process [ARM64]: Stack range: {:#x} - {:#x}",
+            stack_bottom.as_u64(),
+            stack_top.as_u64()
+        );
+
+        for page in Page::range_inclusive(start_page, end_page) {
+            let frame = crate::memory::frame_allocator::allocate_frame()
+                .ok_or("Failed to allocate frame for exec stack")?;
+
+            // Map into the NEW process page table with user-accessible permissions
+            new_page_table.map_page(
+                page,
+                frame,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            )?;
+        }
+
+        // For now, we'll use a dummy stack object since we manually mapped the stack
+        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
+            4096, // Dummy size - we already mapped the real stack
+            crate::memory::arch_stub::ThreadPrivilege::User,
+        )
+        .map_err(|_| "Failed to create stack object")?;
+
+        log::info!(
+            "exec_process [ARM64]: New entry point: {:#x}, new stack top: {:#x}",
+            new_entry_point,
+            stack_top.as_u64()
+        );
+
+        // Update the process with new program data
+        if let Some(name) = program_name {
+            process.name = String::from(name);
+            log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
+        }
+        process.entry_point = VirtAddr::new(new_entry_point);
+
+        // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
+        // SIG_IGN handlers are preserved
+        process.signals.exec_reset();
+        log::debug!(
+            "exec_process [ARM64]: Reset signal handlers for process {}",
+            pid.as_u64()
+        );
+
+        // Replace the page table with the new one containing the loaded program
+        process.page_table = Some(new_page_table);
+
+        // Replace the stack
+        process.stack = Some(Box::new(new_stack));
+
+        // Update the main thread context for the new program (ARM64-specific)
+        if let Some(ref mut thread) = process.main_thread {
+            // CRITICAL: Preserve the kernel stack - userspace threads need it for exceptions
+            let preserved_kernel_stack_top = thread.kernel_stack_top;
+            log::info!(
+                "exec_process [ARM64]: Preserving kernel stack top: {:?}",
+                preserved_kernel_stack_top
+            );
+
+            // Reset the CPU context for the new program (ARM64-specific registers)
+            // SP must be 16-byte aligned on ARM64
+            let aligned_stack = stack_top.as_u64() & !0xF;
+
+            // Set ARM64-specific context fields
+            thread.context.elr_el1 = new_entry_point; // Entry point (PC on return)
+            thread.context.sp_el0 = aligned_stack; // User stack pointer
+            thread.context.spsr_el1 = 0x0; // EL0t mode with interrupts enabled
+
+            // Clear all general-purpose registers for security
+            thread.context.x0 = 0;
+            thread.context.x19 = 0;
+            thread.context.x20 = 0;
+            thread.context.x21 = 0;
+            thread.context.x22 = 0;
+            thread.context.x23 = 0;
+            thread.context.x24 = 0;
+            thread.context.x25 = 0;
+            thread.context.x26 = 0;
+            thread.context.x27 = 0;
+            thread.context.x28 = 0;
+            thread.context.x29 = 0; // Frame pointer
+            thread.context.x30 = 0; // Link register
+
+            thread.stack_top = stack_top;
+            thread.stack_bottom = stack_bottom;
+
+            // Restore the preserved kernel stack
+            thread.kernel_stack_top = preserved_kernel_stack_top;
+
+            // Mark the thread as ready to run the new program
+            thread.state = crate::task::thread::ThreadState::Ready;
+
+            log::info!(
+                "exec_process [ARM64]: Updated thread {} context for new program",
+                thread_id
+            );
+        }
+
+        log::info!(
+            "exec_process [ARM64]: Successfully replaced process {} address space",
+            pid.as_u64()
+        );
+
+        // Handle page table switching based on process state
+        if is_current_process {
+            log::info!("exec_process [ARM64]: Current process exec - page table will be used on next context switch");
+        } else if is_scheduled {
+            log::info!(
+                "exec_process [ARM64]: Process {} is scheduled - new page table will be used on next schedule",
+                pid.as_u64()
+            );
+        } else {
+            log::info!(
+                "exec_process [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
+                pid.as_u64()
+            );
+        }
+
+        // Clean up old page table resources
+        if let Some(_old_pt) = old_page_table {
+            log::info!("exec_process [ARM64]: Old page table cleanup needed (TODO)");
+        }
+
+        // Add the process back to the ready queue if it's not already there
+        if !self.ready_queue.contains(&pid) {
+            self.ready_queue.push(pid);
+            log::info!(
+                "exec_process [ARM64]: Added process {} back to ready queue",
+                pid.as_u64()
+            );
+        }
+
+        Ok(new_entry_point)
     }
 
     /// Set up argc/argv on the stack for a new process

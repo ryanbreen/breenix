@@ -24,6 +24,8 @@
 //!
 //! All context switching happens on the interrupt return path via irq_exit().
 
+#![cfg(target_arch = "x86_64")]
+
 use crate::task::scheduler;
 
 /// Time quantum in timer ticks (5ms per tick @ 200 Hz, 50ms quantum = 10 ticks)

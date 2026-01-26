@@ -6,7 +6,33 @@ use alloc::vec::Vec;
 
 use super::ethernet::{EthernetFrame, ETHERTYPE_IPV4};
 use super::ipv4::{self, Ipv4Packet, PROTOCOL_ICMP};
+
+// Driver abstraction: use E1000 on x86_64, VirtIO net on ARM64
+#[cfg(target_arch = "x86_64")]
 use crate::drivers::e1000;
+#[cfg(target_arch = "aarch64")]
+use crate::drivers::virtio::net_mmio;
+
+// Driver abstraction functions (local to this module)
+#[cfg(target_arch = "x86_64")]
+fn get_mac_address() -> Option<[u8; 6]> {
+    e1000::mac_address()
+}
+
+#[cfg(target_arch = "aarch64")]
+fn get_mac_address() -> Option<[u8; 6]> {
+    net_mmio::mac_address()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
+    e1000::transmit(data)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
+    net_mmio::transmit(data)
+}
 
 /// ICMP type: Echo Reply
 pub const ICMP_ECHO_REPLY: u8 = 0;
@@ -103,8 +129,15 @@ impl<'a> IcmpPacket<'a> {
 pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket) {
     match icmp.icmp_type {
         ICMP_ECHO_REQUEST => {
+            #[cfg(target_arch = "x86_64")]
             log::info!(
                 "ICMP: Echo request from {}.{}.{}.{} seq={}",
+                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                icmp.sequence
+            );
+            #[cfg(target_arch = "aarch64")]
+            crate::serial_println!(
+                "[icmp] Echo request from {}.{}.{}.{} seq={}",
                 ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
                 icmp.sequence
             );
@@ -113,20 +146,35 @@ pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
             send_echo_reply(eth_frame, ip, icmp);
         }
         ICMP_ECHO_REPLY => {
+            #[cfg(target_arch = "x86_64")]
             log::info!(
                 "NET: ICMP echo reply received from {}.{}.{}.{} seq={}",
                 ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
                 icmp.sequence
             );
+            #[cfg(target_arch = "aarch64")]
+            crate::serial_println!(
+                "[net] ICMP echo reply received from {}.{}.{}.{} seq={}",
+                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                icmp.sequence
+            );
         }
         ICMP_DEST_UNREACHABLE => {
+            #[cfg(target_arch = "x86_64")]
             log::warn!(
                 "ICMP: Destination unreachable from {}.{}.{}.{} code={}",
                 ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
                 icmp.code
             );
+            #[cfg(target_arch = "aarch64")]
+            crate::serial_println!(
+                "[icmp] Destination unreachable from {}.{}.{}.{} code={}",
+                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                icmp.code
+            );
         }
         _ => {
+            #[cfg(target_arch = "x86_64")]
             log::debug!("ICMP: Unknown type {} from {}.{}.{}.{}",
                 icmp.icmp_type,
                 ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3]
@@ -137,7 +185,7 @@ pub fn handle_icmp(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
 
 /// Send an ICMP echo reply
 fn send_echo_reply(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket) {
-    let our_mac = match e1000::mac_address() {
+    let our_mac = match get_mac_address() {
         Some(mac) => mac,
         None => return,
     };
@@ -163,9 +211,11 @@ fn send_echo_reply(eth_frame: &EthernetFrame, ip: &Ipv4Packet, icmp: &IcmpPacket
         &ip_packet,
     );
 
-    if let Err(e) = e1000::transmit(&frame) {
-        log::warn!("ICMP: Failed to send echo reply: {}", e);
+    if let Err(_e) = driver_transmit(&frame) {
+        #[cfg(target_arch = "x86_64")]
+        log::warn!("ICMP: Failed to send echo reply: {}", _e);
     } else {
+        #[cfg(target_arch = "x86_64")]
         log::debug!("ICMP: Sent echo reply to {}.{}.{}.{}",
             ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3]
         );

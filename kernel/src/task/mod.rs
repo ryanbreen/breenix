@@ -6,16 +6,34 @@ use core::{
     task::{Context, Poll},
 };
 
-pub mod context;
+// Core task/thread modules - shared across architectures
 pub mod executor;
-pub mod kthread;
-pub mod process_context;
-pub mod process_task;
-pub mod scheduler;
-pub mod softirqd;
-pub mod spawn;
 pub mod thread;
+
+// Architecture-specific context switching
+// Note: context.rs contains x86_64 assembly - ARM64 uses separate implementation
+#[cfg(target_arch = "x86_64")]
+pub mod context;
+
+// Scheduler and preemption - works on both x86_64 and aarch64
+// (requires architecture-specific interrupt control, provided by arch_impl)
+pub mod scheduler;
+
+// Kernel threads and workqueues - work on both x86_64 and aarch64
+// Uses architecture-independent types and conditional interrupt control
+pub mod kthread;
 pub mod workqueue;
+pub mod softirqd;
+
+// Process-related modules
+// Note: process_context is available for both architectures as SavedRegisters
+// is architecture-specific but needed for signal delivery on both
+pub mod process_context;
+// process_task uses architecture-independent types (ProcessId, scheduler, Thread)
+pub mod process_task;
+// spawn.rs provides thread spawning functionality for both architectures
+// Uses architecture-specific cfg guards internally for VirtAddr, ELF loading, and TLS
+pub mod spawn;
 
 // Re-export kthread public API for kernel-wide use
 // These are intentionally available but may not be called yet

@@ -184,6 +184,8 @@ enum Cmd {
     BootStages,
     /// Create test disk image containing all userspace test binaries.
     CreateTestDisk,
+    /// Create ARM64 test disk image containing all ARM64 userspace test binaries.
+    CreateTestDiskAarch64,
     /// Boot Breenix interactively with init_shell (serial console attached).
     Interactive,
     /// Run automated interactive shell tests (sends keyboard input via QEMU monitor).
@@ -200,6 +202,7 @@ fn main() -> Result<()> {
         Cmd::Ring3Enosys => ring3_enosys(),
         Cmd::BootStages => boot_stages(),
         Cmd::CreateTestDisk => test_disk::create_test_disk(),
+        Cmd::CreateTestDiskAarch64 => test_disk::create_test_disk_aarch64(),
         Cmd::Interactive => interactive(),
         Cmd::InteractiveTest => interactive_test(),
         Cmd::KthreadStress => kthread_stress(),

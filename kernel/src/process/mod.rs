@@ -3,7 +3,6 @@
 //! This module handles process creation, scheduling, and lifecycle management.
 //! A process is a running instance of a program with its own address space.
 
-use alloc::string::String;
 use spin::Mutex;
 
 pub mod creation;
@@ -16,7 +15,7 @@ pub use process::{Process, ProcessId, ProcessState};
 
 /// Wrapper to log when process manager lock is dropped
 pub struct ProcessManagerGuard {
-    _guard: spin::MutexGuard<'static, Option<ProcessManager>>,
+    pub(crate) _guard: spin::MutexGuard<'static, Option<ProcessManager>>,
 }
 
 impl Drop for ProcessManagerGuard {
@@ -40,7 +39,7 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 }
 
 /// Global process manager
-pub(crate) static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
+pub static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
 /// Initialize the process management system
 pub fn init() {
@@ -60,6 +59,7 @@ pub fn manager() -> ProcessManagerGuard {
 
 /// Execute a function with the process manager while interrupts are disabled
 /// This prevents deadlock when the timer interrupt tries to access the process manager
+#[cfg(target_arch = "x86_64")]
 pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ProcessManager) -> R,
@@ -70,14 +70,29 @@ where
     })
 }
 
+/// Execute a function with the process manager while interrupts are disabled (ARM64)
+/// This prevents deadlock when timer interrupts try to access the process manager
+#[cfg(target_arch = "aarch64")]
+pub fn with_process_manager<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut ProcessManager) -> R,
+{
+    // On ARM64, we use DAIF masking to disable interrupts
+    // For now, just acquire the lock - proper interrupt masking will be added
+    // when ARM64 interrupt handling is fully implemented
+    let mut manager_lock = PROCESS_MANAGER.lock();
+    manager_lock.as_mut().map(f)
+}
+
 /// Try to get the process manager without blocking (for interrupt contexts)
 pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>> {
     PROCESS_MANAGER.try_lock()
 }
 
 /// Create a new user process using the new architecture
+/// Note: Uses architecture-specific ELF loader and process creation
 #[allow(dead_code)]
-pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
+pub fn create_user_process(name: alloc::string::String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
     creation::create_user_process(name, elf_data)
 }
 

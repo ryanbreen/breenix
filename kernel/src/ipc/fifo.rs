@@ -17,6 +17,13 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use super::pipe::PipeBuffer;
+use crate::arch_impl::traits::CpuOps;
+
+// Architecture-specific CPU type for interrupt control
+#[cfg(target_arch = "x86_64")]
+type Cpu = crate::arch_impl::x86_64::X86Cpu;
+#[cfg(target_arch = "aarch64")]
+type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 /// Global FIFO registry
 pub static FIFO_REGISTRY: FifoRegistry = FifoRegistry::new();
@@ -34,6 +41,7 @@ pub struct FifoEntry {
     /// Threads waiting to open for writing (waiting for reader)
     pub write_waiters: Vec<u64>,
     /// File mode (permissions)
+    #[allow(dead_code)] // Part of FifoEntry public API, used for permission checking
     pub mode: u32,
 }
 
@@ -62,6 +70,7 @@ impl FifoEntry {
     }
 
     /// Check if the FIFO has both readers and writers (ready for I/O)
+    #[allow(dead_code)] // Part of FifoEntry public API
     pub fn is_ready(&self) -> bool {
         self.readers > 0 && self.writers > 0
     }
@@ -71,11 +80,14 @@ impl FifoEntry {
         self.readers += 1;
         // Wake writers waiting for a reader
         let waiters: Vec<u64> = self.write_waiters.drain(..).collect();
+        #[cfg(target_arch = "x86_64")]
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
         }
+        #[cfg(target_arch = "aarch64")]
+        let _ = waiters; // On ARM64 we don't have a scheduler yet
     }
 
     /// Add a writer and wake any waiting readers
@@ -83,11 +95,14 @@ impl FifoEntry {
         self.writers += 1;
         // Wake readers waiting for a writer
         let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
+        #[cfg(target_arch = "x86_64")]
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
         }
+        #[cfg(target_arch = "aarch64")]
+        let _ = waiters; // On ARM64 we don't have a scheduler yet
     }
 
     /// Remove a reader
@@ -127,11 +142,13 @@ impl FifoEntry {
     }
 
     /// Remove thread from read waiters
+    #[allow(dead_code)] // Part of FifoEntry public API for waiter management
     pub fn remove_read_waiter(&mut self, tid: u64) {
         self.read_waiters.retain(|&t| t != tid);
     }
 
     /// Remove thread from write waiters
+    #[allow(dead_code)] // Part of FifoEntry public API for waiter management
     pub fn remove_write_waiter(&mut self, tid: u64) {
         self.write_waiters.retain(|&t| t != tid);
     }
@@ -217,7 +234,7 @@ pub enum FifoOpenResult {
 pub fn open_fifo_read(path: &str, nonblock: bool) -> FifoOpenResult {
     // CRITICAL: Disable interrupts during lock acquisition to prevent
     // preemption while holding the lock.
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    Cpu::without_interrupts(|| {
         let entry_arc = match FIFO_REGISTRY.get(path) {
             Some(e) => e,
             None => return FifoOpenResult::Error(2), // ENOENT
@@ -259,7 +276,7 @@ pub fn open_fifo_read(path: &str, nonblock: bool) -> FifoOpenResult {
 pub fn open_fifo_write(path: &str, nonblock: bool) -> FifoOpenResult {
     // CRITICAL: Disable interrupts during lock acquisition to prevent
     // preemption while holding the lock.
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    Cpu::without_interrupts(|| {
         let entry_arc = match FIFO_REGISTRY.get(path) {
             Some(e) => e,
             None => return FifoOpenResult::Error(2), // ENOENT
@@ -303,7 +320,7 @@ pub fn complete_fifo_open(path: &str, for_write: bool) -> FifoOpenResult {
     // CRITICAL: Disable interrupts during lock acquisition to prevent
     // preemption while holding the lock. This avoids deadlock when
     // both parent and child try to access the same FIFO.
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    Cpu::without_interrupts(|| {
         let entry_arc = match FIFO_REGISTRY.get(path) {
             Some(e) => e,
             None => return FifoOpenResult::Error(2), // ENOENT

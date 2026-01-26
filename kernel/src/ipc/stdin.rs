@@ -5,6 +5,7 @@
 //! and userspace processes can read from it via the read() syscall.
 
 use alloc::collections::VecDeque;
+#[cfg(target_arch = "x86_64")]
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -124,6 +125,7 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
 }
 
 /// Try to wake blocked readers without blocking (for interrupt context)
+#[cfg(target_arch = "x86_64")]
 fn wake_blocked_readers_try() {
     let readers: alloc::vec::Vec<u64> = {
         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
@@ -149,6 +151,13 @@ fn wake_blocked_readers_try() {
 
     // Trigger reschedule so the woken thread runs soon
     crate::task::scheduler::set_need_resched();
+}
+
+/// Stub for ARM64 - scheduler not yet available
+#[cfg(target_arch = "aarch64")]
+fn wake_blocked_readers_try() {
+    // On ARM64 we don't have a scheduler yet, so blocked readers
+    // will be woken when they poll again
 }
 
 /// Read bytes from stdin buffer
@@ -192,6 +201,7 @@ pub fn unregister_blocked_reader(thread_id: u64) {
 ///
 /// Note: With TTY integration, blocked readers are woken through
 /// TtyDevice::wake_blocked_readers. This function is kept for fallback.
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
     let readers: Vec<u64> = {
@@ -215,6 +225,13 @@ fn wake_blocked_readers() {
 
     // Trigger reschedule to let woken threads run
     crate::task::scheduler::set_need_resched();
+}
+
+/// Stub for ARM64 - scheduler not yet available
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+fn wake_blocked_readers() {
+    // On ARM64 we don't have a scheduler yet
 }
 
 /// Get the number of bytes available in the stdin buffer

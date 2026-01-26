@@ -266,3 +266,105 @@ pub fn create_test_disk() -> Result<()> {
 
     Ok(())
 }
+
+pub fn create_test_disk_aarch64() -> Result<()> {
+    println!("Creating ARM64 test disk image...");
+
+    let userspace_dir = Path::new("userspace/tests/aarch64");
+    let output_path = Path::new("target/aarch64_test_binaries.img");
+
+    // Find all .elf files
+    let mut binaries = Vec::new();
+
+    if !userspace_dir.exists() {
+        bail!("ARM64 userspace directory not found: {}\nRun: cd userspace/tests && ./build-aarch64.sh", userspace_dir.display());
+    }
+
+    for entry in fs::read_dir(userspace_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().and_then(|s| s.to_str()) == Some("elf") {
+            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                let mut file = File::open(&path)?;
+                let mut data = Vec::new();
+                file.read_to_end(&mut data)?;
+
+                // Verify it's an ARM64 ELF
+                if data.len() >= 18 && &data[0..4] == b"\x7fELF" && data[18] == 0xB7 {
+                    binaries.push((name.to_string(), data));
+                } else {
+                    println!("  Warning: {} is not an ARM64 ELF, skipping", name);
+                }
+            }
+        }
+    }
+
+    if binaries.is_empty() {
+        bail!("No ARM64 .elf files found in {}", userspace_dir.display());
+    }
+
+    binaries.sort_by(|a, b| a.0.cmp(&b.0));
+    println!("  Found {} ARM64 binaries", binaries.len());
+
+    // Create disk (same format as x86_64)
+    let mut output = File::create(output_path)?;
+
+    let header = TestDiskHeader::new(binaries.len() as u32);
+    let header_bytes = header.as_bytes();
+    let mut sector_buffer = vec![0u8; SECTOR_SIZE];
+    sector_buffer[..64].copy_from_slice(&header_bytes);
+    output.write_all(&sector_buffer)?;
+
+    let mut entries = Vec::new();
+    let mut current_sector = DATA_START_SECTOR;
+
+    for (name, data) in &binaries {
+        let size_bytes = data.len() as u64;
+        let entry = BinaryEntry::new(name, current_sector, size_bytes);
+        entries.push(entry);
+        let sectors_needed = (size_bytes + SECTOR_SIZE as u64 - 1) / SECTOR_SIZE as u64;
+        current_sector += sectors_needed;
+    }
+
+    sector_buffer.fill(0);
+    let mut entries_in_current_sector = 0;
+
+    for entry in &entries {
+        let entry_bytes = entry.as_bytes();
+        let offset = entries_in_current_sector * 64;
+        sector_buffer[offset..offset + 64].copy_from_slice(&entry_bytes);
+        entries_in_current_sector += 1;
+
+        if entries_in_current_sector == 8 {
+            output.write_all(&sector_buffer)?;
+            sector_buffer.fill(0);
+            entries_in_current_sector = 0;
+        }
+    }
+
+    if entries_in_current_sector > 0 {
+        output.write_all(&sector_buffer)?;
+        sector_buffer.fill(0);
+    }
+
+    let entries_sectors_written = (entries.len() + 7) / 8;
+    let padding_sectors = 127_usize.saturating_sub(entries_sectors_written);
+    for _ in 0..padding_sectors {
+        output.write_all(&sector_buffer)?;
+    }
+
+    for (i, (name, data)) in binaries.iter().enumerate() {
+        let entry = &entries[i];
+        println!("  Added: {} ({} bytes, sector {})", name, data.len(), entry.sector_offset);
+        output.write_all(data)?;
+        let remainder = data.len() % SECTOR_SIZE;
+        if remainder != 0 {
+            let padding = vec![0u8; SECTOR_SIZE - remainder];
+            output.write_all(&padding)?;
+        }
+    }
+
+    println!("\nARM64 test disk created: {}", output_path.display());
+    Ok(())
+}

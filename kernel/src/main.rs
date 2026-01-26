@@ -1,18 +1,50 @@
+//! Kernel entry point and initialization.
+//!
+//! This file contains the x86_64-specific kernel entry point.
+//! For ARM64, this file is gated out and the entry point is in main_aarch64.rs.
+
+// Gate the entire file to x86_64. On ARM64, only the minimal stub at the bottom compiles.
+#![cfg_attr(not(target_arch = "x86_64"), allow(unused_imports))]
+
 #![no_std] // don't link the Rust standard library
 #![no_main] // disable all Rust-level entry points
-#![feature(abi_x86_interrupt)]
-#![feature(alloc_error_handler)]
-#![feature(never_type)]
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
+#![cfg_attr(target_arch = "x86_64", feature(alloc_error_handler))]
+#![cfg_attr(target_arch = "x86_64", feature(never_type))]
 
+// =============================================================================
+// ARM64 Stub: This binary is x86_64-only. ARM64 uses kernel-aarch64 binary.
+// Provide minimal lang items so this file compiles but does nothing.
+// =============================================================================
+#[cfg(not(target_arch = "x86_64"))]
+mod aarch64_stub {
+    use core::panic::PanicInfo;
+
+    #[panic_handler]
+    fn panic(_info: &PanicInfo) -> ! {
+        loop {}
+    }
+}
+
+// =============================================================================
+// x86_64 Implementation
+// =============================================================================
+#[cfg(target_arch = "x86_64")]
 extern crate alloc;
 
+#[cfg(target_arch = "x86_64")]
 use crate::syscall::SyscallResult;
+#[cfg(target_arch = "x86_64")]
 use alloc::boxed::Box;
+#[cfg(target_arch = "x86_64")]
 use alloc::string::ToString;
+#[cfg(target_arch = "x86_64")]
 use bootloader_api::config::{BootloaderConfig, Mapping};
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
 /// Bootloader configuration to enable physical memory mapping
+#[cfg(target_arch = "x86_64")]
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(Mapping::Dynamic);
@@ -21,59 +53,96 @@ pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     config
 };
 
+#[cfg(target_arch = "x86_64")]
 bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
+#[cfg(target_arch = "x86_64")]
 #[macro_use]
 mod macros;
+#[cfg(target_arch = "x86_64")]
 mod arch_impl;
+#[cfg(target_arch = "x86_64")]
 mod clock_gettime_test;
+#[cfg(target_arch = "x86_64")]
 mod block;
+#[cfg(target_arch = "x86_64")]
 mod drivers;
+#[cfg(target_arch = "x86_64")]
 mod elf;
+#[cfg(target_arch = "x86_64")]
 mod framebuffer;
+#[cfg(target_arch = "x86_64")]
 mod fs;
-#[cfg(feature = "interactive")]
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 mod graphics;
-#[cfg(feature = "interactive")]
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 mod terminal_emulator;
+#[cfg(target_arch = "x86_64")]
 mod gdt;
+#[cfg(target_arch = "x86_64")]
 mod net;
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 mod gdt_tests;
+#[cfg(target_arch = "x86_64")]
 mod test_checkpoints;
+#[cfg(target_arch = "x86_64")]
 mod interrupts;
+#[cfg(target_arch = "x86_64")]
 mod irq_log;
+#[cfg(target_arch = "x86_64")]
 mod keyboard;
+#[cfg(target_arch = "x86_64")]
 mod logger;
+#[cfg(target_arch = "x86_64")]
 mod memory;
+#[cfg(target_arch = "x86_64")]
 mod per_cpu;
+#[cfg(target_arch = "x86_64")]
 mod process;
+#[cfg(target_arch = "x86_64")]
 mod rtc_test;
+#[cfg(target_arch = "x86_64")]
 mod signal;
+#[cfg(target_arch = "x86_64")]
 mod ipc;
+#[cfg(target_arch = "x86_64")]
 mod serial;
+#[cfg(target_arch = "x86_64")]
 mod socket;
+#[cfg(target_arch = "x86_64")]
 mod spinlock;
+#[cfg(target_arch = "x86_64")]
 mod syscall;
+#[cfg(target_arch = "x86_64")]
 mod task;
+#[cfg(target_arch = "x86_64")]
 pub mod test_exec;
+#[cfg(target_arch = "x86_64")]
 mod time;
+#[cfg(target_arch = "x86_64")]
 mod time_test;
+#[cfg(target_arch = "x86_64")]
 mod tls;
+#[cfg(target_arch = "x86_64")]
 mod tty;
+#[cfg(target_arch = "x86_64")]
 mod userspace_test;
+#[cfg(target_arch = "x86_64")]
 mod userspace_fault_tests;
+#[cfg(target_arch = "x86_64")]
 mod preempt_count_test;
+#[cfg(target_arch = "x86_64")]
 mod stack_switch;
+#[cfg(target_arch = "x86_64")]
 mod test_userspace;
 
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 mod contracts;
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 mod contract_runner;
 
 // Fault test thread function
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 #[allow(dead_code)]
 extern "C" fn fault_test_thread(_arg: u64) -> ! {
     // Wait briefly for initial Ring 3 process to run (scheduler will handle timing)
@@ -84,10 +153,10 @@ extern "C" fn fault_test_thread(_arg: u64) -> ! {
     for _ in 0..10 {
         task::scheduler::yield_current();
     }
-    
+
     log::info!("Fault test thread: Running user-only fault tests...");
     userspace_fault_tests::run_fault_tests();
-    
+
     // Thread complete, just halt
     loop {
         x86_64::instructions::hlt();
@@ -95,6 +164,7 @@ extern "C" fn fault_test_thread(_arg: u64) -> ! {
 }
 
 // Test infrastructure
+#[cfg(target_arch = "x86_64")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum QemuExitCode {
@@ -102,6 +172,7 @@ pub enum QemuExitCode {
     Failed = 0x11,
 }
 
+#[cfg(target_arch = "x86_64")]
 pub fn test_exit_qemu(exit_code: QemuExitCode) {
     use x86_64::instructions::port::Port;
 
@@ -111,6 +182,7 @@ pub fn test_exit_qemu(exit_code: QemuExitCode) {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize logger early so all log messages work
     logger::init_early();
@@ -466,6 +538,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
 /// Continuation of kernel_main after switching to the upper-half kernel stack
 /// This function runs on the properly allocated kernel stack, not the bootstrap stack
 /// arg: the idle kernel stack top address (passed from kernel_main)
+#[cfg(target_arch = "x86_64")]
 extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Verify stack alignment per SysV ABI (RSP % 16 == 8 at function entry after call)
     let current_rsp: u64;
@@ -629,7 +702,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 }
 
 /// DNS test only mode - minimal boot, just run DNS test and exit
-#[cfg(feature = "dns_test_only")]
+#[cfg(all(target_arch = "x86_64", feature = "dns_test_only"))]
 fn dns_test_only_main() -> ! {
     use alloc::string::String;
 
@@ -678,7 +751,7 @@ fn dns_test_only_main() -> ! {
 }
 
 /// Blocking recvfrom test only mode - minimal boot, just run blocking_recv_test and exit
-#[cfg(feature = "blocking_recv_test")]
+#[cfg(all(target_arch = "x86_64", feature = "blocking_recv_test"))]
 fn blocking_recv_test_main() -> ! {
     use alloc::string::String;
 
@@ -738,7 +811,7 @@ fn blocking_recv_test_main() -> ! {
 }
 
 /// Nonblock EAGAIN test only mode - minimal boot, just run nonblock_eagain_test and exit
-#[cfg(feature = "nonblock_eagain_test")]
+#[cfg(all(target_arch = "x86_64", feature = "nonblock_eagain_test"))]
 fn nonblock_eagain_test_main() -> ! {
     use alloc::string::String;
 
@@ -799,7 +872,7 @@ fn nonblock_eagain_test_main() -> ! {
 }
 
 /// Continue kernel initialization after setting up threading
-#[cfg(not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test")))]
+#[cfg(all(target_arch = "x86_64", not(any(feature = "kthread_stress_test", feature = "workqueue_test_only", feature = "dns_test_only", feature = "blocking_recv_test", feature = "nonblock_eagain_test"))))]
 fn kernel_main_continue() -> ! {
     // INTERACTIVE MODE: Load init_shell as the only userspace process
     #[cfg(feature = "interactive")]
@@ -1475,6 +1548,7 @@ fn kernel_main_continue() -> ! {
     executor.run()
 }
 
+#[cfg(target_arch = "x86_64")]
 fn idle_thread_fn() {
     loop {
         // Enable interrupts and halt until next interrupt
@@ -1500,9 +1574,11 @@ fn idle_thread_fn() {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 use core::panic::PanicInfo;
 
 /// This function is called on panic.
+#[cfg(target_arch = "x86_64")]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     // Try to output panic info if possible
@@ -1522,7 +1598,7 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 // Test function for exception handlers
-#[cfg(feature = "test_all_exceptions")]
+#[cfg(all(target_arch = "x86_64", feature = "test_all_exceptions"))]
 fn test_exception_handlers() {
     log::info!("🧪 EXCEPTION_HANDLER_TESTS_START 🧪");
 
@@ -1548,6 +1624,7 @@ fn test_exception_handlers() {
 }
 
 /// Test system calls from kernel mode
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 fn test_syscalls() {
     serial_println!("DEBUG: test_syscalls() function entered");
@@ -1653,7 +1730,7 @@ fn test_syscalls() {
 /// 2. Enables interrupts so the kthread can be scheduled
 /// 3. Waits for kthread to run and complete
 /// 4. Disables interrupts for cleanup
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_kthread_lifecycle() {
     use crate::task::kthread::{kthread_park, kthread_run, kthread_should_stop, kthread_stop};
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -1739,7 +1816,7 @@ fn test_kthread_lifecycle() {
 /// Test kthread_join() - waiting for a kthread to exit
 /// This test verifies that join() actually BLOCKS until the kthread exits,
 /// not just that it returns the correct exit code.
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_kthread_join() {
     use crate::task::kthread::{kthread_join, kthread_run};
 
@@ -1777,7 +1854,7 @@ fn test_kthread_join() {
 /// Test kthread_exit() - setting a custom exit code
 /// This test verifies that kthread_exit(code) properly sets the exit code
 /// and that join() returns it correctly, with join() actually blocking.
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_kthread_exit_code() {
     use crate::task::kthread::{kthread_exit, kthread_join, kthread_run};
 
@@ -1810,7 +1887,7 @@ fn test_kthread_exit_code() {
 /// 1. kthread_park() blocks the kthread
 /// 2. kthread_unpark() wakes it up
 /// 3. The kthread continues execution after unpark
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_kthread_park_unpark() {
     use crate::task::kthread::{
         kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
@@ -1919,7 +1996,7 @@ fn test_kthread_park_unpark() {
 }
 
 /// Test kthread_stop() called twice returns AlreadyStopped
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_kthread_double_stop() {
     use crate::task::kthread::{kthread_run, kthread_should_stop, kthread_stop, KthreadError};
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -1987,7 +2064,7 @@ fn test_kthread_double_stop() {
 }
 
 /// Test kthread_should_stop() from non-kthread context
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_kthread_should_stop_non_kthread() {
     use crate::task::kthread::kthread_should_stop;
 
@@ -1998,7 +2075,7 @@ fn test_kthread_should_stop_non_kthread() {
 
 /// Test kthread_stop() on a thread that has already exited naturally
 /// This is distinct from double-stop (stop -> stop) - this tests (natural exit -> stop)
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_kthread_stop_after_exit() {
     use crate::task::kthread::{kthread_join, kthread_run, kthread_stop, KthreadError};
 
@@ -2039,7 +2116,7 @@ fn test_kthread_stop_after_exit() {
 /// 1. Basic work execution via system workqueue
 /// 2. Multiple work items execute in order
 /// 3. Flush waits for all pending work
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_workqueue() {
     use alloc::sync::Arc;
     use crate::task::workqueue::{flush_system_workqueue, schedule_work, schedule_work_fn, Work};
@@ -2269,7 +2346,7 @@ fn test_workqueue() {
 /// 2. raise_softirq() marks softirq as pending
 /// 3. do_softirq() invokes registered handlers
 /// 4. ksoftirqd thread is running
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 fn test_softirq() {
     use crate::task::softirqd::{
         do_softirq, raise_softirq, register_softirq_handler, SoftirqType,
@@ -2507,7 +2584,7 @@ fn test_softirq() {
 /// 2. The kthread_stop() always calling kthread_unpark() fix
 /// 3. Scheduler stability under high thread churn
 /// 4. Memory management with many concurrent threads
-#[cfg(feature = "kthread_stress_test")]
+#[cfg(all(target_arch = "x86_64", feature = "kthread_stress_test"))]
 fn test_kthread_stress() {
     use crate::task::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop};
     use alloc::vec::Vec;
@@ -2689,7 +2766,7 @@ fn test_kthread_stress() {
 }
 
 /// Test basic threading functionality
-#[cfg(feature = "testing")]
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
 #[allow(dead_code)]
 fn test_threading() {
     log::info!("Testing threading infrastructure...");
@@ -2871,3 +2948,11 @@ fn test_threading() {
 
     log::info!("Threading infrastructure test completed successfully!");
 }
+
+
+// =============================================================================
+// Non-x86_64 note:
+// When building for non-x86_64 (e.g., aarch64), all the code above is gated out.
+// The lang items (panic_handler, global_allocator, alloc_error_handler) are
+// provided by main_aarch64.rs for the entire crate.
+// =============================================================================

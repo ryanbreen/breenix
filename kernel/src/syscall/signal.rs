@@ -13,10 +13,20 @@ use crate::process::{manager, ProcessId};
 use crate::signal::constants::*;
 use crate::signal::types::{SignalAction, StackT};
 
+// Architecture-specific imports
+use crate::arch_impl::traits::CpuOps;
+
+#[cfg(target_arch = "x86_64")]
+type Cpu = crate::arch_impl::x86_64::X86Cpu;
+
+#[cfg(target_arch = "aarch64")]
+type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
+
 /// Process ID of the init process (cannot receive signals from kill -1)
 const INIT_PID: u64 = 1;
 
-/// Userspace address limit - addresses must be below this to be valid userspace
+/// Userspace address limit - addresses must be below this to be valid userspace (x86_64)
+#[cfg(target_arch = "x86_64")]
 const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
 
 /// kill(pid, sig) - Send signal to a process or process group
@@ -714,7 +724,7 @@ pub fn sys_pause() -> SyscallResult {
     let mut _loop_count = 0u64;
     loop {
         crate::task::scheduler::yield_current();
-        x86_64::instructions::interrupts::enable_and_hlt();
+        Cpu::halt_with_interrupts();
 
         _loop_count += 1;
         let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -739,7 +749,7 @@ pub fn sys_pause() -> SyscallResult {
     SyscallResult::Err(4) // EINTR
 }
 
-/// pause() - Wait until a signal is delivered (with frame access)
+/// pause() - Wait until a signal is delivered (with frame access) - x86_64 version
 ///
 /// pause() causes the calling process (or thread) to sleep until a signal
 /// is delivered that either terminates the process or causes the invocation
@@ -750,6 +760,7 @@ pub fn sys_pause() -> SyscallResult {
 ///
 /// # Returns
 /// * Always returns -EINTR (4) - pause() only returns when interrupted by a signal
+#[cfg(target_arch = "x86_64")]
 pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResult {
     let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
     log::info!("sys_pause_with_frame: Thread {} blocking until signal arrives", thread_id);
@@ -806,7 +817,7 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
     let mut loop_count = 0u64;
     loop {
         crate::task::scheduler::yield_current();
-        x86_64::instructions::interrupts::enable_and_hlt();
+        Cpu::halt_with_interrupts();
 
         loop_count += 1;
         if loop_count % 100 == 0 {
@@ -844,14 +855,16 @@ pub fn sys_pause_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResu
     SyscallResult::Err(4) // EINTR
 }
 
-/// RFLAGS bits that userspace is allowed to modify
+/// RFLAGS bits that userspace is allowed to modify (x86_64)
 /// User can modify: CF, PF, AF, ZF, SF, DF, OF (arithmetic flags)
+#[cfg(target_arch = "x86_64")]
 const USER_RFLAGS_MASK: u64 = 0x0000_0CD5;
 
-/// RFLAGS bits that must always be set (IF = interrupts enabled)
+/// RFLAGS bits that must always be set (IF = interrupts enabled) (x86_64)
+#[cfg(target_arch = "x86_64")]
 const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 
-/// rt_sigreturn() - Return from signal handler with frame access
+/// rt_sigreturn() - Return from signal handler with frame access (x86_64)
 ///
 /// This syscall is called by the signal trampoline after a signal handler
 /// returns. It restores the pre-signal execution context from the SignalFrame
@@ -866,6 +879,7 @@ const REQUIRED_RFLAGS: u64 = 0x0000_0200;
 /// - Ensures saved_rip points to userspace (prevents jumping to kernel code)
 /// - Ensures saved_rsp points to userspace (prevents using kernel stack)
 /// - Sanitizes saved_rflags (prevents disabling interrupts, changing IOPL)
+#[cfg(target_arch = "x86_64")]
 pub fn sys_sigreturn_with_frame(frame: &mut super::handler::SyscallFrame) -> SyscallResult {
     use crate::signal::types::SignalFrame;
 
@@ -1161,7 +1175,7 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
-/// rt_sigsuspend(mask, sigsetsize) - Atomically set signal mask and wait for signal
+/// rt_sigsuspend(mask, sigsetsize) - Atomically set signal mask and wait for signal (x86_64)
 ///
 /// sigsuspend() temporarily replaces the signal mask of the calling process with
 /// the mask given and then suspends the process until delivery of a signal whose
@@ -1188,6 +1202,7 @@ pub fn sys_sigaltstack(ss: u64, old_ss: u64) -> SyscallResult {
 /// # POSIX Behavior
 /// When sigsuspend returns, the original signal mask is restored. The mask provided
 /// to sigsuspend is only in effect while the process is suspended.
+#[cfg(target_arch = "x86_64")]
 pub fn sys_sigsuspend_with_frame(
     mask_ptr: u64,
     sigsetsize: u64,
@@ -1305,7 +1320,7 @@ pub fn sys_sigsuspend_with_frame(
     let mut loop_count = 0u64;
     loop {
         crate::task::scheduler::yield_current();
-        x86_64::instructions::interrupts::enable_and_hlt();
+        Cpu::halt_with_interrupts();
 
         loop_count += 1;
         if loop_count % 100 == 0 {
@@ -1644,4 +1659,415 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
     }
 
     SyscallResult::Ok(0)
+}
+
+// =============================================================================
+// ARM64 Signal Syscalls
+// =============================================================================
+
+/// Userspace address range end - addresses at or above this are kernel addresses
+#[cfg(target_arch = "aarch64")]
+const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
+
+/// pause() - Wait until a signal is delivered (with frame access) - ARM64 version
+///
+/// pause() causes the calling process (or thread) to sleep until a signal
+/// is delivered that either terminates the process or causes the invocation
+/// of a signal-catching function.
+///
+/// # Returns
+/// * Always returns -EINTR (4) - pause() only returns when interrupted by a signal
+#[cfg(target_arch = "aarch64")]
+pub fn sys_pause_with_frame_aarch64(
+    frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+) -> SyscallResult {
+    use crate::arch_impl::traits::CpuOps;
+
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    log::info!("sys_pause_with_frame_aarch64: Thread {} blocking until signal arrives", thread_id);
+
+    // Read SP_EL0 for the userspace context
+    let user_sp = crate::arch_impl::aarch64::context::read_sp_el0();
+
+    // Create userspace context from the exception frame
+    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
+
+    // Save to process.main_thread for signal delivery
+    if let Some(mut manager_guard) = crate::process::try_manager() {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                if let Some(ref mut thread) = process.main_thread {
+                    thread.saved_userspace_context = Some(userspace_context.clone());
+                    log::info!(
+                        "sys_pause_with_frame_aarch64: Saved userspace context for thread {}: ELR={:#x}, SP={:#x}",
+                        thread_id,
+                        frame.elr,
+                        user_sp
+                    );
+                }
+            }
+        }
+    }
+
+    // Block the current thread until a signal arrives
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal_with_context(Some(userspace_context));
+    });
+
+    log::info!("sys_pause_with_frame_aarch64: Thread {} marked BlockedOnSignal, entering WFI loop", thread_id);
+
+    // Re-enable preemption before entering blocking loop
+    crate::per_cpu::preempt_enable();
+
+    // WFI loop - wait for interrupt which will switch to another thread
+    let mut loop_count = 0u64;
+    loop {
+        crate::task::scheduler::yield_current();
+        Cpu::halt_with_interrupts();
+
+        loop_count += 1;
+        if loop_count % 100 == 0 {
+            log::info!("sys_pause_with_frame_aarch64: Thread {} WFI loop iteration {}", thread_id, loop_count);
+        }
+
+        // Check if we were unblocked
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
+            } else {
+                false
+            }
+        }).unwrap_or(false);
+
+        if !still_blocked {
+            log::info!("sys_pause_with_frame_aarch64: Thread {} unblocked after {} WFI iterations", thread_id, loop_count);
+            break;
+        }
+    }
+
+    // Clear the blocked_in_syscall flag
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.saved_userspace_context = None;
+            log::info!("sys_pause_with_frame_aarch64: Thread {} cleared blocked_in_syscall flag", thread_id);
+        }
+    });
+
+    // Re-disable preemption before returning
+    crate::per_cpu::preempt_disable();
+
+    log::info!("sys_pause_with_frame_aarch64: Thread {} returning -EINTR", thread_id);
+    SyscallResult::Err(4) // EINTR
+}
+
+/// rt_sigreturn() - Return from signal handler with frame access (ARM64)
+///
+/// This syscall is called by the signal trampoline after a signal handler
+/// returns. It restores the pre-signal execution context from the SignalFrame
+/// that was pushed to the user stack when the signal was delivered.
+///
+/// # Security
+/// This function validates the signal frame to prevent privilege escalation.
+#[cfg(target_arch = "aarch64")]
+pub fn sys_sigreturn_with_frame_aarch64(
+    frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+) -> SyscallResult {
+    use crate::signal::types::SignalFrame;
+
+    // On ARM64, signal frame is at current SP_EL0
+    // The signal handler returns via BLR to the trampoline, which calls sigreturn.
+    // SP_EL0 still points to where we set it during signal delivery.
+    let sp = crate::arch_impl::aarch64::context::read_sp_el0();
+    let signal_frame_ptr = sp as *const SignalFrame;
+
+    // Read the signal frame from userspace (with validation)
+    let signal_frame = match copy_from_user(signal_frame_ptr) {
+        Ok(f) => f,
+        Err(errno) => {
+            log::error!("sys_sigreturn_aarch64: invalid signal frame pointer at {:#x}", sp);
+            return SyscallResult::Err(errno);
+        }
+    };
+
+    // Validate magic number
+    if signal_frame.magic != SignalFrame::MAGIC {
+        log::error!(
+            "sys_sigreturn_aarch64: invalid magic {:#x} (expected {:#x}) - possible attack!",
+            signal_frame.magic,
+            SignalFrame::MAGIC
+        );
+        return SyscallResult::Err(14); // EFAULT
+    }
+
+    // Validate saved_pc is in userspace
+    if signal_frame.saved_pc >= USER_SPACE_END {
+        log::error!(
+            "sys_sigreturn_aarch64: saved_pc {:#x} is not in userspace - privilege escalation attempt!",
+            signal_frame.saved_pc
+        );
+        return SyscallResult::Err(14); // EFAULT
+    }
+
+    // Validate saved_sp is in userspace
+    if signal_frame.saved_sp >= USER_SPACE_END {
+        log::error!(
+            "sys_sigreturn_aarch64: saved_sp {:#x} is not in userspace - privilege escalation attempt!",
+            signal_frame.saved_sp
+        );
+        return SyscallResult::Err(14); // EFAULT
+    }
+
+    log::debug!(
+        "sigreturn_aarch64: restoring context from frame at {:#x}, saved_pc={:#x}",
+        sp,
+        signal_frame.saved_pc
+    );
+
+    // Restore the original execution context
+    frame.elr = signal_frame.saved_pc;
+
+    // Restore SP_EL0
+    unsafe {
+        crate::arch_impl::aarch64::context::write_sp_el0(signal_frame.saved_sp);
+    }
+
+    // Sanitize SPSR - ensure we return to EL0 with interrupts enabled
+    // SPSR.M[3:0] = 0 for EL0t, DAIF clear for interrupts enabled
+    let sanitized_spsr = signal_frame.saved_pstate & 0xFFFFFFFF_FFFFF000; // Clear mode and DAIF
+    frame.spsr = sanitized_spsr;
+
+    // Restore general-purpose registers (X0-X30)
+    frame.x0 = signal_frame.saved_x[0];
+    frame.x1 = signal_frame.saved_x[1];
+    frame.x2 = signal_frame.saved_x[2];
+    frame.x3 = signal_frame.saved_x[3];
+    frame.x4 = signal_frame.saved_x[4];
+    frame.x5 = signal_frame.saved_x[5];
+    frame.x6 = signal_frame.saved_x[6];
+    frame.x7 = signal_frame.saved_x[7];
+    frame.x8 = signal_frame.saved_x[8];
+    frame.x9 = signal_frame.saved_x[9];
+    frame.x10 = signal_frame.saved_x[10];
+    frame.x11 = signal_frame.saved_x[11];
+    frame.x12 = signal_frame.saved_x[12];
+    frame.x13 = signal_frame.saved_x[13];
+    frame.x14 = signal_frame.saved_x[14];
+    frame.x15 = signal_frame.saved_x[15];
+    frame.x16 = signal_frame.saved_x[16];
+    frame.x17 = signal_frame.saved_x[17];
+    frame.x18 = signal_frame.saved_x[18];
+    frame.x19 = signal_frame.saved_x[19];
+    frame.x20 = signal_frame.saved_x[20];
+    frame.x21 = signal_frame.saved_x[21];
+    frame.x22 = signal_frame.saved_x[22];
+    frame.x23 = signal_frame.saved_x[23];
+    frame.x24 = signal_frame.saved_x[24];
+    frame.x25 = signal_frame.saved_x[25];
+    frame.x26 = signal_frame.saved_x[26];
+    frame.x27 = signal_frame.saved_x[27];
+    frame.x28 = signal_frame.saved_x[28];
+    frame.x29 = signal_frame.saved_x[29];
+    frame.x30 = signal_frame.saved_x[30];
+
+    // Restore the signal mask
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_sigreturn_aarch64: no current thread");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    };
+
+    if let Some(mut manager_guard) = crate::process::try_manager() {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+                // Check if we're returning from a signal that interrupted sigsuspend
+                if let Some(saved_mask) = process.signals.sigsuspend_saved_mask.take() {
+                    process.signals.set_blocked(saved_mask);
+                    log::info!(
+                        "sigreturn_aarch64: restored sigsuspend saved mask to {:#x}",
+                        saved_mask
+                    );
+                } else {
+                    process.signals.set_blocked(signal_frame.saved_blocked);
+                    log::debug!("sigreturn_aarch64: restored signal mask to {:#x}", signal_frame.saved_blocked);
+                }
+
+                // Clear the on_stack flag
+                if process.signals.alt_stack.on_stack {
+                    process.signals.alt_stack.on_stack = false;
+                    log::debug!("sigreturn_aarch64: cleared alt_stack.on_stack flag");
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "sigreturn_aarch64: restored context, returning to PC={:#x} SP={:#x}",
+        signal_frame.saved_pc,
+        signal_frame.saved_sp
+    );
+
+    // Return value is ignored - original X0 was restored above
+    SyscallResult::Ok(0)
+}
+
+/// rt_sigsuspend(mask, sigsetsize) - Atomically set signal mask and wait for signal (ARM64)
+#[cfg(target_arch = "aarch64")]
+pub fn sys_sigsuspend_with_frame_aarch64(
+    mask_ptr: u64,
+    sigsetsize: u64,
+    frame: &mut crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame,
+) -> SyscallResult {
+    use crate::arch_impl::traits::CpuOps;
+
+    // Validate sigsetsize
+    if sigsetsize != 8 {
+        log::warn!(
+            "sys_sigsuspend_aarch64: invalid sigsetsize {} (expected 8)",
+            sigsetsize
+        );
+        return SyscallResult::Err(22); // EINVAL
+    }
+
+    // Copy the new mask from userspace
+    let new_mask: u64 = if mask_ptr != 0 {
+        let ptr = mask_ptr as *const u64;
+        match copy_from_user(ptr) {
+            Ok(mask) => mask,
+            Err(errno) => {
+                log::warn!("sys_sigsuspend_aarch64: invalid mask pointer {:#x}", mask_ptr);
+                return SyscallResult::Err(errno);
+            }
+        }
+    } else {
+        log::warn!("sys_sigsuspend_aarch64: NULL mask pointer");
+        return SyscallResult::Err(14); // EFAULT
+    };
+
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    log::info!(
+        "sys_sigsuspend_aarch64: Thread {} suspending with temporary mask {:#x}",
+        thread_id,
+        new_mask
+    );
+
+    // Read SP_EL0 for the userspace context
+    let user_sp = crate::arch_impl::aarch64::context::read_sp_el0();
+
+    // Create userspace context from the exception frame
+    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
+
+    // Save userspace context and set temporary mask atomically
+    {
+        if let Some(mut manager_guard) = crate::process::try_manager() {
+            if let Some(ref mut manager) = *manager_guard {
+                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    // Save the original mask
+                    let saved_mask = process.signals.blocked;
+
+                    // Set the temporary mask (SIGKILL and SIGSTOP cannot be blocked)
+                    let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
+                    process.signals.set_blocked(sanitized_mask);
+
+                    // Store saved_mask for sigreturn
+                    process.signals.sigsuspend_saved_mask = Some(saved_mask);
+
+                    log::info!(
+                        "sys_sigsuspend_aarch64: Thread {} saved mask {:#x}, set temporary mask {:#x}",
+                        thread_id,
+                        saved_mask,
+                        sanitized_mask
+                    );
+
+                    // Save userspace context
+                    if let Some(ref mut thread) = process.main_thread {
+                        thread.saved_userspace_context = Some(userspace_context.clone());
+                        log::info!(
+                            "sys_sigsuspend_aarch64: Saved userspace context for thread {}: ELR={:#x}, SP={:#x}",
+                            thread_id,
+                            frame.elr,
+                            user_sp
+                        );
+                    }
+                } else {
+                    log::error!("sys_sigsuspend_aarch64: process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            } else {
+                log::error!("sys_sigsuspend_aarch64: process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        } else {
+            log::error!("sys_sigsuspend_aarch64: could not acquire process manager lock");
+            return SyscallResult::Err(3); // ESRCH
+        }
+    }
+
+    // Block the current thread until a signal arrives
+    crate::task::scheduler::with_scheduler(|sched| {
+        sched.block_current_for_signal_with_context(Some(userspace_context));
+    });
+
+    log::info!(
+        "sys_sigsuspend_aarch64: Thread {} marked BlockedOnSignal, entering WFI loop",
+        thread_id
+    );
+
+    // Re-enable preemption before entering blocking loop
+    crate::per_cpu::preempt_enable();
+
+    // WFI loop - wait for interrupt
+    let mut loop_count = 0u64;
+    loop {
+        crate::task::scheduler::yield_current();
+        Cpu::halt_with_interrupts();
+
+        loop_count += 1;
+        if loop_count % 100 == 0 {
+            log::info!(
+                "sys_sigsuspend_aarch64: Thread {} WFI loop iteration {}",
+                thread_id,
+                loop_count
+            );
+        }
+
+        // Check if we were unblocked
+        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+
+        if !still_blocked {
+            log::info!(
+                "sys_sigsuspend_aarch64: Thread {} unblocked after {} WFI iterations",
+                thread_id,
+                loop_count
+            );
+            break;
+        }
+    }
+
+    // Clear blocked_in_syscall flag
+    crate::task::scheduler::with_scheduler(|sched| {
+        if let Some(thread) = sched.current_thread_mut() {
+            thread.blocked_in_syscall = false;
+            thread.saved_userspace_context = None;
+            log::info!(
+                "sys_sigsuspend_aarch64: Thread {} cleared blocked_in_syscall flag",
+                thread_id
+            );
+        }
+    });
+
+    // Re-disable preemption before returning
+    crate::per_cpu::preempt_disable();
+
+    log::info!("sys_sigsuspend_aarch64: Thread {} returning -EINTR", thread_id);
+    SyscallResult::Err(4) // EINTR
 }

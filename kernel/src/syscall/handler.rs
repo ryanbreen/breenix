@@ -533,7 +533,6 @@ fn deliver_pending_signals_syscall(
     saved_regs: &mut crate::task::process_context::SavedRegisters,
 ) -> crate::signal::delivery::SignalDeliveryResult {
     use crate::signal::constants::*;
-    use crate::signal::types::*;
 
     // Process all deliverable signals in a loop
     loop {

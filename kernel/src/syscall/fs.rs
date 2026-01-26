@@ -3,7 +3,14 @@
 //! Implements: open, lseek, fstat, getdents64
 
 use crate::ipc::fd::FdKind;
+use crate::arch_impl::traits::CpuOps;
 use super::SyscallResult;
+
+// Architecture-specific CPU type for interrupt control
+#[cfg(target_arch = "x86_64")]
+type Cpu = crate::arch_impl::x86_64::X86Cpu;
+#[cfg(target_arch = "aarch64")]
+type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 /// Open flags (POSIX compatible)
 pub const O_RDONLY: u32 = 0;
@@ -2562,7 +2569,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
             //   - when we set thread state to Blocked
             // If other end opened during that window, add_reader/add_writer
             // would have tried to wake us but unblock() would have done nothing.
-            let other_end_ready = x86_64::instructions::interrupts::without_interrupts(|| {
+            let other_end_ready = Cpu::without_interrupts(|| {
                 match complete_fifo_open(&path_owned, for_write) {
                     FifoOpenResult::Ready(_) => true,
                     _ => false,
@@ -2588,7 +2595,7 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
                 // When other end opens, add_reader/add_writer will call unblock(tid)
                 loop {
                     crate::task::scheduler::yield_current();
-                    x86_64::instructions::interrupts::enable_and_hlt();
+                    Cpu::halt_with_interrupts();
 
                     // Check if we were unblocked (thread state changed from Blocked)
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {

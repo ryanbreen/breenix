@@ -10,6 +10,12 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use spin::Mutex;
 
+// Architecture-specific framebuffer imports
+#[cfg(target_arch = "x86_64")]
+use SHELL_FRAMEBUFFER;
+#[cfg(target_arch = "aarch64")]
+use super::arm64_fb::SHELL_FRAMEBUFFER;
+
 /// Tab header height in pixels
 const TAB_HEIGHT: usize = 24;
 
@@ -58,6 +64,7 @@ impl LogBuffer {
         self.lines.push_back(line);
     }
 
+    #[allow(dead_code)] // Part of LineHistory API for future scrollback
     fn iter(&self) -> impl Iterator<Item = &String> {
         self.lines.iter()
     }
@@ -420,14 +427,18 @@ pub fn write_char_to_shell(c: char) -> bool {
     let result = (|| {
         let mut guard = TERMINAL_MANAGER.try_lock()?;
         let manager = guard.as_mut()?;
-        let fb = crate::logger::SHELL_FRAMEBUFFER.get()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
         let mut fb_guard = fb.try_lock()?;
 
         manager.write_char_to_shell(&mut *fb_guard, c);
 
+        // Flush framebuffer
+        #[cfg(target_arch = "x86_64")]
         if let Some(db) = fb_guard.double_buffer_mut() {
             db.flush_if_dirty();
         }
+        #[cfg(target_arch = "aarch64")]
+        fb_guard.flush();
         Some(())
     })()
     .is_some();
@@ -446,14 +457,18 @@ pub fn write_str_to_shell(s: &str) -> bool {
     let result = (|| {
         let mut guard = TERMINAL_MANAGER.try_lock()?;
         let manager = guard.as_mut()?;
-        let fb = crate::logger::SHELL_FRAMEBUFFER.get()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
         let mut fb_guard = fb.try_lock()?;
 
         manager.write_str_to_shell(&mut *fb_guard, s);
 
+        // Flush framebuffer
+        #[cfg(target_arch = "x86_64")]
         if let Some(db) = fb_guard.double_buffer_mut() {
             db.flush_if_dirty();
         }
+        #[cfg(target_arch = "aarch64")]
+        fb_guard.flush();
         Some(())
     })()
     .is_some();
@@ -473,11 +488,16 @@ pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
     }
 
     // Flush after writing
-    if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+    if let Some(fb) = SHELL_FRAMEBUFFER.get() {
+        #[cfg(target_arch = "x86_64")]
         if let Some(mut fb_guard) = fb.try_lock() {
             if let Some(db) = fb_guard.double_buffer_mut() {
                 db.flush_if_dirty();
             }
+        }
+        #[cfg(target_arch = "aarch64")]
+        if let Some(fb_guard) = fb.try_lock() {
+            fb_guard.flush();
         }
     }
     true
@@ -495,7 +515,7 @@ pub fn write_bytes_to_shell_internal(bytes: &[u8]) -> bool {
     let result = (|| {
         let mut guard = TERMINAL_MANAGER.try_lock()?;
         let manager = guard.as_mut()?;
-        let fb = crate::logger::SHELL_FRAMEBUFFER.get()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
         let mut fb_guard = fb.try_lock()?;
 
         // Use the batched method which hides cursor once, writes all, shows cursor once
@@ -518,16 +538,20 @@ pub fn write_str_to_logs(s: &str) -> bool {
     let result = (|| {
         let mut guard = TERMINAL_MANAGER.try_lock()?;
         let manager = guard.as_mut()?;
-        let fb = crate::logger::SHELL_FRAMEBUFFER.get()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
         let mut fb_guard = fb.try_lock()?;
 
         // Remove trailing \r\n since add_log_line adds it
         let line = s.trim_end_matches('\n').trim_end_matches('\r');
         manager.add_log_line(&mut *fb_guard, line);
 
+        // Flush framebuffer
+        #[cfg(target_arch = "x86_64")]
         if let Some(db) = fb_guard.double_buffer_mut() {
             db.flush_if_dirty();
         }
+        #[cfg(target_arch = "aarch64")]
+        fb_guard.flush();
         Some(())
     })()
     .is_some();
@@ -545,14 +569,18 @@ pub fn toggle_cursor() {
     let _ = (|| {
         let mut guard = TERMINAL_MANAGER.try_lock()?;
         let manager = guard.as_mut()?;
-        let fb = crate::logger::SHELL_FRAMEBUFFER.get()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
         let mut fb_guard = fb.try_lock()?;
 
         manager.toggle_cursor(&mut *fb_guard);
 
+        // Flush framebuffer
+        #[cfg(target_arch = "x86_64")]
         if let Some(db) = fb_guard.double_buffer_mut() {
             db.flush_if_dirty();
         }
+        #[cfg(target_arch = "aarch64")]
+        fb_guard.flush();
         Some(())
     })();
 
@@ -568,15 +596,52 @@ pub fn switch_terminal(id: TerminalId) {
     let _ = (|| {
         let mut guard = TERMINAL_MANAGER.try_lock()?;
         let manager = guard.as_mut()?;
-        let fb = crate::logger::SHELL_FRAMEBUFFER.get()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
         let mut fb_guard = fb.try_lock()?;
 
         manager.switch_to(id, &mut *fb_guard);
 
+        // Flush framebuffer
+        #[cfg(target_arch = "x86_64")]
         if let Some(db) = fb_guard.double_buffer_mut() {
             // Only flush dirty regions, not entire 8MB buffer
             db.flush();
         }
+        #[cfg(target_arch = "aarch64")]
+        fb_guard.flush();
+
+        Some(())
+    })();
+
+    IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
+}
+
+/// Clear the shell terminal.
+pub fn clear_shell() {
+    if IN_TERMINAL_CALL.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
+    let _ = (|| {
+        let mut guard = TERMINAL_MANAGER.try_lock()?;
+        let manager = guard.as_mut()?;
+        let fb = SHELL_FRAMEBUFFER.get()?;
+        let mut fb_guard = fb.try_lock()?;
+
+        // Only clear if shell is the active terminal
+        if manager.active_idx == TerminalId::Shell as usize {
+            manager.clear_terminal_area(&mut *fb_guard);
+            manager.draw_tab_bar(&mut *fb_guard);
+            manager.terminal_pane.draw_cursor(&mut *fb_guard, manager.cursor_visible);
+        }
+
+        // Flush framebuffer
+        #[cfg(target_arch = "x86_64")]
+        if let Some(db) = fb_guard.double_buffer_mut() {
+            db.flush_if_dirty();
+        }
+        #[cfg(target_arch = "aarch64")]
+        fb_guard.flush();
         Some(())
     })();
 

@@ -3,9 +3,13 @@
 //! Reserves VA range 0xffffc900_0000_0000 – 0xffffc900_07ff_ffff (128 MiB) for kernel stacks.
 //! Each stack gets 512 KiB usable space + 4 KiB guard page (total 516 KiB per slot).
 
+#[cfg(target_arch = "x86_64")]
 use crate::memory::frame_allocator::allocate_frame;
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::{structures::paging::PageTableFlags, VirtAddr};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 
 /// Base address for kernel stack allocation
 const KERNEL_STACK_BASE: u64 = 0xffffc900_0000_0000;
@@ -84,6 +88,7 @@ impl Drop for KernelStack {
 ///
 /// This allocates 8 KiB for the stack + 4 KiB guard page.
 /// The stack is immediately mapped in the global kernel page tables.
+#[cfg(target_arch = "x86_64")]
 pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
     // Find a free slot in the bitmap
     let mut bitmap = STACK_BITMAP.lock();
@@ -172,6 +177,7 @@ pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
 /// Initialize the kernel stack allocator
 ///
 /// This should be called during memory system initialization.
+#[cfg(target_arch = "x86_64")]
 pub fn init() {
     // The bitmap is already statically initialized to all zeros (all free)
     log::info!(
@@ -188,4 +194,114 @@ pub fn init() {
         KERNEL_STACK_SIZE / 1024,
         GUARD_PAGE_SIZE / 1024
     );
+}
+
+// =============================================================================
+// ARM64-specific kernel stack allocator (identity-mapped)
+// =============================================================================
+
+#[cfg(target_arch = "aarch64")]
+mod aarch64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use super::VirtAddr;
+
+    /// ARM64 kernel stack base (in identity-mapped region)
+    /// Using 0x5100_0000 to 0x5200_0000 (16MB for kernel stacks)
+    const ARM64_KERNEL_STACK_BASE: u64 = 0x5100_0000;
+    const ARM64_KERNEL_STACK_END: u64 = 0x5200_0000;
+
+    /// Stack size for ARM64 (64KB per stack)
+    const ARM64_KERNEL_STACK_SIZE: u64 = 64 * 1024;
+
+    /// Guard page size (4KB)
+    const ARM64_GUARD_PAGE_SIZE: u64 = 4 * 1024;
+
+    /// Total slot size (stack + guard)
+    const ARM64_STACK_SLOT_SIZE: u64 = ARM64_KERNEL_STACK_SIZE + ARM64_GUARD_PAGE_SIZE;
+
+    /// Next available stack slot (atomic bump allocator)
+    static NEXT_STACK_SLOT: AtomicU64 = AtomicU64::new(ARM64_KERNEL_STACK_BASE);
+
+    /// A kernel stack allocation for ARM64
+    #[derive(Debug)]
+    pub struct Aarch64KernelStack {
+        /// Bottom of the stack (lowest address, above guard page)
+        pub bottom: VirtAddr,
+        /// Top of the stack (highest address)
+        pub top: VirtAddr,
+    }
+
+    impl Aarch64KernelStack {
+        /// Get the top of the stack (for SP initialization)
+        pub fn top(&self) -> VirtAddr {
+            self.top
+        }
+    }
+
+    /// Allocate a kernel stack for ARM64
+    ///
+    /// Uses a simple bump allocator in the identity-mapped region.
+    /// Stacks are not freed (leaked) - this is acceptable for the
+    /// current single-process test workload.
+    pub fn allocate_kernel_stack() -> Result<Aarch64KernelStack, &'static str> {
+        let slot_base = NEXT_STACK_SLOT.fetch_add(ARM64_STACK_SLOT_SIZE, Ordering::SeqCst);
+
+        if slot_base + ARM64_STACK_SLOT_SIZE > ARM64_KERNEL_STACK_END {
+            return Err("ARM64 kernel stack pool exhausted");
+        }
+
+        let stack_bottom = VirtAddr::new(slot_base + ARM64_GUARD_PAGE_SIZE);
+        let stack_top = VirtAddr::new(slot_base + ARM64_STACK_SLOT_SIZE);
+
+        log::debug!(
+            "ARM64 kernel stack allocated: {:#x}-{:#x}",
+            stack_bottom.as_u64(),
+            stack_top.as_u64()
+        );
+
+        Ok(Aarch64KernelStack {
+            bottom: stack_bottom,
+            top: stack_top,
+        })
+    }
+
+    /// Initialize the ARM64 kernel stack allocator
+    pub fn init() {
+        let total_slots = (ARM64_KERNEL_STACK_END - ARM64_KERNEL_STACK_BASE) / ARM64_STACK_SLOT_SIZE;
+        log::info!(
+            "ARM64 kernel stack allocator initialized: {} slots available",
+            total_slots
+        );
+        log::info!(
+            "  Stack range: {:#x} - {:#x}",
+            ARM64_KERNEL_STACK_BASE,
+            ARM64_KERNEL_STACK_END
+        );
+        log::info!(
+            "  Stack size: {} KiB + {} KiB guard",
+            ARM64_KERNEL_STACK_SIZE / 1024,
+            ARM64_GUARD_PAGE_SIZE / 1024
+        );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub use aarch64::{allocate_kernel_stack as allocate_kernel_stack_aarch64, init as init_aarch64, Aarch64KernelStack};
+
+/// ARM64: Use the aarch64-specific allocator
+#[cfg(target_arch = "aarch64")]
+pub fn allocate_kernel_stack() -> Result<KernelStack, &'static str> {
+    let aarch64_stack = allocate_kernel_stack_aarch64()?;
+    // Convert to KernelStack format for API compatibility
+    Ok(KernelStack {
+        index: 0, // Not used for ARM64
+        bottom: aarch64_stack.bottom,
+        top: aarch64_stack.top,
+    })
+}
+
+/// ARM64: Initialize the kernel stack allocator
+#[cfg(target_arch = "aarch64")]
+pub fn init() {
+    init_aarch64();
 }

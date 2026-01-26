@@ -174,13 +174,16 @@ pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
                 icmp::handle_icmp(eth_frame, ip, &icmp_packet);
             }
         }
+        #[cfg(target_arch = "x86_64")]
         PROTOCOL_TCP => {
             super::tcp::handle_tcp(ip, ip.payload);
         }
+        #[cfg(target_arch = "x86_64")]
         PROTOCOL_UDP => {
             super::udp::handle_udp(ip, ip.payload);
         }
         _ => {
+            #[cfg(target_arch = "x86_64")]
             log::debug!("IPv4: Unknown protocol {}", ip.protocol);
         }
     }

@@ -20,6 +20,16 @@ use spin::Mutex;
 use super::kthread::{kthread_run, kthread_should_stop, kthread_park, kthread_unpark, KthreadHandle};
 use crate::per_cpu;
 
+/// Architecture-specific enable interrupts
+#[inline(always)]
+unsafe fn arch_enable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::interrupts::enable();
+
+    #[cfg(target_arch = "aarch64")]
+    core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+}
+
 /// Maximum number of softirq restarts before deferring to ksoftirqd
 /// Linux uses 10, we match that
 const MAX_SOFTIRQ_RESTART: u32 = 10;
@@ -233,7 +243,7 @@ fn ksoftirqd_fn() {
     log::info!("KSOFTIRQD_SPAWN: ksoftirqd/0 started");
 
     // Enable interrupts so timer can preempt us and switch to other threads
-    x86_64::instructions::interrupts::enable();
+    unsafe { arch_enable_interrupts(); }
 
     while !kthread_should_stop() {
         // Check for pending softirqs

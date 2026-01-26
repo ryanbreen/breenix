@@ -37,4 +37,13 @@ impl CpuOps for X86Cpu {
     fn halt_with_interrupts() {
         x86_64::instructions::interrupts::enable_and_hlt();
     }
+
+    #[inline(always)]
+    fn without_interrupts<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        // Delegate to the x86_64 crate's implementation
+        x86_64::instructions::interrupts::without_interrupts(f)
+    }
 }

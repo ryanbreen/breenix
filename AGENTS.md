@@ -61,43 +61,9 @@ ls -t logs/*.log | head -1 | xargs less
 
 ## Development Workflow
 
-### Agent-Based Development (MANDATORY)
+### Agent-Based Development
 
-**The main conversation is for ORCHESTRATION ONLY.** Never execute tests, run builds, or perform iterative debugging directly in the top-level session. This burns token context and leads to session exhaustion.
-
-**ALWAYS dispatch to agents:**
-- Build verification and compilation checks
-- GDB debugging sessions (via gdb_chat.py)
-- Code exploration and codebase research
-- Any task that may require multiple iterations or produce verbose output
-
-**The orchestrator session should only:**
-- Plan and decompose work into agent-dispatchable tasks
-- Review agent reports and synthesize findings
-- Make high-level decisions based on agent results
-- Coordinate multiple parallel agent investigations
-- Communicate summaries and next steps to the user
-
-**Anti-pattern (NEVER DO THIS):**
-```
-# DON'T run kernel directly - ALWAYS use GDB
-cargo run --release --bin qemu-uefi
-cargo run -p xtask -- boot-stages
-# DON'T grep through large outputs in main session
-cat target/output.txt | grep ...
-```
-
-**Correct pattern:**
-```
-# DO use GDB for kernel debugging
-printf 'break kernel::kernel_main\ncontinue\ninfo registers\nquit\n' | python3 breenix-gdb-chat/scripts/gdb_chat.py
-
-# DO dispatch to an agent for GDB sessions
-Task(subagent_type="general-purpose", prompt="Use gdb_chat.py to debug the
-clock_gettime syscall. Set breakpoint, examine registers, report findings.")
-```
-
-When a debugging task requires multiple iterations, dispatch it ONCE to an agent with comprehensive instructions. The agent will iterate internally and return a summary. If more investigation is needed, dispatch another agent - don't bring the iteration into the main session.
+Use agents when it’s helpful for long or iterative investigations, but it is no longer mandatory to route all work through agents. The main session may run commands, do code exploration, or perform debugging directly as needed.
 
 ### Feature Branches (REQUIRED)
 Never push directly to main. Always:

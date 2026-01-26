@@ -8,6 +8,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::structures::paging::Translate;
 use x86_64::VirtAddr;
+use crate::arch_impl::traits::CpuOps;
+
+// Architecture-specific CPU type for interrupt control
+type Cpu = crate::arch_impl::x86_64::X86Cpu;
 
 /// Global flag to signal that userspace testing is complete and kernel should exit
 pub static USERSPACE_TEST_COMPLETE: AtomicBool = AtomicBool::new(false);
@@ -548,7 +552,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // When keyboard data arrives, the interrupt handler will unblock us
                         loop {
                             crate::task::scheduler::yield_current();
-                            x86_64::instructions::interrupts::enable_and_hlt();
+                            Cpu::halt_with_interrupts();
 
                             // Check if we were unblocked (thread state changed from Blocked)
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
@@ -716,7 +720,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // HLT loop - wait for data or EOF
                         loop {
                             crate::task::scheduler::yield_current();
-                            x86_64::instructions::interrupts::enable_and_hlt();
+                            Cpu::halt_with_interrupts();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -931,7 +935,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // HLT loop - wait for data to arrive
                 loop {
                     crate::task::scheduler::yield_current();
-                    x86_64::instructions::interrupts::enable_and_hlt();
+                    Cpu::halt_with_interrupts();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -1096,7 +1100,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // HLT loop
                         loop {
                             crate::task::scheduler::yield_current();
-                            x86_64::instructions::interrupts::enable_and_hlt();
+                            Cpu::halt_with_interrupts();
 
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                                 if let Some(thread) = sched.current_thread_mut() {
@@ -1198,7 +1202,7 @@ pub fn sys_fork_with_frame(frame: &super::handler::SyscallFrame) -> SyscallResul
 /// sys_fork with full parent context - captures all registers from syscall frame
 fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext) -> SyscallResult {
     // Disable interrupts for the entire fork operation to ensure atomicity
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    Cpu::without_interrupts(|| {
         log::info!(
             "sys_fork_with_parent_context called with RSP {:#x}, RIP {:#x}",
             parent_context.rsp,
@@ -1337,7 +1341,7 @@ pub fn sys_exec_with_frame(
     program_name_ptr: u64,
     elf_data_ptr: u64,
 ) -> SyscallResult {
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    Cpu::without_interrupts(|| {
         log::info!(
             "sys_exec_with_frame called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
             program_name_ptr,
@@ -1759,7 +1763,7 @@ pub fn sys_execv_with_frame(
 
         // CRITICAL SECTION: Frame manipulation and process state changes
         // Only this part needs interrupts disabled for atomicity
-        x86_64::instructions::interrupts::without_interrupts(|| {
+        Cpu::without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
                 match manager.exec_process_with_argv(current_pid, elf_data, Some(leaked_name), &argv_slices) {
@@ -1847,7 +1851,7 @@ pub fn sys_execv_with_frame(
 ///
 /// DEPRECATED: Use sys_exec_with_frame instead to properly update the syscall frame
 pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    Cpu::without_interrupts(|| {
         log::info!(
             "sys_exec called: program_name_ptr={:#x}, elf_data_ptr={:#x}",
             program_name_ptr,
@@ -1998,7 +2002,7 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
 /// sys_getpid - Get the current process ID
 pub fn sys_getpid() -> SyscallResult {
     // Disable interrupts when accessing process manager
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    Cpu::without_interrupts(|| {
         log::info!("sys_getpid called");
 
         // Get current thread ID from scheduler
@@ -2172,7 +2176,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
                 crate::task::scheduler::yield_current();
-                x86_64::instructions::interrupts::enable_and_hlt();
+                Cpu::halt_with_interrupts();
 
                 // After being rescheduled, check if child terminated
                 let manager_guard = crate::process::manager();
@@ -2242,7 +2246,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
                 crate::task::scheduler::yield_current();
-                x86_64::instructions::interrupts::enable_and_hlt();
+                Cpu::halt_with_interrupts();
 
                 // After being rescheduled, check if any child terminated
                 let manager_guard = crate::process::manager();

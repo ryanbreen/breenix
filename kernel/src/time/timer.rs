@@ -5,11 +5,16 @@
 //! use the TSC module directly.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_arch = "x86_64")]
 use x86_64::instructions::port::Port;
 
+#[cfg(target_arch = "x86_64")]
 const PIT_INPUT_FREQ_HZ: u32 = 1_193_182;
+#[cfg(target_arch = "x86_64")]
 const PIT_HZ: u32 = 200; // 200 Hz ⇒ 5 ms per tick
+#[cfg(target_arch = "x86_64")]
 const PIT_COMMAND_PORT: u16 = 0x43;
+#[cfg(target_arch = "x86_64")]
 const PIT_CHANNEL0_PORT: u16 = 0x40;
 
 /// Global monotonic tick counter (1 tick == 1 ms at 1000 Hz).
@@ -25,6 +30,7 @@ static CURSOR_BLINK_COUNTER: AtomicU64 = AtomicU64::new(0);
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 
 /// Program the PIT to generate periodic interrupts at `PIT_HZ`.
+#[cfg(target_arch = "x86_64")]
 pub fn init() {
     let divisor: u16 = (PIT_INPUT_FREQ_HZ / PIT_HZ) as u16;
     unsafe {
@@ -42,6 +48,11 @@ pub fn init() {
     log::info!("Timer initialized at {} Hz ({}ms per tick)", PIT_HZ, 1000 / PIT_HZ);
 
     // Initialize RTC for wall clock time
+    super::rtc::init();
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn init() {
     super::rtc::init();
 }
 
@@ -97,6 +108,7 @@ pub fn get_monotonic_time_ns() -> (u64, u64) {
 
 /// Validate that the PIT hardware is configured and counting
 /// Returns (is_counting, count1, count2, description)
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
     unsafe {
@@ -142,4 +154,10 @@ pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
         // If count2 > count1, it might have wrapped or be counting wrong
         (true, count1, count2, "Counter changed (possibly wrapped)")
     }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
+pub fn validate_pit_counting() -> (bool, u16, u16, &'static str) {
+    (false, 0, 0, "PIT not supported on this architecture")
 }

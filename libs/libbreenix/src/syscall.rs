@@ -1,10 +1,16 @@
 //! Raw syscall primitives for Breenix
 //!
-//! This module provides the low-level syscall interface using INT 0x80.
-//! All syscalls follow the Linux AMD64 calling convention:
+//! This module provides the low-level syscall interface.
+//!
+//! x86_64: Uses INT 0x80 with Linux AMD64 calling convention:
 //! - Syscall number in RAX
 //! - Arguments in RDI, RSI, RDX, R10, R8, R9
 //! - Return value in RAX
+//!
+//! ARM64: Uses SVC #0 with Linux ARM64 calling convention:
+//! - Syscall number in X8
+//! - Arguments in X0-X5
+//! - Return value in X0
 
 use core::arch::asm;
 
@@ -82,6 +88,7 @@ pub mod nr {
 }
 
 /// Raw syscall functions - use higher-level wrappers when possible
+#[cfg(target_arch = "x86_64")]
 pub mod raw {
     use super::*;
 
@@ -194,6 +201,120 @@ pub mod raw {
             in("r9") arg6,
             lateout("rax") ret,
             options(nostack, preserves_flags),
+        );
+        ret
+    }
+}
+
+/// ARM64 raw syscall functions
+/// Uses SVC #0 with syscall number in X8, args in X0-X5, return in X0
+#[cfg(target_arch = "aarch64")]
+pub mod raw {
+    use super::*;
+
+    #[inline(always)]
+    pub unsafe fn syscall0(num: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "svc #0",
+            in("x8") num,
+            lateout("x0") ret,
+            options(nostack),
+        );
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall1(num: u64, arg1: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") arg1 => ret,
+            options(nostack),
+        );
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall2(num: u64, arg1: u64, arg2: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") arg1 => ret,
+            in("x1") arg2,
+            options(nostack),
+        );
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall3(num: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") arg1 => ret,
+            in("x1") arg2,
+            in("x2") arg3,
+            options(nostack),
+        );
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall4(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") arg1 => ret,
+            in("x1") arg2,
+            in("x2") arg3,
+            in("x3") arg4,
+            options(nostack),
+        );
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall5(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> u64 {
+        let ret: u64;
+        asm!(
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") arg1 => ret,
+            in("x1") arg2,
+            in("x2") arg3,
+            in("x3") arg4,
+            in("x4") arg5,
+            options(nostack),
+        );
+        ret
+    }
+
+    #[inline(always)]
+    pub unsafe fn syscall6(
+        num: u64,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+        arg4: u64,
+        arg5: u64,
+        arg6: u64,
+    ) -> u64 {
+        let ret: u64;
+        asm!(
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") arg1 => ret,
+            in("x1") arg2,
+            in("x2") arg3,
+            in("x3") arg4,
+            in("x4") arg5,
+            in("x5") arg6,
+            options(nostack),
         );
         ret
     }

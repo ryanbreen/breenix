@@ -115,12 +115,24 @@ impl Default for Sigaction {
 /// because the alt stack may be in non-executable memory (NX bit set).
 /// By using SA_RESTORER, the kernel uses this function's address instead
 /// of writing a trampoline to the stack.
+#[cfg(target_arch = "x86_64")]
 #[unsafe(naked)]
 pub extern "C" fn __restore_rt() -> ! {
     core::arch::naked_asm!(
         "mov rax, 15",  // SYS_rt_sigreturn
         "int 0x80",     // Trigger syscall
         "ud2",          // Should never reach here
+    )
+}
+
+/// ARM64 signal return trampoline
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+pub extern "C" fn __restore_rt() -> ! {
+    core::arch::naked_asm!(
+        "mov x8, 15",   // SYS_rt_sigreturn
+        "svc #0",       // Trigger syscall
+        "brk #1",       // Should never reach here
     )
 }
 

@@ -10,10 +10,15 @@
 
 use crate::memory::frame_allocator::allocate_frame;
 use spin::Mutex;
+#[cfg(target_arch = "x86_64")]
 use x86_64::{
     registers::control::{Cr3, Cr3Flags},
-    structures::paging::{PageTable, PageTableFlags, PhysFrame},
+    structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB},
     PhysAddr, VirtAddr,
+};
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    Cr3, Cr3Flags, PageTable, PageTableFlags, PhysFrame, PhysAddr, Size4KiB, VirtAddr,
 };
 
 /// The global kernel PDPT (L3 page table) frame
@@ -62,7 +67,7 @@ pub fn init(phys_mem_offset: VirtAddr) {
         for i in 256..512 {
             if !pml4[i].is_unused() {
                 // This PML4 entry has kernel mappings
-                let old_pdpt_frame = pml4[i].frame().unwrap();
+                let old_pdpt_frame: PhysFrame<Size4KiB> = pml4[i].frame().unwrap();
                 let old_pdpt_virt = phys_mem_offset + old_pdpt_frame.start_address().as_u64();
                 let old_pdpt = &*(old_pdpt_virt.as_ptr() as *const PageTable);
 
@@ -208,7 +213,7 @@ pub unsafe fn map_kernel_page(
     let pt = &mut *(pt_virt.as_mut_ptr() as *mut PageTable);
 
     // Map the page
-    let page_frame = PhysFrame::containing_address(phys);
+    let page_frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(phys);
     pt[pt_index as usize].set_frame(page_frame, flags);
 
     // Log detailed mapping for kernel/IST stacks (trace level to avoid spam)
@@ -220,7 +225,10 @@ pub unsafe fn map_kernel_page(
     }
 
     // Flush TLB for this specific page
+    #[cfg(target_arch = "x86_64")]
     use x86_64::instructions::tlb;
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::tlb;
     tlb::flush(virt);
 
     log::trace!(
@@ -367,7 +375,7 @@ pub fn build_master_kernel_pml4() {
         // If PML4[0] contains kernel mappings, we need to preserve them AND alias them
         if !current_pml4[0].is_unused() {
             // Get the PDPT frame from PML4[0]
-            let low_pdpt_frame = current_pml4[0].frame().unwrap();
+            let low_pdpt_frame: PhysFrame<Size4KiB> = current_pml4[0].frame().unwrap();
             
             // We'll share the same PDPT but need to ensure it has correct flags
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::GLOBAL;
@@ -388,7 +396,7 @@ pub fn build_master_kernel_pml4() {
         
         // Log what's in PML4[510] if present
         if !master_pml4[510].is_unused() {
-            let frame = master_pml4[510].frame().unwrap();
+            let frame: PhysFrame<Size4KiB> = master_pml4[510].frame().unwrap();
             log::info!("PHASE2: Master PML4[510] -> frame {:?}", frame);
         }
         
@@ -580,8 +588,8 @@ pub fn build_master_kernel_pml4() {
     unsafe {
         let master_pml4_virt = phys_mem_offset + master_pml4_frame.start_address().as_u64();
         let master_pml4 = &*(master_pml4_virt.as_ptr() as *const PageTable);
-        let f402 = master_pml4[402].frame().unwrap();
-        let f403 = master_pml4[403].frame().unwrap();
+        let f402: PhysFrame<Size4KiB> = master_pml4[402].frame().unwrap();
+        let f403: PhysFrame<Size4KiB> = master_pml4[403].frame().unwrap();
         assert_ne!(f402, f403, "PML4[402] and [403] still aliased after fresh allocation!");
         log::info!("Verified: PML4[402]={:?} != PML4[403]={:?}", f402, f403);
     }
@@ -595,7 +603,11 @@ pub fn build_master_kernel_pml4() {
     log::info!("Switching CR3 to master kernel PML4: {:?}", master_pml4_frame);
     unsafe {
         Cr3::write(master_pml4_frame, Cr3Flags::empty());
-        x86_64::instructions::tlb::flush_all();
+        #[cfg(target_arch = "x86_64")]
+        use x86_64::instructions::tlb;
+        #[cfg(not(target_arch = "x86_64"))]
+        use crate::memory::arch_stub::tlb;
+        tlb::flush_all();
     }
     log::info!("CR3 switched to master PML4");
 
@@ -604,8 +616,8 @@ pub fn build_master_kernel_pml4() {
         let (verify_frame, _) = Cr3::read();
         let verify_pml4_virt = phys_mem_offset + verify_frame.start_address().as_u64();
         let verify_pml4 = &*(verify_pml4_virt.as_ptr() as *const PageTable);
-        let f402 = verify_pml4[402].frame().unwrap();
-        let f403 = verify_pml4[403].frame().unwrap();
+        let f402: PhysFrame<Size4KiB> = verify_pml4[402].frame().unwrap();
+        let f403: PhysFrame<Size4KiB> = verify_pml4[403].frame().unwrap();
         assert_ne!(f402, f403, "PML4[402] and [403] still aliased after CR3 switch!");
         log::info!("Post-CR3 verification: PML4[402]={:?} != PML4[403]={:?}", f402, f403);
     }

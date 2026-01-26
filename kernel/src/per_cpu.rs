@@ -15,8 +15,8 @@ use x86_64::VirtAddr;
 use crate::arch_impl::current::percpu as hal_percpu;
 use crate::arch_impl::PerCpuOps;
 
-// Import HAL constants - single source of truth for GS-relative offsets
-use crate::arch_impl::x86_64::constants::{
+// Import HAL constants - single source of truth for per-CPU offsets
+use crate::arch_impl::current::constants::{
     PERCPU_CPU_ID_OFFSET, PERCPU_CURRENT_THREAD_OFFSET, PERCPU_KERNEL_STACK_TOP_OFFSET,
     PERCPU_IDLE_THREAD_OFFSET, PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_NEED_RESCHED_OFFSET,
     PERCPU_USER_RSP_SCRATCH_OFFSET, PERCPU_TSS_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,

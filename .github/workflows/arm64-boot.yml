@@ -1,0 +1,92 @@
+name: ARM64 Boot Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-boot-arm64:
+    name: Build and Boot ARM64 Kernel
+    runs-on: ubuntu-24.04-arm64
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+
+      - name: Verify Rust setup
+        run: |
+          rustc -Vv
+          cargo -Vv
+          rustup component list --installed
+
+      - name: Install QEMU for ARM64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm
+          qemu-system-aarch64 --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-arm64-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-arm64-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build ARM64 kernel
+        run: |
+          cargo build --release \
+            --target aarch64-breenix.json \
+            -Z build-std=core,alloc \
+            -p kernel \
+            --bin kernel-aarch64
+
+      - name: Verify kernel binary
+        run: |
+          ls -la target/aarch64-breenix/release/kernel-aarch64
+          file target/aarch64-breenix/release/kernel-aarch64
+
+      - name: Boot ARM64 kernel in QEMU
+        run: |
+          timeout 30 qemu-system-aarch64 \
+            -M virt \
+            -cpu cortex-a72 \
+            -m 512M \
+            -nographic \
+            -kernel target/aarch64-breenix/release/kernel-aarch64 \
+            2>&1 | tee arm64-boot.log &
+          QEMU_PID=$!
+
+          # Wait for boot or timeout
+          for i in $(seq 1 30); do
+            if grep -q "Hello from ARM64" arm64-boot.log 2>/dev/null; then
+              echo "SUCCESS: ARM64 kernel booted successfully!"
+              kill $QEMU_PID 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "TIMEOUT: Kernel did not print expected message"
+          kill $QEMU_PID 2>/dev/null || true
+          echo "=== Boot log ==="
+          cat arm64-boot.log
+          exit 1
+
+      - name: Upload boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-boot-log-${{ github.run_number }}
+          path: arm64-boot.log
+          if-no-files-found: ignore
+          retention-days: 7

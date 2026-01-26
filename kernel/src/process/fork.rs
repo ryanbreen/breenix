@@ -12,10 +12,20 @@
 use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::frame_metadata::frame_incref;
 use crate::memory::process_memory::{make_cow_flags, ProcessPageTable};
-use crate::process::{Process, ProcessId};
+use crate::process::Process;
+#[cfg(target_arch = "x86_64")]
+use crate::process::ProcessId;
+#[cfg(target_arch = "x86_64")]
 use crate::task::thread::Thread;
+
+// Import paging types - use x86_64 crate on x86_64, arch_stub on other platforms
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
-use x86_64::VirtAddr;
+#[cfg(target_arch = "x86_64")]
+use x86_64::{PhysAddr, VirtAddr};
+
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr};
 
 /// Copy all mapped user pages from parent to child
 ///
@@ -130,7 +140,7 @@ pub fn setup_cow_pages(
 
     // First pass: collect all pages we need to process
     // (We can't modify parent while iterating, so we collect first)
-    let mut pages_to_share: alloc::vec::Vec<(VirtAddr, x86_64::PhysAddr, PageTableFlags)> =
+    let mut pages_to_share: alloc::vec::Vec<(VirtAddr, PhysAddr, PageTableFlags)> =
         alloc::vec::Vec::new();
 
     parent_page_table.walk_mapped_pages(|virt_addr, phys_addr, flags| {
@@ -149,6 +159,20 @@ pub fn setup_cow_pages(
     for (virt_addr, phys_addr, flags) in pages_to_share {
         if cow_error.is_some() {
             break;
+        }
+
+        // ARM64 WORKAROUND: Skip huge pages (2MB blocks) from boot page tables.
+        // These can't be manipulated as 4KB pages. They use identity mapping
+        // which is shared anyway, so CoW isn't needed for them.
+        #[cfg(target_arch = "aarch64")]
+        if flags.contains(PageTableFlags::HUGE_PAGE) {
+            log::debug!(
+                "setup_cow_pages: skipping 2MB block at {:#x} (boot identity mapping)",
+                virt_addr.as_u64()
+            );
+            // Still count as "shared" for bookkeeping
+            pages_shared += 1;
+            continue;
         }
 
         let page = Page::<Size4KiB>::containing_address(virt_addr);
@@ -173,7 +197,10 @@ pub fn setup_cow_pages(
             // Without this, the parent's TLB may still have the old WRITABLE entry,
             // allowing writes without triggering page faults. This causes memory
             // corruption since parent and child would write to the same physical frame.
+            #[cfg(target_arch = "x86_64")]
             x86_64::instructions::tlb::flush(virt_addr);
+            #[cfg(not(target_arch = "x86_64"))]
+            crate::memory::arch_stub::tlb::flush(virt_addr);
 
             // Map same frame in child with CoW flags
             if let Err(e) = child_page_table.map_page(page, frame, cow_flags) {
@@ -238,6 +265,8 @@ pub fn setup_cow_pages(
 /// 2. Stack contents
 /// 3. Heap (if any)
 /// 4. Other mapped regions
+/// Note: Uses architecture-specific register names via copy_stack_state
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub fn copy_process_memory(
     parent_pid: ProcessId,
@@ -273,6 +302,8 @@ pub fn copy_process_memory(
 /// The actual stack pages are already copied by copy_user_pages().
 /// This function adjusts the child's RSP to the same relative position
 /// in its stack as the parent's RSP is in the parent's stack.
+/// Note: Uses architecture-specific register names
+#[cfg(target_arch = "x86_64")]
 fn copy_stack_state(
     parent_thread: &Thread,
     child_thread: &mut Thread,
@@ -308,6 +339,8 @@ fn copy_stack_state(
 /// This is used when the child has a separate stack allocation from the parent.
 /// The stack pages need to be copied separately from the main copy_user_pages
 /// because they may be at different virtual addresses.
+/// Note: Uses architecture-specific register names
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub fn copy_stack_contents(
     parent_thread: &Thread,

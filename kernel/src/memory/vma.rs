@@ -5,7 +5,10 @@
 //! permissions and flags.
 
 use alloc::vec::Vec;
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 
 /// Start of mmap allocation region (below stack)
 #[allow(dead_code)]

@@ -2,7 +2,9 @@
 //!
 //! Verifies critical invariants for PML4/page table configuration.
 
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{PageTable, PageTableFlags};
+#[cfg(target_arch = "x86_64")]
 use x86_64::PhysAddr;
 
 /// Contract: PML4[402] (kernel stacks) and PML4[403] (IST stacks) must point to DIFFERENT frames

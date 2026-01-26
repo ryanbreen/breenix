@@ -6,7 +6,33 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use super::ethernet::{self, EthernetFrame, BROADCAST_MAC, ETHERTYPE_ARP};
+
+// Driver abstraction: use E1000 on x86_64, VirtIO net on ARM64
+#[cfg(target_arch = "x86_64")]
 use crate::drivers::e1000;
+#[cfg(target_arch = "aarch64")]
+use crate::drivers::virtio::net_mmio;
+
+// Driver abstraction functions (local to this module)
+#[cfg(target_arch = "x86_64")]
+fn get_mac_address() -> Option<[u8; 6]> {
+    e1000::mac_address()
+}
+
+#[cfg(target_arch = "aarch64")]
+fn get_mac_address() -> Option<[u8; 6]> {
+    net_mmio::mac_address()
+}
+
+#[cfg(target_arch = "x86_64")]
+fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
+    e1000::transmit(data)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn driver_transmit(data: &[u8]) -> Result<(), &'static str> {
+    net_mmio::transmit(data)
+}
 
 /// ARP hardware type for Ethernet
 pub const ARP_HTYPE_ETHERNET: u16 = 1;
@@ -51,6 +77,7 @@ static ARP_CACHE: Mutex<[ArpCacheEntry; ARP_CACHE_SIZE]> =
 /// Initialize ARP subsystem
 pub fn init() {
     // Cache is already initialized with default values
+    #[cfg(target_arch = "x86_64")]
     log::debug!("ARP: Cache initialized ({} entries)", ARP_CACHE_SIZE);
 }
 
@@ -150,7 +177,7 @@ impl ArpPacket {
 /// Handle an incoming ARP packet
 pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
     let config = super::config();
-    let our_mac = match e1000::mac_address() {
+    let our_mac = match get_mac_address() {
         Some(mac) => mac,
         None => return,
     };
@@ -166,6 +193,7 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
     match arp.operation {
         ARP_OP_REQUEST => {
             // Send ARP reply
+            #[cfg(target_arch = "x86_64")]
             log::debug!(
                 "ARP: Request from {}.{}.{}.{} for our IP",
                 arp.sender_ip[0], arp.sender_ip[1], arp.sender_ip[2], arp.sender_ip[3]
@@ -186,13 +214,16 @@ pub fn handle_arp(eth_frame: &EthernetFrame, arp: &ArpPacket) {
                 &reply,
             );
 
-            if let Err(e) = e1000::transmit(&frame) {
-                log::warn!("ARP: Failed to send reply: {}", e);
+            if let Err(_e) = driver_transmit(&frame) {
+                #[cfg(target_arch = "x86_64")]
+                log::warn!("ARP: Failed to send reply: {}", _e);
             } else {
+                #[cfg(target_arch = "x86_64")]
                 log::debug!("ARP: Sent reply");
             }
         }
         ARP_OP_REPLY => {
+            #[cfg(target_arch = "x86_64")]
             log::debug!(
                 "ARP: Reply from {}.{}.{}.{} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                 arp.sender_ip[0], arp.sender_ip[1], arp.sender_ip[2], arp.sender_ip[3],
@@ -249,7 +280,7 @@ pub fn lookup(ip: &[u8; 4]) -> Option<[u8; 6]> {
 /// Send an ARP request for an IP address
 pub fn request(target_ip: &[u8; 4]) -> Result<(), &'static str> {
     let config = super::config();
-    let our_mac = e1000::mac_address().ok_or("E1000 not initialized")?;
+    let our_mac = get_mac_address().ok_or("Network device not initialized")?;
 
     let arp_packet = ArpPacket::build(
         ARP_OP_REQUEST,
@@ -266,8 +297,9 @@ pub fn request(target_ip: &[u8; 4]) -> Result<(), &'static str> {
         &arp_packet,
     );
 
-    e1000::transmit(&frame)?;
+    driver_transmit(&frame)?;
 
+    #[cfg(target_arch = "x86_64")]
     log::debug!(
         "ARP: Sent request for {}.{}.{}.{}",
         target_ip[0], target_ip[1], target_ip[2], target_ip[3]

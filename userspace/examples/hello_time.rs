@@ -37,8 +37,13 @@ fn num_to_str(mut num: u64, buf: &mut [u8]) -> &str {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     // DEBUGGING: First try a breakpoint to test kernel transitions
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!("int 3", options(nomem, nostack));
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #3", options(nomem, nostack));
     }
 
     // Get current time using the legacy GET_TIME syscall

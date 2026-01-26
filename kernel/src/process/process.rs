@@ -8,7 +8,10 @@ use crate::task::thread::Thread;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::VirtAddr;
 
 /// Process ID type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -224,6 +227,7 @@ impl Process {
     ///
     /// This properly decrements pipe reader/writer counts, ensuring that
     /// when all writers close, readers get EOF instead of EAGAIN.
+    #[cfg(target_arch = "x86_64")]
     fn close_all_fds(&mut self) {
         use crate::ipc::FdKind;
 
@@ -328,11 +332,55 @@ impl Process {
         }
     }
 
+    /// Close all file descriptors in this process (ARM64 stub)
+    #[cfg(not(target_arch = "x86_64"))]
+    fn close_all_fds(&mut self) {
+        use crate::ipc::FdKind;
+
+        log::debug!("Process::close_all_fds() for process '{}'", self.name);
+
+        // Close each fd, which will decrement pipe counts
+        for fd in 0..crate::ipc::MAX_FDS {
+            if let Ok(fd_entry) = self.fd_table.close(fd as i32) {
+                match fd_entry.kind {
+                    FdKind::PipeRead(buffer) => {
+                        buffer.lock().close_read();
+                        log::debug!("Process::close_all_fds() - closed pipe read fd {}", fd);
+                    }
+                    FdKind::PipeWrite(buffer) => {
+                        buffer.lock().close_write();
+                        log::debug!("Process::close_all_fds() - closed pipe write fd {}", fd);
+                    }
+                    FdKind::StdIo(_) => {
+                        // StdIo doesn't need cleanup
+                    }
+                    FdKind::UdpSocket(_) => {
+                        // UDP socket cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed UDP socket fd {}", fd);
+                    }
+                    FdKind::UnixStream(_) => {
+                        // Unix stream cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed Unix stream fd {}", fd);
+                    }
+                    FdKind::UnixSocket(_) => {
+                        // Unix socket cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed Unix socket fd {}", fd);
+                    }
+                    FdKind::UnixListener(_) => {
+                        // Unix listener cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed Unix listener fd {}", fd);
+                    }
+                }
+            }
+        }
+    }
+
     /// Clean up Copy-on-Write frame references when process exits
     ///
     /// Walks all user pages in the process's page table and decrements their
     /// reference counts. Frames that are no longer shared (refcount reaches 0)
     /// are returned to the frame allocator for reuse.
+    #[cfg(target_arch = "x86_64")]
     fn cleanup_cow_frames(&mut self) {
         use crate::memory::frame_allocator::deallocate_frame;
         use crate::memory::frame_metadata::frame_decref;
@@ -382,6 +430,16 @@ impl Process {
                 shared_count
             );
         }
+    }
+
+    /// Clean up Copy-on-Write frame references (ARM64 stub)
+    #[cfg(not(target_arch = "x86_64"))]
+    fn cleanup_cow_frames(&mut self) {
+        // ARM64 stub - CoW not yet implemented
+        log::debug!(
+            "Process {}: CoW cleanup not implemented for ARM64",
+            self.id.as_u64()
+        );
     }
 
     /// Check if process is terminated

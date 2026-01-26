@@ -267,4 +267,22 @@ pub trait CpuOps {
 
     /// Halt with interrupts enabled (wait for interrupt).
     fn halt_with_interrupts();
+
+    /// Execute a closure with interrupts disabled.
+    ///
+    /// This saves the current interrupt state, disables interrupts, executes
+    /// the closure, and then restores the previous interrupt state. This is
+    /// essential for preventing deadlocks when acquiring locks that may also
+    /// be acquired in interrupt context (e.g., socket receive queues).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Cpu::without_interrupts(|| {
+    ///     socket.lock().register_waiter(thread_id);
+    /// });
+    /// ```
+    fn without_interrupts<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R;
 }
