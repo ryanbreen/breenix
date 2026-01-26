@@ -34,15 +34,6 @@ static CURRENT_QUANTUM: AtomicU32 = AtomicU32::new(TIME_QUANTUM);
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-/// Raw serial output for debugging (no locks, minimal overhead)
-#[inline(always)]
-fn raw_serial_char(c: u8) {
-    const PL011_DR: *mut u32 = 0x0900_0000 as *mut u32;
-    unsafe {
-        core::ptr::write_volatile(PL011_DR, c as u32);
-    }
-}
-
 /// Initialize the timer interrupt system
 ///
 /// Sets up the virtual timer to fire periodically for scheduling.
@@ -101,13 +92,11 @@ fn arm_timer(ticks: u64) {
 /// It performs the absolute minimum work:
 /// 1. Re-arm the timer for the next interrupt
 /// 2. Update global time
-/// 3. Decrement time quantum
-/// 4. Set need_resched if quantum expired
+/// 3. Poll keyboard input (VirtIO doesn't use interrupts on ARM64)
+/// 4. Decrement time quantum
+/// 5. Set need_resched if quantum expired
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler() {
-    // Debug marker: 'T' for timer interrupt
-    raw_serial_char(b'T');
-
     // Enter IRQ context (increment HARDIRQ count)
     crate::per_cpu_aarch64::irq_enter();
 
@@ -119,17 +108,58 @@ pub extern "C" fn timer_interrupt_handler() {
     // Update global time (single atomic operation)
     crate::time::timer_interrupt();
 
+    // Poll VirtIO keyboard and push to stdin
+    // VirtIO MMIO devices don't generate interrupts on ARM64 virt machine,
+    // so we poll during timer tick to get keyboard input to userspace
+    poll_keyboard_to_stdin();
+
     // Decrement quantum and check for reschedule
     let old_quantum = CURRENT_QUANTUM.fetch_sub(1, Ordering::Relaxed);
     if old_quantum <= 1 {
         // Quantum expired - request reschedule
         scheduler::set_need_resched();
         CURRENT_QUANTUM.store(TIME_QUANTUM, Ordering::Relaxed);
-        raw_serial_char(b'!'); // Debug: quantum expired
     }
 
     // Exit IRQ context (decrement HARDIRQ count)
     crate::per_cpu_aarch64::irq_exit();
+}
+
+/// Poll VirtIO keyboard and push characters to stdin buffer
+///
+/// This allows keyboard input to reach userspace processes that call read(0, ...)
+fn poll_keyboard_to_stdin() {
+    use crate::drivers::virtio::input_mmio::{self, event_type};
+
+    // Track shift state across calls
+    static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+
+    if !input_mmio::is_initialized() {
+        return;
+    }
+
+    for event in input_mmio::poll_events() {
+        if event.event_type == event_type::EV_KEY {
+            let keycode = event.code;
+            let pressed = event.value != 0;
+
+            // Track shift key state
+            if input_mmio::is_shift(keycode) {
+                SHIFT_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+
+            // Only process key presses (not releases)
+            if pressed {
+                let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
+                if let Some(c) = input_mmio::keycode_to_char(keycode, shift) {
+                    // Push to stdin buffer so userspace can read it
+                    crate::ipc::stdin::push_byte_from_irq(c as u8);
+                }
+            }
+        }
+    }
 }
 
 /// Reset the quantum counter (called when switching threads)

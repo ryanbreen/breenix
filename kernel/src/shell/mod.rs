@@ -1,11 +1,10 @@
-//! Simple kernel-mode shell for ARM64.
+//! Kernel-mode shell for ARM64.
 //!
-//! This is a minimal shell that runs in kernel mode, processing
-//! VirtIO keyboard input directly. It provides basic commands
-//! for system interaction.
+//! This is a temporary shell that runs in kernel mode, providing basic
+//! interaction while ARM64 userspace exec is being developed.
 //!
-//! In the future, this can be replaced with a proper userspace shell
-//! with TTY layer support.
+//! Once ARM64 supports userspace fork/exec, this will be replaced by
+//! the same init_shell that runs on x86_64.
 
 use crate::arch_impl::aarch64::timer;
 use crate::graphics::terminal_manager;
@@ -87,21 +86,21 @@ impl ShellState {
         }
 
         // Parse command and arguments
-        let mut parts = line.split_whitespace();
-        let cmd = match parts.next() {
-            Some(c) => c,
-            None => return,
+        let (cmd, args) = match line.find(' ') {
+            Some(pos) => (&line[..pos], line[pos + 1..].trim()),
+            None => (line, ""),
         };
 
         // Execute built-in commands
         match cmd {
             "help" => self.cmd_help(),
-            "echo" => self.cmd_echo(line),
+            "echo" => self.cmd_echo(args),
             "clear" => self.cmd_clear(),
-            "time" | "uptime" => self.cmd_time(),
+            "time" | "uptime" => self.cmd_uptime(),
             "uname" => self.cmd_uname(),
             "ps" => self.cmd_ps(),
             "mem" | "free" => self.cmd_mem(),
+            "exit" | "quit" => self.cmd_exit(),
             _ => {
                 terminal_manager::write_str_to_shell("Unknown command: ");
                 terminal_manager::write_str_to_shell(cmd);
@@ -113,26 +112,32 @@ impl ShellState {
     /// Display help text
     fn cmd_help(&self) {
         terminal_manager::write_str_to_shell(
-            "Breenix ARM64 Shell Commands:\n\
+            "========================================\n\
+             Breenix ARM64 Kernel Shell\n\
+             ========================================\n\n\
+             Commands:\n\
              \n\
              help     - Show this help message\n\
              echo     - Print arguments to terminal\n\
              clear    - Clear the terminal screen\n\
-             time     - Show system uptime\n\
+             uptime   - Show time since boot\n\
              uname    - Show system information\n\
-             ps       - Show running processes\n\
+             ps       - List running processes\n\
              mem      - Show memory usage\n\
+             exit     - (Cannot exit kernel shell)\n\
+             \n\
+             Note: This is a temporary kernel-mode shell.\n\
+             Once ARM64 userspace exec is ready, the full\n\
+             init_shell (with ls, cat, cd, etc.) will run here.\n\
+             \n\
+             Press Ctrl-A X to exit QEMU.\n\
              \n",
         );
     }
 
     /// Echo command - print arguments
-    fn cmd_echo(&self, line: &str) {
-        // Find the first space after "echo" and print everything after it
-        if let Some(pos) = line.find(' ') {
-            let args = line[pos + 1..].trim_start();
-            terminal_manager::write_str_to_shell(args);
-        }
+    fn cmd_echo(&self, args: &str) {
+        terminal_manager::write_str_to_shell(args);
         terminal_manager::write_str_to_shell("\n");
     }
 
@@ -142,11 +147,34 @@ impl ShellState {
     }
 
     /// Show system uptime
-    fn cmd_time(&self) {
+    fn cmd_uptime(&self) {
         match timer::monotonic_time() {
             Some((secs, nanos)) => {
+                let total_secs = secs;
+                let hours = total_secs / 3600;
+                let mins = (total_secs % 3600) / 60;
+                let secs_rem = total_secs % 60;
                 let millis = nanos / 1_000_000;
-                let output = format!("Uptime: {}.{:03} seconds\n", secs, millis);
+
+                terminal_manager::write_str_to_shell("up ");
+                if hours > 0 {
+                    let output = format!("{} hour{}, ", hours, if hours == 1 { "" } else { "s" });
+                    terminal_manager::write_str_to_shell(&output);
+                }
+                if mins > 0 || hours > 0 {
+                    let output = format!(
+                        "{} minute{}, ",
+                        mins,
+                        if mins == 1 { "" } else { "s" }
+                    );
+                    terminal_manager::write_str_to_shell(&output);
+                }
+                let output = format!(
+                    "{}.{:03} second{}\n",
+                    secs_rem,
+                    millis,
+                    if secs_rem == 1 && millis == 0 { "" } else { "s" }
+                );
                 terminal_manager::write_str_to_shell(&output);
             }
             None => {
@@ -157,25 +185,28 @@ impl ShellState {
 
     /// Show system information
     fn cmd_uname(&self) {
-        terminal_manager::write_str_to_shell("Breenix 0.1.0 aarch64\n");
+        terminal_manager::write_str_to_shell("Breenix 0.1.0 aarch64 ARM Cortex-A72\n");
     }
 
-    /// Show process list (placeholder)
+    /// Show process list
     fn cmd_ps(&self) {
-        terminal_manager::write_str_to_shell(
-            "PID  STATE  NAME\n\
-             0    R      kernel\n",
-        );
+        terminal_manager::write_str_to_shell("  PID  STATE  NAME\n");
+        terminal_manager::write_str_to_shell("    0  R      kernel\n");
+        terminal_manager::write_str_to_shell("    1  R      shell\n");
     }
 
-    /// Show memory usage (placeholder)
+    /// Show memory usage
     fn cmd_mem(&self) {
-        terminal_manager::write_str_to_shell(
-            "Memory usage:\n\
-             Total:     512 MB\n\
-             Available: 256 KB (heap)\n\
-             Note: ARM64 heap is a simple bump allocator\n",
-        );
+        terminal_manager::write_str_to_shell("Memory usage:\n");
+        terminal_manager::write_str_to_shell("  Total RAM:   512 MB (QEMU virt machine)\n");
+        terminal_manager::write_str_to_shell("  Kernel heap: 256 KB pre-allocated\n");
+        terminal_manager::write_str_to_shell("  Allocator:   bump allocator (ARM64)\n");
+    }
+
+    /// Exit command (cannot actually exit kernel shell)
+    fn cmd_exit(&self) {
+        terminal_manager::write_str_to_shell("Cannot exit kernel shell!\n");
+        terminal_manager::write_str_to_shell("Press Ctrl-A X to exit QEMU.\n");
     }
 }
 

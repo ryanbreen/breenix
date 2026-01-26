@@ -46,7 +46,6 @@ pub mod pipe;
 pub mod pty;
 #[cfg(target_arch = "x86_64")]
 pub mod session;
-#[cfg(target_arch = "x86_64")]
 pub mod signal;
 // Socket syscalls - enabled for both architectures
 // Unix domain sockets are fully arch-independent

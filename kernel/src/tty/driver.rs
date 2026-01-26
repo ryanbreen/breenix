@@ -335,12 +335,12 @@ impl TtyDevice {
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
             crate::serial::write_byte(b'\r');
             // Queue CR for deferred framebuffer rendering
-            #[cfg(feature = "interactive")]
+            #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
         crate::serial::write_byte(c);
         // Queue for deferred framebuffer rendering
-        #[cfg(feature = "interactive")]
+        #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
     }
 
@@ -364,11 +364,11 @@ impl TtyDevice {
         for &c in buf {
             if do_onlcr && c == b'\n' {
                 crate::serial::write_byte(b'\r');
-                #[cfg(feature = "interactive")]
+                #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
                 let _ = crate::graphics::render_queue::queue_byte(b'\r');
             }
             crate::serial::write_byte(c);
-            #[cfg(feature = "interactive")]
+            #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(c);
         }
     }
@@ -385,11 +385,11 @@ impl TtyDevice {
         // Handle NL -> CR-NL translation if OPOST and ONLCR are set
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
             crate::serial::write_byte(b'\r');
-            #[cfg(feature = "interactive")]
+            #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
         crate::serial::write_byte(c);
-        #[cfg(feature = "interactive")]
+        #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
     }
 
@@ -405,13 +405,13 @@ impl TtyDevice {
 
             if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
                 crate::serial::write_byte(b'\r');
-                #[cfg(feature = "interactive")]
+                #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
                 let _ = crate::graphics::render_queue::queue_byte(b'\r');
             }
         }
         crate::serial::write_byte(c);
         // Queue for deferred framebuffer rendering
-        #[cfg(feature = "interactive")]
+        #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
     }
 

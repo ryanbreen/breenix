@@ -39,7 +39,6 @@ pub use arch_impl::aarch64::elf;
 pub mod ipc;
 #[cfg(target_arch = "x86_64")]
 pub mod keyboard;
-#[cfg(target_arch = "x86_64")]
 pub mod tty;
 #[cfg(target_arch = "x86_64")]
 pub mod irq_log;

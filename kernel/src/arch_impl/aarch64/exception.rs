@@ -289,24 +289,8 @@ fn raw_serial_char(c: u8) {
 /// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq() {
-    // Debug: show we entered IRQ handler
-    raw_serial_char(b'I');
-
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
-        // Debug: show IRQ ID (as hex digit if < 16, else 'X')
-        raw_serial_char(b':');
-        if irq_id < 10 {
-            raw_serial_char(b'0' + irq_id as u8);
-        } else if irq_id < 16 {
-            raw_serial_char(b'a' + (irq_id - 10) as u8);
-        } else if irq_id < 100 {
-            raw_serial_char(b'0' + (irq_id / 10) as u8);
-            raw_serial_char(b'0' + (irq_id % 10) as u8);
-        } else {
-            raw_serial_char(b'X');
-        }
-        raw_serial_char(b' ');
 
         // Handle the interrupt based on ID
         match irq_id {

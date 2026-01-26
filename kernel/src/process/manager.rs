@@ -2423,6 +2423,263 @@ impl ProcessManager {
         Ok((new_entry_point, initial_rsp))
     }
 
+    /// Replace a process's address space with a new program (exec) for ARM64
+    ///
+    /// This implements the exec() family of system calls on ARM64. Unlike fork(), which creates
+    /// a new process, exec() replaces the current process's address space with a new
+    /// program while keeping the same PID.
+    ///
+    /// The `program_name` parameter is optional - if provided, it updates the process name
+    /// to match the new program.
+    ///
+    /// ARM64-specific details:
+    /// - Uses TTBR0_EL1 for userspace page tables (kernel is always in TTBR1)
+    /// - ELR_EL1 holds the entry point (return PC)
+    /// - SP_EL0 holds the user stack pointer
+    /// - SPSR_EL1 = 0x0 for EL0t mode with interrupts enabled
+    /// - X0-X30 are cleared for security
+    #[cfg(target_arch = "aarch64")]
+    pub fn exec_process(
+        &mut self,
+        pid: ProcessId,
+        elf_data: &[u8],
+        program_name: Option<&str>,
+    ) -> Result<u64, &'static str> {
+        use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
+
+        log::info!(
+            "exec_process [ARM64]: Replacing process {} with new program",
+            pid.as_u64()
+        );
+
+        // CRITICAL OS-STANDARD CHECK: Is this the current process?
+        let is_current_process = self.current_pid == Some(pid);
+        if is_current_process {
+            log::info!("exec_process [ARM64]: Executing on current process - special handling required");
+        }
+
+        // Get the existing process
+        let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+
+        // For now, assume non-current processes are not actively running
+        let is_scheduled = false;
+
+        // Get the main thread (we need to preserve its ID)
+        let main_thread = process
+            .main_thread
+            .as_ref()
+            .ok_or("Process has no main thread")?;
+        let thread_id = main_thread.id;
+
+        // Store old page table for proper cleanup
+        let old_page_table = process.page_table.take();
+
+        log::info!(
+            "exec_process [ARM64]: Preserving thread ID {} for process {}",
+            thread_id,
+            pid.as_u64()
+        );
+
+        // Create a new page table for the new program
+        log::info!("exec_process [ARM64]: Creating new page table...");
+        let mut new_page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new()
+                .map_err(|_| "Failed to create new page table for exec")?,
+        );
+        log::info!("exec_process [ARM64]: New page table created successfully");
+
+        // Clear any user mappings that might have been copied from the current page table
+        new_page_table.clear_user_entries();
+
+        // Unmap the old program's pages in common userspace ranges
+        if let Err(e) = new_page_table.unmap_user_pages(
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE),
+            VirtAddr::new(crate::memory::layout::USERSPACE_BASE + 0x100000),
+        ) {
+            log::warn!("ARM64: Failed to unmap old user code pages: {}", e);
+        }
+
+        // Also unmap any pages in the BSS/data area (just after code)
+        if let Err(e) =
+            new_page_table.unmap_user_pages(VirtAddr::new(0x10001000), VirtAddr::new(0x10010000))
+        {
+            log::warn!("ARM64: Failed to unmap old user data pages: {}", e);
+        }
+
+        // Unmap the stack region before mapping new stack pages
+        {
+            const STACK_SIZE: usize = 64 * 1024; // 64KB stack
+            const STACK_TOP: u64 = 0x7FFF_FF01_0000;
+            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(STACK_TOP);
+            if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
+                log::warn!("ARM64: Failed to unmap old stack pages: {}", e);
+            }
+        }
+
+        log::info!("exec_process [ARM64]: Cleared potential user mappings from new page table");
+
+        // Load the ELF binary into the new page table using ARM64-specific loader
+        log::info!("exec_process [ARM64]: Loading ELF into new page table...");
+        let loaded_elf =
+            crate::arch_impl::aarch64::elf::load_elf_into_page_table(elf_data, new_page_table.as_mut())?;
+        let new_entry_point = loaded_elf.entry_point;
+        log::info!(
+            "exec_process [ARM64]: ELF loaded successfully, entry point: {:#x}",
+            new_entry_point
+        );
+
+        // Allocate and map stack directly into the new process page table
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
+        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
+
+        // Calculate stack range
+        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(USER_STACK_TOP);
+
+        // Map stack pages into the NEW process page table
+        log::info!("exec_process [ARM64]: Mapping stack pages into new process page table");
+        let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
+        let end_page = Page::<Size4KiB>::containing_address(VirtAddr::new(stack_top.as_u64() - 1));
+        log::info!(
+            "exec_process [ARM64]: Stack range: {:#x} - {:#x}",
+            stack_bottom.as_u64(),
+            stack_top.as_u64()
+        );
+
+        for page in Page::range_inclusive(start_page, end_page) {
+            let frame = crate::memory::frame_allocator::allocate_frame()
+                .ok_or("Failed to allocate frame for exec stack")?;
+
+            // Map into the NEW process page table with user-accessible permissions
+            new_page_table.map_page(
+                page,
+                frame,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
+            )?;
+        }
+
+        // For now, we'll use a dummy stack object since we manually mapped the stack
+        let new_stack = crate::memory::stack::allocate_stack_with_privilege(
+            4096, // Dummy size - we already mapped the real stack
+            crate::memory::arch_stub::ThreadPrivilege::User,
+        )
+        .map_err(|_| "Failed to create stack object")?;
+
+        log::info!(
+            "exec_process [ARM64]: New entry point: {:#x}, new stack top: {:#x}",
+            new_entry_point,
+            stack_top.as_u64()
+        );
+
+        // Update the process with new program data
+        if let Some(name) = program_name {
+            process.name = String::from(name);
+            log::info!("exec_process [ARM64]: Updated process name to '{}'", name);
+        }
+        process.entry_point = VirtAddr::new(new_entry_point);
+
+        // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
+        // SIG_IGN handlers are preserved
+        process.signals.exec_reset();
+        log::debug!(
+            "exec_process [ARM64]: Reset signal handlers for process {}",
+            pid.as_u64()
+        );
+
+        // Replace the page table with the new one containing the loaded program
+        process.page_table = Some(new_page_table);
+
+        // Replace the stack
+        process.stack = Some(Box::new(new_stack));
+
+        // Update the main thread context for the new program (ARM64-specific)
+        if let Some(ref mut thread) = process.main_thread {
+            // CRITICAL: Preserve the kernel stack - userspace threads need it for exceptions
+            let preserved_kernel_stack_top = thread.kernel_stack_top;
+            log::info!(
+                "exec_process [ARM64]: Preserving kernel stack top: {:?}",
+                preserved_kernel_stack_top
+            );
+
+            // Reset the CPU context for the new program (ARM64-specific registers)
+            // SP must be 16-byte aligned on ARM64
+            let aligned_stack = stack_top.as_u64() & !0xF;
+
+            // Set ARM64-specific context fields
+            thread.context.elr_el1 = new_entry_point; // Entry point (PC on return)
+            thread.context.sp_el0 = aligned_stack; // User stack pointer
+            thread.context.spsr_el1 = 0x0; // EL0t mode with interrupts enabled
+
+            // Clear all general-purpose registers for security
+            thread.context.x0 = 0;
+            thread.context.x19 = 0;
+            thread.context.x20 = 0;
+            thread.context.x21 = 0;
+            thread.context.x22 = 0;
+            thread.context.x23 = 0;
+            thread.context.x24 = 0;
+            thread.context.x25 = 0;
+            thread.context.x26 = 0;
+            thread.context.x27 = 0;
+            thread.context.x28 = 0;
+            thread.context.x29 = 0; // Frame pointer
+            thread.context.x30 = 0; // Link register
+
+            thread.stack_top = stack_top;
+            thread.stack_bottom = stack_bottom;
+
+            // Restore the preserved kernel stack
+            thread.kernel_stack_top = preserved_kernel_stack_top;
+
+            // Mark the thread as ready to run the new program
+            thread.state = crate::task::thread::ThreadState::Ready;
+
+            log::info!(
+                "exec_process [ARM64]: Updated thread {} context for new program",
+                thread_id
+            );
+        }
+
+        log::info!(
+            "exec_process [ARM64]: Successfully replaced process {} address space",
+            pid.as_u64()
+        );
+
+        // Handle page table switching based on process state
+        if is_current_process {
+            log::info!("exec_process [ARM64]: Current process exec - page table will be used on next context switch");
+        } else if is_scheduled {
+            log::info!(
+                "exec_process [ARM64]: Process {} is scheduled - new page table will be used on next schedule",
+                pid.as_u64()
+            );
+        } else {
+            log::info!(
+                "exec_process [ARM64]: Process {} is not scheduled - new page table ready for when it runs",
+                pid.as_u64()
+            );
+        }
+
+        // Clean up old page table resources
+        if let Some(_old_pt) = old_page_table {
+            log::info!("exec_process [ARM64]: Old page table cleanup needed (TODO)");
+        }
+
+        // Add the process back to the ready queue if it's not already there
+        if !self.ready_queue.contains(&pid) {
+            self.ready_queue.push(pid);
+            log::info!(
+                "exec_process [ARM64]: Added process {} back to ready queue",
+                pid.as_u64()
+            );
+        }
+
+        Ok(new_entry_point)
+    }
+
     /// Set up argc/argv on the stack for a new process
     ///
     /// This function writes the argc/argv structure to the stack following the

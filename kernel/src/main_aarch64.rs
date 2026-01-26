@@ -240,14 +240,14 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("Hello from ARM64!");
     serial_println!();
 
-    // Try to load and run userspace from the test disk
-    // If a VirtIO block device is present with a BXTEST disk, run a test binary
+    // Try to load and run userspace init_shell from the test disk
+    // If a VirtIO block device is present with a BXTEST disk, run init_shell
     if device_count > 0 {
-        serial_println!("[boot] Attempting to load userspace from test disk...");
-        match kernel::boot::test_disk::run_userspace_from_disk("fork_test") {
+        serial_println!("[boot] Loading userspace init_shell from test disk...");
+        match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
             Err(e) => {
-                serial_println!("[boot] Could not load userspace: {}", e);
-                serial_println!("[boot] Falling back to interactive mode");
+                serial_println!("[boot] Failed to load init_shell: {}", e);
+                serial_println!("[boot] Falling back to kernel shell...");
             }
             // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
             Ok(never) => match never {},

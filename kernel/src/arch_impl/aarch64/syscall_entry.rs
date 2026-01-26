@@ -83,19 +83,41 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     let arg6 = frame.arg6();
 
     // Dispatch to syscall handler
-    // Fork needs special handling because it requires access to the frame
+    // Some syscalls need special handling because they require access to the frame
     let result = if syscall_num == syscall_nums::FORK {
         sys_fork_aarch64(frame)
+    } else if syscall_num == syscall_nums::EXEC {
+        sys_exec_aarch64(frame, arg1, arg2)
+    } else if syscall_num == syscall_nums::SIGRETURN {
+        // SIGRETURN restores ALL registers from signal frame - don't overwrite X0 after
+        match crate::syscall::signal::sys_sigreturn_with_frame_aarch64(frame) {
+            crate::syscall::SyscallResult::Ok(_) => {
+                // X0 was already restored from signal frame - don't overwrite it
+                check_and_deliver_signals_aarch64(frame);
+                Aarch64PerCpu::preempt_enable();
+                return;
+            }
+            crate::syscall::SyscallResult::Err(errno) => (-(errno as i64)) as u64,
+        }
+    } else if syscall_num == syscall_nums::PAUSE {
+        match crate::syscall::signal::sys_pause_with_frame_aarch64(frame) {
+            crate::syscall::SyscallResult::Ok(r) => r,
+            crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+        }
+    } else if syscall_num == syscall_nums::SIGSUSPEND {
+        match crate::syscall::signal::sys_sigsuspend_with_frame_aarch64(arg1, arg2, frame) {
+            crate::syscall::SyscallResult::Ok(r) => r,
+            crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+        }
     } else {
-        dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
+        dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6, frame)
     };
 
     // Set return value in X0
     frame.set_return_value(result);
 
-    // TODO: Check for pending signals before returning to userspace
-    // This requires signal infrastructure to be ported to ARM64
-    // check_and_deliver_signals_on_syscall_return_aarch64(frame);
+    // Check for pending signals before returning to userspace
+    check_and_deliver_signals_aarch64(frame);
 
     // Decrement preempt count on syscall exit
     Aarch64PerCpu::preempt_enable();
@@ -144,6 +166,92 @@ pub extern "C" fn check_need_resched_and_switch_aarch64(_frame: &mut Aarch64Exce
 #[no_mangle]
 pub extern "C" fn trace_eret_to_el0(_elr: u64, _spsr: u64) {
     // Intentionally empty - diagnostics would slow down syscall return
+}
+
+// =============================================================================
+// Signal delivery on syscall return (ARM64)
+// =============================================================================
+
+/// Check for and deliver pending signals before returning from a syscall (ARM64)
+///
+/// This function checks if the current process has any deliverable signals.
+/// If so, it modifies the exception frame to jump to the signal handler
+/// instead of returning to the original code.
+fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    // Get current thread ID
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return,
+    };
+
+    // Thread 0 is the idle thread - no signals
+    if current_thread_id == 0 {
+        return;
+    }
+
+    // Try to acquire process manager lock (non-blocking)
+    let mut manager_guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => return, // Lock held, skip - will happen on next interrupt
+    };
+
+    if let Some(ref mut manager) = *manager_guard {
+        // Find the process for this thread
+        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+            // Check alarms
+            crate::signal::delivery::check_and_fire_alarm(process);
+            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
+            // Check if there are any deliverable signals
+            if !crate::signal::delivery::has_deliverable_signals(process) {
+                return;
+            }
+
+            // Switch to process's page table for signal delivery
+            if let Some(ref page_table) = process.page_table {
+                let ttbr0 = page_table.level_4_frame().start_address().as_u64();
+                unsafe {
+                    core::arch::asm!(
+                        "dsb ishst",
+                        "msr ttbr0_el1, {}",
+                        "isb",
+                        in(reg) ttbr0,
+                        options(nostack)
+                    );
+                }
+            }
+
+            // Read current SP_EL0
+            let user_sp = super::context::read_sp_el0();
+
+            // Create SavedRegisters from exception frame
+            let mut saved_regs = crate::task::process_context::SavedRegisters::from_exception_frame_with_sp(frame, user_sp);
+
+            // Deliver signals
+            let signal_result = crate::signal::delivery::deliver_pending_signals(
+                process,
+                frame,
+                &mut saved_regs,
+            );
+
+            // Apply changes back to frame
+            saved_regs.apply_to_frame(frame);
+
+            // Update SP_EL0 if it changed
+            if saved_regs.sp != user_sp {
+                unsafe {
+                    super::context::write_sp_el0(saved_regs.sp);
+                }
+            }
+
+            // Handle termination
+            if let crate::signal::delivery::SignalDeliveryResult::Terminated(_notification) = signal_result {
+                // Process was terminated by signal - switch to idle
+                crate::task::scheduler::set_need_resched();
+                // Note: We can't call switch_to_idle here - let the scheduler handle it
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -247,6 +355,7 @@ fn dispatch_syscall(
     arg4: u64,
     arg5: u64,
     arg6: u64,
+    _frame: &mut Aarch64ExceptionFrame,
 ) -> u64 {
     match num {
         syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
@@ -309,12 +418,57 @@ fn dispatch_syscall(
             }
         }
 
-        // Signal syscalls (stubs)
-        syscall_nums::SIGACTION | syscall_nums::SIGPROCMASK | syscall_nums::SIGPENDING |
-        syscall_nums::SIGALTSTACK | syscall_nums::KILL | syscall_nums::ALARM |
-        syscall_nums::GETITIMER | syscall_nums::SETITIMER => {
-            (-38_i64) as u64 // -ENOSYS
+        // Signal syscalls - now using shared implementations
+        syscall_nums::KILL => {
+            match crate::syscall::signal::sys_kill(arg1 as i64, arg2 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
+        syscall_nums::SIGACTION => {
+            match crate::syscall::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SIGPROCMASK => {
+            match crate::syscall::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SIGPENDING => {
+            match crate::syscall::signal::sys_sigpending(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SIGALTSTACK => {
+            match crate::syscall::signal::sys_sigaltstack(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::ALARM => {
+            match crate::syscall::signal::sys_alarm(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETITIMER => {
+            match crate::syscall::signal::sys_getitimer(arg1 as i32, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SETITIMER => {
+            match crate::syscall::signal::sys_setitimer(arg1 as i32, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        // Note: PAUSE, SIGSUSPEND, and SIGRETURN are handled specially in rust_syscall_handler_aarch64
+        // because they need access to the frame
 
         // Pipe and I/O syscalls (stubs)
         syscall_nums::PIPE | syscall_nums::PIPE2 | syscall_nums::DUP | syscall_nums::DUP2 |
@@ -652,6 +806,222 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
         } else {
             log::error!("sys_fork_aarch64: Process manager not available");
             (-12_i64) as u64 // -ENOMEM
+        }
+    })
+}
+
+// =============================================================================
+// Exec syscall implementation for ARM64
+// =============================================================================
+
+/// sys_exec for ARM64 - Replace current process with a new program
+///
+/// This function replaces the current process's address space with a new program.
+/// On ARM64, we update the exception frame to point to the new program's entry point.
+///
+/// Arguments:
+/// - frame: Mutable reference to the exception frame (to update ELR_EL1/SP_EL0)
+/// - program_name_ptr: Pointer to null-terminated program name string
+/// - argv_ptr: Pointer to argv array (unused in this simplified implementation)
+///
+/// Returns:
+/// - 0 on success (though exec() never returns on success)
+/// - Negative errno on error
+fn sys_exec_aarch64(
+    frame: &mut Aarch64ExceptionFrame,
+    program_name_ptr: u64,
+    _argv_ptr: u64,
+) -> u64 {
+    without_interrupts(|| {
+        log::info!(
+            "sys_exec_aarch64: program_name_ptr={:#x}",
+            program_name_ptr
+        );
+
+        // Get current thread ID from scheduler
+        let current_thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("sys_exec_aarch64: No current thread");
+                return (-22_i64) as u64; // -EINVAL
+            }
+        };
+
+        if current_thread_id == 0 {
+            log::error!("sys_exec_aarch64: Cannot exec from idle thread");
+            return (-22_i64) as u64; // -EINVAL
+        }
+
+        // Exec is only supported with the testing feature for now
+        #[cfg(not(feature = "testing"))]
+        {
+            let _ = frame;
+            log::error!("sys_exec_aarch64: Testing feature not enabled");
+            return (-38_i64) as u64; // -ENOSYS
+        }
+
+        #[cfg(feature = "testing")]
+        {
+            // Get the ELF data and program name
+            let (elf_data, exec_program_name): (&[u8], Option<&'static str>) =
+                if program_name_ptr != 0 {
+                    // Read program name from userspace
+                    let program_name = unsafe {
+                        let mut len = 0;
+                        let ptr = program_name_ptr as *const u8;
+                        while *ptr.add(len) != 0 && len < 256 {
+                            len += 1;
+                        }
+                        core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len))
+                    };
+
+                    log::info!("sys_exec_aarch64: Loading program '{}'", program_name);
+
+                    // Load the binary from the test disk by name
+                    let elf_vec = crate::userspace_test::get_test_binary(program_name);
+                    // Leak the vector to get a static slice (needed for exec_process)
+                    let boxed_slice = elf_vec.into_boxed_slice();
+                    let elf_data = Box::leak(boxed_slice) as &'static [u8];
+                    // Also leak the program name so we can pass it to exec_process
+                    let name_string = alloc::string::String::from(program_name);
+                    let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+                    (elf_data, Some(leaked_name))
+                } else {
+                    log::info!("sys_exec_aarch64: Using default hello_world test program");
+                    (
+                        crate::userspace_test::get_test_binary_static("hello_world"),
+                        Some("hello_world"),
+                    )
+                };
+
+            // Find current process
+            let current_pid = {
+                let manager_guard = crate::process::manager();
+                if let Some(ref manager) = *manager_guard {
+                    if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                        pid
+                    } else {
+                        log::error!(
+                            "sys_exec_aarch64: Thread {} not found in any process",
+                            current_thread_id
+                        );
+                        return (-3_i64) as u64; // -ESRCH
+                    }
+                } else {
+                    log::error!("sys_exec_aarch64: Process manager not available");
+                    return (-12_i64) as u64; // -ENOMEM
+                }
+            };
+
+            log::info!(
+                "sys_exec_aarch64: Replacing process {} (thread {}) with new program",
+                current_pid.as_u64(),
+                current_thread_id
+            );
+
+            // Replace the process's address space
+            let mut manager_guard = crate::process::manager();
+            if let Some(ref mut manager) = *manager_guard {
+                match manager.exec_process(current_pid, elf_data, exec_program_name) {
+                    Ok(new_entry_point) => {
+                        log::info!(
+                            "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
+                            new_entry_point
+                        );
+
+                        // Get the new stack pointer from the exec'd process
+                        // NOTE: Must match the value used in exec_process() in manager.rs
+                        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
+                        // SP must be 16-byte aligned on ARM64
+                        let new_sp = USER_STACK_TOP & !0xF;
+
+                        // Update the exception frame to jump to the new program
+                        frame.elr = new_entry_point; // Entry point (PC on return)
+
+                        // Update SP_EL0 via MSR instruction
+                        unsafe {
+                            core::arch::asm!(
+                                "msr sp_el0, {}",
+                                in(reg) new_sp,
+                                options(nomem, nostack)
+                            );
+                        }
+
+                        // Clear all general-purpose registers in the frame for security
+                        frame.x0 = 0;
+                        frame.x1 = 0;
+                        frame.x2 = 0;
+                        frame.x3 = 0;
+                        frame.x4 = 0;
+                        frame.x5 = 0;
+                        frame.x6 = 0;
+                        frame.x7 = 0;
+                        frame.x8 = 0;
+                        frame.x9 = 0;
+                        frame.x10 = 0;
+                        frame.x11 = 0;
+                        frame.x12 = 0;
+                        frame.x13 = 0;
+                        frame.x14 = 0;
+                        frame.x15 = 0;
+                        frame.x16 = 0;
+                        frame.x17 = 0;
+                        frame.x18 = 0;
+                        frame.x19 = 0;
+                        frame.x20 = 0;
+                        frame.x21 = 0;
+                        frame.x22 = 0;
+                        frame.x23 = 0;
+                        frame.x24 = 0;
+                        frame.x25 = 0;
+                        frame.x26 = 0;
+                        frame.x27 = 0;
+                        frame.x28 = 0;
+                        frame.x29 = 0; // Frame pointer
+                        frame.x30 = 0; // Link register
+
+                        // Set SPSR for EL0t mode with interrupts enabled
+                        frame.spsr = 0x0; // EL0t, DAIF clear
+
+                        // Update TTBR0_EL1 for the new process page table
+                        if let Some(process) = manager.get_process(current_pid) {
+                            if let Some(ref page_table) = process.page_table {
+                                let new_ttbr0 = page_table.level_4_frame().start_address().as_u64();
+                                log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
+                                unsafe {
+                                    core::arch::asm!(
+                                        "dsb ishst",       // Ensure stores complete
+                                        "msr ttbr0_el1, {}", // Switch page table
+                                        "isb",             // Instruction synchronization barrier
+                                        "tlbi vmalle1is",  // Invalidate TLB
+                                        "dsb ish",         // Ensure TLB invalidation completes
+                                        "isb",             // Synchronize
+                                        in(reg) new_ttbr0,
+                                        options(nostack)
+                                    );
+                                }
+                            }
+                        }
+
+                        log::info!(
+                            "sys_exec_aarch64: Frame updated - ELR={:#x}, SP_EL0={:#x}",
+                            frame.elr,
+                            new_sp
+                        );
+
+                        // exec() returns 0 on success (but caller never sees it because
+                        // we're jumping to a new program)
+                        0
+                    }
+                    Err(e) => {
+                        log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
+                        (-12_i64) as u64 // -ENOMEM
+                    }
+                }
+            } else {
+                log::error!("sys_exec_aarch64: Process manager not available");
+                (-12_i64) as u64 // -ENOMEM
+            }
         }
     })
 }

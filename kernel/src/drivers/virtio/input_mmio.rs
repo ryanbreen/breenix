@@ -115,8 +115,13 @@ static mut EVENT_BUFFERS: EventBuffers = EventBuffers {
 
 // Device state
 static mut DEVICE_BASE: u64 = 0;
+static mut DEVICE_SLOT: usize = 0;  // Track which slot for IRQ calculation
 static DEVICE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
+
+/// Base IRQ for VirtIO MMIO devices on QEMU virt machine
+/// IRQ = VIRTIO_IRQ_BASE + slot_number
+const VIRTIO_IRQ_BASE: u32 = 48;
 
 // =============================================================================
 // Descriptor Helpers
@@ -158,13 +163,24 @@ pub fn init() -> Result<(), &'static str> {
             crate::serial_println!("[virtio-input] Slot {} at {:#x}: device_id={}", i, base, id);
 
             if id == device_id::INPUT {
-                crate::serial_println!("[virtio-input] Found input device at {:#x}", base);
+                crate::serial_println!("[virtio-input] Found input device at {:#x} (slot {})", base, i);
                 crate::serial_println!("[virtio-input] Device version: {}", device.version());
 
                 // Initialize the device
                 init_device(&mut device)?;
 
-                unsafe { *(&raw mut DEVICE_BASE) = base; }
+                unsafe {
+                    *(&raw mut DEVICE_BASE) = base;
+                    *(&raw mut DEVICE_SLOT) = i;
+                }
+
+                // Enable the device's interrupt in the GIC
+                let irq = VIRTIO_IRQ_BASE + i as u32;
+                crate::serial_println!("[virtio-input] Enabling IRQ {} for input device", irq);
+                use crate::arch_impl::aarch64::gic;
+                use crate::arch_impl::traits::InterruptController;
+                gic::Gicv2::enable_irq(irq as u8);
+
                 DEVICE_INITIALIZED.store(true, Ordering::Release);
 
                 crate::serial_println!("[virtio-input] Input device initialized successfully");
@@ -455,4 +471,65 @@ pub fn is_modifier(code: u16) -> bool {
 /// Check if keycode is left or right shift
 pub fn is_shift(code: u16) -> bool {
     code == 42 || code == 54
+}
+
+/// Get the IRQ number for the input device (if initialized)
+pub fn get_irq() -> Option<u32> {
+    if DEVICE_INITIALIZED.load(Ordering::Acquire) {
+        let slot = unsafe { *(&raw const DEVICE_SLOT) };
+        Some(VIRTIO_IRQ_BASE + slot as u32)
+    } else {
+        None
+    }
+}
+
+/// Interrupt handler for VirtIO input device
+///
+/// Called from the GIC interrupt dispatcher when the input device generates
+/// an interrupt. Processes pending events and pushes keyboard characters to stdin.
+pub fn handle_interrupt() {
+    if !DEVICE_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    // Acknowledge the interrupt from the device
+    unsafe {
+        let base = *(&raw const DEVICE_BASE);
+        if base != 0 {
+            // Read interrupt status
+            let status_addr = (base + 0x60) as *const u32;
+            let status = core::ptr::read_volatile(status_addr);
+
+            // Acknowledge the interrupt
+            let ack_addr = (base + 0x64) as *mut u32;
+            core::ptr::write_volatile(ack_addr, status);
+        }
+    }
+
+    // Track shift state
+    static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+
+    // Process all pending events
+    for event in poll_events() {
+        if event.event_type == event_type::EV_KEY {
+            let keycode = event.code;
+            let pressed = event.value != 0;
+
+            // Track shift key state
+            if is_shift(keycode) {
+                SHIFT_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+
+            // Only process key presses (not releases)
+            if pressed {
+                let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
+                if let Some(c) = keycode_to_char(keycode, shift) {
+                    // Push to stdin buffer so userspace can read it
+                    crate::ipc::stdin::push_byte_from_irq(c as u8);
+                }
+            }
+        }
+    }
 }

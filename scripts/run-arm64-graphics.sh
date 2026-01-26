@@ -5,29 +5,54 @@
 #
 # This version enables VirtIO GPU for graphical output.
 # Use Cocoa display on macOS, or SDL on Linux.
+# If a test disk exists, it will be loaded for userspace programs.
 
 set -e
 
 BUILD_TYPE="${1:-release}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 if [ "$BUILD_TYPE" = "debug" ]; then
-    KERNEL="target/aarch64-breenix/debug/kernel-aarch64"
+    KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/debug/kernel-aarch64"
 else
-    KERNEL="target/aarch64-breenix/release/kernel-aarch64"
+    KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/release/kernel-aarch64"
 fi
 
 # Check if kernel exists
 if [ ! -f "$KERNEL" ]; then
     echo "Building ARM64 kernel ($BUILD_TYPE)..."
     if [ "$BUILD_TYPE" = "debug" ]; then
-        cargo build --target aarch64-breenix.json -Z build-std=core,alloc -p kernel --bin kernel-aarch64
+        cargo build --target aarch64-unknown-none -p kernel --bin kernel-aarch64
     else
-        cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -p kernel --bin kernel-aarch64
+        cargo build --release --target aarch64-unknown-none -p kernel --bin kernel-aarch64
     fi
 fi
 
-echo "Starting Breenix ARM64 kernel with graphics in QEMU..."
-echo "Serial output goes to terminal, display shows graphics."
+# Check for test disk with userspace binaries
+TEST_DISK="$BREENIX_ROOT/target/aarch64_test_binaries.img"
+DISK_OPTS=""
+if [ -f "$TEST_DISK" ]; then
+    echo "Found test disk with userspace binaries"
+    DISK_OPTS="-device virtio-blk-device,drive=testdisk \
+        -blockdev driver=file,node-name=testfile,filename=$TEST_DISK \
+        -blockdev driver=raw,node-name=testdisk,file=testfile"
+else
+    echo "No test disk found - run 'cargo run -p xtask -- create-test-disk-aarch64' to create one"
+    DISK_OPTS="-device virtio-blk-device,drive=empty \
+        -blockdev driver=file,node-name=nullfile,filename=/dev/null \
+        -blockdev driver=raw,node-name=empty,file=nullfile"
+fi
+
+echo ""
+echo "========================================="
+echo "  Breenix ARM64 Kernel"
+echo "========================================="
+echo "Kernel: $KERNEL"
+if [ -f "$TEST_DISK" ]; then
+    echo "Test disk: $TEST_DISK"
+fi
+echo ""
 echo "Press Ctrl-A X to exit QEMU"
 echo ""
 
@@ -44,7 +69,7 @@ esac
 # Run QEMU with:
 # - VirtIO GPU device (MMIO) for framebuffer
 # - Serial output to terminal (mon:stdio)
-# - VirtIO block device (empty, MMIO)
+# - VirtIO block device (MMIO) for test disk
 # - VirtIO net device (MMIO)
 # - VirtIO keyboard device (MMIO) for keyboard input
 # NOTE: Use -device virtio-*-device (MMIO) not virtio-*-pci
@@ -55,8 +80,7 @@ exec qemu-system-aarch64 \
     -serial mon:stdio \
     -device virtio-gpu-device \
     $DISPLAY_OPT \
-    -device virtio-blk-device,drive=hd0 \
-    -drive if=none,id=hd0,format=raw,file=/dev/null \
+    $DISK_OPTS \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -device virtio-keyboard-device \
