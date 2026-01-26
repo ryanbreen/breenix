@@ -90,8 +90,7 @@ pub fn try_manager() -> Option<spin::MutexGuard<'static, Option<ProcessManager>>
 }
 
 /// Create a new user process using the new architecture
-/// Note: Uses x86_64-specific ELF loader and process creation
-#[cfg(target_arch = "x86_64")]
+/// Note: Uses architecture-specific ELF loader and process creation
 #[allow(dead_code)]
 pub fn create_user_process(name: alloc::string::String, elf_data: &[u8]) -> Result<ProcessId, &'static str> {
     creation::create_user_process(name, elf_data)

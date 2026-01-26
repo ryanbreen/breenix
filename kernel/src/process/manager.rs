@@ -14,9 +14,10 @@ use x86_64::VirtAddr;
 use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
 
 #[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+use crate::memory::arch_stub::VirtAddr;
 
 use super::{Process, ProcessId};
+#[cfg(target_arch = "x86_64")]
 use crate::elf;
 use crate::memory::process_memory::ProcessPageTable;
 use crate::task::thread::Thread;
@@ -266,6 +267,149 @@ impl ProcessManager {
         Ok(pid)
     }
 
+    /// Create a new process from an ELF binary (ARM64 version)
+    ///
+    /// This is simpler than the x86_64 version because:
+    /// - ARM64 uses TTBR1 for kernel mappings automatically (no kernel mapping restoration needed)
+    /// - Uses ARM64-specific ELF loader
+    /// - Uses ARM64-specific ProcessPageTable
+    #[cfg(target_arch = "aarch64")]
+    pub fn create_process(
+        &mut self,
+        name: String,
+        elf_data: &[u8],
+    ) -> Result<ProcessId, &'static str> {
+        // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
+        use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
+
+        crate::serial_println!("manager.create_process [ARM64]: ENTRY - name='{}', elf_size={}", name, elf_data.len());
+
+        // Generate a new PID
+        let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+        crate::serial_println!("manager.create_process [ARM64]: Generated PID {}", pid.as_u64());
+
+        // Create a new page table for this process
+        // On ARM64, this creates a TTBR0 page table for userspace only
+        // Kernel mappings are handled automatically via TTBR1
+        crate::serial_println!("manager.create_process [ARM64]: Creating ProcessPageTable");
+        let mut page_table = Box::new(
+            crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
+                log::error!(
+                    "ARM64: Failed to create process page table for PID {}: {}",
+                    pid.as_u64(),
+                    e
+                );
+                crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable creation failed: {}", e);
+                "Failed to create process page table"
+            })?,
+        );
+        crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable created");
+
+        // Load the ELF binary into the process's page table
+        // Use the ARM64-specific ELF loader
+        crate::serial_println!("manager.create_process [ARM64]: Loading ELF into page table");
+        let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
+            elf_data,
+            page_table.as_mut(),
+        )?;
+        crate::serial_println!(
+            "manager.create_process [ARM64]: ELF loaded, entry={:#x}",
+            loaded_elf.entry_point
+        );
+
+        // NOTE: On ARM64, we skip kernel mapping restoration because:
+        // - TTBR1_EL1 always holds kernel mappings (upper half addresses: 0xFFFF...)
+        // - TTBR0_EL1 holds userspace mappings (lower half addresses: 0x0000...)
+        // - The hardware automatically selects the correct translation table based on address
+        // This is a key simplification compared to x86_64 where CR3 holds all mappings
+
+        // Create the process
+        crate::serial_println!("manager.create_process [ARM64]: Creating Process struct");
+        let entry_point = VirtAddr::new(loaded_elf.entry_point);
+        let mut process = Process::new(pid, name.clone(), entry_point);
+        process.page_table = Some(page_table);
+
+        // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+        crate::serial_println!(
+            "manager.create_process [ARM64]: Process struct created, heap_start={:#x}",
+            heap_base
+        );
+
+        // Update memory usage
+        process.memory_usage.code_size = elf_data.len();
+
+        // Allocate a stack for the process
+        use crate::memory::stack;
+
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
+        crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
+        let user_stack =
+            stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
+                .map_err(|_| {
+                    crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
+                    "Failed to allocate user stack"
+                })?;
+        crate::serial_println!(
+            "manager.create_process [ARM64]: User stack allocated at {:#x}",
+            user_stack.top().as_u64()
+        );
+
+        let stack_top = user_stack.top();
+        process.memory_usage.stack_size = USER_STACK_SIZE;
+
+        // Store the stack in the process
+        process.stack = Some(Box::new(user_stack));
+
+        // Map the user stack pages into the process page table
+        log::debug!("ARM64: Mapping user stack pages into process page table...");
+        crate::serial_println!("manager.create_process [ARM64]: Mapping user stack into process page table");
+        if let Some(ref mut page_table) = process.page_table {
+            let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
+            crate::memory::process_memory::map_user_stack_to_process(
+                page_table,
+                stack_bottom,
+                stack_top,
+            )
+            .map_err(|e| {
+                log::error!("ARM64: Failed to map user stack to process page table: {}", e);
+                "Failed to map user stack in process page table"
+            })?;
+            log::debug!("ARM64: User stack mapped in process page table");
+            crate::serial_println!("manager.create_process [ARM64]: User stack mapped successfully");
+        } else {
+            return Err("Process page table not available for stack mapping");
+        }
+
+        // Create the main thread
+        crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
+        let thread = self.create_main_thread(&mut process, stack_top)?;
+        crate::serial_println!("manager.create_process [ARM64]: Main thread created");
+        process.set_main_thread(thread);
+        crate::serial_println!("manager.create_process [ARM64]: Main thread set on process");
+
+        // Add to ready queue
+        crate::serial_println!(
+            "manager.create_process [ARM64]: Adding PID {} to ready queue",
+            pid.as_u64()
+        );
+        self.ready_queue.push(pid);
+
+        // Insert into process table
+        crate::serial_println!("manager.create_process [ARM64]: Inserting process into process table");
+        self.processes.insert(pid, process);
+
+        log::info!("ARM64: Created process {} (PID {})", name, pid.as_u64());
+        crate::serial_println!(
+            "manager.create_process [ARM64]: SUCCESS - returning PID {}",
+            pid.as_u64()
+        );
+
+        Ok(pid)
+    }
+
     /// Create the main thread for a process
     /// Note: Uses x86_64-specific TLS and thread creation
     #[cfg(target_arch = "x86_64")]
@@ -325,6 +469,72 @@ impl ProcessManager {
         let context = crate::task::thread::CpuContext::new(
             process.entry_point,
             initial_rsp,
+            crate::task::thread::ThreadPrivilege::User,
+        );
+
+        let thread = Thread {
+            id: thread_id,
+            name: String::from(&process.name),
+            state: crate::task::thread::ThreadState::Ready,
+            context,
+            stack_top,
+            stack_bottom,
+            kernel_stack_top: Some(kernel_stack_top),
+            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
+            tls_block: actual_tls_block,
+            priority: 128,
+            time_slice: 10,
+            entry_point: None,
+            privilege: crate::task::thread::ThreadPrivilege::User,
+            has_started: false,
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
+        };
+
+        Ok(thread)
+    }
+
+    /// Create the main thread for a process (ARM64 version)
+    ///
+    /// Note: TLS support is not yet implemented for ARM64.
+    #[cfg(target_arch = "aarch64")]
+    fn create_main_thread(
+        &mut self,
+        process: &mut Process,
+        stack_top: VirtAddr,
+    ) -> Result<Thread, &'static str> {
+        // Allocate a globally unique thread ID
+        let thread_id = crate::task::thread::allocate_thread_id();
+
+        // For ARM64, use a simple TLS placeholder (TLS not yet fully implemented)
+        let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
+
+        // Calculate stack bottom (stack grows down)
+        const USER_STACK_SIZE: usize = 64 * 1024;
+        let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
+
+        // Allocate a kernel stack for exception handling
+        let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
+            log::error!("ARM64: Failed to allocate kernel stack: {}", e);
+            "Failed to allocate kernel stack for thread"
+        })?;
+        let kernel_stack_top = kernel_stack.top();
+
+        log::debug!(
+            "ARM64: Allocated kernel stack at {:#x}",
+            kernel_stack_top.as_u64()
+        );
+
+        // Store the kernel stack - it will be dropped when the thread is destroyed
+        // For now, we'll leak it - TODO: proper cleanup
+        Box::leak(Box::new(kernel_stack));
+
+        // Set up initial context for userspace
+        // On ARM64, SP should be 16-byte aligned
+        let initial_sp = VirtAddr::new(stack_top.as_u64() & !0xF);
+        let context = crate::task::thread::CpuContext::new(
+            process.entry_point,
+            initial_sp,
             crate::task::thread::ThreadPrivilege::User,
         );
 

@@ -74,8 +74,13 @@ pub fn make_private_flags(original_flags: PageTableFlags) -> PageTableFlags {
 }
 
 /// A per-process page table
+///
+/// On x86_64: Contains a full PML4 with kernel mappings copied from the master.
+/// On ARM64: Contains only a TTBR0 L0 table for userspace; kernel uses TTBR1 automatically.
 pub struct ProcessPageTable {
-    /// Physical frame containing the level 4 page table
+    /// Physical frame containing the L0/PML4 page table
+    /// On x86_64: This is the PML4 frame loaded into CR3
+    /// On ARM64: This is the L0 frame loaded into TTBR0_EL1
     level_4_frame: PhysFrame,
     /// The mapper for this page table
     mapper: OffsetPageTable<'static>,
@@ -283,26 +288,78 @@ impl ProcessPageTable {
         Ok(new_l1_frame)
     }
 
-    /// Create a new page table for a process
+    /// Create a new page table for a process (ARM64 version)
+    ///
+    /// On ARM64, this is much simpler than x86_64 because:
+    /// - TTBR1_EL1 handles all kernel mappings automatically
+    /// - We only need to allocate a fresh L0 table for TTBR0 (userspace)
+    /// - No kernel mapping copy is required
+    #[cfg(target_arch = "aarch64")]
+    pub fn new() -> Result<Self, &'static str> {
+        log::debug!("ProcessPageTable::new() [ARM64] - Creating userspace page table");
+
+        // Allocate a frame for the L0 page table (TTBR0)
+        let l0_frame = match allocate_frame() {
+            Some(frame) => {
+                log::debug!(
+                    "ARM64: Allocated L0 frame for TTBR0: {:#x}",
+                    frame.start_address().as_u64()
+                );
+                frame
+            }
+            None => {
+                log::error!("ARM64: Frame allocator returned None - out of memory?");
+                return Err("Failed to allocate frame for page table");
+            }
+        };
+
+        // Get physical memory offset
+        let phys_offset = crate::memory::physical_memory_offset();
+
+        // Zero out the L0 table - all entries should be empty initially
+        // On ARM64, we don't need to copy kernel mappings because TTBR1_EL1
+        // handles kernel addresses (0xFFFF...) automatically
+        let l0_table = unsafe {
+            let virt = phys_offset + l0_frame.start_address().as_u64();
+            &mut *(virt.as_mut_ptr() as *mut PageTable)
+        };
+
+        for i in 0..512 {
+            l0_table[i].set_unused();
+        }
+
+        log::debug!("ARM64: L0 table zeroed - kernel uses TTBR1 automatically");
+
+        // Create mapper for the new page table
+        let mapper = unsafe {
+            let l0_table_ptr = {
+                let virt = phys_offset + l0_frame.start_address().as_u64();
+                &mut *(virt.as_mut_ptr() as *mut PageTable)
+            };
+            OffsetPageTable::new(l0_table_ptr, phys_offset)
+        };
+
+        let page_table = ProcessPageTable {
+            level_4_frame: l0_frame,
+            mapper,
+        };
+
+        log::debug!("ARM64: ProcessPageTable created successfully");
+        Ok(page_table)
+    }
+
+    /// Create a new page table for a process (x86_64 version)
     ///
     /// This creates a new level 4 page table with kernel mappings copied
     /// from the current page table.
+    #[cfg(target_arch = "x86_64")]
     pub fn new() -> Result<Self, &'static str> {
         // NOTE: Removed serial_println here to avoid potential stack issues
-        
+
         // Check stack pointer before allocating
         let rsp: u64;
-        #[cfg(target_arch = "x86_64")]
         unsafe {
             core::arch::asm!("mov {}, rsp", out(reg) rsp);
-        }
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!("mov {}, sp", out(reg) rsp);
-        }
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        {
-            rsp = 0; // Stub for other architectures
         }
         log::debug!("ProcessPageTable::new() - Current RSP: {:#x}", rsp);
 
@@ -1523,13 +1580,41 @@ impl ProcessPageTable {
     }
 }
 
-/// Switch to a process's page table
+/// Switch to a process's page table (ARM64 version)
+///
+/// On ARM64, this only switches TTBR0_EL1 (userspace page table).
+/// Kernel mappings in TTBR1_EL1 remain unchanged.
+///
+/// # Safety
+/// This changes the active page table. The caller must ensure that:
+/// - The new page table is valid
+/// - This is called from a safe context (e.g., during interrupt return)
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
+    let (current_frame, flags) = Cr3::read(); // Reads TTBR0_EL1
+    let new_frame = page_table.level_4_frame();
+
+    if current_frame != new_frame {
+        log::trace!(
+            "ARM64: Switching TTBR0: {:?} -> {:?}",
+            current_frame,
+            new_frame
+        );
+        Cr3::write(new_frame, flags); // Writes TTBR0_EL1 with barriers
+        // ARM64 Cr3::write includes DSB ISH and ISB, so no separate TLB flush needed
+        log::debug!("ARM64: TTBR0 switch completed");
+    }
+}
+
+/// Switch to a process's page table (x86_64 version)
 ///
 /// # Safety
 /// This changes the active page table. The caller must ensure that:
 /// - The new page table is valid
 /// - The kernel mappings are present in the new page table
 /// - This is called from a safe context (e.g., during interrupt return)
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
     let (current_frame, flags) = Cr3::read();
@@ -1541,20 +1626,11 @@ pub unsafe fn switch_to_process_page_table(page_table: &ProcessPageTable) {
             current_frame,
             new_frame
         );
-        #[cfg(target_arch = "x86_64")]
         let stack_ptr: u64 = {
-            let mut rsp: u64;
+            let rsp: u64;
             core::arch::asm!("mov {}, rsp", out(reg) rsp);
             rsp
         };
-        #[cfg(target_arch = "aarch64")]
-        let stack_ptr: u64 = {
-            let mut rsp: u64;
-            core::arch::asm!("mov {}, sp", out(reg) rsp);
-            rsp
-        };
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        let stack_ptr: u64 = 0;
         log::debug!("Current stack pointer: {:#x}", stack_ptr);
 
         // Verify that kernel mappings are present in the new page table
@@ -1609,10 +1685,27 @@ pub fn init_kernel_page_table() {
     }
 }
 
-/// Switch back to the kernel page table
+/// Switch back to the kernel page table (ARM64 version)
+///
+/// On ARM64, kernel mappings are always in TTBR1_EL1, so we don't need to
+/// switch anything. This function is essentially a no-op, but we zero out
+/// TTBR0 to ensure no stale userspace mappings remain active.
 ///
 /// # Safety
 /// Caller must ensure this is called from a safe context
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn switch_to_kernel_page_table() {
+    // On ARM64, TTBR1 always has kernel mappings, so no switch needed.
+    // However, we could optionally zero TTBR0 to prevent any accidental
+    // userspace access. For now, we just log and do nothing.
+    log::trace!("ARM64: switch_to_kernel_page_table - TTBR1 always active");
+}
+
+/// Switch back to the kernel page table (x86_64 version)
+///
+/// # Safety
+/// Caller must ensure this is called from a safe context
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn switch_to_kernel_page_table() {
     // Use the master kernel PML4 which has all kernel mappings including stacks.
     // The bootloader's KERNEL_PAGE_TABLE_FRAME (0x101000) doesn't have the

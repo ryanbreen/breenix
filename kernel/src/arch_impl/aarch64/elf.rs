@@ -251,3 +251,250 @@ pub fn prepare_user_program(elf: &LoadedElf, stack_top: u64) -> UserProgram {
         heap_base: elf.segments_end,
     }
 }
+
+// =============================================================================
+// ELF loading into ProcessPageTable (for process isolation)
+// =============================================================================
+
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{
+    Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr,
+};
+
+/// Load ELF into a specific page table (for process isolation)
+///
+/// This function loads an ARM64 ELF binary into a process's page table,
+/// using physical memory access from kernel space (Linux-style approach).
+/// The kernel never switches to the process page table during loading.
+///
+/// # Arguments
+/// * `data` - The raw ELF file data
+/// * `page_table` - Mutable reference to the process's page table
+///
+/// # Returns
+/// * `Ok(LoadedElf)` - Information about the loaded program
+/// * `Err(&'static str)` - Error description if loading failed
+pub fn load_elf_into_page_table(
+    data: &[u8],
+    page_table: &mut crate::memory::process_memory::ProcessPageTable,
+) -> Result<LoadedElf, &'static str> {
+    // Validate ELF header
+    let header = validate_elf_header(data)?;
+
+    crate::serial_println!(
+        "[elf-arm64] Loading ELF into process page table: entry={:#x}, {} program headers",
+        header.entry,
+        header.phnum
+    );
+
+    let mut max_segment_end: u64 = 0;
+    let mut min_load_addr: u64 = u64::MAX;
+
+    // Process program headers
+    let ph_offset = header.phoff as usize;
+    let ph_size = header.phentsize as usize;
+    let ph_count = header.phnum as usize;
+
+    for i in 0..ph_count {
+        let ph_start = ph_offset + i * ph_size;
+        if ph_start + mem::size_of::<Elf64ProgramHeader>() > data.len() {
+            return Err("Program header out of bounds");
+        }
+
+        // Copy program header to avoid alignment issues
+        let mut ph_bytes = [0u8; mem::size_of::<Elf64ProgramHeader>()];
+        ph_bytes.copy_from_slice(&data[ph_start..ph_start + mem::size_of::<Elf64ProgramHeader>()]);
+        let ph: &Elf64ProgramHeader = unsafe { &*(ph_bytes.as_ptr() as *const Elf64ProgramHeader) };
+
+        if ph.p_type == SegmentType::Load as u32 {
+            load_segment_into_page_table(data, ph, page_table)?;
+
+            // Track address range
+            if ph.p_vaddr < min_load_addr {
+                min_load_addr = ph.p_vaddr;
+            }
+            let segment_end = ph.p_vaddr + ph.p_memsz;
+            if segment_end > max_segment_end {
+                max_segment_end = segment_end;
+            }
+        }
+    }
+
+    // Page-align the heap start (4KB alignment)
+    let heap_start = (max_segment_end + 0xfff) & !0xfff;
+
+    crate::serial_println!(
+        "[elf-arm64] Loaded: base={:#x}, end={:#x}, entry={:#x}",
+        if min_load_addr == u64::MAX { 0 } else { min_load_addr },
+        heap_start,
+        header.entry
+    );
+
+    Ok(LoadedElf {
+        entry_point: header.entry,
+        segments_end: heap_start,
+        load_base: if min_load_addr == u64::MAX { 0 } else { min_load_addr },
+    })
+}
+
+/// Load a single ELF segment into a process page table.
+///
+/// This function:
+/// 1. Calculates the page range needed for the segment
+/// 2. Allocates physical frames for each page
+/// 3. Maps pages into the process page table with appropriate permissions
+/// 4. Copies segment data using physical memory access (kernel stays in its own address space)
+/// 5. Zeros the BSS region (memsz - filesz)
+fn load_segment_into_page_table(
+    data: &[u8],
+    ph: &Elf64ProgramHeader,
+    page_table: &mut crate::memory::process_memory::ProcessPageTable,
+) -> Result<(), &'static str> {
+    let file_start = ph.p_offset as usize;
+    let file_size = ph.p_filesz as usize;
+    let mem_size = ph.p_memsz as usize;
+    let vaddr = VirtAddr::new(ph.p_vaddr);
+
+    if file_start + file_size > data.len() {
+        return Err("Segment data out of bounds");
+    }
+
+    crate::serial_println!(
+        "[elf-arm64] Loading segment: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}",
+        vaddr.as_u64(),
+        file_size,
+        mem_size,
+        ph.p_flags
+    );
+
+    // Calculate page range
+    let start_page = Page::<Size4KiB>::containing_address(vaddr);
+    let end_addr = VirtAddr::new(vaddr.as_u64() + mem_size as u64 - 1);
+    let end_page = Page::<Size4KiB>::containing_address(end_addr);
+
+    // Determine page flags based on ELF segment flags
+    let segment_readable = ph.p_flags & flags::PF_R != 0;
+    let segment_writable = ph.p_flags & flags::PF_W != 0;
+    let segment_executable = ph.p_flags & flags::PF_X != 0;
+
+    // All mapped pages need PRESENT and USER_ACCESSIBLE
+    let mut page_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+
+    if segment_writable {
+        page_flags |= PageTableFlags::WRITABLE;
+    }
+
+    if !segment_executable {
+        page_flags |= PageTableFlags::NO_EXECUTE;
+    }
+
+    crate::serial_println!(
+        "[elf-arm64] Segment permissions: R={}, W={}, X={}",
+        segment_readable,
+        segment_writable,
+        segment_executable
+    );
+
+    // Get physical memory offset for kernel-space access to physical frames
+    let physical_memory_offset = crate::memory::physical_memory_offset();
+
+    // Map and load each page
+    for page in Page::range_inclusive(start_page, end_page) {
+        let page_vaddr = page.start_address();
+
+        // Check if page is already mapped (handles overlapping segments like RELRO)
+        // translate_page takes VirtAddr and returns Option<PhysAddr>
+        #[cfg(target_arch = "x86_64")]
+        let existing_phys_opt = page_table.translate_page(x86_64::VirtAddr::new(page_vaddr.as_u64()));
+        #[cfg(not(target_arch = "x86_64"))]
+        let existing_phys_opt = page_table.translate_page(crate::memory::arch_stub::VirtAddr::new(page_vaddr.as_u64()));
+
+        let (frame, already_mapped) = if let Some(existing_phys) = existing_phys_opt {
+            let existing_frame = PhysFrame::containing_address(PhysAddr::new(existing_phys.as_u64()));
+            crate::serial_println!(
+                "[elf-arm64] Page {:#x} already mapped to frame {:#x}, reusing",
+                page_vaddr.as_u64(),
+                existing_frame.start_address().as_u64()
+            );
+            (existing_frame, true)
+        } else {
+            // Allocate a new physical frame
+            let new_frame = crate::memory::frame_allocator::allocate_frame()
+                .ok_or("Out of memory allocating frame for ELF segment")?;
+
+            crate::serial_println!(
+                "[elf-arm64] Allocated frame {:#x} for page {:#x}",
+                new_frame.start_address().as_u64(),
+                page_vaddr.as_u64()
+            );
+
+            // Map the page in the process page table
+            page_table.map_page(page, new_frame, page_flags)?;
+
+            (new_frame, false)
+        };
+
+        // Get virtual pointer to the physical frame via kernel's physical memory mapping
+        let frame_phys_addr = frame.start_address();
+        let phys_ptr = (physical_memory_offset.as_u64() + frame_phys_addr.as_u64()) as *mut u8;
+
+        // Only zero the page if it was newly allocated (don't overwrite existing data from overlapping segments)
+        if !already_mapped {
+            unsafe {
+                core::ptr::write_bytes(phys_ptr, 0, 4096);
+            }
+        }
+
+        // Calculate which part of the file data maps to this page
+        let page_file_offset = if page_vaddr.as_u64() >= vaddr.as_u64() {
+            page_vaddr.as_u64() - vaddr.as_u64()
+        } else {
+            0
+        };
+
+        let copy_start_in_file = page_file_offset;
+        let copy_end_in_file = core::cmp::min(page_file_offset + 4096, file_size as u64);
+
+        if copy_start_in_file < file_size as u64 && copy_end_in_file > copy_start_in_file {
+            let file_data_start = (file_start as u64 + copy_start_in_file) as usize;
+            let copy_size = (copy_end_in_file - copy_start_in_file) as usize;
+
+            // Calculate offset within the page where data should go
+            let page_offset = if vaddr.as_u64() > page_vaddr.as_u64() {
+                vaddr.as_u64() - page_vaddr.as_u64()
+            } else {
+                0
+            };
+
+            // Copy data using physical memory access (Linux-style approach)
+            unsafe {
+                let src = data.as_ptr().add(file_data_start);
+                let dst = phys_ptr.add(page_offset as usize);
+                core::ptr::copy_nonoverlapping(src, dst, copy_size);
+            }
+
+            crate::serial_println!(
+                "[elf-arm64] Copied {} bytes to frame {:#x} (page {:#x}) at offset {}",
+                copy_size,
+                frame_phys_addr.as_u64(),
+                page_vaddr.as_u64(),
+                page_offset
+            );
+        }
+    }
+
+    let page_count = {
+        let mut count = 0u64;
+        for _ in Page::range_inclusive(start_page, end_page) {
+            count += 1;
+        }
+        count
+    };
+
+    crate::serial_println!(
+        "[elf-arm64] Successfully loaded segment with {} pages",
+        page_count
+    );
+
+    Ok(())
+}
