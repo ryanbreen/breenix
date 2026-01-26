@@ -83,21 +83,19 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     let arg6 = frame.arg6();
 
     // Dispatch to syscall handler
-    // Some syscalls need special handling because they require access to the frame
-    let result = match syscall_num {
-        syscall_nums::FORK => sys_fork_aarch64(frame),
-        syscall_nums::SIGRETURN => sys_sigreturn_aarch64(frame),
-        syscall_nums::PAUSE => sys_pause_aarch64(frame),
-        syscall_nums::SIGSUSPEND => sys_sigsuspend_aarch64(frame, arg1, arg2),
-        _ => dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6),
+    // Fork needs special handling because it requires access to the frame
+    let result = if syscall_num == syscall_nums::FORK {
+        sys_fork_aarch64(frame)
+    } else {
+        dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
     };
 
     // Set return value in X0
     frame.set_return_value(result);
 
-    // Check for pending signals before returning to userspace
-    // This is required for POSIX compliance - signals must be delivered on syscall return
-    check_and_deliver_signals_on_syscall_return_aarch64(frame);
+    // TODO: Check for pending signals before returning to userspace
+    // This requires signal infrastructure to be ported to ARM64
+    // check_and_deliver_signals_on_syscall_return_aarch64(frame);
 
     // Decrement preempt count on syscall exit
     Aarch64PerCpu::preempt_enable();
@@ -155,7 +153,7 @@ pub extern "C" fn trace_eret_to_el0(_elr: u64, _spsr: u64) {
 /// Syscall numbers (Breenix ABI - matches libbreenix/src/syscall.rs)
 /// We use the same syscall numbers across architectures for simplicity.
 mod syscall_nums {
-    // Breenix syscall numbers (same as x86_64 for consistency)
+    // Core syscalls
     pub const EXIT: u64 = 0;
     pub const WRITE: u64 = 1;
     pub const READ: u64 = 2;
@@ -168,6 +166,7 @@ mod syscall_nums {
     pub const MPROTECT: u64 = 10;
     pub const MUNMAP: u64 = 11;
     pub const BRK: u64 = 12;
+    // Signal syscalls
     pub const SIGACTION: u64 = 13;
     pub const SIGPROCMASK: u64 = 14;
     pub const SIGRETURN: u64 = 15;
@@ -182,6 +181,15 @@ mod syscall_nums {
     pub const ALARM: u64 = 37;
     pub const SETITIMER: u64 = 38;
     pub const GETPID: u64 = 39;
+    pub const SOCKET: u64 = 41;
+    pub const CONNECT: u64 = 42;
+    pub const ACCEPT: u64 = 43;
+    pub const SENDTO: u64 = 44;
+    pub const RECVFROM: u64 = 45;
+    pub const SHUTDOWN: u64 = 48;
+    pub const BIND: u64 = 49;
+    pub const LISTEN: u64 = 50;
+    pub const SOCKETPAIR: u64 = 53;
     pub const EXEC: u64 = 59;
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
@@ -195,15 +203,6 @@ mod syscall_nums {
     pub const UNLINK: u64 = 87;
     pub const SYMLINK: u64 = 88;
     pub const READLINK: u64 = 89;
-    pub const SOCKET: u64 = 41;
-    pub const CONNECT: u64 = 42;
-    pub const ACCEPT: u64 = 43;
-    pub const SENDTO: u64 = 44;
-    pub const RECVFROM: u64 = 45;
-    pub const SHUTDOWN: u64 = 48;
-    pub const BIND: u64 = 49;
-    pub const LISTEN: u64 = 50;
-    pub const SOCKETPAIR: u64 = 53;
     pub const SETPGID: u64 = 109;
     pub const SETSID: u64 = 112;
     pub const GETPGID: u64 = 121;
@@ -245,148 +244,120 @@ fn dispatch_syscall(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    arg4: u64,
-    arg5: u64,
-    arg6: u64,
+    _arg4: u64,
+    _arg5: u64,
+    _arg6: u64,
 ) -> u64 {
     match num {
         syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
-            // Use proper exit handler that terminates the process
-            match crate::syscall::handlers::sys_exit(arg1 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            let exit_code = arg1 as i32;
+            crate::serial_println!("[syscall] exit({})", exit_code);
+            crate::serial_println!();
+            crate::serial_println!("========================================");
+            crate::serial_println!("  Userspace Test Complete!");
+            crate::serial_println!("  Exit code: {}", exit_code);
+            crate::serial_println!("========================================");
+            crate::serial_println!();
+
+            // For now, halt - real implementation would terminate process
+            loop {
+                unsafe {
+                    core::arch::asm!("wfi");
+                }
             }
         }
 
         syscall_nums::WRITE | syscall_nums::ARM64_WRITE => sys_write(arg1, arg2, arg3),
 
         syscall_nums::READ => {
-            match crate::syscall::handlers::sys_read(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+            // Stub: not implemented yet
+            (-38_i64) as u64 // -ENOSYS
         }
 
         syscall_nums::CLOSE => {
-            match crate::syscall::pipe::sys_close(arg1 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+            // Stub: close - just succeed for now
+            0
         }
 
         syscall_nums::BRK => {
-            match crate::syscall::memory::sys_brk(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+            // Stub: brk syscall - return same address (no-op)
+            arg1
         }
 
-        // Memory mapping syscalls
-        syscall_nums::MMAP => {
-            match crate::syscall::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Memory mapping syscalls (stubs)
+        syscall_nums::MMAP | syscall_nums::MUNMAP | syscall_nums::MPROTECT => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::MUNMAP => {
-            match crate::syscall::mmap::sys_munmap(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Signal syscalls (stubs)
+        syscall_nums::SIGACTION | syscall_nums::SIGPROCMASK | syscall_nums::SIGPENDING |
+        syscall_nums::SIGALTSTACK | syscall_nums::KILL | syscall_nums::ALARM |
+        syscall_nums::GETITIMER | syscall_nums::SETITIMER => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::MPROTECT => {
-            match crate::syscall::mmap::sys_mprotect(arg1, arg2, arg3 as u32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Pipe and I/O syscalls (stubs)
+        syscall_nums::PIPE | syscall_nums::PIPE2 | syscall_nums::DUP | syscall_nums::DUP2 |
+        syscall_nums::FCNTL | syscall_nums::POLL | syscall_nums::SELECT | syscall_nums::IOCTL => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        // Pipe and I/O syscalls
-        syscall_nums::PIPE => {
-            match crate::syscall::pipe::sys_pipe(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Process syscalls (stubs)
+        syscall_nums::EXEC | syscall_nums::WAIT4 => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::PIPE2 => {
-            match crate::syscall::pipe::sys_pipe2(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Socket syscalls (stubs)
+        syscall_nums::SOCKET | syscall_nums::CONNECT | syscall_nums::ACCEPT |
+        syscall_nums::SENDTO | syscall_nums::RECVFROM | syscall_nums::BIND |
+        syscall_nums::LISTEN | syscall_nums::SHUTDOWN | syscall_nums::SOCKETPAIR => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::DUP => {
-            match crate::syscall::handlers::sys_dup(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Filesystem syscalls (stubs)
+        syscall_nums::OPEN | syscall_nums::LSEEK | syscall_nums::FSTAT |
+        syscall_nums::GETDENTS64 | syscall_nums::ACCESS | syscall_nums::GETCWD |
+        syscall_nums::CHDIR | syscall_nums::RENAME | syscall_nums::MKDIR |
+        syscall_nums::RMDIR | syscall_nums::LINK | syscall_nums::UNLINK |
+        syscall_nums::SYMLINK | syscall_nums::READLINK | syscall_nums::MKNOD => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::DUP2 => {
-            match crate::syscall::handlers::sys_dup2(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Session syscalls (stubs)
+        syscall_nums::SETPGID | syscall_nums::SETSID | syscall_nums::GETPGID |
+        syscall_nums::GETSID => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::FCNTL => {
-            match crate::syscall::handlers::sys_fcntl(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // PTY syscalls (stubs)
+        syscall_nums::POSIX_OPENPT | syscall_nums::GRANTPT |
+        syscall_nums::UNLOCKPT | syscall_nums::PTSNAME => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::POLL => {
-            match crate::syscall::handlers::sys_poll(arg1, arg2, arg3 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Graphics syscalls (stubs)
+        syscall_nums::FBINFO | syscall_nums::FBDRAW => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::SELECT => {
-            match crate::syscall::handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // Process syscalls
-        syscall_nums::EXEC => {
-            match crate::syscall::handlers::sys_exec(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::WAIT4 => {
-            match crate::syscall::handlers::sys_waitpid(arg1 as i64, arg2, arg3 as u32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+        // Testing syscalls (stubs)
+        syscall_nums::COW_STATS | syscall_nums::SIMULATE_OOM => {
+            (-38_i64) as u64 // -ENOSYS
         }
 
         syscall_nums::GETPID => {
-            match crate::syscall::handlers::sys_getpid() {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+            // Return fixed PID for now
+            1
         }
 
         syscall_nums::GETTID => {
-            match crate::syscall::handlers::sys_gettid() {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+            // Return fixed TID for now
+            1
         }
 
         syscall_nums::YIELD => {
-            match crate::syscall::handlers::sys_yield() {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
+            // Yield does nothing for single-process kernel
+            0
         }
 
         syscall_nums::GET_TIME => {
@@ -397,337 +368,6 @@ fn dispatch_syscall(
         syscall_nums::CLOCK_GETTIME => {
             // clock_gettime: writes to timespec pointer in arg2
             sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec)
-        }
-
-        // Signal syscalls
-        syscall_nums::KILL => {
-            match crate::syscall::signal::sys_kill(arg1 as i64, arg2 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SIGACTION => {
-            match crate::syscall::signal::sys_sigaction(arg1 as i32, arg2, arg3, arg4) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SIGPROCMASK => {
-            match crate::syscall::signal::sys_sigprocmask(arg1 as i32, arg2, arg3, arg4) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SIGPENDING => {
-            match crate::syscall::signal::sys_sigpending(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SIGALTSTACK => {
-            match crate::syscall::signal::sys_sigaltstack(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::ALARM => {
-            match crate::syscall::signal::sys_alarm(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::GETITIMER => {
-            match crate::syscall::signal::sys_getitimer(arg1 as i32, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SETITIMER => {
-            match crate::syscall::signal::sys_setitimer(arg1 as i32, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // Note: SIGRETURN, SIGSUSPEND, and PAUSE require frame access
-        // They are handled separately with the frame passed in
-        syscall_nums::SIGRETURN | syscall_nums::SIGSUSPEND | syscall_nums::PAUSE => {
-            // These should not reach here - they need frame access
-            log::warn!("[syscall] {} requires frame access - use rust_syscall_handler_aarch64", num);
-            (-38_i64) as u64 // -ENOSYS
-        }
-
-        // Socket syscalls
-        syscall_nums::SOCKET => {
-            match crate::syscall::socket::sys_socket(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::CONNECT => {
-            match crate::syscall::socket::sys_connect(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::ACCEPT => {
-            match crate::syscall::socket::sys_accept(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SENDTO => {
-            match crate::syscall::socket::sys_sendto(arg1, arg2, arg3, arg4, arg5, arg6) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::RECVFROM => {
-            match crate::syscall::socket::sys_recvfrom(arg1, arg2, arg3, arg4, arg5, arg6) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SHUTDOWN => {
-            match crate::syscall::socket::sys_shutdown(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::BIND => {
-            match crate::syscall::socket::sys_bind(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::LISTEN => {
-            match crate::syscall::socket::sys_listen(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SOCKETPAIR => {
-            match crate::syscall::socket::sys_socketpair(arg1, arg2, arg3, arg4) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // Ioctl
-        syscall_nums::IOCTL => {
-            match crate::syscall::ioctl::sys_ioctl(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // Filesystem syscalls
-        syscall_nums::ACCESS => {
-            match crate::syscall::fs::sys_access(arg1, arg2 as u32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::GETCWD => {
-            match crate::syscall::fs::sys_getcwd(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::CHDIR => {
-            match crate::syscall::fs::sys_chdir(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::OPEN => {
-            match crate::syscall::fs::sys_open(arg1, arg2 as u32, arg3 as u32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::LSEEK => {
-            match crate::syscall::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::FSTAT => {
-            match crate::syscall::fs::sys_fstat(arg1 as i32, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::GETDENTS64 => {
-            match crate::syscall::fs::sys_getdents64(arg1 as i32, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::RENAME => {
-            match crate::syscall::fs::sys_rename(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::MKDIR => {
-            match crate::syscall::fs::sys_mkdir(arg1, arg2 as u32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::RMDIR => {
-            match crate::syscall::fs::sys_rmdir(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::LINK => {
-            match crate::syscall::fs::sys_link(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::UNLINK => {
-            match crate::syscall::fs::sys_unlink(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SYMLINK => {
-            match crate::syscall::fs::sys_symlink(arg1, arg2) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::READLINK => {
-            match crate::syscall::fs::sys_readlink(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::MKNOD => {
-            match crate::syscall::fifo::sys_mknod(arg1, arg2 as u32, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // Session/process group syscalls
-        syscall_nums::SETPGID => {
-            match crate::syscall::session::sys_setpgid(arg1 as i32, arg2 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SETSID => {
-            match crate::syscall::session::sys_setsid() {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::GETPGID => {
-            match crate::syscall::session::sys_getpgid(arg1 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::GETSID => {
-            match crate::syscall::session::sys_getsid(arg1 as i32) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // PTY syscalls
-        syscall_nums::POSIX_OPENPT => {
-            match crate::syscall::pty::sys_posix_openpt(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::GRANTPT => {
-            match crate::syscall::pty::sys_grantpt(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::UNLOCKPT => {
-            match crate::syscall::pty::sys_unlockpt(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::PTSNAME => {
-            match crate::syscall::pty::sys_ptsname(arg1, arg2, arg3) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // Graphics syscalls
-        syscall_nums::FBINFO => {
-            match crate::syscall::graphics::sys_fbinfo(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::FBDRAW => {
-            match crate::syscall::graphics::sys_fbdraw(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        // Testing/diagnostic syscalls
-        syscall_nums::COW_STATS => {
-            match crate::syscall::handlers::sys_cow_stats(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
-        }
-
-        syscall_nums::SIMULATE_OOM => {
-            match crate::syscall::handlers::sys_simulate_oom(arg1) {
-                crate::syscall::SyscallResult::Ok(v) => v,
-                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
-            }
         }
 
         _ => {
@@ -944,502 +584,6 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
             (-12_i64) as u64 // -ENOMEM
         }
     })
-}
-
-// =============================================================================
-// Signal-related syscalls for ARM64
-// =============================================================================
-
-/// Userspace address limit - addresses must be below this to be valid userspace
-const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
-
-/// sys_sigreturn for ARM64 - Return from signal handler
-///
-/// This syscall is called by the signal trampoline after a signal handler returns.
-/// It restores the pre-signal execution context from the SignalFrame pushed to
-/// the user stack when the signal was delivered.
-fn sys_sigreturn_aarch64(frame: &mut Aarch64ExceptionFrame) -> u64 {
-    use crate::signal::types::SignalFrame;
-
-    // Read SP_EL0 to find the user stack
-    let user_sp: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, sp_el0", out(reg) user_sp, options(nomem, nostack));
-    }
-
-    // The signal frame is at SP - 8 (signal handler's 'ret' popped the return address)
-    let signal_frame_ptr = (user_sp - 8) as *const SignalFrame;
-
-    // Read the signal frame from userspace
-    let signal_frame = unsafe { *signal_frame_ptr };
-
-    // Verify magic number
-    if signal_frame.magic != SignalFrame::MAGIC {
-        log::error!(
-            "sys_sigreturn_aarch64: invalid magic {:#x} (expected {:#x})",
-            signal_frame.magic,
-            SignalFrame::MAGIC
-        );
-        return (-14_i64) as u64; // -EFAULT
-    }
-
-    // Validate saved_pc is in userspace
-    if signal_frame.saved_pc >= USER_SPACE_END {
-        log::error!(
-            "sys_sigreturn_aarch64: saved_pc {:#x} is not in userspace",
-            signal_frame.saved_pc
-        );
-        return (-14_i64) as u64; // -EFAULT
-    }
-
-    // Validate saved_sp is in userspace
-    if signal_frame.saved_sp >= USER_SPACE_END {
-        log::error!(
-            "sys_sigreturn_aarch64: saved_sp {:#x} is not in userspace",
-            signal_frame.saved_sp
-        );
-        return (-14_i64) as u64; // -EFAULT
-    }
-
-    log::debug!(
-        "sigreturn_aarch64: restoring context from frame at {:#x}, saved_pc={:#x}",
-        user_sp,
-        signal_frame.saved_pc
-    );
-
-    // Restore the execution context
-    frame.elr = signal_frame.saved_pc;
-    frame.spsr = signal_frame.saved_pstate;
-
-    // Restore SP_EL0
-    unsafe {
-        core::arch::asm!("msr sp_el0, {}", in(reg) signal_frame.saved_sp, options(nomem, nostack));
-    }
-
-    // Restore general-purpose registers (x0-x30)
-    frame.x0 = signal_frame.saved_x[0];
-    frame.x1 = signal_frame.saved_x[1];
-    frame.x2 = signal_frame.saved_x[2];
-    frame.x3 = signal_frame.saved_x[3];
-    frame.x4 = signal_frame.saved_x[4];
-    frame.x5 = signal_frame.saved_x[5];
-    frame.x6 = signal_frame.saved_x[6];
-    frame.x7 = signal_frame.saved_x[7];
-    frame.x8 = signal_frame.saved_x[8];
-    frame.x9 = signal_frame.saved_x[9];
-    frame.x10 = signal_frame.saved_x[10];
-    frame.x11 = signal_frame.saved_x[11];
-    frame.x12 = signal_frame.saved_x[12];
-    frame.x13 = signal_frame.saved_x[13];
-    frame.x14 = signal_frame.saved_x[14];
-    frame.x15 = signal_frame.saved_x[15];
-    frame.x16 = signal_frame.saved_x[16];
-    frame.x17 = signal_frame.saved_x[17];
-    frame.x18 = signal_frame.saved_x[18];
-    frame.x19 = signal_frame.saved_x[19];
-    frame.x20 = signal_frame.saved_x[20];
-    frame.x21 = signal_frame.saved_x[21];
-    frame.x22 = signal_frame.saved_x[22];
-    frame.x23 = signal_frame.saved_x[23];
-    frame.x24 = signal_frame.saved_x[24];
-    frame.x25 = signal_frame.saved_x[25];
-    frame.x26 = signal_frame.saved_x[26];
-    frame.x27 = signal_frame.saved_x[27];
-    frame.x28 = signal_frame.saved_x[28];
-    frame.x29 = signal_frame.saved_x[29];
-    frame.x30 = signal_frame.saved_x[30];
-
-    // Restore the signal mask
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => return (-3_i64) as u64, // -ESRCH
-    };
-
-    if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-                // Check if we're returning from a signal that interrupted sigsuspend
-                if let Some(saved_mask) = process.signals.sigsuspend_saved_mask.take() {
-                    process.signals.set_blocked(saved_mask);
-                    log::info!(
-                        "sigreturn_aarch64: restored sigsuspend saved mask to {:#x}",
-                        saved_mask
-                    );
-                } else {
-                    process.signals.set_blocked(signal_frame.saved_blocked);
-                    log::debug!(
-                        "sigreturn_aarch64: restored signal mask to {:#x}",
-                        signal_frame.saved_blocked
-                    );
-                }
-
-                // Clear on_stack flag if we were on alt stack
-                if process.signals.alt_stack.on_stack {
-                    process.signals.alt_stack.on_stack = false;
-                }
-            }
-        }
-    }
-
-    log::info!(
-        "sigreturn_aarch64: restored context, returning to PC={:#x} SP={:#x}",
-        signal_frame.saved_pc,
-        signal_frame.saved_sp
-    );
-
-    0 // Return value is ignored - original x0 was restored above
-}
-
-/// sys_pause for ARM64 - Wait until a signal is delivered
-fn sys_pause_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!("sys_pause_aarch64: Thread {} blocking until signal arrives", thread_id);
-
-    // Read SP_EL0 for context
-    let user_sp: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, sp_el0", out(reg) user_sp, options(nomem, nostack));
-    }
-
-    // Save userspace context
-    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
-
-    // Save to process
-    if let Some(mut manager_guard) = crate::process::try_manager() {
-        if let Some(ref mut manager) = *manager_guard {
-            if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                if let Some(ref mut thread) = process.main_thread {
-                    thread.saved_userspace_context = Some(userspace_context.clone());
-                }
-            }
-        }
-    }
-
-    // Block until signal
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal_with_context(Some(userspace_context));
-    });
-
-    // Re-enable preemption for HLT loop
-    Aarch64PerCpu::preempt_enable();
-
-    // Wait loop
-    loop {
-        crate::task::scheduler::yield_current();
-        unsafe { core::arch::asm!("wfi"); }
-
-        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
-            } else {
-                false
-            }
-        }).unwrap_or(false);
-
-        if !still_blocked {
-            break;
-        }
-    }
-
-    // Clear blocked state
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
-            thread.blocked_in_syscall = false;
-            thread.saved_userspace_context = None;
-        }
-    });
-
-    // Re-disable preemption
-    Aarch64PerCpu::preempt_disable();
-
-    (-4_i64) as u64 // -EINTR
-}
-
-/// sys_sigsuspend for ARM64 - Atomically set signal mask and wait
-fn sys_sigsuspend_aarch64(frame: &Aarch64ExceptionFrame, mask_ptr: u64, sigsetsize: u64) -> u64 {
-    use crate::signal::constants::UNCATCHABLE_SIGNALS;
-
-    // Validate sigsetsize
-    if sigsetsize != 8 {
-        log::warn!("sys_sigsuspend_aarch64: invalid sigsetsize {}", sigsetsize);
-        return (-22_i64) as u64; // -EINVAL
-    }
-
-    // Read mask from userspace
-    let new_mask: u64 = if mask_ptr != 0 {
-        unsafe { *(mask_ptr as *const u64) }
-    } else {
-        return (-14_i64) as u64; // -EFAULT
-    };
-
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    log::info!(
-        "sys_sigsuspend_aarch64: Thread {} suspending with mask {:#x}",
-        thread_id, new_mask
-    );
-
-    // Read SP_EL0 for context
-    let user_sp: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, sp_el0", out(reg) user_sp, options(nomem, nostack));
-    }
-
-    let userspace_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
-
-    // Save mask and context atomically
-    {
-        if let Some(mut manager_guard) = crate::process::try_manager() {
-            if let Some(ref mut manager) = *manager_guard {
-                if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
-                    let saved_mask = process.signals.blocked;
-                    let sanitized_mask = new_mask & !UNCATCHABLE_SIGNALS;
-                    process.signals.set_blocked(sanitized_mask);
-                    process.signals.sigsuspend_saved_mask = Some(saved_mask);
-
-                    if let Some(ref mut thread) = process.main_thread {
-                        thread.saved_userspace_context = Some(userspace_context.clone());
-                    }
-
-                    log::info!(
-                        "sys_sigsuspend_aarch64: Thread {} saved mask {:#x}, set temp mask {:#x}",
-                        thread_id, saved_mask, sanitized_mask
-                    );
-                } else {
-                    return (-3_i64) as u64; // -ESRCH
-                }
-            } else {
-                return (-3_i64) as u64; // -ESRCH
-            }
-        } else {
-            return (-3_i64) as u64; // -ESRCH
-        }
-    }
-
-    // Block until signal
-    crate::task::scheduler::with_scheduler(|sched| {
-        sched.block_current_for_signal_with_context(Some(userspace_context));
-    });
-
-    // Re-enable preemption for wait loop
-    Aarch64PerCpu::preempt_enable();
-
-    // Wait loop
-    loop {
-        crate::task::scheduler::yield_current();
-        unsafe { core::arch::asm!("wfi"); }
-
-        let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
-            if let Some(thread) = sched.current_thread_mut() {
-                thread.state == crate::task::thread::ThreadState::BlockedOnSignal
-            } else {
-                false
-            }
-        }).unwrap_or(false);
-
-        if !still_blocked {
-            break;
-        }
-    }
-
-    // Clear blocked state
-    crate::task::scheduler::with_scheduler(|sched| {
-        if let Some(thread) = sched.current_thread_mut() {
-            thread.blocked_in_syscall = false;
-            thread.saved_userspace_context = None;
-        }
-    });
-
-    // Re-disable preemption
-    Aarch64PerCpu::preempt_disable();
-
-    (-4_i64) as u64 // -EINTR
-}
-
-// =============================================================================
-// Signal delivery on syscall return (ARM64)
-// =============================================================================
-
-/// Check for pending signals before returning to userspace (ARM64)
-///
-/// This is critical for POSIX compliance - signals must be delivered on syscall return.
-fn check_and_deliver_signals_on_syscall_return_aarch64(frame: &mut Aarch64ExceptionFrame) {
-    use crate::signal::constants::*;
-    use crate::signal::types::SignalFrame;
-
-    // Get current thread ID
-    let current_thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => return,
-    };
-
-    // Thread 0 is idle - no signals
-    if current_thread_id == 0 {
-        return;
-    }
-
-    // Try to acquire process manager lock (non-blocking)
-    let mut manager_guard = match crate::process::try_manager() {
-        Some(guard) => guard,
-        None => return, // Lock held, skip - will happen on next timer interrupt
-    };
-
-    if let Some(ref mut manager) = *manager_guard {
-        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
-            // Check interval timers
-            crate::signal::delivery::check_and_fire_alarm(process);
-            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
-
-            // Check if there are any deliverable signals
-            if !crate::signal::delivery::has_deliverable_signals(process) {
-                return;
-            }
-
-            // Get next deliverable signal
-            let sig = match process.signals.next_deliverable_signal() {
-                Some(s) => s,
-                None => return,
-            };
-
-            // Clear pending flag
-            process.signals.clear_pending(sig);
-
-            // Get the handler
-            let action = *process.signals.get_handler(sig);
-
-            match action.handler {
-                SIG_DFL => {
-                    // Default action - re-queue for timer interrupt to handle
-                    process.signals.set_pending(sig);
-                    return;
-                }
-                SIG_IGN => {
-                    // Signal ignored
-                    return;
-                }
-                handler_addr => {
-                    // User-defined handler - set up signal frame
-                    deliver_signal_to_user_handler_aarch64(
-                        process,
-                        frame,
-                        sig,
-                        handler_addr,
-                        &action,
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Deliver a signal to a user-defined handler (ARM64)
-fn deliver_signal_to_user_handler_aarch64(
-    process: &mut crate::process::Process,
-    frame: &mut Aarch64ExceptionFrame,
-    sig: u32,
-    handler_addr: u64,
-    action: &crate::signal::types::SignalAction,
-) {
-    use crate::signal::constants::*;
-    use crate::signal::types::SignalFrame;
-
-    // Read current SP_EL0
-    let current_sp: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, sp_el0", out(reg) current_sp, options(nomem, nostack));
-    }
-
-    // Check if we should use alternate stack
-    let use_alt_stack = (action.flags & SA_ONSTACK) != 0
-        && (process.signals.alt_stack.flags & SS_DISABLE) == 0
-        && process.signals.alt_stack.size > 0
-        && !process.signals.alt_stack.on_stack;
-
-    let user_sp = if use_alt_stack {
-        let alt_top = process.signals.alt_stack.base + process.signals.alt_stack.size as u64;
-        process.signals.alt_stack.on_stack = true;
-        alt_top
-    } else {
-        current_sp
-    };
-
-    // Build signal frame
-    let mut signal_frame = SignalFrame {
-        trampoline_addr: action.restorer,
-        magic: SignalFrame::MAGIC,
-        signal: sig as u64,
-        siginfo_ptr: 0,
-        ucontext_ptr: 0,
-        saved_pc: frame.elr,
-        saved_sp: current_sp,
-        saved_pstate: frame.spsr,
-        saved_x: [0u64; 31],
-        saved_blocked: process.signals.blocked,
-    };
-
-    // Save x0-x30
-    signal_frame.saved_x[0] = frame.x0;
-    signal_frame.saved_x[1] = frame.x1;
-    signal_frame.saved_x[2] = frame.x2;
-    signal_frame.saved_x[3] = frame.x3;
-    signal_frame.saved_x[4] = frame.x4;
-    signal_frame.saved_x[5] = frame.x5;
-    signal_frame.saved_x[6] = frame.x6;
-    signal_frame.saved_x[7] = frame.x7;
-    signal_frame.saved_x[8] = frame.x8;
-    signal_frame.saved_x[9] = frame.x9;
-    signal_frame.saved_x[10] = frame.x10;
-    signal_frame.saved_x[11] = frame.x11;
-    signal_frame.saved_x[12] = frame.x12;
-    signal_frame.saved_x[13] = frame.x13;
-    signal_frame.saved_x[14] = frame.x14;
-    signal_frame.saved_x[15] = frame.x15;
-    signal_frame.saved_x[16] = frame.x16;
-    signal_frame.saved_x[17] = frame.x17;
-    signal_frame.saved_x[18] = frame.x18;
-    signal_frame.saved_x[19] = frame.x19;
-    signal_frame.saved_x[20] = frame.x20;
-    signal_frame.saved_x[21] = frame.x21;
-    signal_frame.saved_x[22] = frame.x22;
-    signal_frame.saved_x[23] = frame.x23;
-    signal_frame.saved_x[24] = frame.x24;
-    signal_frame.saved_x[25] = frame.x25;
-    signal_frame.saved_x[26] = frame.x26;
-    signal_frame.saved_x[27] = frame.x27;
-    signal_frame.saved_x[28] = frame.x28;
-    signal_frame.saved_x[29] = frame.x29;
-    signal_frame.saved_x[30] = frame.x30;
-
-    // Align stack and make room for signal frame
-    let new_sp = (user_sp - SignalFrame::SIZE as u64) & !0xF; // 16-byte align
-
-    // Write signal frame to user stack
-    let frame_ptr = new_sp as *mut SignalFrame;
-    unsafe {
-        *frame_ptr = signal_frame;
-    }
-
-    // Block signals during handler (including the signal being handled)
-    let blocked_during_handler = process.signals.blocked | action.mask | sig_mask(sig);
-    process.signals.set_blocked(blocked_during_handler & !UNCATCHABLE_SIGNALS);
-
-    // Set up registers for signal handler call:
-    // x0 = signal number
-    // x30 (lr) = restorer address (trampoline)
-    // elr = handler address
-    // sp_el0 = new stack pointer with signal frame
-    frame.x0 = sig as u64;
-    frame.x30 = action.restorer;
-    frame.elr = handler_addr;
-
-    // Set new stack pointer
-    unsafe {
-        core::arch::asm!("msr sp_el0, {}", in(reg) new_sp, options(nomem, nostack));
-    }
-
-    log::info!(
-        "signal_aarch64: delivering signal {} to handler {:#x}, restorer={:#x}, sp={:#x}",
-        sig, handler_addr, action.restorer, new_sp
-    );
 }
 
 // =============================================================================
