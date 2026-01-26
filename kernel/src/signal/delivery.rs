@@ -320,6 +320,7 @@ fn deliver_to_user_handler_x86_64(
 ) -> bool {
     // Get current user stack pointer from interrupt frame
     let current_rsp = interrupt_frame.stack_pointer.as_u64();
+    let original_rsp = current_rsp;
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
@@ -401,7 +402,7 @@ fn deliver_to_user_handler_x86_64(
 
         // Save current execution state
         saved_rip: interrupt_frame.instruction_pointer.as_u64(),
-        saved_rsp: user_rsp,
+        saved_rsp: original_rsp,
         saved_rflags: interrupt_frame.cpu_flags.bits(),
 
         // Save all general-purpose registers
@@ -504,6 +505,7 @@ fn deliver_to_user_handler_aarch64(
     // Get current user stack pointer from saved registers
     // On ARM64, user SP is in SP_EL0, which we save in saved_regs.sp
     let current_sp = saved_regs.sp;
+    let original_sp = current_sp;
 
     // Check if we should use the alternate signal stack
     // SA_ONSTACK flag means use alt stack if one is configured and enabled
@@ -593,7 +595,7 @@ fn deliver_to_user_handler_aarch64(
 
         // Save current execution state (ARM64 specific)
         saved_pc: saved_regs.elr,      // Program counter (ELR_EL1)
-        saved_sp: user_sp,              // Stack pointer
+        saved_sp: original_sp,           // Stack pointer
         saved_pstate: saved_regs.spsr,  // Processor state (SPSR_EL1)
 
         // Save all general-purpose registers (X0-X30)
