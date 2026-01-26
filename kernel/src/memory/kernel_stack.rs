@@ -197,7 +197,7 @@ pub fn init() {
 }
 
 // =============================================================================
-// ARM64-specific kernel stack allocator (identity-mapped)
+// ARM64-specific kernel stack allocator (HHDM)
 // =============================================================================
 
 #[cfg(target_arch = "aarch64")]

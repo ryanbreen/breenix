@@ -279,8 +279,9 @@ const UART0_IRQ: u32 = 33;
 /// Raw serial write - no locks, for use in interrupt handlers
 #[inline(always)]
 fn raw_serial_char(c: u8) {
-    const PL011_DR: *mut u32 = 0x0900_0000 as *mut u32;
-    unsafe { core::ptr::write_volatile(PL011_DR, c as u32); }
+    let base = crate::memory::physical_memory_offset().as_u64();
+    let addr = (base + 0x0900_0000) as *mut u32;
+    unsafe { core::ptr::write_volatile(addr, c as u32); }
 }
 
 /// Handle IRQ interrupts

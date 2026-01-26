@@ -293,6 +293,18 @@ setup_mmu:
     orr x1, x1, x2
     str x1, [x0, #8]
 
+    // TTBR1 L1[2] = normal (high-half direct map)
+    ldr x1, =0x80000000
+    ldr x2, =BLOCK_FLAGS_NORMAL
+    orr x1, x1, x2
+    str x1, [x0, #16]
+
+    // TTBR1 L1[3] = normal (high-half direct map)
+    ldr x1, =0xC0000000
+    ldr x2, =BLOCK_FLAGS_NORMAL
+    orr x1, x1, x2
+    str x1, [x0, #24]
+
     // MAIR / TCR
     ldr x0, =MAIR_EL1_VALUE
     msr mair_el1, x0
