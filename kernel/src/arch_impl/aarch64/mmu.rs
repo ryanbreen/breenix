@@ -1,6 +1,10 @@
-//! ARM64 MMU initialization and page table setup.
+//! ARM64 MMU initialization and page table setup (legacy identity map).
 //!
-//! Sets up identity-mapped translation for kernel and userspace:
+//! NOTE: The high-half kernel boot path now enables MMU in boot.S with
+//! TTBR0/TTBR1 split and a higher-half direct map. This module is retained
+//! for early bring-up tooling and should not be used in the high-half path.
+//!
+//! Legacy layout (identity map) for reference:
 //! - 0x0000_0000 .. 0x4000_0000: Device memory (MMIO, kernel-only)
 //! - 0x4000_0000 .. 0x4100_0000: Kernel region (EL1 RW, EL1 exec)
 //! - 0x4100_0000 .. 0x8000_0000: User region (EL0/EL1 RW, EL0 exec)
@@ -114,7 +118,17 @@ fn l2_block_desc_user(base: u64, attr: u64) -> u64 {
 /// - 0x4000_0000 - 0x4100_0000: Kernel (8x 2MB blocks, AP=0, EL1 exec)
 /// - 0x4100_0000 - 0x8000_0000: User (2MB blocks, AP=1, EL0 exec only due to implicit PXN)
 pub fn init() {
-    crate::serial_println!("[mmu] Setting up page tables...");
+    // If MMU is already enabled, do not reprogram page tables.
+    let mut sctlr: u64 = 0;
+    unsafe {
+        core::arch::asm!("mrs {0}, sctlr_el1", out(reg) sctlr, options(nomem, nostack));
+    }
+    if (sctlr & 1) != 0 {
+        crate::serial_println!("[mmu] MMU already enabled - skipping legacy init");
+        return;
+    }
+
+    crate::serial_println!("[mmu] Setting up legacy identity-mapped page tables...");
 
     let l0_addr = &raw const L0_TABLE as u64;
     let l1_addr = &raw const L1_TABLE as u64;

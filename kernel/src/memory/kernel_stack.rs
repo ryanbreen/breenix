@@ -205,10 +205,14 @@ mod aarch64 {
     use core::sync::atomic::{AtomicU64, Ordering};
     use super::VirtAddr;
 
-    /// ARM64 kernel stack base (in identity-mapped region)
-    /// Using 0x5100_0000 to 0x5200_0000 (16MB for kernel stacks)
-    const ARM64_KERNEL_STACK_BASE: u64 = 0x5100_0000;
-    const ARM64_KERNEL_STACK_END: u64 = 0x5200_0000;
+    /// ARM64 kernel stack base (in high-half direct map)
+    /// Physical range: 0x5100_0000 .. 0x5200_0000 (16MB for kernel stacks)
+    const ARM64_KERNEL_STACK_PHYS_BASE: u64 = 0x5100_0000;
+    const ARM64_KERNEL_STACK_PHYS_END: u64 = 0x5200_0000;
+    const ARM64_KERNEL_STACK_BASE: u64 =
+        crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_BASE;
+    const ARM64_KERNEL_STACK_END: u64 =
+        crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_END;
 
     /// Stack size for ARM64 (64KB per stack)
     const ARM64_KERNEL_STACK_SIZE: u64 = 64 * 1024;
@@ -240,7 +244,7 @@ mod aarch64 {
 
     /// Allocate a kernel stack for ARM64
     ///
-    /// Uses a simple bump allocator in the identity-mapped region.
+    /// Uses a simple bump allocator in the high-half direct map region.
     /// Stacks are not freed (leaked) - this is acceptable for the
     /// current single-process test workload.
     pub fn allocate_kernel_stack() -> Result<Aarch64KernelStack, &'static str> {
@@ -273,9 +277,14 @@ mod aarch64 {
             total_slots
         );
         log::info!(
-            "  Stack range: {:#x} - {:#x}",
+            "  Stack range (virt): {:#x} - {:#x}",
             ARM64_KERNEL_STACK_BASE,
             ARM64_KERNEL_STACK_END
+        );
+        log::info!(
+            "  Stack range (phys): {:#x} - {:#x}",
+            ARM64_KERNEL_STACK_PHYS_BASE,
+            ARM64_KERNEL_STACK_PHYS_END
         );
         log::info!(
             "  Stack size: {} KiB + {} KiB guard",

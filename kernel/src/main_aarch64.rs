@@ -86,8 +86,6 @@ fn alloc_error_handler(layout: Layout) -> ! {
 #[cfg(target_arch = "aarch64")]
 use kernel::serial;
 #[cfg(target_arch = "aarch64")]
-use kernel::arch_impl::aarch64::mmu;
-#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::timer;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::timer_interrupt;
@@ -115,9 +113,12 @@ use kernel::shell::ShellState;
 /// - We're running at EL1 (or need to drop from EL2)
 /// - Stack is set up
 /// - BSS is zeroed
-/// - MMU is off (identity mapped by UEFI or running physical)
+/// - MMU is already enabled by boot.S (high-half kernel)
 #[no_mangle]
 pub extern "C" fn kernel_main() -> ! {
+    // Initialize physical memory offset (needed for MMIO access)
+    kernel::memory::init_physical_memory_offset_aarch64();
+
     // Initialize serial output first so we can print
     serial::init_serial();
 
@@ -131,16 +132,13 @@ pub extern "C" fn kernel_main() -> ! {
     let el = current_exception_level();
     serial_println!("[boot] Current exception level: EL{}", el);
 
-    serial_println!("[boot] Initializing MMU...");
-    mmu::init();
-    serial_println!("[boot] MMU enabled");
+    serial_println!("[boot] MMU already enabled (high-half kernel)");
 
     // Initialize memory management for ARM64
     // ARM64 QEMU virt machine: RAM starts at 0x40000000
     // We use 0x42000000..0x50000000 (224MB) for frame allocation
     // Kernel stacks are at 0x51000000..0x52000000 (16MB)
     serial_println!("[boot] Initializing memory management...");
-    kernel::memory::init_physical_memory_offset_aarch64();
     kernel::memory::frame_allocator::init_aarch64(0x4200_0000, 0x5000_0000);
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");

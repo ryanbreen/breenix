@@ -128,8 +128,11 @@ impl VirtioMmioDevice {
     ///
     /// Returns None if no device is present (magic value mismatch or device_id == 0)
     pub fn probe(base: u64) -> Option<Self> {
+        // Convert physical MMIO base to kernel virtual address
+        let virt_base = crate::memory::physical_memory_offset().as_u64() + base;
+
         let device = VirtioMmioDevice {
-            base,
+            base: virt_base,
             device_id: 0,
             version: 0,
             device_features: 0,
@@ -155,7 +158,7 @@ impl VirtioMmioDevice {
         }
 
         Some(VirtioMmioDevice {
-            base,
+            base: virt_base,
             device_id,
             version,
             device_features: 0,

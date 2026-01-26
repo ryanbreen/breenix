@@ -238,7 +238,7 @@ The following files are on the **prohibited modifications list**. Agents MUST NO
 | `kernel/src/interrupts/timer.rs` | Timer fires every 1ms - <1000 cycles budget |
 | `kernel/src/interrupts/timer_entry.asm` | Assembly timer entry - must be minimal |
 
-### Tier 2: High Scrutiny (explain why GDB is insufficient)
+### Tier 2: High Scrutiny (explain why change is required)
 | File | Reason |
 |------|--------|
 | `kernel/src/interrupts/context_switch.rs` | Context switch path - timing sensitive |
@@ -250,11 +250,11 @@ The following files are on the **prohibited modifications list**. Agents MUST NO
 
 If you believe you must modify a prohibited file:
 
-1. **Explain why GDB debugging is insufficient** for this specific problem
+1. **Explain why the change is required** and why nonintrusive debugging isn't enough
 2. **Get explicit user approval** before making any changes
-3. **Never add logging** - use GDB breakpoints instead
+3. **Never add logging** - use nonintrusive debugging if needed
 4. **Remove any temporary debug code** before committing
-5. **Test via GDB** to verify the fix works
+5. **Verify via boot stages or targeted tests** (GDB optional)
 
 ### Detecting Violations
 
@@ -312,18 +312,13 @@ Before approving changes to interrupt/syscall code:
 - [ ] No heap allocations
 - [ ] Timing-critical paths marked with comments
 
-## GDB-Only Kernel Debugging - MANDATORY
+## GDB Debugging - Recommended (Not Required)
 
-**ALL kernel execution and debugging MUST be done through GDB.** This is non-negotiable.
+GDB is the preferred tool for root-cause debugging of timing-sensitive or low-level issues. Boot stages and end-to-end boot task tests are the default for verification and CI.
 
-Running the kernel directly (`cargo run`, `cargo test`, `cargo run -p xtask -- boot-stages`) without GDB:
-- Provides only serial output, which is insufficient for timing-sensitive bugs
-- Cannot inspect register state, memory, or call stacks
-- Cannot set breakpoints to catch issues before they cascade
-- Cannot intercept panics to examine state
-- Burns context analyzing log output instead of actual debugging
+Running without GDB provides only serial output; that's often sufficient for boot-stage verification, but it won't help when you need register state, memory inspection, or breakpoints.
 
-### Interactive GDB Session (PRIMARY WORKFLOW)
+### Interactive GDB Session (Optional Workflow)
 
 Use `gdb_session.sh` for persistent, interactive debugging sessions:
 

@@ -233,6 +233,11 @@ struct GpuDeviceState {
     last_used_idx: u16,
 }
 
+#[inline(always)]
+fn virt_to_phys(addr: u64) -> u64 {
+    addr - crate::memory::physical_memory_offset().as_u64()
+}
+
 /// Initialize the VirtIO GPU device
 pub fn init() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-gpu] Searching for GPU device...");
@@ -273,7 +278,7 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     let queue_size = core::cmp::min(queue_num_max, 16);
     device.set_queue_num(queue_size);
 
-    let queue_phys = &raw const CTRL_QUEUE as u64;
+    let queue_phys = virt_to_phys(&raw const CTRL_QUEUE as u64);
 
     unsafe {
         let queue_ptr = &raw mut CTRL_QUEUE;
@@ -338,8 +343,8 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
 fn get_display_info() -> Result<(u32, u32), &'static str> {
     with_device_state(|device, state| {
         // Prepare GET_DISPLAY_INFO command
-        let cmd_phys = &raw const CMD_BUF as u64;
-        let resp_phys = &raw const RESP_BUF as u64;
+        let cmd_phys = virt_to_phys(&raw const CMD_BUF as u64);
+        let resp_phys = virt_to_phys(&raw const RESP_BUF as u64);
 
         unsafe {
             let cmd_ptr = &raw mut CMD_BUF;
@@ -472,8 +477,8 @@ fn send_command_expect_ok(
     state: &mut GpuDeviceState,
     cmd_len: u32,
 ) -> Result<(), &'static str> {
-    let cmd_phys = &raw const CMD_BUF as u64;
-    let resp_phys = &raw const RESP_BUF as u64;
+    let cmd_phys = virt_to_phys(&raw const CMD_BUF as u64);
+    let resp_phys = virt_to_phys(&raw const RESP_BUF as u64);
     send_command(
         device,
         state,
@@ -530,7 +535,7 @@ struct AttachBackingCmd {
 fn attach_backing() -> Result<(), &'static str> {
     with_device_state(|device, state| {
         let fb_len = framebuffer_len(state)? as u32;
-        let fb_addr = &raw const FRAMEBUFFER as u64;
+        let fb_addr = virt_to_phys(&raw const FRAMEBUFFER as u64);
         unsafe {
             let cmd_ptr = &raw mut CMD_BUF;
             let cmd = &mut *((*cmd_ptr).data.as_mut_ptr() as *mut AttachBackingCmd);

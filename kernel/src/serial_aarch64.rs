@@ -13,8 +13,8 @@ use spin::Mutex;
 // PL011 UART Register Map
 // =============================================================================
 
-/// PL011 UART base address for QEMU virt machine.
-const PL011_BASE: usize = 0x0900_0000;
+/// PL011 UART base physical address for QEMU virt machine.
+const PL011_BASE_PHYS: usize = 0x0900_0000;
 
 /// PL011 Register offsets - complete register map for UART configuration
 #[allow(dead_code)]
@@ -78,7 +78,8 @@ mod cr {
 #[inline]
 fn read_reg(offset: usize) -> u32 {
     unsafe {
-        let addr = (PL011_BASE + offset) as *const u32;
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + PL011_BASE_PHYS + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
@@ -86,7 +87,8 @@ fn read_reg(offset: usize) -> u32 {
 #[inline]
 fn write_reg(offset: usize, value: u32) {
     unsafe {
-        let addr = (PL011_BASE + offset) as *mut u32;
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + PL011_BASE_PHYS + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }

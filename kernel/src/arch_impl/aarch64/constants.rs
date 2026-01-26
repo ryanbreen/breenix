@@ -15,7 +15,7 @@
 pub const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_0000_0000_0000;
 
 /// Base of the higher-half direct map (HHDM).
-/// Physical memory is identity-mapped starting here.
+/// Physical memory is mapped at this virtual base.
 pub const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
 
 /// Base address for per-CPU data regions.

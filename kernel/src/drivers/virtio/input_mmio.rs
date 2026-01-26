@@ -115,6 +115,11 @@ static mut EVENT_BUFFERS: EventBuffers = EventBuffers {
 
 // Device state
 static mut DEVICE_BASE: u64 = 0;
+
+#[inline(always)]
+fn virt_to_phys(addr: u64) -> u64 {
+    addr - crate::memory::physical_memory_offset().as_u64()
+}
 static mut DEVICE_SLOT: usize = 0;  // Track which slot for IRQ calculation
 static DEVICE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static LAST_USED_IDX: AtomicU16 = AtomicU16::new(0);
@@ -170,7 +175,8 @@ pub fn init() -> Result<(), &'static str> {
                 init_device(&mut device)?;
 
                 unsafe {
-                    *(&raw mut DEVICE_BASE) = base;
+                let mmio_base = crate::memory::physical_memory_offset().as_u64() + base;
+                *(&raw mut DEVICE_BASE) = mmio_base;
                     *(&raw mut DEVICE_SLOT) = i;
                 }
 
@@ -220,13 +226,14 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<(), &'static str> {
 
     // Setup the event queue
     let queue_addr = &raw const QUEUE_MEM as *const _ as u64;
-    let desc_addr = queue_addr;
-    let avail_addr = queue_addr + core::mem::offset_of!(QueueMemory, avail_flags) as u64;
-    let used_addr = queue_addr + core::mem::offset_of!(QueueMemory, used_flags) as u64;
+    let queue_phys = virt_to_phys(queue_addr);
+    let desc_addr = queue_phys;
+    let avail_addr = queue_phys + core::mem::offset_of!(QueueMemory, avail_flags) as u64;
+    let used_addr = queue_phys + core::mem::offset_of!(QueueMemory, used_flags) as u64;
 
     if version == 1 {
         // Legacy: use PFN-based setup
-        let pfn = (queue_addr >> 12) as u32;
+        let pfn = (queue_phys >> 12) as u32;
         device.set_queue_align(4096);
         device.set_queue_pfn(pfn);
     } else {
@@ -250,7 +257,7 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<(), &'static str> {
 
 /// Post event buffers to the available ring
 unsafe fn post_event_buffers(count: usize) {
-    let event_base = (&raw const EVENT_BUFFERS).cast::<VirtioInputEvent>() as u64;
+    let event_base = virt_to_phys((&raw const EVENT_BUFFERS).cast::<VirtioInputEvent>() as u64);
     let queue_mem = &raw mut QUEUE_MEM;
     let device_base = &raw const DEVICE_BASE;
 

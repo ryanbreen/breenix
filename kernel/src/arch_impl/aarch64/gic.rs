@@ -99,7 +99,8 @@ static GIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
 #[inline]
 fn gicd_read(offset: usize) -> u32 {
     unsafe {
-        let addr = (GICD_BASE as usize + offset) as *const u32;
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + GICD_BASE as usize + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
@@ -108,7 +109,8 @@ fn gicd_read(offset: usize) -> u32 {
 #[inline]
 fn gicd_write(offset: usize, value: u32) {
     unsafe {
-        let addr = (GICD_BASE as usize + offset) as *mut u32;
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + GICD_BASE as usize + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }
@@ -117,7 +119,8 @@ fn gicd_write(offset: usize, value: u32) {
 #[inline]
 fn gicc_read(offset: usize) -> u32 {
     unsafe {
-        let addr = (GICC_BASE as usize + offset) as *const u32;
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + GICC_BASE as usize + offset) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
@@ -126,7 +129,8 @@ fn gicc_read(offset: usize) -> u32 {
 #[inline]
 fn gicc_write(offset: usize, value: u32) {
     unsafe {
-        let addr = (GICC_BASE as usize + offset) as *mut u32;
+        let base = crate::memory::physical_memory_offset().as_u64() as usize;
+        let addr = (base + GICC_BASE as usize + offset) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }

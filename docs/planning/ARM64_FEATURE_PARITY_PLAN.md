@@ -70,6 +70,9 @@ Deliverables:
 - Kernel heap allocator enabled on ARM64.
 - Userspace pointer validation blocks kernel addresses.
 
+Execution note (in progress):
+- High-half kernel + TTBR0/TTBR1 split is now being implemented in `boot.S` + `linker.ld`.
+
 Primary files:
 - `kernel/src/main_aarch64.rs`
 - `kernel/src/arch_impl/aarch64/mmu.rs`
@@ -199,3 +202,159 @@ Primary files:
 1. Fix ARM64 user pointer validation and memory map plumbing.
 2. Wire syscall modules and remove ARM64 ENOSYS stubs for FS/TTY/PTY.
 3. Boot into userspace init_shell from ext2 disk image.
+
+---
+
+# Parity Checklist (Living Document)
+This checklist captures **what must match AMD64**. ARM64 status is intentionally blunt; any "unknown" item requires a concrete audit pass.
+
+Legend: `[x]` parity verified, `[~]` partial/in-progress, `[ ]` missing/unknown
+
+## Boot & Initialization
+- [ ] UEFI/DTB memory map consumed and trusted (no static ranges)
+- [ ] Per-CPU structures allocated and initialized
+- [ ] SMP bring-up parity (APs start, enter scheduler)
+- [ ] Userspace init process launched from filesystem image
+
+## Memory & MMU
+- [ ] VMA + COW flows usable by ARM64 page tables
+- [ ] User/kernel address split enforced by userptr checks
+- [ ] Kernel heap allocator active (no bump allocator)
+- [ ] Fault handling parity (page faults, permissions, user faults)
+
+## Scheduling, Signals, and Timers
+- [ ] Preemptive scheduling with timer-based quantum reset
+- [ ] Signal delivery path (incl. alt stack) matches AMD64
+- [ ] sigreturn restores correct context on ARM64
+- [ ] Timer IRQ handling is minimal and timing-safe
+
+## Syscall Surface Parity
+- [ ] FS syscalls (open/read/write/getdents/fstat/close/etc)
+- [ ] TTY/PTY/session/setsid/ioctl
+- [ ] pipe/dup/poll/select
+- [ ] process (fork/exec/wait/exit/getpid)
+- [ ] time (clock_gettime, nanosleep, etc)
+- [ ] socket (UDP/TCP), bind/connect/accept/listen
+
+## Filesystem & Storage
+- [ ] ext2 read/write parity
+- [ ] VFS + devfs + devpts mount parity
+- [ ] VirtIO block MMIO: IRQ + queue features stable
+
+## TTY/PTY & Shell
+- [ ] VirtIO input routed to TTY line discipline
+- [ ] /dev/pts functional (PTY pairs)
+- [ ] Userspace init_shell runs with job control + signals
+
+## Networking
+- [ ] VirtIO net MMIO RX/TX stable
+- [ ] UDP userspace tests pass
+- [ ] TCP userspace tests pass (no ARM64 block)
+- [ ] DNS/HTTP userspace tests pass
+
+## Drivers & Graphics
+- [ ] VirtIO GPU usable by userspace terminal
+- [ ] VirtIO input/keyboard parity
+- [ ] Any ARM64-specific device quirks documented
+
+## CI/Test Parity
+- [ ] ARM64 build is warning-free
+- [ ] ARM64 test subset defined and tracked
+- [ ] Boot stages (or equivalent) executed for ARM64
+
+---
+
+# Analysis Workstreams (Deep Diff Required)
+This is the concrete work needed to **prove** AMD64 ↔ ARM64 parity and identify every gap.
+
+## Workstream A - Syscall Matrix Diff
+Goal: build an explicit list of syscalls that are implemented on AMD64 but ENOSYS or stubbed on ARM64.
+
+Tasks:
+- Inventory AMD64 syscall table and mapping (source of truth).
+- Inventory ARM64 syscall entry mapping and `cfg(target_arch)` gates.
+- Produce a per-syscall matrix with status: OK / stubbed / missing / ABI mismatch.
+- Highlight syscalls required for init_shell + tests.
+
+Deliverable:
+- A table appended here or in a sibling doc: `ARM64_SYSCALL_MATRIX.md`.
+- Current artifact: `docs/planning/ARM64_SYSCALL_MATRIX.md`.
+- Porting checklist: `docs/planning/ARM64_SYSCALL_PORTING_CHECKLIST.md`.
+
+## Workstream B - User/Kernel Memory Safety Audit
+Goal: ensure ARM64 user memory validation and page table policy match AMD64 behavior.
+
+Tasks:
+- Audit `kernel/src/syscall/userptr.rs` and architecture-specific splits.
+- Verify page fault handler parity (error codes, user vs kernel faults).
+- Validate `ProcessPageTable` integration for ARM64 mappings.
+
+Deliverable:
+- Summary of differences and exact code locations; explicit fixes.
+- Current artifact: `docs/planning/ARM64_USERPTR_AUDIT.md`.
+- Memory layout diff: `docs/planning/ARM64_MEMORY_LAYOUT_DIFF.md`.
+
+## Workstream C - Exec/ELF/Process Parity
+Goal: ensure ARM64 exec path is real filesystem-backed, not test-only loader.
+
+Tasks:
+- Audit ARM64 ELF loader for correct auxv, stack layout, and permissions.
+- Confirm execve path is shared and not gated for AMD64 only.
+- Confirm fork/exec/wait semantics in scheduler and process manager.
+
+Deliverable:
+- A minimal boot-to-shell scenario documented with steps.
+
+## Workstream D - Device & IRQ Path Parity
+Goal: ensure VirtIO MMIO and IRQ routing is complete for block/net/input/gpu.
+
+Tasks:
+- Compare VirtIO MMIO feature negotiation and IRQ ack/EOI paths.
+- Validate timer IRQ performance and preemption behavior.
+- Confirm device drivers do not assume x86-specific features.
+
+Deliverable:
+- Driver parity checklist with explicit IRQ and feature gaps.
+
+## Workstream E - Filesystem & TTY/PTY Parity
+Goal: ensure init_shell has full TTY and filesystem semantics.
+
+Tasks:
+- Confirm devfs/devpts mount parity at boot.
+- Validate PTY allocation and session leadership syscalls on ARM64.
+- Ensure TTY line discipline receives VirtIO input.
+
+Deliverable:
+- A matrix of required shell syscalls and their ARM64 status.
+
+---
+
+# Milestones and Exit Criteria
+
+## Milestone 1 - "Boot to Userspace"
+Exit criteria:
+- ARM64 boots to EL0 init_shell from ext2 image.
+- Basic TTY input works (echo, backspace, newline).
+
+## Milestone 2 - "Core Shell Workflow"
+Exit criteria:
+- `/bin/ls`, `/bin/cat` run from disk.
+- Job control and Ctrl-C work.
+- No kernel shell fallback in normal path.
+
+## Milestone 3 - "Networking Online"
+Exit criteria:
+- UDP/TCP tests pass on ARM64.
+- DNS/HTTP userspace tests pass.
+
+## Milestone 4 - "Parity Lock"
+Exit criteria:
+- ARM64 passes the same userspace test suite as AMD64 (or documented, justified exceptions).
+- No ARM64-only hacks in hot paths.
+
+---
+
+# Verification Strategy
+- Use AMD64 tests as the gold standard; define the ARM64 subset explicitly and expand it to parity.
+- Require warning-free ARM64 builds.
+- Validate each subsystem with a minimal userspace test (filesystem, TTY, signals, networking).

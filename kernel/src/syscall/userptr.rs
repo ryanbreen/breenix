@@ -8,10 +8,18 @@
 
 use super::SyscallResult;
 
-/// Userspace address range - below the kernel split
-/// On x86_64, the canonical address split is at 0x0000_8000_0000_0000
-/// Addresses at or above this value are kernel addresses
+/// Userspace address range (architecture-specific)
+/// Keep these values aligned with the active VA layout for each arch.
+#[cfg(target_arch = "x86_64")]
+const USER_SPACE_START: u64 = 0x0000_0000_0000_0000;
+#[cfg(target_arch = "x86_64")]
 const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
+
+// ARM64 high-half kernel: userspace is the lower-half canonical range
+#[cfg(target_arch = "aarch64")]
+const USER_SPACE_START: u64 = crate::memory::layout::USERSPACE_BASE;
+#[cfg(target_arch = "aarch64")]
+const USER_SPACE_END: u64 = crate::memory::layout::USER_STACK_REGION_END;
 
 /// Validate that a userspace pointer is safe to read from
 ///
@@ -36,7 +44,7 @@ pub fn validate_user_ptr_read<T>(ptr: *const T) -> Result<(), u64> {
     }
 
     // Check address is in userspace range
-    if addr >= USER_SPACE_END {
+    if addr < USER_SPACE_START || addr >= USER_SPACE_END {
         return Err(14); // EFAULT
     }
 
@@ -159,7 +167,7 @@ pub fn validate_user_buffer(ptr: *const u8, len: usize) -> Result<(), u64> {
     }
 
     // Check address is in userspace range
-    if addr >= USER_SPACE_END {
+    if addr < USER_SPACE_START || addr >= USER_SPACE_END {
         return Err(14); // EFAULT
     }
 
@@ -194,7 +202,7 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
     if ptr == 0 {
         return Err(14); // EFAULT - null pointer
     }
-    if ptr >= USER_SPACE_END {
+    if ptr < USER_SPACE_START || ptr >= USER_SPACE_END {
         return Err(14); // EFAULT - kernel address
     }
 
@@ -202,7 +210,7 @@ pub fn copy_cstr_from_user(ptr: u64) -> Result<alloc::string::String, u64> {
 
     for offset in 0..MAX_PATH_LEN {
         let byte_addr = match ptr.checked_add(offset as u64) {
-            Some(addr) if addr < USER_SPACE_END => addr,
+            Some(addr) if addr >= USER_SPACE_START && addr < USER_SPACE_END => addr,
             _ => return Err(14), // EFAULT - overflow or kernel address
         };
 
