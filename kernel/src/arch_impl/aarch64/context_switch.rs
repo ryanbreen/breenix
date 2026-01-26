@@ -12,11 +12,10 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::context::CpuContext;
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
 use crate::arch_impl::traits::PerCpuOps;
-use crate::task::thread::{ThreadPrivilege, ThreadState};
+use crate::task::thread::{CpuContext, ThreadPrivilege, ThreadState};
 
 /// Raw serial debug output - single character, no locks, no allocations.
 /// Use this for debugging context switch paths where any allocation/locking

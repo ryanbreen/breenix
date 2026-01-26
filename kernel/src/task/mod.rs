@@ -31,8 +31,8 @@ pub mod softirqd;
 pub mod process_context;
 // process_task uses architecture-independent types (ProcessId, scheduler, Thread)
 pub mod process_task;
-// spawn.rs uses x86_64-specific types (VirtAddr from x86_64 crate, ELF loader)
-#[cfg(target_arch = "x86_64")]
+// spawn.rs provides thread spawning functionality for both architectures
+// Uses architecture-specific cfg guards internally for VirtAddr, ELF loading, and TLS
 pub mod spawn;
 
 // Re-export kthread public API for kernel-wide use
