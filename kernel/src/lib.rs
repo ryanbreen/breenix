@@ -45,7 +45,8 @@ pub mod tty;
 pub mod irq_log;
 #[cfg(target_arch = "x86_64")]
 pub mod userspace_test;
-#[cfg(target_arch = "x86_64")]
+// Syscall module - enabled for both architectures
+// Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
 #[cfg(target_arch = "x86_64")]
 pub mod socket;

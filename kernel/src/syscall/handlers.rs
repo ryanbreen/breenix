@@ -11,10 +11,7 @@ use x86_64::VirtAddr;
 use crate::arch_impl::traits::CpuOps;
 
 // Architecture-specific CPU type for interrupt control
-#[cfg(target_arch = "x86_64")]
 type Cpu = crate::arch_impl::x86_64::X86Cpu;
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 /// Global flag to signal that userspace testing is complete and kernel should exit
 pub static USERSPACE_TEST_COMPLETE: AtomicBool = AtomicBool::new(false);

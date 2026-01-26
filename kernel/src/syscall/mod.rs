@@ -21,8 +21,8 @@ pub mod userptr;
 #[cfg(target_arch = "x86_64")]
 pub mod handler;
 
-// Syscall implementations - most are architecture-independent
-// but some use x86_64-specific paging APIs that need abstraction
+// Syscall implementations - handlers module is architecture-independent
+// Other modules have x86_64-specific dependencies and are being ported
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
 #[cfg(target_arch = "x86_64")]
@@ -31,6 +31,8 @@ pub mod fifo;
 pub mod fs;
 #[cfg(target_arch = "x86_64")]
 pub mod graphics;
+// handlers module has deep dependencies on x86_64-only subsystems
+// ARM64 uses stub handlers in arch_impl/aarch64/syscall_entry.rs
 #[cfg(target_arch = "x86_64")]
 pub mod handlers;
 #[cfg(target_arch = "x86_64")]
