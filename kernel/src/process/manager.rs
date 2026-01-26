@@ -5,7 +5,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{self, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // Import paging types from appropriate source
 #[cfg(target_arch = "x86_64")]
@@ -816,7 +816,7 @@ impl ProcessManager {
         };
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -930,7 +930,7 @@ impl ProcessManager {
         };
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",
@@ -1004,6 +1004,313 @@ impl ProcessManager {
                 child_process,
             )
         }
+    }
+
+    /// Fork a process on ARM64 with the ACTUAL parent register state from exception frame
+    ///
+    /// This is the ARM64 equivalent of fork_process_with_parent_context. It captures the
+    /// exact register values at fork time from the exception frame.
+    #[cfg(target_arch = "aarch64")]
+    pub fn fork_process_aarch64(
+        &mut self,
+        parent_pid: ProcessId,
+        parent_context: crate::task::thread::CpuContext,
+        mut child_page_table: Box<ProcessPageTable>,
+    ) -> Result<ProcessId, &'static str> {
+        // Get the parent process info
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
+            let parent = self
+                .processes
+                .get(&parent_pid)
+                .ok_or("Parent process not found")?;
+
+            let parent_thread = parent
+                .main_thread
+                .as_ref()
+                .ok_or("Parent process has no main thread")?;
+
+            (
+                parent.name.clone(),
+                parent.entry_point,
+                parent.pgid,
+                parent.sid,
+                parent.cwd.clone(),
+                parent_thread.clone(),
+                parent.heap_start,
+                parent.heap_end,
+            )
+        };
+
+        // Allocate a new PID for the child
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
+
+        log::info!(
+            "ARM64 fork: process {} '{}' -> child PID {}",
+            parent_pid.as_u64(),
+            parent_name,
+            child_pid.as_u64()
+        );
+
+        // Create child process name
+        let child_name = format!("{}_child_{}", parent_name, child_pid.as_u64());
+
+        // Create the child process with the same entry point
+        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
+        child_process.parent = Some(parent_pid);
+        // POSIX: Child inherits parent's process group, session, and working directory
+        child_process.pgid = parent_pgid;
+        child_process.sid = parent_sid;
+        child_process.cwd = parent_cwd.clone();
+
+        // COPY-ON-WRITE FORK: Share pages between parent and child
+        {
+            // Get mutable access to parent's page table for CoW setup
+            let parent = self
+                .processes
+                .get_mut(&parent_pid)
+                .ok_or("Parent process not found during CoW setup")?;
+            let mut parent_page_table = parent
+                .page_table
+                .take()
+                .ok_or("Parent process has no page table")?;
+
+            // Set up Copy-on-Write sharing between parent and child
+            let pages_shared = super::fork::setup_cow_pages(
+                parent_page_table.as_mut(),
+                child_page_table.as_mut(),
+            )?;
+
+            // Put parent's page table back
+            parent.page_table = Some(parent_page_table);
+
+            log::info!(
+                "ARM64 fork: Set up {} pages for CoW sharing",
+                pages_shared
+            );
+
+            // Child inherits parent's heap bounds
+            child_process.heap_start = parent_heap_start;
+            child_process.heap_end = parent_heap_end;
+        }
+
+        child_process.page_table = Some(child_page_table);
+
+        // Complete the fork with ARM64-specific handling
+        self.complete_fork_aarch64(
+            parent_pid,
+            child_pid,
+            &parent_thread_info,
+            parent_context,
+            child_process,
+        )
+    }
+
+    /// Complete the fork operation for ARM64 after page table is created
+    ///
+    /// ARM64 key differences from x86_64:
+    /// - SP_EL0 holds user stack pointer (not RSP)
+    /// - ELR_EL1 holds return address (not RIP)
+    /// - X0 is the return value register (not RAX)
+    /// - 16-byte stack alignment required
+    #[cfg(target_arch = "aarch64")]
+    fn complete_fork_aarch64(
+        &mut self,
+        parent_pid: ProcessId,
+        child_pid: ProcessId,
+        parent_thread: &Thread,
+        parent_context: crate::task::thread::CpuContext,
+        mut child_process: Process,
+    ) -> Result<ProcessId, &'static str> {
+        use crate::memory::arch_stub::{ThreadPrivilege as StackPrivilege, VirtAddr};
+
+        log::info!(
+            "ARM64 complete_fork: Creating child thread for PID {}",
+            child_pid.as_u64()
+        );
+
+        // Create a new stack for the child process (64KB userspace stack)
+        const CHILD_STACK_SIZE: usize = 64 * 1024;
+
+        // Allocate the stack
+        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
+            CHILD_STACK_SIZE,
+            StackPrivilege::User,
+        )
+        .map_err(|_| "Failed to allocate stack for child process")?;
+        let child_stack_top = child_stack.top();
+        let child_stack_bottom = child_stack.bottom();
+
+        // Map the stack pages into the child's page table
+        let child_page_table_ref = child_process
+            .page_table
+            .as_mut()
+            .ok_or("Child process has no page table")?;
+
+        crate::memory::process_memory::map_user_stack_to_process(
+            child_page_table_ref,
+            child_stack_bottom,
+            child_stack_top,
+        )
+        .map_err(|e| {
+            log::error!("ARM64 fork: Failed to map user stack: {}", e);
+            "Failed to map user stack in child's page table"
+        })?;
+
+        // Allocate a globally unique thread ID for the child's main thread
+        let child_thread_id = crate::task::thread::allocate_thread_id();
+
+        // Allocate a TLS block for this thread ID
+        let child_tls_block = VirtAddr::new(0x10000 + child_thread_id * 0x1000);
+
+        // Allocate a kernel stack for the child thread
+        let child_kernel_stack_top = if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
+            let kernel_stack = crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
+                log::error!("ARM64 fork: Failed to allocate kernel stack: {}", e);
+                "Failed to allocate kernel stack for child thread"
+            })?;
+            let kernel_stack_top = kernel_stack.top();
+
+            log::debug!(
+                "ARM64 fork: Allocated child kernel stack at {:#x}",
+                kernel_stack_top.as_u64()
+            );
+
+            // Store the kernel stack (leak for now - TODO: proper cleanup)
+            Box::leak(Box::new(kernel_stack));
+
+            kernel_stack_top
+        } else {
+            parent_thread.kernel_stack_top.unwrap_or(parent_thread.stack_top)
+        };
+
+        // Create the child's main thread
+        fn dummy_entry() {}
+
+        let mut child_thread = Thread::new(
+            format!("{}_main", child_process.name),
+            dummy_entry,
+            child_stack_top,
+            parent_thread.stack_bottom,
+            child_tls_block,
+            parent_thread.privilege,
+        );
+
+        // Set the ID and kernel stack
+        child_thread.id = child_thread_id;
+        child_thread.kernel_stack_top = Some(child_kernel_stack_top);
+
+        // Copy parent's thread context from the exception frame
+        log::debug!("ARM64 fork: Copying parent context to child");
+        log::debug!(
+            "  Parent: SP_EL0={:#x}, ELR_EL1={:#x}, SPSR={:#x}",
+            parent_context.sp_el0, parent_context.elr_el1, parent_context.spsr_el1
+        );
+
+        child_thread.context = parent_context.clone();
+
+        // CRITICAL: Set has_started=true for forked children
+        child_thread.has_started = true;
+
+        // Calculate the child's stack pointer based on parent's stack usage
+        let parent_sp = parent_context.sp_el0;
+        let parent_stack_used = parent_thread.stack_top.as_u64().saturating_sub(parent_sp);
+        let child_sp = child_stack_top.as_u64().saturating_sub(parent_stack_used);
+        // ARM64 requires 16-byte alignment
+        let child_sp_aligned = child_sp & !0xF;
+        child_thread.context.sp_el0 = child_sp_aligned;
+
+        log::info!(
+            "ARM64 fork: parent_stack_top={:#x}, parent_sp={:#x}, used={:#x}",
+            parent_thread.stack_top.as_u64(),
+            parent_sp,
+            parent_stack_used
+        );
+        log::info!(
+            "ARM64 fork: child_stack_top={:#x}, child_sp={:#x}",
+            child_stack_top.as_u64(),
+            child_sp_aligned
+        );
+
+        // Copy the parent's stack contents to the child's stack
+        if parent_stack_used > 0 && parent_stack_used <= (64 * 1024) {
+            let parent_stack_src = parent_sp as *const u8;
+            let child_stack_dst = child_sp_aligned as *mut u8;
+
+            log::debug!(
+                "ARM64 fork: Copying {} bytes of stack from {:#x} to {:#x}",
+                parent_stack_used,
+                parent_sp,
+                child_sp_aligned
+            );
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    parent_stack_src,
+                    child_stack_dst,
+                    parent_stack_used as usize,
+                );
+            }
+
+            log::info!(
+                "ARM64 fork: Copied {} bytes of stack from parent to child",
+                parent_stack_used
+            );
+        }
+
+        // Set the kernel stack pointer for exception handling
+        child_thread.context.sp = child_kernel_stack_top.as_u64();
+
+        // CRUCIAL: Set the child's return value to 0 in X0
+        // On ARM64, X0 is the return value register (like RAX on x86_64)
+        // The child process must receive 0 from fork(), while the parent gets child_pid
+        child_thread.context.x0 = 0;
+
+        log::info!(
+            "ARM64 fork: Created child thread {} with ELR={:#x}, SP_EL0={:#x}, X0={}",
+            child_thread_id,
+            child_thread.context.elr_el1,
+            child_thread.context.sp_el0,
+            child_thread.context.x0
+        );
+
+        // Set the child process's main thread
+        child_process.main_thread = Some(child_thread);
+
+        // Store the stack in the child process
+        child_process.stack = Some(Box::new(child_stack));
+
+        // Copy all other process state (fd_table, signals, verify pgid/sid)
+        if let Some(parent) = self.processes.get(&parent_pid) {
+            if let Err(e) = super::fork::copy_process_state(parent, &mut child_process) {
+                log::error!(
+                    "ARM64 fork: Failed to copy process state: {}",
+                    e
+                );
+                return Err(e);
+            }
+        } else {
+            log::error!(
+                "ARM64 fork: Parent {} not found when copying process state!",
+                parent_pid.as_u64()
+            );
+            return Err("Parent process not found during state copy");
+        }
+
+        // Add the child to the parent's children list
+        if let Some(parent) = self.processes.get_mut(&parent_pid) {
+            parent.children.push(child_pid);
+        }
+
+        // Insert the child process into the process table
+        self.processes.insert(child_pid, child_process);
+
+        log::info!(
+            "ARM64 fork complete: parent {} -> child {}",
+            parent_pid.as_u64(),
+            child_pid.as_u64()
+        );
+
+        Ok(child_pid)
     }
 
     /// Complete the fork operation after page table is created
@@ -1323,7 +1630,7 @@ impl ProcessManager {
             .clone();
 
         // Allocate a new PID for the child
-        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, atomic::Ordering::SeqCst));
+        let child_pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
 
         log::info!(
             "Forking process {} '{}' -> child PID {}",

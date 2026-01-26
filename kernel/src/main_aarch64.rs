@@ -133,6 +133,16 @@ pub extern "C" fn kernel_main() -> ! {
     mmu::init();
     serial_println!("[boot] MMU enabled");
 
+    // Initialize memory management for ARM64
+    // ARM64 QEMU virt machine: RAM starts at 0x40000000
+    // We use 0x42000000..0x50000000 (224MB) for frame allocation
+    // Kernel stacks are at 0x51000000..0x52000000 (16MB)
+    serial_println!("[boot] Initializing memory management...");
+    kernel::memory::init_physical_memory_offset_aarch64();
+    kernel::memory::frame_allocator::init_aarch64(0x4200_0000, 0x5000_0000);
+    kernel::memory::kernel_stack::init();
+    serial_println!("[boot] Memory management ready");
+
     // Initialize timer
     serial_println!("[boot] Initializing Generic Timer...");
     timer::calibrate();
@@ -184,6 +194,16 @@ pub extern "C" fn kernel_main() -> ! {
         Err(e) => serial_println!("[boot] VirtIO keyboard init failed: {}", e),
     }
 
+    // Initialize process manager
+    serial_println!("[boot] Initializing process manager...");
+    kernel::process::init();
+    serial_println!("[boot] Process manager initialized");
+
+    // Initialize scheduler with an idle task
+    serial_println!("[boot] Initializing scheduler...");
+    init_scheduler();
+    serial_println!("[boot] Scheduler initialized");
+
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Boot Complete!");
@@ -191,6 +211,20 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!();
     serial_println!("Hello from ARM64!");
     serial_println!();
+
+    // Try to load and run userspace from the test disk
+    // If a VirtIO block device is present with a BXTEST disk, run a test binary
+    if device_count > 0 {
+        serial_println!("[boot] Attempting to load userspace from test disk...");
+        match kernel::boot::test_disk::run_userspace_from_disk("fork_test") {
+            Err(e) => {
+                serial_println!("[boot] Could not load userspace: {}", e);
+                serial_println!("[boot] Falling back to interactive mode");
+            }
+            // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
+            Ok(never) => match never {},
+        }
+    }
 
     // Write welcome message to the terminal (right pane)
     terminal_manager::write_str_to_shell("Breenix ARM64 Interactive Shell\n");
@@ -247,6 +281,51 @@ pub extern "C" fn kernel_main() -> ! {
             serial_println!(".");
         }
 
+        core::hint::spin_loop();
+    }
+}
+
+/// Initialize the scheduler with an idle thread (ARM64)
+#[cfg(target_arch = "aarch64")]
+fn init_scheduler() {
+    use alloc::boxed::Box;
+    use alloc::string::String;
+    use kernel::task::thread::{Thread, ThreadState, ThreadPrivilege};
+    use kernel::task::scheduler;
+    use kernel::per_cpu_aarch64;
+    use kernel::memory::arch_stub::VirtAddr;
+
+    // Use a dummy stack address for the idle task (we're already running on a stack)
+    let dummy_stack_top = VirtAddr::new(0x4000_0000);
+    let dummy_stack_bottom = VirtAddr::new(0x3FFF_0000);
+    let dummy_tls = VirtAddr::zero();
+
+    // Create the idle task (thread ID 0)
+    let mut idle_task = Box::new(Thread::new(
+        String::from("swapper/0"),  // Linux convention: swapper/0 is the idle task
+        idle_thread_fn,
+        dummy_stack_top,
+        dummy_stack_bottom,
+        dummy_tls,
+        ThreadPrivilege::Kernel,
+    ));
+
+    // Mark as running with ID 0
+    idle_task.state = ThreadState::Running;
+    idle_task.id = 0;
+
+    // Set up per-CPU current thread pointer
+    let idle_task_ptr = &*idle_task as *const _ as *mut Thread;
+    per_cpu_aarch64::set_current_thread(idle_task_ptr);
+
+    // Initialize scheduler with the idle task
+    scheduler::init_with_current(idle_task);
+}
+
+/// Idle thread function (does nothing - placeholder for context switching)
+#[cfg(target_arch = "aarch64")]
+fn idle_thread_fn() {
+    loop {
         core::hint::spin_loop();
     }
 }

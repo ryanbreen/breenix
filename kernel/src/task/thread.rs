@@ -186,6 +186,10 @@ impl CpuContext {
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct CpuContext {
+    // X0 is stored for fork() return value (child gets 0, parent gets child PID)
+    // Normally X0 is caller-saved, but we need it for fork semantics
+    pub x0: u64,
+
     // Callee-saved registers (must be preserved across calls)
     pub x19: u64,
     pub x20: u64,
@@ -227,6 +231,7 @@ impl CpuContext {
     /// The thread will start executing at `entry_point` with the given stack.
     pub fn new_kernel_thread(entry_point: u64, stack_top: u64) -> Self {
         Self {
+            x0: 0,  // Result register (not used for initial context)
             x19: 0, x20: 0, x21: 0, x22: 0,
             x23: 0, x24: 0, x25: 0, x26: 0,
             x27: 0, x28: 0, x29: 0,
@@ -249,6 +254,7 @@ impl CpuContext {
         kernel_stack_top: u64,
     ) -> Self {
         Self {
+            x0: 0,  // Result register (starts at 0 for new threads)
             x19: 0, x20: 0, x21: 0, x22: 0,
             x23: 0, x24: 0, x25: 0, x26: 0,
             x27: 0, x28: 0, x29: 0, x30: 0,
@@ -257,6 +263,34 @@ impl CpuContext {
             elr_el1: entry_point,      // Where to jump in userspace
             // SPSR for EL0: mode=0 (EL0t), DAIF clear (interrupts enabled)
             spsr_el1: 0x0,             // EL0t with interrupts enabled
+        }
+    }
+
+    /// Create a CpuContext from an ARM64 exception frame (captures actual register values at syscall time)
+    ///
+    /// This captures the userspace context from the exception frame saved by the syscall entry.
+    /// The exception frame contains all registers as they were at the time of the SVC instruction.
+    pub fn from_aarch64_frame(frame: &crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame, user_sp: u64) -> Self {
+        Self {
+            // X0 from the exception frame (will be the syscall number at entry, but we need it for fork)
+            x0: frame.x0,
+            // Copy callee-saved registers x19-x28 from the exception frame
+            x19: frame.x19,
+            x20: frame.x20,
+            x21: frame.x21,
+            x22: frame.x22,
+            x23: frame.x23,
+            x24: frame.x24,
+            x25: frame.x25,
+            x26: frame.x26,
+            x27: frame.x27,
+            x28: frame.x28,
+            x29: frame.x29,  // Frame pointer
+            x30: frame.x30,  // Link register
+            sp: 0,           // Kernel SP will be set when scheduling
+            sp_el0: user_sp, // User stack pointer (passed separately since it's in SP_EL0)
+            elr_el1: frame.elr, // Return address (where to resume after syscall)
+            spsr_el1: frame.spsr, // Saved program status
         }
     }
 }

@@ -292,8 +292,11 @@ impl ProcessPageTable {
     ///
     /// On ARM64, this is much simpler than x86_64 because:
     /// - TTBR1_EL1 handles all kernel mappings automatically
-    /// - We only need to allocate a fresh L0 table for TTBR0 (userspace)
-    /// - No kernel mapping copy is required
+    /// Create a new page table for ARM64 process
+    ///
+    /// IMPORTANT: Since our kernel is at 0x4000_0000 (uses TTBR0, not TTBR1),
+    /// we MUST copy kernel mappings to each process page table. Otherwise
+    /// exception handlers become inaccessible after switching TTBR0.
     #[cfg(target_arch = "aarch64")]
     pub fn new() -> Result<Self, &'static str> {
         log::debug!("ProcessPageTable::new() [ARM64] - Creating userspace page table");
@@ -316,19 +319,39 @@ impl ProcessPageTable {
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
 
-        // Zero out the L0 table - all entries should be empty initially
-        // On ARM64, we don't need to copy kernel mappings because TTBR1_EL1
-        // handles kernel addresses (0xFFFF...) automatically
+        // CRITICAL: Copy kernel L0 entry from current page table
+        // Since kernel is at 0x40000000 (TTBR0 region), we need kernel mappings
+        // in every process page table for exception handling to work
         let l0_table = unsafe {
             let virt = phys_offset + l0_frame.start_address().as_u64();
             &mut *(virt.as_mut_ptr() as *mut PageTable)
         };
 
+        // First, zero out all entries
         for i in 0..512 {
             l0_table[i].set_unused();
         }
 
-        log::debug!("ARM64: L0 table zeroed - kernel uses TTBR1 automatically");
+        // Read current TTBR0 to get the boot page table
+        let current_ttbr0: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, ttbr0_el1", out(reg) current_ttbr0, options(nomem, nostack));
+        }
+
+        // Copy L0[0] from boot page table (covers 0x0 - 0x8000_0000_0000)
+        // This entry points to L1 which contains both kernel and device mappings
+        let boot_l0_table = unsafe {
+            let virt = phys_offset + (current_ttbr0 & 0x0000_FFFF_FFFF_F000);
+            &*(virt.as_ptr() as *const PageTable)
+        };
+
+        // Copy the first L0 entry which covers kernel region
+        l0_table[0] = boot_l0_table[0].clone();
+
+        log::debug!(
+            "ARM64: Copied L0[0]={:#x} from boot page table for kernel access",
+            l0_table[0].addr().as_u64()
+        );
 
         // Create mapper for the new page table
         let mapper = unsafe {

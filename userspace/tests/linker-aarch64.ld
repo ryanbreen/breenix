@@ -2,25 +2,24 @@
 ENTRY(_start)
 
 SECTIONS {
-    /* ARM64 userspace starts at 4KB (page 1) */
-    /* Page 0 is left unmapped to catch null pointer dereferences */
-    . = 0x1000;
-
+    /* Start at user-accessible region (0x4100_0000 per kernel MMU setup) */
+    . = 0x41000000;
+    
     .text : ALIGN(4K) {
         *(.text .text.*)
     }
-
+    
     .rodata : ALIGN(4K) {
         *(.rodata .rodata.*)
     }
-
+    
     .data : ALIGN(4K) {
         *(.data .data.*)
     }
-
+    
     .bss : ALIGN(4K) {
         *(.bss .bss.*)
     }
-
-    /* Stack will be allocated separately by the kernel */
+    
+    /* Stack allocated separately by kernel */
 }

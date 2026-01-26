@@ -315,8 +315,8 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
     let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
     device.notify_queue(0);
 
-    // Poll for completion
-    let mut timeout = 1_000_000u32;
+    // Poll for completion - use a longer timeout for sequential reads
+    let mut timeout = 100_000_000u32;
     loop {
         fence(Ordering::SeqCst);
         let used_idx = unsafe {
@@ -331,7 +331,10 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
         if timeout == 0 {
             return Err("Block read timeout");
         }
-        core::hint::spin_loop();
+        // Add a small delay between polls to reduce CPU spin
+        for _ in 0..100 {
+            core::hint::spin_loop();
+        }
     }
 
     // Check status

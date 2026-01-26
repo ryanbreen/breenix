@@ -66,6 +66,8 @@ pub mod graphics;
 // Shell module: ARM64-only for now (kernel-mode shell)
 #[cfg(target_arch = "aarch64")]
 pub mod shell;
+// Boot utilities (test disk loader, etc.)
+pub mod boot;
 
 #[cfg(test)]
 use bootloader_api::{entry_point, BootInfo};

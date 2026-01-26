@@ -12,10 +12,15 @@ use libbreenix::process;
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // CRITICAL: int3 as the absolute first instruction to prove CPL3 execution
-    // This breakpoint is caught by the kernel to verify Ring 3 is working
+    // CRITICAL: breakpoint as the absolute first instruction to prove userspace execution
+    // This breakpoint is caught by the kernel to verify userspace is working
+    #[cfg(target_arch = "x86_64")]
     unsafe {
         core::arch::asm!("int3", options(nomem, nostack));
+    }
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #3", options(nomem, nostack));
     }
 
     // Exit cleanly with code 42

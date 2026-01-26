@@ -499,7 +499,8 @@ pub fn spawn(thread: Box<Thread>) {
             // Mirror to per-CPU flag so IRQ-exit path sees it
             #[cfg(target_arch = "x86_64")]
             crate::per_cpu::set_need_resched(true);
-            // TODO: ARM64 per_cpu::set_need_resched when per_cpu module is ported
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::set_need_resched(true);
         } else {
             panic!("Scheduler not initialized");
         }
@@ -611,6 +612,18 @@ pub fn current_thread_id() -> Option<u64> {
     })
 }
 
+/// Set the current thread ID
+/// Used during boot to establish the initial userspace thread as current
+/// before jumping to userspace.
+pub fn set_current_thread(thread_id: u64) {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.set_current_thread(thread_id);
+        }
+    });
+}
+
 /// Yield the current thread
 pub fn yield_current() {
     // CRITICAL FIX: Do NOT call schedule() here!
@@ -648,7 +661,8 @@ pub fn set_need_resched() {
     NEED_RESCHED.store(true, Ordering::Relaxed);
     #[cfg(target_arch = "x86_64")]
     crate::per_cpu::set_need_resched(true);
-    // TODO: ARM64 per_cpu::set_need_resched when per_cpu module is ported
+    #[cfg(target_arch = "aarch64")]
+    crate::per_cpu_aarch64::set_need_resched(true);
 }
 
 /// Check and clear the need_resched flag (called from interrupt return path)
@@ -662,8 +676,13 @@ pub fn check_and_clear_need_resched() -> bool {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // On ARM64, use only the atomic flag until per_cpu is ported
-        NEED_RESCHED.swap(false, Ordering::Relaxed)
+        // ARM64: Check per-CPU flag and global atomic
+        let need = crate::per_cpu_aarch64::need_resched();
+        if need {
+            crate::per_cpu_aarch64::set_need_resched(false);
+        }
+        let _ = NEED_RESCHED.swap(false, Ordering::Relaxed);
+        need
     }
 }
 
@@ -676,8 +695,8 @@ pub fn is_need_resched() -> bool {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // On ARM64, use only the atomic flag until per_cpu is ported
-        NEED_RESCHED.load(Ordering::Relaxed)
+        // ARM64: Check per-CPU flag and global atomic
+        crate::per_cpu_aarch64::need_resched() || NEED_RESCHED.load(Ordering::Relaxed)
     }
 }
 

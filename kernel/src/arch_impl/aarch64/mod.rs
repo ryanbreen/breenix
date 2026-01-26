@@ -20,8 +20,10 @@ pub mod percpu;
 pub mod gic;
 pub mod privilege;
 pub mod timer;
+pub mod timer_interrupt;
 pub mod mmu;
 pub mod context;
+pub mod context_switch;
 pub mod syscall_entry;
 
 // Re-export commonly used items
@@ -44,6 +46,14 @@ pub use privilege::Aarch64PrivilegeLevel;
 pub use timer::Aarch64Timer;
 #[allow(unused_imports)]
 pub use syscall_entry::{is_el0_confirmed, syscall_return_to_userspace_aarch64};
+#[allow(unused_imports)]
+pub use context_switch::{
+    check_need_resched_and_switch_arm64,
+    idle_loop_arm64,
+    perform_context_switch,
+    switch_to_new_thread,
+    switch_to_user,
+};
 
 // Re-export interrupt control functions for convenient access
 // These provide the ARM64 equivalent of x86_64::instructions::interrupts::*

@@ -285,7 +285,8 @@ fn raw_serial_char(c: u8) {
 
 /// Handle IRQ interrupts
 ///
-/// Called from assembly after saving registers
+/// Called from assembly after saving registers.
+/// This is the main IRQ dispatch point for ARM64.
 #[no_mangle]
 pub extern "C" fn handle_irq() {
     // Debug: show we entered IRQ handler
@@ -306,12 +307,18 @@ pub extern "C" fn handle_irq() {
             raw_serial_char(b'X');
         }
         raw_serial_char(b' ');
+
         // Handle the interrupt based on ID
         match irq_id {
-            // Virtual timer interrupt (PPI 27, but shows as 27 in IAR)
-            27 => {
-                // Timer interrupt - clear it without logging to avoid noise
-                crate::arch_impl::aarch64::timer::disarm_timer();
+            // Virtual timer interrupt (PPI 27)
+            // This is the scheduling timer - calls into scheduler
+            crate::arch_impl::aarch64::timer_interrupt::TIMER_IRQ => {
+                // Call the timer interrupt handler which handles:
+                // - Re-arming the timer
+                // - Updating global time
+                // - Decrementing time quantum
+                // - Setting need_resched flag
+                crate::arch_impl::aarch64::timer_interrupt::timer_interrupt_handler();
             }
 
             // UART0 receive interrupt (SPI 1 = IRQ 33)
@@ -324,7 +331,7 @@ pub extern "C" fn handle_irq() {
                 crate::serial_println!("[irq] SGI {} received", irq_id);
             }
 
-            // PPIs (16-31) - Private peripheral interrupts
+            // PPIs (16-31) - Private peripheral interrupts (excluding timer)
             16..=31 => {
                 crate::serial_println!("[irq] PPI {} received", irq_id);
             }
@@ -337,7 +344,51 @@ pub extern "C" fn handle_irq() {
 
         // Signal end of interrupt
         gic::end_of_interrupt(irq_id);
+
+        // Check if we need to reschedule after handling the interrupt
+        // This is the ARM64 equivalent of x86's check_need_resched_and_switch
+        check_need_resched_on_irq_exit();
     }
+}
+
+/// Check if rescheduling is needed and perform context switch if necessary
+///
+/// This is called at the end of IRQ handling, before returning via ERET.
+/// It checks the need_resched flag and performs a context switch if needed.
+///
+/// Note: This is a simplified version that only handles the scheduling decision.
+/// The actual context switch happens when the exception handler returns and
+/// the assembly code uses the modified exception frame.
+fn check_need_resched_on_irq_exit() {
+    // Check if per-CPU data is initialized
+    if !crate::per_cpu_aarch64::is_initialized() {
+        return;
+    }
+
+    // Check if we're still in interrupt context (nested IRQs)
+    // Note: Timer interrupt already decremented HARDIRQ count before we get here
+    if crate::per_cpu_aarch64::in_interrupt() {
+        return;
+    }
+
+    // Check if rescheduling is needed (don't clear yet - context_switch does that)
+    if !crate::task::scheduler::is_need_resched() {
+        return;
+    }
+
+    // Debug marker: need_resched is set
+    raw_serial_char(b'R');
+
+    // The actual context switch will be performed by check_need_resched_and_switch_arm64
+    // which is called from the exception return path with access to the exception frame.
+    // Here we just signal that a reschedule is pending.
+    //
+    // The flow is:
+    // 1. Timer IRQ fires -> timer_interrupt_handler() sets need_resched
+    // 2. IRQ handler returns
+    // 3. Assembly exception return path calls check_need_resched_and_switch_arm64
+    // 4. Context switch happens if needed
+    // 5. ERET returns to new thread
 }
 
 /// Handle UART receive interrupt

@@ -7,14 +7,13 @@
   "target-c-int-width": "32",
   "os": "none",
   "executables": true,
-  "linker-flavor": "gnu-lld",
+  "linker-flavor": "ld.lld",
   "linker": "rust-lld",
   "panic-strategy": "abort",
   "disable-redzone": true,
-  "features": "+v8a,+strict-align",
-  "max-atomic-width": 128,
+  "features": "+strict-align",
   "pre-link-args": {
-    "gnu-lld": [
+    "ld.lld": [
       "-Tlinker-aarch64.ld"
     ]
   }

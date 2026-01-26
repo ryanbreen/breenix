@@ -15,9 +15,11 @@
 //!   - ERET instead of IRETQ/SYSRET
 //!   - TTBR0_EL1/TTBR1_EL1 instead of CR3
 
+use alloc::boxed::Box;
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use super::cpu::without_interrupts;
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
 use crate::arch_impl::traits::{PerCpuOps, SyscallFrame};
@@ -81,9 +83,12 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     let arg6 = frame.arg6();
 
     // Dispatch to syscall handler
-    // For now, use the simple ARM64-native handler
-    // In the future, this should integrate with the main syscall subsystem
-    let result = dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6);
+    // Fork needs special handling because it requires access to the frame
+    let result = if syscall_num == syscall_nums::FORK {
+        sys_fork_aarch64(frame)
+    } else {
+        dispatch_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
+    };
 
     // Set return value in X0
     frame.set_return_value(result);
@@ -142,33 +147,29 @@ pub extern "C" fn trace_eret_to_el0(_elr: u64, _spsr: u64) {
 }
 
 // =============================================================================
-// Syscall dispatch (ARM64 Linux ABI)
+// Syscall dispatch (Breenix ABI - same as x86_64 for consistency)
 // =============================================================================
 
-/// Syscall numbers (ARM64 Linux ABI)
-/// ARM64 uses different syscall numbers than x86_64
+/// Syscall numbers (Breenix ABI - matches libbreenix/src/syscall.rs)
+/// We use the same syscall numbers across architectures for simplicity.
 mod syscall_nums {
-    pub const READ: u64 = 63;
-    pub const WRITE: u64 = 64;
-    pub const CLOSE: u64 = 57;
-    pub const EXIT: u64 = 93;
-    pub const EXIT_GROUP: u64 = 94;
-    pub const NANOSLEEP: u64 = 101;
-    pub const CLOCK_GETTIME: u64 = 113;
-    pub const SCHED_YIELD: u64 = 124;
-    pub const KILL: u64 = 129;
-    pub const SIGACTION: u64 = 134;
-    pub const SIGPROCMASK: u64 = 135;
-    pub const SIGRETURN: u64 = 139;
-    pub const GETPID: u64 = 172;
-    pub const GETTID: u64 = 178;
-    pub const BRK: u64 = 214;
-    pub const MUNMAP: u64 = 215;
-    pub const EXECVE: u64 = 221;
-    pub const MMAP: u64 = 222;
-    pub const MPROTECT: u64 = 226;
-    pub const CLONE: u64 = 220;
-    pub const CLONE3: u64 = 435;
+    // Breenix syscall numbers (same as x86_64 for consistency)
+    pub const EXIT: u64 = 0;
+    pub const WRITE: u64 = 1;
+    pub const READ: u64 = 2;
+    pub const YIELD: u64 = 3;
+    pub const GET_TIME: u64 = 4;
+    pub const FORK: u64 = 5;
+    pub const CLOSE: u64 = 6;
+    pub const BRK: u64 = 12;
+    pub const GETPID: u64 = 39;
+    pub const GETTID: u64 = 186;
+    pub const CLOCK_GETTIME: u64 = 228;
+
+    // Also accept Linux ARM64 syscall numbers for compatibility
+    pub const ARM64_EXIT: u64 = 93;
+    pub const ARM64_EXIT_GROUP: u64 = 94;
+    pub const ARM64_WRITE: u64 = 64;
 }
 
 /// Dispatch a syscall to the appropriate handler.
@@ -184,7 +185,7 @@ fn dispatch_syscall(
     _arg6: u64,
 ) -> u64 {
     match num {
-        syscall_nums::EXIT | syscall_nums::EXIT_GROUP => {
+        syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
             let exit_code = arg1 as i32;
             crate::serial_println!("[syscall] exit({})", exit_code);
             crate::serial_println!();
@@ -202,7 +203,7 @@ fn dispatch_syscall(
             }
         }
 
-        syscall_nums::WRITE => sys_write(arg1, arg2, arg3),
+        syscall_nums::WRITE | syscall_nums::ARM64_WRITE => sys_write(arg1, arg2, arg3),
 
         syscall_nums::READ => {
             // Not implemented yet
@@ -229,34 +230,19 @@ fn dispatch_syscall(
             1
         }
 
-        syscall_nums::SCHED_YIELD => {
+        syscall_nums::YIELD => {
             // Yield does nothing for single-process kernel
             0
         }
 
+        syscall_nums::GET_TIME => {
+            // Legacy GET_TIME: returns ticks directly in x0
+            sys_get_time()
+        }
+
         syscall_nums::CLOCK_GETTIME => {
-            // Use the architecture-independent time module
+            // clock_gettime: writes to timespec pointer in arg2
             sys_clock_gettime(arg1 as u32, arg2 as *mut Timespec)
-        }
-
-        syscall_nums::MMAP | syscall_nums::MUNMAP | syscall_nums::MPROTECT => {
-            // Memory management not implemented yet
-            (-38_i64) as u64 // -ENOSYS
-        }
-
-        syscall_nums::KILL | syscall_nums::SIGACTION | syscall_nums::SIGPROCMASK | syscall_nums::SIGRETURN => {
-            // Signals not implemented yet
-            (-38_i64) as u64 // -ENOSYS
-        }
-
-        syscall_nums::NANOSLEEP => {
-            // Not implemented yet
-            (-38_i64) as u64 // -ENOSYS
-        }
-
-        syscall_nums::CLONE | syscall_nums::CLONE3 | syscall_nums::EXECVE => {
-            // Process management not implemented yet
-            (-38_i64) as u64 // -ENOSYS
         }
 
         _ => {
@@ -272,6 +258,13 @@ fn dispatch_syscall(
 pub struct Timespec {
     pub tv_sec: i64,
     pub tv_nsec: i64,
+}
+
+/// sys_get_time implementation - returns ticks directly
+fn sys_get_time() -> u64 {
+    // Return monotonic nanoseconds as ticks
+    let (secs, nanos) = crate::time::get_monotonic_time_ns();
+    secs as u64 * 1_000_000_000 + nanos as u64
 }
 
 /// sys_write implementation
@@ -325,6 +318,147 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> u64 {
     }
 
     0
+}
+
+// =============================================================================
+// Fork syscall implementation for ARM64
+// =============================================================================
+
+/// sys_fork for ARM64 - creates a child process with Copy-on-Write memory
+///
+/// This function captures the parent's full register state from the exception frame
+/// and creates a child process that will resume from the same point.
+///
+/// Returns:
+/// - To parent: child PID (positive)
+/// - To child: 0
+/// - On error: negative errno
+fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
+    // Read SP_EL0 (user stack pointer) which isn't in the exception frame
+    let user_sp: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, sp_el0", out(reg) user_sp, options(nomem, nostack));
+    }
+
+    // Create a CpuContext from the exception frame
+    let parent_context = crate::task::thread::CpuContext::from_aarch64_frame(frame, user_sp);
+
+    log::info!(
+        "sys_fork_aarch64: userspace SP = {:#x}, return PC (ELR) = {:#x}",
+        user_sp,
+        frame.elr
+    );
+
+    log::debug!(
+        "sys_fork_aarch64: x19={:#x}, x20={:#x}, x29={:#x}, x30={:#x}",
+        frame.x19, frame.x20, frame.x29, frame.x30
+    );
+
+    // Disable interrupts for the entire fork operation to ensure atomicity
+    without_interrupts(|| {
+        // Get current thread ID from scheduler
+        let scheduler_thread_id = crate::task::scheduler::current_thread_id();
+        let current_thread_id = match scheduler_thread_id {
+            Some(id) => id,
+            None => {
+                log::error!("sys_fork_aarch64: No current thread in scheduler");
+                return (-22_i64) as u64; // -EINVAL
+            }
+        };
+
+        if current_thread_id == 0 {
+            log::error!("sys_fork_aarch64: Cannot fork from idle thread");
+            return (-22_i64) as u64; // -EINVAL
+        }
+
+        // Find the current process by thread ID
+        let manager_guard = crate::process::manager();
+        let process_info = if let Some(ref manager) = *manager_guard {
+            manager.find_process_by_thread(current_thread_id)
+        } else {
+            log::error!("sys_fork_aarch64: Process manager not available");
+            return (-12_i64) as u64; // -ENOMEM
+        };
+
+        let (parent_pid, parent_process) = match process_info {
+            Some((pid, process)) => (pid, process),
+            None => {
+                log::error!(
+                    "sys_fork_aarch64: Current thread {} not found in any process",
+                    current_thread_id
+                );
+                return (-3_i64) as u64; // -ESRCH
+            }
+        };
+
+        log::info!(
+            "sys_fork_aarch64: Found parent process {} (PID {})",
+            parent_process.name,
+            parent_pid.as_u64()
+        );
+
+        // Drop the lock before creating page table to avoid deadlock
+        drop(manager_guard);
+
+        // Create the child page table BEFORE re-acquiring the lock
+        log::info!("sys_fork_aarch64: Creating page table for child process");
+        let child_page_table = match crate::memory::process_memory::ProcessPageTable::new() {
+            Ok(pt) => Box::new(pt),
+            Err(e) => {
+                log::error!("sys_fork_aarch64: Failed to create child page table: {}", e);
+                return (-12_i64) as u64; // -ENOMEM
+            }
+        };
+        log::info!("sys_fork_aarch64: Child page table created successfully");
+
+        // Now re-acquire the lock and complete the fork
+        let mut manager_guard = crate::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            match manager.fork_process_aarch64(parent_pid, parent_context, child_page_table) {
+                Ok(child_pid) => {
+                    // Get the child's thread ID to add to scheduler
+                    if let Some(child_process) = manager.get_process(child_pid) {
+                        if let Some(child_thread) = &child_process.main_thread {
+                            let child_thread_id = child_thread.id;
+                            let child_thread_clone = child_thread.clone();
+
+                            // Drop the lock before spawning to avoid issues
+                            drop(manager_guard);
+
+                            // Add the child thread to the scheduler
+                            log::info!(
+                                "sys_fork_aarch64: Spawning child thread {} to scheduler",
+                                child_thread_id
+                            );
+                            crate::task::scheduler::spawn(Box::new(child_thread_clone));
+                            log::info!("sys_fork_aarch64: Child thread spawned successfully");
+
+                            log::info!(
+                                "sys_fork_aarch64: Fork successful - parent {} gets child PID {}, thread {}",
+                                parent_pid.as_u64(), child_pid.as_u64(), child_thread_id
+                            );
+
+                            // Return the child PID to the parent
+                            child_pid.as_u64()
+                        } else {
+                            log::error!("sys_fork_aarch64: Child process has no main thread");
+                            (-12_i64) as u64 // -ENOMEM
+                        }
+                    } else {
+                        log::error!("sys_fork_aarch64: Failed to find newly created child process");
+                        (-12_i64) as u64 // -ENOMEM
+                    }
+                }
+                Err(e) => {
+                    log::error!("sys_fork_aarch64: Failed to fork process: {}", e);
+                    (-12_i64) as u64 // -ENOMEM
+                }
+            }
+        } else {
+            log::error!("sys_fork_aarch64: Process manager not available");
+            (-12_i64) as u64 // -ENOMEM
+        }
+    })
 }
 
 // =============================================================================

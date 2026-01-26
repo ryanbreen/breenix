@@ -12,7 +12,10 @@
 use crate::memory::frame_allocator::allocate_frame;
 use crate::memory::frame_metadata::frame_incref;
 use crate::memory::process_memory::{make_cow_flags, ProcessPageTable};
-use crate::process::{Process, ProcessId};
+use crate::process::Process;
+#[cfg(target_arch = "x86_64")]
+use crate::process::ProcessId;
+#[cfg(target_arch = "x86_64")]
 use crate::task::thread::Thread;
 
 // Import paging types - use x86_64 crate on x86_64, arch_stub on other platforms
@@ -156,6 +159,20 @@ pub fn setup_cow_pages(
     for (virt_addr, phys_addr, flags) in pages_to_share {
         if cow_error.is_some() {
             break;
+        }
+
+        // ARM64 WORKAROUND: Skip huge pages (2MB blocks) from boot page tables.
+        // These can't be manipulated as 4KB pages. They use identity mapping
+        // which is shared anyway, so CoW isn't needed for them.
+        #[cfg(target_arch = "aarch64")]
+        if flags.contains(PageTableFlags::HUGE_PAGE) {
+            log::debug!(
+                "setup_cow_pages: skipping 2MB block at {:#x} (boot identity mapping)",
+                virt_addr.as_u64()
+            );
+            // Still count as "shared" for bookkeeping
+            pages_shared += 1;
+            continue;
         }
 
         let page = Page::<Size4KiB>::containing_address(virt_addr);
