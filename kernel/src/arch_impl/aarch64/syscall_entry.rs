@@ -219,6 +219,17 @@ mod syscall_nums {
     pub const FSTAT: u64 = 259;
     pub const GETDENTS64: u64 = 260;
     pub const PIPE2: u64 = 293;
+    // PTY syscalls (Breenix-specific)
+    pub const POSIX_OPENPT: u64 = 400;
+    pub const GRANTPT: u64 = 401;
+    pub const UNLOCKPT: u64 = 402;
+    pub const PTSNAME: u64 = 403;
+    // Graphics syscalls (Breenix-specific)
+    pub const FBINFO: u64 = 410;
+    pub const FBDRAW: u64 = 411;
+    // Testing syscalls (Breenix-specific)
+    pub const COW_STATS: u64 = 500;
+    pub const SIMULATE_OOM: u64 = 501;
 
     // Also accept Linux ARM64 syscall numbers for compatibility
     pub const ARM64_EXIT: u64 = 93;
@@ -240,38 +251,34 @@ fn dispatch_syscall(
 ) -> u64 {
     match num {
         syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
-            let exit_code = arg1 as i32;
-            crate::serial_println!("[syscall] exit({})", exit_code);
-            crate::serial_println!();
-            crate::serial_println!("========================================");
-            crate::serial_println!("  Userspace Test Complete!");
-            crate::serial_println!("  Exit code: {}", exit_code);
-            crate::serial_println!("========================================");
-            crate::serial_println!();
-
-            // For now, halt - real implementation would terminate process
-            loop {
-                unsafe {
-                    core::arch::asm!("wfi");
-                }
+            // Use proper exit handler that terminates the process
+            match crate::syscall::handlers::sys_exit(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
             }
         }
 
         syscall_nums::WRITE | syscall_nums::ARM64_WRITE => sys_write(arg1, arg2, arg3),
 
         syscall_nums::READ => {
-            // Not implemented yet
-            (-38_i64) as u64 // -ENOSYS
+            match crate::syscall::handlers::sys_read(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::CLOSE => {
-            // Close syscall - no file descriptors yet, just succeed
-            0
+            match crate::syscall::pipe::sys_close(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::BRK => {
-            // brk syscall - return same address (no-op)
-            arg1
+            match crate::syscall::memory::sys_brk(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         // Memory mapping syscalls
@@ -362,18 +369,24 @@ fn dispatch_syscall(
         }
 
         syscall_nums::GETPID => {
-            // Return fixed PID for now
-            1
+            match crate::syscall::handlers::sys_getpid() {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::GETTID => {
-            // Return fixed TID for now
-            1
+            match crate::syscall::handlers::sys_gettid() {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::YIELD => {
-            // Yield does nothing for single-process kernel
-            0
+            match crate::syscall::handlers::sys_yield() {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::GET_TIME => {
@@ -653,6 +666,65 @@ fn dispatch_syscall(
 
         syscall_nums::GETSID => {
             match crate::syscall::session::sys_getsid(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // PTY syscalls
+        syscall_nums::POSIX_OPENPT => {
+            match crate::syscall::pty::sys_posix_openpt(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::GRANTPT => {
+            match crate::syscall::pty::sys_grantpt(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::UNLOCKPT => {
+            match crate::syscall::pty::sys_unlockpt(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::PTSNAME => {
+            match crate::syscall::pty::sys_ptsname(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Graphics syscalls
+        syscall_nums::FBINFO => {
+            match crate::syscall::graphics::sys_fbinfo(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::FBDRAW => {
+            match crate::syscall::graphics::sys_fbdraw(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Testing/diagnostic syscalls
+        syscall_nums::COW_STATS => {
+            match crate::syscall::handlers::sys_cow_stats(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SIMULATE_OOM => {
+            match crate::syscall::handlers::sys_simulate_oom(arg1) {
                 crate::syscall::SyscallResult::Ok(v) => v,
                 crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
             }
