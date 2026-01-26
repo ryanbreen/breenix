@@ -90,6 +90,8 @@ use kernel::arch_impl::aarch64::mmu;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::timer;
 #[cfg(target_arch = "aarch64")]
+use kernel::arch_impl::aarch64::timer_interrupt;
+#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::cpu::Aarch64Cpu;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::gic::Gicv2;
@@ -194,6 +196,11 @@ pub extern "C" fn kernel_main() -> ! {
         Err(e) => serial_println!("[boot] VirtIO keyboard init failed: {}", e),
     }
 
+    // Initialize per-CPU data (required before scheduler and interrupts)
+    serial_println!("[boot] Initializing per-CPU data...");
+    kernel::per_cpu_aarch64::init();
+    serial_println!("[boot] Per-CPU data initialized");
+
     // Initialize process manager
     serial_println!("[boot] Initializing process manager...");
     kernel::process::init();
@@ -203,6 +210,12 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing scheduler...");
     init_scheduler();
     serial_println!("[boot] Scheduler initialized");
+
+    // Initialize timer interrupt for preemptive scheduling
+    // This MUST come after per-CPU data and scheduler are initialized
+    serial_println!("[boot] Initializing timer interrupt...");
+    timer_interrupt::init();
+    serial_println!("[boot] Timer interrupt initialized");
 
     serial_println!();
     serial_println!("========================================");
