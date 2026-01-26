@@ -244,9 +244,9 @@ fn dispatch_syscall(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    _arg4: u64,
-    _arg5: u64,
-    _arg6: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
 ) -> u64 {
     match num {
         syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
@@ -280,13 +280,33 @@ fn dispatch_syscall(
         }
 
         syscall_nums::BRK => {
-            // Stub: brk syscall - return same address (no-op)
-            arg1
+            // Use the shared brk implementation
+            match crate::syscall::memory::sys_brk(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
-        // Memory mapping syscalls (stubs)
-        syscall_nums::MMAP | syscall_nums::MUNMAP | syscall_nums::MPROTECT => {
-            (-38_i64) as u64 // -ENOSYS
+        // Memory mapping syscalls (use shared implementations)
+        syscall_nums::MMAP => {
+            match crate::syscall::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::MUNMAP => {
+            match crate::syscall::mmap::sys_munmap(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::MPROTECT => {
+            match crate::syscall::mmap::sys_mprotect(arg1, arg2, arg3 as u32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         // Signal syscalls (stubs)

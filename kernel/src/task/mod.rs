@@ -11,6 +11,7 @@ pub mod executor;
 pub mod thread;
 
 // Architecture-specific context switching
+// Note: context.rs contains x86_64 assembly - ARM64 uses separate implementation
 #[cfg(target_arch = "x86_64")]
 pub mod context;
 
@@ -18,42 +19,38 @@ pub mod context;
 // (requires architecture-specific interrupt control, provided by arch_impl)
 pub mod scheduler;
 
-// Kernel threads and workqueues - depend on scheduler
-#[cfg(target_arch = "x86_64")]
+// Kernel threads and workqueues - work on both x86_64 and aarch64
+// Uses architecture-independent types and conditional interrupt control
 pub mod kthread;
-#[cfg(target_arch = "x86_64")]
 pub mod workqueue;
-#[cfg(target_arch = "x86_64")]
 pub mod softirqd;
 
-// Process-related modules - depend on process module which is x86_64 only
+// Process-related modules
 // Note: process_context is available for both architectures as SavedRegisters
 // is architecture-specific but needed for signal delivery on both
 pub mod process_context;
-#[cfg(target_arch = "x86_64")]
+// process_task uses architecture-independent types (ProcessId, scheduler, Thread)
 pub mod process_task;
+// spawn.rs uses x86_64-specific types (VirtAddr from x86_64 crate, ELF loader)
 #[cfg(target_arch = "x86_64")]
 pub mod spawn;
 
-// Re-export kthread public API for kernel-wide use (x86_64 only)
+// Re-export kthread public API for kernel-wide use
 // These are intentionally available but may not be called yet
-#[cfg(target_arch = "x86_64")]
 #[allow(unused_imports)]
 pub use kthread::{
     kthread_exit, kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop,
     kthread_unpark, KthreadError, KthreadHandle,
 };
 
-// Re-export workqueue public API for kernel-wide use (x86_64 only)
-#[cfg(target_arch = "x86_64")]
+// Re-export workqueue public API for kernel-wide use
 #[allow(unused_imports)]
 pub use workqueue::{
     flush_system_workqueue, init_workqueue, schedule_work, schedule_work_fn, Work, Workqueue,
     WorkqueueFlags,
 };
 
-// Re-export softirqd public API for kernel-wide use (x86_64 only)
-#[cfg(target_arch = "x86_64")]
+// Re-export softirqd public API for kernel-wide use
 #[allow(unused_imports)]
 pub use softirqd::{
     init_softirq, raise_softirq, register_softirq_handler, shutdown_softirq, SoftirqHandler,

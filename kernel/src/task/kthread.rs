@@ -98,7 +98,17 @@ where
     let start = Box::new(KthreadStart {
         func: Some(Box::new(func)),
     });
-    thread.context.rdi = Box::into_raw(start) as u64;
+    // Pass the KthreadStart pointer as the argument to kthread_entry
+    // x86_64: argument passed in RDI register (System V ABI)
+    // ARM64: argument passed in X0 register (AAPCS64)
+    #[cfg(target_arch = "x86_64")]
+    {
+        thread.context.rdi = Box::into_raw(start) as u64;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        thread.context.x0 = Box::into_raw(start) as u64;
+    }
 
     // CRITICAL: Disable interrupts across both registry insert AND spawn to prevent
     // a race where the timer interrupt schedules the new thread before we've finished

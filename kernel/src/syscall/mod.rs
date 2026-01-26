@@ -10,8 +10,11 @@
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::idt::InterruptStackFrame;
 
-// Architecture-independent modules
+// Architecture-independent modules (compile for both x86_64 and ARM64)
 pub mod errno;
+pub mod memory;
+pub mod memory_common;
+pub mod mmap;
 pub mod time;
 pub mod userptr;
 
@@ -37,10 +40,6 @@ pub mod graphics;
 pub mod handlers;
 #[cfg(target_arch = "x86_64")]
 pub mod ioctl;
-#[cfg(target_arch = "x86_64")]
-pub mod memory;
-#[cfg(target_arch = "x86_64")]
-pub mod mmap;
 #[cfg(target_arch = "x86_64")]
 pub mod pipe;
 #[cfg(target_arch = "x86_64")]

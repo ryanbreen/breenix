@@ -1,14 +1,23 @@
 //! Memory-related system calls
 //!
 //! This module implements memory management syscalls including brk() for heap allocation.
+//!
+//! This module is architecture-independent - it uses conditional imports to support
+//! both x86_64 and ARM64.
 
 use crate::syscall::{ErrorCode, SyscallResult};
-use x86_64::instructions::tlb;
+
+// Conditional imports based on architecture
+#[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
-/// Maximum heap size (64MB) - prevents runaway allocation
-const MAX_HEAP_SIZE: u64 = 64 * 1024 * 1024;
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+
+// Import common memory syscall helpers
+use crate::syscall::memory_common::{flush_tlb, get_current_thread_id, MAX_HEAP_SIZE};
 
 /// Syscall 12: brk - change data segment size
 ///
@@ -27,11 +36,9 @@ const MAX_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 /// - brk(addr) attempts to set program break to addr (page-aligned)
 /// - Returns new break on success, old break on failure
 pub fn sys_brk(addr: u64) -> SyscallResult {
-    // Get current thread ID from per-CPU data (authoritative source)
-    // per_cpu::current_thread() reads directly from GS segment, which is
-    // set by the context switch code - this is what's actually running
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
+    // Get current thread ID from per-CPU data (architecture-independent)
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
         None => {
             log::error!("sys_brk: No current thread in per-CPU data!");
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
@@ -141,7 +148,7 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
             }
 
             // Flush TLB for this page so CPU sees the new mapping
-            tlb::flush(current_page.start_address());
+            flush_tlb(current_page.start_address());
             pages_mapped += 1;
 
             // Stop after mapping the end page
@@ -194,7 +201,7 @@ pub fn sys_brk(addr: u64) -> SyscallResult {
             match page_table.unmap_page(page) {
                 Ok(frame) => {
                     // Flush TLB for this page
-                    tlb::flush(page.start_address());
+                    flush_tlb(page.start_address());
                     // Free the physical frame
                     crate::memory::frame_allocator::deallocate_frame(frame);
                     pages_unmapped += 1;

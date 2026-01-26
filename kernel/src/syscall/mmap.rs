@@ -2,71 +2,29 @@
 //!
 //! This module implements mmap() and munmap() for mapping and unmapping
 //! memory regions in userspace process address spaces.
+//!
+//! This module is architecture-independent - it uses conditional imports to support
+//! both x86_64 and ARM64.
 
 use crate::memory::vma::{MmapFlags, Protection, Vma};
 use crate::syscall::{ErrorCode, SyscallResult};
-use x86_64::structures::paging::{PhysFrame, Page, PageTableFlags, Size4KiB};
-use x86_64::instructions::tlb;
+
+// Conditional imports based on architecture
+#[cfg(target_arch = "x86_64")]
+use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
+#[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
+#[cfg(not(target_arch = "x86_64"))]
+use crate::memory::arch_stub::{Page, PhysFrame, Size4KiB, VirtAddr};
+
+// Import common memory syscall helpers
+use crate::syscall::memory_common::{
+    cleanup_mapped_pages, flush_tlb, get_current_thread_id, is_page_aligned, prot_to_page_flags,
+    round_down_to_page, round_up_to_page, PAGE_SIZE,
+};
+
 extern crate alloc;
-
-/// Page size constant (4 KiB)
-const PAGE_SIZE: u64 = 4096;
-
-/// Convert protection flags to page table flags
-fn prot_to_page_flags(prot: Protection) -> PageTableFlags {
-    let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
-    if prot.contains(Protection::WRITE) {
-        flags |= PageTableFlags::WRITABLE;
-    }
-    // Note: x86_64 doesn't have a built-in execute-disable bit in basic paging
-    // NX (No-Execute) requires enabling NXE bit in EFER MSR, which we can add later
-    flags
-}
-
-/// Round up to page size
-#[inline]
-fn round_up_to_page(size: u64) -> u64 {
-    (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
-}
-
-/// Round down to page size
-#[inline]
-fn round_down_to_page(addr: u64) -> u64 {
-    addr & !(PAGE_SIZE - 1)
-}
-
-/// Check if address is page-aligned
-#[inline]
-fn is_page_aligned(addr: u64) -> bool {
-    (addr & (PAGE_SIZE - 1)) == 0
-}
-
-/// Helper function to clean up mapped pages on mmap failure (Issue 2)
-fn cleanup_mapped_pages(
-    page_table: &mut crate::memory::process_memory::ProcessPageTable,
-    mapped_pages: &[(Page<Size4KiB>, PhysFrame<Size4KiB>)],
-) {
-    log::warn!("sys_mmap: cleaning up {} already-mapped pages due to failure", mapped_pages.len());
-
-    for (page, frame) in mapped_pages.iter() {
-        // Unmap the page
-        match page_table.unmap_page(*page) {
-            Ok(_) => {
-                // Flush TLB
-                tlb::flush(page.start_address());
-                // Free the frame
-                crate::memory::frame_allocator::deallocate_frame(*frame);
-            }
-            Err(e) => {
-                log::error!("sys_mmap cleanup: failed to unmap page {:#x}: {}", page.start_address().as_u64(), e);
-                // Still try to free the frame
-                crate::memory::frame_allocator::deallocate_frame(*frame);
-            }
-        }
-    }
-}
 
 /// Syscall 9: mmap - Map memory into process address space
 ///
@@ -115,8 +73,8 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
     }
 
     // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
         None => {
             log::error!("sys_mmap: No current thread in per-CPU data!");
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
@@ -243,7 +201,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u32, flags: u32, fd: i64, offset: 
         }
 
         // Flush TLB for this page
-        tlb::flush(current_page.start_address());
+        flush_tlb(current_page.start_address());
 
         // Track this mapping for potential cleanup
         mapped_pages.push((current_page, frame));
@@ -310,8 +268,8 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
     };
 
     // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
         None => {
             log::error!("sys_mprotect: No current thread in per-CPU data!");
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
@@ -367,7 +325,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u32) -> SyscallResult {
         match page_table.update_page_flags(page, new_flags) {
             Ok(()) => {
                 // Flush TLB for this page to ensure new flags take effect
-                tlb::flush(page.start_address());
+                flush_tlb(page.start_address());
                 pages_updated += 1;
             }
             Err(e) => {
@@ -412,8 +370,8 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
     let end_addr = addr + length;
 
     // Get current thread and process
-    let current_thread_id = match crate::per_cpu::current_thread() {
-        Some(thread) => thread.id,
+    let current_thread_id = match get_current_thread_id() {
+        Some(id) => id,
         None => {
             log::error!("sys_munmap: No current thread in per-CPU data!");
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
@@ -468,7 +426,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> SyscallResult {
         match page_table.unmap_page(page) {
             Ok(frame) => {
                 // Flush TLB for this page
-                tlb::flush(page.start_address());
+                flush_tlb(page.start_address());
                 // Free the physical frame
                 crate::memory::frame_allocator::deallocate_frame(frame);
                 pages_unmapped += 1;

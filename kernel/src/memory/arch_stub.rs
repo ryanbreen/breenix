@@ -303,11 +303,20 @@ impl<S> fmt::Debug for PhysFrame<S> {
 // Page
 // =============================================================================
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone)]
 pub struct Page<S = Size4KiB> {
     start: VirtAddr,
     _marker: PhantomData<S>,
 }
+
+// Manual Eq/PartialEq implementations that don't require S: Eq
+impl<S> PartialEq for Page<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.start.as_u64() == other.start.as_u64()
+    }
+}
+
+impl<S> Eq for Page<S> {}
 
 impl<S> Page<S> {
     #[inline]
@@ -336,6 +345,35 @@ impl<S> Page<S> {
 impl<S> fmt::Debug for Page<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Page({:#x})", self.start.as_u64())
+    }
+}
+
+impl<S> PartialOrd for Page<S> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<S> Ord for Page<S> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.start.as_u64().cmp(&other.start.as_u64())
+    }
+}
+
+impl<S> core::ops::Add<u64> for Page<S> {
+    type Output = Self;
+
+    fn add(self, rhs: u64) -> Self::Output {
+        Self {
+            start: VirtAddr::new(self.start.as_u64() + rhs * PAGE_SIZE),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S> core::ops::AddAssign<u64> for Page<S> {
+    fn add_assign(&mut self, rhs: u64) {
+        self.start = VirtAddr::new(self.start.as_u64() + rhs * PAGE_SIZE);
     }
 }
 
