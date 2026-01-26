@@ -163,21 +163,62 @@ mod syscall_nums {
     pub const GET_TIME: u64 = 4;
     pub const FORK: u64 = 5;
     pub const CLOSE: u64 = 6;
+    pub const POLL: u64 = 7;
+    pub const MMAP: u64 = 9;
+    pub const MPROTECT: u64 = 10;
+    pub const MUNMAP: u64 = 11;
     pub const BRK: u64 = 12;
     pub const SIGACTION: u64 = 13;
     pub const SIGPROCMASK: u64 = 14;
     pub const SIGRETURN: u64 = 15;
+    pub const IOCTL: u64 = 16;
+    pub const ACCESS: u64 = 21;
+    pub const PIPE: u64 = 22;
+    pub const SELECT: u64 = 23;
+    pub const DUP: u64 = 32;
+    pub const DUP2: u64 = 33;
     pub const PAUSE: u64 = 34;
     pub const GETITIMER: u64 = 36;
     pub const ALARM: u64 = 37;
     pub const SETITIMER: u64 = 38;
     pub const GETPID: u64 = 39;
+    pub const EXEC: u64 = 59;
+    pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
+    pub const FCNTL: u64 = 72;
+    pub const GETCWD: u64 = 79;
+    pub const CHDIR: u64 = 80;
+    pub const RENAME: u64 = 82;
+    pub const MKDIR: u64 = 83;
+    pub const RMDIR: u64 = 84;
+    pub const LINK: u64 = 86;
+    pub const UNLINK: u64 = 87;
+    pub const SYMLINK: u64 = 88;
+    pub const READLINK: u64 = 89;
+    pub const SOCKET: u64 = 41;
+    pub const CONNECT: u64 = 42;
+    pub const ACCEPT: u64 = 43;
+    pub const SENDTO: u64 = 44;
+    pub const RECVFROM: u64 = 45;
+    pub const SHUTDOWN: u64 = 48;
+    pub const BIND: u64 = 49;
+    pub const LISTEN: u64 = 50;
+    pub const SOCKETPAIR: u64 = 53;
+    pub const SETPGID: u64 = 109;
+    pub const SETSID: u64 = 112;
+    pub const GETPGID: u64 = 121;
+    pub const GETSID: u64 = 124;
     pub const SIGPENDING: u64 = 127;
     pub const SIGSUSPEND: u64 = 130;
     pub const SIGALTSTACK: u64 = 131;
+    pub const MKNOD: u64 = 133;
     pub const GETTID: u64 = 186;
     pub const CLOCK_GETTIME: u64 = 228;
+    pub const OPEN: u64 = 257;
+    pub const LSEEK: u64 = 258;
+    pub const FSTAT: u64 = 259;
+    pub const GETDENTS64: u64 = 260;
+    pub const PIPE2: u64 = 293;
 
     // Also accept Linux ARM64 syscall numbers for compatibility
     pub const ARM64_EXIT: u64 = 93;
@@ -193,9 +234,9 @@ fn dispatch_syscall(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    _arg4: u64,
-    _arg5: u64,
-    _arg6: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
 ) -> u64 {
     match num {
         syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
@@ -231,6 +272,93 @@ fn dispatch_syscall(
         syscall_nums::BRK => {
             // brk syscall - return same address (no-op)
             arg1
+        }
+
+        // Memory mapping syscalls
+        syscall_nums::MMAP => {
+            match crate::syscall::mmap::sys_mmap(arg1, arg2, arg3 as u32, arg4 as u32, arg5 as i64, arg6) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::MUNMAP => {
+            match crate::syscall::mmap::sys_munmap(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::MPROTECT => {
+            match crate::syscall::mmap::sys_mprotect(arg1, arg2, arg3 as u32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Pipe and I/O syscalls
+        syscall_nums::PIPE => {
+            match crate::syscall::pipe::sys_pipe(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::PIPE2 => {
+            match crate::syscall::pipe::sys_pipe2(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::DUP => {
+            match crate::syscall::handlers::sys_dup(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::DUP2 => {
+            match crate::syscall::handlers::sys_dup2(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::FCNTL => {
+            match crate::syscall::handlers::sys_fcntl(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::POLL => {
+            match crate::syscall::handlers::sys_poll(arg1, arg2, arg3 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SELECT => {
+            match crate::syscall::handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Process syscalls
+        syscall_nums::EXEC => {
+            match crate::syscall::handlers::sys_exec(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::WAIT4 => {
+            match crate::syscall::handlers::sys_waitpid(arg1 as i64, arg2, arg3 as u32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::GETPID => {
@@ -321,6 +449,213 @@ fn dispatch_syscall(
             // These should not reach here - they need frame access
             log::warn!("[syscall] {} requires frame access - use rust_syscall_handler_aarch64", num);
             (-38_i64) as u64 // -ENOSYS
+        }
+
+        // Socket syscalls
+        syscall_nums::SOCKET => {
+            match crate::syscall::socket::sys_socket(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::CONNECT => {
+            match crate::syscall::socket::sys_connect(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::ACCEPT => {
+            match crate::syscall::socket::sys_accept(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SENDTO => {
+            match crate::syscall::socket::sys_sendto(arg1, arg2, arg3, arg4, arg5, arg6) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::RECVFROM => {
+            match crate::syscall::socket::sys_recvfrom(arg1, arg2, arg3, arg4, arg5, arg6) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SHUTDOWN => {
+            match crate::syscall::socket::sys_shutdown(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::BIND => {
+            match crate::syscall::socket::sys_bind(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::LISTEN => {
+            match crate::syscall::socket::sys_listen(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SOCKETPAIR => {
+            match crate::syscall::socket::sys_socketpair(arg1, arg2, arg3, arg4) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Ioctl
+        syscall_nums::IOCTL => {
+            match crate::syscall::ioctl::sys_ioctl(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Filesystem syscalls
+        syscall_nums::ACCESS => {
+            match crate::syscall::fs::sys_access(arg1, arg2 as u32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::GETCWD => {
+            match crate::syscall::fs::sys_getcwd(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::CHDIR => {
+            match crate::syscall::fs::sys_chdir(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::OPEN => {
+            match crate::syscall::fs::sys_open(arg1, arg2 as u32, arg3 as u32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::LSEEK => {
+            match crate::syscall::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::FSTAT => {
+            match crate::syscall::fs::sys_fstat(arg1 as i32, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::GETDENTS64 => {
+            match crate::syscall::fs::sys_getdents64(arg1 as i32, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::RENAME => {
+            match crate::syscall::fs::sys_rename(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::MKDIR => {
+            match crate::syscall::fs::sys_mkdir(arg1, arg2 as u32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::RMDIR => {
+            match crate::syscall::fs::sys_rmdir(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::LINK => {
+            match crate::syscall::fs::sys_link(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::UNLINK => {
+            match crate::syscall::fs::sys_unlink(arg1) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SYMLINK => {
+            match crate::syscall::fs::sys_symlink(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::READLINK => {
+            match crate::syscall::fs::sys_readlink(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::MKNOD => {
+            match crate::syscall::fifo::sys_mknod(arg1, arg2 as u32, arg3) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        // Session/process group syscalls
+        syscall_nums::SETPGID => {
+            match crate::syscall::session::sys_setpgid(arg1 as i32, arg2 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::SETSID => {
+            match crate::syscall::session::sys_setsid() {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::GETPGID => {
+            match crate::syscall::session::sys_getpgid(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+
+        syscall_nums::GETSID => {
+            match crate::syscall::session::sys_getsid(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(v) => v,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         _ => {
