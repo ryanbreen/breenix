@@ -89,7 +89,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::UdpSocket(_socket) => {
             // For UDP sockets: we don't implement poll properly yet
             // Just mark as always writable for now
@@ -243,7 +242,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::UnixStream(socket_ref) => {
             let socket = socket_ref.lock();
             // Check for readable data
@@ -263,14 +261,12 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLHUP;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::UnixSocket(_) => {
             // Unconnected Unix socket - always writable (for connect attempt)
             if (events & events::POLLOUT) != 0 {
                 revents |= events::POLLOUT;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::UnixListener(listener_ref) => {
             // Listening socket - check for pending connections
             if (events & events::POLLIN) != 0 {

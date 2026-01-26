@@ -2,7 +2,10 @@
 //!
 //! Implements socket, bind, sendto, recvfrom syscalls for UDP and TCP.
 
-use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINPROGRESS, EINVAL, ENETUNREACH, ENOTSOCK, EADDRINUSE, ENOTCONN, EISCONN, EOPNOTSUPP, ECONNREFUSED, ETIMEDOUT, ENOENT};
+use super::errno::{EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINVAL, ENOTSOCK, EADDRINUSE, EISCONN, EOPNOTSUPP, ECONNREFUSED, ENOENT, ENETUNREACH};
+// TCP-specific error codes (x86_64 only for now)
+#[cfg(target_arch = "x86_64")]
+use super::errno::{EINPROGRESS, ENOTCONN, ETIMEDOUT};
 use super::{ErrorCode, SyscallResult};
 use crate::socket::types::{AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM, SockAddrIn, SockAddrUn};
 use crate::socket::udp::UdpSocket;
@@ -15,6 +18,17 @@ use crate::arch_impl::traits::CpuOps;
 type Cpu = crate::arch_impl::x86_64::X86Cpu;
 #[cfg(target_arch = "aarch64")]
 type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
+
+/// Reset the timer quantum after a blocking wait (architecture-specific)
+/// This prevents immediate preemption after returning from a long blocking syscall
+#[inline(always)]
+fn reset_quantum() {
+    #[cfg(target_arch = "x86_64")]
+    reset_quantum();
+    // ARM64: No-op for now - timer quantum handled differently
+    #[cfg(target_arch = "aarch64")]
+    {}
+}
 
 const SOCK_NONBLOCK: u64 = 0x800;
 const SOCK_CLOEXEC: u64 = 0x80000;
@@ -74,9 +88,16 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
                     let socket = alloc::sync::Arc::new(spin::Mutex::new(socket));
                     (FdKind::UdpSocket(socket), "UDP")
                 }
+                #[cfg(target_arch = "x86_64")]
                 SOCK_STREAM => {
                     // Create TCP socket (initially unbound, port = 0)
                     (FdKind::TcpSocket(0), "TCP")
+                }
+                #[cfg(target_arch = "aarch64")]
+                SOCK_STREAM => {
+                    // TCP not yet implemented on ARM64
+                    log::debug!("sys_socket: TCP not implemented on ARM64");
+                    return SyscallResult::Err(EAFNOSUPPORT as u64);
                 }
                 _ => {
                     log::debug!("sys_socket: unsupported type {} for AF_INET", base_type);
@@ -214,6 +235,7 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                         Err(e) => SyscallResult::Err(e as u64),
                     }
                 }
+                #[cfg(target_arch = "x86_64")]
                 FdKind::TcpSocket(existing_port) => {
                     // TCP socket binding - update the socket's port
                     if *existing_port != 0 {
@@ -699,7 +721,7 @@ pub fn sys_recvfrom(
             }
         });
         // Reset quantum to prevent immediate preemption after long blocking wait
-        crate::interrupts::timer::reset_quantum();
+        reset_quantum();
         crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
@@ -741,6 +763,7 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
         }
     };
 
+    #[allow(unused_variables)] // pid only used for TCP on x86_64
     let (pid, process) = match manager.find_process_by_thread_mut(current_thread_id) {
         Some(p) => p,
         None => {
@@ -757,6 +780,7 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
 
     // Handle listen based on socket type
     match &fd_entry.kind {
+        #[cfg(target_arch = "x86_64")]
         FdKind::TcpSocket(port) => {
             if *port == 0 {
                 // Not bound
@@ -776,6 +800,7 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
             log::info!("TCP: Socket now listening on port {}", port);
             SyscallResult::Ok(0)
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::TcpListener(_) => {
             // Already listening
             SyscallResult::Err(EINVAL as u64)
@@ -828,6 +853,7 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
 
 /// Internal enum to track listener type for accept
 enum ListenerType {
+    #[cfg(target_arch = "x86_64")]
     Tcp(u16),
     Unix(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
 }
@@ -846,6 +872,7 @@ enum ListenerType {
 /// accept() blocks until a connection is available. When no pending
 /// connections exist, the calling thread blocks until a connection arrives.
 /// The blocking pattern follows the same double-check approach as UDP recvfrom.
+#[allow(unused_variables)] // addr_ptr/addrlen_ptr only used for TCP on x86_64
 pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     log::debug!("sys_accept: fd={}", fd);
 
@@ -890,6 +917,7 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 
         // Determine listener type
         let lt = match &fd_entry.kind {
+            #[cfg(target_arch = "x86_64")]
             FdKind::TcpListener(p) => ListenerType::Tcp(*p),
             FdKind::UnixListener(l) => ListenerType::Unix(l.clone()),
             _ => return SyscallResult::Err(EOPNOTSUPP as u64),
@@ -900,6 +928,7 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 
     // Dispatch based on listener type
     match listener_type {
+        #[cfg(target_arch = "x86_64")]
         ListenerType::Tcp(port) => {
             sys_accept_tcp(fd, port, is_nonblocking, thread_id, addr_ptr, addrlen_ptr)
         }
@@ -909,7 +938,8 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     }
 }
 
-/// Accept on TCP listener
+/// Accept on TCP listener (x86_64 only)
+#[cfg(target_arch = "x86_64")]
 fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     // Blocking accept loop
     loop {
@@ -1034,7 +1064,7 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
             }
         });
         // Reset quantum to prevent immediate preemption after long blocking wait
-        crate::interrupts::timer::reset_quantum();
+        reset_quantum();
         crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
@@ -1174,7 +1204,7 @@ fn sys_accept_unix(
             }
         });
         // Reset quantum to prevent immediate preemption after long blocking wait
-        crate::interrupts::timer::reset_quantum();
+        reset_quantum();
         crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
@@ -1219,7 +1249,13 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
     // Dispatch based on address family
     match family {
+        #[cfg(target_arch = "x86_64")]
         AF_INET => sys_connect_tcp(fd, addr_ptr, addrlen),
+        #[cfg(target_arch = "aarch64")]
+        AF_INET => {
+            log::debug!("sys_connect: TCP not implemented on ARM64");
+            SyscallResult::Err(EAFNOSUPPORT as u64)
+        }
         AF_UNIX => sys_connect_unix(fd, addr_ptr, addrlen),
         _ => {
             log::debug!("sys_connect: unsupported address family {}", family);
@@ -1228,7 +1264,8 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     }
 }
 
-/// Connect TCP socket
+/// Connect TCP socket (x86_64 only)
+#[cfg(target_arch = "x86_64")]
 fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     // Validate address length for IPv4
     if addrlen < 16 {
@@ -1282,6 +1319,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
         // Handle connect based on socket type
         match &fd_entry.kind {
+            #[cfg(target_arch = "x86_64")]
             FdKind::TcpSocket(local_port) => {
                 // Assign ephemeral port if not bound
                 let port = if *local_port == 0 {
@@ -1314,6 +1352,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
                 (conn_id, nonblocking)
             }
+            #[cfg(target_arch = "x86_64")]
             FdKind::TcpConnection(_) => {
                 // Already connected
                 return SyscallResult::Err(EISCONN as u64);
@@ -1446,7 +1485,7 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
             }
         });
         // Reset quantum to prevent immediate preemption after long blocking wait
-        crate::interrupts::timer::reset_quantum();
+        reset_quantum();
         crate::task::scheduler::check_and_clear_need_resched();
 
         // Unregister from wait queue (will re-register at top of loop)
@@ -1611,6 +1650,7 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
 
     // Must be a TCP connection
     match &fd_entry.kind {
+        #[cfg(target_arch = "x86_64")]
         FdKind::TcpConnection(conn_id) => {
             // Set shutdown flags on the connection
             let shut_rd = how == 0 || how == 2; // SHUT_RD or SHUT_RDWR
@@ -1621,6 +1661,7 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
             log::info!("TCP: Shutdown fd={} how={}", fd, how);
             SyscallResult::Ok(0)
         }
+        #[cfg(target_arch = "x86_64")]
         FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
             // Not connected
             SyscallResult::Err(ENOTCONN as u64)

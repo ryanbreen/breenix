@@ -354,6 +354,22 @@ impl Process {
                     FdKind::StdIo(_) => {
                         // StdIo doesn't need cleanup
                     }
+                    FdKind::UdpSocket(_) => {
+                        // UDP socket cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed UDP socket fd {}", fd);
+                    }
+                    FdKind::UnixStream(_) => {
+                        // Unix stream cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed Unix stream fd {}", fd);
+                    }
+                    FdKind::UnixSocket(_) => {
+                        // Unix socket cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed Unix socket fd {}", fd);
+                    }
+                    FdKind::UnixListener(_) => {
+                        // Unix listener cleanup handled by Drop
+                        log::debug!("Process::close_all_fds() - closed Unix listener fd {}", fd);
+                    }
                 }
             }
         }

@@ -13,10 +13,9 @@ pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
 
-// TCP and UDP require process/socket/ipc modules which are x86_64-only for now
-#[cfg(target_arch = "x86_64")]
+// TCP and UDP protocol implementations - architecture-independent
+// The socket syscall layer handles arch-specific details
 pub mod tcp;
-#[cfg(target_arch = "x86_64")]
 pub mod udp;
 
 use alloc::vec::Vec;

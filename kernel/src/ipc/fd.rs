@@ -85,7 +85,7 @@ pub enum FdKind {
     /// Write end of a pipe
     PipeWrite(Arc<Mutex<super::pipe::PipeBuffer>>),
     /// UDP socket (wrapped in Arc<Mutex<>> for sharing and dup/fork)
-    #[cfg(target_arch = "x86_64")]
+    /// Available on both x86_64 and ARM64 (driver abstraction handles hardware differences)
     UdpSocket(Arc<Mutex<crate::socket::udp::UdpSocket>>),
     /// TCP socket (unbound, or bound but not connected/listening)
     /// The u16 is the bound local port (0 if unbound)
@@ -126,13 +126,13 @@ pub enum FdKind {
     #[allow(dead_code)]
     PtySlave(u32),
     /// Unix stream socket (AF_UNIX, SOCK_STREAM) - for socketpair IPC
-    #[cfg(target_arch = "x86_64")]
+    /// Fully architecture-independent - uses in-memory buffers
     UnixStream(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>>),
     /// Unix socket (AF_UNIX, SOCK_STREAM) - unbound or bound but not connected/listening
-    #[cfg(target_arch = "x86_64")]
+    /// Fully architecture-independent
     UnixSocket(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixSocket>>),
     /// Unix listener socket (AF_UNIX, SOCK_STREAM) - listening for connections
-    #[cfg(target_arch = "x86_64")]
+    /// Fully architecture-independent
     UnixListener(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
     /// FIFO (named pipe) read end - path is stored for cleanup on close
     #[cfg(target_arch = "x86_64")]
@@ -148,7 +148,6 @@ impl core::fmt::Debug for FdKind {
             FdKind::StdIo(n) => write!(f, "StdIo({})", n),
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
-            #[cfg(target_arch = "x86_64")]
             FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
             #[cfg(target_arch = "x86_64")]
             FdKind::TcpSocket(port) => write!(f, "TcpSocket(port={})", port),
@@ -170,17 +169,14 @@ impl core::fmt::Debug for FdKind {
             FdKind::PtyMaster(n) => write!(f, "PtyMaster({})", n),
             #[cfg(target_arch = "x86_64")]
             FdKind::PtySlave(n) => write!(f, "PtySlave({})", n),
-            #[cfg(target_arch = "x86_64")]
             FdKind::UnixStream(s) => {
                 let sock = s.lock();
                 write!(f, "UnixStream({:?})", sock.endpoint)
             }
-            #[cfg(target_arch = "x86_64")]
             FdKind::UnixSocket(s) => {
                 let sock = s.lock();
                 write!(f, "UnixSocket({:?})", sock.state)
             }
-            #[cfg(target_arch = "x86_64")]
             FdKind::UnixListener(l) => {
                 let listener = l.lock();
                 write!(f, "UnixListener(pending={})", listener.pending_count())
@@ -562,7 +558,6 @@ impl Drop for FdTable {
                         buffer.lock().close_write();
                         log::debug!("FdTable::drop() - closed pipe write fd {}", i);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::UdpSocket(_) => {
                         // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
                         log::debug!("FdTable::drop() - releasing UDP socket fd {}", i);
@@ -630,13 +625,11 @@ impl Drop for FdTable {
                         // PTY slave doesn't own the pair, just decrement reference
                         log::debug!("FdTable::drop() - released PTY slave fd {}", i);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::UnixStream(socket) => {
                         // Close the Unix socket endpoint
                         socket.lock().close();
                         log::debug!("FdTable::drop() - closed Unix stream socket fd {}", i);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::UnixSocket(socket) => {
                         // Unbind from registry if bound
                         let sock = socket.lock();
@@ -646,7 +639,6 @@ impl Drop for FdTable {
                         }
                         log::debug!("FdTable::drop() - closed Unix socket fd {}", i);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::UnixListener(listener) => {
                         // Unbind from registry and wake any pending accept waiters
                         let l = listener.lock();

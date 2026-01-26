@@ -327,11 +327,61 @@ fn dispatch_syscall(
             (-38_i64) as u64 // -ENOSYS
         }
 
-        // Socket syscalls (stubs)
-        syscall_nums::SOCKET | syscall_nums::CONNECT | syscall_nums::ACCEPT |
-        syscall_nums::SENDTO | syscall_nums::RECVFROM | syscall_nums::BIND |
-        syscall_nums::LISTEN | syscall_nums::SHUTDOWN | syscall_nums::SOCKETPAIR => {
-            (-38_i64) as u64 // -ENOSYS
+        // Socket syscalls - use shared implementations
+        // Note: TCP (AF_INET) is not supported on ARM64, but Unix domain (AF_UNIX) and UDP work
+        syscall_nums::SOCKET => {
+            match crate::syscall::socket::sys_socket(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::CONNECT => {
+            match crate::syscall::socket::sys_connect(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::ACCEPT => {
+            match crate::syscall::socket::sys_accept(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SENDTO => {
+            match crate::syscall::socket::sys_sendto(arg1, arg2, arg3, arg4, arg5, arg6) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::RECVFROM => {
+            match crate::syscall::socket::sys_recvfrom(arg1, arg2, arg3, arg4, arg5, arg6) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::BIND => {
+            match crate::syscall::socket::sys_bind(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::LISTEN => {
+            match crate::syscall::socket::sys_listen(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SHUTDOWN => {
+            match crate::syscall::socket::sys_shutdown(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SOCKETPAIR => {
+            match crate::syscall::socket::sys_socketpair(arg1, arg2, arg3, arg4) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         // Filesystem syscalls (stubs)

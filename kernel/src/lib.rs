@@ -48,7 +48,8 @@ pub mod userspace_test;
 // Syscall module - enabled for both architectures
 // Individual submodules have cfg guards for arch-specific code
 pub mod syscall;
-#[cfg(target_arch = "x86_64")]
+// Socket module - enabled for both architectures
+// Unix domain sockets are fully arch-independent
 pub mod socket;
 #[cfg(target_arch = "x86_64")]
 pub mod test_exec;
