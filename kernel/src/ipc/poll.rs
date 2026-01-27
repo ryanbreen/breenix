@@ -203,7 +203,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::PtyMaster(pty_num) => {
             // PTY master - check slave_to_master buffer for readable data
             if let Some(pair) = crate::tty::pty::get(*pty_num) {
@@ -221,7 +220,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLERR;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::PtySlave(pty_num) => {
             // PTY slave - check line discipline for readable data
             if let Some(pair) = crate::tty::pty::get(*pty_num) {

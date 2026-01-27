@@ -110,6 +110,16 @@ impl Scheduler {
             .and_then(move |id| self.get_thread_mut(id))
     }
 
+    /// Get the current thread ID
+    pub fn current_thread_id_inner(&self) -> Option<u64> {
+        self.current_thread
+    }
+
+    /// Get the idle thread ID
+    pub fn idle_thread_id(&self) -> u64 {
+        self.idle_thread
+    }
+
     /// Schedule the next thread to run
     /// Returns (old_thread, new_thread) for context switching
     pub fn schedule(&mut self) -> Option<(&mut Thread, &Thread)> {
@@ -183,12 +193,36 @@ impl Scheduler {
             // This is important for kthreads that yield while waiting for the idle
             // thread (which runs tests/main logic) to set a flag.
             if next_thread_id != self.idle_thread {
+                // On ARM64, don't switch userspace threads to idle. Idle runs in kernel
+                // mode (EL1), and ARM64 only preempts when returning to userspace (from_el0=true).
+                // If we switched a userspace thread to idle, idle would never be preempted
+                // back to the userspace thread because timer fires with from_el0=false.
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let is_userspace = self
+                        .get_thread(next_thread_id)
+                        .map(|t| t.privilege == super::thread::ThreadPrivilege::User)
+                        .unwrap_or(false);
+                    if is_userspace {
+                        // Userspace thread is alone - keep running it, don't switch to idle
+                        if debug_log {
+                            log_serial_println!(
+                                "Thread {} is userspace and alone, continuing (no idle switch)",
+                                next_thread_id
+                            );
+                        }
+                        return None;
+                    }
+                }
                 self.ready_queue.push_back(next_thread_id);
                 next_thread_id = self.idle_thread;
                 // CRITICAL: Set NEED_RESCHED so the next timer interrupt will
                 // switch back to the deferred thread. Without this, idle would
                 // spin in HLT for an entire quantum (50ms) before rescheduling.
+                #[cfg(target_arch = "x86_64")]
                 crate::per_cpu::set_need_resched(true);
+                #[cfg(target_arch = "aarch64")]
+                crate::per_cpu_aarch64::set_need_resched(true);
                 if debug_log {
                     log_serial_println!(
                         "Thread {} is alone (non-idle), switching to idle {}",
@@ -611,6 +645,24 @@ pub fn try_schedule() -> Option<(u64, u64)> {
     if let Some(mut scheduler_lock) = SCHEDULER.try_lock() {
         if let Some(scheduler) = scheduler_lock.as_mut() {
             return scheduler.schedule().map(|(old, new)| (old.id(), new.id()));
+        }
+    }
+    None
+}
+
+/// Check if the current thread is the idle thread (safe to call from IRQ context)
+/// Returns None if the scheduler lock can't be acquired (to avoid deadlock)
+pub fn is_current_idle_thread() -> Option<bool> {
+    // Try to get the lock without blocking - if we can't, assume not idle
+    // to be safe. This prevents deadlock when timer fires during scheduler ops.
+    if let Some(scheduler_lock) = SCHEDULER.try_lock() {
+        if let Some(scheduler) = scheduler_lock.as_ref() {
+            return Some(
+                scheduler
+                    .current_thread_id_inner()
+                    .map(|id| id == scheduler.idle_thread_id())
+                    .unwrap_or(false),
+            );
         }
     }
     None

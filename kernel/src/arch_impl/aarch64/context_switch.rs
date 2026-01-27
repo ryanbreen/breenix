@@ -54,9 +54,14 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
-    // Only reschedule when returning to userspace (EL0)
+    // Only reschedule when returning to userspace (EL0).
     // Kernel code is not preemptible - this avoids scheduler lock deadlocks
     // when IRQs fire during kernel operations that hold the scheduler lock.
+    //
+    // NOTE: This means when idle thread runs in kernel mode (e.g., in the spin loop),
+    // it won't be preempted by timer. Instead, we rely on need_resched being checked
+    // when returning from syscalls. Since the pty_test and init_shell are in userspace
+    // making syscalls, they will get preempted properly on syscall return.
     if !from_el0 {
         return;
     }

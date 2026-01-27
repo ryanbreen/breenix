@@ -370,6 +370,15 @@ impl Process {
                         // Unix listener cleanup handled by Drop
                         log::debug!("Process::close_all_fds() - closed Unix listener fd {}", fd);
                     }
+                    FdKind::PtyMaster(pty_num) => {
+                        // Release PTY pair when master is closed
+                        crate::tty::pty::release(pty_num);
+                        log::debug!("Process::close_all_fds() - closed PTY master fd {}", fd);
+                    }
+                    FdKind::PtySlave(_) => {
+                        // Slave cleanup handled by PTY subsystem
+                        log::debug!("Process::close_all_fds() - closed PTY slave fd {}", fd);
+                    }
                 }
             }
         }

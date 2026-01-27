@@ -76,6 +76,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         StdIo,
         Pipe { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
         UnixStream { socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>> },
+        PtyMaster(u32),
+        PtySlave(u32),
         Ebadf,
         Enotconn,
         Eopnotsupp,
@@ -109,6 +111,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::UnixStream(socket) => WriteOperation::UnixStream { socket: socket.clone() },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn,
             FdKind::UnixListener(_) => WriteOperation::Enotconn,
+            FdKind::PtyMaster(pty_num) => WriteOperation::PtyMaster(*pty_num),
+            FdKind::PtySlave(pty_num) => WriteOperation::PtySlave(*pty_num),
         }
     };
 
@@ -130,6 +134,28 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             match sock.write(&buffer) {
                 Ok(n) => SyscallResult::Ok(n as u64),
                 Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        WriteOperation::PtyMaster(pty_num) => {
+            // Write to PTY master - data goes to slave through line discipline
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                match pair.master_write(&buffer) {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
+            }
+        }
+        WriteOperation::PtySlave(pty_num) => {
+            // Write to PTY slave - data goes to master
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                match pair.slave_write(&buffer) {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
             }
         }
     }
@@ -229,6 +255,44 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     SyscallResult::Ok(n as u64)
                 }
                 Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        FdKind::PtyMaster(pty_num) => {
+            // Read from PTY master - read data written by slave
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                let mut buf = alloc::vec![0u8; count as usize];
+                match pair.master_read(&mut buf) {
+                    Ok(n) => {
+                        if n > 0 {
+                            if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
+                                return SyscallResult::Err(14);
+                            }
+                        }
+                        SyscallResult::Ok(n as u64)
+                    }
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
+            }
+        }
+        FdKind::PtySlave(pty_num) => {
+            // Read from PTY slave - read processed data from line discipline
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                let mut buf = alloc::vec![0u8; count as usize];
+                match pair.slave_read(&mut buf) {
+                    Ok(n) => {
+                        if n > 0 {
+                            if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
+                                return SyscallResult::Err(14);
+                            }
+                        }
+                        SyscallResult::Ok(n as u64)
+                    }
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
             }
         }
     }
