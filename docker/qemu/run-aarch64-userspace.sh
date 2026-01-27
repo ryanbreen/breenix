@@ -8,63 +8,44 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Find the ARM64 kernel
-KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/release/kernel-aarch64"
+KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Error: No ARM64 kernel found. Build with:"
-    echo "  cargo build --release --target aarch64-unknown-none -p kernel --features aarch64-qemu --bin kernel-aarch64"
+    echo "  cargo build --release --target aarch64-breenix.json -p kernel --features aarch64-qemu --bin kernel-aarch64"
     exit 1
 fi
 
-# Find or create ARM64 test disk
-TEST_DISK="$BREENIX_ROOT/target/aarch64_test_binaries.img"
-if [ ! -f "$TEST_DISK" ]; then
-    echo "Creating ARM64 test disk image..."
+# Find or create ARM64 ext2 disk
+EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+EXT2_SIZE_BYTES=$((8 * 1024 * 1024))
+EXT2_SIZE_ACTUAL=0
+if [ -f "$EXT2_DISK" ]; then
+    if stat -f%z "$EXT2_DISK" >/dev/null 2>&1; then
+        EXT2_SIZE_ACTUAL=$(stat -f%z "$EXT2_DISK")
+    else
+        EXT2_SIZE_ACTUAL=$(stat -c %s "$EXT2_DISK")
+    fi
+fi
 
-    # Create a disk image with userspace binaries
-    # Using a simple raw format - kernel will need to parse this
-    TEMP_DIR=$(mktemp -d)
-
-    # Copy ARM64 binaries to temp dir
-    if [ -d "$BREENIX_ROOT/userspace/tests/aarch64" ]; then
-        cp "$BREENIX_ROOT/userspace/tests/aarch64/"*.elf "$TEMP_DIR/" 2>/dev/null || true
+if [ ! -f "$EXT2_DISK" ] || [ "$EXT2_SIZE_ACTUAL" -ne "$EXT2_SIZE_BYTES" ]; then
+    if [ -f "$EXT2_DISK" ]; then
+        echo "Recreating ARM64 ext2 disk (size mismatch: $EXT2_SIZE_ACTUAL bytes)"
+        rm -f "$EXT2_DISK"
+    else
+        echo "Creating ARM64 ext2 disk image..."
     fi
 
-    # Create a simple FAT disk image
-    # 4MB should be plenty for test binaries
-    dd if=/dev/zero of="$TEST_DISK" bs=1M count=4
+    "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64 --size 8
 
-    # Format as FAT16
-    if command -v mkfs.fat &>/dev/null; then
-        mkfs.fat -F 16 "$TEST_DISK"
-        # Mount and copy files
-        MOUNT_DIR=$(mktemp -d)
-        if mount -o loop "$TEST_DISK" "$MOUNT_DIR" 2>/dev/null; then
-            cp "$TEMP_DIR"/*.elf "$MOUNT_DIR/" 2>/dev/null || true
-            umount "$MOUNT_DIR"
-        else
-            echo "Note: Could not mount disk image to copy files"
-            echo "      (This is expected on macOS - using mtools instead)"
-        fi
-        rmdir "$MOUNT_DIR"
+    if [ ! -f "$EXT2_DISK" ]; then
+        echo "Error: Failed to create ext2 disk image at $EXT2_DISK"
+        exit 1
     fi
-
-    # On macOS, use mtools if available
-    if command -v mtools &>/dev/null || [ -f /opt/homebrew/bin/mformat ]; then
-        # Try to use mtools
-        mformat -i "$TEST_DISK" -F :: 2>/dev/null || true
-        for f in "$TEMP_DIR"/*.elf; do
-            [ -f "$f" ] && mcopy -i "$TEST_DISK" "$f" :: 2>/dev/null || true
-        done
-    fi
-
-    rm -rf "$TEMP_DIR"
-
-    echo "Created: $TEST_DISK"
 fi
 
 echo "Running ARM64 kernel with userspace..."
 echo "Kernel: $KERNEL"
-echo "Test disk: $TEST_DISK"
+echo "Ext2 disk: $EXT2_DISK"
 
 # Create output directory
 OUTPUT_DIR="/tmp/breenix_aarch64_1"
@@ -86,7 +67,7 @@ echo "Starting QEMU ARM64 with VirtIO devices..."
 #   etc.
 docker run --rm \
     -v "$KERNEL:/breenix/kernel:ro" \
-    -v "$TEST_DISK:/breenix/test_disk.img:ro" \
+    -v "$EXT2_DISK:/breenix/ext2.img:ro" \
     -v "$OUTPUT_DIR:/output" \
     breenix-qemu-aarch64 \
     qemu-system-aarch64 \
@@ -94,8 +75,8 @@ docker run --rm \
         -cpu cortex-a72 \
         -m 512 \
         -kernel /breenix/kernel \
-        -drive if=none,id=hd0,format=raw,readonly=on,file=/breenix/test_disk.img \
-        -device virtio-blk-device,drive=hd0 \
+        -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img \
+        -device virtio-blk-device,drive=ext2disk \
         -display none \
         -no-reboot \
         -serial file:/output/serial.txt \

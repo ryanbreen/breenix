@@ -345,6 +345,10 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
 
 /// Restore userspace context for a thread.
 fn restore_userspace_context_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
+    crate::serial_println!(
+        "ARM64: enter restore_userspace_context_arm64 thread={}",
+        thread_id
+    );
     log::trace!("restore_userspace_context_arm64: thread {}", thread_id);
 
     // Check if this thread has ever run
@@ -397,6 +401,9 @@ fn restore_userspace_context_arm64(thread_id: u64, frame: &mut Aarch64ExceptionF
             );
         }
     });
+
+    // Set TTBR0 target for this thread's process address space
+    set_next_ttbr0_for_thread(thread_id);
 
     // Switch TTBR0 if needed for different address space
     switch_ttbr0_if_needed(thread_id);
@@ -462,6 +469,9 @@ fn setup_first_userspace_entry_arm64(thread_id: u64, frame: &mut Aarch64Exceptio
         );
     });
 
+    // Set TTBR0 target for this thread's process address space
+    set_next_ttbr0_for_thread(thread_id);
+
     // Switch TTBR0 for this thread's address space
     switch_ttbr0_if_needed(thread_id);
 
@@ -492,6 +502,12 @@ fn switch_ttbr0_if_needed(thread_id: u64) {
     }
 
     if current_ttbr0 != next_ttbr0 {
+        crate::serial_println!(
+            "ARM64: TTBR0 switch thread={} {:#x} -> {:#x}",
+            thread_id,
+            current_ttbr0,
+            next_ttbr0
+        );
         log::trace!(
             "TTBR0 switch: {:#x} -> {:#x} for thread {}",
             current_ttbr0,
@@ -526,6 +542,45 @@ fn switch_ttbr0_if_needed(thread_id: u64) {
     // Clear next_cr3 to indicate switch is done
     unsafe {
         Aarch64PerCpu::set_next_cr3(0);
+    }
+}
+
+/// Determine and set the next TTBR0 value for a userspace thread.
+fn set_next_ttbr0_for_thread(thread_id: u64) {
+    let next_ttbr0 = {
+        let manager_guard = crate::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                process
+                    .page_table
+                    .as_ref()
+                    .map(|pt| pt.level_4_frame().start_address().as_u64())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some(ttbr0) = next_ttbr0 {
+        crate::serial_println!(
+            "ARM64: set_next_ttbr0_for_thread thread={} ttbr0={:#x}",
+            thread_id,
+            ttbr0
+        );
+        unsafe {
+            Aarch64PerCpu::set_next_cr3(ttbr0);
+        }
+    } else {
+        crate::serial_println!(
+            "ARM64: set_next_ttbr0_for_thread thread={} ttbr0=NONE",
+            thread_id
+        );
+        log::error!(
+            "ARM64: Failed to determine TTBR0 for thread {} (process/page table missing)",
+            thread_id
+        );
     }
 }
 

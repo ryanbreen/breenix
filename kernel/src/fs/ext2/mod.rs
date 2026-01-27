@@ -1280,19 +1280,18 @@ static ROOT_EXT2: Mutex<Option<Ext2Fs>> = Mutex::new(None);
 
 /// Initialize the root ext2 filesystem
 ///
-/// Mounts the ext2 disk (VirtIO block device index 2) as the root filesystem.
+/// Mounts the ext2 disk as the root filesystem.
 /// Device layout:
-///   - Device 0: UEFI boot disk
-///   - Device 1: Test binaries disk
-///   - Device 2: ext2 filesystem disk (testdata/ext2.img)
+///   - x86_64: Device 0 UEFI boot disk, device 1 test binaries disk, device 2 ext2 disk
+///   - ARM64: Device 0 ext2 disk
 ///
 /// This should be called during kernel initialization after VirtIO
 /// block device initialization.
 pub fn init_root_fs() -> Result<(), &'static str> {
-    // Get the ext2 disk (device index 2)
-    // Device 0 is the UEFI boot disk, device 1 is the test binaries disk
+    // Try x86_64 layout first (device index 2), then ARM64 layout (device index 0).
     let device = VirtioBlockWrapper::new(2)
-        .ok_or("No ext2 block device available (expected at device index 2)")?;
+        .or_else(|| VirtioBlockWrapper::new(0))
+        .ok_or("No ext2 block device available (expected at device index 2 or 0)")?;
     let device = Arc::new(device);
 
     // Register with VFS mount system

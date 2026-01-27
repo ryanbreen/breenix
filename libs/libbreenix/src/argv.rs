@@ -1,7 +1,7 @@
 //! Command-line argument parsing for Breenix userspace programs
 //!
 //! This module provides utilities to parse argc/argv from the stack,
-//! following the Linux x86_64 ABI convention.
+//! following the Linux ABI convention on x86_64 and aarch64.
 //!
 //! At process startup, the stack layout is:
 //! ```text
@@ -12,7 +12,7 @@
 //!   argv[n-1] pointer
 //!   ...
 //!   argv[0] pointer
-//!   argc              <- RSP points here at _start
+//!   argc              <- stack pointer points here at _start
 //! Low addresses:
 //! ```
 //!
@@ -133,7 +133,7 @@ impl Iterator for ArgsIter {
 /// # Safety
 ///
 /// This function must be called from `_start` with the original RSP value.
-/// The RSP must point to a valid argc/argv structure set up by the kernel.
+/// The stack pointer must point to a valid argc/argv structure set up by the kernel.
 ///
 /// # Usage
 ///
@@ -145,6 +145,7 @@ impl Iterator for ArgsIter {
 ///     // ...
 /// }
 /// ```
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub unsafe fn get_args() -> Args {
     let argc: usize;
@@ -159,6 +160,29 @@ pub unsafe fn get_args() -> Args {
     core::arch::asm!(
         "mov {argc}, [rsp]",
         "lea {argv}, [rsp + 8]",
+        argc = out(reg) argc,
+        argv = out(reg) argv_ptr,
+        options(nostack, preserves_flags, pure, readonly)
+    );
+
+    Args::new(argc, argv_ptr)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub unsafe fn get_args() -> Args {
+    let argc: usize;
+    let argv_ptr: *const *const u8;
+
+    // Read argc from SP and argv from SP+8
+    // The kernel sets up: [argc] [argv[0]] [argv[1]] ... [NULL]
+    // SP -> argc
+    // SP+8 -> argv[0]
+    // SP+16 -> argv[1]
+    // etc.
+    core::arch::asm!(
+        "ldr {argc}, [sp]",
+        "add {argv}, sp, #8",
         argc = out(reg) argc,
         argv = out(reg) argv_ptr,
         options(nostack, preserves_flags, pure, readonly)

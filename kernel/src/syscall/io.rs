@@ -75,14 +75,9 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
     enum WriteOperation {
         StdIo,
         Pipe { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
-        Fifo { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
         UnixStream { socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>> },
-        RegularFile { file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>> },
-        TcpConnection { conn_id: crate::net::tcp::ConnectionId },
-        Device { device_type: crate::fs::devfs::DeviceType },
         Ebadf,
         Enotconn,
-        Eisdir,
         Eopnotsupp,
     }
 
@@ -110,23 +105,10 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 WriteOperation::Pipe { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
             }
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
-            FdKind::FifoWrite(_path, pipe_buffer) => {
-                WriteOperation::Fifo { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
-            }
-            FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
-            FdKind::TcpSocket(_) => WriteOperation::Enotconn,
-            FdKind::TcpListener(_) => WriteOperation::Enotconn,
-            FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp,
             FdKind::UnixStream(socket) => WriteOperation::UnixStream { socket: socket.clone() },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn,
             FdKind::UnixListener(_) => WriteOperation::Enotconn,
-            FdKind::RegularFile(file) => WriteOperation::RegularFile { file: file.clone() },
-            FdKind::Directory(_) => WriteOperation::Eisdir,
-            FdKind::Device(device_type) => WriteOperation::Device { device_type: device_type.clone() },
-            FdKind::DevfsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::DevptsDirectory { .. } => WriteOperation::Eisdir,
-            FdKind::PtyMaster(_) | FdKind::PtySlave(_) => WriteOperation::Eopnotsupp,
         }
     };
 
@@ -134,17 +116,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         WriteOperation::StdIo => write_to_stdio(fd, &buffer),
         WriteOperation::Ebadf => SyscallResult::Err(9),
         WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
-        WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
         WriteOperation::Eopnotsupp => SyscallResult::Err(95),
         WriteOperation::Pipe { pipe_buffer, is_nonblocking } => {
-            let mut pipe = pipe_buffer.lock();
-            match pipe.write(&buffer) {
-                Ok(n) => SyscallResult::Ok(n as u64),
-                Err(11) if !is_nonblocking => SyscallResult::Err(11),
-                Err(e) => SyscallResult::Err(e as u64),
-            }
-        }
-        WriteOperation::Fifo { pipe_buffer, is_nonblocking } => {
             let mut pipe = pipe_buffer.lock();
             match pipe.write(&buffer) {
                 Ok(n) => SyscallResult::Ok(n as u64),
@@ -158,65 +131,6 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 Ok(n) => SyscallResult::Ok(n as u64),
                 Err(e) => SyscallResult::Err(e as u64),
             }
-        }
-        WriteOperation::TcpConnection { conn_id } => {
-            match crate::net::tcp::tcp_send(&conn_id, &buffer) {
-                Ok(n) => SyscallResult::Ok(n as u64),
-                Err(e) => {
-                    if e.contains("shutdown") {
-                        SyscallResult::Err(super::errno::EPIPE as u64)
-                    } else {
-                        SyscallResult::Err(super::errno::EIO as u64)
-                    }
-                }
-            }
-        }
-        WriteOperation::Device { device_type } => {
-            use crate::fs::devfs::DeviceType;
-            match device_type {
-                DeviceType::Null | DeviceType::Zero => SyscallResult::Ok(buffer.len() as u64),
-                DeviceType::Console | DeviceType::Tty => write_to_stdio(fd, &buffer),
-            }
-        }
-        WriteOperation::RegularFile { file } => {
-            let (inode_num, position, flags) = {
-                let file_guard = file.lock();
-                (file_guard.inode_num, file_guard.position, file_guard.flags)
-            };
-
-            let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
-                let root_fs = crate::fs::ext2::root_fs();
-                let fs = match root_fs.as_ref() {
-                    Some(fs) => fs,
-                    None => return SyscallResult::Err(super::errno::ENOSYS as u64),
-                };
-                match fs.read_inode(inode_num as u32) {
-                    Ok(inode) => inode.size(),
-                    Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-                }
-            } else {
-                position
-            };
-
-            let mut root_fs = crate::fs::ext2::root_fs();
-            let fs = match root_fs.as_mut() {
-                Some(fs) => fs,
-                None => return SyscallResult::Err(super::errno::ENOSYS as u64),
-            };
-
-            let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
-                Ok(n) => n,
-                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-            };
-
-            drop(root_fs);
-
-            {
-                let mut file_guard = file.lock();
-                file_guard.position = write_offset + bytes_written as u64;
-            }
-
-            SyscallResult::Ok(bytes_written as u64)
         }
     }
 }
@@ -271,9 +185,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Ok(n as u64);
                     }
                     Err(11) => {
-                        crate::task::scheduler::with_scheduler(|sched| {
-                            sched.block_current_for_stdin_read();
-                        });
+                        // ARM64: no scheduler unblock path for stdin yet; wait for data.
                         loop {
                             if crate::ipc::stdin::has_data() {
                                 break;
@@ -291,7 +203,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::StdIo(_) => SyscallResult::Err(9),
         FdKind::PipeRead(pipe_buffer) => {
             let mut pipe = pipe_buffer.lock();
-            let mut buf = vec![0u8; count as usize];
+            let mut buf = alloc::vec![0u8; count as usize];
             match pipe.read(&mut buf) {
                 Ok(n) => {
                     if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
@@ -302,26 +214,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 Err(e) => SyscallResult::Err(e as u64),
             }
         }
-        FdKind::FifoRead(_path, pipe_buffer) => {
-            let mut pipe = pipe_buffer.lock();
-            let mut buf = vec![0u8; count as usize];
-            match pipe.read(&mut buf) {
-                Ok(n) => {
-                    if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
-                        return SyscallResult::Err(14);
-                    }
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            }
-        }
-        FdKind::PipeWrite(_) | FdKind::FifoWrite(_, _) => SyscallResult::Err(9),
-        FdKind::UdpSocket(_) | FdKind::TcpSocket(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) | FdKind::TcpListener(_) => {
+        FdKind::PipeWrite(_) => SyscallResult::Err(9),
+        FdKind::UdpSocket(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
             SyscallResult::Err(super::errno::ENOTCONN as u64)
         }
         FdKind::UnixStream(socket) => {
-            let mut sock = socket.lock();
-            let mut buf = vec![0u8; count as usize];
+            let sock = socket.lock();
+            let mut buf = alloc::vec![0u8; count as usize];
             match sock.read(&mut buf) {
                 Ok(n) => {
                     if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
@@ -332,67 +231,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 Err(e) => SyscallResult::Err(e as u64),
             }
         }
-        FdKind::TcpConnection(conn_id) => {
-            let mut buf = vec![0u8; count as usize];
-            match crate::net::tcp::tcp_recv(conn_id, &mut buf) {
-                Ok(n) => {
-                    if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
-                        return SyscallResult::Err(14);
-                    }
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            }
-        }
-        FdKind::RegularFile(file) => {
-            let (inode_num, position) = {
-                let file_guard = file.lock();
-                (file_guard.inode_num, file_guard.position)
-            };
-
-            let mut root_fs = crate::fs::ext2::root_fs();
-            let fs = match root_fs.as_mut() {
-                Some(fs) => fs,
-                None => return SyscallResult::Err(super::errno::ENOSYS as u64),
-            };
-
-            let mut buf = vec![0u8; count as usize];
-            let bytes_read = match fs.read_file_range(inode_num as u32, position, &mut buf) {
-                Ok(n) => n,
-                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-            };
-
-            drop(root_fs);
-
-            {
-                let mut file_guard = file.lock();
-                file_guard.position = position + bytes_read as u64;
-            }
-
-            if copy_to_user_bytes(buf_ptr, &buf[..bytes_read]).is_err() {
-                return SyscallResult::Err(14);
-            }
-
-            SyscallResult::Ok(bytes_read as u64)
-        }
-        FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } => {
-            SyscallResult::Err(super::errno::EISDIR as u64)
-        }
-        FdKind::Device(device_type) => {
-            use crate::fs::devfs::DeviceType;
-            match device_type {
-                DeviceType::Null => SyscallResult::Ok(0),
-                DeviceType::Zero => {
-                    let buf = vec![0u8; count as usize];
-                    if copy_to_user_bytes(buf_ptr, &buf).is_err() {
-                        return SyscallResult::Err(14);
-                    }
-                    SyscallResult::Ok(count)
-                }
-                DeviceType::Console | DeviceType::Tty => SyscallResult::Err(9),
-            }
-        }
-        FdKind::PtyMaster(_) | FdKind::PtySlave(_) => SyscallResult::Err(95),
     }
 }
 
@@ -484,19 +322,14 @@ pub fn sys_fcntl(fd: u64, cmd: u64, arg: u64) -> SyscallResult {
 
     match cmd {
         F_DUPFD => {
-            match process.fd_table.dup_min(fd, arg) {
+            match process.fd_table.dup_at_least(fd, arg, false) {
                 Ok(new_fd) => SyscallResult::Ok(new_fd as u64),
                 Err(e) => SyscallResult::Err(e as u64),
             }
         }
         F_DUPFD_CLOEXEC => {
-            match process.fd_table.dup_min(fd, arg) {
-                Ok(new_fd) => {
-                    if let Some(entry) = process.fd_table.get_mut(new_fd) {
-                        entry.flags |= crate::ipc::fd::flags::FD_CLOEXEC;
-                    }
-                    SyscallResult::Ok(new_fd as u64)
-                }
+            match process.fd_table.dup_at_least(fd, arg, true) {
+                Ok(new_fd) => SyscallResult::Ok(new_fd as u64),
                 Err(e) => SyscallResult::Err(e as u64),
             }
         }

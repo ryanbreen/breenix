@@ -34,6 +34,7 @@ pub use crate::task::thread::CpuContext;
 //   120      elr_el1 (exception return address)
 //   128      spsr_el1 (saved program status)
 core::arch::global_asm!(r#"
+.section .text
 .global switch_context
 .type switch_context, @function
 switch_context:

@@ -2,15 +2,15 @@
 //!
 //! Implements: open, lseek, fstat, getdents64
 
+#[cfg(target_arch = "x86_64")]
 use crate::ipc::fd::FdKind;
+#[cfg(target_arch = "x86_64")]
 use crate::arch_impl::traits::CpuOps;
 use super::SyscallResult;
 
 // Architecture-specific CPU type for interrupt control
 #[cfg(target_arch = "x86_64")]
 type Cpu = crate::arch_impl::x86_64::X86Cpu;
-#[cfg(target_arch = "aarch64")]
-type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
 /// Open flags (POSIX compatible)
 pub const O_RDONLY: u32 = 0;
@@ -34,6 +34,7 @@ pub const O_DIRECTORY: u32 = 0x10000;
 ///
 /// Note: We don't instantiate this struct directly; instead we write
 /// the fields manually to user memory due to the variable-length d_name.
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 #[allow(dead_code)] // Documentation struct - we write fields manually
 pub struct LinuxDirent64 {
@@ -49,51 +50,72 @@ pub struct LinuxDirent64 {
 }
 
 /// Size of the fixed part of LinuxDirent64 (before d_name)
+#[cfg(target_arch = "x86_64")]
 const DIRENT64_HEADER_SIZE: usize = 19; // 8 + 8 + 2 + 1 = 19 bytes
 
 // File type constants for d_type field (Linux values)
 /// Unknown file type
+#[cfg(target_arch = "x86_64")]
 pub const DT_UNKNOWN: u8 = 0;
 /// FIFO (named pipe)
 #[allow(dead_code)] // Part of dirent API
+#[cfg(target_arch = "x86_64")]
 pub const DT_FIFO: u8 = 1;
 /// Character device
 #[allow(dead_code)] // Part of dirent API
+#[cfg(target_arch = "x86_64")]
 pub const DT_CHR: u8 = 2;
 /// Directory
+#[cfg(target_arch = "x86_64")]
 pub const DT_DIR: u8 = 4;
 /// Block device
 #[allow(dead_code)] // Part of dirent API
+#[cfg(target_arch = "x86_64")]
 pub const DT_BLK: u8 = 6;
 /// Regular file
+#[cfg(target_arch = "x86_64")]
 pub const DT_REG: u8 = 8;
 /// Symbolic link
 #[allow(dead_code)] // Part of dirent API
+#[cfg(target_arch = "x86_64")]
 pub const DT_LNK: u8 = 10;
 /// Socket
 #[allow(dead_code)] // Part of dirent API
+#[cfg(target_arch = "x86_64")]
 pub const DT_SOCK: u8 = 12;
 
 /// Seek whence values
+#[cfg(target_arch = "x86_64")]
 pub const SEEK_SET: i32 = 0;
+#[cfg(target_arch = "x86_64")]
 pub const SEEK_CUR: i32 = 1;
+#[cfg(target_arch = "x86_64")]
 pub const SEEK_END: i32 = 2;
 
 /// File type mode constants (POSIX S_IFMT values)
 #[allow(dead_code)] // Part of POSIX stat API
+#[cfg(target_arch = "x86_64")]
 pub const S_IFMT: u32 = 0o170000;   // File type mask
+#[cfg(target_arch = "x86_64")]
 pub const S_IFSOCK: u32 = 0o140000; // Socket
 #[allow(dead_code)] // Part of POSIX stat API
+#[cfg(target_arch = "x86_64")]
 pub const S_IFLNK: u32 = 0o120000;  // Symbolic link
+#[cfg(target_arch = "x86_64")]
 pub const S_IFREG: u32 = 0o100000;  // Regular file
 #[allow(dead_code)] // Part of POSIX stat API
+#[cfg(target_arch = "x86_64")]
 pub const S_IFBLK: u32 = 0o060000;  // Block device
 #[allow(dead_code)] // Part of POSIX stat API
+#[cfg(target_arch = "x86_64")]
 pub const S_IFDIR: u32 = 0o040000;  // Directory
+#[cfg(target_arch = "x86_64")]
 pub const S_IFCHR: u32 = 0o020000;  // Character device
+#[cfg(target_arch = "x86_64")]
 pub const S_IFIFO: u32 = 0o010000;  // FIFO (pipe)
 
 /// stat structure (Linux x86_64 compatible)
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 pub struct Stat {
     pub st_dev: u64,
@@ -116,6 +138,7 @@ pub struct Stat {
     _reserved: [i64; 3],
 }
 
+#[cfg(target_arch = "x86_64")]
 impl Stat {
     /// Create a zeroed Stat structure
     pub fn zeroed() -> Self {
@@ -151,6 +174,7 @@ impl Stat {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
+#[cfg(target_arch = "x86_64")]
 pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EISDIR, EMFILE, ENOENT, ENOSPC, ENOTDIR};
     use super::userptr::copy_cstr_from_user;
@@ -438,6 +462,11 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_open(_pathname: u64, _flags: u32, _mode: u32) -> SyscallResult {
+    SyscallResult::Err(super::errno::ENOSYS as u64)
+}
+
 /// sys_lseek - Reposition file offset
 ///
 /// # Arguments
@@ -447,6 +476,7 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
 ///
 /// # Returns
 /// New file position on success, negative errno on failure
+#[cfg(target_arch = "x86_64")]
 pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
     // Get current process
     let thread_id = match crate::task::scheduler::current_thread_id() {
@@ -510,6 +540,11 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_lseek(_fd: i32, _offset: i64, _whence: i32) -> SyscallResult {
+    SyscallResult::Err(super::errno::ENOSYS as u64)
+}
+
 /// sys_fstat - Get file status
 ///
 /// # Arguments
@@ -518,6 +553,7 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
 ///
 /// # Returns
 /// 0 on success, negative errno on failure
+#[cfg(target_arch = "x86_64")]
 pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     use super::errno::{EBADF, EFAULT};
     use core::ptr;
@@ -702,12 +738,19 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     SyscallResult::Ok(0)
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_fstat(_fd: i32, _statbuf: u64) -> SyscallResult {
+    SyscallResult::Err(super::errno::ENOSYS as u64)
+}
+
 /// Helper to create device ID from major/minor numbers
+#[cfg(target_arch = "x86_64")]
 fn make_dev(major: u64, minor: u64) -> u64 {
     (major << 8) | (minor & 0xff)
 }
 
 /// Inode metadata from ext2 filesystem
+#[cfg(target_arch = "x86_64")]
 struct InodeStat {
     mode: u32,
     uid: u32,
@@ -723,6 +766,7 @@ struct InodeStat {
 /// Load inode metadata from ext2 filesystem
 ///
 /// Returns None if the ext2 filesystem is not available or inode cannot be read.
+#[cfg(target_arch = "x86_64")]
 fn load_ext2_inode_stat(inode_num: u64) -> Option<InodeStat> {
     use crate::fs::ext2;
 
@@ -759,6 +803,7 @@ fn load_ext2_inode_stat(inode_num: u64) -> Option<InodeStat> {
 /// Get file size from ext2 inode
 ///
 /// Returns None if the ext2 filesystem is not available or inode cannot be read.
+#[cfg(target_arch = "x86_64")]
 fn get_ext2_file_size(inode_num: u64) -> Option<u64> {
     use crate::fs::ext2;
 
@@ -773,6 +818,7 @@ fn get_ext2_file_size(inode_num: u64) -> Option<u64> {
 }
 
 /// Convert ext2 file type to Linux dirent d_type
+#[cfg(target_arch = "x86_64")]
 fn ext2_file_type_to_dt(ext2_type: u8) -> u8 {
     use crate::fs::ext2::dir;
     match ext2_type {
@@ -788,6 +834,7 @@ fn ext2_file_type_to_dt(ext2_type: u8) -> u8 {
 }
 
 /// Align a value up to the nearest multiple of 8
+#[cfg(target_arch = "x86_64")]
 fn align_up_8(value: usize) -> usize {
     (value + 7) & !7
 }
@@ -805,6 +852,7 @@ fn align_up_8(value: usize) -> usize {
 /// * On success: Number of bytes written to the buffer
 /// * On success with no more entries: 0
 /// * On error: Negative errno
+#[cfg(target_arch = "x86_64")]
 pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     use super::errno::{EBADF, EFAULT, EINVAL, EIO, ENOTDIR};
     use crate::fs::ext2::{self, dir::DirReader};
@@ -990,6 +1038,11 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     SyscallResult::Ok(bytes_written as u64)
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub fn sys_getdents64(_fd: i32, _dirp: u64, _count: u64) -> SyscallResult {
+    SyscallResult::Err(super::errno::ENOSYS as u64)
+}
+
 /// sys_unlink - Delete a file
 ///
 /// Removes a directory entry for the specified pathname. If this is the
@@ -1010,7 +1063,6 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
     use super::errno::{EACCES, EIO, EISDIR, ENOENT};
     use super::userptr::copy_cstr_from_user;
     use crate::fs::ext2;
-    use crate::ipc::fifo::FIFO_REGISTRY;
 
     // Copy path from userspace
     let raw_path = match copy_cstr_from_user(pathname) {
@@ -1034,14 +1086,18 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
     log::debug!("sys_unlink: path={:?}", path);
 
     // Check if this is a FIFO - if so, remove from registry
-    if FIFO_REGISTRY.exists(&path) {
-        match FIFO_REGISTRY.unlink(&path) {
-            Ok(()) => {
-                log::info!("sys_unlink: successfully unlinked FIFO {}", path);
-                return SyscallResult::Ok(0);
-            }
-            Err(errno) => {
-                return SyscallResult::Err(errno as u64);
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::ipc::fifo::FIFO_REGISTRY;
+        if FIFO_REGISTRY.exists(&path) {
+            match FIFO_REGISTRY.unlink(&path) {
+                Ok(()) => {
+                    log::info!("sys_unlink: successfully unlinked FIFO {}", path);
+                    return SyscallResult::Ok(0);
+                }
+                Err(errno) => {
+                    return SyscallResult::Err(errno as u64);
+                }
             }
         }
     }
@@ -1664,6 +1720,7 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
+#[cfg(target_arch = "x86_64")]
 fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devfs;
@@ -1735,6 +1792,7 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
+#[cfg(target_arch = "x86_64")]
 fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
@@ -1791,6 +1849,7 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
 /// Handle opening the /dev/pts directory itself
 ///
 /// Returns a directory fd that can be used with getdents64 to list PTY slaves.
+#[cfg(target_arch = "x86_64")]
 fn handle_devpts_directory_open() -> SyscallResult {
     use super::errno::EMFILE;
 
@@ -1840,6 +1899,7 @@ fn handle_devpts_directory_open() -> SyscallResult {
 ///
 /// # Arguments
 /// * `_flags` - Open flags (O_DIRECTORY expected)
+#[cfg(target_arch = "x86_64")]
 fn handle_devfs_directory_open(_flags: u32) -> SyscallResult {
     use super::errno::EMFILE;
 
@@ -1886,6 +1946,7 @@ fn handle_devfs_directory_open(_flags: u32) -> SyscallResult {
 /// Handle getdents64 for the /dev directory
 ///
 /// Returns virtual directory entries for all registered devices.
+#[cfg(target_arch = "x86_64")]
 fn handle_devfs_getdents64(
     fd: i32,
     dirp: u64,
@@ -2034,6 +2095,7 @@ fn handle_devfs_getdents64(
 /// Handle getdents64 for the /dev/pts directory
 ///
 /// Returns virtual directory entries for all active and unlocked PTY slaves.
+#[cfg(target_arch = "x86_64")]
 fn handle_devpts_getdents64(
     fd: i32,
     dirp: u64,
@@ -2471,6 +2533,7 @@ pub fn get_current_cwd() -> Option<alloc::string::String> {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
+#[cfg(target_arch = "x86_64")]
 fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
     use super::errno::EMFILE;
     use crate::ipc::fd::{FdKind, FileDescriptor, status_flags};

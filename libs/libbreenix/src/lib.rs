@@ -47,6 +47,8 @@ pub mod io;
 pub mod memory;
 pub mod process;
 pub mod pty;
+#[cfg(feature = "runtime")]
+pub mod runtime;
 pub mod signal;
 pub mod socket;
 pub mod syscall;

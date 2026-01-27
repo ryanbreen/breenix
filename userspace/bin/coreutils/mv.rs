@@ -8,7 +8,7 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use libbreenix::argv::get_args;
+use libbreenix::argv;
 use libbreenix::errno::Errno;
 use libbreenix::fs::rename;
 use libbreenix::io::{println, stderr};
@@ -57,19 +57,19 @@ fn build_path(arg: &[u8], buf: &mut [u8; 256]) -> Option<usize> {
 }
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    let args = unsafe { get_args() };
+pub extern "C" fn main(argc: usize, argv_ptr: *const *const u8) -> i32 {
+    let args = unsafe { argv::Args::new(argc, argv_ptr) };
 
     if args.argc < 3 {
         print_usage();
-        exit(1);
+        return 1;
     }
 
     let src_arg = match args.argv(1) {
         Some(arg) => arg,
         None => {
             print_usage();
-            exit(1);
+            return 1;
         }
     };
 
@@ -77,7 +77,7 @@ pub extern "C" fn _start() -> ! {
         Some(arg) => arg,
         None => {
             print_usage();
-            exit(1);
+            return 1;
         }
     };
 
@@ -88,7 +88,7 @@ pub extern "C" fn _start() -> ! {
         Some(len) => len,
         None => {
             let _ = stderr().write_str("mv: source path too long\n");
-            exit(1);
+            return 1;
         }
     };
 
@@ -96,7 +96,7 @@ pub extern "C" fn _start() -> ! {
         Some(len) => len,
         None => {
             let _ = stderr().write_str("mv: destination path too long\n");
-            exit(1);
+            return 1;
         }
     };
 
@@ -104,7 +104,7 @@ pub extern "C" fn _start() -> ! {
         Ok(s) => s,
         Err(_) => {
             let _ = stderr().write_str("mv: invalid source path encoding\n");
-            exit(1);
+            return 1;
         }
     };
 
@@ -112,18 +112,18 @@ pub extern "C" fn _start() -> ! {
         Ok(s) => s,
         Err(_) => {
             let _ = stderr().write_str("mv: invalid destination path encoding\n");
-            exit(1);
+            return 1;
         }
     };
 
     match rename(src, dst) {
         Ok(()) => {
             println("mv: file moved");
-            exit(0)
+            0
         }
         Err(e) => {
             print_error(src_arg, dst_arg, e);
-            exit(1);
+            1
         }
     }
 }

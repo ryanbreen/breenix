@@ -14,7 +14,6 @@
 #![no_std]
 #![no_main]
 
-use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use libbreenix::argv;
 use libbreenix::errno::Errno;
@@ -220,20 +219,9 @@ fn print_error_bytes(path: &[u8], e: Errno) {
     let _ = stderr().write(b"\n");
 }
 
-#[unsafe(naked)]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    naked_asm!(
-        "mov rdi, rsp",
-        "and rsp, -16",
-        "call {main}",
-        "ud2",
-        main = sym rust_main,
-    )
-}
-
-extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
-    let args = unsafe { argv::get_args_from_stack(stack_ptr) };
+pub extern "C" fn main(argc: usize, argv_ptr: *const *const u8) -> i32 {
+    let args = unsafe { argv::Args::new(argc, argv_ptr) };
 
     let mut max_lines = DEFAULT_LINES;
     let mut file_start_idx = 1usize;
@@ -249,7 +237,7 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
                         file_start_idx = 2;
                     } else {
                         let _ = stderr().write_str("tail: invalid number of lines\n");
-                        exit(1);
+                        return 1;
                     }
                 } else if args.argc >= 3 {
                     // -n NUM format
@@ -259,7 +247,7 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
                             file_start_idx = 3;
                         } else {
                             let _ = stderr().write_str("tail: invalid number of lines\n");
-                            exit(1);
+                            return 1;
                         }
                     }
                 }
@@ -270,9 +258,9 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
     // If no files, read from stdin
     if file_start_idx >= args.argc {
         if let Err(_e) = tail_stdin(max_lines) {
-            exit(1);
+            return 1;
         }
-        exit(0);
+        return 0;
     }
 
     // Process files
@@ -298,7 +286,7 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
         }
     }
 
-    exit(exit_code);
+    exit_code
 }
 
 #[panic_handler]

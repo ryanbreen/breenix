@@ -3,6 +3,7 @@
 //! This module provides per-process page tables and address space isolation.
 
 use crate::memory::frame_allocator::{allocate_frame, GlobalFrameAllocator};
+use crate::memory::layout::USER_STACK_REGION_END;
 #[cfg(target_arch = "x86_64")]
 use crate::task::thread::ThreadPrivilege;
 #[cfg(not(target_arch = "x86_64"))]
@@ -19,7 +20,6 @@ use x86_64::{
 };
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::{
-    mapper::TranslateResult,
     Cr3,
     Mapper, OffsetPageTable, Page, PageTable, PageTableEntry, PageTableFlags, PhysAddr, PhysFrame,
     Size4KiB, Translate, VirtAddr,
@@ -294,9 +294,9 @@ impl ProcessPageTable {
     /// - TTBR1_EL1 handles all kernel mappings automatically
     /// Create a new page table for ARM64 process
     ///
-    /// IMPORTANT: Since our kernel is at 0x4000_0000 (uses TTBR0, not TTBR1),
-    /// we MUST copy kernel mappings to each process page table. Otherwise
-    /// exception handlers become inaccessible after switching TTBR0.
+    /// IMPORTANT: The kernel is mapped in the higher half via TTBR1.
+    /// TTBR0 is reserved for userspace mappings only, so new process page tables
+    /// must start empty and allow the mapper to create L0 entries on demand.
     #[cfg(target_arch = "aarch64")]
     pub fn new() -> Result<Self, &'static str> {
         log::debug!("ProcessPageTable::new() [ARM64] - Creating userspace page table");
@@ -319,9 +319,7 @@ impl ProcessPageTable {
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
 
-        // CRITICAL: Copy kernel L0 entry from current page table
-        // Since kernel is at 0x40000000 (TTBR0 region), we need kernel mappings
-        // in every process page table for exception handling to work
+        // Initialize a fresh TTBR0 L0 table for userspace mappings.
         let l0_table = unsafe {
             let virt = phys_offset + l0_frame.start_address().as_u64();
             &mut *(virt.as_mut_ptr() as *mut PageTable)
@@ -332,26 +330,9 @@ impl ProcessPageTable {
             l0_table[i].set_unused();
         }
 
-        // Read current TTBR0 to get the boot page table
-        let current_ttbr0: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, ttbr0_el1", out(reg) current_ttbr0, options(nomem, nostack));
-        }
-
-        // Copy L0[0] from boot page table (covers 0x0 - 0x8000_0000_0000)
-        // This entry points to L1 which contains both kernel and device mappings
-        let boot_l0_table = unsafe {
-            let virt = phys_offset + (current_ttbr0 & 0x0000_FFFF_FFFF_F000);
-            &*(virt.as_ptr() as *const PageTable)
-        };
-
-        // Copy the first L0 entry which covers kernel region
-        l0_table[0] = boot_l0_table[0].clone();
-
-        log::debug!(
-            "ARM64: Copied L0[0]={:#x} from boot page table for kernel access",
-            l0_table[0].addr().as_u64()
-        );
+        // NOTE: Do not copy boot TTBR0 entries (kernel/device mappings).
+        // Userspace mappings may reside in high TTBR0 regions (e.g. L0[511]),
+        // and we want the mapper to allocate those tables as needed.
 
         // Create mapper for the new page table
         let mapper = unsafe {
@@ -1131,9 +1112,10 @@ impl ProcessPageTable {
             // CRITICAL WORKAROUND: The OffsetPageTable might be failing during child
             // page table operations. Let's add extra validation.
 
-            // First, ensure we're not trying to map kernel addresses as user pages
+            // First, ensure we're not trying to map kernel/non-canonical addresses as user pages.
+            // Use the arch-specific canonical boundary instead of an x86_64 constant.
             let page_addr = page.start_address().as_u64();
-            if page_addr >= 0x800000000000 && flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            if page_addr >= USER_STACK_REGION_END && flags.contains(PageTableFlags::USER_ACCESSIBLE) {
                 log::error!(
                     "Attempting to map kernel address {:#x} as user-accessible!",
                     page_addr
@@ -1767,78 +1749,161 @@ pub fn map_user_stack_to_process(
         stack_top.as_u64()
     );
 
-    // Get access to the kernel page table
-    let kernel_mapper = unsafe { crate::memory::paging::get_mapper() };
-
     // Calculate page range to copy
     let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
     let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);
 
     let mut mapped_pages = 0;
 
-    // Copy each page mapping from kernel to process page table
-    for page in Page::range_inclusive(start_page, end_page) {
-        // Look up the mapping in the kernel page table
-        match kernel_mapper.translate(page.start_address()) {
-            TranslateResult::Mapped {
-                frame,
-                offset,
-                flags: _,
-            } => {
-                let phys_addr = frame.start_address() + offset;
-                let frame = PhysFrame::containing_address(phys_addr);
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Get access to the kernel page table
+        let kernel_mapper = unsafe { crate::memory::paging::get_mapper() };
 
-                // Map the same physical frame in the process page table
-                // Use user-accessible permissions for user stack
-                let flags = PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE;
+        // Copy each page mapping from kernel to process page table
+        for page in Page::range_inclusive(start_page, end_page) {
+            // Look up the mapping in the kernel page table
+            match kernel_mapper.translate(page.start_address()) {
+                TranslateResult::Mapped {
+                    frame,
+                    offset,
+                    flags: _,
+                } => {
+                    let phys_addr = frame.start_address() + offset;
+                    let frame = PhysFrame::containing_address(phys_addr);
 
-                // Check if already mapped
-                if let Some(existing_frame) =
-                    process_page_table.translate_page(page.start_address())
-                {
-                    let existing_frame = PhysFrame::containing_address(existing_frame);
-                    if existing_frame == frame {
-                        log::trace!(
-                            "User stack page {:#x} already mapped correctly to frame {:#x}",
-                            page.start_address().as_u64(),
-                            frame.start_address().as_u64()
-                        );
-                        mapped_pages += 1;
-                    } else {
-                        log::error!("User stack page {:#x} already mapped to different frame: expected {:#x}, found {:#x}", 
-                            page.start_address().as_u64(), frame.start_address().as_u64(), existing_frame.start_address().as_u64());
-                        return Err("User stack page already mapped to different frame");
-                    }
-                } else {
-                    // Page not mapped, map it now
-                    match process_page_table.map_page(page, frame, flags) {
-                        Ok(()) => {
-                            mapped_pages += 1;
+                    // Map the same physical frame in the process page table
+                    // Use user-accessible permissions for user stack
+                    let flags = PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE;
+
+                    // Check if already mapped
+                    if let Some(existing_frame) =
+                        process_page_table.translate_page(page.start_address())
+                    {
+                        let existing_frame = PhysFrame::containing_address(existing_frame);
+                        if existing_frame == frame {
                             log::trace!(
-                                "Mapped user stack page {:#x} -> frame {:#x}",
+                                "User stack page {:#x} already mapped correctly to frame {:#x}",
                                 page.start_address().as_u64(),
                                 frame.start_address().as_u64()
                             );
+                            mapped_pages += 1;
+                        } else {
+                            log::error!("User stack page {:#x} already mapped to different frame: expected {:#x}, found {:#x}", 
+                                page.start_address().as_u64(), frame.start_address().as_u64(), existing_frame.start_address().as_u64());
+                            return Err("User stack page already mapped to different frame");
                         }
-                        Err(e) => {
-                            log::error!(
-                                "Failed to map user stack page {:#x}: {}",
-                                page.start_address().as_u64(),
-                                e
-                            );
-                            return Err("Failed to map user stack page");
+                    } else {
+                        // Page not mapped, map it now
+                        match process_page_table.map_page(page, frame, flags) {
+                            Ok(()) => {
+                                mapped_pages += 1;
+                                log::trace!(
+                                    "Mapped user stack page {:#x} -> frame {:#x}",
+                                    page.start_address().as_u64(),
+                                    frame.start_address().as_u64()
+                                );
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "Failed to map user stack page {:#x}: {}",
+                                    page.start_address().as_u64(),
+                                    e
+                                );
+                                return Err("Failed to map user stack page");
+                            }
                         }
                     }
                 }
+                _ => {
+                    log::error!(
+                        "User stack page {:#x} not mapped in kernel page table!",
+                        page.start_address().as_u64()
+                    );
+                    return Err("User stack page not found in kernel page table");
+                }
             }
-            _ => {
-                log::error!(
-                    "User stack page {:#x} not mapped in kernel page table!",
-                    page.start_address().as_u64()
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // ARM64: user addresses live in TTBR0 and must be mapped directly into
+        // the process page table, not copied from the kernel (TTBR1) mappings.
+        crate::serial_println!(
+            "map_user_stack_to_process [ARM64]: enter mapping {:#x} - {:#x}",
+            start_page.start_address().as_u64(),
+            end_page.start_address().as_u64()
+        );
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE;
+
+        for page in Page::range_inclusive(start_page, end_page) {
+            crate::serial_println!(
+                "map_user_stack_to_process [ARM64]: processing page {:#x}",
+                page.start_address().as_u64()
+            );
+            if let Some(existing_frame) = process_page_table.translate_page(page.start_address()) {
+                let existing_frame = PhysFrame::<Size4KiB>::containing_address(existing_frame);
+                log::trace!(
+                    "User stack page {:#x} already mapped to frame {:#x}",
+                    page.start_address().as_u64(),
+                    existing_frame.start_address().as_u64()
                 );
-                return Err("User stack page not found in kernel page table");
+                crate::serial_println!(
+                    "map_user_stack_to_process [ARM64]: page already mapped to frame {:#x}",
+                    existing_frame.start_address().as_u64()
+                );
+                mapped_pages += 1;
+                continue;
+            }
+
+            let frame = match allocate_frame() {
+                Some(frame) => {
+                    crate::serial_println!(
+                        "map_user_stack_to_process [ARM64]: allocated frame {:#x}",
+                        frame.start_address().as_u64()
+                    );
+                    frame
+                }
+                None => {
+                    crate::serial_println!(
+                        "map_user_stack_to_process [ARM64]: allocate_frame failed (OOM)"
+                    );
+                    return Err("Out of memory for user stack");
+                }
+            };
+            match process_page_table.map_page(page, frame, flags) {
+                Ok(()) => {
+                    mapped_pages += 1;
+                    log::trace!(
+                        "Mapped user stack page {:#x} -> frame {:#x}",
+                        page.start_address().as_u64(),
+                        frame.start_address().as_u64()
+                    );
+                    crate::serial_println!(
+                        "map_user_stack_to_process [ARM64]: map_page ok {:#x} -> {:#x}",
+                        page.start_address().as_u64(),
+                        frame.start_address().as_u64()
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "Failed to map user stack page {:#x}: {}",
+                        page.start_address().as_u64(),
+                        e
+                    );
+                    crate::serial_println!(
+                        "map_user_stack_to_process [ARM64]: map_page FAILED {:#x} -> {:#x}: {}",
+                        page.start_address().as_u64(),
+                        frame.start_address().as_u64(),
+                        e
+                    );
+                    return Err("Failed to map user stack page");
+                }
             }
         }
     }

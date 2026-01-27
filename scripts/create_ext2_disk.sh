@@ -12,6 +12,7 @@
 # Usage:
 #   ./scripts/create_ext2_disk.sh
 #   ./scripts/create_ext2_disk.sh --arch aarch64
+#   ./scripts/create_ext2_disk.sh --arch aarch64 --size 8
 #
 # Or use xtask:
 #   cargo run -p xtask -- create-ext2-disk
@@ -30,8 +31,12 @@ while [[ $# -gt 0 ]]; do
             ARCH="$2"
             shift 2
             ;;
+        --size)
+            SIZE_MB="$2"
+            shift 2
+            ;;
         *)
-            echo "Usage: $0 [--arch x86_64|aarch64]"
+            echo "Usage: $0 [--arch x86_64|aarch64] [--size MB]"
             exit 1
             ;;
     esac
@@ -77,23 +82,27 @@ if [[ "$(uname)" == "Darwin" ]]; then
 
     echo "  Using Docker to create ext2 filesystem..."
 
+    # Extract just the filename from OUTPUT_FILE for use in Docker
+    OUTPUT_FILENAME=$(basename "$OUTPUT_FILE")
+
     docker run --rm --privileged \
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
+        -e "OUTPUT_FILENAME=$OUTPUT_FILENAME" \
         alpine:latest \
         sh -c '
             set -e
             apk add --no-cache e2fsprogs >/dev/null 2>&1
 
             # Create the empty disk image
-            dd if=/dev/zero of=/work/ext2.img bs=1M count='"$SIZE_MB"' status=none
+            dd if=/dev/zero of=/work/$OUTPUT_FILENAME bs=1M count='"$SIZE_MB"' status=none
 
             # Create ext2 filesystem
-            mke2fs -t ext2 -F /work/ext2.img >/dev/null 2>&1
+            mke2fs -t ext2 -F /work/$OUTPUT_FILENAME >/dev/null 2>&1
 
             # Mount and populate
             mkdir -p /mnt/ext2
-            mount /work/ext2.img /mnt/ext2
+            mount /work/$OUTPUT_FILENAME /mnt/ext2
 
             # Create /bin and /sbin directories for coreutils
             mkdir -p /mnt/ext2/bin

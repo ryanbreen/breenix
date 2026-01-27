@@ -119,7 +119,7 @@ fn l2_block_desc_user(base: u64, attr: u64) -> u64 {
 /// - 0x4100_0000 - 0x8000_0000: User (2MB blocks, AP=1, EL0 exec only due to implicit PXN)
 pub fn init() {
     // If MMU is already enabled, do not reprogram page tables.
-    let mut sctlr: u64 = 0;
+    let mut sctlr: u64;
     unsafe {
         core::arch::asm!("mrs {0}, sctlr_el1", out(reg) sctlr, options(nomem, nostack));
     }

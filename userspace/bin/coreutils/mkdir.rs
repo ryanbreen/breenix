@@ -8,7 +8,7 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use libbreenix::argv::get_args;
+use libbreenix::argv;
 use libbreenix::errno::Errno;
 use libbreenix::fs::mkdir;
 use libbreenix::io::{println, stderr};
@@ -34,14 +34,13 @@ fn print_usage() {
 }
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // Get command-line arguments - must be first thing in _start
-    let args = unsafe { get_args() };
+pub extern "C" fn main(argc: usize, argv_ptr: *const *const u8) -> i32 {
+    let args = unsafe { argv::Args::new(argc, argv_ptr) };
 
     // Need at least one argument (the directory name)
     if args.argc < 2 {
         print_usage();
-        exit(1);
+        return 1;
     }
 
     // Get the directory path from argv[1]
@@ -49,7 +48,7 @@ pub extern "C" fn _start() -> ! {
         Some(arg) => arg,
         None => {
             print_usage();
-            exit(1);
+            return 1;
         }
     };
 
@@ -62,7 +61,7 @@ pub extern "C" fn _start() -> ! {
         // Absolute path - copy as-is
         if dir_arg.len() >= PATH_BUF_LEN {
             let _ = stderr().write_str("mkdir: path too long\n");
-            exit(1);
+            return 1;
         }
         path_buf[..dir_arg.len()].copy_from_slice(dir_arg);
         path_len = dir_arg.len();
@@ -70,7 +69,7 @@ pub extern "C" fn _start() -> ! {
         // Relative path - prepend /
         if dir_arg.len() + 1 >= PATH_BUF_LEN {
             let _ = stderr().write_str("mkdir: path too long\n");
-            exit(1);
+            return 1;
         }
         path_buf[0] = b'/';
         path_buf[1..=dir_arg.len()].copy_from_slice(dir_arg);
@@ -84,18 +83,18 @@ pub extern "C" fn _start() -> ! {
         Ok(s) => s,
         Err(_) => {
             let _ = stderr().write_str("mkdir: invalid path encoding\n");
-            exit(1);
+            return 1;
         }
     };
 
     match mkdir(path_str, 0o755) {
         Ok(()) => {
             println("mkdir: directory created");
-            exit(0)
+            0
         }
         Err(e) => {
             print_error(dir_arg, e);
-            exit(1);
+            1
         }
     }
 }

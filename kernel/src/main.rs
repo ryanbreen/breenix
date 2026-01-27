@@ -2954,5 +2954,5 @@ fn test_threading() {
 // Non-x86_64 note:
 // When building for non-x86_64 (e.g., aarch64), all the code above is gated out.
 // The lang items (panic_handler, global_allocator, alloc_error_handler) are
-// provided by main_aarch64.rs for the entire crate.
+// provided by kernel::memory::heap for the entire crate.
 // =============================================================================
