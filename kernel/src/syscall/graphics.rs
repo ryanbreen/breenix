@@ -28,7 +28,7 @@ pub struct FbInfo {
 /// Maximum valid userspace address (canonical lower half)
 /// Addresses above this are kernel space and must be rejected.
 #[cfg(feature = "interactive")]
-const USER_SPACE_MAX: u64 = 0x0000_8000_0000_0000;
+const USER_SPACE_MAX: u64 = crate::memory::layout::USER_STACK_REGION_END;
 
 /// sys_fbinfo - Get framebuffer information
 ///

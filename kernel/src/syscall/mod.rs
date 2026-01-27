@@ -24,27 +24,21 @@ pub mod userptr;
 #[cfg(target_arch = "x86_64")]
 pub mod handler;
 
-// Syscall implementations - handlers module is architecture-independent
-// Other modules have x86_64-specific dependencies and are being ported
+// Syscall implementations
+// - dispatcher/handlers remain x86_64-only for now
+// - other modules are shared across architectures
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
-#[cfg(target_arch = "x86_64")]
 pub mod fifo;
-#[cfg(target_arch = "x86_64")]
 pub mod fs;
-#[cfg(target_arch = "x86_64")]
 pub mod graphics;
 // handlers module has deep dependencies on x86_64-only subsystems
-// ARM64 uses stub handlers in arch_impl/aarch64/syscall_entry.rs
+// ARM64 uses arch_impl/aarch64/syscall_entry.rs for dispatch
 #[cfg(target_arch = "x86_64")]
 pub mod handlers;
-#[cfg(target_arch = "x86_64")]
 pub mod ioctl;
-#[cfg(target_arch = "x86_64")]
 pub mod pipe;
-#[cfg(target_arch = "x86_64")]
 pub mod pty;
-#[cfg(target_arch = "x86_64")]
 pub mod session;
 pub mod signal;
 // Socket syscalls - enabled for both architectures
