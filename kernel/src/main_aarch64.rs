@@ -395,7 +395,11 @@ pub extern "C" fn kernel_main() -> ! {
             }
         }
 
-        core::hint::spin_loop();
+        // Wait for interrupt instead of busy-spinning to save CPU
+        // WFI will wake on any interrupt (timer, UART RX, etc.)
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 
@@ -562,11 +566,14 @@ fn init_scheduler() {
     scheduler::init_with_current(idle_task);
 }
 
-/// Idle thread function (does nothing - placeholder for context switching)
+/// Idle thread function - waits for interrupts when no work to do
 #[cfg(target_arch = "aarch64")]
 fn idle_thread_fn() {
     loop {
-        core::hint::spin_loop();
+        // WFI saves power by halting until an interrupt arrives
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 

@@ -378,30 +378,27 @@ fn check_need_resched_on_irq_exit() {
 
 /// Handle UART receive interrupt
 ///
-/// Read all available bytes from the UART and route them to the terminal.
+/// Read all available bytes from the UART and route them to the terminal
+/// and push to stdin buffer for userspace read().
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
     use crate::graphics::terminal_manager;
 
-    // Debug marker: 'U' for UART interrupt entry
-    raw_serial_char(b'U');
-
     // Read all available bytes from the UART FIFO
     while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Debug: echo the byte we received
-        raw_serial_char(b'[');
-        raw_serial_char(byte);
-        raw_serial_char(b']');
+        // Push to stdin buffer for userspace read() syscall
+        // This wakes any blocked readers waiting for input
+        crate::ipc::stdin::push_byte_from_irq(byte);
 
-        // Handle special keys
+        // Handle special keys for terminal display
         let c = match byte {
             // Backspace
             0x7F | 0x08 => '\x08',
-            // Enter
+            // Enter (CR -> newline)
             0x0D => '\n',
             // Tab
             0x09 => '\t',
-            // Escape sequences start with 0x1B - for now, ignore
+            // Escape sequences start with 0x1B - for now, ignore display
             0x1B => continue,
             // Regular ASCII
             b if b >= 0x20 && b < 0x7F => byte as char,
@@ -410,7 +407,7 @@ fn handle_uart_interrupt() {
             _ => continue,
         };
 
-        // Write to the shell terminal (handles locking internally)
+        // Write to the shell terminal for display (handles locking internally)
         terminal_manager::write_char_to_shell(c);
     }
 

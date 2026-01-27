@@ -360,16 +360,30 @@ impl TtyDevice {
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
 
+        // Build processed buffer for graphical output (with CR-NL translation)
+        #[cfg(target_arch = "aarch64")]
+        let mut processed_buf = alloc::vec::Vec::with_capacity(buf.len() + buf.len() / 10);
+
         // Write to serial and queue for deferred framebuffer rendering
         for &c in buf {
             if do_onlcr && c == b'\n' {
                 crate::serial::write_byte(b'\r');
                 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
                 let _ = crate::graphics::render_queue::queue_byte(b'\r');
+                #[cfg(target_arch = "aarch64")]
+                processed_buf.push(b'\r');
             }
             crate::serial::write_byte(c);
             #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(c);
+            #[cfg(target_arch = "aarch64")]
+            processed_buf.push(c);
+        }
+
+        // ARM64: Write to graphical terminal if available
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = crate::graphics::terminal_manager::write_bytes_to_shell(&processed_buf);
         }
     }
 

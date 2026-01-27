@@ -153,11 +153,30 @@ fn wake_blocked_readers_try() {
     crate::task::scheduler::set_need_resched();
 }
 
-/// Stub for ARM64 - scheduler not yet available
+/// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
 #[cfg(target_arch = "aarch64")]
 fn wake_blocked_readers_try() {
-    // On ARM64 we don't have a scheduler yet, so blocked readers
-    // will be woken when they poll again
+    let readers: alloc::vec::Vec<u64> = {
+        if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
+            blocked.drain(..).collect()
+        } else {
+            return; // Can't get lock, readers will be woken when they retry
+        }
+    };
+
+    if readers.is_empty() {
+        return;
+    }
+
+    // Try to wake threads via the scheduler
+    crate::task::scheduler::with_scheduler(|sched| {
+        for thread_id in &readers {
+            sched.unblock(*thread_id);
+        }
+    });
+
+    // Trigger reschedule so the woken thread runs soon
+    crate::task::scheduler::set_need_resched();
 }
 
 /// Read bytes from stdin buffer
@@ -227,11 +246,30 @@ fn wake_blocked_readers() {
     crate::task::scheduler::set_need_resched();
 }
 
-/// Stub for ARM64 - scheduler not yet available
+/// Wake blocked readers on ARM64
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
-    // On ARM64 we don't have a scheduler yet
+    use alloc::vec::Vec;
+
+    let readers: Vec<u64> = {
+        let mut blocked = BLOCKED_READERS.lock();
+        blocked.drain(..).collect()
+    };
+
+    if readers.is_empty() {
+        return;
+    }
+
+    // Wake each blocked thread
+    crate::task::scheduler::with_scheduler(|sched| {
+        for thread_id in readers {
+            sched.unblock(thread_id);
+        }
+    });
+
+    // Trigger reschedule to let woken threads run
+    crate::task::scheduler::set_need_resched();
 }
 
 /// Get the number of bytes available in the stdin buffer
