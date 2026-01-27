@@ -30,6 +30,7 @@ This plan is deliberately frank about gaps found in the current ARM64 code path.
 - devptsfs is initialized on ARM64 at boot.
 - TTY subsystem is initialized on ARM64 at boot.
 - Ext2 disk builder supports ARM64 (`scripts/create_ext2_disk.sh --arch aarch64`); ARM64 QEMU script prefers ext2 image.
+- ARM64 userspace build script now includes coreutils/telnetd (best-effort) for ext2 population.
 
 ### What Is Missing or Stubbed
 - PTY/TTY validation under ARM64 userspace load (devptsfs now initialized).

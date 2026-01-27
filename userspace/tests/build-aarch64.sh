@@ -20,7 +20,7 @@ echo "  ARM64 USERSPACE BUILD"
 echo "========================================"
 
 # List of binaries to include (only those that are ARM64 compatible - no x86_64 inline asm)
-# These have been verified to build successfully for aarch64
+# These are intended to populate /bin for ext2 init_shell use.
 BINARIES=(
     "hello_world"
     "simple_exit"
@@ -28,6 +28,23 @@ BINARIES=(
     "fork_test"
     "init_shell"
     "signal_test"
+    # Coreutils (best-effort on ARM64)
+    "cat"
+    "ls"
+    "echo"
+    "mkdir"
+    "rmdir"
+    "rm"
+    "cp"
+    "mv"
+    "true"
+    "false"
+    "head"
+    "tail"
+    "wc"
+    "which"
+    # PTY/telnet daemon for interactive use
+    "telnetd"
 )
 
 # Create output directory for ARM64 binaries
