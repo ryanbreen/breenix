@@ -384,8 +384,14 @@ fn handle_uart_interrupt() {
     use crate::serial_aarch64;
     use crate::graphics::terminal_manager;
 
+    // Debug marker: UART interrupt handler entry
+    raw_serial_char(b'U');
+
     // Read all available bytes from the UART FIFO
     while let Some(byte) = serial_aarch64::get_received_byte() {
+        // Debug marker: byte received
+        raw_serial_char(b'R');
+        raw_serial_char(byte); // Echo the actual byte
         // Push to stdin buffer for userspace read() syscall
         // This wakes any blocked readers waiting for input
         crate::ipc::stdin::push_byte_from_irq(byte);

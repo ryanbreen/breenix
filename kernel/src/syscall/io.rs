@@ -212,7 +212,15 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                     Err(11) => {
                         // EAGAIN - no data available, need to block
-                        // Use proper scheduler blocking like x86_64 does
+                        // Block the current thread AND set blocked_in_syscall flag.
+                        // CRITICAL: Setting blocked_in_syscall is essential because:
+                        // 1. The thread will enter a kernel-mode WFI loop below
+                        // 2. If a context switch happens while in WFI, the scheduler sees
+                        //    from_userspace=false (kernel mode) but blocked_in_syscall tells
+                        //    it to save/restore kernel context, not userspace context
+                        // 3. Without this flag, no context is saved when switching away,
+                        //    and stale userspace context is restored when switching back,
+                        //    causing ELR_EL1 corruption (kernel address in userspace context)
                         crate::task::scheduler::with_scheduler(|sched| {
                             sched.block_current();
                             if let Some(thread) = sched.current_thread_mut() {
@@ -220,8 +228,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
                         });
 
-                        // Yield to let other threads run, then WFI loop until woken
-                        // The wake_blocked_readers_try() in stdin will unblock us
+                        // CRITICAL: Re-enable preemption before entering blocking loop!
+                        // The syscall handler called preempt_disable() at entry, but we need
+                        // to allow timer interrupts to schedule other threads while we're blocked.
+                        crate::per_cpu::preempt_enable();
+
+                        // WFI loop - wait for interrupt which will either:
+                        // 1. Wake us via wake_blocked_readers_try() when keyboard data arrives
+                        // 2. Context switch to another thread via timer interrupt
                         loop {
                             crate::task::scheduler::yield_current();
                             unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
@@ -238,7 +252,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }
                         }
 
-                        // Clear blocked_in_syscall now that we're resuming
+                        // Re-disable preemption before continuing to balance syscall's preempt_disable
+                        crate::per_cpu::preempt_disable();
+
+                        // Clear blocked_in_syscall now that we're resuming normal syscall execution
                         crate::task::scheduler::with_scheduler(|sched| {
                             if let Some(thread) = sched.current_thread_mut() {
                                 thread.blocked_in_syscall = false;

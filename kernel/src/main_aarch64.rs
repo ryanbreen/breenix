@@ -333,6 +333,13 @@ pub extern "C" fn kernel_main() -> ! {
         // Poll serial input (for -nographic mode)
         // This is the primary input method when no VirtIO keyboard is available
         while let Some(byte) = kernel::serial_aarch64::get_received_byte() {
+            // Debug marker: byte received in polling loop ('p' then the byte)
+            let base = kernel::memory::physical_memory_offset().as_u64();
+            let addr = (base + 0x0900_0000) as *mut u32;
+            unsafe {
+                core::ptr::write_volatile(addr, b'p' as u32);
+                core::ptr::write_volatile(addr, byte as u32);
+            }
             // Handle special keys
             let c = match byte {
                 // Backspace

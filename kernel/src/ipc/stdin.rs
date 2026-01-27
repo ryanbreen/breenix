@@ -114,6 +114,14 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
     // Try to acquire the buffer lock - don't block in interrupt context
     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
         if buffer.push_byte(byte) {
+            // Debug marker: byte successfully pushed to stdin
+            #[cfg(target_arch = "aarch64")]
+            {
+                // Raw serial output - no locks, single char
+                let base = crate::memory::physical_memory_offset().as_u64();
+                let addr = (base + 0x0900_0000) as *mut u32;
+                unsafe { core::ptr::write_volatile(addr, b'P' as u32); }
+            }
             drop(buffer);
 
             // Try to wake blocked readers (may fail if scheduler lock is held)

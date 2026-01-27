@@ -125,6 +125,14 @@ pub extern "C" fn timer_interrupt_handler() {
     crate::per_cpu_aarch64::irq_exit();
 }
 
+/// Raw serial output - no locks, single char for debugging
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    let base = crate::memory::physical_memory_offset().as_u64();
+    let addr = (base + 0x0900_0000) as *mut u32;
+    unsafe { core::ptr::write_volatile(addr, c as u32); }
+}
+
 /// Poll VirtIO keyboard and push characters to stdin buffer
 ///
 /// This allows keyboard input to reach userspace processes that call read(0, ...)
@@ -154,6 +162,9 @@ fn poll_keyboard_to_stdin() {
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = input_mmio::keycode_to_char(keycode, shift) {
+                    // Debug marker: VirtIO key event -> stdin
+                    raw_serial_char(b'V');
+                    raw_serial_char(c as u8);
                     // Push to stdin buffer so userspace can read it
                     crate::ipc::stdin::push_byte_from_irq(c as u8);
                 }
