@@ -376,11 +376,18 @@ fn dispatch_syscall(
             }
         }
 
-        syscall_nums::WRITE | syscall_nums::ARM64_WRITE => sys_write(arg1, arg2, arg3),
+        syscall_nums::WRITE | syscall_nums::ARM64_WRITE => {
+            match crate::syscall::io::sys_write(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
 
         syscall_nums::READ => {
-            // Stub: not implemented yet
-            (-38_i64) as u64 // -ENOSYS
+            match crate::syscall::io::sys_read(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::CLOSE => {
@@ -490,10 +497,35 @@ fn dispatch_syscall(
                 crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
             }
         }
-        // Pipe and I/O syscalls (still stubs)
-        syscall_nums::DUP | syscall_nums::DUP2 |
-        syscall_nums::FCNTL | syscall_nums::POLL | syscall_nums::SELECT => {
-            (-38_i64) as u64 // -ENOSYS
+        syscall_nums::DUP => {
+            match crate::syscall::io::sys_dup(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::DUP2 => {
+            match crate::syscall::io::sys_dup2(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::FCNTL => {
+            match crate::syscall::io::sys_fcntl(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::POLL => {
+            match crate::syscall::io::sys_poll(arg1, arg2, arg3 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SELECT => {
+            match crate::syscall::io::sys_select(arg1 as i32, arg2, arg3, arg4, arg5) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         // Process syscalls (stubs)
@@ -781,27 +813,6 @@ fn sys_getpid() -> u64 {
 /// sys_gettid - Get the current thread ID (ARM64)
 fn sys_gettid() -> u64 {
     crate::task::scheduler::current_thread_id().unwrap_or(0)
-}
-
-/// sys_write implementation
-fn sys_write(fd: u64, buf: u64, count: u64) -> u64 {
-    // Only support stdout (1) and stderr (2)
-    if fd != 1 && fd != 2 {
-        return (-9_i64) as u64; // -EBADF
-    }
-
-    // Validate buffer pointer
-    if buf == 0 {
-        return (-14_i64) as u64; // -EFAULT
-    }
-
-    // Write each byte to serial
-    for i in 0..count {
-        let byte = unsafe { *((buf + i) as *const u8) };
-        crate::serial_print!("{}", byte as char);
-    }
-
-    count
 }
 
 /// sys_clock_gettime implementation - uses architecture-independent time module

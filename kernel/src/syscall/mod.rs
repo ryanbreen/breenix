@@ -17,6 +17,8 @@ pub mod memory_common;
 pub mod mmap;
 pub mod time;
 pub mod userptr;
+#[cfg(target_arch = "aarch64")]
+pub mod io;
 
 // Syscall handler - the main dispatcher
 // x86_64: Full handler with signal delivery and process management
