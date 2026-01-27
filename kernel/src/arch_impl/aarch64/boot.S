@@ -25,13 +25,14 @@
 .equ DESC_TABLE,        (1 << 0) | (1 << 1) // 0b11
 .equ DESC_AF,           (1 << 10)
 .equ DESC_SH_INNER,     (0b11 << 8)
+.equ DESC_SH_NONE,      (0b00 << 8)
 .equ DESC_ATTR_DEVICE,  (0 << 2)
 .equ DESC_ATTR_NORMAL,  (1 << 2)
 .equ DESC_AP_KERNEL,    (0 << 6)       // EL1 RW, EL0 no access
 .equ DESC_PXN,          (1 << 53)
 .equ DESC_UXN,          (1 << 54)
 
-.equ BLOCK_FLAGS_DEVICE, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_DEVICE | DESC_PXN | DESC_UXN)
+.equ BLOCK_FLAGS_DEVICE, (DESC_BLOCK | DESC_AF | DESC_SH_NONE | DESC_AP_KERNEL | DESC_ATTR_DEVICE | DESC_PXN | DESC_UXN)
 .equ BLOCK_FLAGS_NORMAL, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NORMAL)
 
 // MAIR attributes
@@ -245,6 +246,7 @@ lower_el_aarch32_serror:
 .section .text.boot
 
 setup_mmu:
+    str x30, [sp, #-16]!    // Save link register
     // Zero page tables
     ldr x0, =ttbr0_l0
     bl zero_table
@@ -280,7 +282,7 @@ setup_mmu:
     orr x1, x1, #DESC_TABLE
     str x1, [x0]
 
-    // TTBR1 L1[0] = device (high-half direct map)
+    // TTBR1 L1[0] = device (high-half direct map, includes PL011 @ 0x0900_0000)
     ldr x0, =ttbr1_l1
     ldr x1, =0x00000000
     ldr x2, =BLOCK_FLAGS_DEVICE
@@ -330,6 +332,7 @@ setup_mmu:
     msr sctlr_el1, x0
     isb
 
+    ldr x30, [sp], #16      // Restore link register
     ret
 
 // Zero a 4KB table at x0
