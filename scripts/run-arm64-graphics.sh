@@ -29,16 +29,22 @@ if [ ! -f "$KERNEL" ]; then
     fi
 fi
 
-# Check for test disk with userspace binaries
+# Prefer ext2 disk image (for /bin/init_shell); fall back to BXTEST disk
+EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 TEST_DISK="$BREENIX_ROOT/target/aarch64_test_binaries.img"
 DISK_OPTS=""
-if [ -f "$TEST_DISK" ]; then
-    echo "Found test disk with userspace binaries"
+if [ -f "$EXT2_DISK" ]; then
+    echo "Found ext2 disk image: $EXT2_DISK"
+    DISK_OPTS="-device virtio-blk-device,drive=ext2disk \
+        -blockdev driver=file,node-name=ext2file,filename=$EXT2_DISK \
+        -blockdev driver=raw,node-name=ext2disk,file=ext2file"
+elif [ -f "$TEST_DISK" ]; then
+    echo "Found BXTEST disk with userspace binaries: $TEST_DISK"
     DISK_OPTS="-device virtio-blk-device,drive=testdisk \
         -blockdev driver=file,node-name=testfile,filename=$TEST_DISK \
         -blockdev driver=raw,node-name=testdisk,file=testfile"
 else
-    echo "No test disk found - run 'cargo run -p xtask -- create-test-disk-aarch64' to create one"
+    echo "No ext2/BXTEST disk found"
     DISK_OPTS="-device virtio-blk-device,drive=empty \
         -blockdev driver=file,node-name=nullfile,filename=/dev/null \
         -blockdev driver=raw,node-name=empty,file=nullfile"
@@ -49,7 +55,9 @@ echo "========================================="
 echo "  Breenix ARM64 Kernel"
 echo "========================================="
 echo "Kernel: $KERNEL"
-if [ -f "$TEST_DISK" ]; then
+if [ -f "$EXT2_DISK" ]; then
+    echo "Ext2 disk: $EXT2_DISK"
+elif [ -f "$TEST_DISK" ]; then
     echo "Test disk: $TEST_DISK"
 fi
 echo ""

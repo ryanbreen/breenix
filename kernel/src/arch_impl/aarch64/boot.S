@@ -9,12 +9,48 @@
  *
  * Entry conditions (from UEFI or bootloader):
  * - Running at EL2 or EL1
- * - MMU may be on with identity mapping, or off
+ * - MMU may be on (from firmware) or off
  * - Interrupts disabled
  */
 
 .section .text.boot
 .global _start
+
+// High-half kernel base (must match linker.ld)
+.equ KERNEL_VIRT_BASE, 0xFFFF000000000000
+
+// Descriptor bits
+.equ DESC_VALID,        (1 << 0)
+.equ DESC_BLOCK,        (1 << 0)       // 0b01 for L1 block
+.equ DESC_TABLE,        (1 << 0) | (1 << 1) // 0b11
+.equ DESC_AF,           (1 << 10)
+.equ DESC_SH_INNER,     (0b11 << 8)
+.equ DESC_ATTR_DEVICE,  (0 << 2)
+.equ DESC_ATTR_NORMAL,  (1 << 2)
+.equ DESC_AP_KERNEL,    (0 << 6)       // EL1 RW, EL0 no access
+.equ DESC_PXN,          (1 << 53)
+.equ DESC_UXN,          (1 << 54)
+
+.equ BLOCK_FLAGS_DEVICE, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_DEVICE | DESC_PXN | DESC_UXN)
+.equ BLOCK_FLAGS_NORMAL, (DESC_BLOCK | DESC_AF | DESC_SH_INNER | DESC_AP_KERNEL | DESC_ATTR_NORMAL)
+
+// MAIR attributes
+.equ MAIR_ATTR_DEVICE,  0x00
+.equ MAIR_ATTR_NORMAL,  0xFF
+.equ MAIR_EL1_VALUE,    (MAIR_ATTR_DEVICE | (MAIR_ATTR_NORMAL << 8))
+
+// TCR configuration (4KB granule, 48-bit VA, inner-shareable, WBWA)
+.equ TCR_T0SZ,           16
+.equ TCR_T1SZ,           (16 << 16)
+.equ TCR_TG0_4K,         (0b00 << 14)
+.equ TCR_TG1_4K,         (0b01 << 30)
+.equ TCR_SH0_INNER,      (0b11 << 12)
+.equ TCR_SH1_INNER,      (0b11 << 28)
+.equ TCR_ORGN0_WBWA,     (0b01 << 10)
+.equ TCR_IRGN0_WBWA,     (0b01 << 8)
+.equ TCR_ORGN1_WBWA,     (0b01 << 26)
+.equ TCR_IRGN1_WBWA,     (0b01 << 24)
+.equ TCR_VALUE,          (TCR_T0SZ | TCR_T1SZ | TCR_TG0_4K | TCR_TG1_4K | TCR_SH0_INNER | TCR_SH1_INNER | TCR_ORGN0_WBWA | TCR_IRGN0_WBWA | TCR_ORGN1_WBWA | TCR_IRGN1_WBWA)
 
 _start:
     // Disable interrupts (should already be disabled)
@@ -70,13 +106,16 @@ el1_init:
     msr cpacr_el1, x0
     isb
 
-    // Set up stack pointer
-    ldr x0, =__stack_top
+    // Set up boot stack pointer (low)
+    ldr x0, =__boot_stack_top
     mov sp, x0
 
-    // Zero BSS section
+    // Zero kernel BSS section (linked in higher half)
     ldr x0, =__bss_start
     ldr x1, =__bss_end
+    ldr x2, =KERNEL_VIRT_BASE
+    sub x0, x0, x2
+    sub x1, x1, x2
 zero_bss:
     cmp x0, x1
     b.ge bss_done
@@ -84,13 +123,28 @@ zero_bss:
     b zero_bss
 bss_done:
 
-    // Set VBAR_EL1 to our exception vector table
+    // Set VBAR_EL1 to boot exception vectors (low)
+    ldr x0, =exception_vectors_boot
+    msr vbar_el1, x0
+    isb
+
+    // Set up MMU and enable high-half mapping
+    bl setup_mmu
+
+    // Switch to high-half boot stack
+    ldr x0, =__boot_stack_top
+    ldr x1, =KERNEL_VIRT_BASE
+    add x0, x0, x1
+    mov sp, x0
+
+    // Switch to runtime exception vectors (high)
     ldr x0, =exception_vectors
     msr vbar_el1, x0
     isb
 
-    // Jump to Rust kernel_main
-    bl kernel_main
+    // Jump to Rust kernel_main (high)
+    ldr x0, =kernel_main
+    br x0
 
     // If kernel_main returns, hang
 hang:
@@ -98,7 +152,25 @@ hang:
     b hang
 
 /*
- * Exception Vector Table
+ * Boot Exception Vector Table (low)
+ *
+ * Minimal handlers until MMU is enabled and runtime vectors are installed.
+ */
+.section .text.vectors.boot
+.balign 0x800
+.global exception_vectors_boot
+exception_vectors_boot:
+    .rept 16
+    b boot_unhandled_exception
+    .balign 0x80
+    .endr
+
+boot_unhandled_exception:
+    wfi
+    b boot_unhandled_exception
+
+/*
+ * Exception Vector Table (runtime, high)
  *
  * ARM64 requires 16 entries, each 128 bytes (0x80), aligned to 2048 bytes.
  * 4 exception types × 4 source contexts = 16 vectors
@@ -167,6 +239,109 @@ lower_el_aarch32_serror:
 /*
  * Exception handlers
  */
+// -----------------------------------------------------------------------------
+// MMU setup (boot-time, low)
+// -----------------------------------------------------------------------------
+.section .text.boot
+
+setup_mmu:
+    // Zero page tables
+    ldr x0, =ttbr0_l0
+    bl zero_table
+    ldr x0, =ttbr0_l1
+    bl zero_table
+    ldr x0, =ttbr1_l0
+    bl zero_table
+    ldr x0, =ttbr1_l1
+    bl zero_table
+
+    // TTBR0 L0[0] -> L1
+    ldr x0, =ttbr0_l0
+    ldr x1, =ttbr0_l1
+    orr x1, x1, #DESC_TABLE
+    str x1, [x0]
+
+    // TTBR0 L1[0] = device (0x0000_0000 - 0x3FFF_FFFF)
+    ldr x0, =ttbr0_l1
+    ldr x1, =0x00000000
+    ldr x2, =BLOCK_FLAGS_DEVICE
+    orr x1, x1, x2
+    str x1, [x0, #0]
+
+    // TTBR0 L1[1] = normal (0x4000_0000 - 0x7FFF_FFFF)
+    ldr x1, =0x40000000
+    ldr x2, =BLOCK_FLAGS_NORMAL
+    orr x1, x1, x2
+    str x1, [x0, #8]
+
+    // TTBR1 L0[0] -> L1
+    ldr x0, =ttbr1_l0
+    ldr x1, =ttbr1_l1
+    orr x1, x1, #DESC_TABLE
+    str x1, [x0]
+
+    // TTBR1 L1[0] = device (high-half direct map)
+    ldr x0, =ttbr1_l1
+    ldr x1, =0x00000000
+    ldr x2, =BLOCK_FLAGS_DEVICE
+    orr x1, x1, x2
+    str x1, [x0, #0]
+
+    // TTBR1 L1[1] = normal (high-half direct map)
+    ldr x1, =0x40000000
+    ldr x2, =BLOCK_FLAGS_NORMAL
+    orr x1, x1, x2
+    str x1, [x0, #8]
+
+    // TTBR1 L1[2] = normal (high-half direct map)
+    ldr x1, =0x80000000
+    ldr x2, =BLOCK_FLAGS_NORMAL
+    orr x1, x1, x2
+    str x1, [x0, #16]
+
+    // TTBR1 L1[3] = normal (high-half direct map)
+    ldr x1, =0xC0000000
+    ldr x2, =BLOCK_FLAGS_NORMAL
+    orr x1, x1, x2
+    str x1, [x0, #24]
+
+    // MAIR / TCR
+    ldr x0, =MAIR_EL1_VALUE
+    msr mair_el1, x0
+    ldr x0, =TCR_VALUE
+    msr tcr_el1, x0
+    isb
+
+    // TTBRs
+    ldr x0, =ttbr0_l0
+    msr ttbr0_el1, x0
+    ldr x0, =ttbr1_l0
+    msr ttbr1_el1, x0
+    dsb ishst
+    isb
+
+    // Enable MMU
+    mrs x0, sctlr_el1
+    // Clear WXN (bit 19)
+    mov x1, #(1 << 19)
+    bic x0, x0, x1
+    // Set M (bit 0)
+    orr x0, x0, #1
+    msr sctlr_el1, x0
+    isb
+
+    ret
+
+// Zero a 4KB table at x0
+zero_table:
+    mov x1, #512              // 512 entries * 8 bytes = 4096
+    mov x2, x0
+zero_table_loop:
+    str xzr, [x2], #8
+    subs x1, x1, #1
+    b.ne zero_table_loop
+    ret
+
 .section .text
 
 sync_exception_handler:
@@ -284,3 +459,28 @@ unhandled_exception:
  * Stack is now defined in the linker script (64KB)
  * Symbols __stack_bottom and __stack_top are provided by linker.ld
  */
+
+// -----------------------------------------------------------------------------
+// Boot-time BSS (low): page tables + boot stack
+// -----------------------------------------------------------------------------
+.section .bss.boot
+.balign 4096
+.global ttbr0_l0
+ttbr0_l0:
+    .skip 4096
+.global ttbr0_l1
+ttbr0_l1:
+    .skip 4096
+.global ttbr1_l0
+ttbr1_l0:
+    .skip 4096
+.global ttbr1_l1
+ttbr1_l1:
+    .skip 4096
+
+.balign 16
+.global __boot_stack_bottom
+__boot_stack_bottom:
+    .skip 65536
+.global __boot_stack_top
+__boot_stack_top:

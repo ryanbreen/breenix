@@ -29,6 +29,59 @@ use core::alloc::{GlobalAlloc, Layout};
 #[macro_use]
 extern crate kernel;
 
+#[cfg(target_arch = "aarch64")]
+fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'static str> {
+    use alloc::string::String;
+    use kernel::arch_impl::aarch64::context::return_to_userspace;
+
+    let fs_guard = kernel::fs::ext2::root_fs();
+    let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
+
+    let inode_num = fs.resolve_path(path).map_err(|_| "init_shell not found")?;
+    let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
+
+    if inode.is_dir() {
+        return Err("init_shell is a directory");
+    }
+
+    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
+
+    if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
+        return Err("init_shell is not a valid ELF file");
+    }
+
+    let proc_name = path.rsplit('/').next().unwrap_or(path);
+    let pid = {
+        let mut manager_guard = kernel::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            manager.create_process(String::from(proc_name), &elf_data)?
+        } else {
+            return Err("process manager not initialized");
+        }
+    };
+
+    let (entry_point, user_stack_top) = {
+        let manager_guard = kernel::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some(process) = manager.get_process(pid) {
+                let entry = process.entry_point.as_u64();
+                let thread = process
+                    .main_thread
+                    .as_ref()
+                    .ok_or("process has no main thread")?;
+                let stack_top = thread.stack_top.as_u64();
+                (entry, stack_top)
+            } else {
+                return Err("process not found after creation");
+            }
+        } else {
+            return Err("process manager not available");
+        }
+    };
+
+    return_to_userspace(entry_point, user_stack_top);
+}
+
 // =============================================================================
 // Simple bump allocator for early boot
 // This is temporary - will be replaced by proper heap allocator later
@@ -86,8 +139,6 @@ fn alloc_error_handler(layout: Layout) -> ! {
 #[cfg(target_arch = "aarch64")]
 use kernel::serial;
 #[cfg(target_arch = "aarch64")]
-use kernel::arch_impl::aarch64::mmu;
-#[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::timer;
 #[cfg(target_arch = "aarch64")]
 use kernel::arch_impl::aarch64::timer_interrupt;
@@ -115,9 +166,12 @@ use kernel::shell::ShellState;
 /// - We're running at EL1 (or need to drop from EL2)
 /// - Stack is set up
 /// - BSS is zeroed
-/// - MMU is off (identity mapped by UEFI or running physical)
+/// - MMU is already enabled by boot.S (high-half kernel)
 #[no_mangle]
 pub extern "C" fn kernel_main() -> ! {
+    // Initialize physical memory offset (needed for MMIO access)
+    kernel::memory::init_physical_memory_offset_aarch64();
+
     // Initialize serial output first so we can print
     serial::init_serial();
 
@@ -131,16 +185,13 @@ pub extern "C" fn kernel_main() -> ! {
     let el = current_exception_level();
     serial_println!("[boot] Current exception level: EL{}", el);
 
-    serial_println!("[boot] Initializing MMU...");
-    mmu::init();
-    serial_println!("[boot] MMU enabled");
+    serial_println!("[boot] MMU already enabled (high-half kernel)");
 
     // Initialize memory management for ARM64
     // ARM64 QEMU virt machine: RAM starts at 0x40000000
     // We use 0x42000000..0x50000000 (224MB) for frame allocation
     // Kernel stacks are at 0x51000000..0x52000000 (16MB)
     serial_println!("[boot] Initializing memory management...");
-    kernel::memory::init_physical_memory_offset_aarch64();
     kernel::memory::frame_allocator::init_aarch64(0x4200_0000, 0x5000_0000);
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
@@ -196,7 +247,13 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::fs::devfs::init();
     serial_println!("[boot] devfs initialized at /dev");
 
-    // Note: devptsfs is x86_64-only (depends on tty module)
+    // Initialize devptsfs (/dev/pts pseudo-terminal slave filesystem)
+    kernel::fs::devptsfs::init();
+    serial_println!("[boot] devptsfs initialized at /dev/pts");
+
+    // Initialize TTY subsystem (console + PTY infrastructure)
+    kernel::tty::init();
+    serial_println!("[boot] TTY subsystem initialized");
 
     // Initialize graphics (if GPU is available)
     serial_println!("[boot] Initializing graphics...");
@@ -240,16 +297,23 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("Hello from ARM64!");
     serial_println!();
 
-    // Try to load and run userspace init_shell from the test disk
-    // If a VirtIO block device is present with a BXTEST disk, run init_shell
+    // Try to load and run userspace init_shell from ext2 or test disk
+    // If a VirtIO block device is present, prefer ext2 (/bin/init_shell), then fall back
     if device_count > 0 {
-        serial_println!("[boot] Loading userspace init_shell from test disk...");
-        match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+        serial_println!("[boot] Loading userspace init_shell from ext2...");
+        match run_userspace_from_ext2("/bin/init_shell") {
             Err(e) => {
-                serial_println!("[boot] Failed to load init_shell: {}", e);
-                serial_println!("[boot] Falling back to kernel shell...");
+                serial_println!("[boot] Failed to load init_shell from ext2: {}", e);
+                serial_println!("[boot] Loading userspace init_shell from test disk...");
+                match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                    Err(e) => {
+                        serial_println!("[boot] Failed to load init_shell: {}", e);
+                        serial_println!("[boot] Falling back to kernel shell...");
+                    }
+                    // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
+                    Ok(never) => match never {},
+                }
             }
-            // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
             Ok(never) => match never {},
         }
     }

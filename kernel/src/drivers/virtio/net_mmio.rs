@@ -168,6 +168,11 @@ struct NetDeviceState {
     tx_last_used_idx: u16,
 }
 
+#[inline(always)]
+fn virt_to_phys(addr: u64) -> u64 {
+    addr - crate::memory::physical_memory_offset().as_u64()
+}
+
 /// Initialize the VirtIO network device
 pub fn init() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-net] Searching for network device...");
@@ -253,7 +258,7 @@ fn setup_rx_queue(device: &mut VirtioMmioDevice, version: u32) -> Result<(), &'s
     let queue_size = core::cmp::min(queue_num_max, 16);
     device.set_queue_num(queue_size);
 
-    let queue_phys = &raw const RX_QUEUE as u64;
+    let queue_phys = virt_to_phys(&raw const RX_QUEUE as u64);
 
     // Initialize descriptor table and rings
     unsafe {
@@ -293,7 +298,7 @@ fn setup_tx_queue(device: &mut VirtioMmioDevice, version: u32) -> Result<(), &'s
     let queue_size = core::cmp::min(queue_num_max, 16);
     device.set_queue_num(queue_size);
 
-    let queue_phys = &raw const TX_QUEUE as u64;
+    let queue_phys = virt_to_phys(&raw const TX_QUEUE as u64);
 
     // Initialize descriptor table and rings
     unsafe {
@@ -324,10 +329,10 @@ fn setup_tx_queue(device: &mut VirtioMmioDevice, version: u32) -> Result<(), &'s
 /// Get the physical address of an RX buffer by index
 fn rx_buffer_phys(idx: usize) -> u64 {
     match idx {
-        0 => &raw const RX_BUFFER_0 as u64,
-        1 => &raw const RX_BUFFER_1 as u64,
-        2 => &raw const RX_BUFFER_2 as u64,
-        3 => &raw const RX_BUFFER_3 as u64,
+        0 => virt_to_phys(&raw const RX_BUFFER_0 as u64),
+        1 => virt_to_phys(&raw const RX_BUFFER_1 as u64),
+        2 => virt_to_phys(&raw const RX_BUFFER_2 as u64),
+        3 => virt_to_phys(&raw const RX_BUFFER_3 as u64),
         _ => 0,
     }
 }
@@ -414,7 +419,7 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
     }
 
     // Build descriptor
-    let tx_phys = &raw const TX_BUFFER as u64;
+    let tx_phys = virt_to_phys(&raw const TX_BUFFER as u64);
     let total_len = core::mem::size_of::<VirtioNetHdr>() + data.len();
 
     unsafe {

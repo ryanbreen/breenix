@@ -26,13 +26,14 @@ use crate::memory::arch_stub::{Mapper, Page, PageTableFlags, PhysFrame, Size4KiB
 /// Global physical memory offset for use throughout the kernel
 static PHYSICAL_MEMORY_OFFSET: OnceCell<VirtAddr> = OnceCell::uninit();
 
-/// Initialize the physical memory offset for ARM64 (identity mapping)
+/// Initialize the physical memory offset for ARM64 (high-half direct map)
 /// This must be called before any memory operations that need phys<->virt conversion
 #[cfg(target_arch = "aarch64")]
 pub fn init_physical_memory_offset_aarch64() {
-    // ARM64 uses identity mapping, so offset is 0
-    PHYSICAL_MEMORY_OFFSET.init_once(|| VirtAddr::new(0));
-    log::info!("ARM64 physical memory offset initialized (identity mapping)");
+    // ARM64 uses a higher-half direct map (HHDM)
+    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+    PHYSICAL_MEMORY_OFFSET.init_once(|| VirtAddr::new(hhdm_base));
+    log::info!("ARM64 physical memory offset initialized (HHDM at {:#x})", hhdm_base);
 }
 
 /// Next available MMIO virtual address

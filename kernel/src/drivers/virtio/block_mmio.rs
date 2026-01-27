@@ -134,6 +134,11 @@ struct BlockDeviceState {
     last_used_idx: u16,
 }
 
+#[inline(always)]
+fn virt_to_phys(addr: u64) -> u64 {
+    addr - crate::memory::physical_memory_offset().as_u64()
+}
+
 /// Initialize the VirtIO block device
 pub fn init() -> Result<(), &'static str> {
     crate::serial_println!("[virtio-blk] Searching for block device...");
@@ -186,9 +191,8 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     let queue_size = core::cmp::min(queue_num_max, 16);
     device.set_queue_num(queue_size);
 
-    // Get physical address of queue memory using raw pointer (safe for &raw const)
-    // With identity mapping, VA == PA for our static buffers
-    let queue_phys = &raw const QUEUE_MEM as u64;
+    // Get physical address of queue memory from high-half direct map
+    let queue_phys = virt_to_phys(&raw const QUEUE_MEM as u64);
 
     // Initialize descriptor free list and rings
     unsafe {
@@ -270,9 +274,9 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
     }
 
     // Get physical addresses using raw pointers (safe for &raw const)
-    let header_phys = &raw const REQ_HEADER as u64;
-    let data_phys = &raw const DATA_BUF as u64;
-    let status_phys = &raw const STATUS_BUF as u64;
+    let header_phys = virt_to_phys(&raw const REQ_HEADER as u64);
+    let data_phys = virt_to_phys(&raw const DATA_BUF as u64);
+    let status_phys = virt_to_phys(&raw const STATUS_BUF as u64);
 
     // Build descriptor chain:
     // [0] header (device reads) -> [1] data (device writes) -> [2] status (device writes)
@@ -387,9 +391,9 @@ pub fn write_sector(sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'sta
     }
 
     // Get physical addresses using raw pointers (safe for &raw const)
-    let header_phys = &raw const REQ_HEADER as u64;
-    let data_phys = &raw const DATA_BUF as u64;
-    let status_phys = &raw const STATUS_BUF as u64;
+    let header_phys = virt_to_phys(&raw const REQ_HEADER as u64);
+    let data_phys = virt_to_phys(&raw const DATA_BUF as u64);
+    let status_phys = virt_to_phys(&raw const STATUS_BUF as u64);
 
     // Build descriptor chain for write:
     // [0] header (device reads) -> [1] data (device reads) -> [2] status (device writes)

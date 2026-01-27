@@ -376,16 +376,25 @@ fn dispatch_syscall(
             }
         }
 
-        syscall_nums::WRITE | syscall_nums::ARM64_WRITE => sys_write(arg1, arg2, arg3),
+        syscall_nums::WRITE | syscall_nums::ARM64_WRITE => {
+            match crate::syscall::io::sys_write(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
 
         syscall_nums::READ => {
-            // Stub: not implemented yet
-            (-38_i64) as u64 // -ENOSYS
+            match crate::syscall::io::sys_read(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::CLOSE => {
-            // Stub: close - just succeed for now
-            0
+            match crate::syscall::pipe::sys_close(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         syscall_nums::BRK => {
@@ -470,19 +479,62 @@ fn dispatch_syscall(
         // Note: PAUSE, SIGSUSPEND, and SIGRETURN are handled specially in rust_syscall_handler_aarch64
         // because they need access to the frame
 
-        // Pipe and I/O syscalls (stubs)
-        syscall_nums::PIPE | syscall_nums::PIPE2 | syscall_nums::DUP | syscall_nums::DUP2 |
-        syscall_nums::FCNTL | syscall_nums::POLL | syscall_nums::SELECT | syscall_nums::IOCTL => {
-            (-38_i64) as u64 // -ENOSYS
+        syscall_nums::PIPE => {
+            match crate::syscall::pipe::sys_pipe(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::PIPE2 => {
+            match crate::syscall::pipe::sys_pipe2(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::IOCTL => {
+            match crate::syscall::ioctl::sys_ioctl(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::DUP => {
+            match crate::syscall::io::sys_dup(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::DUP2 => {
+            match crate::syscall::io::sys_dup2(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::FCNTL => {
+            match crate::syscall::io::sys_fcntl(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::POLL => {
+            match crate::syscall::io::sys_poll(arg1, arg2, arg3 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SELECT => {
+            match crate::syscall::io::sys_select(arg1 as i32, arg2, arg3, arg4, arg5) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
-        // Process syscalls (stubs)
-        syscall_nums::EXEC | syscall_nums::WAIT4 => {
-            (-38_i64) as u64 // -ENOSYS
-        }
+        // Process syscalls
+        syscall_nums::WAIT4 => match crate::syscall::wait::sys_waitpid(arg1 as i64, arg2, arg3 as u32) {
+            crate::syscall::SyscallResult::Ok(result) => result,
+            crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+        },
 
         // Socket syscalls - use shared implementations
-        // Note: TCP (AF_INET) is not supported on ARM64, but Unix domain (AF_UNIX) and UDP work
         syscall_nums::SOCKET => {
             match crate::syscall::socket::sys_socket(arg1, arg2, arg3) {
                 crate::syscall::SyscallResult::Ok(result) => result,
@@ -538,30 +590,162 @@ fn dispatch_syscall(
             }
         }
 
-        // Filesystem syscalls (stubs)
-        syscall_nums::OPEN | syscall_nums::LSEEK | syscall_nums::FSTAT |
-        syscall_nums::GETDENTS64 | syscall_nums::ACCESS | syscall_nums::GETCWD |
-        syscall_nums::CHDIR | syscall_nums::RENAME | syscall_nums::MKDIR |
-        syscall_nums::RMDIR | syscall_nums::LINK | syscall_nums::UNLINK |
-        syscall_nums::SYMLINK | syscall_nums::READLINK | syscall_nums::MKNOD => {
-            (-38_i64) as u64 // -ENOSYS
+        // Filesystem syscalls
+        syscall_nums::OPEN => {
+            match crate::syscall::fs::sys_open(arg1, arg2 as u32, arg3 as u32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::LSEEK => {
+            match crate::syscall::fs::sys_lseek(arg1 as i32, arg2 as i64, arg3 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::FSTAT => {
+            match crate::syscall::fs::sys_fstat(arg1 as i32, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETDENTS64 => {
+            match crate::syscall::fs::sys_getdents64(arg1 as i32, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::ACCESS => {
+            match crate::syscall::fs::sys_access(arg1, arg2 as u32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETCWD => {
+            match crate::syscall::fs::sys_getcwd(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::CHDIR => {
+            match crate::syscall::fs::sys_chdir(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::RENAME => {
+            match crate::syscall::fs::sys_rename(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::MKDIR => {
+            match crate::syscall::fs::sys_mkdir(arg1, arg2 as u32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::RMDIR => {
+            match crate::syscall::fs::sys_rmdir(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::LINK => {
+            match crate::syscall::fs::sys_link(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::UNLINK => {
+            match crate::syscall::fs::sys_unlink(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SYMLINK => {
+            match crate::syscall::fs::sys_symlink(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::READLINK => {
+            match crate::syscall::fs::sys_readlink(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::MKNOD => {
+            match crate::syscall::fifo::sys_mknod(arg1, arg2 as u32, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
-        // Session syscalls (stubs)
-        syscall_nums::SETPGID | syscall_nums::SETSID | syscall_nums::GETPGID |
+        // Session syscalls
+        syscall_nums::SETPGID => {
+            match crate::syscall::session::sys_setpgid(arg1 as i32, arg2 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SETSID => {
+            match crate::syscall::session::sys_setsid() {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETPGID => {
+            match crate::syscall::session::sys_getpgid(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
         syscall_nums::GETSID => {
-            (-38_i64) as u64 // -ENOSYS
+            match crate::syscall::session::sys_getsid(arg1 as i32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
-        // PTY syscalls (stubs)
-        syscall_nums::POSIX_OPENPT | syscall_nums::GRANTPT |
-        syscall_nums::UNLOCKPT | syscall_nums::PTSNAME => {
-            (-38_i64) as u64 // -ENOSYS
+        // PTY syscalls
+        syscall_nums::POSIX_OPENPT => {
+            match crate::syscall::pty::sys_posix_openpt(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GRANTPT => {
+            match crate::syscall::pty::sys_grantpt(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::UNLOCKPT => {
+            match crate::syscall::pty::sys_unlockpt(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::PTSNAME => {
+            match crate::syscall::pty::sys_ptsname(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
-        // Graphics syscalls (stubs)
-        syscall_nums::FBINFO | syscall_nums::FBDRAW => {
-            (-38_i64) as u64 // -ENOSYS
+        // Graphics syscalls
+        syscall_nums::FBINFO => {
+            match crate::syscall::graphics::sys_fbinfo(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::FBDRAW => {
+            match crate::syscall::graphics::sys_fbdraw(arg1) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
         }
 
         // Testing syscalls (stubs)
@@ -569,18 +753,12 @@ fn dispatch_syscall(
             (-38_i64) as u64 // -ENOSYS
         }
 
-        syscall_nums::GETPID => {
-            // Return fixed PID for now
-            1
-        }
+        syscall_nums::GETPID => sys_getpid(),
 
-        syscall_nums::GETTID => {
-            // Return fixed TID for now
-            1
-        }
+        syscall_nums::GETTID => sys_gettid(),
 
         syscall_nums::YIELD => {
-            // Yield does nothing for single-process kernel
+            crate::task::scheduler::yield_current();
             0
         }
 
@@ -616,25 +794,25 @@ fn sys_get_time() -> u64 {
     secs as u64 * 1_000_000_000 + nanos as u64
 }
 
-/// sys_write implementation
-fn sys_write(fd: u64, buf: u64, count: u64) -> u64 {
-    // Only support stdout (1) and stderr (2)
-    if fd != 1 && fd != 2 {
-        return (-9_i64) as u64; // -EBADF
+/// sys_getpid - Get the current process ID (ARM64)
+fn sys_getpid() -> u64 {
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    if thread_id == 0 {
+        return 0;
     }
 
-    // Validate buffer pointer
-    if buf == 0 {
-        return (-14_i64) as u64; // -EFAULT
+    if let Some(ref manager) = *crate::process::manager() {
+        if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
+            return pid.as_u64();
+        }
     }
 
-    // Write each byte to serial
-    for i in 0..count {
-        let byte = unsafe { *((buf + i) as *const u8) };
-        crate::serial_print!("{}", byte as char);
-    }
+    0
+}
 
-    count
+/// sys_gettid - Get the current thread ID (ARM64)
+fn sys_gettid() -> u64 {
+    crate::task::scheduler::current_thread_id().unwrap_or(0)
 }
 
 /// sys_clock_gettime implementation - uses architecture-independent time module
@@ -830,124 +1008,167 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
 fn sys_exec_aarch64(
     frame: &mut Aarch64ExceptionFrame,
     program_name_ptr: u64,
-    _argv_ptr: u64,
+    argv_ptr: u64,
 ) -> u64 {
-    without_interrupts(|| {
-        log::info!(
-            "sys_exec_aarch64: program_name_ptr={:#x}",
-            program_name_ptr
-        );
+    log::info!(
+        "sys_exec_aarch64: program_name_ptr={:#x}, argv_ptr={:#x}",
+        program_name_ptr,
+        argv_ptr
+    );
 
-        // Get current thread ID from scheduler
-        let current_thread_id = match crate::task::scheduler::current_thread_id() {
-            Some(id) => id,
-            None => {
-                log::error!("sys_exec_aarch64: No current thread");
-                return (-22_i64) as u64; // -EINVAL
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => {
+            log::error!("sys_exec_aarch64: No current thread");
+            return (-22_i64) as u64; // -EINVAL
+        }
+    };
+
+    if current_thread_id == 0 {
+        log::error!("sys_exec_aarch64: Cannot exec from idle thread");
+        return (-22_i64) as u64; // -EINVAL
+    }
+
+    #[cfg(not(feature = "testing"))]
+    {
+        let _ = frame;
+        log::error!("sys_exec_aarch64: Testing feature not enabled");
+        return (-38_i64) as u64; // -ENOSYS
+    }
+
+    #[cfg(feature = "testing")]
+    {
+        use crate::syscall::userptr::{copy_cstr_from_user, copy_from_user};
+
+        if program_name_ptr == 0 {
+            log::error!("sys_exec_aarch64: NULL program name");
+            return (-14_i64) as u64; // -EFAULT
+        }
+
+        let program_name = match copy_cstr_from_user(program_name_ptr) {
+            Ok(name) => name,
+            Err(errno) => {
+                log::error!("sys_exec_aarch64: Failed to read program name: {}", errno);
+                return (-(errno as i64)) as u64;
             }
         };
 
-        if current_thread_id == 0 {
-            log::error!("sys_exec_aarch64: Cannot exec from idle thread");
-            return (-22_i64) as u64; // -EINVAL
-        }
+        log::info!("sys_exec_aarch64: Loading program '{}'", program_name);
 
-        // Exec is only supported with the testing feature for now
-        #[cfg(not(feature = "testing"))]
-        {
-            let _ = frame;
-            log::error!("sys_exec_aarch64: Testing feature not enabled");
-            return (-38_i64) as u64; // -ENOSYS
-        }
-
-        #[cfg(feature = "testing")]
-        {
-            // Get the ELF data and program name
-            let (elf_data, exec_program_name): (&[u8], Option<&'static str>) =
-                if program_name_ptr != 0 {
-                    // Read program name from userspace
-                    let program_name = unsafe {
-                        let mut len = 0;
-                        let ptr = program_name_ptr as *const u8;
-                        while *ptr.add(len) != 0 && len < 256 {
-                            len += 1;
-                        }
-                        core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len))
-                    };
-
-                    log::info!("sys_exec_aarch64: Loading program '{}'", program_name);
-
-                    // Load the binary from the test disk by name
-                    let elf_vec = crate::userspace_test::get_test_binary(program_name);
-                    // Leak the vector to get a static slice (needed for exec_process)
-                    let boxed_slice = elf_vec.into_boxed_slice();
-                    let elf_data = Box::leak(boxed_slice) as &'static [u8];
-                    // Also leak the program name so we can pass it to exec_process
-                    let name_string = alloc::string::String::from(program_name);
-                    let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
-                    (elf_data, Some(leaked_name))
-                } else {
-                    log::info!("sys_exec_aarch64: Using default hello_world test program");
-                    (
-                        crate::userspace_test::get_test_binary_static("hello_world"),
-                        Some("hello_world"),
-                    )
+        // Parse argv from userspace
+        let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+        if argv_ptr != 0 {
+            const MAX_ARGS: usize = 64;
+            const MAX_ARG_LEN: usize = 4096;
+            for i in 0..MAX_ARGS {
+                let arg_ptr_addr = argv_ptr + (i * core::mem::size_of::<u64>()) as u64;
+                let arg_ptr = match copy_from_user(arg_ptr_addr as *const u64) {
+                    Ok(ptr) => ptr,
+                    Err(errno) => {
+                        log::error!(
+                            "sys_exec_aarch64: Failed to read argv[{}] pointer: {}",
+                            i,
+                            errno
+                        );
+                        return (-(errno as i64)) as u64;
+                    }
                 };
 
-            // Find current process
-            let current_pid = {
-                let manager_guard = crate::process::manager();
-                if let Some(ref manager) = *manager_guard {
-                    if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
-                        pid
-                    } else {
-                        log::error!(
-                            "sys_exec_aarch64: Thread {} not found in any process",
-                            current_thread_id
-                        );
-                        return (-3_i64) as u64; // -ESRCH
-                    }
-                } else {
-                    log::error!("sys_exec_aarch64: Process manager not available");
-                    return (-12_i64) as u64; // -ENOMEM
+                if arg_ptr == 0 {
+                    break;
                 }
-            };
 
-            log::info!(
-                "sys_exec_aarch64: Replacing process {} (thread {}) with new program",
-                current_pid.as_u64(),
-                current_thread_id
-            );
+                let arg_string = match copy_cstr_from_user(arg_ptr) {
+                    Ok(s) => s,
+                    Err(errno) => {
+                        log::error!(
+                            "sys_exec_aarch64: Failed to read argv[{}] string: {}",
+                            i,
+                            errno
+                        );
+                        return (-(errno as i64)) as u64;
+                    }
+                };
 
-            // Replace the process's address space
+                let mut arg = arg_string.into_bytes();
+                if arg.len() >= MAX_ARG_LEN {
+                    arg.truncate(MAX_ARG_LEN.saturating_sub(1));
+                }
+                arg.push(0);
+                argv_vec.push(arg);
+            }
+        }
+
+        if argv_vec.is_empty() {
+            let mut arg0 = program_name.as_bytes().to_vec();
+            arg0.push(0);
+            argv_vec.push(arg0);
+        }
+
+        let elf_vec = if program_name.contains('/') {
+            match load_elf_from_ext2(&program_name) {
+                Ok(data) => data,
+                Err(errno) => return (-(errno as i64)) as u64,
+            }
+        } else {
+            let bin_path = alloc::format!("/bin/{}", program_name);
+            match load_elf_from_ext2(&bin_path) {
+                Ok(data) => data,
+                Err(_) => crate::userspace_test::get_test_binary(&program_name),
+            }
+        };
+
+        let boxed_slice = elf_vec.into_boxed_slice();
+        let elf_data = Box::leak(boxed_slice) as &'static [u8];
+        let leaked_name: &'static str = Box::leak(program_name.into_boxed_str());
+
+        let current_pid = {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((pid, _)) = manager.find_process_by_thread(current_thread_id) {
+                    pid
+                } else {
+                    log::error!(
+                        "sys_exec_aarch64: Thread {} not found in any process",
+                        current_thread_id
+                    );
+                    return (-3_i64) as u64; // -ESRCH
+                }
+            } else {
+                log::error!("sys_exec_aarch64: Process manager not available");
+                return (-12_i64) as u64; // -ENOMEM
+            }
+        };
+
+        log::info!(
+            "sys_exec_aarch64: Replacing process {} (thread {}) with new program",
+            current_pid.as_u64(),
+            current_thread_id
+        );
+
+        let argv_slices: alloc::vec::Vec<&[u8]> =
+            argv_vec.iter().map(|v| v.as_slice()).collect();
+
+        without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process(current_pid, elf_data, exec_program_name) {
-                    Ok(new_entry_point) => {
+                match manager.exec_process_with_argv(current_pid, elf_data, Some(leaked_name), &argv_slices) {
+                    Ok((new_entry_point, new_rsp)) => {
                         log::info!(
                             "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
                             new_entry_point
                         );
 
-                        // Get the new stack pointer from the exec'd process
-                        // NOTE: Must match the value used in exec_process() in manager.rs
-                        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
-                        // SP must be 16-byte aligned on ARM64
-                        let new_sp = USER_STACK_TOP & !0xF;
+                        frame.elr = new_entry_point;
 
-                        // Update the exception frame to jump to the new program
-                        frame.elr = new_entry_point; // Entry point (PC on return)
-
-                        // Update SP_EL0 via MSR instruction
                         unsafe {
                             core::arch::asm!(
                                 "msr sp_el0, {}",
-                                in(reg) new_sp,
+                                in(reg) new_rsp,
                                 options(nomem, nostack)
                             );
                         }
 
-                        // Clear all general-purpose registers in the frame for security
                         frame.x0 = 0;
                         frame.x1 = 0;
                         frame.x2 = 0;
@@ -977,25 +1198,23 @@ fn sys_exec_aarch64(
                         frame.x26 = 0;
                         frame.x27 = 0;
                         frame.x28 = 0;
-                        frame.x29 = 0; // Frame pointer
-                        frame.x30 = 0; // Link register
+                        frame.x29 = 0;
+                        frame.x30 = 0;
 
-                        // Set SPSR for EL0t mode with interrupts enabled
                         frame.spsr = 0x0; // EL0t, DAIF clear
 
-                        // Update TTBR0_EL1 for the new process page table
                         if let Some(process) = manager.get_process(current_pid) {
                             if let Some(ref page_table) = process.page_table {
                                 let new_ttbr0 = page_table.level_4_frame().start_address().as_u64();
                                 log::info!("sys_exec_aarch64: Setting TTBR0_EL1 to {:#x}", new_ttbr0);
                                 unsafe {
                                     core::arch::asm!(
-                                        "dsb ishst",       // Ensure stores complete
-                                        "msr ttbr0_el1, {}", // Switch page table
-                                        "isb",             // Instruction synchronization barrier
-                                        "tlbi vmalle1is",  // Invalidate TLB
-                                        "dsb ish",         // Ensure TLB invalidation completes
-                                        "isb",             // Synchronize
+                                        "dsb ishst",
+                                        "msr ttbr0_el1, {}",
+                                        "isb",
+                                        "tlbi vmalle1is",
+                                        "dsb ish",
+                                        "isb",
                                         in(reg) new_ttbr0,
                                         options(nostack)
                                     );
@@ -1006,24 +1225,59 @@ fn sys_exec_aarch64(
                         log::info!(
                             "sys_exec_aarch64: Frame updated - ELR={:#x}, SP_EL0={:#x}",
                             frame.elr,
-                            new_sp
+                            new_rsp
                         );
 
-                        // exec() returns 0 on success (but caller never sees it because
-                        // we're jumping to a new program)
                         0
                     }
                     Err(e) => {
                         log::error!("sys_exec_aarch64: Failed to exec process: {}", e);
-                        (-12_i64) as u64 // -ENOMEM
+                        (-12_i64) as u64
                     }
                 }
             } else {
                 log::error!("sys_exec_aarch64: Process manager not available");
-                (-12_i64) as u64 // -ENOMEM
+                (-12_i64) as u64
             }
+        })
+    }
+}
+
+/// Load ELF binary from ext2 filesystem path.
+///
+/// Returns the file content as Vec<u8> on success, or an errno on failure.
+///
+/// NOTE: This function intentionally has NO logging to avoid timing overhead.
+#[cfg(feature = "testing")]
+fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
+    use crate::fs::ext2;
+    use crate::syscall::errno::{EACCES, EIO, ENOENT, ENOTDIR};
+
+    let fs_guard = ext2::root_fs();
+    let fs = fs_guard.as_ref().ok_or(EIO)?;
+
+    let inode_num = fs.resolve_path(path).map_err(|e| {
+        if e.contains("not found") {
+            ENOENT
+        } else {
+            EIO
         }
-    })
+    })?;
+
+    let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
+
+    if inode.is_dir() {
+        return Err(ENOTDIR);
+    }
+
+    let perms = inode.permissions();
+    if (perms & 0o100) == 0 {
+        return Err(EACCES);
+    }
+
+    let data = fs.read_file_content(&inode).map_err(|_| EIO)?;
+
+    Ok(data)
 }
 
 // =============================================================================

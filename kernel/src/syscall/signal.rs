@@ -1667,7 +1667,7 @@ pub fn sys_setitimer(which: i32, new_value: u64, old_value: u64) -> SyscallResul
 
 /// Userspace address range end - addresses at or above this are kernel addresses
 #[cfg(target_arch = "aarch64")]
-const USER_SPACE_END: u64 = 0x0000_8000_0000_0000;
+const USER_SPACE_END: u64 = crate::memory::layout::USER_STACK_REGION_END;
 
 /// pause() - Wait until a signal is delivered (with frame access) - ARM64 version
 ///

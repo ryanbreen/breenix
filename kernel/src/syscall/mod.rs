@@ -17,6 +17,8 @@ pub mod memory_common;
 pub mod mmap;
 pub mod time;
 pub mod userptr;
+#[cfg(target_arch = "aarch64")]
+pub mod io;
 
 // Syscall handler - the main dispatcher
 // x86_64: Full handler with signal delivery and process management
@@ -24,32 +26,28 @@ pub mod userptr;
 #[cfg(target_arch = "x86_64")]
 pub mod handler;
 
-// Syscall implementations - handlers module is architecture-independent
-// Other modules have x86_64-specific dependencies and are being ported
+// Syscall implementations
+// - dispatcher/handlers remain x86_64-only for now
+// - other modules are shared across architectures
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
-#[cfg(target_arch = "x86_64")]
 pub mod fifo;
-#[cfg(target_arch = "x86_64")]
 pub mod fs;
-#[cfg(target_arch = "x86_64")]
 pub mod graphics;
 // handlers module has deep dependencies on x86_64-only subsystems
-// ARM64 uses stub handlers in arch_impl/aarch64/syscall_entry.rs
+// ARM64 uses arch_impl/aarch64/syscall_entry.rs for dispatch
 #[cfg(target_arch = "x86_64")]
 pub mod handlers;
-#[cfg(target_arch = "x86_64")]
 pub mod ioctl;
-#[cfg(target_arch = "x86_64")]
 pub mod pipe;
-#[cfg(target_arch = "x86_64")]
 pub mod pty;
-#[cfg(target_arch = "x86_64")]
 pub mod session;
 pub mod signal;
 // Socket syscalls - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod socket;
+#[cfg(target_arch = "aarch64")]
+pub mod wait;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

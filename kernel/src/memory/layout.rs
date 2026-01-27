@@ -9,18 +9,47 @@
 use x86_64::VirtAddr;
 #[cfg(not(target_arch = "x86_64"))]
 use crate::memory::arch_stub::VirtAddr;
+#[cfg(target_arch = "aarch64")]
+use crate::arch_impl::aarch64::constants as aarch64_const;
 
 // Virtual address layout constants
+#[cfg(target_arch = "x86_64")]
 pub const KERNEL_LOW_BASE: u64 = 0x100000;           // Current low-half kernel base (1MB)
+#[cfg(target_arch = "aarch64")]
+pub const KERNEL_LOW_BASE: u64 = 0x40080000;         // Physical load base
+
+#[cfg(target_arch = "x86_64")]
 pub const KERNEL_BASE: u64 = 0xffffffff80000000;     // Upper half kernel base
+#[cfg(target_arch = "aarch64")]
+pub const KERNEL_BASE: u64 = aarch64_const::KERNEL_HIGHER_HALF_BASE + KERNEL_LOW_BASE;
+
 #[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
 pub const HHDM_BASE: u64 = 0xffff800000000000;       // Higher-half direct map
 #[allow(dead_code)]
+#[cfg(target_arch = "aarch64")]
+pub const HHDM_BASE: u64 = aarch64_const::HHDM_BASE;  // Higher-half direct map
+
+#[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
 pub const PERCPU_BASE: u64 = 0xfffffe0000000000;     // Per-CPU area
 #[allow(dead_code)]
+#[cfg(target_arch = "aarch64")]
+pub const PERCPU_BASE: u64 = aarch64_const::PERCPU_BASE;
+
+#[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
 pub const FIXMAP_BASE: u64 = 0xfffffd0000000000;     // Fixed mappings (GDT/IDT/TSS)
 #[allow(dead_code)]
+#[cfg(target_arch = "aarch64")]
+pub const FIXMAP_BASE: u64 = aarch64_const::FIXMAP_BASE;
+
+#[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
 pub const MMIO_BASE: u64 = 0xffffe00000000000;       // MMIO regions
+#[allow(dead_code)]
+#[cfg(target_arch = "aarch64")]
+pub const MMIO_BASE: u64 = aarch64_const::MMIO_BASE;  // MMIO regions
 
 // === User Space Memory Layout ===
 
@@ -28,12 +57,19 @@ pub const MMIO_BASE: u64 = 0xffffe00000000000;       // MMIO regions
 /// Userspace base moved to 1GB to avoid PML4[0] conflict with kernel
 /// This places userspace in PDPT[1] while kernel stays in PDPT[0]
 #[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
 pub const USERSPACE_BASE: u64 = 0x40000000;          // 1GB - avoids kernel conflict
+#[allow(dead_code)]
+#[cfg(target_arch = "aarch64")]
+pub const USERSPACE_BASE: u64 = aarch64_const::USERSPACE_BASE;
 
 /// End of user code/data region (2GB)
 /// This defines the upper boundary of the region where user programs' code and data
 /// can be loaded. The stack lives in a separate, higher region.
+#[cfg(target_arch = "x86_64")]
 pub const USERSPACE_CODE_DATA_END: u64 = 0x80000000;
+#[cfg(target_arch = "aarch64")]
+pub const USERSPACE_CODE_DATA_END: u64 = 0x0000_0000_8000_0000;
 
 /// Start of mmap allocation region (below stack)
 /// This is where anonymous mmap allocations (used by Rust's Vec/Box) are placed.
@@ -46,12 +82,18 @@ pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
 /// User stack allocation region start (high canonical space)
 /// User stacks are allocated in this high canonical range for better compatibility
 /// with different QEMU configurations and to avoid conflicts with code/data region
+#[cfg(target_arch = "x86_64")]
 pub const USER_STACK_REGION_START: u64 = 0x7FFF_FF00_0000;
+#[cfg(target_arch = "aarch64")]
+pub const USER_STACK_REGION_START: u64 = aarch64_const::USER_STACK_REGION_START;
 
 /// User stack allocation region end (canonical boundary)
 /// This is the top of the lower-half canonical address space, just before
 /// the non-canonical hole that separates user and kernel space
+#[cfg(target_arch = "x86_64")]
 pub const USER_STACK_REGION_END: u64 = 0x8000_0000_0000;
+#[cfg(target_arch = "aarch64")]
+pub const USER_STACK_REGION_END: u64 = aarch64_const::USER_STACK_REGION_END;
 
 /// Default user stack size (64 KiB)
 /// This is the standard size allocated for user process stacks
@@ -66,7 +108,11 @@ pub const BOOTSTRAP_PML4_INDEX: u64 = 3;             // Bootstrap stack at 0x180
 
 /// Base address for the kernel higher half
 #[allow(dead_code)]
+#[cfg(target_arch = "x86_64")]
 pub const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
+#[allow(dead_code)]
+#[cfg(target_arch = "aarch64")]
+pub const KERNEL_HIGHER_HALF_BASE: u64 = aarch64_const::KERNEL_HIGHER_HALF_BASE;
 
 /// Base address for per-CPU kernel stacks region
 /// This is at PML4[402] = 0xffffc90000000000 - matching existing kernel stack region
@@ -260,6 +306,13 @@ fn log_control_structures() {
 /// The code/data region spans from USERSPACE_BASE (1GB) to USERSPACE_CODE_DATA_END (2GB).
 /// This is where ELF programs are loaded and where their .text, .data, .rodata, and .bss
 /// sections reside.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn is_user_code_data_address(addr: u64) -> bool {
+    addr >= USERSPACE_BASE && addr < USERSPACE_CODE_DATA_END
+}
+
+#[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn is_user_code_data_address(addr: u64) -> bool {
     addr >= USERSPACE_BASE && addr < USERSPACE_CODE_DATA_END
@@ -270,6 +323,14 @@ pub fn is_user_code_data_address(addr: u64) -> bool {
 /// The stack region is in high canonical space, from USER_STACK_REGION_START to
 /// USER_STACK_REGION_END. This region is separate from code/data to allow for
 /// better compatibility and to avoid conflicts.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn is_user_stack_address(addr: u64) -> bool {
+    addr >= USER_STACK_REGION_START && addr < USER_STACK_REGION_END
+}
+
+// ARM64: stack is in high user range (lower half canonical space).
+#[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn is_user_stack_address(addr: u64) -> bool {
     addr >= USER_STACK_REGION_START && addr < USER_STACK_REGION_END
@@ -279,6 +340,14 @@ pub fn is_user_stack_address(addr: u64) -> bool {
 ///
 /// The mmap region is where anonymous memory mappings (used by Vec, Box, etc.)
 /// are placed. It spans from MMAP_REGION_START to MMAP_REGION_END.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn is_user_mmap_address(addr: u64) -> bool {
+    addr >= MMAP_REGION_START && addr < MMAP_REGION_END
+}
+
+// ARM64: mmap region is in the lower half, below the stack.
+#[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn is_user_mmap_address(addr: u64) -> bool {
     addr >= MMAP_REGION_START && addr < MMAP_REGION_END
@@ -293,6 +362,13 @@ pub fn is_user_mmap_address(addr: u64) -> bool {
 /// Note: This only checks that the address is in a valid region - it does NOT
 /// verify that the specific page is mapped. Accessing an unmapped address in
 /// a valid region will cause a page fault, which is the correct behavior.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn is_valid_user_address(addr: u64) -> bool {
+    is_user_code_data_address(addr) || is_user_mmap_address(addr) || is_user_stack_address(addr)
+}
+
+#[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn is_valid_user_address(addr: u64) -> bool {
     is_user_code_data_address(addr) || is_user_mmap_address(addr) || is_user_stack_address(addr)
