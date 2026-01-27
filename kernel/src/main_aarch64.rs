@@ -29,6 +29,59 @@ use core::alloc::{GlobalAlloc, Layout};
 #[macro_use]
 extern crate kernel;
 
+#[cfg(target_arch = "aarch64")]
+fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'static str> {
+    use alloc::string::String;
+    use kernel::arch_impl::aarch64::context::return_to_userspace;
+
+    let fs_guard = kernel::fs::ext2::root_fs();
+    let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
+
+    let inode_num = fs.resolve_path(path).map_err(|_| "init_shell not found")?;
+    let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
+
+    if inode.is_dir() {
+        return Err("init_shell is a directory");
+    }
+
+    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
+
+    if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
+        return Err("init_shell is not a valid ELF file");
+    }
+
+    let proc_name = path.rsplit('/').next().unwrap_or(path);
+    let pid = {
+        let mut manager_guard = kernel::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            manager.create_process(String::from(proc_name), &elf_data)?
+        } else {
+            return Err("process manager not initialized");
+        }
+    };
+
+    let (entry_point, user_stack_top) = {
+        let manager_guard = kernel::process::manager();
+        if let Some(ref manager) = *manager_guard {
+            if let Some(process) = manager.get_process(pid) {
+                let entry = process.entry_point.as_u64();
+                let thread = process
+                    .main_thread
+                    .as_ref()
+                    .ok_or("process has no main thread")?;
+                let stack_top = thread.stack_top.as_u64();
+                (entry, stack_top)
+            } else {
+                return Err("process not found after creation");
+            }
+        } else {
+            return Err("process manager not available");
+        }
+    };
+
+    return_to_userspace(entry_point, user_stack_top);
+}
+
 // =============================================================================
 // Simple bump allocator for early boot
 // This is temporary - will be replaced by proper heap allocator later
@@ -238,16 +291,23 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("Hello from ARM64!");
     serial_println!();
 
-    // Try to load and run userspace init_shell from the test disk
-    // If a VirtIO block device is present with a BXTEST disk, run init_shell
+    // Try to load and run userspace init_shell from ext2 or test disk
+    // If a VirtIO block device is present, prefer ext2 (/bin/init_shell), then fall back
     if device_count > 0 {
-        serial_println!("[boot] Loading userspace init_shell from test disk...");
-        match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+        serial_println!("[boot] Loading userspace init_shell from ext2...");
+        match run_userspace_from_ext2("/bin/init_shell") {
             Err(e) => {
-                serial_println!("[boot] Failed to load init_shell: {}", e);
-                serial_println!("[boot] Falling back to kernel shell...");
+                serial_println!("[boot] Failed to load init_shell from ext2: {}", e);
+                serial_println!("[boot] Loading userspace init_shell from test disk...");
+                match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
+                    Err(e) => {
+                        serial_println!("[boot] Failed to load init_shell: {}", e);
+                        serial_println!("[boot] Falling back to kernel shell...");
+                    }
+                    // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
+                    Ok(never) => match never {},
+                }
             }
-            // run_userspace_from_disk returns Result<Infallible, _>, so Ok is unreachable
             Ok(never) => match never {},
         }
     }

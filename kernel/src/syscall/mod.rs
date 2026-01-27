@@ -46,6 +46,8 @@ pub mod signal;
 // Socket syscalls - enabled for both architectures
 // Unix domain sockets are fully arch-independent
 pub mod socket;
+#[cfg(target_arch = "aarch64")]
+pub mod wait;
 
 /// System call numbers following Linux conventions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
