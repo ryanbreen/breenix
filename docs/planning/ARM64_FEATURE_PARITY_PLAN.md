@@ -28,6 +28,7 @@ This plan is deliberately frank about gaps found in the current ARM64 code path.
 - TCP enabled on ARM64 socket syscalls.
 - ARM64 boot now attempts `/bin/init_shell` from ext2 before test-disk fallback.
 - devptsfs is initialized on ARM64 at boot.
+- TTY subsystem is initialized on ARM64 at boot.
 
 ### What Is Missing or Stubbed
 - PTY/TTY validation under ARM64 userspace load (devptsfs now initialized).

@@ -251,6 +251,10 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::fs::devptsfs::init();
     serial_println!("[boot] devptsfs initialized at /dev/pts");
 
+    // Initialize TTY subsystem (console + PTY infrastructure)
+    kernel::tty::init();
+    serial_println!("[boot] TTY subsystem initialized");
+
     // Initialize graphics (if GPU is available)
     serial_println!("[boot] Initializing graphics...");
     if let Err(e) = init_graphics() {
