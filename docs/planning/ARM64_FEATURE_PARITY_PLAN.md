@@ -29,10 +29,12 @@ This plan is deliberately frank about gaps found in the current ARM64 code path.
 - ARM64 boot now attempts `/bin/init_shell` from ext2 before test-disk fallback.
 - devptsfs is initialized on ARM64 at boot.
 - TTY subsystem is initialized on ARM64 at boot.
+- Ext2 disk builder supports ARM64 (`scripts/create_ext2_disk.sh --arch aarch64`); ARM64 QEMU script prefers ext2 image.
 
 ### What Is Missing or Stubbed
 - PTY/TTY validation under ARM64 userspace load (devptsfs now initialized).
 - Userspace shell (init_shell) running from ext2 disk image (ARM64 binaries).
+- ARM64 ext2 image still lacks full coreutils coverage (depends on ARM64 userspace builds).
 - Userspace test harness / boot stage parity for ARM64.
 - Proper kernel heap allocator (ARM64 uses a bump allocator).
 - User pointer validation needs full audit against ARM64 VMA/layout.

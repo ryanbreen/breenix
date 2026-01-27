@@ -11,6 +11,7 @@
 #
 # Usage:
 #   ./scripts/create_ext2_disk.sh
+#   ./scripts/create_ext2_disk.sh --arch aarch64
 #
 # Or use xtask:
 #   cargo run -p xtask -- create-ext2-disk
@@ -20,15 +21,37 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="$PROJECT_ROOT/target"
-USERSPACE_DIR="$PROJECT_ROOT/userspace/tests"
-OUTPUT_FILE="$TARGET_DIR/ext2.img"
-TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
 SIZE_MB=4
+
+ARCH="x86_64"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --arch)
+            ARCH="$2"
+            shift 2
+            ;;
+        *)
+            echo "Usage: $0 [--arch x86_64|aarch64]"
+            exit 1
+            ;;
+    esac
+done
+
+if [[ "$ARCH" == "aarch64" ]]; then
+    USERSPACE_DIR="$PROJECT_ROOT/userspace/tests/aarch64"
+    OUTPUT_FILE="$TARGET_DIR/ext2-aarch64.img"
+    TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2-aarch64.img"
+else
+    USERSPACE_DIR="$PROJECT_ROOT/userspace/tests"
+    OUTPUT_FILE="$TARGET_DIR/ext2.img"
+    TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2.img"
+fi
 
 # Coreutils to install in /bin
 COREUTILS="cat ls echo mkdir rmdir rm cp mv true false head tail wc which"
 
 echo "Creating ext2 disk image..."
+echo "  Arch: $ARCH"
 echo "  Output: $OUTPUT_FILE"
 echo "  Size: ${SIZE_MB}MB"
 echo "  Coreutils: $COREUTILS"

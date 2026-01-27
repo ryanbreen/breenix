@@ -121,7 +121,7 @@ Legend: **OK** = implemented and used on AMD64, **PARTIAL** = implemented but no
 ---
 
 # Immediate Parity Gaps (Blocking init_shell)
-1. ARM64 userspace binaries installed on ext2 image
+1. ARM64 userspace binaries installed on ext2 image (builder exists, coreutils coverage TBD)
 2. PTY/TTY validation under ARM64 userspace load
 3. Scheduler/preemption validation under userspace load
 4. Memory map + allocator parity (still bump allocator)
