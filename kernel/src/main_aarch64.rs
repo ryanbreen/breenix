@@ -247,7 +247,9 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::fs::devfs::init();
     serial_println!("[boot] devfs initialized at /dev");
 
-    // Note: devptsfs is x86_64-only (depends on tty module)
+    // Initialize devptsfs (/dev/pts pseudo-terminal slave filesystem)
+    kernel::fs::devptsfs::init();
+    serial_println!("[boot] devptsfs initialized at /dev/pts");
 
     // Initialize graphics (if GPU is available)
     serial_println!("[boot] Initializing graphics...");

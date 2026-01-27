@@ -21,20 +21,28 @@ This plan is deliberately frank about gaps found in the current ARM64 code path.
 - Kernel-mode graphics terminal + kernel shell loop.
 - Minimal syscall entry/exit path for EL0.
 
+### Recent Progress (parity wiring)
+- ARM64 execv supports argv + ext2/test-disk fallback.
+- wait4/waitpid implemented for ARM64.
+- Core FS/IO/pipe/poll/select/ioctl/session/pty syscalls wired on ARM64.
+- TCP enabled on ARM64 socket syscalls.
+- ARM64 boot now attempts `/bin/init_shell` from ext2 before test-disk fallback.
+- devptsfs is initialized on ARM64 at boot.
+
 ### What Is Missing or Stubbed
-- Userspace syscalls for FS/TTY/PTY/session/pipe/select/poll on ARM64.
-- Userspace shell (init_shell) running from disk.
-- File-based exec path for ARM64 (uses test disk loader only).
+- PTY/TTY validation under ARM64 userspace load (devptsfs now initialized).
+- Userspace shell (init_shell) running from ext2 disk image (ARM64 binaries).
+- Userspace test harness / boot stage parity for ARM64.
 - Proper kernel heap allocator (ARM64 uses a bump allocator).
-- User pointer validation uses x86_64 canonical split (unsafe on ARM64 identity map).
+- User pointer validation needs full audit against ARM64 VMA/layout.
 - Full scheduler/quantum reset and signal delivery on ARM64 return paths.
-- TCP sockets on ARM64 are explicitly blocked.
+- TCP sockets enabled but not validated under ARM64 userspace load.
 
 ## High-Risk Gaps (Blockers)
-1. **User pointer validation is unsafe on ARM64**
-   - `kernel/src/syscall/userptr.rs` uses x86_64 canonical split; kernel memory can be treated as user.
-2. **ARM64 syscall coverage is incomplete**
-   - Many syscalls return ENOSYS in `kernel/src/arch_impl/aarch64/syscall_entry.rs`.
+1. **User pointer validation needs full ARM64 audit**
+   - Range checks exist, but must align with actual ARM64 VMA/layout and page fault behavior.
+2. **PTY/TTY path unverified on ARM64**
+   - devptsfs is initialized, but PTY/TTY behavior under userspace is unproven.
 3. **Kernel-mode shell is not parity**
    - Userspace init_shell depends on TTY/PTY/syscalls; current ARM64 uses `kernel/src/shell/mod.rs`.
 4. **Memory subsystem parity not reached**
@@ -52,15 +60,15 @@ This section is deliberately blunt about what is missing on ARM64 compared to AM
 | User pointers | Validated for x86_64 layout | ARM64 userptr was unsafe; now partially aligned with high-half | Security risk + EFAULT mismatch | Complete ARM64 userptr validation for new VA layout |
 | Scheduler + preemption | Preemptive scheduling stable | ARM64 preemption not fully validated | Timing bugs, missed signals | Ensure timer IRQ drives scheduler; verify preemption on ARM64 |
 | Signal delivery | AMD64 SA_ONSTACK + sigreturn working | ARM64 delivery path exists but not parity-verified | SA_ONSTACK, sigreturn, mask restore on ARM64 | Validate signal delivery on ARM64 and fix path divergences |
-| Syscall coverage | Broad syscall set for tests/shell | Many ARM64 syscalls return ENOSYS (FS/TTY/PTY/session/pipe/poll/select/ioctl/exec/wait4) | Userspace shell cannot run | Remove ENOSYS stubs, wire to shared implementations |
-| Exec / ELF | Exec from ext2 works; argv supported | ARM64 exec path incomplete | Cannot boot to userspace shell | Implement exec from ext2 for ARM64 |
-| VFS/ext2 | VFS + ext2 stable | ARM64 syscalls stubbed; driver not fully exercised | No filesystem for userspace | Wire syscalls and verify ext2 on ARM64 |
-| devfs / devpts | Working on AMD64 | Not wired on ARM64 | PTY + /dev missing | Enable devfs/devpts mounts on ARM64 |
-| TTY + PTY | Full interactive shell + job control | ARM64 uses kernel shell; PTY syscalls stubbed | No interactive userspace | Implement PTY syscalls + line discipline for ARM64 |
+| Syscall coverage | Broad syscall set for tests/shell | Core syscalls wired; ARM64 coverage largely matches AMD64 | Unverified correctness on ARM64 | Validate syscall tests under ARM64 and fix ABI/edge cases |
+| Exec / ELF | Exec from ext2 works; argv supported | ARM64 execv supports argv + ext2/test-disk fallback | Userspace shell not yet proven | Validate exec + argv under ARM64 userspace |
+| VFS/ext2 | VFS + ext2 stable | ARM64 syscalls wired; ext2 mounted at boot | Unverified under userspace load | Validate ext2 + VFS on ARM64 |
+| devfs / devpts | Working on AMD64 | devfs + devptsfs initialized on ARM64 | Unverified under userspace | Validate devptsfs with PTY allocation on ARM64 |
+| TTY + PTY | Full interactive shell + job control | PTY syscalls wired; devptsfs mounted | No interactive userspace yet | Validate TTY line discipline + job control on ARM64 |
 | VirtIO block | AMD64 stable (PCI) | ARM64 MMIO driver in progress | Storage I/O unreliable | Confirm MMIO queues + IRQs + HHDM DMA |
-| VirtIO net | AMD64 stable | ARM64 MMIO wired but TCP blocked | Networking incomplete | Enable TCP on ARM64; validate RX/TX path |
+| VirtIO net | AMD64 stable | ARM64 MMIO wired; TCP enabled | Unverified under ARM64 userspace | Validate RX/TX + TCP tests on ARM64 |
 | VirtIO GPU/input | AMD64 stable | ARM64 MMIO in progress | No interactive UI | Confirm MMIO registers + input routing |
-| IPC (pipes, sockets) | Pipes, UNIX sockets, UDP/TCP | ARM64 stubs for pipe/select/poll | Userspace blocked | Port IPC syscalls and polling |
+| IPC (pipes, sockets) | Pipes, UNIX sockets, UDP/TCP | ARM64 IPC syscalls wired | Unverified under ARM64 userspace | Validate IPC/poll/select tests on ARM64 |
 | Userland shell | init_shell + coreutils on ext2 | Kernel shell only | Not parity | Build/install ARM64 userland and boot into init_shell |
 | CI / tests | Boot stages + userspace tests | ARM64 manual workflow only | No parity signal in CI | Add ARM64 parity subsets once core syscalls work |
 
@@ -119,9 +127,9 @@ Primary files:
 - `kernel/src/arch_impl/aarch64/context_switch.rs`
 
 ## Phase 3 - Syscall Parity (Core)
-- Remove ARM64 ENOSYS stubs for FS/TTY/PTY/session/pipe/select/poll.
-- Wire shared syscall modules for ARM64 by loosening `cfg(target_arch)` gates.
+- ✅ Core syscall wiring done (FS/TTY/PTY/session/pipe/select/poll/ioctl/exec/wait4).
 - Validate ARM64 ABI struct layouts for stat/dirent/time/sigset.
+- Run syscall-heavy userspace tests on ARM64 and fix edge cases.
 
 Deliverables:
 - ARM64 passes syscall tests that currently pass on AMD64.
