@@ -158,7 +158,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             fi
 
             # Copy test binaries to /bin
-            for test_bin in pty_test signal_test fork_test; do
+            for test_bin in pty_test signal_test fork_test udp_socket_test; do
                 if [ -f /binaries/${test_bin}.elf ]; then
                     cp /binaries/${test_bin}.elf /mnt/ext2/bin/${test_bin}
                     chmod 755 /mnt/ext2/bin/${test_bin}

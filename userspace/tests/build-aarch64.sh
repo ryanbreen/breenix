@@ -47,6 +47,8 @@ BINARIES=(
     "telnetd"
     # PTY test for validating PTY functionality
     "pty_test"
+    # Network socket tests
+    "udp_socket_test"
 )
 
 # Binaries that rely on the libbreenix runtime _start (no local _start)

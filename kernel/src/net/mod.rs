@@ -252,10 +252,10 @@ fn init_common() {
 
     // Wait for ARP reply (poll RX a few times to get the gateway MAC)
     // The reply comes via interrupt, so we just need to give it time to arrive
-    for _ in 0..50 {
+    for _ in 0..100 {
         process_rx();
         // Delay to let packets arrive and interrupts fire
-        for _ in 0..500000 {
+        for _ in 0..1_000_000 {
             core::hint::spin_loop();
         }
         // Check if we got the ARP reply yet

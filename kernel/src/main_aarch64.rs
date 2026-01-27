@@ -216,6 +216,10 @@ pub extern "C" fn kernel_main() -> ! {
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
 
+    // Initialize network stack (after VirtIO network driver is ready)
+    serial_println!("[boot] Initializing network stack...");
+    kernel::net::init();
+
     // Initialize filesystem layer (requires VirtIO block device)
     serial_println!("[boot] Initializing filesystem...");
 

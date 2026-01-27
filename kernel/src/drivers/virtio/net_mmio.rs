@@ -201,8 +201,8 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     }
 
     // Initialize the device (reset, ack, driver, features)
-    // Request MAC feature
-    device.init(features::MAC)?;
+    // Request MAC feature and STATUS for link awareness
+    device.init(features::MAC | features::STATUS)?;
 
     // Read MAC address from config space
     // VirtIO network config: MAC at offset 0 (6 bytes)
@@ -456,6 +456,7 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
         }
         timeout -= 1;
         if timeout == 0 {
+            crate::serial_println!("[virtio-net] TX timeout!");
             return Err("TX timeout");
         }
         core::hint::spin_loop();
@@ -473,7 +474,20 @@ pub fn receive() -> Option<&'static [u8]> {
         (*ptr).as_mut()?
     };
 
+    // Check and clear interrupt status (VirtIO requires this)
+    let device = VirtioMmioDevice::probe(state.base)?;
+    let int_status = device.read_interrupt_status();
+    if int_status != 0 {
+        device.ack_interrupt(int_status);
+    }
+
+    // ARM64 requires DSB to ensure device writes are visible
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
     fence(Ordering::SeqCst);
+
     let used_idx = unsafe {
         let ptr = &raw const RX_QUEUE;
         read_volatile(&(*ptr).used.idx)

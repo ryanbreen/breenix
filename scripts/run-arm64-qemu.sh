@@ -48,10 +48,15 @@ echo ""
 echo "Press Ctrl-A X to exit QEMU"
 echo ""
 
+# Network options (SLIRP user-mode networking)
+NET_OPTS="-device virtio-net-device,netdev=net0 \
+    -netdev user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15"
+
 exec qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
     -m 512M \
     -nographic \
     -kernel "$KERNEL" \
-    $DISK_OPTS
+    $DISK_OPTS \
+    $NET_OPTS
