@@ -325,54 +325,16 @@ pub extern "C" fn kernel_main() -> ! {
         serial_print!("breenix> ");
     }
 
-    // Poll for VirtIO keyboard and serial input
+    // Poll for VirtIO keyboard input only
+    // Serial input is handled exclusively by the UART interrupt handler (handle_uart_interrupt)
+    // which pushes bytes to stdin buffer for userspace read() syscall.
+    // DO NOT poll serial here - it races with the interrupt handler on the same FIFO.
     let mut shift_pressed = false;
 
     loop {
-
-        // Poll serial input (for -nographic mode)
-        // This is the primary input method when no VirtIO keyboard is available
-        while let Some(byte) = kernel::serial_aarch64::get_received_byte() {
-            // Debug marker: byte received in polling loop ('p' then the byte)
-            let base = kernel::memory::physical_memory_offset().as_u64();
-            let addr = (base + 0x0900_0000) as *mut u32;
-            unsafe {
-                core::ptr::write_volatile(addr, b'p' as u32);
-                core::ptr::write_volatile(addr, byte as u32);
-            }
-            // Handle special keys
-            let c = match byte {
-                // Backspace
-                0x7F | 0x08 => '\x08',
-                // Enter (CR)
-                0x0D => '\n',
-                // Tab
-                0x09 => '\t',
-                // Escape sequences start with 0x1B - for now, ignore
-                0x1B => continue,
-                // Regular ASCII
-                b if b >= 0x20 && b < 0x7F => byte as char,
-                // Ctrl+C
-                0x03 => {
-                    serial_println!("^C");
-                    continue;
-                }
-                // Other control characters
-                _ => continue,
-            };
-
-            // In serial-only mode, echo to serial and process through shell
-            if !has_graphics {
-                // Process through shell (which outputs to terminal_manager, but that won't work)
-                // Instead, handle serial shell inline
-                process_serial_shell_char(&mut shell, c);
-            } else {
-                // With graphics, route to terminal manager
-                shell.process_char(c);
-            }
-        }
-
         // Poll VirtIO input device for keyboard events (when GPU is available)
+        // VirtIO uses a different mechanism (virtqueues) that requires polling,
+        // unlike UART which generates interrupts.
         if input_mmio::is_initialized() {
             for event in input_mmio::poll_events() {
                 // Only process key events (EV_KEY = 1)
@@ -403,137 +365,11 @@ pub extern "C" fn kernel_main() -> ! {
         }
 
         // Wait for interrupt instead of busy-spinning to save CPU
-        // WFI will wake on any interrupt (timer, UART RX, etc.)
+        // WFI will wake on any interrupt (timer, UART RX, VirtIO, etc.)
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
     }
-}
-
-/// Process a character for the serial-only shell mode.
-///
-/// This is used when running without graphics (-nographic) where output
-/// goes to serial instead of the graphical terminal.
-#[cfg(target_arch = "aarch64")]
-fn process_serial_shell_char(shell: &mut ShellState, c: char) {
-    match c {
-        '\n' | '\r' => {
-            // Echo newline
-            serial_println!();
-            // Execute command (shell writes to terminal_manager which won't render,
-            // but we can capture the command and execute it ourselves)
-            execute_serial_command(shell);
-            // Show new prompt
-            serial_print!("breenix> ");
-        }
-        '\x08' | '\x7f' => {
-            // Backspace
-            if shell.line_pos() > 0 {
-                shell.backspace();
-                // Echo backspace sequence to erase character
-                serial_print!("\x08 \x08");
-            }
-        }
-        c if c.is_ascii() && !c.is_control() => {
-            // Regular printable character - add to buffer and echo
-            if shell.add_char(c) {
-                serial_print!("{}", c);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Execute the command in the shell's line buffer (serial mode).
-#[cfg(target_arch = "aarch64")]
-fn execute_serial_command(shell: &mut ShellState) {
-    use kernel::arch_impl::aarch64::timer;
-
-    let line = shell.get_line();
-    let line = line.trim();
-
-    if line.is_empty() {
-        return;
-    }
-
-    // Parse command and arguments
-    let (cmd, args) = match line.find(' ') {
-        Some(pos) => (&line[..pos], line[pos + 1..].trim()),
-        None => (line, ""),
-    };
-
-    match cmd {
-        "help" => {
-            serial_println!("========================================");
-            serial_println!("Breenix ARM64 Serial Shell");
-            serial_println!("========================================");
-            serial_println!();
-            serial_println!("Commands:");
-            serial_println!("  help     - Show this help message");
-            serial_println!("  echo     - Print arguments");
-            serial_println!("  uptime   - Show time since boot");
-            serial_println!("  uname    - Show system information");
-            serial_println!("  ps       - List running processes");
-            serial_println!("  mem      - Show memory usage");
-            serial_println!();
-            serial_println!("Press Ctrl-A X to exit QEMU.");
-            serial_println!();
-        }
-        "echo" => {
-            serial_println!("{}", args);
-        }
-        "clear" => {
-            // Send ANSI clear screen sequence
-            serial_print!("\x1b[2J\x1b[H");
-        }
-        "uptime" | "time" => {
-            match timer::monotonic_time() {
-                Some((secs, nanos)) => {
-                    let hours = secs / 3600;
-                    let mins = (secs % 3600) / 60;
-                    let secs_rem = secs % 60;
-                    let millis = nanos / 1_000_000;
-                    serial_print!("up ");
-                    if hours > 0 {
-                        serial_print!("{} hour{}, ", hours, if hours == 1 { "" } else { "s" });
-                    }
-                    if mins > 0 || hours > 0 {
-                        serial_print!("{} minute{}, ", mins, if mins == 1 { "" } else { "s" });
-                    }
-                    serial_println!("{}.{:03} second{}", secs_rem, millis,
-                        if secs_rem == 1 && millis == 0 { "" } else { "s" });
-                }
-                None => {
-                    serial_println!("Error: timer not available");
-                }
-            }
-        }
-        "uname" => {
-            serial_println!("Breenix 0.1.0 aarch64 ARM Cortex-A72");
-        }
-        "ps" => {
-            serial_println!("  PID  STATE  NAME");
-            serial_println!("    0  R      kernel");
-            serial_println!("    1  R      shell");
-        }
-        "mem" | "free" => {
-            serial_println!("Memory usage:");
-            serial_println!("  Total RAM:   512 MB (QEMU virt machine)");
-            serial_println!("  Kernel heap: 256 KB pre-allocated");
-            serial_println!("  Allocator:   bump allocator (ARM64)");
-        }
-        "exit" | "quit" => {
-            serial_println!("Cannot exit kernel shell!");
-            serial_println!("Press Ctrl-A X to exit QEMU.");
-        }
-        _ => {
-            serial_println!("Unknown command: {}", cmd);
-            serial_println!("Type 'help' for available commands.");
-        }
-    }
-
-    // Clear the line buffer for next command
-    shell.clear_line();
 }
 
 /// Initialize the scheduler with an idle thread (ARM64)
