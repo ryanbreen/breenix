@@ -52,6 +52,19 @@ echo ""
 NET_OPTS="-device virtio-net-device,netdev=net0 \
     -netdev user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15"
 
+# Debug options (set BREENIX_NET_DEBUG=1 to enable packet capture)
+DEBUG_OPTS=""
+if [ "${BREENIX_NET_DEBUG:-0}" = "1" ]; then
+    echo "Network debugging enabled - packets logged to /tmp/breenix-packets.pcap"
+    DEBUG_OPTS="-object filter-dump,id=dump0,netdev=net0,file=/tmp/breenix-packets.pcap"
+fi
+
+# QEMU tracing for VirtIO debugging (set BREENIX_VIRTIO_TRACE=1)
+if [ "${BREENIX_VIRTIO_TRACE:-0}" = "1" ]; then
+    echo "VirtIO tracing enabled"
+    DEBUG_OPTS="$DEBUG_OPTS -trace virtio_*"
+fi
+
 exec qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
@@ -59,4 +72,5 @@ exec qemu-system-aarch64 \
     -nographic \
     -kernel "$KERNEL" \
     $DISK_OPTS \
-    $NET_OPTS
+    $NET_OPTS \
+    $DEBUG_OPTS

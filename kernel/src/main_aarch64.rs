@@ -284,7 +284,6 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!();
 
     // Try to load and run userspace init_shell from ext2 or test disk
-    // If a VirtIO block device is present, prefer ext2 (/bin/init_shell), then fall back
     if device_count > 0 {
         serial_println!("[boot] Loading userspace init_shell from ext2...");
         match run_userspace_from_ext2("/bin/init_shell") {
