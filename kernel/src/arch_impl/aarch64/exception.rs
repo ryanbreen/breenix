@@ -279,8 +279,9 @@ const UART0_IRQ: u32 = 33;
 /// Raw serial write - no locks, for use in interrupt handlers
 #[inline(always)]
 fn raw_serial_char(c: u8) {
-    let base = crate::memory::physical_memory_offset().as_u64();
-    let addr = (base + 0x0900_0000) as *mut u32;
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const PL011_BASE: u64 = 0x0900_0000;
+    let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
     unsafe { core::ptr::write_volatile(addr, c as u32); }
 }
 
@@ -292,7 +293,6 @@ fn raw_serial_char(c: u8) {
 pub extern "C" fn handle_irq() {
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
-
         // Handle the interrupt based on ID
         match irq_id {
             // Virtual timer interrupt (PPI 27)
@@ -321,9 +321,14 @@ pub extern "C" fn handle_irq() {
                 crate::serial_println!("[irq] PPI {} received", irq_id);
             }
 
-            // SPIs (32+) - Shared peripheral interrupts
+            // SPIs (32-1019) - Shared peripheral interrupts
+            32..=1019 => {
+                crate::serial_println!("[irq] SPI {} (IRQ {}) received", irq_id - 32, irq_id);
+            }
+
+            // Should not happen - GIC filters invalid IDs (1020+)
             _ => {
-                crate::serial_println!("[irq] SPI {} received", irq_id);
+                crate::serial_println!("[irq] Invalid IRQ {} received - should not happen", irq_id);
             }
         }
 
@@ -378,43 +383,22 @@ fn check_need_resched_on_irq_exit() {
 
 /// Handle UART receive interrupt
 ///
-/// Read all available bytes from the UART and route them to the terminal
-/// and push to stdin buffer for userspace read().
+/// Read all available bytes from the UART and push to stdin buffer.
+/// Echo is handled by the consumer (kernel shell or userspace tty driver).
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
-    use crate::graphics::terminal_manager;
 
     // Debug marker: UART interrupt handler entry
     raw_serial_char(b'U');
 
     // Read all available bytes from the UART FIFO
     while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Debug marker: byte received
-        raw_serial_char(b'R');
-        raw_serial_char(byte); // Echo the actual byte
-        // Push to stdin buffer for userspace read() syscall
+        // Debug marker: byte received (show as hex digit to avoid polluting output)
+        raw_serial_char(b'.');
+
+        // Push to stdin buffer for kernel shell or userspace read() syscall
         // This wakes any blocked readers waiting for input
         crate::ipc::stdin::push_byte_from_irq(byte);
-
-        // Handle special keys for terminal display
-        let c = match byte {
-            // Backspace
-            0x7F | 0x08 => '\x08',
-            // Enter (CR -> newline)
-            0x0D => '\n',
-            // Tab
-            0x09 => '\t',
-            // Escape sequences start with 0x1B - for now, ignore display
-            0x1B => continue,
-            // Regular ASCII
-            b if b >= 0x20 && b < 0x7F => byte as char,
-            // Control characters (Ctrl+C = 0x03, Ctrl+D = 0x04, etc.)
-            b if b < 0x20 => byte as char,
-            _ => continue,
-        };
-
-        // Write to the shell terminal for display (handles locking internally)
-        terminal_manager::write_char_to_shell(c);
     }
 
     // Clear the interrupt

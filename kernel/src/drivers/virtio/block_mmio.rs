@@ -321,6 +321,16 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
 
     // Poll for completion - use a longer timeout for sequential reads
     let mut timeout = 100_000_000u32;
+
+    // Raw serial character for debugging (no locks)
+    #[inline(always)]
+    fn raw_char(c: u8) {
+        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+        const PL011_BASE: u64 = 0x0900_0000;
+        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
+        unsafe { core::ptr::write_volatile(addr, c as u32); }
+    }
+
     loop {
         fence(Ordering::SeqCst);
         let used_idx = unsafe {
@@ -329,16 +339,16 @@ pub fn read_sector(sector: u64, buffer: &mut [u8; SECTOR_SIZE]) -> Result<(), &'
         };
         if used_idx != state.last_used_idx {
             state.last_used_idx = used_idx;
+            raw_char(b'.'); // Block read completed
             break;
         }
         timeout -= 1;
         if timeout == 0 {
+            raw_char(b'!'); // Timeout!
             return Err("Block read timeout");
         }
-        // Add a small delay between polls to reduce CPU spin
-        for _ in 0..100 {
-            core::hint::spin_loop();
-        }
+        // Just yield to prevent tight spin
+        core::hint::spin_loop();
     }
 
     // Check status

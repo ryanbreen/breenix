@@ -20,14 +20,12 @@ else
     KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 fi
 
-# Check if kernel exists
-if [ ! -f "$KERNEL" ]; then
-    echo "Building ARM64 kernel ($BUILD_TYPE)..."
-    if [ "$BUILD_TYPE" = "debug" ]; then
-        cargo build --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
-    else
-        cargo build --release --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
-    fi
+# Always rebuild kernel to ensure latest changes are included
+echo "Building ARM64 kernel ($BUILD_TYPE)..."
+if [ "$BUILD_TYPE" = "debug" ]; then
+    cargo build --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+else
+    cargo build --release --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
 fi
 
 # Check for ext2 disk image

@@ -9,6 +9,15 @@ use super::SyscallResult;
 use alloc::vec::Vec;
 use crate::syscall::userptr::validate_user_buffer;
 
+/// Raw serial debug output - single character, no locks, no allocations.
+/// Safe to call from any context including interrupt handlers and syscalls.
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    let base = crate::memory::physical_memory_offset().as_u64();
+    let addr = (base + 0x0900_0000) as *mut u32;
+    unsafe { core::ptr::write_volatile(addr, c as u32); }
+}
+
 /// Copy a byte buffer from userspace.
 fn copy_from_user_bytes(ptr: u64, len: usize) -> Result<Vec<u8>, u64> {
     if len == 0 {
@@ -195,6 +204,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
+            // Debug marker: entering stdin read loop
+            raw_serial_char(b'r');
+
             loop {
                 crate::ipc::stdin::register_blocked_reader(thread_id);
 
@@ -212,6 +224,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                     Err(11) => {
                         // EAGAIN - no data available, need to block
+                        // Debug marker: blocking for input
+                        raw_serial_char(b'b');
+
                         // Block the current thread AND set blocked_in_syscall flag.
                         // CRITICAL: Setting blocked_in_syscall is essential because:
                         // 1. The thread will enter a kernel-mode WFI loop below
@@ -248,6 +263,8 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }).unwrap_or(false);
 
                             if !still_blocked {
+                                // Debug marker: woken from block
+                                raw_serial_char(b'w');
                                 break; // We've been woken, try reading again
                             }
                         }

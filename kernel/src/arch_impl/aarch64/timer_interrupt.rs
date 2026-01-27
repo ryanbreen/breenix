@@ -128,8 +128,10 @@ pub extern "C" fn timer_interrupt_handler() {
 /// Raw serial output - no locks, single char for debugging
 #[inline(always)]
 fn raw_serial_char(c: u8) {
-    let base = crate::memory::physical_memory_offset().as_u64();
-    let addr = (base + 0x0900_0000) as *mut u32;
+    // Use constant HHDM base to minimize function calls in interrupt context
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const PL011_BASE: u64 = 0x0900_0000;
+    let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
     unsafe { core::ptr::write_volatile(addr, c as u32); }
 }
 

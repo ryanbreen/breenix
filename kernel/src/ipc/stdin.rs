@@ -161,6 +161,15 @@ fn wake_blocked_readers_try() {
     crate::task::scheduler::set_need_resched();
 }
 
+/// Raw serial output for debugging - no locks, single char
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    let base = crate::memory::physical_memory_offset().as_u64();
+    let addr = (base + 0x0900_0000) as *mut u32;
+    unsafe { core::ptr::write_volatile(addr, c as u32); }
+}
+
 /// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
 #[cfg(target_arch = "aarch64")]
 fn wake_blocked_readers_try() {
@@ -168,13 +177,21 @@ fn wake_blocked_readers_try() {
         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
             blocked.drain(..).collect()
         } else {
+            // Debug marker: couldn't get lock
+            raw_serial_char(b'L');
             return; // Can't get lock, readers will be woken when they retry
         }
     };
 
     if readers.is_empty() {
+        // Debug marker: no readers to wake
+        raw_serial_char(b'0');
         return;
     }
+
+    // Debug marker: waking readers
+    raw_serial_char(b'W');
+    raw_serial_char(b'0' + (readers.len() as u8).min(9));
 
     // Try to wake threads via the scheduler
     crate::task::scheduler::with_scheduler(|sched| {
