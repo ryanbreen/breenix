@@ -211,13 +211,39 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Ok(n as u64);
                     }
                     Err(11) => {
-                        // ARM64: no scheduler unblock path for stdin yet; wait for data.
-                        loop {
-                            if crate::ipc::stdin::has_data() {
-                                break;
+                        // EAGAIN - no data available, need to block
+                        // Use proper scheduler blocking like x86_64 does
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.block_current();
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = true;
                             }
-                            unsafe { core::arch::asm!("wfi"); }
+                        });
+
+                        // Yield to let other threads run, then WFI loop until woken
+                        // The wake_blocked_readers_try() in stdin will unblock us
+                        loop {
+                            crate::task::scheduler::yield_current();
+                            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+
+                            // Check if we've been unblocked (thread state changed from Blocked)
+                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                                sched.current_thread()
+                                    .map(|t| t.state == crate::task::thread::ThreadState::Blocked)
+                                    .unwrap_or(false)
+                            }).unwrap_or(false);
+
+                            if !still_blocked {
+                                break; // We've been woken, try reading again
+                            }
                         }
+
+                        // Clear blocked_in_syscall now that we're resuming
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                            }
+                        });
                     }
                     Err(e) => {
                         crate::ipc::stdin::unregister_blocked_reader(thread_id);
