@@ -426,6 +426,15 @@ irq_handler:
     // Call Rust IRQ handler
     bl handle_irq
 
+    // Check if we need to reschedule before returning from IRQ
+    // from_el0 = 1 if SPSR_EL1.M[3:2] indicates EL0 (bit 2 == 0)
+    mrs x1, spsr_el1
+    and x1, x1, #0x4
+    cmp x1, #0
+    cset x1, eq
+    mov x0, sp
+    bl check_need_resched_and_switch_arm64
+
     // Restore registers
     ldp x0, x1, [sp, #240]
     msr elr_el1, x1

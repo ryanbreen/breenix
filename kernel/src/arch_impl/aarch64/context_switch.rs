@@ -54,13 +54,11 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
-    // Only reschedule when returning to userspace with preempt_count == 0
+    // Only reschedule when returning to userspace (EL0)
+    // Kernel code is not preemptible - this avoids scheduler lock deadlocks
+    // when IRQs fire during kernel operations that hold the scheduler lock.
     if !from_el0 {
-        // If we're returning to kernel mode, only reschedule if explicitly allowed
-        let preempt_count = Aarch64PerCpu::preempt_count();
-        if preempt_count > 0 {
-            return;
-        }
+        return;
     }
 
     // Check PREEMPT_ACTIVE flag (bit 28)
@@ -134,7 +132,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
 
         // Reset timer quantum for the new thread
-        // TODO: Implement timer quantum reset for ARM64
+        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
     }
 }
 
