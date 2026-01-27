@@ -14,18 +14,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 if [ "$BUILD_TYPE" = "debug" ]; then
-    KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/debug/kernel-aarch64"
+    KERNEL="$BREENIX_ROOT/target/aarch64-breenix/debug/kernel-aarch64"
 else
-    KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/release/kernel-aarch64"
+    KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 fi
 
 # Check if kernel exists
 if [ ! -f "$KERNEL" ]; then
     echo "Building ARM64 kernel ($BUILD_TYPE)..."
     if [ "$BUILD_TYPE" = "debug" ]; then
-        cargo build --target aarch64-unknown-none -p kernel --bin kernel-aarch64
+        cargo build --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
     else
-        cargo build --release --target aarch64-unknown-none -p kernel --bin kernel-aarch64
+        cargo build --release --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
     fi
 fi
 

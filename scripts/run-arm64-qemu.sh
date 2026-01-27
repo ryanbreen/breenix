@@ -2,6 +2,11 @@
 # Run Breenix ARM64 kernel in QEMU
 #
 # Usage: ./scripts/run-arm64-qemu.sh [release|debug]
+#
+# Environment variables:
+#   BREENIX_GRAPHICS=1      - Enable headed display with VirtIO GPU (default: headless)
+#   BREENIX_NET_DEBUG=1     - Enable network packet capture
+#   BREENIX_VIRTIO_TRACE=1  - Enable VirtIO tracing
 
 set -e
 
@@ -65,11 +70,29 @@ if [ "${BREENIX_VIRTIO_TRACE:-0}" = "1" ]; then
     DEBUG_OPTS="$DEBUG_OPTS -trace virtio_*"
 fi
 
+# Graphics options (set BREENIX_GRAPHICS=1 to enable headed display with VirtIO GPU)
+GRAPHICS_OPTS=""
+DISPLAY_OPTS="-nographic"
+if [ "${BREENIX_GRAPHICS:-0}" = "1" ]; then
+    echo "Graphics mode enabled - VirtIO GPU with native window"
+    GRAPHICS_OPTS="-device virtio-gpu-device -device virtio-keyboard-device"
+    # Use Cocoa display on macOS, SDL on Linux
+    case "$(uname)" in
+        Darwin)
+            DISPLAY_OPTS="-display cocoa,show-cursor=on -serial mon:stdio"
+            ;;
+        *)
+            DISPLAY_OPTS="-display sdl -serial mon:stdio"
+            ;;
+    esac
+fi
+
 exec qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
     -m 512M \
-    -nographic \
+    $DISPLAY_OPTS \
+    $GRAPHICS_OPTS \
     -kernel "$KERNEL" \
     $DISK_OPTS \
     $NET_OPTS \

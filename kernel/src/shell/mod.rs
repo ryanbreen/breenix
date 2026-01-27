@@ -30,6 +30,41 @@ impl ShellState {
         }
     }
 
+    /// Get current cursor position in line buffer
+    pub fn line_pos(&self) -> usize {
+        self.line_pos
+    }
+
+    /// Handle backspace - remove last character
+    pub fn backspace(&mut self) {
+        if self.line_pos > 0 {
+            self.line_pos -= 1;
+        }
+    }
+
+    /// Add a character to the line buffer
+    ///
+    /// Returns true if character was added, false if buffer is full
+    pub fn add_char(&mut self, c: char) -> bool {
+        if self.line_pos < MAX_LINE_LEN - 1 {
+            self.line_buffer[self.line_pos] = c as u8;
+            self.line_pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the current line as a string slice
+    pub fn get_line(&self) -> &str {
+        core::str::from_utf8(&self.line_buffer[..self.line_pos]).unwrap_or("")
+    }
+
+    /// Clear the line buffer
+    pub fn clear_line(&mut self) {
+        self.line_pos = 0;
+    }
+
     /// Process a character from keyboard input.
     ///
     /// Returns true if a command was executed (meaning we need a new prompt).

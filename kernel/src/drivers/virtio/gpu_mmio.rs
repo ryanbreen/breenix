@@ -240,6 +240,15 @@ fn virt_to_phys(addr: u64) -> u64 {
 
 /// Initialize the VirtIO GPU device
 pub fn init() -> Result<(), &'static str> {
+    // Check if already initialized
+    unsafe {
+        let ptr = &raw const GPU_DEVICE;
+        if (*ptr).is_some() {
+            crate::serial_println!("[virtio-gpu] GPU device already initialized");
+            return Ok(());
+        }
+    }
+
     crate::serial_println!("[virtio-gpu] Searching for GPU device...");
 
     for i in 0..VIRTIO_MMIO_COUNT {
