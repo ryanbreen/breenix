@@ -180,6 +180,14 @@ impl GuardedStack {
         mapper: &mut OffsetPageTable,
         privilege: ThreadPrivilege,
     ) -> Result<(), &'static str> {
+        #[cfg(target_arch = "aarch64")]
+        if privilege == ThreadPrivilege::User {
+            // ARM64 user stacks live in TTBR0; defer physical mapping to the
+            // process page table instead of the kernel (TTBR1) mappings.
+            log::debug!("ARM64 user stack: deferring page mapping to process page table");
+            return Ok(());
+        }
+
         let start_page = Page::<Size4KiB>::containing_address(start);
         let end_page = Page::<Size4KiB>::containing_address(start + size as u64 - 1u64);
 

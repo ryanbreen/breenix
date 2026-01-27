@@ -47,6 +47,24 @@ BINARIES=(
     "telnetd"
 )
 
+# Binaries that rely on the libbreenix runtime _start (no local _start)
+RUNTIME_BINS=(
+    "cat"
+    "ls"
+    "echo"
+    "mkdir"
+    "rmdir"
+    "rm"
+    "cp"
+    "mv"
+    "true"
+    "false"
+    "head"
+    "tail"
+    "wc"
+    "which"
+)
+
 # Create output directory for ARM64 binaries
 mkdir -p aarch64
 
@@ -56,7 +74,14 @@ echo "Building ${#BINARIES[@]} ARM64 userspace binaries..."
 # Build each binary individually to avoid building x86_64-only binaries
 for bin in "${BINARIES[@]}"; do
     echo "  Building $bin..."
-    if ! cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc --bin "$bin" 2>&1 | grep -E "^error" | head -3; then
+    FEATURES=()
+    for runtime_bin in "${RUNTIME_BINS[@]}"; do
+        if [ "$bin" = "$runtime_bin" ]; then
+            FEATURES=(--features runtime)
+            break
+        fi
+    done
+    if ! cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc "${FEATURES[@]}" --bin "$bin" 2>&1 | grep -E "^error" | head -3; then
         : # Success, no error output
     fi
 done

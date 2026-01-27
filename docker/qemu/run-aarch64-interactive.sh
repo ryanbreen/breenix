@@ -11,19 +11,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BREENIX_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Build the kernel if needed
-KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/release/kernel"
+KERNEL="$BREENIX_ROOT/target/aarch64-unknown-none/release/kernel-aarch64"
 if [ ! -f "$KERNEL" ]; then
     echo "Building ARM64 kernel..."
-    cd "$BREENIX_ROOT/kernel"
-    cargo build --release --target aarch64-unknown-none
-    cd "$BREENIX_ROOT"
+    cargo build --release --target aarch64-unknown-none -p kernel --bin kernel-aarch64
 fi
 
 if [ ! -f "$KERNEL" ]; then
     echo "Error: ARM64 kernel not found at $KERNEL"
     echo "Try building with:"
-    echo "  cd kernel && cargo build --release --target aarch64-unknown-none"
+    echo "  cargo build --release --target aarch64-unknown-none -p kernel --bin kernel-aarch64"
     exit 1
+fi
+
+# Check for ext2 disk image
+EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
+if [ -f "$EXT2_DISK" ]; then
+    echo "Found ext2 disk: $EXT2_DISK"
 fi
 
 # Build Docker image if needed
@@ -57,10 +61,20 @@ echo ""
 
 # Run QEMU with VNC display in Docker
 # Port 5901 to avoid conflict with x86_64 on 5900
+
+# Build disk options
+DISK_VOLUME=""
+DISK_OPTS="-device virtio-blk-device,drive=hd0 -drive if=none,id=hd0,format=raw,file=/dev/null"
+if [ -f "$EXT2_DISK" ]; then
+    DISK_VOLUME="-v $EXT2_DISK:/breenix/ext2.img:ro"
+    DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img"
+fi
+
 docker run --rm \
     -p 5901:5900 \
     -v "$KERNEL:/breenix/kernel:ro" \
     -v "$OUTPUT_DIR:/output" \
+    $DISK_VOLUME \
     "$IMAGE_NAME" \
     qemu-system-aarch64 \
         -M virt \
@@ -70,8 +84,7 @@ docker run --rm \
         -device virtio-gpu-device \
         -vnc :0 \
         -device virtio-keyboard-device \
-        -device virtio-blk-device,drive=hd0 \
-        -drive if=none,id=hd0,format=raw,file=/dev/null \
+        $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial file:/output/serial.txt \

@@ -8,7 +8,6 @@
 #![no_std]
 #![no_main]
 
-use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use libbreenix::argv;
 use libbreenix::fs::{access, X_OK};
@@ -50,27 +49,14 @@ fn build_path(dir: &[u8], name: &[u8], buf: &mut [u8; 256]) -> Option<usize> {
     Some(total)
 }
 
-/// Naked entry point that captures RSP before any prologue modifies it.
-#[unsafe(naked)]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    naked_asm!(
-        "mov rdi, rsp",    // Pass original RSP as first argument
-        "and rsp, -16",    // Align stack to 16 bytes (ABI requirement)
-        "call {main}",     // Call rust_main(stack_ptr)
-        "ud2",             // Should never return
-        main = sym rust_main,
-    )
-}
-
-/// Real entry point called from naked _start with the original stack pointer.
-extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
-    let args = unsafe { argv::get_args_from_stack(stack_ptr) };
+pub extern "C" fn main(argc: usize, argv_ptr: *const *const u8) -> i32 {
+    let args = unsafe { argv::Args::new(argc, argv_ptr) };
 
     if args.argc < 2 {
         let _ = stderr().write(b"which: missing command name\n");
         let _ = stderr().write(b"Usage: which COMMAND\n");
-        exit(1);
+        return 1;
     }
 
     // Get command name (first argument after program name)
@@ -78,7 +64,7 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
         Some(name) if !name.is_empty() => name,
         _ => {
             let _ = stderr().write(b"which: empty command name\n");
-            exit(1);
+            return 1;
         }
     };
 
@@ -87,9 +73,9 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
         if is_executable(cmd_name) {
             print_bytes(cmd_name);
             println("");
-            exit(0);
+            return 0;
         } else {
-            exit(1);
+            return 1;
         }
     }
 
@@ -100,13 +86,13 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
             if is_executable(&path_buf[..len]) {
                 print_bytes(&path_buf[..len]);
                 println("");
-                exit(0);
+                return 0;
             }
         }
     }
 
     // Not found
-    exit(1);
+    1
 }
 
 /// Print bytes as string

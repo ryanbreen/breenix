@@ -154,20 +154,45 @@ BINARIES=(
     "rm_argv_test"
 )
 
+RUNTIME_BINS=(
+    "cat"
+    "ls"
+    "echo"
+    "mkdir"
+    "rmdir"
+    "rm"
+    "cp"
+    "mv"
+    "true"
+    "false"
+    "head"
+    "tail"
+    "wc"
+    "which"
+)
+
 echo "Building ${#BINARIES[@]} userspace binaries with libbreenix..."
 echo ""
 
-# Build with cargo (config is in .cargo/config.toml)
-# This will compile libbreenix first, then link it into each binary
-cargo build --release 2>&1 | while read line; do
-    # Highlight libbreenix compilation
-    if echo "$line" | grep -q "Compiling libbreenix"; then
-        echo "  [libbreenix] $line"
-    elif echo "$line" | grep -q "Compiling userspace_tests"; then
-        echo "  [userspace]  $line"
-    else
-        echo "  $line"
-    fi
+# Build each binary with the appropriate feature set
+for bin in "${BINARIES[@]}"; do
+    echo "  Building $bin..."
+    FEATURES=()
+    for runtime_bin in "${RUNTIME_BINS[@]}"; do
+        if [ "$bin" = "$runtime_bin" ]; then
+            FEATURES=(--features runtime)
+            break
+        fi
+    done
+    cargo build --release "${FEATURES[@]}" --bin "$bin" 2>&1 | while read line; do
+        if echo "$line" | grep -q "Compiling libbreenix"; then
+            echo "  [libbreenix] $line"
+        elif echo "$line" | grep -q "Compiling userspace_tests"; then
+            echo "  [userspace]  $line"
+        else
+            echo "  $line"
+        fi
+    done
 done
 
 echo ""

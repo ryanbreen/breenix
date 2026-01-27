@@ -36,6 +36,15 @@ pub fn init_physical_memory_offset_aarch64() {
     log::info!("ARM64 physical memory offset initialized (HHDM at {:#x})", hhdm_base);
 }
 
+/// Initialize the ARM64 kernel heap (mapped virtual pages + global allocator)
+#[cfg(target_arch = "aarch64")]
+pub fn init_aarch64_heap() {
+    log::info!("ARM64: Initializing heap allocator...");
+    let phys_offset = physical_memory_offset();
+    let mapper = unsafe { paging::init(phys_offset) };
+    heap::init(&mapper).expect("ARM64 heap initialization failed");
+}
+
 /// Next available MMIO virtual address
 #[allow(dead_code)] // Used by map_mmio for device driver MMIO mappings
 static MMIO_NEXT_ADDR: Mutex<u64> = Mutex::new(layout::MMIO_BASE);
@@ -101,10 +110,9 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     #[cfg(target_arch = "x86_64")]
     let mapper = unsafe { paging::init(physical_memory_offset) };
     #[cfg(not(target_arch = "x86_64"))]
-    let _mapper = unsafe { paging::init(physical_memory_offset) };
+    let mapper = unsafe { paging::init(physical_memory_offset) };
 
     // Initialize heap
-    // For ARM64, the heap is initialized in main_aarch64.rs with a simple bump allocator
     #[cfg(target_arch = "x86_64")]
     {
         log::info!("Initializing heap allocator...");
@@ -112,7 +120,8 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
     }
     #[cfg(target_arch = "aarch64")]
     {
-        log::info!("ARM64: Using bump allocator from main_aarch64.rs");
+        log::info!("Initializing heap allocator...");
+        heap::init(&mapper).expect("heap initialization failed");
     }
 
     // Initialize stack allocation system

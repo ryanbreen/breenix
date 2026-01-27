@@ -368,12 +368,22 @@ impl ProcessManager {
         crate::serial_println!("manager.create_process [ARM64]: Mapping user stack into process page table");
         if let Some(ref mut page_table) = process.page_table {
             let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
+            crate::serial_println!(
+                "manager.create_process [ARM64]: map_user_stack_to_process stack_bottom={:#x} stack_top={:#x} size={}",
+                stack_bottom.as_u64(),
+                stack_top.as_u64(),
+                USER_STACK_SIZE
+            );
             crate::memory::process_memory::map_user_stack_to_process(
                 page_table,
                 stack_bottom,
                 stack_top,
             )
             .map_err(|e| {
+                crate::serial_println!(
+                    "manager.create_process [ARM64]: map_user_stack_to_process FAILED: {}",
+                    e
+                );
                 log::error!("ARM64: Failed to map user stack to process page table: {}", e);
                 "Failed to map user stack in process page table"
             })?;

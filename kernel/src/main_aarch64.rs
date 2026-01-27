@@ -21,8 +21,6 @@ extern crate rlibc; // Provides memcpy, memset, etc.
 
 #[cfg(target_arch = "aarch64")]
 use core::panic::PanicInfo;
-#[cfg(target_arch = "aarch64")]
-use core::alloc::{GlobalAlloc, Layout};
 
 // Import the kernel library macros and modules
 #[cfg(target_arch = "aarch64")]
@@ -32,6 +30,7 @@ extern crate kernel;
 #[cfg(target_arch = "aarch64")]
 fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'static str> {
     use alloc::string::String;
+    use core::arch::asm;
     use kernel::arch_impl::aarch64::context::return_to_userspace;
 
     let fs_guard = kernel::fs::ext2::root_fs();
@@ -60,7 +59,7 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
         }
     };
 
-    let (entry_point, user_stack_top) = {
+    let (entry_point, user_stack_top, ttbr0_phys) = {
         let manager_guard = kernel::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
@@ -70,7 +69,14 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
                     .as_ref()
                     .ok_or("process has no main thread")?;
                 let stack_top = thread.stack_top.as_u64();
-                (entry, stack_top)
+                let ttbr0 = process
+                    .page_table
+                    .as_ref()
+                    .ok_or("process has no page table")?
+                    .level_4_frame()
+                    .start_address()
+                    .as_u64();
+                (entry, stack_top, ttbr0)
             } else {
                 return Err("process not found after creation");
             }
@@ -79,62 +85,12 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
         }
     };
 
-    return_to_userspace(entry_point, user_stack_top);
-}
-
-// =============================================================================
-// Simple bump allocator for early boot
-// This is temporary - will be replaced by proper heap allocator later
-// =============================================================================
-
-/// Simple bump allocator that uses a fixed buffer
-#[cfg(target_arch = "aarch64")]
-struct BumpAllocator;
-
-/// 256KB heap buffer for early boot allocations
-#[cfg(target_arch = "aarch64")]
-static mut HEAP: [u8; 256 * 1024] = [0; 256 * 1024];
-#[cfg(target_arch = "aarch64")]
-static mut HEAP_POS: usize = 0;
-
-#[cfg(target_arch = "aarch64")]
-unsafe impl GlobalAlloc for BumpAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let align = layout.align();
-        let size = layout.size();
-
-        // Use raw pointers to avoid references to mutable statics
-        let heap_ptr = &raw mut HEAP;
-        let heap_pos_ptr = &raw mut HEAP_POS;
-
-        // Align the current position
-        let current_pos = *heap_pos_ptr;
-        let aligned_pos = (current_pos + align - 1) & !(align - 1);
-        let new_pos = aligned_pos + size;
-
-        if new_pos > (*heap_ptr).len() {
-            // Out of memory
-            core::ptr::null_mut()
-        } else {
-            *heap_pos_ptr = new_pos;
-            (*heap_ptr).as_mut_ptr().add(aligned_pos)
-        }
+    unsafe {
+        asm!("msr ttbr0_el1, {0}", "isb", in(reg) ttbr0_phys, options(nostack, preserves_flags));
     }
-
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        // Bump allocator doesn't support deallocation
-    }
+    unsafe { return_to_userspace(entry_point, user_stack_top); }
 }
 
-#[cfg(target_arch = "aarch64")]
-#[global_allocator]
-static ALLOCATOR: BumpAllocator = BumpAllocator;
-
-#[cfg(target_arch = "aarch64")]
-#[alloc_error_handler]
-fn alloc_error_handler(layout: Layout) -> ! {
-    panic!("allocation error: {:?}", layout)
-}
 
 #[cfg(target_arch = "aarch64")]
 use kernel::serial;
@@ -193,6 +149,7 @@ pub extern "C" fn kernel_main() -> ! {
     // Kernel stacks are at 0x51000000..0x52000000 (16MB)
     serial_println!("[boot] Initializing memory management...");
     kernel::memory::frame_allocator::init_aarch64(0x4200_0000, 0x5000_0000);
+    kernel::memory::init_aarch64_heap();
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
 

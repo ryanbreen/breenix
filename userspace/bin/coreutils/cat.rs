@@ -9,7 +9,6 @@
 #![no_std]
 #![no_main]
 
-use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use libbreenix::argv;
 use libbreenix::errno::Errno;
@@ -78,34 +77,17 @@ fn print_error_bytes(path: &[u8], e: Errno) {
     let _ = stderr().write(b"\n");
 }
 
-/// Naked entry point that captures RSP before any prologue modifies it.
-/// RSP points to argc on entry per Linux x86_64 ABI.
-#[unsafe(naked)]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    naked_asm!(
-        "mov rdi, rsp",    // Pass original RSP as first argument
-        "and rsp, -16",    // Align stack to 16 bytes (ABI requirement)
-        "call {main}",     // Call rust_main(stack_ptr)
-        "ud2",             // Should never return
-        main = sym rust_main,
-    )
-}
-
-/// Real entry point called from naked _start with the original stack pointer.
-/// Note: stack_ptr points to the ORIGINAL RSP (argc location), not current RSP.
-extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
-    // Get command-line arguments from the original stack pointer
-    // stack_ptr was captured BEFORE the call instruction, so it points to argc
-    let args = unsafe { argv::get_args_from_stack(stack_ptr) };
+pub extern "C" fn main(argc: usize, argv_ptr: *const *const u8) -> i32 {
+    let args = unsafe { argv::Args::new(argc, argv_ptr) };
 
     // If no arguments (besides program name), read from stdin
     if args.argc < 2 {
         if let Err(_e) = cat_stdin() {
             let _ = stderr().write_str("cat: error reading stdin\n");
-            exit(1);
+            return 1;
         }
-        exit(0);
+        return 0;
     }
 
     // Process each file argument
@@ -119,7 +101,7 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
         }
     }
 
-    exit(exit_code);
+    exit_code
 }
 
 #[panic_handler]

@@ -8,7 +8,6 @@
 #![no_std]
 #![no_main]
 
-use core::arch::naked_asm;
 use core::panic::PanicInfo;
 use libbreenix::argv;
 use libbreenix::errno::Errno;
@@ -81,23 +80,9 @@ fn print_error(path: &[u8], e: Errno) {
     let _ = stderr().write(b"\n");
 }
 
-/// Naked entry point that captures RSP before any prologue modifies it.
-#[unsafe(naked)]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    naked_asm!(
-        "mov rdi, rsp",    // Pass original RSP as first argument
-        "and rsp, -16",    // Align stack to 16 bytes (ABI requirement)
-        "call {main}",     // Call rust_main(stack_ptr)
-        "ud2",             // Should never return
-        main = sym rust_main,
-    )
-}
-
-/// Real entry point called from naked _start with the original stack pointer.
-extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
-    // Get command-line arguments from the original stack pointer
-    let args = unsafe { argv::get_args_from_stack(stack_ptr) };
+pub extern "C" fn main(argc: usize, argv_ptr: *const *const u8) -> i32 {
+    let args = unsafe { argv::Args::new(argc, argv_ptr) };
 
     // Default to current directory if no arguments
     let path: &[u8] = if args.argc >= 2 {
@@ -107,10 +92,10 @@ extern "C" fn rust_main(stack_ptr: *const u64) -> ! {
     };
 
     match ls_directory(path) {
-        Ok(()) => exit(0),
+        Ok(()) => 0,
         Err(e) => {
             print_error(path, e);
-            exit(1);
+            1
         }
     }
 }

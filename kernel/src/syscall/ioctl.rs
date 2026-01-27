@@ -49,7 +49,10 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     // First, try to look up the fd in the process's fd table
     // to check if it's a PTY device
     if let Some((fd_kind, pid)) = get_fd_kind_and_pid(fd as i32) {
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = pid;
         match fd_kind {
+            #[cfg(target_arch = "x86_64")]
             FdKind::PtyMaster(pty_num) | FdKind::PtySlave(pty_num) => {
                 // Dispatch to PTY ioctl handler
                 let pair = match crate::tty::pty::get(pty_num) {

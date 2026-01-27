@@ -54,22 +54,26 @@ SECTIONS
     }
 
     /* Main code section */
-    .text : ALIGN(4K) AT(ADDR(.text) - VMLINUX_OFFSET) {
+    . = ALIGN(4K);
+    .text : AT(ADDR(.text) - VMLINUX_OFFSET) {
         *(.text .text.*)
     }
 
     /* Read-only data */
-    .rodata : ALIGN(4K) AT(ADDR(.rodata) - VMLINUX_OFFSET) {
+    . = ALIGN(4K);
+    .rodata : AT(ADDR(.rodata) - VMLINUX_OFFSET) {
         *(.rodata .rodata.*)
     }
 
     /* Initialized data */
-    .data : ALIGN(4K) AT(ADDR(.data) - VMLINUX_OFFSET) {
+    . = ALIGN(4K);
+    .data : AT(ADDR(.data) - VMLINUX_OFFSET) {
         *(.data .data.*)
     }
 
     /* BSS - zero initialized */
-    .bss (NOLOAD) : ALIGN(4K) AT(ADDR(.bss) - VMLINUX_OFFSET) {
+    . = ALIGN(4K);
+    .bss (NOLOAD) : AT(ADDR(.bss) - VMLINUX_OFFSET) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
@@ -77,7 +81,8 @@ SECTIONS
     }
 
     /* Stack section - 64KB stack */
-    .bss.stack (NOLOAD) : ALIGN(16) AT(ADDR(.bss.stack) - VMLINUX_OFFSET) {
+    . = ALIGN(16);
+    .bss.stack (NOLOAD) : AT(ADDR(.bss.stack) - VMLINUX_OFFSET) {
         __stack_bottom = .;
         . = . + 65536;  /* Reserve 64KB for stack */
         __stack_top = .;

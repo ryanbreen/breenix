@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 libbreenix = { path = "../../libs/libbreenix" }
 
+[features]
+runtime = ["libbreenix/runtime"]
+
 # ============================================================================
 # EXAMPLES - Demo programs and shell
 # ============================================================================

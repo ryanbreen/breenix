@@ -8,13 +8,13 @@
 #![no_main]
 
 use core::panic::PanicInfo;
-use libbreenix::argv::get_args;
+use libbreenix::argv;
 use libbreenix::io::{print, println, stderr, stdout};
 use libbreenix::process::exit;
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    let args = unsafe { get_args() };
+pub extern "C" fn main(argc: usize, argv_ptr: *const *const u8) -> i32 {
+    let args = unsafe { argv::Args::new(argc, argv_ptr) };
 
     // Print each argument starting from argv[1], separated by spaces
     for i in 1..args.argc {
@@ -29,7 +29,7 @@ pub extern "C" fn _start() -> ! {
 
     // Print final newline
     println("");
-    exit(0);
+    0
 }
 
 #[panic_handler]

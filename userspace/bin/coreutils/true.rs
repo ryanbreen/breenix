@@ -12,8 +12,8 @@ use core::panic::PanicInfo;
 use libbreenix::process::exit;
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    exit(0);
+pub extern "C" fn main(_argc: usize, _argv: *const *const u8) -> i32 {
+    0
 }
 
 #[panic_handler]

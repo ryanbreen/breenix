@@ -75,7 +75,6 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
                 return SyscallResult::Err(ECHILD as u64);
             }
 
-            let children_copy: Vec<_> = current_process.children.clone();
             drop(manager_guard);
 
             // Check if the specific child is already terminated
@@ -131,7 +130,7 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
 
         // pid == -1: Wait for any child
         -1 => {
-            let children_copy: Vec<_> = current_process.children.clone();
+            let children_copy = current_process.children.clone();
             drop(manager_guard);
 
             let terminated_child = {
