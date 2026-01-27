@@ -69,6 +69,27 @@ impl Scheduler {
         );
     }
 
+    /// Add a thread as the current running thread without scheduling.
+    ///
+    /// Used when manually starting the first userspace thread (init process).
+    /// The thread is added to the scheduler's thread list and marked as current,
+    /// but NOT added to the ready queue. This avoids the scheduler trying to
+    /// reschedule when timer interrupts fire.
+    pub fn add_thread_as_current(&mut self, mut thread: Box<Thread>) {
+        let thread_id = thread.id();
+        let thread_name = thread.name.clone();
+        // Mark thread as running
+        thread.state = ThreadState::Running;
+        thread.has_started = true;
+        self.threads.push(thread);
+        self.current_thread = Some(thread_id);
+        log_serial_println!(
+            "Added thread {} '{}' as current (not in ready_queue)",
+            thread_id,
+            thread_name,
+        );
+    }
+
     /// Get a mutable thread by ID
     pub fn get_thread_mut(&mut self, id: u64) -> Option<&mut Thread> {
         self.threads
@@ -501,6 +522,24 @@ pub fn spawn(thread: Box<Thread>) {
             crate::per_cpu::set_need_resched(true);
             #[cfg(target_arch = "aarch64")]
             crate::per_cpu_aarch64::set_need_resched(true);
+        } else {
+            panic!("Scheduler not initialized");
+        }
+    });
+}
+
+/// Add a thread as the current running thread without scheduling.
+///
+/// Used when manually starting the first userspace thread (init process).
+/// The thread is added to the scheduler's thread list and marked as current,
+/// but NOT added to the ready queue and need_resched is NOT set.
+/// This allows the thread to run without the scheduler trying to preempt it.
+pub fn spawn_as_current(thread: Box<Thread>) {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.add_thread_as_current(thread);
+            // NOTE: Do NOT set need_resched - we want this thread to run
         } else {
             panic!("Scheduler not initialized");
         }

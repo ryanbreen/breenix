@@ -59,7 +59,7 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
         }
     };
 
-    let (entry_point, user_stack_top, ttbr0_phys) = {
+    let (entry_point, user_stack_top, ttbr0_phys, main_thread_id, main_thread_clone) = {
         let manager_guard = kernel::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
@@ -76,7 +76,7 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
                     .level_4_frame()
                     .start_address()
                     .as_u64();
-                (entry, stack_top, ttbr0)
+                (entry, stack_top, ttbr0, thread.id, thread.clone())
             } else {
                 return Err("process not found after creation");
             }
@@ -84,6 +84,31 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             return Err("process manager not available");
         }
     };
+
+    // Register the userspace thread with the scheduler as the current running thread.
+    // This uses spawn_as_current which:
+    // - Adds the thread to scheduler's thread list (for lookups)
+    // - Sets it as current_thread
+    // - Does NOT add to ready_queue (thread is already running)
+    // - Does NOT set need_resched (we don't want preemption until first syscall completes)
+    kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
+
+    // Set per-CPU pointers to the thread in the scheduler
+    kernel::task::scheduler::with_thread_mut(main_thread_id, |thread| {
+        let thread_ptr = thread as *mut kernel::task::thread::Thread;
+        kernel::per_cpu_aarch64::set_current_thread(thread_ptr);
+        if let Some(kernel_stack_top) = thread.kernel_stack_top {
+            kernel::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top.as_u64());
+        }
+    });
+
+    // Mark the process as running.
+    {
+        let mut manager_guard = kernel::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            manager.set_current_pid(pid);
+        }
+    }
 
     unsafe {
         asm!("msr ttbr0_el1, {0}", "isb", in(reg) ttbr0_phys, options(nostack, preserves_flags));
