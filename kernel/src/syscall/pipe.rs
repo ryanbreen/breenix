@@ -162,27 +162,22 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // to remain bound until all references are closed.
                     log::debug!("sys_close: Closed UDP socket fd={}", fd);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::RegularFile(_) => {
                     // Regular file cleanup handled by Arc refcount
                     log::debug!("sys_close: Closed regular file fd={}", fd);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::Directory(_) => {
                     // Directory cleanup handled by Arc refcount
                     log::debug!("sys_close: Closed directory fd={}", fd);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::Device(_) => {
                     // Device files don't need cleanup
                     log::debug!("sys_close: Closed device fd={}", fd);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::DevfsDirectory { .. } => {
                     // Devfs directory doesn't need cleanup
                     log::debug!("sys_close: Closed devfs directory fd={}", fd);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::DevptsDirectory { .. } => {
                     // Devpts directory doesn't need cleanup
                     log::debug!("sys_close: Closed devpts directory fd={}", fd);
@@ -230,14 +225,12 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     // Unix listener socket cleanup handled by Arc refcount
                     log::debug!("sys_close: Closed Unix listener fd={}", fd);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::FifoRead(path, buffer) => {
                     // Close FIFO read end - decrement both FIFO entry and pipe buffer counts
                     crate::ipc::fifo::close_fifo_read(&path);
                     buffer.lock().close_read();
                     log::debug!("sys_close: Closed FIFO read end fd={} ({})", fd, path);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::FifoWrite(path, buffer) => {
                     // Close FIFO write end - decrement both FIFO entry and pipe buffer counts
                     crate::ipc::fifo::close_fifo_write(&path);
