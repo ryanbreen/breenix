@@ -198,7 +198,6 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     let _ = crate::net::tcp::tcp_close(&conn_id);
                     log::debug!("sys_close: Closed TCP connection fd={}", fd);
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::PtyMaster(pty_num) => {
                     // PTY master cleanup - decrement refcount, only release when all masters closed
                     if let Some(pair) = crate::tty::pty::get(pty_num) {
@@ -214,7 +213,6 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                         log::warn!("sys_close: PTY {} not found for master fd={}", pty_num, fd);
                     }
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::PtySlave(pty_num) => {
                     // PTY slave doesn't own the pair, just log closure
                     log::debug!("sys_close: Closed PTY slave fd={} (pty {})", fd, pty_num);

@@ -4,9 +4,7 @@ use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, 
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 #[cfg(not(target_arch = "x86_64"))]
-use crate::memory::arch_stub::{
-    Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB, VirtAddr,
-};
+use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 
 #[cfg(target_arch = "x86_64")]
 pub const HEAP_START: u64 = 0x_4444_4444_0000;

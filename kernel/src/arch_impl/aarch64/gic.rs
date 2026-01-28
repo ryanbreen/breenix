@@ -87,6 +87,8 @@ const PRIORITY_MASK: u8 = 0xFF;
 
 /// Spurious interrupt ID (no pending interrupt)
 const SPURIOUS_IRQ: u32 = 1023;
+/// Maximum valid interrupt ID (GICv2: 0-1019 valid, 1020-1022 reserved, 1023 spurious)
+const MAX_VALID_IRQ: u32 = 1019;
 
 /// Whether GIC has been initialized
 static GIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -167,6 +169,13 @@ impl Gicv2 {
             gicd_write(GICD_ICPENDR + (i as usize * 4), 0xFFFF_FFFF);
         }
 
+        // Configure all interrupts as Group 1 (delivered as IRQ, not FIQ)
+        // IGROUPR: 1 bit per IRQ, 1 = Group 1 (IRQ), 0 = Group 0 (FIQ)
+        // In non-secure world (where QEMU runs), Group 1 = IRQ, Group 0 = FIQ
+        for i in 0..num_regs {
+            gicd_write(GICD_IGROUPR + (i as usize * 4), 0xFFFF_FFFF);
+        }
+
         // Set default priority for all interrupts
         let num_priority_regs = (num_irqs + 3) / 4;
         let priority_val = (DEFAULT_PRIORITY as u32) * 0x0101_0101; // Same priority in all 4 bytes
@@ -191,8 +200,10 @@ impl Gicv2 {
             gicd_write(GICD_ICFGR + (i as usize * 4), 0); // All level-triggered
         }
 
-        // Enable distributor
-        gicd_write(GICD_CTLR, 1);
+        // Enable distributor with both Group 0 and Group 1
+        // Bit 0: EnableGrp0 (Group 0 forwarding)
+        // Bit 1: EnableGrp1 (Group 1 forwarding)
+        gicd_write(GICD_CTLR, 0x3);
     }
 
     /// Initialize the GIC CPU interface
@@ -203,8 +214,14 @@ impl Gicv2 {
         // No preemption (binary point = 7 means all priority bits used for priority, none for subpriority)
         gicc_write(GICC_BPR, 7);
 
-        // Enable CPU interface
-        gicc_write(GICC_CTLR, 1);
+        // Enable CPU interface with both Group 0 and Group 1
+        // Bit 0: EnableGrp0 (enable signaling of Group 0 interrupts)
+        // Bit 1: EnableGrp1 (enable signaling of Group 1 interrupts)
+        // Bit 2: AckCtl - When set, GICC_IAR can acknowledge both groups (important for non-secure)
+        // Bit 3: FIQEn - When set, Group 0 interrupts are signaled as FIQ (we want IRQ for both)
+        // Since we configured all interrupts as Group 1 in init_distributor(),
+        // we need bit 1 set. Also set AckCtl to allow acknowledging any pending interrupt.
+        gicc_write(GICC_CTLR, 0x7);  // EnableGrp0 | EnableGrp1 | AckCtl
     }
 }
 
@@ -259,13 +276,18 @@ impl InterruptController for Gicv2 {
 
 /// Acknowledge the current interrupt and get its ID
 ///
-/// Returns the interrupt ID, or None if spurious.
+/// Returns the interrupt ID, or None if spurious or invalid.
+/// GICv2 interrupt ID ranges:
+/// - 0-1019: Valid interrupts (SGI 0-15, PPI 16-31, SPI 32-1019)
+/// - 1020-1022: Reserved (treat as spurious)
+/// - 1023: Spurious interrupt (no pending interrupt when IAR was read)
 #[inline]
 pub fn acknowledge_irq() -> Option<u32> {
     let iar = gicc_read(GICC_IAR);
     let irq_id = iar & 0x3FF; // Bits 9:0 are the interrupt ID
 
-    if irq_id == SPURIOUS_IRQ {
+    // Filter out spurious (1023) and reserved/invalid IDs (1020-1022)
+    if irq_id > MAX_VALID_IRQ {
         None
     } else {
         Some(irq_id)
@@ -320,4 +342,48 @@ pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
 #[inline]
 pub fn is_initialized() -> bool {
     GIC_INITIALIZED.load(Ordering::Acquire)
+}
+
+/// Debug function to dump GIC state for a specific IRQ
+///
+/// Useful for diagnosing interrupt routing issues.
+pub fn dump_irq_state(irq: u32) {
+    let reg_index = irq / 32;
+    let bit_index = irq % 32;
+
+    // Read enable state
+    let isenabler = gicd_read(GICD_ISENABLER + (reg_index as usize * 4));
+    let enabled = (isenabler & (1 << bit_index)) != 0;
+
+    // Read group state
+    let igroupr = gicd_read(GICD_IGROUPR + (reg_index as usize * 4));
+    let group1 = (igroupr & (1 << bit_index)) != 0;
+
+    // Read pending state
+    let ispendr = gicd_read(GICD_ISPENDR + (reg_index as usize * 4));
+    let pending = (ispendr & (1 << bit_index)) != 0;
+
+    // Read priority (4 IRQs per register, 8 bits each)
+    let priority_reg_index = irq / 4;
+    let priority_byte_index = irq % 4;
+    let ipriorityr = gicd_read(GICD_IPRIORITYR + (priority_reg_index as usize * 4));
+    let priority = ((ipriorityr >> (priority_byte_index * 8)) & 0xFF) as u8;
+
+    // Read target (4 IRQs per register, 8 bits each)
+    let target_reg_index = irq / 4;
+    let target_byte_index = irq % 4;
+    let itargetsr = gicd_read(GICD_ITARGETSR + (target_reg_index as usize * 4));
+    let target = ((itargetsr >> (target_byte_index * 8)) & 0xFF) as u8;
+
+    // Read distributor control
+    let gicd_ctlr = gicd_read(GICD_CTLR);
+
+    // Read CPU interface control and priority mask
+    let gicc_ctlr = gicc_read(GICC_CTLR);
+    let gicc_pmr = gicc_read(GICC_PMR);
+
+    crate::serial_println!("[gic] IRQ {} state:", irq);
+    crate::serial_println!("  enabled={}, group1={}, pending={}", enabled, group1, pending);
+    crate::serial_println!("  priority={:#x}, target={:#x}", priority, target);
+    crate::serial_println!("  GICD_CTLR={:#x}, GICC_CTLR={:#x}, GICC_PMR={:#x}", gicd_ctlr, gicc_ctlr, gicc_pmr);
 }

@@ -69,6 +69,28 @@ impl Scheduler {
         );
     }
 
+    /// Add a thread as the current running thread without scheduling.
+    ///
+    /// Used when manually starting the first userspace thread (init process).
+    /// The thread is added to the scheduler's thread list and marked as current,
+    /// but NOT added to the ready queue. This avoids the scheduler trying to
+    /// reschedule when timer interrupts fire.
+    #[allow(dead_code)]
+    pub fn add_thread_as_current(&mut self, mut thread: Box<Thread>) {
+        let thread_id = thread.id();
+        let thread_name = thread.name.clone();
+        // Mark thread as running
+        thread.state = ThreadState::Running;
+        thread.has_started = true;
+        self.threads.push(thread);
+        self.current_thread = Some(thread_id);
+        log_serial_println!(
+            "Added thread {} '{}' as current (not in ready_queue)",
+            thread_id,
+            thread_name,
+        );
+    }
+
     /// Get a mutable thread by ID
     pub fn get_thread_mut(&mut self, id: u64) -> Option<&mut Thread> {
         self.threads
@@ -87,6 +109,18 @@ impl Scheduler {
     pub fn current_thread_mut(&mut self) -> Option<&mut Thread> {
         self.current_thread
             .and_then(move |id| self.get_thread_mut(id))
+    }
+
+    /// Get the current thread ID
+    #[allow(dead_code)]
+    pub fn current_thread_id_inner(&self) -> Option<u64> {
+        self.current_thread
+    }
+
+    /// Get the idle thread ID
+    #[allow(dead_code)]
+    pub fn idle_thread_id(&self) -> u64 {
+        self.idle_thread
     }
 
     /// Schedule the next thread to run
@@ -162,12 +196,36 @@ impl Scheduler {
             // This is important for kthreads that yield while waiting for the idle
             // thread (which runs tests/main logic) to set a flag.
             if next_thread_id != self.idle_thread {
+                // On ARM64, don't switch userspace threads to idle. Idle runs in kernel
+                // mode (EL1), and ARM64 only preempts when returning to userspace (from_el0=true).
+                // If we switched a userspace thread to idle, idle would never be preempted
+                // back to the userspace thread because timer fires with from_el0=false.
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let is_userspace = self
+                        .get_thread(next_thread_id)
+                        .map(|t| t.privilege == super::thread::ThreadPrivilege::User)
+                        .unwrap_or(false);
+                    if is_userspace {
+                        // Userspace thread is alone - keep running it, don't switch to idle
+                        if debug_log {
+                            log_serial_println!(
+                                "Thread {} is userspace and alone, continuing (no idle switch)",
+                                next_thread_id
+                            );
+                        }
+                        return None;
+                    }
+                }
                 self.ready_queue.push_back(next_thread_id);
                 next_thread_id = self.idle_thread;
                 // CRITICAL: Set NEED_RESCHED so the next timer interrupt will
                 // switch back to the deferred thread. Without this, idle would
                 // spin in HLT for an entire quantum (50ms) before rescheduling.
+                #[cfg(target_arch = "x86_64")]
                 crate::per_cpu::set_need_resched(true);
+                #[cfg(target_arch = "aarch64")]
+                crate::per_cpu_aarch64::set_need_resched(true);
                 if debug_log {
                     log_serial_println!(
                         "Thread {} is alone (non-idle), switching to idle {}",
@@ -507,6 +565,25 @@ pub fn spawn(thread: Box<Thread>) {
     });
 }
 
+/// Add a thread as the current running thread without scheduling.
+///
+/// Used when manually starting the first userspace thread (init process).
+/// The thread is added to the scheduler's thread list and marked as current,
+/// but NOT added to the ready queue and need_resched is NOT set.
+/// This allows the thread to run without the scheduler trying to preempt it.
+#[allow(dead_code)]
+pub fn spawn_as_current(thread: Box<Thread>) {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.add_thread_as_current(thread);
+            // NOTE: Do NOT set need_resched - we want this thread to run
+        } else {
+            panic!("Scheduler not initialized");
+        }
+    });
+}
+
 /// Perform scheduling and return threads to switch between
 pub fn schedule() -> Option<(u64, u64)> {
     // Check if interrupts are already disabled (i.e., we're in interrupt context)
@@ -577,6 +654,25 @@ pub fn try_schedule() -> Option<(u64, u64)> {
     None
 }
 
+/// Check if the current thread is the idle thread (safe to call from IRQ context)
+/// Returns None if the scheduler lock can't be acquired (to avoid deadlock)
+#[allow(dead_code)]
+pub fn is_current_idle_thread() -> Option<bool> {
+    // Try to get the lock without blocking - if we can't, assume not idle
+    // to be safe. This prevents deadlock when timer fires during scheduler ops.
+    if let Some(scheduler_lock) = SCHEDULER.try_lock() {
+        if let Some(scheduler) = scheduler_lock.as_ref() {
+            return Some(
+                scheduler
+                    .current_thread_id_inner()
+                    .map(|id| id == scheduler.idle_thread_id())
+                    .unwrap_or(false),
+            );
+        }
+    }
+    None
+}
+
 /// Get access to the scheduler
 /// This function disables interrupts to prevent deadlock with timer interrupt
 pub fn with_scheduler<F, R>(f: F) -> Option<R>
@@ -615,6 +711,7 @@ pub fn current_thread_id() -> Option<u64> {
 /// Set the current thread ID
 /// Used during boot to establish the initial userspace thread as current
 /// before jumping to userspace.
+#[allow(dead_code)]
 pub fn set_current_thread(thread_id: u64) {
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();

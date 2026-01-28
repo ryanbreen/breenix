@@ -9,6 +9,17 @@ use super::SyscallResult;
 use alloc::vec::Vec;
 use crate::syscall::userptr::validate_user_buffer;
 
+/// Raw serial debug output - write a string without locks or allocations.
+/// Safe to call from any context including interrupt handlers and syscalls.
+#[inline(always)]
+fn raw_serial_str(s: &[u8]) {
+    let base = crate::memory::physical_memory_offset().as_u64();
+    let addr = (base + 0x0900_0000) as *mut u32;
+    for &c in s {
+        unsafe { core::ptr::write_volatile(addr, c as u32); }
+    }
+}
+
 /// Copy a byte buffer from userspace.
 fn copy_from_user_bytes(ptr: u64, len: usize) -> Result<Vec<u8>, u64> {
     if len == 0 {
@@ -76,6 +87,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         StdIo,
         Pipe { pipe_buffer: alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>, is_nonblocking: bool },
         UnixStream { socket: alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixStreamSocket>> },
+        PtyMaster(u32),
+        PtySlave(u32),
         Ebadf,
         Enotconn,
         Eopnotsupp,
@@ -109,6 +122,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::UnixStream(socket) => WriteOperation::UnixStream { socket: socket.clone() },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn,
             FdKind::UnixListener(_) => WriteOperation::Enotconn,
+            FdKind::PtyMaster(pty_num) => WriteOperation::PtyMaster(*pty_num),
+            FdKind::PtySlave(pty_num) => WriteOperation::PtySlave(*pty_num),
         }
     };
 
@@ -130,6 +145,28 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             match sock.write(&buffer) {
                 Ok(n) => SyscallResult::Ok(n as u64),
                 Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        WriteOperation::PtyMaster(pty_num) => {
+            // Write to PTY master - data goes to slave through line discipline
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                match pair.master_write(&buffer) {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
+            }
+        }
+        WriteOperation::PtySlave(pty_num) => {
+            // Write to PTY slave - data goes to master
+            if let Some(pair) = crate::tty::pty::get(pty_num) {
+                match pair.slave_write(&buffer) {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
             }
         }
     }
@@ -169,6 +206,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
+            // Debug marker: entering stdin read loop
+            raw_serial_str(b"[STDIN_READ]");
+
             loop {
                 crate::ipc::stdin::register_blocked_reader(thread_id);
 
@@ -185,13 +225,61 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Ok(n as u64);
                     }
                     Err(11) => {
-                        // ARM64: no scheduler unblock path for stdin yet; wait for data.
-                        loop {
-                            if crate::ipc::stdin::has_data() {
-                                break;
+                        // EAGAIN - no data available, need to block
+                        // Debug marker: blocking for input
+                        raw_serial_str(b"[STDIN_BLOCK]");
+
+                        // Block the current thread AND set blocked_in_syscall flag.
+                        // CRITICAL: Setting blocked_in_syscall is essential because:
+                        // 1. The thread will enter a kernel-mode WFI loop below
+                        // 2. If a context switch happens while in WFI, the scheduler sees
+                        //    from_userspace=false (kernel mode) but blocked_in_syscall tells
+                        //    it to save/restore kernel context, not userspace context
+                        // 3. Without this flag, no context is saved when switching away,
+                        //    and stale userspace context is restored when switching back,
+                        //    causing ELR_EL1 corruption (kernel address in userspace context)
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.block_current();
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = true;
                             }
-                            unsafe { core::arch::asm!("wfi"); }
+                        });
+
+                        // CRITICAL: Re-enable preemption before entering blocking loop!
+                        // The syscall handler called preempt_disable() at entry, but we need
+                        // to allow timer interrupts to schedule other threads while we're blocked.
+                        crate::per_cpu::preempt_enable();
+
+                        // WFI loop - wait for interrupt which will either:
+                        // 1. Wake us via wake_blocked_readers_try() when keyboard data arrives
+                        // 2. Context switch to another thread via timer interrupt
+                        loop {
+                            crate::task::scheduler::yield_current();
+                            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+
+                            // Check if we've been unblocked (thread state changed from Blocked)
+                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                                sched.current_thread()
+                                    .map(|t| t.state == crate::task::thread::ThreadState::Blocked)
+                                    .unwrap_or(false)
+                            }).unwrap_or(false);
+
+                            if !still_blocked {
+                                // Debug marker: woken from block
+                                raw_serial_str(b"[STDIN_WAKE]");
+                                break; // We've been woken, try reading again
+                            }
                         }
+
+                        // Re-disable preemption before continuing to balance syscall's preempt_disable
+                        crate::per_cpu::preempt_disable();
+
+                        // Clear blocked_in_syscall now that we're resuming normal syscall execution
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                            }
+                        });
                     }
                     Err(e) => {
                         crate::ipc::stdin::unregister_blocked_reader(thread_id);
@@ -229,6 +317,44 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     SyscallResult::Ok(n as u64)
                 }
                 Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        FdKind::PtyMaster(pty_num) => {
+            // Read from PTY master - read data written by slave
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                let mut buf = alloc::vec![0u8; count as usize];
+                match pair.master_read(&mut buf) {
+                    Ok(n) => {
+                        if n > 0 {
+                            if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
+                                return SyscallResult::Err(14);
+                            }
+                        }
+                        SyscallResult::Ok(n as u64)
+                    }
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
+            }
+        }
+        FdKind::PtySlave(pty_num) => {
+            // Read from PTY slave - read processed data from line discipline
+            if let Some(pair) = crate::tty::pty::get(*pty_num) {
+                let mut buf = alloc::vec![0u8; count as usize];
+                match pair.slave_read(&mut buf) {
+                    Ok(n) => {
+                        if n > 0 {
+                            if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
+                                return SyscallResult::Err(14);
+                            }
+                        }
+                        SyscallResult::Ok(n as u64)
+                    }
+                    Err(e) => SyscallResult::Err(e as u64),
+                }
+            } else {
+                SyscallResult::Err(5) // EIO
             }
         }
     }

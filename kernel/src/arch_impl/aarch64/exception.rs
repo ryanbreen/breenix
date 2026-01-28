@@ -276,12 +276,10 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> Syscall
 /// PL011 UART IRQ number (SPI 1, which is IRQ 33)
 const UART0_IRQ: u32 = 33;
 
-/// Raw serial write - no locks, for use in interrupt handlers
+/// Raw serial write - write a string without locks, for use in interrupt handlers
 #[inline(always)]
-fn raw_serial_char(c: u8) {
-    let base = crate::memory::physical_memory_offset().as_u64();
-    let addr = (base + 0x0900_0000) as *mut u32;
-    unsafe { core::ptr::write_volatile(addr, c as u32); }
+fn raw_serial_str(s: &[u8]) {
+    crate::serial_aarch64::raw_serial_str(s);
 }
 
 /// Handle IRQ interrupts
@@ -292,7 +290,6 @@ fn raw_serial_char(c: u8) {
 pub extern "C" fn handle_irq() {
     // Acknowledge the interrupt from GIC
     if let Some(irq_id) = gic::acknowledge_irq() {
-
         // Handle the interrupt based on ID
         match irq_id {
             // Virtual timer interrupt (PPI 27)
@@ -312,19 +309,17 @@ pub extern "C" fn handle_irq() {
             }
 
             // SGIs (0-15) - Inter-processor interrupts
-            0..=15 => {
-                crate::serial_println!("[irq] SGI {} received", irq_id);
-            }
+            0..=15 => {}
 
             // PPIs (16-31) - Private peripheral interrupts (excluding timer)
-            16..=31 => {
-                crate::serial_println!("[irq] PPI {} received", irq_id);
-            }
+            16..=31 => {}
 
-            // SPIs (32+) - Shared peripheral interrupts
-            _ => {
-                crate::serial_println!("[irq] SPI {} received", irq_id);
-            }
+            // SPIs (32-1019) - Shared peripheral interrupts
+            // Note: No logging here - interrupt handlers must be < 1000 cycles
+            32..=1019 => {}
+
+            // Should not happen - GIC filters invalid IDs (1020+)
+            _ => {}
         }
 
         // Signal end of interrupt
@@ -361,9 +356,6 @@ fn check_need_resched_on_irq_exit() {
         return;
     }
 
-    // Debug marker: need_resched is set
-    raw_serial_char(b'R');
-
     // The actual context switch will be performed by check_need_resched_and_switch_arm64
     // which is called from the exception return path with access to the exception frame.
     // Here we just signal that a reschedule is pending.
@@ -378,40 +370,16 @@ fn check_need_resched_on_irq_exit() {
 
 /// Handle UART receive interrupt
 ///
-/// Read all available bytes from the UART and route them to the terminal.
+/// Read all available bytes from the UART and push to stdin buffer.
+/// Echo is handled by the consumer (kernel shell or userspace tty driver).
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
-    use crate::graphics::terminal_manager;
-
-    // Debug marker: 'U' for UART interrupt entry
-    raw_serial_char(b'U');
 
     // Read all available bytes from the UART FIFO
     while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Debug: echo the byte we received
-        raw_serial_char(b'[');
-        raw_serial_char(byte);
-        raw_serial_char(b']');
-
-        // Handle special keys
-        let c = match byte {
-            // Backspace
-            0x7F | 0x08 => '\x08',
-            // Enter
-            0x0D => '\n',
-            // Tab
-            0x09 => '\t',
-            // Escape sequences start with 0x1B - for now, ignore
-            0x1B => continue,
-            // Regular ASCII
-            b if b >= 0x20 && b < 0x7F => byte as char,
-            // Control characters (Ctrl+C = 0x03, Ctrl+D = 0x04, etc.)
-            b if b < 0x20 => byte as char,
-            _ => continue,
-        };
-
-        // Write to the shell terminal (handles locking internally)
-        terminal_manager::write_char_to_shell(c);
+        // Push to stdin buffer for kernel shell or userspace read() syscall
+        // This wakes any blocked readers waiting for input
+        crate::ipc::stdin::push_byte_from_irq(byte);
     }
 
     // Clear the interrupt

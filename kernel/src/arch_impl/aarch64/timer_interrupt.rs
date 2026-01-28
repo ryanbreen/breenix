@@ -15,7 +15,7 @@
 //! 5. On exception return, check need_resched and perform context switch if needed
 
 use crate::task::scheduler;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Virtual timer interrupt ID (PPI 27)
 pub const TIMER_IRQ: u32 = 27;
@@ -23,9 +23,16 @@ pub const TIMER_IRQ: u32 = 27;
 /// Time quantum in timer ticks (10 ticks = ~50ms at 200Hz)
 const TIME_QUANTUM: u32 = 10;
 
-/// Timer frequency for scheduling (target: 200 Hz = 5ms per tick)
-/// This is calculated based on CNTFRQ and desired interrupt rate
-const TIMER_TICKS_PER_INTERRUPT: u64 = 120_000; // For 24MHz clock = ~5ms
+/// Default timer ticks per interrupt (fallback for 24MHz clock)
+/// This value is overwritten at init() with the dynamically calculated value
+const DEFAULT_TICKS_PER_INTERRUPT: u64 = 120_000; // For 24MHz clock = ~5ms
+
+/// Target timer frequency in Hz (200 Hz = 5ms per interrupt)
+const TARGET_TIMER_HZ: u64 = 200;
+
+/// Dynamically calculated ticks per interrupt based on actual timer frequency
+/// Set during init() and used by the interrupt handler for consistent timing
+static TICKS_PER_INTERRUPT: AtomicU64 = AtomicU64::new(DEFAULT_TICKS_PER_INTERRUPT);
 
 /// Current thread's remaining time quantum
 static CURRENT_QUANTUM: AtomicU32 = AtomicU32::new(TIME_QUANTUM);
@@ -33,6 +40,14 @@ static CURRENT_QUANTUM: AtomicU32 = AtomicU32::new(TIME_QUANTUM);
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+
+/// Total timer interrupt count (for frequency verification)
+static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Interval for printing timer count (every N interrupts for frequency verification)
+/// Printing on every interrupt adds overhead; reduce frequency for more accurate measurement
+/// At 200 Hz: print interval 200 = print once per second
+const TIMER_COUNT_PRINT_INTERVAL: u64 = 200;
 
 /// Initialize the timer interrupt system
 ///
@@ -42,20 +57,25 @@ pub fn init() {
         return;
     }
 
-    // Get the timer frequency
+    // Get the timer frequency from hardware
     let freq = super::timer::frequency_hz();
     log::info!("ARM64 timer interrupt init: frequency = {} Hz", freq);
 
-    // Calculate ticks per interrupt for ~200 Hz scheduling rate
+    // Calculate ticks per interrupt for target Hz scheduling rate
+    // For 62.5 MHz clock: 62_500_000 / 200 = 312_500 ticks
     // For 24 MHz clock: 24_000_000 / 200 = 120_000 ticks
     let ticks_per_interrupt = if freq > 0 {
-        freq / 200 // 200 Hz = 5ms intervals
+        freq / TARGET_TIMER_HZ
     } else {
-        TIMER_TICKS_PER_INTERRUPT
+        DEFAULT_TICKS_PER_INTERRUPT
     };
 
-    log::info!(
-        "Timer configured for ~200 Hz ({} ticks per interrupt)",
+    // Store the calculated value for use in the interrupt handler
+    TICKS_PER_INTERRUPT.store(ticks_per_interrupt, Ordering::Release);
+
+    crate::serial_println!(
+        "[timer] Timer configured for ~{} Hz ({} ticks per interrupt)",
+        TARGET_TIMER_HZ,
         ticks_per_interrupt
     );
 
@@ -100,13 +120,18 @@ pub extern "C" fn timer_interrupt_handler() {
     // Enter IRQ context (increment HARDIRQ count)
     crate::per_cpu_aarch64::irq_enter();
 
-    // Re-arm the timer for the next interrupt
-    let freq = super::timer::frequency_hz();
-    let ticks_per_interrupt = if freq > 0 { freq / 200 } else { TIMER_TICKS_PER_INTERRUPT };
-    arm_timer(ticks_per_interrupt);
+    // Re-arm the timer for the next interrupt using the dynamically calculated value
+    // This ensures consistent timing regardless of the actual timer frequency
+    // (62.5 MHz on cortex-a72, 1 GHz on 'max' CPU, 24 MHz on some platforms)
+    arm_timer(TICKS_PER_INTERRUPT.load(Ordering::Relaxed));
 
     // Update global time (single atomic operation)
     crate::time::timer_interrupt();
+
+    // Increment timer interrupt counter (used for debugging when needed)
+    let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    // Note: [TIMER_COUNT:N] output disabled - interrupt handlers must be minimal
+    // To enable: uncomment and rebuild with TIMER_COUNT_PRINT_INTERVAL check
 
     // Poll VirtIO keyboard and push to stdin
     // VirtIO MMIO devices don't generate interrupts on ARM64 virt machine,
@@ -123,6 +148,41 @@ pub extern "C" fn timer_interrupt_handler() {
 
     // Exit IRQ context (decrement HARDIRQ count)
     crate::per_cpu_aarch64::irq_exit();
+}
+
+/// Raw serial output - no locks, single char for debugging (used by print_timer_count)
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    crate::serial_aarch64::raw_serial_char(c);
+}
+
+/// Raw serial output - write a string without locks for debugging
+#[inline(always)]
+fn raw_serial_str(s: &[u8]) {
+    crate::serial_aarch64::raw_serial_str(s);
+}
+
+/// Print a decimal number using raw serial output
+/// Used by timer interrupt handler to output [TIMER_COUNT:N] markers
+fn print_timer_count_decimal(count: u64) {
+    if count == 0 {
+        raw_serial_char(b'0');
+    } else {
+        // Convert to decimal digits (max u64 is 20 digits)
+        let mut digits = [0u8; 20];
+        let mut n = count;
+        let mut i = 0;
+        while n > 0 {
+            digits[i] = (n % 10) as u8 + b'0';
+            n /= 10;
+            i += 1;
+        }
+        // Print in reverse order
+        while i > 0 {
+            i -= 1;
+            raw_serial_char(digits[i]);
+        }
+    }
 }
 
 /// Poll VirtIO keyboard and push characters to stdin buffer
@@ -154,6 +214,8 @@ fn poll_keyboard_to_stdin() {
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = input_mmio::keycode_to_char(keycode, shift) {
+                    // Debug marker: VirtIO key event -> stdin
+                    raw_serial_str(b"[VIRTIO_KEY]");
                     // Push to stdin buffer so userspace can read it
                     crate::ipc::stdin::push_byte_from_irq(c as u8);
                 }

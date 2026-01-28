@@ -128,36 +128,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 /// Called from assembly after syscall handler returns.
 /// This is the ARM64 equivalent of `check_need_resched_and_switch`.
 #[no_mangle]
-pub extern "C" fn check_need_resched_and_switch_aarch64(_frame: &mut Aarch64ExceptionFrame) {
-    // Check if we should reschedule
-    if !Aarch64PerCpu::need_resched() {
-        return;
-    }
-
-    // Check preempt count (excluding PREEMPT_ACTIVE bit)
-    let preempt_count = Aarch64PerCpu::preempt_count();
-    let preempt_value = preempt_count & 0x0FFFFFFF;
-
-    if preempt_value > 0 {
-        // Preemption disabled - don't context switch
-        return;
-    }
-
-    // Check PREEMPT_ACTIVE flag
-    let preempt_active = (preempt_count & 0x10000000) != 0;
-    if preempt_active {
-        // In syscall return path - don't context switch
-        return;
-    }
-
-    // Clear need_resched and trigger reschedule
-    unsafe {
-        Aarch64PerCpu::set_need_resched(false);
-    }
-
-    // TODO: Implement actual context switch for ARM64
-    // This requires the scheduler to be ported to support ARM64
-    // crate::task::scheduler::schedule();
+pub extern "C" fn check_need_resched_and_switch_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    crate::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64(frame, true);
 }
 
 /// Trace function called before ERET to EL0 (for debugging).

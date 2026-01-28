@@ -37,6 +37,7 @@ mod features {
 pub const MAX_PACKET_SIZE: usize = 1514;
 
 /// VirtIO network header - prepended to each packet
+/// For legacy mode without MRG_RXBUF, this is 10 bytes (no num_buffers field)
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct VirtioNetHdr {
@@ -46,7 +47,7 @@ struct VirtioNetHdr {
     gso_size: u16,
     csum_start: u16,
     csum_offset: u16,
-    num_buffers: u16,  // Only valid when VIRTIO_NET_F_MRG_RXBUF is negotiated
+    // Note: num_buffers is NOT included for legacy mode without MRG_RXBUF
 }
 
 /// Virtqueue descriptor
@@ -137,24 +138,24 @@ static mut TX_QUEUE: TxQueueMemory = TxQueueMemory {
 
 // RX/TX buffers - need to initialize each element separately due to size
 static mut RX_BUFFER_0: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0, num_buffers: 0 },
+    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut RX_BUFFER_1: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0, num_buffers: 0 },
+    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut RX_BUFFER_2: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0, num_buffers: 0 },
+    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
     data: [0; MAX_PACKET_SIZE],
 };
 static mut RX_BUFFER_3: RxBuffer = RxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0, num_buffers: 0 },
+    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
     data: [0; MAX_PACKET_SIZE],
 };
 
 static mut TX_BUFFER: TxBuffer = TxBuffer {
-    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0, num_buffers: 0 },
+    hdr: VirtioNetHdr { flags: 0, gso_type: 0, hdr_len: 0, gso_size: 0, csum_start: 0, csum_offset: 0 },
     data: [0; MAX_PACKET_SIZE],
 };
 
@@ -201,8 +202,8 @@ fn init_device(device: &mut VirtioMmioDevice, base: u64) -> Result<(), &'static 
     }
 
     // Initialize the device (reset, ack, driver, features)
-    // Request MAC feature
-    device.init(features::MAC)?;
+    // Request MAC feature and STATUS for link awareness
+    device.init(features::MAC | features::STATUS)?;
 
     // Read MAC address from config space
     // VirtIO network config: MAC at offset 0 (6 bytes)
@@ -365,11 +366,12 @@ fn post_rx_buffers() -> Result<(), &'static str> {
         // Post 4 RX buffers
         for i in 0..4 {
             let buf_phys = rx_buffer_phys(i);
+            let buf_len = (core::mem::size_of::<VirtioNetHdr>() + MAX_PACKET_SIZE) as u32;
 
             // Single descriptor for entire buffer (header + data)
             (*queue_ptr).desc[i] = VirtqDesc {
                 addr: buf_phys,
-                len: (core::mem::size_of::<VirtioNetHdr>() + MAX_PACKET_SIZE) as u32,
+                len: buf_len,
                 flags: DESC_F_WRITE,  // Device writes to this
                 next: 0,
             };
@@ -413,7 +415,6 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
             gso_size: 0,
             csum_start: 0,
             csum_offset: 0,
-            num_buffers: 0,
         };
         (&mut (*tx_ptr).data)[..data.len()].copy_from_slice(data);
     }
@@ -456,6 +457,7 @@ pub fn transmit(data: &[u8]) -> Result<(), &'static str> {
         }
         timeout -= 1;
         if timeout == 0 {
+            crate::serial_println!("[virtio-net] TX timeout!");
             return Err("TX timeout");
         }
         core::hint::spin_loop();
@@ -473,7 +475,20 @@ pub fn receive() -> Option<&'static [u8]> {
         (*ptr).as_mut()?
     };
 
+    // Check and clear interrupt status (VirtIO requires this)
+    let device = VirtioMmioDevice::probe(state.base)?;
+    let int_status = device.read_interrupt_status();
+    if int_status != 0 {
+        device.ack_interrupt(int_status);
+    }
+
+    // ARM64 requires DSB to ensure device writes are visible
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
     fence(Ordering::SeqCst);
+
     let used_idx = unsafe {
         let ptr = &raw const RX_QUEUE;
         read_volatile(&(*ptr).used.idx)

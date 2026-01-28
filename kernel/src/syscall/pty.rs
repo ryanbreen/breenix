@@ -2,22 +2,15 @@
 //!
 //! Implements the POSIX PTY syscalls: posix_openpt, grantpt, unlockpt, ptsname
 
-#[cfg(target_arch = "x86_64")]
 use super::errno::ENOTTY;
-#[cfg(target_arch = "x86_64")]
 use super::userptr::validate_user_buffer;
 use super::SyscallResult;
-#[cfg(target_arch = "x86_64")]
 use crate::ipc::fd::{flags, FileDescriptor, FdKind};
-#[cfg(target_arch = "x86_64")]
 use crate::process::manager;
-#[cfg(target_arch = "x86_64")]
 use crate::tty::pty;
 
 /// Open flags
-#[cfg(target_arch = "x86_64")]
 const O_RDWR: u32 = 0x02;
-#[cfg(target_arch = "x86_64")]
 const O_CLOEXEC: u32 = 0x80000;
 
 /// sys_posix_openpt - Open a new PTY master device
@@ -35,7 +28,6 @@ const O_CLOEXEC: u32 = 0x80000;
 ///   - EMFILE (24): Too many open files
 ///   - ENOSPC (28): No PTY slots available
 ///   - ESRCH (3): Process not found
-#[cfg(target_arch = "x86_64")]
 pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
     let flags_u32 = flags as u32;
 
@@ -128,7 +120,6 @@ pub fn sys_posix_openpt(flags: u64) -> SyscallResult {
 ///   - EBADF (9): Bad file descriptor
 ///   - ENOTTY (25): fd is not a PTY master
 ///   - ESRCH (3): Process not found
-#[cfg(target_arch = "x86_64")]
 pub fn sys_grantpt(fd: u64) -> SyscallResult {
     let fd_i32 = fd as i32;
 
@@ -193,7 +184,6 @@ pub fn sys_grantpt(fd: u64) -> SyscallResult {
 ///   - ENOTTY (25): fd is not a PTY master
 ///   - EIO (5): PTY pair not found (internal error)
 ///   - ESRCH (3): Process not found
-#[cfg(target_arch = "x86_64")]
 pub fn sys_unlockpt(fd: u64) -> SyscallResult {
     let fd_i32 = fd as i32;
 
@@ -270,7 +260,6 @@ pub fn sys_unlockpt(fd: u64) -> SyscallResult {
 ///   - EFAULT (14): Invalid buffer pointer
 ///   - EIO (5): PTY pair not found (internal error)
 ///   - ESRCH (3): Process not found
-#[cfg(target_arch = "x86_64")]
 pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
     let fd_i32 = fd as i32;
 
@@ -367,24 +356,4 @@ pub fn sys_ptsname(fd: u64, buf: u64, buflen: u64) -> SyscallResult {
             SyscallResult::Err(ENOTTY as u64)
         }
     }
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn sys_posix_openpt(_flags: u64) -> SyscallResult {
-    SyscallResult::Err(super::errno::ENOSYS as u64)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn sys_grantpt(_fd: u64) -> SyscallResult {
-    SyscallResult::Err(super::errno::ENOSYS as u64)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn sys_unlockpt(_fd: u64) -> SyscallResult {
-    SyscallResult::Err(super::errno::ENOSYS as u64)
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn sys_ptsname(_fd: u64, _buf: u64, _buflen: u64) -> SyscallResult {
-    SyscallResult::Err(super::errno::ENOSYS as u64)
 }

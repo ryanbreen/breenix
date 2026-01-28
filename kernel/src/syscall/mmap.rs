@@ -11,7 +11,7 @@ use crate::syscall::{ErrorCode, SyscallResult};
 
 // Conditional imports based on architecture
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{Page, PhysFrame, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 

@@ -140,6 +140,8 @@ mod test_userspace;
 mod contracts;
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 mod contract_runner;
+#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+mod test_framework;
 
 // Fault test thread function
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
@@ -1483,6 +1485,20 @@ fn kernel_main_continue() -> ! {
     log::info!("Testing clock_gettime syscall implementation...");
     clock_gettime_test::test_clock_gettime();
     log::info!("✅ clock_gettime tests passed");
+
+    // Run parallel boot tests if enabled
+    // These run after scheduler init but before enabling interrupts to avoid
+    // preemption during test execution
+    #[cfg(feature = "boot_tests")]
+    {
+        log::info!("[boot] Running parallel boot tests...");
+        let failures = test_framework::run_all_tests();
+        if failures > 0 {
+            log::error!("[boot] {} test(s) failed!", failures);
+        } else {
+            log::info!("[boot] All boot tests passed!");
+        }
+    }
 
     // Mark kernel initialization complete BEFORE enabling interrupts
     // Once interrupts are enabled, the scheduler will preempt to userspace

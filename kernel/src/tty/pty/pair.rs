@@ -6,7 +6,6 @@
 // - PtyPair methods will be called from PTY syscalls
 #![allow(dead_code)]
 
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::tty::termios::Termios;
 use crate::tty::ioctl::Winsize;
@@ -131,34 +130,24 @@ impl PtyPair {
     }
 
     /// Write data to master (goes to slave's input via line discipline)
+    ///
+    /// Echo output is discarded - in a real PTY, the terminal emulator (master)
+    /// is responsible for displaying what it writes. The echo callback is still
+    /// called for line discipline state tracking, but output isn't sent to the
+    /// slave_to_master buffer to avoid polluting slave->master data flow.
     pub fn master_write(&self, data: &[u8]) -> Result<usize, i32> {
         let mut ldisc = self.ldisc.lock();
-        let termios = self.termios.lock();
-
-        // Collect echo output to send back to master
-        let mut echo_output: Vec<u8> = Vec::new();
+        let _termios = self.termios.lock();
 
         let mut written = 0;
         for &byte in data {
-            // Process through line discipline with echo callback
-            let _signal = ldisc.input_char(byte, &mut |echo_byte| {
-                echo_output.push(echo_byte);
+            // Process through line discipline - echo callback is a no-op
+            // because the master (terminal emulator) handles its own display
+            let _signal = ldisc.input_char(byte, &mut |_echo_byte| {
+                // Discard echo - master handles its own display
             });
-
-            // If echo produced output, send it to slave_to_master (so master can read it)
-            if !echo_output.is_empty() {
-                let mut s2m_buffer = self.slave_to_master.lock();
-                for &echo_byte in &echo_output {
-                    s2m_buffer.write(&[echo_byte]);
-                }
-                echo_output.clear();
-            }
-
             written += 1;
         }
-
-        // Drop termios lock (was used for potential future CR/NL mapping)
-        drop(termios);
 
         Ok(written)
     }

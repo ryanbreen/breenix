@@ -186,11 +186,31 @@ impl CpuContext {
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct CpuContext {
-    // X0 is stored for fork() return value (child gets 0, parent gets child PID)
-    // Normally X0 is caller-saved, but we need it for fork semantics
+    // All general-purpose registers x0-x30
+    // We save ALL registers (not just callee-saved) because:
+    // 1. Fork needs x0 for return value (child gets 0, parent gets child PID)
+    // 2. Kernel thread preemption can happen mid-loop, caller-saved registers
+    //    (x0-x18) may contain loop variables, pointers, etc. that must be preserved.
     pub x0: u64,
-
-    // Callee-saved registers (must be preserved across calls)
+    pub x1: u64,
+    pub x2: u64,
+    pub x3: u64,
+    pub x4: u64,
+    pub x5: u64,
+    pub x6: u64,
+    pub x7: u64,
+    pub x8: u64,
+    pub x9: u64,
+    pub x10: u64,
+    pub x11: u64,
+    pub x12: u64,
+    pub x13: u64,
+    pub x14: u64,
+    pub x15: u64,
+    pub x16: u64,
+    pub x17: u64,
+    pub x18: u64,
+    // Callee-saved registers
     pub x19: u64,
     pub x20: u64,
     pub x21: u64,
@@ -232,6 +252,11 @@ impl CpuContext {
     pub fn new_kernel_thread(entry_point: u64, stack_top: u64) -> Self {
         Self {
             x0: 0,  // Result register (not used for initial context)
+            x1: 0, x2: 0, x3: 0, x4: 0,
+            x5: 0, x6: 0, x7: 0, x8: 0,
+            x9: 0, x10: 0, x11: 0, x12: 0,
+            x13: 0, x14: 0, x15: 0, x16: 0,
+            x17: 0, x18: 0,
             x19: 0, x20: 0, x21: 0, x22: 0,
             x23: 0, x24: 0, x25: 0, x26: 0,
             x27: 0, x28: 0, x29: 0,
@@ -255,6 +280,11 @@ impl CpuContext {
     ) -> Self {
         Self {
             x0: 0,  // Result register (starts at 0 for new threads)
+            x1: 0, x2: 0, x3: 0, x4: 0,
+            x5: 0, x6: 0, x7: 0, x8: 0,
+            x9: 0, x10: 0, x11: 0, x12: 0,
+            x13: 0, x14: 0, x15: 0, x16: 0,
+            x17: 0, x18: 0,
             x19: 0, x20: 0, x21: 0, x22: 0,
             x23: 0, x24: 0, x25: 0, x26: 0,
             x27: 0, x28: 0, x29: 0, x30: 0,
@@ -272,9 +302,26 @@ impl CpuContext {
     /// The exception frame contains all registers as they were at the time of the SVC instruction.
     pub fn from_aarch64_frame(frame: &crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame, user_sp: u64) -> Self {
         Self {
-            // X0 from the exception frame (will be the syscall number at entry, but we need it for fork)
+            // All general-purpose registers from the exception frame
             x0: frame.x0,
-            // Copy callee-saved registers x19-x28 from the exception frame
+            x1: frame.x1,
+            x2: frame.x2,
+            x3: frame.x3,
+            x4: frame.x4,
+            x5: frame.x5,
+            x6: frame.x6,
+            x7: frame.x7,
+            x8: frame.x8,
+            x9: frame.x9,
+            x10: frame.x10,
+            x11: frame.x11,
+            x12: frame.x12,
+            x13: frame.x13,
+            x14: frame.x14,
+            x15: frame.x15,
+            x16: frame.x16,
+            x17: frame.x17,
+            x18: frame.x18,
             x19: frame.x19,
             x20: frame.x20,
             x21: frame.x21,

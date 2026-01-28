@@ -117,12 +117,10 @@ pub enum FdKind {
     DevptsDirectory { position: u64 },
     /// PTY master file descriptor
     /// Allow unused - constructed by posix_openpt syscall in Phase 2
-    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     PtyMaster(u32),
     /// PTY slave file descriptor
     /// Allow unused - constructed when opening /dev/pts/N in Phase 2
-    #[cfg(target_arch = "x86_64")]
     #[allow(dead_code)]
     PtySlave(u32),
     /// Unix stream socket (AF_UNIX, SOCK_STREAM) - for socketpair IPC
@@ -165,9 +163,7 @@ impl core::fmt::Debug for FdKind {
             FdKind::DevfsDirectory { position } => write!(f, "DevfsDirectory(pos={})", position),
             #[cfg(target_arch = "x86_64")]
             FdKind::DevptsDirectory { position } => write!(f, "DevptsDirectory(pos={})", position),
-            #[cfg(target_arch = "x86_64")]
             FdKind::PtyMaster(n) => write!(f, "PtyMaster({})", n),
-            #[cfg(target_arch = "x86_64")]
             FdKind::PtySlave(n) => write!(f, "PtySlave({})", n),
             FdKind::UnixStream(s) => {
                 let sock = s.lock();
@@ -607,7 +603,6 @@ impl Drop for FdTable {
                         // Devpts directory doesn't need cleanup
                         log::debug!("FdTable::drop() - releasing devpts directory fd {}", i);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::PtyMaster(pty_num) => {
                         // PTY master cleanup - decrement refcount, only release when all masters closed
                         if let Some(pair) = crate::tty::pty::get(pty_num) {
@@ -620,7 +615,6 @@ impl Drop for FdTable {
                             }
                         }
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::PtySlave(_pty_num) => {
                         // PTY slave doesn't own the pair, just decrement reference
                         log::debug!("FdTable::drop() - released PTY slave fd {}", i);

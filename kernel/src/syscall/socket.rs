@@ -26,7 +26,7 @@ type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 #[inline(always)]
 fn reset_quantum() {
     #[cfg(target_arch = "x86_64")]
-    reset_quantum();
+    crate::interrupts::timer::reset_quantum();
     // ARM64: No-op for now - timer quantum handled differently
     #[cfg(target_arch = "aarch64")]
     {}

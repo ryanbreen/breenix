@@ -33,21 +33,65 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     use core::arch::asm;
     use kernel::arch_impl::aarch64::context::return_to_userspace;
 
+    // Raw serial character output - no locks, minimal code
+    fn raw_char(c: u8) {
+        // Use constant HHDM base instead of calling physical_memory_offset()
+        // to minimize code paths
+        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+        const PL011_BASE: u64 = 0x0900_0000;
+        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
+        unsafe { core::ptr::write_volatile(addr, c as u32); }
+    }
+
+    // Markers: A=entry, B=got fs, C=resolved, D=read inode, E=read content,
+    // F=ELF ok, G=process created, H=info extracted, I=scheduler reg,
+    // J=percpu set, K=pid set, L=ttbr0 set, M=jumping to userspace
+
+    raw_char(b'A'); // Entry - about to call root_fs()
+    raw_char(b'a'); // Calling root_fs() now
     let fs_guard = kernel::fs::ext2::root_fs();
+    raw_char(b'b'); // root_fs() returned, checking if Some
     let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
+    raw_char(b'B'); // Got fs
 
     let inode_num = fs.resolve_path(path).map_err(|_| "init_shell not found")?;
+    raw_char(b'C'); // Path resolved
+
     let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
+    raw_char(b'D'); // Inode read
 
     if inode.is_dir() {
         return Err("init_shell is a directory");
     }
 
+    raw_char(b'd'); // About to read file content
+
+    // Disable interrupts during large file read to prevent timer overhead
+    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
+
     let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
+    raw_char(b'E'); // File content read
+
+    // Re-enable interrupts
+    raw_char(b'e'); // About to enable interrupts
+
+    // Check timer status before enabling
+    let timer_ctl: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) timer_ctl);
+    }
+    // Print timer status: bit 0 = enabled, bit 1 = masked, bit 2 = pending
+    raw_char(if timer_ctl & 1 != 0 { b'E' } else { b'-' });  // Timer enabled?
+    raw_char(if timer_ctl & 2 != 0 { b'M' } else { b'-' });  // Timer masked?
+    raw_char(if timer_ctl & 4 != 0 { b'P' } else { b'-' });  // Timer pending?
+
+    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+    raw_char(b'f'); // Interrupts enabled
 
     if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
         return Err("init_shell is not a valid ELF file");
     }
+    raw_char(b'F'); // ELF verified
 
     let proc_name = path.rsplit('/').next().unwrap_or(path);
     let pid = {
@@ -58,8 +102,9 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             return Err("process manager not initialized");
         }
     };
+    raw_char(b'G'); // Process created
 
-    let (entry_point, user_stack_top, ttbr0_phys) = {
+    let (entry_point, user_stack_top, ttbr0_phys, main_thread_id, main_thread_clone) = {
         let manager_guard = kernel::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
@@ -76,7 +121,7 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
                     .level_4_frame()
                     .start_address()
                     .as_u64();
-                (entry, stack_top, ttbr0)
+                (entry, stack_top, ttbr0, thread.id, thread.clone())
             } else {
                 return Err("process not found after creation");
             }
@@ -84,10 +129,37 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             return Err("process manager not available");
         }
     };
+    raw_char(b'H'); // Process info extracted
+
+    // Register the userspace thread with the scheduler as the current running thread.
+    kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
+    raw_char(b'I'); // Scheduler registered
+
+    // Set per-CPU pointers to the thread in the scheduler
+    kernel::task::scheduler::with_thread_mut(main_thread_id, |thread| {
+        let thread_ptr = thread as *mut kernel::task::thread::Thread;
+        kernel::per_cpu_aarch64::set_current_thread(thread_ptr);
+        if let Some(kernel_stack_top) = thread.kernel_stack_top {
+            kernel::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top.as_u64());
+        }
+    });
+    raw_char(b'J'); // Per-CPU set
+
+    // Mark the process as running.
+    {
+        let mut manager_guard = kernel::process::manager();
+        if let Some(ref mut manager) = *manager_guard {
+            manager.set_current_pid(pid);
+        }
+    }
+    raw_char(b'K'); // Current PID set
 
     unsafe {
         asm!("msr ttbr0_el1, {0}", "isb", in(reg) ttbr0_phys, options(nostack, preserves_flags));
     }
+    raw_char(b'L'); // TTBR0 set
+
+    raw_char(b'M'); // Jumping to userspace
     unsafe { return_to_userspace(entry_point, user_stack_top); }
 }
 
@@ -178,6 +250,9 @@ pub extern "C" fn kernel_main() -> ! {
     // Enable RX interrupts in PL011
     serial::enable_rx_interrupt();
 
+    // Dump GIC state for UART IRQ to verify configuration
+    kernel::arch_impl::aarch64::gic::dump_irq_state(33);
+
     serial_println!("[boot] UART interrupts enabled");
 
     // Enable interrupts
@@ -190,6 +265,10 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
+
+    // Initialize network stack (after VirtIO network driver is ready)
+    serial_println!("[boot] Initializing network stack...");
+    kernel::net::init();
 
     // Initialize filesystem layer (requires VirtIO block device)
     serial_println!("[boot] Initializing filesystem...");
@@ -246,6 +325,18 @@ pub extern "C" fn kernel_main() -> ! {
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
 
+    // Run parallel boot tests if enabled
+    #[cfg(feature = "boot_tests")]
+    {
+        serial_println!("[boot] Running parallel boot tests...");
+        let failures = kernel::test_framework::run_all_tests();
+        if failures > 0 {
+            serial_println!("[boot] {} test(s) failed!", failures);
+        } else {
+            serial_println!("[boot] All boot tests passed!");
+        }
+    }
+
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Boot Complete!");
@@ -254,10 +345,21 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("Hello from ARM64!");
     serial_println!();
 
+    // Raw char helper for debugging
+    fn boot_raw_char(c: u8) {
+        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+        const PL011_BASE: u64 = 0x0900_0000;
+        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
+        unsafe { core::ptr::write_volatile(addr, c as u32); }
+    }
+
+    boot_raw_char(b'1'); // Before if statement
+
     // Try to load and run userspace init_shell from ext2 or test disk
-    // If a VirtIO block device is present, prefer ext2 (/bin/init_shell), then fall back
     if device_count > 0 {
+        boot_raw_char(b'2'); // Inside if
         serial_println!("[boot] Loading userspace init_shell from ext2...");
+        boot_raw_char(b'3'); // After serial_println
         match run_userspace_from_ext2("/bin/init_shell") {
             Err(e) => {
                 serial_println!("[boot] Failed to load init_shell from ext2: {}", e);
@@ -288,14 +390,28 @@ pub extern "C" fn kernel_main() -> ! {
     // Create shell state for command processing
     let mut shell = ShellState::new();
 
-    // Poll for VirtIO keyboard input
+    // Check if we have graphics (VirtIO GPU) or running in serial-only mode
+    let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER.get().is_some();
+    if !has_graphics {
+        serial_println!("[interactive] Running in serial-only mode (no VirtIO GPU)");
+        serial_println!("[interactive] Type commands at the serial console");
+        serial_println!();
+        serial_print!("breenix> ");
+    }
+
+    // Input sources:
+    // 1. VirtIO keyboard - polled from virtqueue, used with graphics mode
+    // 2. Serial UART - interrupt-driven, bytes pushed to stdin buffer by handle_uart_interrupt()
+    //
+    // The kernel shell reads from both:
+    // - VirtIO events are processed directly via poll_events()
+    // - Serial bytes are read from stdin buffer (same buffer userspace would use)
     let mut shift_pressed = false;
-    let mut tick = 0u64;
 
     loop {
-        tick = tick.wrapping_add(1);
-
-        // Poll VirtIO input device for keyboard events
+        // Poll VirtIO input device for keyboard events (when GPU is available)
+        // VirtIO uses a different mechanism (virtqueues) that requires polling,
+        // unlike UART which generates interrupts.
         if input_mmio::is_initialized() {
             for event in input_mmio::poll_events() {
                 // Only process key events (EV_KEY = 1)
@@ -325,12 +441,32 @@ pub extern "C" fn kernel_main() -> ! {
             }
         }
 
-        // Print a heartbeat every ~50 million iterations to show we're alive
-        if tick % 50_000_000 == 0 {
-            serial_println!(".");
+        // Read any bytes from stdin buffer (populated by UART interrupt handler)
+        // This handles serial input for the kernel shell.
+        let mut stdin_buf = [0u8; 16];
+        if let Ok(n) = kernel::ipc::stdin::read_bytes(&mut stdin_buf) {
+            for i in 0..n {
+                let byte = stdin_buf[i];
+                // Convert byte to char for shell processing
+                let c = match byte {
+                    0x0D => '\n',        // CR -> newline
+                    0x7F | 0x08 => '\x08', // DEL or BS -> backspace
+                    b => b as char,
+                };
+                // Echo to serial (UART interrupt handler doesn't echo for kernel shell)
+                if !has_graphics {
+                    serial_print!("{}", c);
+                }
+                // Process the character in the shell
+                shell.process_char(c);
+            }
         }
 
-        core::hint::spin_loop();
+        // Wait for interrupt instead of busy-spinning to save CPU
+        // WFI will wake on any interrupt (timer, UART RX, VirtIO, etc.)
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 
@@ -359,9 +495,10 @@ fn init_scheduler() {
         ThreadPrivilege::Kernel,
     ));
 
-    // Mark as running with ID 0
+    // Mark as running with ID 0, and has_started=true since boot code is already executing
     idle_task.state = ThreadState::Running;
     idle_task.id = 0;
+    idle_task.has_started = true;  // CRITICAL: Boot thread is already running, not waiting for first entry
 
     // Set up per-CPU current thread pointer
     let idle_task_ptr = &*idle_task as *const _ as *mut Thread;
@@ -371,11 +508,14 @@ fn init_scheduler() {
     scheduler::init_with_current(idle_task);
 }
 
-/// Idle thread function (does nothing - placeholder for context switching)
+/// Idle thread function - waits for interrupts when no work to do
 #[cfg(target_arch = "aarch64")]
 fn idle_thread_fn() {
     loop {
-        core::hint::spin_loop();
+        // WFI saves power by halting until an interrupt arrives
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }
 

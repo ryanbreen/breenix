@@ -265,6 +265,43 @@ pub fn _log_print(args: fmt::Arguments) {
     _print(args);
 }
 
+// =============================================================================
+// Lock-Free Debug Output for Critical Paths
+// =============================================================================
+
+/// Raw serial debug output - single character, no locks, no allocations.
+/// Safe to call from any context including interrupt handlers and syscalls.
+///
+/// This is the ONLY acceptable way to add debug markers to critical paths like:
+/// - Context switch code
+/// - Kernel thread entry
+/// - Workqueue workers
+/// - Interrupt handlers
+/// - Syscall entry/exit
+#[inline(always)]
+pub fn raw_serial_char(c: u8) {
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let addr = (HHDM_BASE + PL011_BASE_PHYS as u64) as *mut u32;
+    unsafe { core::ptr::write_volatile(addr, c as u32); }
+}
+
+/// Raw serial debug output - write a string without locks or allocations.
+/// Safe to call from any context including interrupt handlers and syscalls.
+///
+/// Use this for unique, descriptive debug markers that are easy to grep for:
+/// - `raw_serial_str(b"[STDIN_READ]")` instead of `raw_serial_char(b'r')`
+/// - `raw_serial_str(b"[VIRTIO_KEY]")` instead of `raw_serial_char(b'V')`
+///
+/// This helps identify markers in test output without ambiguity.
+#[inline(always)]
+pub fn raw_serial_str(s: &[u8]) {
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let addr = (HHDM_BASE + PL011_BASE_PHYS as u64) as *mut u32;
+    for &c in s {
+        unsafe { core::ptr::write_volatile(addr, c as u32); }
+    }
+}
+
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {

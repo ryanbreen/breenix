@@ -463,8 +463,90 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn sys_open(_pathname: u64, _flags: u32, _mode: u32) -> SyscallResult {
-    SyscallResult::Err(super::errno::ENOSYS as u64)
+pub fn sys_open(pathname: u64, _flags: u32, _mode: u32) -> SyscallResult {
+    use super::errno::{EFAULT, EMFILE, ENOENT, ENOSYS};
+    use crate::ipc::fd::FdKind;
+
+    // Read the pathname from user memory
+    if pathname == 0 {
+        return SyscallResult::Err(EFAULT as u64);
+    }
+
+    // Read pathname into buffer
+    let mut path_buf = [0u8; 256];
+    let mut len = 0;
+    unsafe {
+        for i in 0..255 {
+            let byte = *((pathname + i as u64) as *const u8);
+            if byte == 0 {
+                break;
+            }
+            path_buf[i] = byte;
+            len = i + 1;
+        }
+    }
+
+    let path = match core::str::from_utf8(&path_buf[..len]) {
+        Ok(s) => s,
+        Err(_) => return SyscallResult::Err(EFAULT as u64),
+    };
+
+    log::debug!("sys_open [ARM64]: path={:?}", path);
+
+    // Handle /dev/pts/N paths for PTY slave opening
+    if path.starts_with("/dev/pts/") {
+        let pty_name = &path[9..]; // Remove "/dev/pts/" prefix
+
+        // Look up the PTY slave in devptsfs
+        let pty_num = match crate::fs::devptsfs::lookup(pty_name) {
+            Some(num) => num,
+            None => {
+                log::debug!("sys_open [ARM64]: PTY slave not found or locked: {}", pty_name);
+                return SyscallResult::Err(ENOENT as u64);
+            }
+        };
+
+        // Get current process and allocate fd
+        let thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => {
+                log::error!("sys_open [ARM64]: No current thread");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        let mut manager_guard = crate::process::manager();
+        let process = match &mut *manager_guard {
+            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                Some((_, p)) => p,
+                None => {
+                    log::error!("sys_open [ARM64]: Process not found for thread {}", thread_id);
+                    return SyscallResult::Err(3); // ESRCH
+                }
+            },
+            None => {
+                log::error!("sys_open [ARM64]: Process manager not initialized");
+                return SyscallResult::Err(3); // ESRCH
+            }
+        };
+
+        // Allocate file descriptor with PtySlave kind
+        let fd_kind = FdKind::PtySlave(pty_num);
+        match process.fd_table.alloc(fd_kind) {
+            Ok(fd) => {
+                log::info!("sys_open [ARM64]: opened /dev/pts/{} as fd {}", pty_num, fd);
+                return SyscallResult::Ok(fd as u64);
+            }
+            Err(_) => {
+                log::error!("sys_open [ARM64]: too many open files");
+                return SyscallResult::Err(EMFILE as u64);
+            }
+        }
+    }
+
+    // Other paths not supported on ARM64 yet
+    log::debug!("sys_open [ARM64]: unsupported path: {}", path);
+    SyscallResult::Err(ENOSYS as u64)
 }
 
 /// sys_lseek - Reposition file offset

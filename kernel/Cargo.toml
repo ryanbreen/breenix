@@ -25,6 +25,7 @@ test = false
 
 [features]
 testing = []
+boot_tests = []  # Parallel boot test framework
 kthread_test_only = ["testing"]  # Run only kthread tests and exit
 kthread_stress_test = ["testing"]  # Run kthread stress test (100+ kthreads) and exit
 workqueue_test_only = ["testing"]  # Run only workqueue tests and exit

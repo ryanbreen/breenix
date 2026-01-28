@@ -157,6 +157,15 @@ if [[ "$(uname)" == "Darwin" ]]; then
                 echo "  WARNING: telnetd.elf not found"
             fi
 
+            # Copy test binaries to /bin
+            for test_bin in pty_test signal_test fork_test udp_socket_test; do
+                if [ -f /binaries/${test_bin}.elf ]; then
+                    cp /binaries/${test_bin}.elf /mnt/ext2/bin/${test_bin}
+                    chmod 755 /mnt/ext2/bin/${test_bin}
+                    echo "  /bin/${test_bin} installed"
+                fi
+            done
+
             # Create test files for filesystem testing
             echo "Hello from ext2!" > /mnt/ext2/hello.txt
             echo "Truncate test file" > /mnt/ext2/trunctest.txt

@@ -114,6 +114,11 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
     // Try to acquire the buffer lock - don't block in interrupt context
     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
         if buffer.push_byte(byte) {
+            // Debug marker: byte successfully pushed to stdin
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::serial_aarch64::raw_serial_str(b"[STDIN_PUSH]");
+            }
             drop(buffer);
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
@@ -153,11 +158,55 @@ fn wake_blocked_readers_try() {
     crate::task::scheduler::set_need_resched();
 }
 
-/// Stub for ARM64 - scheduler not yet available
+/// Raw serial output for debugging - write a string without locks
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn raw_serial_str(s: &[u8]) {
+    crate::serial_aarch64::raw_serial_str(s);
+}
+
+/// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
 #[cfg(target_arch = "aarch64")]
 fn wake_blocked_readers_try() {
-    // On ARM64 we don't have a scheduler yet, so blocked readers
-    // will be woken when they poll again
+    let readers: alloc::vec::Vec<u64> = {
+        if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
+            blocked.drain(..).collect()
+        } else {
+            // Debug marker: couldn't get lock
+            raw_serial_str(b"[STDIN_LOCK_FAIL]");
+            return; // Can't get lock, readers will be woken when they retry
+        }
+    };
+
+    if readers.is_empty() {
+        // Debug marker: no readers to wake
+        raw_serial_str(b"[STDIN_NO_READERS]");
+        return;
+    }
+
+    // Debug marker: waking readers with count
+    match readers.len() {
+        1 => raw_serial_str(b"[WAKE_READERS:1]"),
+        2 => raw_serial_str(b"[WAKE_READERS:2]"),
+        3 => raw_serial_str(b"[WAKE_READERS:3]"),
+        4 => raw_serial_str(b"[WAKE_READERS:4]"),
+        5 => raw_serial_str(b"[WAKE_READERS:5]"),
+        6 => raw_serial_str(b"[WAKE_READERS:6]"),
+        7 => raw_serial_str(b"[WAKE_READERS:7]"),
+        8 => raw_serial_str(b"[WAKE_READERS:8]"),
+        9 => raw_serial_str(b"[WAKE_READERS:9]"),
+        _ => raw_serial_str(b"[WAKE_READERS:N]"),
+    }
+
+    // Try to wake threads via the scheduler
+    crate::task::scheduler::with_scheduler(|sched| {
+        for thread_id in &readers {
+            sched.unblock(*thread_id);
+        }
+    });
+
+    // Trigger reschedule so the woken thread runs soon
+    crate::task::scheduler::set_need_resched();
 }
 
 /// Read bytes from stdin buffer
@@ -227,11 +276,30 @@ fn wake_blocked_readers() {
     crate::task::scheduler::set_need_resched();
 }
 
-/// Stub for ARM64 - scheduler not yet available
+/// Wake blocked readers on ARM64
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
-    // On ARM64 we don't have a scheduler yet
+    use alloc::vec::Vec;
+
+    let readers: Vec<u64> = {
+        let mut blocked = BLOCKED_READERS.lock();
+        blocked.drain(..).collect()
+    };
+
+    if readers.is_empty() {
+        return;
+    }
+
+    // Wake each blocked thread
+    crate::task::scheduler::with_scheduler(|sched| {
+        for thread_id in readers {
+            sched.unblock(thread_id);
+        }
+    });
+
+    // Trigger reschedule to let woken threads run
+    crate::task::scheduler::set_need_resched();
 }
 
 /// Get the number of bytes available in the stdin buffer
