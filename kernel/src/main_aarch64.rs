@@ -325,6 +325,18 @@ pub extern "C" fn kernel_main() -> ! {
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
 
+    // Run parallel boot tests if enabled
+    #[cfg(feature = "boot_tests")]
+    {
+        serial_println!("[boot] Running parallel boot tests...");
+        let failures = kernel::test_framework::run_all_tests();
+        if failures > 0 {
+            serial_println!("[boot] {} test(s) failed!", failures);
+        } else {
+            serial_println!("[boot] All boot tests passed!");
+        }
+    }
+
     serial_println!();
     serial_println!("========================================");
     serial_println!("  Breenix ARM64 Boot Complete!");
@@ -483,9 +495,10 @@ fn init_scheduler() {
         ThreadPrivilege::Kernel,
     ));
 
-    // Mark as running with ID 0
+    // Mark as running with ID 0, and has_started=true since boot code is already executing
     idle_task.state = ThreadState::Running;
     idle_task.id = 0;
+    idle_task.has_started = true;  // CRITICAL: Boot thread is already running, not waiting for first entry
 
     // Set up per-CPU current thread pointer
     let idle_task_ptr = &*idle_task as *const _ as *mut Thread;

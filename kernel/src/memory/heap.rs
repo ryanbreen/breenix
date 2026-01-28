@@ -1,6 +1,6 @@
 use spin::Mutex;
 #[cfg(target_arch = "x86_64")]
-use x86_64::structures::paging::{OffsetPageTable, Page, PageTableFlags, Size4KiB};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 #[cfg(not(target_arch = "x86_64"))]

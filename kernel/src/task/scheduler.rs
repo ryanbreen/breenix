@@ -75,6 +75,7 @@ impl Scheduler {
     /// The thread is added to the scheduler's thread list and marked as current,
     /// but NOT added to the ready queue. This avoids the scheduler trying to
     /// reschedule when timer interrupts fire.
+    #[allow(dead_code)]
     pub fn add_thread_as_current(&mut self, mut thread: Box<Thread>) {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
@@ -111,11 +112,13 @@ impl Scheduler {
     }
 
     /// Get the current thread ID
+    #[allow(dead_code)]
     pub fn current_thread_id_inner(&self) -> Option<u64> {
         self.current_thread
     }
 
     /// Get the idle thread ID
+    #[allow(dead_code)]
     pub fn idle_thread_id(&self) -> u64 {
         self.idle_thread
     }
@@ -568,6 +571,7 @@ pub fn spawn(thread: Box<Thread>) {
 /// The thread is added to the scheduler's thread list and marked as current,
 /// but NOT added to the ready queue and need_resched is NOT set.
 /// This allows the thread to run without the scheduler trying to preempt it.
+#[allow(dead_code)]
 pub fn spawn_as_current(thread: Box<Thread>) {
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();
@@ -652,6 +656,7 @@ pub fn try_schedule() -> Option<(u64, u64)> {
 
 /// Check if the current thread is the idle thread (safe to call from IRQ context)
 /// Returns None if the scheduler lock can't be acquired (to avoid deadlock)
+#[allow(dead_code)]
 pub fn is_current_idle_thread() -> Option<bool> {
     // Try to get the lock without blocking - if we can't, assume not idle
     // to be safe. This prevents deadlock when timer fires during scheduler ops.
@@ -706,6 +711,7 @@ pub fn current_thread_id() -> Option<u64> {
 /// Set the current thread ID
 /// Used during boot to establish the initial userspace thread as current
 /// before jumping to userspace.
+#[allow(dead_code)]
 pub fn set_current_thread(thread_id: u64) {
     without_interrupts(|| {
         let mut scheduler_lock = SCHEDULER.lock();

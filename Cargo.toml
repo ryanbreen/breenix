@@ -6,6 +6,7 @@ edition = "2021"
 
 [features]
 testing = ["kernel/testing"]
+boot_tests = ["kernel/boot_tests"]  # Parallel boot test framework
 kthread_test_only = ["kernel/kthread_test_only"]  # Run only kthread tests and exit
 kthread_stress_test = ["kernel/kthread_stress_test"]  # Run kthread stress test (100+ kthreads) and exit
 workqueue_test_only = ["kernel/workqueue_test_only"]  # Run only workqueue tests and exit

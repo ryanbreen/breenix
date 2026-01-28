@@ -432,10 +432,18 @@ irq_handler:
     and x1, x1, #0x4
     cmp x1, #0
     cset x1, eq
+
+    // Pre-set user_rsp_scratch to current SP + 272 (the return SP if no switch)
+    // If a context switch happens, Rust code will overwrite this with new thread's SP
+    // PERCPU_USER_RSP_SCRATCH_OFFSET = 40
+    mrs x2, tpidr_el1
+    add x3, sp, #272
+    str x3, [x2, #40]
+
     mov x0, sp
     bl check_need_resched_and_switch_arm64
 
-    // Restore registers
+    // Restore registers from exception frame (may have been modified by Rust for new thread)
     ldp x0, x1, [sp, #240]
     msr elr_el1, x1
     ldr x1, [sp, #256]
@@ -456,7 +464,12 @@ irq_handler:
     ldp x26, x27, [sp, #208]
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
-    add sp, sp, #272
+
+    // Load SP from user_rsp_scratch (contains new thread's SP if switched, or old SP+272 if not)
+    // Use x16 as scratch (x0 was already restored and contains thread argument)
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #40]
+    mov sp, x16
     eret
 
 unhandled_exception:

@@ -5,6 +5,7 @@
 #
 # Environment variables:
 #   BREENIX_GRAPHICS=1      - Enable headed display with VirtIO GPU (default: headless)
+#   BOOT_TESTS=1            - Enable parallel boot test framework with progress bars
 #   BREENIX_NET_DEBUG=1     - Enable network packet capture
 #   BREENIX_VIRTIO_TRACE=1  - Enable VirtIO tracing
 
@@ -20,12 +21,19 @@ else
     KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
 fi
 
+# Feature flags
+FEATURES=""
+if [ "${BOOT_TESTS:-0}" = "1" ]; then
+    FEATURES="--features boot_tests"
+    echo "Boot tests enabled - parallel test framework with progress bars"
+fi
+
 # Always rebuild kernel to ensure latest changes are included
 echo "Building ARM64 kernel ($BUILD_TYPE)..."
 if [ "$BUILD_TYPE" = "debug" ]; then
-    cargo build --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+    cargo build --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 $FEATURES
 else
-    cargo build --release --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+    cargo build --release --target aarch64-breenix.json -Zbuild-std=core,alloc -Zbuild-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 $FEATURES
 fi
 
 # Check for ext2 disk image

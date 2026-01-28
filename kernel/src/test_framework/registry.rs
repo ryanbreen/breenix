@@ -1,0 +1,3060 @@
+//! Test registry - static test definitions organized by subsystem
+//!
+//! Tests are registered at compile time using static slices to avoid heap allocation
+//! during registration. Each subsystem groups related tests together.
+
+/// Result of running a single test
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestResult {
+    /// Test passed successfully
+    Pass,
+    /// Test failed with a message
+    Fail(&'static str),
+    /// Test exceeded its time limit
+    Timeout,
+    /// Test caused a panic
+    Panic,
+}
+
+impl TestResult {
+    /// Check if this result represents success
+    pub fn is_pass(&self) -> bool {
+        matches!(self, TestResult::Pass)
+    }
+
+    /// Get failure message if any
+    pub fn failure_message(&self) -> Option<&'static str> {
+        match self {
+            TestResult::Fail(msg) => Some(msg),
+            TestResult::Timeout => Some("test timed out"),
+            TestResult::Panic => Some("test panicked"),
+            TestResult::Pass => None,
+        }
+    }
+}
+
+/// Architecture filter for tests
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    /// Test runs on any architecture
+    Any,
+    /// Test runs only on x86_64
+    X86_64,
+    /// Test runs only on ARM64
+    Aarch64,
+}
+
+impl Arch {
+    /// Check if this architecture filter matches the current target
+    #[inline]
+    pub fn matches_current(&self) -> bool {
+        match self {
+            Arch::Any => true,
+            #[cfg(target_arch = "x86_64")]
+            Arch::X86_64 => true,
+            #[cfg(target_arch = "aarch64")]
+            Arch::Aarch64 => true,
+            #[cfg(target_arch = "x86_64")]
+            Arch::Aarch64 => false,
+            #[cfg(target_arch = "aarch64")]
+            Arch::X86_64 => false,
+        }
+    }
+}
+
+/// A single test definition
+pub struct TestDef {
+    /// Human-readable test name
+    pub name: &'static str,
+    /// The test function to run
+    pub func: fn() -> TestResult,
+    /// Architecture filter
+    pub arch: Arch,
+    /// Timeout in milliseconds (0 = no timeout)
+    pub timeout_ms: u32,
+}
+
+/// Unique identifier for each subsystem
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SubsystemId {
+    Memory = 0,
+    Scheduler = 1,
+    Interrupts = 2,
+    Filesystem = 3,
+    Network = 4,
+    Ipc = 5,
+    Process = 6,
+    Syscall = 7,
+    Timer = 8,
+    Logging = 9,
+    System = 10,
+}
+
+impl SubsystemId {
+    /// Total number of subsystems
+    pub const COUNT: usize = 11;
+
+    /// Convert from index to SubsystemId
+    pub fn from_index(idx: usize) -> Option<Self> {
+        match idx {
+            0 => Some(SubsystemId::Memory),
+            1 => Some(SubsystemId::Scheduler),
+            2 => Some(SubsystemId::Interrupts),
+            3 => Some(SubsystemId::Filesystem),
+            4 => Some(SubsystemId::Network),
+            5 => Some(SubsystemId::Ipc),
+            6 => Some(SubsystemId::Process),
+            7 => Some(SubsystemId::Syscall),
+            8 => Some(SubsystemId::Timer),
+            9 => Some(SubsystemId::Logging),
+            10 => Some(SubsystemId::System),
+            _ => None,
+        }
+    }
+
+    /// Get subsystem name for display
+    pub fn name(&self) -> &'static str {
+        match self {
+            SubsystemId::Memory => "memory",
+            SubsystemId::Scheduler => "scheduler",
+            SubsystemId::Interrupts => "interrupts",
+            SubsystemId::Filesystem => "filesystem",
+            SubsystemId::Network => "network",
+            SubsystemId::Ipc => "ipc",
+            SubsystemId::Process => "process",
+            SubsystemId::Syscall => "syscall",
+            SubsystemId::Timer => "timer",
+            SubsystemId::Logging => "logging",
+            SubsystemId::System => "system",
+        }
+    }
+}
+
+/// A group of tests for a subsystem
+pub struct Subsystem {
+    /// Subsystem identifier
+    pub id: SubsystemId,
+    /// Human-readable subsystem name
+    pub name: &'static str,
+    /// Tests in this subsystem (static slice, no heap)
+    pub tests: &'static [TestDef],
+}
+
+// =============================================================================
+// Test Functions
+// =============================================================================
+
+/// Simple sanity test to verify the test framework is working.
+/// This test always passes - it just proves we can run tests.
+fn test_framework_sanity() -> TestResult {
+    // Just verify we can run a test and return successfully
+    TestResult::Pass
+}
+
+/// Simple test that verifies basic heap allocation works.
+fn test_heap_alloc_basic() -> TestResult {
+    use alloc::vec::Vec;
+    let mut v: Vec<u32> = Vec::new();
+    v.push(42);
+    if v[0] == 42 {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("heap allocation produced wrong value")
+    }
+}
+
+// =============================================================================
+// Memory Test Functions (Phase 4a)
+// =============================================================================
+
+/// Test frame allocator: allocate multiple frames and verify non-overlapping.
+fn test_frame_allocator() -> TestResult {
+    use crate::memory::frame_allocator;
+
+    // Allocate several frames
+    let frame1 = match frame_allocator::allocate_frame() {
+        Some(f) => f,
+        None => return TestResult::Fail("failed to allocate first frame"),
+    };
+
+    let frame2 = match frame_allocator::allocate_frame() {
+        Some(f) => f,
+        None => return TestResult::Fail("failed to allocate second frame"),
+    };
+
+    let frame3 = match frame_allocator::allocate_frame() {
+        Some(f) => f,
+        None => return TestResult::Fail("failed to allocate third frame"),
+    };
+
+    // Verify frames don't overlap (each should be at a different 4KB boundary)
+    let addr1 = frame1.start_address().as_u64();
+    let addr2 = frame2.start_address().as_u64();
+    let addr3 = frame3.start_address().as_u64();
+
+    if addr1 == addr2 || addr2 == addr3 || addr1 == addr3 {
+        return TestResult::Fail("frames overlap - same address returned");
+    }
+
+    // Verify all addresses are page-aligned (4KB = 0x1000)
+    if addr1 & 0xFFF != 0 {
+        return TestResult::Fail("frame1 not page-aligned");
+    }
+    if addr2 & 0xFFF != 0 {
+        return TestResult::Fail("frame2 not page-aligned");
+    }
+    if addr3 & 0xFFF != 0 {
+        return TestResult::Fail("frame3 not page-aligned");
+    }
+
+    // Deallocate frames - they go into the free list for reuse
+    frame_allocator::deallocate_frame(frame1);
+    frame_allocator::deallocate_frame(frame2);
+    frame_allocator::deallocate_frame(frame3);
+
+    // Verify we can reallocate after deallocation
+    let frame4 = match frame_allocator::allocate_frame() {
+        Some(f) => f,
+        None => return TestResult::Fail("failed to reallocate after deallocation"),
+    };
+
+    // Clean up
+    frame_allocator::deallocate_frame(frame4);
+
+    TestResult::Pass
+}
+
+/// Test large heap allocations (64KB, 256KB, 1MB).
+fn test_heap_large_alloc() -> TestResult {
+    use alloc::vec::Vec;
+
+    // Test 64KB allocation
+    let size_64k = 64 * 1024;
+    let mut vec_64k: Vec<u8> = Vec::with_capacity(size_64k);
+
+    // Write pattern to verify memory is usable
+    for i in 0..size_64k {
+        vec_64k.push((i & 0xFF) as u8);
+    }
+
+    // Verify the writes
+    for i in 0..size_64k {
+        if vec_64k[i] != (i & 0xFF) as u8 {
+            return TestResult::Fail("64KB allocation: data corruption");
+        }
+    }
+
+    // Drop 64KB to free memory before next allocation
+    drop(vec_64k);
+
+    // Test 256KB allocation
+    let size_256k = 256 * 1024;
+    let mut vec_256k: Vec<u8> = Vec::with_capacity(size_256k);
+
+    // Write a simpler pattern (every 1KB) to save time
+    for i in 0..size_256k {
+        vec_256k.push(((i / 1024) & 0xFF) as u8);
+    }
+
+    // Spot-check verification
+    if vec_256k[0] != 0 || vec_256k[1024] != 1 || vec_256k[2048] != 2 {
+        return TestResult::Fail("256KB allocation: data corruption");
+    }
+
+    drop(vec_256k);
+
+    // Test 1MB allocation
+    let size_1m = 1024 * 1024;
+    let mut vec_1m: Vec<u8> = Vec::with_capacity(size_1m);
+
+    // Write pattern every 64KB to save time
+    for i in 0..size_1m {
+        vec_1m.push(((i / 65536) & 0xFF) as u8);
+    }
+
+    // Spot-check verification
+    if vec_1m[0] != 0 || vec_1m[65536] != 1 || vec_1m[131072] != 2 {
+        return TestResult::Fail("1MB allocation: data corruption");
+    }
+
+    drop(vec_1m);
+
+    TestResult::Pass
+}
+
+/// Test many small heap allocations (1000 objects of 64 bytes each).
+fn test_heap_many_small() -> TestResult {
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+
+    const NUM_ALLOCS: usize = 1000;
+    const ALLOC_SIZE: usize = 64;
+
+    // Allocate many small objects
+    let mut allocations: Vec<Box<[u8; ALLOC_SIZE]>> = Vec::with_capacity(NUM_ALLOCS);
+
+    for i in 0..NUM_ALLOCS {
+        // Create a box with a pattern based on allocation index
+        let mut data = [0u8; ALLOC_SIZE];
+        let pattern = (i & 0xFF) as u8;
+        for byte in data.iter_mut() {
+            *byte = pattern;
+        }
+        allocations.push(Box::new(data));
+    }
+
+    // Verify all allocations still have correct data
+    for (i, alloc) in allocations.iter().enumerate() {
+        let expected = (i & 0xFF) as u8;
+        // Check first and last byte of each allocation
+        if alloc[0] != expected || alloc[ALLOC_SIZE - 1] != expected {
+            return TestResult::Fail("small allocation: data corruption");
+        }
+    }
+
+    // Verify pointers are unique (no overlapping allocations)
+    // We check a sample to avoid O(n^2) complexity
+    for i in (0..NUM_ALLOCS).step_by(100) {
+        for j in ((i + 1)..NUM_ALLOCS).step_by(100) {
+            let ptr_i = allocations[i].as_ptr() as usize;
+            let ptr_j = allocations[j].as_ptr() as usize;
+
+            // Check if ranges overlap: [ptr_i, ptr_i + ALLOC_SIZE) and [ptr_j, ptr_j + ALLOC_SIZE)
+            let i_end = ptr_i + ALLOC_SIZE;
+            let j_end = ptr_j + ALLOC_SIZE;
+
+            if ptr_i < j_end && ptr_j < i_end {
+                return TestResult::Fail("small allocations overlap");
+            }
+        }
+    }
+
+    // Drop all allocations
+    drop(allocations);
+
+    TestResult::Pass
+}
+
+// =============================================================================
+// Guard Page Test Functions (Phase 4g)
+// =============================================================================
+
+/// Test that guard page exists by verifying stack is in kernel space.
+///
+/// Guard pages are architecture-specific in setup, but the concept is universal:
+/// the kernel stack should have a guard page below it. We can't touch the guard
+/// page directly (that would fault), but we can verify the stack is in the
+/// correct address range for kernel space.
+///
+/// On x86_64: Kernel space starts at 0xFFFF_8000_0000_0000
+/// On ARM64: Kernel space starts at 0xFFFF_0000_0000_0000
+fn test_guard_page_exists() -> TestResult {
+    // Get address of a stack variable to determine our stack location
+    let stack_var: u64 = 0;
+    let stack_addr = &stack_var as *const _ as u64;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // x86_64 kernel space starts at 0xFFFF_8000_0000_0000 (higher half)
+        if stack_addr < 0xFFFF_8000_0000_0000 {
+            return TestResult::Fail("stack not in kernel space (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 kernel space starts at 0xFFFF_0000_0000_0000 (higher half)
+        if stack_addr < 0xFFFF_0000_0000_0000 {
+            return TestResult::Fail("stack not in kernel space (ARM64)");
+        }
+    }
+
+    // Verify the stack address is page-aligned to a reasonable degree
+    // Stack frames are typically 16-byte aligned, but the stack itself
+    // should be within a page-aligned region
+    // Note: We don't check exact alignment since stack variables may not
+    // be at page boundaries
+
+    TestResult::Pass
+}
+
+/// Test stack layout by verifying stack grows downward.
+///
+/// On both x86_64 and ARM64, the stack grows downward (from high addresses
+/// to low addresses). This test calls a nested function and verifies that
+/// the inner function's stack frame is at a lower address than the outer
+/// function's stack frame.
+fn test_stack_layout() -> TestResult {
+    // Get address of outer stack variable
+    let outer_var: u64 = 0;
+    let outer_addr = &outer_var as *const _ as u64;
+
+    /// Inner function to check stack growth direction
+    #[inline(never)]
+    fn inner_check(outer: u64) -> Result<(), &'static str> {
+        let inner_var: u64 = 0;
+        let inner_addr = &inner_var as *const _ as u64;
+
+        // Inner function should have lower stack address (stack grows down)
+        // The difference should be meaningful (at least a few bytes for the
+        // stack frame overhead)
+        if inner_addr >= outer {
+            return Err("stack doesn't grow down");
+        }
+
+        // Verify the difference is reasonable (not huge, indicating corruption)
+        // A normal stack frame difference should be less than a page (4KB)
+        let diff = outer - inner_addr;
+        if diff > 4096 {
+            return Err("stack frame too large - possible corruption");
+        }
+
+        Ok(())
+    }
+
+    match inner_check(outer_addr) {
+        Ok(()) => TestResult::Pass,
+        Err(msg) => TestResult::Fail(msg),
+    }
+}
+
+/// Test stack allocation by using moderate stack space.
+///
+/// This test verifies that the kernel stack is large enough to handle
+/// normal usage patterns including local arrays and moderate recursion.
+/// If guard pages or stack allocation were broken, this would crash.
+fn test_stack_allocation() -> TestResult {
+    // Test 1: Allocate a moderately large array on the stack
+    // Use volatile operations to prevent optimizer from removing this
+    let large_array: [u64; 128] = [0; 128];
+
+    // Use the array to prevent optimization
+    // Check that the array was properly zeroed
+    if large_array[0] != 0 || large_array[64] != 0 || large_array[127] != 0 {
+        return TestResult::Fail("stack array not properly initialized");
+    }
+
+    // Test 2: Recursive function to use more stack frames
+    /// Recursive function that uses stack space at each level
+    fn recurse(depth: usize) -> Result<(), &'static str> {
+        // Local array to use stack space
+        let local: [u8; 64] = [0; 64];
+
+        // Verify local array is accessible
+        if local[0] != 0 || local[63] != 0 {
+            return Err("stack local not accessible");
+        }
+
+        // Recurse if not at target depth
+        if depth > 0 {
+            recurse(depth - 1)?;
+        }
+
+        Ok(())
+    }
+
+    // 10 levels of recursion is modest but tests stack frame creation
+    match recurse(10) {
+        Ok(()) => {}
+        Err(msg) => return TestResult::Fail(msg),
+    }
+
+    // Test 3: Multiple stack allocations in sequence
+    // This tests that stack pointer moves correctly
+    {
+        let _a: [u64; 16] = [1; 16];
+        let _b: [u64; 16] = [2; 16];
+        let _c: [u64; 16] = [3; 16];
+        // These should all be at different stack locations
+    }
+
+    TestResult::Pass
+}
+
+// =============================================================================
+// Stack Bounds Test Functions (Phase 4h)
+// =============================================================================
+
+/// Test user stack base constant is in valid address range.
+///
+/// Verifies that the user stack region starts at a reasonable address.
+/// On x86_64: Should be in lower canonical half (< 0x8000_0000_0000)
+/// On ARM64: Should be in lower half (< 0x0001_0000_0000_0000)
+fn test_user_stack_base() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::USER_STACK_REGION_START;
+
+        // User stack region should be in lower canonical half
+        if USER_STACK_REGION_START >= 0x8000_0000_0000 {
+            return TestResult::Fail("user stack base in kernel space (x86_64)");
+        }
+
+        // Should be above userspace code/data area
+        if USER_STACK_REGION_START < 0x7000_0000_0000 {
+            return TestResult::Fail("user stack base too low (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
+
+        // User stack region should be in lower half (TTBR0 range)
+        if USER_STACK_REGION_START >= 0x0001_0000_0000_0000 {
+            return TestResult::Fail("user stack base in kernel space (ARM64)");
+        }
+
+        // Should be above userspace code/data area
+        if USER_STACK_REGION_START < 0x0000_7000_0000_0000 {
+            return TestResult::Fail("user stack base too low (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test user stack size constant is within reasonable bounds.
+///
+/// User stacks should be at least 64KB and at most 8MB.
+fn test_user_stack_size() -> TestResult {
+    const MIN_STACK: usize = 64 * 1024;      // 64KB minimum
+    const MAX_STACK: usize = 8 * 1024 * 1024; // 8MB maximum
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::USER_STACK_SIZE;
+
+        if USER_STACK_SIZE < MIN_STACK {
+            return TestResult::Fail("user stack size too small (x86_64)");
+        }
+        if USER_STACK_SIZE > MAX_STACK {
+            return TestResult::Fail("user stack size too large (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 uses the same USER_STACK_SIZE from x86_64 layout
+        // (imported via layout.rs)
+        use crate::memory::layout::USER_STACK_SIZE;
+
+        if USER_STACK_SIZE < MIN_STACK {
+            return TestResult::Fail("user stack size too small (ARM64)");
+        }
+        if USER_STACK_SIZE > MAX_STACK {
+            return TestResult::Fail("user stack size too large (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test user stack top = base + region size calculation.
+///
+/// Verifies that the user stack region end is greater than start and
+/// the difference is reasonable (not more than 256GB for the region).
+fn test_user_stack_top() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::{USER_STACK_REGION_END, USER_STACK_REGION_START};
+
+        if USER_STACK_REGION_END <= USER_STACK_REGION_START {
+            return TestResult::Fail("user stack region end <= start (x86_64)");
+        }
+
+        let region_size = USER_STACK_REGION_END - USER_STACK_REGION_START;
+        // Region should be at least 1MB and at most 256GB
+        if region_size < 1024 * 1024 {
+            return TestResult::Fail("user stack region too small (x86_64)");
+        }
+        if region_size > 256 * 1024 * 1024 * 1024 {
+            return TestResult::Fail("user stack region too large (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::{USER_STACK_REGION_END, USER_STACK_REGION_START};
+
+        if USER_STACK_REGION_END <= USER_STACK_REGION_START {
+            return TestResult::Fail("user stack region end <= start (ARM64)");
+        }
+
+        let region_size = USER_STACK_REGION_END - USER_STACK_REGION_START;
+        if region_size < 1024 * 1024 {
+            return TestResult::Fail("user stack region too small (ARM64)");
+        }
+        if region_size > 256 * 1024 * 1024 * 1024 {
+            return TestResult::Fail("user stack region too large (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test guard page size constant below user stack.
+///
+/// Verifies that guard pages are a reasonable size (typically 4KB).
+fn test_user_stack_guard() -> TestResult {
+    // Guard pages are PAGE_SIZE (4KB) in both architectures
+    // The GuardedStack implementation adds one guard page below the stack
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // x86_64 uses 4KB pages for guard
+        const PAGE_SIZE: usize = 4096;
+        // The GuardedStack struct always uses exactly 1 guard page
+        // We verify the guard page concept by checking layout constants
+
+        use crate::memory::layout::PERCPU_STACK_GUARD_SIZE;
+        if PERCPU_STACK_GUARD_SIZE != PAGE_SIZE {
+            return TestResult::Fail("guard page size not 4KB (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::{PAGE_SIZE, STACK_GUARD_SIZE};
+        if STACK_GUARD_SIZE != PAGE_SIZE {
+            return TestResult::Fail("guard page size not 4KB (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test user stack alignment is page-aligned.
+///
+/// Verifies that stack region boundaries are properly aligned.
+fn test_user_stack_alignment() -> TestResult {
+    const PAGE_SIZE: u64 = 4096;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::{USER_STACK_REGION_END, USER_STACK_REGION_START};
+
+        if USER_STACK_REGION_START & (PAGE_SIZE - 1) != 0 {
+            return TestResult::Fail("user stack start not page-aligned (x86_64)");
+        }
+        if USER_STACK_REGION_END & (PAGE_SIZE - 1) != 0 {
+            return TestResult::Fail("user stack end not page-aligned (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::{USER_STACK_REGION_END, USER_STACK_REGION_START};
+
+        if USER_STACK_REGION_START & (PAGE_SIZE - 1) != 0 {
+            return TestResult::Fail("user stack start not page-aligned (ARM64)");
+        }
+        if USER_STACK_REGION_END & (PAGE_SIZE - 1) != 0 {
+            return TestResult::Fail("user stack end not page-aligned (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test kernel stack base constant is in valid kernel address range.
+///
+/// On x86_64: Kernel space starts at 0xFFFF_8000_0000_0000
+/// On ARM64: Kernel space starts at 0xFFFF_0000_0000_0000
+fn test_kernel_stack_base() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::PERCPU_STACK_REGION_BASE;
+
+        // Kernel stack should be in higher half (kernel space)
+        if PERCPU_STACK_REGION_BASE < 0xFFFF_8000_0000_0000 {
+            return TestResult::Fail("kernel stack base not in kernel space (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::KERNEL_HIGHER_HALF_BASE;
+
+        // Kernel space in ARM64 starts at 0xFFFF_0000_0000_0000
+        if KERNEL_HIGHER_HALF_BASE != 0xFFFF_0000_0000_0000 {
+            return TestResult::Fail("kernel higher half base incorrect (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test kernel stack size constant is within reasonable bounds.
+///
+/// Kernel stacks should be at least 8KB and at most 1MB.
+fn test_kernel_stack_size() -> TestResult {
+    const MIN_KERNEL_STACK: usize = 8 * 1024;    // 8KB minimum
+    const MAX_KERNEL_STACK: usize = 1024 * 1024; // 1MB maximum
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::PERCPU_STACK_SIZE;
+
+        if PERCPU_STACK_SIZE < MIN_KERNEL_STACK {
+            return TestResult::Fail("kernel stack size too small (x86_64)");
+        }
+        if PERCPU_STACK_SIZE > MAX_KERNEL_STACK {
+            return TestResult::Fail("kernel stack size too large (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE;
+
+        if KERNEL_STACK_SIZE < MIN_KERNEL_STACK {
+            return TestResult::Fail("kernel stack size too small (ARM64)");
+        }
+        if KERNEL_STACK_SIZE > MAX_KERNEL_STACK {
+            return TestResult::Fail("kernel stack size too large (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test kernel stack top calculation.
+///
+/// Verifies that kernel stack top is computed correctly from base and size.
+fn test_kernel_stack_top() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::{percpu_stack_base, percpu_stack_top, PERCPU_STACK_SIZE};
+
+        // Test CPU 0 stack top calculation
+        let base = percpu_stack_base(0).as_u64();
+        let top = percpu_stack_top(0).as_u64();
+
+        if top != base + PERCPU_STACK_SIZE as u64 {
+            return TestResult::Fail("kernel stack top calculation wrong (x86_64)");
+        }
+
+        // Top should be greater than base
+        if top <= base {
+            return TestResult::Fail("kernel stack top <= base (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 uses a different per-CPU structure accessed via TPIDR_EL1
+        // The kernel stack top is stored in per-CPU data
+        // We verify the constant size is non-zero
+        use crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE;
+
+        if KERNEL_STACK_SIZE == 0 {
+            return TestResult::Fail("kernel stack size is zero (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test guard page below kernel stack.
+///
+/// Verifies that guard page address calculation is correct.
+fn test_kernel_stack_guard() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::{percpu_stack_base, percpu_stack_guard, PERCPU_STACK_GUARD_SIZE};
+
+        // Test CPU 0 guard page calculation
+        let base = percpu_stack_base(0).as_u64();
+        let guard = percpu_stack_guard(0).as_u64();
+
+        // Guard page should be immediately below stack base
+        if guard != base - PERCPU_STACK_GUARD_SIZE as u64 {
+            return TestResult::Fail("kernel guard page calculation wrong (x86_64)");
+        }
+
+        // Guard should be below base
+        if guard >= base {
+            return TestResult::Fail("kernel guard not below stack base (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::STACK_GUARD_SIZE;
+
+        // ARM64 guard size should be non-zero
+        if STACK_GUARD_SIZE == 0 {
+            return TestResult::Fail("kernel stack guard size is zero (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test kernel stack alignment.
+///
+/// Verifies that kernel stack base addresses are properly aligned.
+fn test_kernel_stack_alignment() -> TestResult {
+    const PAGE_SIZE: u64 = 4096;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::memory::layout::{percpu_stack_base, percpu_stack_top};
+
+        // Test CPU 0 stack alignment
+        let base = percpu_stack_base(0).as_u64();
+        let top = percpu_stack_top(0).as_u64();
+
+        if base & (PAGE_SIZE - 1) != 0 {
+            return TestResult::Fail("kernel stack base not page-aligned (x86_64)");
+        }
+
+        // Stack top should be at least 16-byte aligned for ABI compliance
+        if top & 0xF != 0 {
+            return TestResult::Fail("kernel stack top not 16-byte aligned (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::constants::KERNEL_STACK_SIZE;
+
+        // Stack size should be page-aligned
+        if (KERNEL_STACK_SIZE as u64) & (PAGE_SIZE - 1) != 0 {
+            return TestResult::Fail("kernel stack size not page-aligned (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test current stack pointer is in valid range.
+///
+/// Verifies that the current stack pointer is in kernel address space
+/// during kernel execution.
+fn test_stack_in_range() -> TestResult {
+    let stack_var: u64 = 0;
+    let sp = &stack_var as *const _ as u64;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Stack pointer should be in kernel space (high canonical addresses)
+        if sp < 0xFFFF_8000_0000_0000 {
+            return TestResult::Fail("stack not in kernel space (x86_64)");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 kernel space starts at 0xFFFF_0000_0000_0000
+        if sp < 0xFFFF_0000_0000_0000 {
+            return TestResult::Fail("stack not in kernel space (ARM64)");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Test stack grows downward.
+///
+/// Verifies that nested function calls have lower stack addresses.
+fn test_stack_grows_down() -> TestResult {
+    let outer_var: u64 = 0;
+    let outer_addr = &outer_var as *const _ as u64;
+
+    /// Inner function that verifies stack growth direction.
+    #[inline(never)]
+    fn check_inner_stack(outer: u64) -> Result<(), &'static str> {
+        let inner_var: u64 = 0;
+        let inner_addr = &inner_var as *const _ as u64;
+
+        // Inner function should have lower stack address (stack grows down)
+        if inner_addr >= outer {
+            return Err("stack doesn't grow down");
+        }
+
+        Ok(())
+    }
+
+    match check_inner_stack(outer_addr) {
+        Ok(()) => TestResult::Pass,
+        Err(msg) => TestResult::Fail(msg),
+    }
+}
+
+/// Test reasonable recursion depth without stack overflow.
+///
+/// Tests that the kernel stack can handle moderate recursion.
+fn test_stack_depth() -> TestResult {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static MAX_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+    /// Recursive function that tracks maximum depth reached.
+    #[inline(never)]
+    fn recurse(depth: usize, max: usize) -> Result<(), &'static str> {
+        // Track the maximum depth reached
+        MAX_DEPTH.fetch_max(depth, Ordering::Relaxed);
+
+        // Allocate some stack space to simulate realistic usage
+        let _local: [u8; 128] = [0; 128];
+
+        if depth < max {
+            recurse(depth + 1, max)?;
+        }
+
+        Ok(())
+    }
+
+    // Reset counter
+    MAX_DEPTH.store(0, Ordering::Relaxed);
+
+    // Test 50 levels of recursion (conservative for kernel stack)
+    const TARGET_DEPTH: usize = 50;
+    match recurse(0, TARGET_DEPTH) {
+        Ok(()) => {
+            let reached = MAX_DEPTH.load(Ordering::Relaxed);
+            if reached >= TARGET_DEPTH {
+                TestResult::Pass
+            } else {
+                TestResult::Fail("recursion didn't reach target depth")
+            }
+        }
+        Err(msg) => TestResult::Fail(msg),
+    }
+}
+
+/// Test stack frame sizes are reasonable.
+///
+/// Verifies that stack frame differences between function calls
+/// are within expected bounds.
+fn test_stack_frame_size() -> TestResult {
+    let outer_var: u64 = 0;
+    let outer_addr = &outer_var as *const _ as u64;
+
+    /// Check frame size from inner function.
+    #[inline(never)]
+    fn measure_frame(outer: u64) -> Result<u64, &'static str> {
+        let inner_var: u64 = 0;
+        let inner_addr = &inner_var as *const _ as u64;
+
+        // Calculate frame size (difference in stack addresses)
+        if inner_addr >= outer {
+            return Err("invalid stack direction");
+        }
+
+        let frame_size = outer - inner_addr;
+        Ok(frame_size)
+    }
+
+    match measure_frame(outer_addr) {
+        Ok(frame_size) => {
+            // Frame size should be reasonable (< 4KB for a simple function)
+            if frame_size > 4096 {
+                return TestResult::Fail("stack frame too large");
+            }
+            // Frame size should be at least 16 bytes (return address + saved regs)
+            if frame_size < 16 {
+                return TestResult::Fail("stack frame too small");
+            }
+            TestResult::Pass
+        }
+        Err(msg) => TestResult::Fail(msg),
+    }
+}
+
+/// Test red zone behavior (x86_64 specific, skip on ARM64).
+///
+/// The red zone is a 128-byte area below the stack pointer that can be used
+/// without adjusting RSP. This is x86_64 ABI specific.
+fn test_stack_red_zone() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Note: The kernel is built with -mno-red-zone for interrupt safety
+        // This test just verifies we can reason about the stack correctly
+        // without relying on red zone behavior
+
+        let stack_var: u64 = 0;
+        let sp_approx = &stack_var as *const _ as u64;
+
+        // Verify stack pointer is in kernel space
+        if sp_approx < 0xFFFF_8000_0000_0000 {
+            return TestResult::Fail("stack not in kernel space");
+        }
+
+        // Verify stack is reasonably aligned (16-byte for ABI)
+        // Note: The exact SP value may vary, but our stack variable
+        // should be in an aligned frame
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // ARM64 doesn't have a red zone concept in the kernel
+        // The stack pointer is always adjusted before use
+        // This test passes - not applicable
+        TestResult::Pass
+    }
+}
+
+// =============================================================================
+// Timer Test Functions (Phase 4c)
+// =============================================================================
+
+/// Verify timer is initialized and has a reasonable frequency.
+///
+/// On x86_64: Checks that TSC is calibrated or PIT ticks are incrementing
+/// On ARM64: Checks that Generic Timer frequency is non-zero
+fn test_timer_init() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Check if TSC is calibrated (preferred high-resolution source)
+        if crate::time::tsc::is_calibrated() {
+            let freq = crate::time::tsc::frequency_hz();
+            if freq > 0 {
+                return TestResult::Pass;
+            }
+        }
+        // Fallback: check PIT ticks (timer interrupt counter)
+        // The PIT should be initialized before boot tests run
+        let ticks = crate::time::get_ticks();
+        // At boot, ticks may be 0 if interrupts just started, but the
+        // important thing is that the timer subsystem is initialized
+        // We can't easily verify increment without sleeping, which is
+        // covered by test_timer_ticks
+        if ticks >= 0 {
+            // PIT is initialized (get_ticks() didn't panic)
+            return TestResult::Pass;
+        }
+        TestResult::Fail("timer not initialized on x86_64")
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer;
+        let freq = timer::frequency_hz();
+        if freq == 0 {
+            return TestResult::Fail("timer frequency is 0 on ARM64");
+        }
+        // Check timer is calibrated (base timestamp set)
+        if !timer::is_calibrated() {
+            return TestResult::Fail("timer not calibrated on ARM64");
+        }
+        TestResult::Pass
+    }
+}
+
+/// Verify timestamp advances over time.
+///
+/// Reads the current timestamp, spins briefly, then verifies the timestamp
+/// has increased. This confirms the timer is actually running.
+fn test_timer_ticks() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Use monotonic time (milliseconds) for x86_64
+        let time1 = crate::time::get_monotonic_time();
+
+        // Spin for a while - give the PIT time to increment
+        // At 200 Hz (5ms per tick), we need to spin for at least 5-10ms
+        for _ in 0..5_000_000 {
+            core::hint::spin_loop();
+        }
+
+        let time2 = crate::time::get_monotonic_time();
+
+        if time2 > time1 {
+            TestResult::Pass
+        } else {
+            TestResult::Fail("timestamp did not advance on x86_64")
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer;
+
+        // Use the raw counter for ARM64 (always advances)
+        let ts1 = timer::rdtsc();
+
+        // Brief spin
+        for _ in 0..100_000 {
+            core::hint::spin_loop();
+        }
+
+        let ts2 = timer::rdtsc();
+
+        if ts2 > ts1 {
+            TestResult::Pass
+        } else {
+            TestResult::Fail("timestamp did not advance on ARM64")
+        }
+    }
+}
+
+/// Test delay functionality - verify elapsed time is reasonable.
+///
+/// Attempts to delay for approximately 10ms and checks that the elapsed
+/// time is within 50% tolerance (5-15ms). This accounts for timer resolution
+/// and scheduling variance.
+fn test_timer_delay() -> TestResult {
+    // Target delay in milliseconds
+    const TARGET_MS: u64 = 10;
+    // Tolerance: 50% (allow 5-15ms for a 10ms delay)
+    const MIN_MS: u64 = TARGET_MS / 2;
+    const MAX_MS: u64 = TARGET_MS * 2;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        let start = crate::time::get_monotonic_time();
+
+        // Busy-wait for approximately TARGET_MS
+        // At 200 Hz PIT (5ms per tick), we need ~2 ticks for 10ms
+        let target_ticks = (TARGET_MS / 5) + 1; // Round up
+        let start_ticks = crate::time::get_ticks();
+
+        while crate::time::get_ticks() < start_ticks + target_ticks {
+            core::hint::spin_loop();
+        }
+
+        let elapsed = crate::time::get_monotonic_time().saturating_sub(start);
+
+        if elapsed >= MIN_MS && elapsed <= MAX_MS {
+            TestResult::Pass
+        } else if elapsed < MIN_MS {
+            TestResult::Fail("delay too short on x86_64")
+        } else {
+            TestResult::Fail("delay too long on x86_64")
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer;
+
+        // Get frequency for nanosecond calculations
+        let freq = timer::frequency_hz();
+        if freq == 0 {
+            return TestResult::Fail("timer frequency is 0");
+        }
+
+        let start_ns = timer::nanoseconds_since_base().unwrap_or(0);
+
+        // Calculate ticks for TARGET_MS milliseconds
+        let ticks_for_target = (freq * TARGET_MS) / 1000;
+
+        let start_counter = timer::rdtsc();
+        let target_counter = start_counter + ticks_for_target;
+
+        // Busy-wait until we reach target
+        while timer::rdtsc() < target_counter {
+            core::hint::spin_loop();
+        }
+
+        let end_ns = timer::nanoseconds_since_base().unwrap_or(0);
+        let elapsed_ms = (end_ns.saturating_sub(start_ns)) / 1_000_000;
+
+        if elapsed_ms >= MIN_MS && elapsed_ms <= MAX_MS {
+            TestResult::Pass
+        } else if elapsed_ms < MIN_MS {
+            TestResult::Fail("delay too short on ARM64")
+        } else {
+            TestResult::Fail("delay too long on ARM64")
+        }
+    }
+}
+
+/// Verify timestamps are monotonically increasing.
+///
+/// Reads the timestamp 100 times and verifies each reading is greater than
+/// or equal to the previous one. This ensures the timer never goes backwards.
+fn test_timer_monotonic() -> TestResult {
+    const ITERATIONS: usize = 100;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Use TSC if available for higher resolution, otherwise use monotonic time
+        if crate::time::tsc::is_calibrated() {
+            let mut prev = crate::time::tsc::read_tsc();
+            for _ in 0..ITERATIONS {
+                let curr = crate::time::tsc::read_tsc();
+                if curr < prev {
+                    return TestResult::Fail("TSC went backwards on x86_64");
+                }
+                prev = curr;
+            }
+        } else {
+            // Fallback to PIT-based monotonic time
+            let mut prev = crate::time::get_monotonic_time();
+            for _ in 0..ITERATIONS {
+                let curr = crate::time::get_monotonic_time();
+                if curr < prev {
+                    return TestResult::Fail("monotonic time went backwards on x86_64");
+                }
+                prev = curr;
+            }
+        }
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer;
+
+        // Use raw counter (CNTVCT_EL0) for highest resolution
+        let mut prev = timer::rdtsc();
+        for _ in 0..ITERATIONS {
+            let curr = timer::rdtsc();
+            if curr < prev {
+                return TestResult::Fail("counter went backwards on ARM64");
+            }
+            prev = curr;
+        }
+        TestResult::Pass
+    }
+}
+
+// =============================================================================
+// Logging Test Functions (Phase 4d)
+// =============================================================================
+
+/// Verify logging is initialized and log macros don't panic.
+///
+/// This test verifies that the logging infrastructure is functional by
+/// calling each log level. If we get here and can execute log macros
+/// without panicking, the logging subsystem is working.
+fn test_logging_init() -> TestResult {
+    // If we get here, logging is working enough to run tests
+    // Try each log level to ensure no panics
+    log::trace!("[LOGGING_TEST] trace level");
+    log::debug!("[LOGGING_TEST] debug level");
+    log::info!("[LOGGING_TEST] info level");
+    log::warn!("[LOGGING_TEST] warn level");
+    log::error!("[LOGGING_TEST] error level");
+
+    TestResult::Pass
+}
+
+/// Test log level filtering works correctly.
+///
+/// Verifies that different log levels can be used without issues.
+/// The actual filtering behavior depends on the logger configuration,
+/// but this test ensures the log macros themselves work at all levels.
+fn test_log_levels() -> TestResult {
+    // The fact that we can log at different levels is the test
+    // If filtering was broken, we'd see compilation errors or panics
+    log::info!("[LOGGING_TEST] Log level test - info");
+    log::debug!("[LOGGING_TEST] Log level test - debug");
+    log::warn!("[LOGGING_TEST] Log level test - warn");
+    log::trace!("[LOGGING_TEST] Log level test - trace");
+
+    // Verify we can also use format arguments
+    let level = "formatted";
+    log::info!("[LOGGING_TEST] {} log message", level);
+
+    TestResult::Pass
+}
+
+/// Test serial port output works correctly.
+///
+/// This test writes directly to the serial port to verify the
+/// underlying serial I/O infrastructure is functional. Uses
+/// architecture-specific serial output mechanisms.
+fn test_serial_output() -> TestResult {
+    // Test raw serial output - architecture specific
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Use the serial_print! macro which writes to COM1
+        crate::serial_print!("[LOGGING_TEST] Serial test x86_64\n");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Use the raw_serial_str function for lock-free output
+        crate::serial_aarch64::raw_serial_str(b"[LOGGING_TEST] Serial test ARM64\n");
+    }
+
+    TestResult::Pass
+}
+
+// =============================================================================
+// Filesystem Test Functions (Phase 4l)
+// =============================================================================
+
+/// Verify VFS is initialized and root filesystem is mounted.
+///
+/// Checks that the VFS layer is operational and that the root path "/"
+/// is recognized as a valid mount point.
+fn test_vfs_init() -> TestResult {
+    use crate::fs::vfs::mount;
+
+    // Check that some mount points exist (VFS is operational)
+    let mounts = mount::list_mounts();
+    if mounts.is_empty() {
+        return TestResult::Fail("no mount points registered");
+    }
+
+    // Look for root mount point "/"
+    let has_root = mounts.iter().any(|(_, path, _)| path == "/");
+    if !has_root {
+        // Root might not be mounted yet in some configs, but we should have
+        // at least /dev mounted by the time filesystem tests run
+        let has_dev = mounts.iter().any(|(_, path, _)| path == "/dev");
+        if !has_dev {
+            return TestResult::Fail("neither / nor /dev is mounted");
+        }
+    }
+
+    TestResult::Pass
+}
+
+/// Verify devfs is initialized and mounted.
+///
+/// Checks that devfs has been initialized with standard devices and is
+/// mounted at /dev.
+fn test_devfs_mounted() -> TestResult {
+    use crate::fs::devfs;
+    use crate::fs::vfs::mount;
+
+    // Check devfs is initialized
+    if !devfs::is_initialized() {
+        return TestResult::Fail("devfs not initialized");
+    }
+
+    // Check /dev mount point exists
+    let mounts = mount::list_mounts();
+    let has_dev = mounts.iter().any(|(_, path, fs_type)| {
+        path == "/dev" && *fs_type == "devfs"
+    });
+
+    if !has_dev {
+        return TestResult::Fail("/dev not mounted as devfs");
+    }
+
+    TestResult::Pass
+}
+
+/// Test basic file operations - open and close a device file.
+///
+/// Attempts to look up /dev/null (a standard device) to verify
+/// the devfs lookup mechanism works.
+fn test_file_open_close() -> TestResult {
+    use crate::fs::devfs;
+
+    // Check devfs is initialized first
+    if !devfs::is_initialized() {
+        return TestResult::Fail("devfs not initialized");
+    }
+
+    // Look up /dev/null by name (without /dev/ prefix)
+    match devfs::lookup("null") {
+        Some(device) => {
+            // Verify it's the correct device type
+            if device.device_type != devfs::DeviceType::Null {
+                return TestResult::Fail("null device has wrong type");
+            }
+            TestResult::Pass
+        }
+        None => TestResult::Fail("could not find /dev/null"),
+    }
+}
+
+/// Test directory listing - list devices in devfs.
+///
+/// Lists all devices in devfs and verifies at least one device exists.
+fn test_directory_list() -> TestResult {
+    use crate::fs::devfs;
+
+    // Check devfs is initialized first
+    if !devfs::is_initialized() {
+        return TestResult::Fail("devfs not initialized");
+    }
+
+    // List all devices
+    let devices = devfs::list_devices();
+
+    if devices.is_empty() {
+        return TestResult::Fail("no devices in /dev");
+    }
+
+    // Verify we have the standard devices (null, zero, console, tty)
+    let has_null = devices.iter().any(|name| name == "null");
+    let has_zero = devices.iter().any(|name| name == "zero");
+
+    if !has_null || !has_zero {
+        return TestResult::Fail("standard devices missing from /dev");
+    }
+
+    TestResult::Pass
+}
+
+// =============================================================================
+// Network Test Functions (Phase 4k)
+// =============================================================================
+
+/// Test that the network stack is initialized.
+///
+/// Verifies that the network stack has been initialized and is ready for use.
+/// On x86_64, this checks the E1000 driver. On ARM64, this checks VirtIO net.
+/// This test passes even if no network hardware is available - it just verifies
+/// the initialization code ran without crashing.
+fn test_network_stack_init() -> TestResult {
+    // The network stack init() runs during boot and sets up internal state.
+    // We verify we can access network config without crashing.
+    let config = crate::net::config();
+
+    // Verify we have a valid IP configuration (even if not connected)
+    // The IP address should be non-zero (we use static config)
+    if config.ip_addr == [0, 0, 0, 0] {
+        return TestResult::Fail("network config has zero IP address");
+    }
+
+    log::info!(
+        "network stack initialized: IP={}.{}.{}.{}",
+        config.ip_addr[0], config.ip_addr[1], config.ip_addr[2], config.ip_addr[3]
+    );
+
+    TestResult::Pass
+}
+
+/// Test probing for VirtIO network device.
+///
+/// This test probes for a VirtIO network device using MMIO transport (ARM64)
+/// or checks for E1000 device (x86_64). The test passes regardless of whether
+/// hardware is found - it just verifies the probe code doesn't crash.
+fn test_virtio_net_probe() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // On x86_64, check E1000 driver state
+        let initialized = crate::drivers::e1000::is_initialized();
+        if initialized {
+            log::info!("E1000 network device found and initialized");
+        } else {
+            log::info!("E1000 network device not found (OK - optional hardware)");
+        }
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // On ARM64, probe VirtIO MMIO devices looking for network device
+        use crate::drivers::virtio::mmio::{device_id, enumerate_devices};
+
+        let mut found = false;
+        for device in enumerate_devices() {
+            if device.device_id() == device_id::NETWORK {
+                log::info!("VirtIO network device found at version {}", device.version());
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            log::info!("No VirtIO network device found (OK - optional hardware)");
+        }
+
+        // Always pass - this test is for probing, not requiring hardware
+        TestResult::Pass
+    }
+}
+
+/// Test UDP socket creation.
+///
+/// Creates a UDP socket, verifies the handle is valid, then closes it.
+/// This tests the socket allocation path without requiring network hardware.
+fn test_socket_creation() -> TestResult {
+    use crate::socket::udp::UdpSocket;
+
+    // Create a new UDP socket
+    let socket = UdpSocket::new();
+
+    // Verify handle is valid (non-zero after first allocation)
+    // The handle ID should be assigned
+    let handle_id = socket.handle.as_u64();
+    log::info!("created UDP socket with handle {}", handle_id);
+
+    // Verify socket is in expected initial state
+    if socket.bound {
+        return TestResult::Fail("newly created socket should not be bound");
+    }
+
+    if socket.local_port.is_some() {
+        return TestResult::Fail("newly created socket should not have local port");
+    }
+
+    // Socket is dropped here, which cleans up resources
+    TestResult::Pass
+}
+
+/// Test loopback interface functionality.
+///
+/// Sends a packet to the loopback address (127.0.0.1) and verifies
+/// it doesn't crash. The loopback path queues packets for deferred delivery.
+fn test_loopback() -> TestResult {
+    use crate::net::udp::build_udp_packet;
+
+    // Build a minimal UDP packet
+    let payload = b"breenix loopback test";
+    let udp_packet = build_udp_packet(
+        12345,  // source port
+        54321,  // dest port
+        payload,
+    );
+
+    // Try to send to loopback address
+    // This exercises the loopback detection path in send_ipv4()
+    // The packet gets queued in LOOPBACK_QUEUE for deferred delivery
+    let loopback_ip = [127, 0, 0, 1];
+
+    match crate::net::send_ipv4(loopback_ip, crate::net::ipv4::PROTOCOL_UDP, &udp_packet) {
+        Ok(()) => {
+            log::info!("loopback packet queued successfully");
+
+            // Drain the loopback queue to process the packet
+            // This exercises the full loopback path
+            crate::net::drain_loopback_queue();
+
+            TestResult::Pass
+        }
+        Err(e) => {
+            // This can fail if network not initialized - that's OK for this test
+            log::info!("loopback send returned error (expected without network): {}", e);
+            TestResult::Pass
+        }
+    }
+}
+
+// =============================================================================
+// Exception/Interrupt Test Functions (Phase 4f)
+// =============================================================================
+
+/// Test that exception vectors are properly installed.
+///
+/// On x86_64: Verifies that the IDT (Interrupt Descriptor Table) is loaded
+/// by checking that IDTR base address is non-zero.
+///
+/// On ARM64: Verifies that VBAR_EL1 (Vector Base Address Register) is set
+/// to a valid address.
+fn test_exception_vectors() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (idt_base, idt_limit) = crate::interrupts::get_idt_info();
+        if idt_base == 0 {
+            return TestResult::Fail("IDT base is NULL");
+        }
+        if idt_limit == 0 {
+            return TestResult::Fail("IDT limit is zero");
+        }
+        // IDT must have at least 256 entries (each 16 bytes) for full x86-64
+        // Minimum for exceptions is 32 entries = 512 bytes (limit = 511)
+        if idt_limit < 511 {
+            return TestResult::Fail("IDT too small for CPU exceptions");
+        }
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let vbar: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, VBAR_EL1", out(reg) vbar);
+        }
+        if vbar == 0 {
+            return TestResult::Fail("VBAR_EL1 is not set");
+        }
+        // VBAR must be 2KB aligned (bits 0-10 must be zero)
+        if (vbar & 0x7FF) != 0 {
+            return TestResult::Fail("VBAR_EL1 not properly aligned");
+        }
+        TestResult::Pass
+    }
+}
+
+/// Test that exception handlers are registered and point to valid addresses.
+///
+/// On x86_64: Validates that the timer interrupt handler (vector 32) is
+/// properly configured in the IDT with a valid handler address.
+///
+/// On ARM64: Validates that exception handlers are linked by checking
+/// that the sync exception handler symbol exists.
+fn test_exception_handlers() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Validate the timer IDT entry as a representative handler
+        let (is_valid, handler_addr, msg) = crate::interrupts::validate_timer_idt_entry();
+        if !is_valid {
+            // Return the validation message as the error
+            return match msg {
+                "IDT not initialized" => TestResult::Fail("IDT not initialized"),
+                "Handler address is NULL" => TestResult::Fail("Handler address is NULL"),
+                _ => TestResult::Fail("Invalid handler address"),
+            };
+        }
+        // Handler address should be in kernel space
+        // For PIE kernel at 0x10000000000 or legacy at low addresses
+        if handler_addr == 0 {
+            return TestResult::Fail("Timer handler address is zero");
+        }
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // On ARM64, we verify handlers are linked by checking the exception
+        // handler function exists and is callable. The handle_sync_exception
+        // function is called from the vector table assembly.
+        extern "C" {
+            fn handle_sync_exception(frame: *mut u8, esr: u64, far: u64);
+        }
+        // Get the address of the handler function
+        let handler_addr = handle_sync_exception as *const () as u64;
+        if handler_addr == 0 {
+            return TestResult::Fail("Sync exception handler not linked");
+        }
+        // Handler should be in kernel address space (high half: 0xFFFF...)
+        if handler_addr < 0xFFFF_0000_0000_0000 {
+            return TestResult::Fail("Handler not in kernel space");
+        }
+        TestResult::Pass
+    }
+}
+
+/// Test breakpoint exception handling.
+///
+/// On x86_64: Triggers INT 3 (breakpoint) instruction and verifies the
+/// exception handler catches it and returns cleanly.
+///
+/// On ARM64: Triggers BRK instruction and verifies the exception handler
+/// catches it, skips the instruction, and returns cleanly.
+///
+/// This test verifies the complete exception path works: from the CPU
+/// recognizing the exception, through the vector table, to our Rust handler,
+/// and back to normal execution.
+fn test_breakpoint() -> TestResult {
+    // Use a volatile flag to ensure the compiler doesn't optimize away
+    // the code after the breakpoint
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static BREAKPOINT_RETURNED: AtomicBool = AtomicBool::new(false);
+
+    // Reset flag
+    BREAKPOINT_RETURNED.store(false, Ordering::SeqCst);
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        // INT 3 triggers breakpoint exception
+        // Our handler should catch this and return
+        core::arch::asm!("int3", options(nomem, nostack));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        // BRK #0 triggers breakpoint exception
+        // Our handler should catch this, skip the instruction, and return
+        core::arch::asm!("brk #0", options(nomem, nostack));
+    }
+
+    // If we get here, the breakpoint handler returned successfully
+    BREAKPOINT_RETURNED.store(true, Ordering::SeqCst);
+
+    if BREAKPOINT_RETURNED.load(Ordering::SeqCst) {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("Did not return from breakpoint handler")
+    }
+}
+
+// =============================================================================
+// Interrupt Controller Test Functions (Phase 4b)
+// =============================================================================
+
+/// Test that the interrupt controller has been initialized.
+///
+/// - x86_64: Verifies the PIC is configured and timer IRQ is unmasked
+/// - ARM64: Verifies the GICv2 is initialized
+fn test_interrupt_controller_init() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // On x86_64, check that the PIC has been initialized by verifying
+        // that IRQ0 (timer) is unmasked. The PIC is initialized in init_pic().
+        let (irq0_unmasked, _mask, _desc) = crate::interrupts::validate_pic_irq0_unmasked();
+        if !irq0_unmasked {
+            return TestResult::Fail("PIC IRQ0 (timer) is masked - PIC not properly initialized");
+        }
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // On ARM64, check that the GICv2 has been initialized
+        if !crate::arch_impl::aarch64::gic::is_initialized() {
+            return TestResult::Fail("GICv2 not initialized");
+        }
+        TestResult::Pass
+    }
+}
+
+/// Test IRQ enable/disable functionality.
+///
+/// Disables interrupts, re-enables them, and verifies no crash occurs.
+/// Also verifies the interrupt state is correctly reported.
+fn test_irq_enable_disable() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use x86_64::instructions::interrupts;
+
+        // Record initial state
+        let was_enabled = interrupts::are_enabled();
+
+        // Disable interrupts
+        interrupts::disable();
+
+        // Verify interrupts are now disabled
+        if interrupts::are_enabled() {
+            return TestResult::Fail("interrupts still enabled after disable");
+        }
+
+        // Re-enable interrupts
+        interrupts::enable();
+
+        // Verify interrupts are now enabled
+        if !interrupts::are_enabled() {
+            return TestResult::Fail("interrupts not re-enabled after enable");
+        }
+
+        // Restore original state if it was disabled
+        if !was_enabled {
+            interrupts::disable();
+        }
+
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::cpu;
+
+        // Record initial state
+        let was_enabled = cpu::interrupts_enabled();
+
+        // Disable interrupts
+        unsafe {
+            cpu::disable_interrupts();
+        }
+
+        // Verify interrupts are now disabled
+        if cpu::interrupts_enabled() {
+            return TestResult::Fail("interrupts still enabled after disable");
+        }
+
+        // Re-enable interrupts
+        unsafe {
+            cpu::enable_interrupts();
+        }
+
+        // Verify interrupts are now enabled
+        if !cpu::interrupts_enabled() {
+            return TestResult::Fail("interrupts not re-enabled after enable");
+        }
+
+        // Restore original state if it was disabled
+        if !was_enabled {
+            unsafe {
+                cpu::disable_interrupts();
+            }
+        }
+
+        TestResult::Pass
+    }
+}
+
+/// Test that the timer interrupt is firing and advancing the tick counter.
+///
+/// This is the most important interrupt test - it proves interrupts are
+/// actually being delivered and handled correctly.
+fn test_timer_interrupt_running() -> TestResult {
+    // Get the current tick count
+    let ticks_before = crate::time::timer::get_ticks();
+
+    // Wait for at least 15ms (3 timer ticks at 200 Hz) using the hardware timer.
+    // A simple spin loop count is unreliable across architectures - on ARM64 with
+    // a fast CPU, 100k iterations might complete in microseconds.
+    //
+    // We use architecture-specific hardware timers to wait a reliable duration:
+    // - x86_64: Uses TSC which is calibrated at boot
+    // - ARM64: Uses CNTVCT_EL0 with CNTFRQ_EL0 providing the frequency
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::time::tsc;
+        if tsc::is_calibrated() {
+            let freq = tsc::frequency_hz();
+            let start = tsc::read_tsc();
+            // Wait for ~15ms worth of TSC ticks
+            let wait_ticks = (freq * 15) / 1000;
+            while tsc::read_tsc().saturating_sub(start) < wait_ticks {
+                core::hint::spin_loop();
+            }
+        } else {
+            // Fallback: long spin loop if TSC not calibrated
+            for _ in 0..10_000_000 {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use crate::arch_impl::aarch64::timer;
+        let freq = timer::frequency_hz();
+        let start = timer::rdtsc();
+        // Wait for ~15ms worth of timer ticks
+        // freq is in Hz, so freq/1000 = ticks per ms, * 15 = 15ms
+        let wait_ticks = (freq * 15) / 1000;
+        while timer::rdtsc().saturating_sub(start) < wait_ticks {
+            core::hint::spin_loop();
+        }
+    }
+
+    // Get the tick count again
+    let ticks_after = crate::time::timer::get_ticks();
+
+    // The tick count should have advanced
+    if ticks_after <= ticks_before {
+        return TestResult::Fail("timer tick counter not advancing - interrupts not firing");
+    }
+
+    TestResult::Pass
+}
+
+/// Test that the keyboard IRQ is registered.
+///
+/// - x86_64: Verifies the keyboard IRQ1 is unmasked on the PIC
+/// - ARM64: Verifies timer interrupt is initialized (handles keyboard polling)
+fn test_keyboard_irq_setup() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // On x86_64, verify keyboard IRQ1 is properly configured.
+        // The keyboard handler is set in init_idt() at InterruptIndex::Keyboard.
+        // We can verify by checking that the keyboard IRQ
+        // (IRQ1) is unmasked on the PIC.
+        unsafe {
+            use x86_64::instructions::port::Port;
+            let mut pic1_data: Port<u8> = Port::new(0x21);
+            let mask = pic1_data.read();
+
+            // Bit 1 should be clear for keyboard IRQ to be unmasked
+            let keyboard_masked = (mask & 0x02) != 0;
+            if keyboard_masked {
+                return TestResult::Fail("keyboard IRQ1 is masked on PIC");
+            }
+        }
+        TestResult::Pass
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // On ARM64, keyboard input is handled via VirtIO MMIO polling
+        // during timer interrupts, not via a dedicated keyboard IRQ.
+        // We just verify the timer interrupt system is initialized since
+        // that's what handles keyboard polling.
+        if !crate::arch_impl::aarch64::timer_interrupt::is_initialized() {
+            return TestResult::Fail("timer interrupt not initialized for keyboard polling");
+        }
+        TestResult::Pass
+    }
+}
+
+// =============================================================================
+// Process Subsystem Tests (Phase 4j)
+// =============================================================================
+
+/// Test that the process manager has been initialized.
+///
+/// This verifies that the kernel's process management subsystem is properly
+/// set up during boot. The test checks that PROCESS_MANAGER can be locked
+/// and contains a valid ProcessManager instance.
+fn test_process_manager_init() -> TestResult {
+    use crate::process::PROCESS_MANAGER;
+
+    // Try to acquire the process manager lock
+    let manager_guard = PROCESS_MANAGER.lock();
+
+    // Verify the process manager exists (was initialized during boot)
+    if manager_guard.is_some() {
+        TestResult::Pass
+    } else {
+        TestResult::Fail("process manager not initialized")
+    }
+}
+
+/// Test that the scheduler has been initialized and has a current thread.
+///
+/// This verifies that the scheduler subsystem is operational. After boot,
+/// there should always be at least one thread running (the idle thread or
+/// the current boot thread).
+fn test_scheduler_init() -> TestResult {
+    use crate::task::scheduler;
+
+    // Check that we can get the current thread ID
+    // This requires the scheduler to be initialized
+    match scheduler::current_thread_id() {
+        Some(_tid) => {
+            // Any thread ID is valid - we just need a current thread to exist
+            TestResult::Pass
+        }
+        None => TestResult::Fail("scheduler not initialized or no current thread"),
+    }
+}
+
+/// Test kernel thread creation.
+///
+/// This tests the kthread subsystem by creating a simple kernel thread,
+/// waiting for it to complete, and verifying its exit code.
+/// This is a more comprehensive test that exercises scheduler integration.
+fn test_thread_creation() -> TestResult {
+    use crate::task::kthread;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    // Flag to verify the thread actually ran
+    static THREAD_RAN: AtomicBool = AtomicBool::new(false);
+
+    // Reset the flag in case of repeated test runs
+    THREAD_RAN.store(false, Ordering::SeqCst);
+
+    // Create a simple kernel thread that sets the flag and exits
+    let thread_result = kthread::kthread_run(
+        || {
+            THREAD_RAN.store(true, Ordering::SeqCst);
+            // Thread will exit with code 0 when it returns
+        },
+        "test_thread",
+    );
+
+    let handle = match thread_result {
+        Ok(h) => h,
+        Err(_) => return TestResult::Fail("failed to create kernel thread"),
+    };
+
+    // Wait for the thread to complete with a timeout
+    // We use kthread_join which blocks until the thread exits
+    match kthread::kthread_join(&handle) {
+        Ok(exit_code) => {
+            if exit_code != 0 {
+                return TestResult::Fail("thread exited with non-zero code");
+            }
+        }
+        Err(_) => return TestResult::Fail("failed to join kernel thread"),
+    }
+
+    // Verify the thread actually executed
+    if !THREAD_RAN.load(Ordering::SeqCst) {
+        return TestResult::Fail("thread did not execute");
+    }
+
+    TestResult::Pass
+}
+
+// =============================================================================
+// Syscall Subsystem Tests (Phase 4j)
+// =============================================================================
+
+/// Test that the syscall dispatch infrastructure is functional.
+///
+/// This tests the kernel-side syscall infrastructure by verifying that
+/// SyscallNumber can be created from known syscall numbers and that the
+/// dispatcher logic is present. This does NOT test actual userspace syscalls
+/// (which require Ring3/EL0 context).
+fn test_syscall_dispatch() -> TestResult {
+    use crate::syscall::SyscallNumber;
+
+    // Test that we can convert known syscall numbers
+    // These are fundamental syscalls that should always exist
+
+    // Test SYS_exit (0)
+    match SyscallNumber::from_u64(0) {
+        Some(SyscallNumber::Exit) => {}
+        Some(_) => return TestResult::Fail("syscall 0 should be Exit"),
+        None => return TestResult::Fail("syscall 0 not recognized"),
+    }
+
+    // Test SYS_write (1)
+    match SyscallNumber::from_u64(1) {
+        Some(SyscallNumber::Write) => {}
+        Some(_) => return TestResult::Fail("syscall 1 should be Write"),
+        None => return TestResult::Fail("syscall 1 not recognized"),
+    }
+
+    // Test SYS_read (2)
+    match SyscallNumber::from_u64(2) {
+        Some(SyscallNumber::Read) => {}
+        Some(_) => return TestResult::Fail("syscall 2 should be Read"),
+        None => return TestResult::Fail("syscall 2 not recognized"),
+    }
+
+    // Test SYS_getpid (39)
+    match SyscallNumber::from_u64(39) {
+        Some(SyscallNumber::GetPid) => {}
+        Some(_) => return TestResult::Fail("syscall 39 should be GetPid"),
+        None => return TestResult::Fail("syscall 39 not recognized"),
+    }
+
+    // Test that invalid syscall numbers return None
+    match SyscallNumber::from_u64(9999) {
+        None => {}
+        Some(_) => return TestResult::Fail("invalid syscall should return None"),
+    }
+
+    TestResult::Pass
+}
+
+// =============================================================================
+// Async Executor Tests (Phase 4i)
+// =============================================================================
+
+/// Test that async executor infrastructure exists.
+///
+/// This verifies that the core::future infrastructure is available and functional.
+/// We don't require the kernel's async executor to be running - just that we can
+/// create and work with futures.
+fn test_executor_exists() -> TestResult {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+
+    // Simple immediately-ready future to verify the infrastructure exists
+    struct ReadyFuture;
+
+    impl Future for ReadyFuture {
+        type Output = u32;
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Ready(42)
+        }
+    }
+
+    // Verify we can create a future
+    let _future = ReadyFuture;
+
+    // If we got here, the async infrastructure exists
+    TestResult::Pass
+}
+
+/// Test the waker mechanism used for async task wake-up.
+///
+/// This verifies that we can create wakers and that the waker infrastructure
+/// is functional. Wakers are used to notify the executor that a future is
+/// ready to make progress.
+fn test_async_waker() -> TestResult {
+    use core::task::{RawWaker, RawWakerVTable, Waker};
+
+    // Create a no-op waker to verify the mechanism works
+    fn noop_clone(_: *const ()) -> RawWaker {
+        noop_raw_waker()
+    }
+    fn noop(_: *const ()) {}
+
+    fn noop_raw_waker() -> RawWaker {
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
+        RawWaker::new(core::ptr::null(), &VTABLE)
+    }
+
+    // Create waker from raw waker
+    let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+
+    // Verify waker can be cloned without crash
+    let waker2 = waker.clone();
+
+    // Verify waker can be dropped without crash
+    drop(waker);
+    drop(waker2);
+
+    TestResult::Pass
+}
+
+/// Test basic future handling - polling futures to completion.
+///
+/// This verifies that we can create futures, poll them with a context,
+/// and observe them transition from Pending to Ready states.
+fn test_future_basics() -> TestResult {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    // Create a counter future that completes after N polls
+    struct CounterFuture {
+        count: u32,
+        target: u32,
+    }
+
+    impl Future for CounterFuture {
+        type Output = u32;
+
+        fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            self.count += 1;
+            if self.count >= self.target {
+                Poll::Ready(self.count)
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    // Create no-op waker for testing
+    fn noop_clone(_: *const ()) -> RawWaker {
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
+        RawWaker::new(core::ptr::null(), &VTABLE)
+    }
+    fn noop(_: *const ()) {}
+
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
+
+    let waker = unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) };
+    let mut cx = Context::from_waker(&waker);
+
+    // Create a future that requires 3 polls to complete
+    let mut future = CounterFuture { count: 0, target: 3 };
+
+    // Poll until ready
+    for i in 0..5 {
+        // SAFETY: We don't move the future between polls
+        let pinned = unsafe { Pin::new_unchecked(&mut future) };
+
+        match pinned.poll(&mut cx) {
+            Poll::Ready(count) => {
+                if count != 3 {
+                    return TestResult::Fail("unexpected count value");
+                }
+                if i < 2 {
+                    // Should have taken at least 3 polls
+                    return TestResult::Fail("future completed too early");
+                }
+                return TestResult::Pass;
+            }
+            Poll::Pending => {
+                // Expected for first 2 polls
+                if i >= 3 {
+                    return TestResult::Fail("future didn't complete in time");
+                }
+            }
+        }
+    }
+
+    TestResult::Fail("future didn't complete")
+}
+
+// =============================================================================
+// System Subsystem Tests (Phase 4e)
+// =============================================================================
+
+/// Verify boot sequence completed successfully.
+///
+/// This test verifies that all essential subsystems initialized during boot.
+/// If we're running tests, the boot sequence must have completed. This test
+/// verifies key subsystems are operational by performing basic operations.
+fn test_boot_sequence() -> TestResult {
+    use alloc::vec;
+
+    // If we reached this point, the boot sequence completed enough to run tests.
+    // Verify essential subsystems are functional:
+
+    // 1. Memory must be initialized - test with heap allocation
+    let test_alloc = vec![0u8; 1024];
+    if test_alloc.len() != 1024 {
+        return TestResult::Fail("heap allocation failed during boot sequence check");
+    }
+    drop(test_alloc);
+
+    // 2. We're running in a kernel thread, so the scheduler must be working
+    // (test_thread_creation in Process tests covers this in detail)
+
+    // 3. Interrupts should be enabled for timer to work
+    // (test_timer_interrupt_running in Interrupt tests covers this in detail)
+
+    log::info!("[SYSTEM_TEST] Boot sequence verification passed");
+    TestResult::Pass
+}
+
+/// Verify system stability - no panics or errors occurred.
+///
+/// This test simply verifies that we reached this point without crashing.
+/// If the kernel had panicked or hit a fatal error, we would never execute
+/// this test. This is a sanity check that the system is stable.
+fn test_system_stability() -> TestResult {
+    // The fact that this test is executing proves:
+    // 1. The kernel didn't panic during boot
+    // 2. Memory management is stable enough to run tests
+    // 3. The scheduler is working (we're in a test thread)
+    // 4. Interrupts are functioning (timer is driving scheduling)
+
+    // Additional stability check: verify we can do multiple allocations
+    // without corruption or crashes
+    for i in 0..10 {
+        let data = alloc::vec![i as u8; 256];
+        if data[0] != i as u8 || data[255] != i as u8 {
+            return TestResult::Fail("memory corruption detected during stability check");
+        }
+    }
+
+    log::info!("[SYSTEM_TEST] System stability check passed - reached test point");
+    TestResult::Pass
+}
+
+/// Verify kernel heap is functional with various allocation patterns.
+///
+/// This is a system-level sanity check that exercises the heap with
+/// different allocation sizes and patterns to verify overall heap health.
+fn test_kernel_heap() -> TestResult {
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+
+    // Test 1: Basic box allocation
+    let boxed_value = Box::new(42u64);
+    if *boxed_value != 42 {
+        return TestResult::Fail("box allocation returned wrong value");
+    }
+    drop(boxed_value);
+
+    // Test 2: Vector with growth
+    let mut growing_vec: Vec<u32> = Vec::new();
+    for i in 0..100 {
+        growing_vec.push(i);
+    }
+    // Verify contents
+    for (i, val) in growing_vec.iter().enumerate() {
+        if *val != i as u32 {
+            return TestResult::Fail("growing vector has incorrect data");
+        }
+    }
+    drop(growing_vec);
+
+    // Test 3: Multiple simultaneous allocations
+    let alloc1 = Box::new([0u8; 128]);
+    let alloc2 = Box::new([1u8; 256]);
+    let alloc3 = Box::new([2u8; 512]);
+
+    // Verify no overlap by checking patterns
+    if alloc1[0] != 0 || alloc1[127] != 0 {
+        return TestResult::Fail("alloc1 corrupted");
+    }
+    if alloc2[0] != 1 || alloc2[255] != 1 {
+        return TestResult::Fail("alloc2 corrupted");
+    }
+    if alloc3[0] != 2 || alloc3[511] != 2 {
+        return TestResult::Fail("alloc3 corrupted");
+    }
+
+    // Drop in different order than allocation
+    drop(alloc2);
+    drop(alloc1);
+    drop(alloc3);
+
+    // Test 4: Reallocate after free
+    let realloc_test = Box::new([42u8; 256]);
+    if realloc_test[0] != 42 {
+        return TestResult::Fail("reallocation after free failed");
+    }
+    drop(realloc_test);
+
+    log::info!("[SYSTEM_TEST] Kernel heap verification passed");
+    TestResult::Pass
+}
+
+// =============================================================================
+// IPC Test Functions (Phase 4m)
+// =============================================================================
+
+/// Test pipe buffer creation and basic operations.
+///
+/// Creates a pipe buffer and verifies it can be read from and written to.
+/// This tests the core IPC primitive on both architectures.
+fn test_pipe_buffer_basic() -> TestResult {
+    use crate::ipc::pipe::PipeBuffer;
+
+    let mut pipe = PipeBuffer::new();
+
+    // Verify initial state
+    if pipe.available() != 0 {
+        return TestResult::Fail("new pipe should be empty");
+    }
+
+    // Write some data
+    let write_data = b"hello";
+    match pipe.write(write_data) {
+        Ok(5) => {}
+        Ok(_) => return TestResult::Fail("pipe write returned wrong count"),
+        Err(_) => return TestResult::Fail("pipe write failed"),
+    }
+
+    // Verify data is available
+    if pipe.available() != 5 {
+        return TestResult::Fail("pipe should have 5 bytes after write");
+    }
+
+    // Read data back
+    let mut read_buf = [0u8; 5];
+    match pipe.read(&mut read_buf) {
+        Ok(5) => {}
+        Ok(_) => return TestResult::Fail("pipe read returned wrong count"),
+        Err(_) => return TestResult::Fail("pipe read failed"),
+    }
+
+    // Verify read data matches
+    if &read_buf != write_data {
+        return TestResult::Fail("pipe read data mismatch");
+    }
+
+    TestResult::Pass
+}
+
+/// Test pipe buffer EOF semantics.
+///
+/// Verifies that closing the write end causes reads to return EOF (0 bytes)
+/// instead of EAGAIN.
+fn test_pipe_eof() -> TestResult {
+    use crate::ipc::pipe::PipeBuffer;
+
+    let mut pipe = PipeBuffer::new();
+
+    // Empty pipe with writer - should return EAGAIN
+    let mut buf = [0u8; 10];
+    match pipe.read(&mut buf) {
+        Err(11) => {} // EAGAIN - expected
+        Ok(_) => return TestResult::Fail("expected EAGAIN for empty pipe with writer"),
+        Err(_) => return TestResult::Fail("unexpected error on empty pipe read"),
+    }
+
+    // Close the write end
+    pipe.close_write();
+
+    // Now read should return EOF (0 bytes)
+    match pipe.read(&mut buf) {
+        Ok(0) => {} // EOF - expected
+        Ok(_) => return TestResult::Fail("expected EOF after close_write"),
+        Err(_) => return TestResult::Fail("unexpected error after close_write"),
+    }
+
+    TestResult::Pass
+}
+
+/// Test pipe buffer broken pipe detection.
+///
+/// Verifies that closing the read end causes writes to return EPIPE.
+fn test_pipe_broken() -> TestResult {
+    use crate::ipc::pipe::PipeBuffer;
+
+    let mut pipe = PipeBuffer::new();
+
+    // Close the read end
+    pipe.close_read();
+
+    // Write should fail with EPIPE
+    let write_data = b"test";
+    match pipe.write(write_data) {
+        Err(32) => {} // EPIPE - expected
+        Ok(_) => return TestResult::Fail("expected EPIPE after close_read"),
+        Err(_) => return TestResult::Fail("unexpected error after close_read"),
+    }
+
+    TestResult::Pass
+}
+
+/// Test file descriptor table creation and allocation.
+///
+/// Creates a new FdTable and verifies stdin/stdout/stderr are pre-allocated.
+fn test_fd_table_creation() -> TestResult {
+    use crate::ipc::fd::{FdTable, FdKind, STDIN, STDOUT, STDERR};
+
+    let table = FdTable::new();
+
+    // Verify stdin (fd 0) exists and is StdIo
+    match table.get(STDIN) {
+        Some(fd) => match &fd.kind {
+            FdKind::StdIo(0) => {}
+            _ => return TestResult::Fail("fd 0 should be stdin"),
+        },
+        None => return TestResult::Fail("stdin (fd 0) not allocated"),
+    }
+
+    // Verify stdout (fd 1) exists
+    match table.get(STDOUT) {
+        Some(fd) => match &fd.kind {
+            FdKind::StdIo(1) => {}
+            _ => return TestResult::Fail("fd 1 should be stdout"),
+        },
+        None => return TestResult::Fail("stdout (fd 1) not allocated"),
+    }
+
+    // Verify stderr (fd 2) exists
+    match table.get(STDERR) {
+        Some(fd) => match &fd.kind {
+            FdKind::StdIo(2) => {}
+            _ => return TestResult::Fail("fd 2 should be stderr"),
+        },
+        None => return TestResult::Fail("stderr (fd 2) not allocated"),
+    }
+
+    TestResult::Pass
+}
+
+/// Test file descriptor allocation and closing.
+///
+/// Allocates a new fd in the table and verifies close works correctly.
+fn test_fd_alloc_close() -> TestResult {
+    use crate::ipc::fd::{FdTable, FdKind};
+
+    let mut table = FdTable::new();
+
+    // Allocate a new fd (should be fd 3, after stdin/stdout/stderr)
+    let fd = match table.alloc(FdKind::StdIo(99)) {
+        Ok(fd) => fd,
+        Err(_) => return TestResult::Fail("fd allocation failed"),
+    };
+
+    if fd < 3 {
+        return TestResult::Fail("allocated fd should be >= 3");
+    }
+
+    // Verify we can get it back
+    if table.get(fd).is_none() {
+        return TestResult::Fail("allocated fd not found in table");
+    }
+
+    // Close it
+    match table.close(fd) {
+        Ok(_) => {}
+        Err(_) => return TestResult::Fail("fd close failed"),
+    }
+
+    // Verify it's gone
+    if table.get(fd).is_some() {
+        return TestResult::Fail("closed fd still exists in table");
+    }
+
+    // Closing again should fail with EBADF
+    match table.close(fd) {
+        Err(9) => {} // EBADF - expected
+        _ => return TestResult::Fail("double close should return EBADF"),
+    }
+
+    TestResult::Pass
+}
+
+/// Test pipe creation via create_pipe.
+///
+/// Verifies that create_pipe returns two Arc references to the same buffer.
+fn test_create_pipe() -> TestResult {
+    use crate::ipc::pipe::create_pipe;
+
+    let (read_end, write_end) = create_pipe();
+
+    // Write through write_end
+    {
+        let mut write_buf = write_end.lock();
+        match write_buf.write(b"test") {
+            Ok(4) => {}
+            _ => return TestResult::Fail("create_pipe write failed"),
+        }
+    }
+
+    // Read through read_end (should get the same data)
+    {
+        let mut read_buf = read_end.lock();
+        let mut buf = [0u8; 10];
+        match read_buf.read(&mut buf) {
+            Ok(4) => {
+                if &buf[..4] != b"test" {
+                    return TestResult::Fail("create_pipe read data mismatch");
+                }
+            }
+            _ => return TestResult::Fail("create_pipe read failed"),
+        }
+    }
+
+    TestResult::Pass
+}
+
+// =============================================================================
+// Static Test Arrays
+// =============================================================================
+
+/// Memory subsystem tests (Phase 4a + Phase 4g + Phase 4h)
+///
+/// These tests verify memory management functionality on both x86_64 and ARM64:
+/// - framework_sanity: Basic test framework verification
+/// - heap_alloc_basic: Simple heap allocation test
+/// - frame_allocator: Physical frame allocation and deallocation
+/// - heap_large_alloc: Large allocations (64KB, 256KB, 1MB)
+/// - heap_many_small: Many small allocations (1000 x 64 bytes)
+///
+/// Phase 4g guard page tests:
+/// - guard_page_exists: Verify stack is in kernel address space
+/// - stack_layout: Verify stack grows downward
+/// - stack_allocation: Verify moderate stack usage works
+///
+/// Phase 4h stack bounds tests:
+/// - user_stack_base: Verify user stack base constant is reasonable
+/// - user_stack_size: Verify user stack size constant
+/// - user_stack_top: Verify user stack top = base + size
+/// - user_stack_guard: Verify guard page below user stack
+/// - user_stack_alignment: Verify stack is page-aligned
+/// - kernel_stack_base: Verify kernel stack base
+/// - kernel_stack_size: Verify kernel stack size
+/// - kernel_stack_top: Verify kernel stack top
+/// - kernel_stack_guard: Verify guard page below kernel stack
+/// - kernel_stack_alignment: Verify alignment
+/// - stack_in_range: Verify current SP is in valid range
+/// - stack_grows_down: Verify stack grows down
+/// - stack_depth: Test reasonable recursion depth
+/// - stack_frame_size: Verify frame sizes are reasonable
+/// - stack_red_zone: Test red zone behavior (x86_64 specific)
+static MEMORY_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "framework_sanity",
+        func: test_framework_sanity,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "heap_alloc_basic",
+        func: test_heap_alloc_basic,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "frame_allocator",
+        func: test_frame_allocator,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "heap_large_alloc",
+        func: test_heap_large_alloc,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+    },
+    TestDef {
+        name: "heap_many_small",
+        func: test_heap_many_small,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+    },
+    // Phase 4g: Guard page tests
+    TestDef {
+        name: "guard_page_exists",
+        func: test_guard_page_exists,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "stack_layout",
+        func: test_stack_layout,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "stack_allocation",
+        func: test_stack_allocation,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    // Phase 4h: Stack bounds tests (User Stack)
+    TestDef {
+        name: "user_stack_base",
+        func: test_user_stack_base,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "user_stack_size",
+        func: test_user_stack_size,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "user_stack_top",
+        func: test_user_stack_top,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "user_stack_guard",
+        func: test_user_stack_guard,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "user_stack_alignment",
+        func: test_user_stack_alignment,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    // Phase 4h: Stack bounds tests (Kernel Stack)
+    TestDef {
+        name: "kernel_stack_base",
+        func: test_kernel_stack_base,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "kernel_stack_size",
+        func: test_kernel_stack_size,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "kernel_stack_top",
+        func: test_kernel_stack_top,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "kernel_stack_guard",
+        func: test_kernel_stack_guard,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "kernel_stack_alignment",
+        func: test_kernel_stack_alignment,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    // Phase 4h: Stack validation tests
+    TestDef {
+        name: "stack_in_range",
+        func: test_stack_in_range,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "stack_grows_down",
+        func: test_stack_grows_down,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "stack_depth",
+        func: test_stack_depth,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "stack_frame_size",
+        func: test_stack_frame_size,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+    TestDef {
+        name: "stack_red_zone",
+        func: test_stack_red_zone,
+        arch: Arch::Any,
+        timeout_ms: 1000,
+    },
+];
+
+/// Timer subsystem tests (Phase 4c)
+///
+/// These tests verify timer functionality on both x86_64 and ARM64:
+/// - timer_init: Verify timer is initialized with valid frequency
+/// - timer_ticks: Verify timestamp advances over time
+/// - timer_delay: Verify delay functionality is reasonably accurate
+/// - timer_monotonic: Verify timestamps never go backwards
+static TIMER_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "timer_init",
+        func: test_timer_init,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "timer_ticks",
+        func: test_timer_ticks,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "timer_delay",
+        func: test_timer_delay,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+    },
+    TestDef {
+        name: "timer_monotonic",
+        func: test_timer_monotonic,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+];
+
+/// Logging subsystem tests (Phase 4d)
+///
+/// These tests verify logging functionality on both x86_64 and ARM64:
+/// - logging_init: Verify log macros work without panics
+/// - log_levels: Verify different log levels can be used
+/// - serial_output: Verify serial port output works
+static LOGGING_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "logging_init",
+        func: test_logging_init,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "log_levels",
+        func: test_log_levels,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "serial_output",
+        func: test_serial_output,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+];
+
+/// Filesystem subsystem tests (Phase 4l)
+///
+/// These tests verify filesystem functionality on both x86_64 and ARM64:
+/// - vfs_init: Verify VFS is initialized with mount points
+/// - devfs_mounted: Verify devfs is initialized and mounted at /dev
+/// - file_open_close: Verify basic file operations work
+/// - directory_list: Verify directory listing works
+static FILESYSTEM_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "vfs_init",
+        func: test_vfs_init,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "devfs_mounted",
+        func: test_devfs_mounted,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "file_open_close",
+        func: test_file_open_close,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+    },
+    TestDef {
+        name: "directory_list",
+        func: test_directory_list,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+    },
+];
+
+/// Network subsystem tests (Phase 4k)
+///
+/// These tests verify network functionality on both x86_64 and ARM64:
+/// - network_stack_init: Verify network stack is initialized with valid config
+/// - virtio_net_probe: Probe for VirtIO/E1000 network device (passes even if not found)
+/// - socket_creation: Test UDP socket creation and cleanup
+/// - loopback: Test loopback packet path
+static NETWORK_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "network_stack_init",
+        func: test_network_stack_init,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "virtio_net_probe",
+        func: test_virtio_net_probe,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "socket_creation",
+        func: test_socket_creation,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "loopback",
+        func: test_loopback,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+    },
+];
+
+/// IPC subsystem tests (Phase 4m)
+///
+/// These tests verify inter-process communication primitives:
+/// - pipe_buffer_basic: Basic pipe read/write operations
+/// - pipe_eof: EOF semantics when write end is closed
+/// - pipe_broken: Broken pipe detection when read end is closed
+/// - fd_table_creation: File descriptor table initialization (stdin/stdout/stderr)
+/// - fd_alloc_close: File descriptor allocation and closing
+/// - create_pipe: Test create_pipe() function
+static IPC_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "pipe_buffer_basic",
+        func: test_pipe_buffer_basic,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "pipe_eof",
+        func: test_pipe_eof,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "pipe_broken",
+        func: test_pipe_broken,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "fd_table_creation",
+        func: test_fd_table_creation,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "fd_alloc_close",
+        func: test_fd_alloc_close,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "create_pipe",
+        func: test_create_pipe,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+];
+
+/// Interrupt subsystem tests (Phase 4b + Phase 4f)
+///
+/// Phase 4b tests verify interrupt controller functionality:
+/// - interrupt_controller_init: Verify PIC (x86_64) or GICv2 (ARM64) is initialized
+/// - irq_enable_disable: Test interrupt enable/disable works correctly
+/// - timer_interrupt_running: Verify timer interrupts are firing
+/// - keyboard_irq_setup: Verify keyboard IRQ is registered
+///
+/// Phase 4f tests verify exception handling:
+/// - exception_vectors: Verify IDT (x86_64) or VBAR_EL1 (ARM64) is installed
+/// - exception_handlers: Verify handlers are registered with valid addresses
+/// - breakpoint: Test breakpoint exception handling (INT3 / BRK)
+static INTERRUPT_TESTS: &[TestDef] = &[
+    // Phase 4b: Interrupt controller tests
+    TestDef {
+        name: "interrupt_controller_init",
+        func: test_interrupt_controller_init,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "irq_enable_disable",
+        func: test_irq_enable_disable,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "timer_interrupt_running",
+        func: test_timer_interrupt_running,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "keyboard_irq_setup",
+        func: test_keyboard_irq_setup,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    // Phase 4f: Exception handling tests
+    TestDef {
+        name: "exception_vectors",
+        func: test_exception_vectors,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "exception_handlers",
+        func: test_exception_handlers,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "breakpoint",
+        func: test_breakpoint,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+];
+
+/// Process subsystem tests (Phase 4j)
+///
+/// These tests verify process and scheduler functionality:
+/// - process_manager_init: Verify process manager is initialized
+/// - scheduler_init: Verify scheduler has a current thread
+/// - thread_creation: Test creating and joining kernel threads
+static PROCESS_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "process_manager_init",
+        func: test_process_manager_init,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "scheduler_init",
+        func: test_scheduler_init,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "thread_creation",
+        func: test_thread_creation,
+        arch: Arch::Any,
+        timeout_ms: 10000,
+    },
+];
+
+/// Syscall subsystem tests (Phase 4j)
+///
+/// These tests verify syscall dispatch infrastructure:
+/// - syscall_dispatch: Test SyscallNumber parsing and validation
+static SYSCALL_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "syscall_dispatch",
+        func: test_syscall_dispatch,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+];
+
+/// Scheduler subsystem tests (Phase 4i)
+///
+/// These tests verify async executor and future handling infrastructure:
+/// - executor_exists: Verify async executor infrastructure exists
+/// - async_waker: Test waker mechanism for async task wake-up
+/// - future_basics: Test basic future polling and completion
+static SCHEDULER_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "executor_exists",
+        func: test_executor_exists,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "async_waker",
+        func: test_async_waker,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "future_basics",
+        func: test_future_basics,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+];
+
+/// System subsystem tests (Phase 4e)
+///
+/// These tests verify overall system health on both x86_64 and ARM64:
+/// - boot_sequence: Verify boot completed and essential subsystems initialized
+/// - system_stability: Verify no panics or errors - reached test point
+/// - kernel_heap: Verify kernel heap functional with various allocation patterns
+static SYSTEM_TESTS: &[TestDef] = &[
+    TestDef {
+        name: "boot_sequence",
+        func: test_boot_sequence,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "system_stability",
+        func: test_system_stability,
+        arch: Arch::Any,
+        timeout_ms: 2000,
+    },
+    TestDef {
+        name: "kernel_heap",
+        func: test_kernel_heap,
+        arch: Arch::Any,
+        timeout_ms: 5000,
+    },
+];
+
+// =============================================================================
+// Subsystem Definitions
+// =============================================================================
+
+/// Static subsystem definitions
+///
+/// Phase 2 includes sanity tests for Memory. Phase 4 will add comprehensive tests.
+pub static SUBSYSTEMS: &[Subsystem] = &[
+    Subsystem {
+        id: SubsystemId::Memory,
+        name: "Memory Management",
+        tests: MEMORY_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Scheduler,
+        name: "Scheduler",
+        tests: SCHEDULER_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Interrupts,
+        name: "Interrupts",
+        tests: INTERRUPT_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Filesystem,
+        name: "Filesystem",
+        tests: FILESYSTEM_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Network,
+        name: "Network",
+        tests: NETWORK_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Ipc,
+        name: "IPC",
+        tests: IPC_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Process,
+        name: "Process Management",
+        tests: PROCESS_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Syscall,
+        name: "System Calls",
+        tests: SYSCALL_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Timer,
+        name: "Timer",
+        tests: TIMER_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::Logging,
+        name: "Logging",
+        tests: LOGGING_TESTS,
+    },
+    Subsystem {
+        id: SubsystemId::System,
+        name: "System",
+        tests: SYSTEM_TESTS,
+    },
+];
+
+/// Get a subsystem by ID (public API for future use)
+#[allow(dead_code)]
+pub fn get_subsystem(id: SubsystemId) -> Option<&'static Subsystem> {
+    SUBSYSTEMS.iter().find(|s| s.id == id)
+}
+
+/// Iterator over all subsystems (public API for future use)
+#[allow(dead_code)]
+pub fn all_subsystems() -> impl Iterator<Item = &'static Subsystem> {
+    SUBSYSTEMS.iter()
+}

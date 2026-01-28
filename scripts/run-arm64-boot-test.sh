@@ -39,6 +39,13 @@ echo "  Breenix ARM64 Boot Test"
 echo "========================================"
 echo ""
 
+# Feature flags
+FEATURES=""
+if [ "${BOOT_TESTS:-0}" = "1" ]; then
+    FEATURES="--features boot_tests"
+    echo "Boot tests enabled - parallel test framework with progress bars"
+fi
+
 # Build the kernel
 echo "[1/4] Building ARM64 kernel..."
 if ! cargo build --release \
@@ -46,7 +53,7 @@ if ! cargo build --release \
     -Z build-std=core,alloc \
     -Z build-std-features=compiler-builtins-mem \
     -p kernel \
-    --bin kernel-aarch64 2>&1 | tail -5; then
+    --bin kernel-aarch64 $FEATURES 2>&1 | tail -5; then
     echo "ERROR: Kernel build failed"
     exit 1
 fi

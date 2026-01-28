@@ -128,15 +128,10 @@ pub extern "C" fn timer_interrupt_handler() {
     // Update global time (single atomic operation)
     crate::time::timer_interrupt();
 
-    // Increment timer interrupt counter and print every TIMER_COUNT_PRINT_INTERVAL
-    let count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if count % TIMER_COUNT_PRINT_INTERVAL == 0 {
-        // Print [TIMER_COUNT:N] for test verification
-        // Using raw serial to avoid lock contention in interrupt context
-        raw_serial_str(b"[TIMER_COUNT:");
-        print_timer_count_decimal(count);
-        raw_serial_str(b"]\n");
-    }
+    // Increment timer interrupt counter (used for debugging when needed)
+    let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    // Note: [TIMER_COUNT:N] output disabled - interrupt handlers must be minimal
+    // To enable: uncomment and rebuild with TIMER_COUNT_PRINT_INTERVAL check
 
     // Poll VirtIO keyboard and push to stdin
     // VirtIO MMIO devices don't generate interrupts on ARM64 virt machine,

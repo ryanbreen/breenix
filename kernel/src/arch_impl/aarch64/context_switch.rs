@@ -54,25 +54,23 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
     from_el0: bool,
 ) {
-    // Only reschedule when returning to userspace (EL0).
-    // Kernel code is not preemptible - this avoids scheduler lock deadlocks
-    // when IRQs fire during kernel operations that hold the scheduler lock.
-    //
-    // NOTE: This means when idle thread runs in kernel mode (e.g., in the spin loop),
-    // it won't be preempted by timer. Instead, we rely on need_resched being checked
-    // when returning from syscalls. Since the pty_test and init_shell are in userspace
-    // making syscalls, they will get preempted properly on syscall return.
-    if !from_el0 {
-        return;
-    }
-
-    // Check PREEMPT_ACTIVE flag (bit 28)
+    // Check PREEMPT_ACTIVE flag (bit 28) and preempt count (bits 0-7)
     let preempt_count = Aarch64PerCpu::preempt_count();
     let preempt_active = (preempt_count & 0x10000000) != 0;
+    let preempt_depth = preempt_count & 0xFF;
 
     if preempt_active {
         // We're in the middle of returning from a syscall or handling
         // another exception - don't context switch now
+        return;
+    }
+
+    // For kernel mode (EL1) returns, only allow preemption if no locks are held.
+    // preempt_depth > 0 means we're holding a spinlock - NOT safe to switch.
+    // This allows kthreads (e.g., test threads, workqueue workers) to be scheduled
+    // when they're in a safe state (like spinning in kthread_join with WFI).
+    if !from_el0 && preempt_depth > 0 {
+        // Kernel code holding locks - not safe to preempt
         return;
     }
 
@@ -138,6 +136,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
         // Reset timer quantum for the new thread
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+
+        crate::serial_println!("CTX_SWITCH: returning to assembly, will ERET");
     }
 }
 
@@ -177,7 +177,30 @@ fn save_userspace_context_arm64(thread_id: u64, frame: &Aarch64ExceptionFrame) {
 /// Save kernel context for the current thread.
 fn save_kernel_context_arm64(thread_id: u64, frame: &Aarch64ExceptionFrame) {
     crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-        // Save callee-saved registers
+        // Save ALL general-purpose registers, not just callee-saved.
+        // This is critical for context switching: when a thread is preempted in the
+        // middle of a loop (like kthread_join's WFI loop), its caller-saved registers
+        // (x0-x18) contain important values (loop variables, pointers, etc.).
+        // Without saving these, resuming the thread would have garbage in x0-x18.
+        thread.context.x0 = frame.x0;
+        thread.context.x1 = frame.x1;
+        thread.context.x2 = frame.x2;
+        thread.context.x3 = frame.x3;
+        thread.context.x4 = frame.x4;
+        thread.context.x5 = frame.x5;
+        thread.context.x6 = frame.x6;
+        thread.context.x7 = frame.x7;
+        thread.context.x8 = frame.x8;
+        thread.context.x9 = frame.x9;
+        thread.context.x10 = frame.x10;
+        thread.context.x11 = frame.x11;
+        thread.context.x12 = frame.x12;
+        thread.context.x13 = frame.x13;
+        thread.context.x14 = frame.x14;
+        thread.context.x15 = frame.x15;
+        thread.context.x16 = frame.x16;
+        thread.context.x17 = frame.x17;
+        thread.context.x18 = frame.x18;
         thread.context.x19 = frame.x19;
         thread.context.x20 = frame.x20;
         thread.context.x21 = frame.x21;
@@ -191,12 +214,16 @@ fn save_kernel_context_arm64(thread_id: u64, frame: &Aarch64ExceptionFrame) {
         thread.context.x29 = frame.x29;
         thread.context.x30 = frame.x30;
 
-        // Save program counter and kernel stack pointer
+        // Save program counter and processor state
         thread.context.elr_el1 = frame.elr;
         thread.context.spsr_el1 = frame.spsr;
 
-        // For kernel threads, SP comes from the exception frame's context
-        // (it was saved when the exception occurred)
+        // Save the kernel stack pointer.
+        // The exception frame is allocated on the stack, so the SP before the
+        // exception was (frame_address + frame_size). The frame size is 272 bytes
+        // (see boot.S irq_handler: sub sp, sp, #272).
+        // This is critical for resuming the thread at the correct stack position.
+        thread.context.sp = frame as *const _ as u64 + 272;
     });
 }
 
@@ -228,7 +255,30 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         .unwrap_or(false);
 
     if is_idle {
-        setup_idle_return_arm64(frame);
+        // Check if idle thread has a saved context to restore
+        // If it was preempted while running actual code (not idle_loop_arm64), restore that context
+        //
+        // This is critical for kthread_join(): when the boot thread (which IS the idle task)
+        // calls kthread_join() and waits, it gets preempted. When all kthreads finish and we
+        // switch back to idle, we need to restore the boot thread's context (sitting in
+        // kthread_join's WFI loop) rather than jumping to idle_loop_arm64.
+        let idle_loop_addr = idle_loop_arm64 as *const () as u64;
+        let (has_saved_context, saved_elr) = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+            // Has saved context if ELR is non-zero AND not pointing to idle_loop_arm64
+            let has_ctx = thread.context.elr_el1 != 0 && thread.context.elr_el1 != idle_loop_addr;
+            (has_ctx, thread.context.elr_el1)
+        }).unwrap_or((false, 0));
+
+        if has_saved_context {
+            // Restore idle thread's saved context (like a kthread)
+            crate::serial_println!("IDLE: restoring to elr={:#x}", saved_elr);
+            setup_kernel_thread_return_arm64(thread_id, frame);
+            crate::serial_println!("IDLE: after setup, frame.elr={:#x}", frame.elr);
+        } else {
+            // No saved context or was in idle_loop - go to idle loop
+            crate::serial_println!("IDLE: no saved ctx, elr={:#x} idle_loop={:#x}", saved_elr, idle_loop_addr);
+            setup_idle_return_arm64(frame);
+        }
     } else if is_kernel_thread {
         setup_kernel_thread_return_arm64(thread_id, frame);
     } else {
@@ -306,12 +356,46 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
 
 /// Set up exception frame to return to kernel thread.
 fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
+    // Check if this thread has run before
+    let has_started = crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.has_started)
+        .unwrap_or(false);
+
+    if !has_started {
+        // First run - mark as started and set up entry point
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+            thread.has_started = true;
+        });
+    }
+
     let thread_info = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
         (thread.name.clone(), thread.context.clone())
     });
 
     if let Some((_name, context)) = thread_info {
-        // Restore callee-saved registers
+        // Restore ALL general-purpose registers for resumed threads.
+        // For first-time threads, x0 contains the entry argument and other registers
+        // are undefined (will be initialized by the thread function).
+        // For resumed threads, ALL registers must be restored exactly as they were
+        // when the thread was preempted (e.g., loop variables, pointers, etc.).
+        frame.x0 = context.x0;
+        frame.x1 = context.x1;
+        frame.x2 = context.x2;
+        frame.x3 = context.x3;
+        frame.x4 = context.x4;
+        frame.x5 = context.x5;
+        frame.x6 = context.x6;
+        frame.x7 = context.x7;
+        frame.x8 = context.x8;
+        frame.x9 = context.x9;
+        frame.x10 = context.x10;
+        frame.x11 = context.x11;
+        frame.x12 = context.x12;
+        frame.x13 = context.x13;
+        frame.x14 = context.x14;
+        frame.x15 = context.x15;
+        frame.x16 = context.x16;
+        frame.x17 = context.x17;
+        frame.x18 = context.x18;
         frame.x19 = context.x19;
         frame.x20 = context.x20;
         frame.x21 = context.x21;
@@ -325,11 +409,22 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
         frame.x29 = context.x29;
         frame.x30 = context.x30;
 
-        // Set return address (ELR_EL1 = x30 for kernel threads)
-        frame.elr = context.x30;
+        // Set return address:
+        // - For first run: use x30 (which is kthread_entry)
+        // - For resumed thread: use elr_el1 (saved PC from when interrupted)
+        if !has_started {
+            frame.elr = context.x30;  // First run: jump to entry point
+        } else {
+            frame.elr = context.elr_el1;  // Resume: return to where we left off
+        }
 
-        // SPSR for EL1h (kernel mode with SP_EL1)
-        frame.spsr = context.spsr_el1;
+        // SPSR for EL1h with interrupts ENABLED so kthreads can be preempted
+        // For first run, enable interrupts; for resumed, use saved SPSR
+        if !has_started {
+            frame.spsr = 0x5;  // EL1h, DAIF clear (interrupts enabled)
+        } else {
+            frame.spsr = context.spsr_el1;  // Restore saved processor state
+        }
 
         // Store kernel SP for restoration after ERET
         unsafe {

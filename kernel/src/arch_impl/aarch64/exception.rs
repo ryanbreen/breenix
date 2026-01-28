@@ -309,24 +309,17 @@ pub extern "C" fn handle_irq() {
             }
 
             // SGIs (0-15) - Inter-processor interrupts
-            0..=15 => {
-                crate::serial_println!("[irq] SGI {} received", irq_id);
-            }
+            0..=15 => {}
 
             // PPIs (16-31) - Private peripheral interrupts (excluding timer)
-            16..=31 => {
-                crate::serial_println!("[irq] PPI {} received", irq_id);
-            }
+            16..=31 => {}
 
             // SPIs (32-1019) - Shared peripheral interrupts
-            32..=1019 => {
-                crate::serial_println!("[irq] SPI {} (IRQ {}) received", irq_id - 32, irq_id);
-            }
+            // Note: No logging here - interrupt handlers must be < 1000 cycles
+            32..=1019 => {}
 
             // Should not happen - GIC filters invalid IDs (1020+)
-            _ => {
-                crate::serial_println!("[irq] Invalid IRQ {} received - should not happen", irq_id);
-            }
+            _ => {}
         }
 
         // Signal end of interrupt
@@ -363,9 +356,6 @@ fn check_need_resched_on_irq_exit() {
         return;
     }
 
-    // Debug marker: need_resched is set
-    raw_serial_str(b"[NEED_RESCHED]");
-
     // The actual context switch will be performed by check_need_resched_and_switch_arm64
     // which is called from the exception return path with access to the exception frame.
     // Here we just signal that a reschedule is pending.
@@ -385,14 +375,8 @@ fn check_need_resched_on_irq_exit() {
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
-    // Debug marker: UART interrupt handler entry
-    raw_serial_str(b"[UART_IRQ]");
-
     // Read all available bytes from the UART FIFO
     while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Debug marker: byte received
-        raw_serial_str(b"[UART_RX]");
-
         // Push to stdin buffer for kernel shell or userspace read() syscall
         // This wakes any blocked readers waiting for input
         crate::ipc::stdin::push_byte_from_irq(byte);

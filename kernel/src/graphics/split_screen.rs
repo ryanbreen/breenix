@@ -12,7 +12,7 @@ use spin::Mutex;
 
 // Architecture-specific framebuffer imports
 #[cfg(target_arch = "x86_64")]
-use SHELL_FRAMEBUFFER;
+use crate::logger::SHELL_FRAMEBUFFER;
 #[cfg(target_arch = "aarch64")]
 use super::arm64_fb::SHELL_FRAMEBUFFER;
 
