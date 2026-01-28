@@ -276,13 +276,10 @@ fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> Syscall
 /// PL011 UART IRQ number (SPI 1, which is IRQ 33)
 const UART0_IRQ: u32 = 33;
 
-/// Raw serial write - no locks, for use in interrupt handlers
+/// Raw serial write - write a string without locks, for use in interrupt handlers
 #[inline(always)]
-fn raw_serial_char(c: u8) {
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    const PL011_BASE: u64 = 0x0900_0000;
-    let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
-    unsafe { core::ptr::write_volatile(addr, c as u32); }
+fn raw_serial_str(s: &[u8]) {
+    crate::serial_aarch64::raw_serial_str(s);
 }
 
 /// Handle IRQ interrupts
@@ -367,7 +364,7 @@ fn check_need_resched_on_irq_exit() {
     }
 
     // Debug marker: need_resched is set
-    raw_serial_char(b'R');
+    raw_serial_str(b"[NEED_RESCHED]");
 
     // The actual context switch will be performed by check_need_resched_and_switch_arm64
     // which is called from the exception return path with access to the exception frame.
@@ -389,12 +386,12 @@ fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
     // Debug marker: UART interrupt handler entry
-    raw_serial_char(b'U');
+    raw_serial_str(b"[UART_IRQ]");
 
     // Read all available bytes from the UART FIFO
     while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Debug marker: byte received (show as hex digit to avoid polluting output)
-        raw_serial_char(b'.');
+        // Debug marker: byte received
+        raw_serial_str(b"[UART_RX]");
 
         // Push to stdin buffer for kernel shell or userspace read() syscall
         // This wakes any blocked readers waiting for input

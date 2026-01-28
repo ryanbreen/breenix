@@ -117,10 +117,7 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
             // Debug marker: byte successfully pushed to stdin
             #[cfg(target_arch = "aarch64")]
             {
-                // Raw serial output - no locks, single char
-                let base = crate::memory::physical_memory_offset().as_u64();
-                let addr = (base + 0x0900_0000) as *mut u32;
-                unsafe { core::ptr::write_volatile(addr, b'P' as u32); }
+                crate::serial_aarch64::raw_serial_str(b"[STDIN_PUSH]");
             }
             drop(buffer);
 
@@ -161,13 +158,11 @@ fn wake_blocked_readers_try() {
     crate::task::scheduler::set_need_resched();
 }
 
-/// Raw serial output for debugging - no locks, single char
+/// Raw serial output for debugging - write a string without locks
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn raw_serial_char(c: u8) {
-    let base = crate::memory::physical_memory_offset().as_u64();
-    let addr = (base + 0x0900_0000) as *mut u32;
-    unsafe { core::ptr::write_volatile(addr, c as u32); }
+fn raw_serial_str(s: &[u8]) {
+    crate::serial_aarch64::raw_serial_str(s);
 }
 
 /// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
@@ -178,20 +173,30 @@ fn wake_blocked_readers_try() {
             blocked.drain(..).collect()
         } else {
             // Debug marker: couldn't get lock
-            raw_serial_char(b'L');
+            raw_serial_str(b"[STDIN_LOCK_FAIL]");
             return; // Can't get lock, readers will be woken when they retry
         }
     };
 
     if readers.is_empty() {
         // Debug marker: no readers to wake
-        raw_serial_char(b'0');
+        raw_serial_str(b"[STDIN_NO_READERS]");
         return;
     }
 
-    // Debug marker: waking readers
-    raw_serial_char(b'W');
-    raw_serial_char(b'0' + (readers.len() as u8).min(9));
+    // Debug marker: waking readers with count
+    match readers.len() {
+        1 => raw_serial_str(b"[WAKE_READERS:1]"),
+        2 => raw_serial_str(b"[WAKE_READERS:2]"),
+        3 => raw_serial_str(b"[WAKE_READERS:3]"),
+        4 => raw_serial_str(b"[WAKE_READERS:4]"),
+        5 => raw_serial_str(b"[WAKE_READERS:5]"),
+        6 => raw_serial_str(b"[WAKE_READERS:6]"),
+        7 => raw_serial_str(b"[WAKE_READERS:7]"),
+        8 => raw_serial_str(b"[WAKE_READERS:8]"),
+        9 => raw_serial_str(b"[WAKE_READERS:9]"),
+        _ => raw_serial_str(b"[WAKE_READERS:N]"),
+    }
 
     // Try to wake threads via the scheduler
     crate::task::scheduler::with_scheduler(|sched| {

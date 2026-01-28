@@ -191,57 +191,7 @@ if [ "$TEST_MODE" = "timer" ]; then
         fi
     done
 
-    echo ""
-    echo "Timer Tick Analysis:"
-
-    # Extract timestamps and analyze tick rate
-    # Look for log entries with timestamps (format: "[ INFO] timestamp - message")
-    TIMESTAMPS=$(grep -oE '\[ INFO\] [0-9]+\.[0-9]+' "$SERIAL_OUTPUT" 2>/dev/null | \
-                 sed 's/\[ INFO\] //' | sort -n)
-
-    if [ -n "$TIMESTAMPS" ]; then
-        TIMESTAMP_COUNT=$(echo "$TIMESTAMPS" | wc -l | tr -d ' ')
-        FIRST_TS=$(echo "$TIMESTAMPS" | head -1)
-        LAST_TS=$(echo "$TIMESTAMPS" | tail -1)
-
-        echo "  Timestamps found: $TIMESTAMP_COUNT"
-        echo "  First timestamp:  $FIRST_TS"
-        echo "  Last timestamp:   $LAST_TS"
-
-        # Calculate approximate duration and tick rate
-        if [ "$TIMESTAMP_COUNT" -gt 1 ]; then
-            DURATION=$(echo "$LAST_TS - $FIRST_TS" | bc 2>/dev/null || echo "0")
-            if [ "$DURATION" != "0" ] && [ -n "$DURATION" ]; then
-                TICK_RATE=$(echo "scale=1; $TIMESTAMP_COUNT / $DURATION" | bc 2>/dev/null || echo "N/A")
-                echo "  Duration:         ${DURATION}s"
-                echo "  Log output rate:  ~${TICK_RATE} entries/sec"
-            fi
-        fi
-
-        # Check if timestamps are monotonically increasing
-        SORTED_TIMESTAMPS=$(echo "$TIMESTAMPS" | sort -n)
-        if [ "$TIMESTAMPS" = "$SORTED_TIMESTAMPS" ]; then
-            echo "  Monotonic:        PASS"
-            TIMER_PASSED=$((TIMER_PASSED + 1))
-        else
-            echo "  Monotonic:        FAIL (timestamps not increasing)"
-            TIMER_FAILED=$((TIMER_FAILED + 1))
-        fi
-
-        # Check minimum number of timestamps
-        if [ "$TIMESTAMP_COUNT" -ge 10 ]; then
-            echo "  Sufficient ticks: PASS ($TIMESTAMP_COUNT >= 10)"
-            TIMER_PASSED=$((TIMER_PASSED + 1))
-        else
-            echo "  Sufficient ticks: FAIL ($TIMESTAMP_COUNT < 10)"
-            TIMER_FAILED=$((TIMER_FAILED + 1))
-        fi
-    else
-        echo "  WARNING: No timestamps found in log output"
-        TIMER_FAILED=$((TIMER_FAILED + 1))
-    fi
-
-    # Extract and display timer frequency
+    # Extract and display timer frequency configuration
     echo ""
     echo "Timer Configuration:"
     FREQ_LINE=$(grep "Timer frequency:" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
@@ -252,6 +202,148 @@ if [ "$TEST_MODE" = "timer" ]; then
     if [ -n "$CONFIG_LINE" ]; then
         echo "  $CONFIG_LINE"
     fi
+
+    # ===========================================
+    # CRITICAL: Timer Interrupt Frequency Test
+    # This verifies actual interrupt rate, not log output rate
+    # ===========================================
+    echo ""
+    echo "Timer Interrupt Frequency Verification:"
+    echo "  (Kernel prints [TIMER_COUNT:N] on each interrupt)"
+    echo ""
+
+    # Extract TIMER_COUNT values from output
+    # Format: [TIMER_COUNT:N] where N is total interrupt count
+    TIMER_COUNTS=$(grep -oE '\[TIMER_COUNT:[0-9]+\]' "$SERIAL_OUTPUT" 2>/dev/null | \
+                   sed 's/\[TIMER_COUNT:\([0-9]*\)\]/\1/')
+
+    if [ -z "$TIMER_COUNTS" ]; then
+        echo "  FAIL: No [TIMER_COUNT:N] markers found in output"
+        echo ""
+        echo "  This means either:"
+        echo "    1. Timer interrupts are not firing"
+        echo "    2. Kernel was not built with timer count reporting"
+        echo "    3. Boot did not run long enough to accumulate 100 interrupts"
+        echo ""
+        TIMER_FAILED=$((TIMER_FAILED + 1))
+    else
+        # Count number of TIMER_COUNT markers
+        MARKER_COUNT=$(echo "$TIMER_COUNTS" | wc -l | tr -d ' ')
+        echo "  TIMER_COUNT markers found: $MARKER_COUNT"
+
+        # Get first and last count values
+        FIRST_COUNT=$(echo "$TIMER_COUNTS" | head -1)
+        LAST_COUNT=$(echo "$TIMER_COUNTS" | tail -1)
+
+        echo "  First count:  $FIRST_COUNT"
+        echo "  Last count:   $LAST_COUNT"
+
+        if [ "$MARKER_COUNT" -lt 2 ]; then
+            echo ""
+            echo "  FAIL: Need at least 2 TIMER_COUNT markers to measure frequency"
+            echo "  (Got $MARKER_COUNT marker(s) - boot may not have run long enough)"
+            TIMER_FAILED=$((TIMER_FAILED + 1))
+        else
+            # Calculate actual interrupt count between markers
+            INTERRUPT_DELTA=$((LAST_COUNT - FIRST_COUNT))
+
+            # Expected frequency is 200 Hz (configured in timer_interrupt.rs)
+            EXPECTED_FREQ=200
+
+            echo "  Interrupt delta: $INTERRUPT_DELTA (over $MARKER_COUNT markers)"
+
+            # Extract first and last timestamp from TIMER_COUNT lines
+            FIRST_TS_LINE=$(grep '\[TIMER_COUNT:' "$SERIAL_OUTPUT" 2>/dev/null | head -1)
+            LAST_TS_LINE=$(grep '\[TIMER_COUNT:' "$SERIAL_OUTPUT" 2>/dev/null | tail -1)
+
+            # Try to extract timestamp (format: "[ INFO] X.XXX -")
+            FIRST_TS=$(echo "$FIRST_TS_LINE" | grep -oE '\[ INFO\] [0-9]+\.[0-9]+' | sed 's/\[ INFO\] //')
+            LAST_TS=$(echo "$LAST_TS_LINE" | grep -oE '\[ INFO\] [0-9]+\.[0-9]+' | sed 's/\[ INFO\] //')
+
+            if [ -n "$FIRST_TS" ] && [ -n "$LAST_TS" ] && [ "$FIRST_TS" != "$LAST_TS" ]; then
+                # Calculate time elapsed
+                TIME_ELAPSED=$(echo "$LAST_TS - $FIRST_TS" | bc 2>/dev/null)
+
+                if [ -n "$TIME_ELAPSED" ] && [ "$TIME_ELAPSED" != "0" ]; then
+                    # Calculate actual frequency
+                    # Rate = interrupt_delta / time_elapsed
+                    ACTUAL_FREQ=$(echo "scale=1; $INTERRUPT_DELTA / $TIME_ELAPSED" | bc 2>/dev/null)
+
+                    echo ""
+                    echo "  Time elapsed:     ${TIME_ELAPSED}s"
+                    echo "  Actual frequency: ${ACTUAL_FREQ} Hz"
+                    echo "  Expected frequency: ${EXPECTED_FREQ} Hz (+/- 20%)"
+
+                    # Check if within acceptable range (80-120% of expected)
+                    MIN_FREQ=$(echo "$EXPECTED_FREQ * 0.8" | bc)
+                    MAX_FREQ=$(echo "$EXPECTED_FREQ * 1.2" | bc)
+
+                    # Use bc for float comparison
+                    IN_RANGE=$(echo "$ACTUAL_FREQ >= $MIN_FREQ && $ACTUAL_FREQ <= $MAX_FREQ" | bc 2>/dev/null)
+
+                    echo ""
+                    printf "  %-25s " "Frequency In Range"
+                    if [ "$IN_RANGE" = "1" ]; then
+                        echo "PASS (${MIN_FREQ}-${MAX_FREQ} Hz)"
+                        TIMER_PASSED=$((TIMER_PASSED + 1))
+                    else
+                        echo "FAIL (expected ${MIN_FREQ}-${MAX_FREQ} Hz, got ${ACTUAL_FREQ} Hz)"
+                        TIMER_FAILED=$((TIMER_FAILED + 1))
+                    fi
+                else
+                    echo ""
+                    echo "  WARNING: Could not calculate time elapsed (timestamps same or invalid)"
+                    echo "  Falling back to marker count verification..."
+
+                    # Fallback: at least verify we got multiple markers
+                    printf "  %-25s " "Multiple Markers"
+                    if [ "$MARKER_COUNT" -ge 3 ]; then
+                        echo "PASS ($MARKER_COUNT markers)"
+                        TIMER_PASSED=$((TIMER_PASSED + 1))
+                    else
+                        echo "FAIL (only $MARKER_COUNT markers)"
+                        TIMER_FAILED=$((TIMER_FAILED + 1))
+                    fi
+                fi
+            else
+                echo ""
+                echo "  NOTE: No log timestamps on TIMER_COUNT lines"
+                echo "  (Raw serial output doesn't include timestamps)"
+                echo ""
+
+                # Without timestamps, we can still verify interrupts are firing
+                # by checking that we got a reasonable number of markers
+
+                # For a 30-second test at 200 Hz, we'd expect ~60 markers
+                # For a 2-second kernel runtime, we'd expect ~4 markers
+                printf "  %-25s " "Timer Active"
+                if [ "$MARKER_COUNT" -ge 2 ]; then
+                    echo "PASS ($MARKER_COUNT markers = $INTERRUPT_DELTA interrupts)"
+                    TIMER_PASSED=$((TIMER_PASSED + 1))
+
+                    # Check monotonic increase
+                    printf "  %-25s " "Count Increasing"
+                    if [ "$LAST_COUNT" -gt "$FIRST_COUNT" ]; then
+                        echo "PASS ($FIRST_COUNT -> $LAST_COUNT)"
+                        TIMER_PASSED=$((TIMER_PASSED + 1))
+                    else
+                        echo "FAIL (not increasing)"
+                        TIMER_FAILED=$((TIMER_FAILED + 1))
+                    fi
+                else
+                    echo "FAIL (need at least 2 markers)"
+                    TIMER_FAILED=$((TIMER_FAILED + 1))
+                fi
+            fi
+        fi
+    fi
+
+    # Show raw TIMER_COUNT lines for debugging
+    echo ""
+    echo "Raw TIMER_COUNT output:"
+    echo "----------------------------------------"
+    grep '\[TIMER_COUNT:' "$SERIAL_OUTPUT" 2>/dev/null | head -10 || echo "(none found)"
+    echo "----------------------------------------"
 
     echo ""
     echo "========================================"
@@ -325,11 +417,12 @@ if [ "$TEST_MODE" = "interrupt" ]; then
     fi
 
     # Check for BRK (breakpoint) handling
+    # This is OPTIONAL - breakpoints are for debugging, not a boot requirement
     if grep -q "Breakpoint (BRK" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "  Breakpoint handler:     TESTED"
         INT_PASSED=$((INT_PASSED + 1))
     else
-        echo "  Breakpoint handler:     Not triggered (may be expected)"
+        echo "  Breakpoint handler:     (not triggered - debugging feature)"
     fi
 
     echo ""
@@ -373,6 +466,28 @@ if [ "$TEST_MODE" = "syscall" ]; then
     echo "========================================"
     echo ""
 
+    # ===========================================
+    # HARD REQUIREMENT: EL0_CONFIRMED must be present
+    # Without userspace execution, syscall tests are meaningless
+    # ===========================================
+    if ! grep -q "EL0_CONFIRMED" "$SERIAL_OUTPUT" 2>/dev/null; then
+        echo "FATAL: EL0_CONFIRMED marker not found"
+        echo "       Userspace did not execute - tests are meaningless"
+        echo ""
+        echo "Without EL0_CONFIRMED, we cannot verify:"
+        echo "  - Syscalls are actually being made from userspace"
+        echo "  - The kernel correctly handles EL0->EL1 transitions"
+        echo "  - Any syscall results are from real userspace code"
+        echo ""
+        echo "Debug: First 30 lines of output:"
+        head -30 "$SERIAL_OUTPUT" 2>/dev/null || echo "(no output)"
+        echo ""
+        exit 1
+    fi
+
+    echo "PREREQUISITE: EL0_CONFIRMED found - userspace executed"
+    echo ""
+
     SYS_PASSED=0
     SYS_FAILED=0
 
@@ -403,27 +518,27 @@ if [ "$TEST_MODE" = "syscall" ]; then
     done
 
     # ===========================================
-    # SECTION 2: EL0 (Userspace) Entry
+    # SECTION 2: EL0 (Userspace) Entry - Informational Only
     # ===========================================
+    # NOTE: These markers are informational. The REQUIRED check is EL0_CONFIRMED
+    # in Section 3, which definitively proves userspace execution.
     echo ""
-    echo "EL0 (Userspace) Entry:"
+    echo "EL0 (Userspace) Entry (informational):"
 
-    # Check for EL0 entry marker
+    # Check for EL0 entry marker - informational only
     printf "  %-30s " "EL0 First Entry"
     if grep -q "EL0_ENTER: First userspace entry" "$SERIAL_OUTPUT" 2>/dev/null; then
-        echo "PASS"
-        SYS_PASSED=$((SYS_PASSED + 1))
+        echo "detected"
     else
-        echo "not found (may be expected)"
+        echo "(not logged)"
     fi
 
-    # Check for EL0 smoke marker
+    # Check for EL0 smoke marker - informational only
     printf "  %-30s " "EL0 Smoke Test"
     if grep -q "EL0_SMOKE: userspace executed" "$SERIAL_OUTPUT" 2>/dev/null; then
-        echo "PASS"
-        SYS_PASSED=$((SYS_PASSED + 1))
+        echo "detected"
     else
-        echo "not found (may be expected)"
+        echo "(not logged)"
     fi
 
     # ===========================================
@@ -568,6 +683,28 @@ if [ "$TEST_MODE" = "schedule" ]; then
     echo "========================================"
     echo ""
 
+    # ===========================================
+    # HARD REQUIREMENT: EL0_CONFIRMED must be present
+    # Without userspace execution, scheduling tests are meaningless
+    # ===========================================
+    if ! grep -q "EL0_CONFIRMED" "$SERIAL_OUTPUT" 2>/dev/null; then
+        echo "FATAL: EL0_CONFIRMED marker not found"
+        echo "       Userspace did not execute - tests are meaningless"
+        echo ""
+        echo "Without EL0_CONFIRMED, we cannot verify:"
+        echo "  - User processes are actually being scheduled"
+        echo "  - Context switches happen between userspace threads"
+        echo "  - Blocking I/O correctly suspends user processes"
+        echo ""
+        echo "Debug: First 30 lines of output:"
+        head -30 "$SERIAL_OUTPUT" 2>/dev/null || echo "(no output)"
+        echo ""
+        exit 1
+    fi
+
+    echo "PREREQUISITE: EL0_CONFIRMED found - userspace executed"
+    echo ""
+
     SCHED_PASSED=0
     SCHED_FAILED=0
 
@@ -607,14 +744,14 @@ if [ "$TEST_MODE" = "schedule" ]; then
     # Check for timer interrupt handler running
     printf "  %-30s " "Timer Handler Active"
     # ARM64 timer interrupt doesn't log (critical path) but shows activity via:
-    # 1. Shell blocking/waking cycles ('b', 'w' markers)
+    # 1. Shell blocking/waking cycles ([STDIN_BLOCK], [STDIN_WAKE] markers)
     # 2. Timer frequency logged at boot
     # 3. Keyboard polling happening (VirtIO polled in timer tick)
     TIMER_FREQ=$(grep -oE 'Timer frequency: [0-9]+' "$SERIAL_OUTPUT" 2>/dev/null)
-    # Count 'U' markers (UART interrupts which fire alongside timer)
-    U_COUNT=$(grep -o 'U' "$SERIAL_OUTPUT" 2>/dev/null | wc -l | tr -d ' ')
-    if [ -n "$TIMER_FREQ" ] && [ "$U_COUNT" -gt 0 ]; then
-        echo "PASS ($TIMER_FREQ, ${U_COUNT} UART interrupts)"
+    # Count [UART_IRQ] markers (UART interrupts which fire alongside timer)
+    UART_COUNT=$(grep -o '\[UART_IRQ\]' "$SERIAL_OUTPUT" 2>/dev/null | wc -l | tr -d ' ')
+    if [ -n "$TIMER_FREQ" ] && [ "$UART_COUNT" -gt 0 ]; then
+        echo "PASS ($TIMER_FREQ, ${UART_COUNT} UART interrupts)"
         SCHED_PASSED=$((SCHED_PASSED + 1))
     elif [ -n "$TIMER_FREQ" ]; then
         echo "PASS ($TIMER_FREQ)"
@@ -624,23 +761,25 @@ if [ "$TEST_MODE" = "schedule" ]; then
         SCHED_FAILED=$((SCHED_FAILED + 1))
     fi
 
-    # Check for need_resched flag being set (R marker or reschedule log)
+    # Check for need_resched flag being set ([NEED_RESCHED] marker or reschedule log)
+    # OPTIONAL: Preemption only happens when multiple threads compete for CPU
     printf "  %-30s " "Need Resched Flag"
-    # Look for 'R' markers or "need_resched" or "NEED_RESCHED" or scheduling logs
-    if grep -qE 'need_resched|NEED_RESCHED|Switching from thread' "$SERIAL_OUTPUT" 2>/dev/null; then
+    # Look for [NEED_RESCHED] markers or scheduling logs
+    if grep -qE '\[NEED_RESCHED\]|need_resched|Switching from thread' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "PASS"
         SCHED_PASSED=$((SCHED_PASSED + 1))
     else
-        echo "not found (may be expected if no preemption needed)"
+        echo "(no preemption - single thread active)"
     fi
 
     # Check for context switching happening
+    # OPTIONAL: Context switching only occurs with multiple runnable threads
     printf "  %-30s " "Context Switch"
     if grep -qE 'Switching from thread.*to thread|switch.*thread|restore.*context' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "PASS"
         SCHED_PASSED=$((SCHED_PASSED + 1))
     else
-        echo "not found (may be expected if single-threaded)"
+        echo "(no context switch - single thread)"
     fi
 
     # ===========================================
@@ -650,23 +789,23 @@ if [ "$TEST_MODE" = "schedule" ]; then
     echo "Blocking I/O:"
 
     # Look for read syscall markers in the raw output
-    # 'r' = entering stdin read, 'b' = blocking, 'w' = woken
-    printf "  %-30s " "Read Syscall (r marker)"
-    if grep -q 'r' "$SERIAL_OUTPUT" 2>/dev/null; then
+    # [STDIN_READ] = entering stdin read, [STDIN_BLOCK] = blocking, [STDIN_WAKE] = woken
+    printf "  %-30s " "Read Syscall ([STDIN_READ])"
+    if grep -q '\[STDIN_READ\]' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "detected"
     else
         echo "not found"
     fi
 
-    printf "  %-30s " "Thread Blocking (b marker)"
-    if grep -q 'b' "$SERIAL_OUTPUT" 2>/dev/null; then
+    printf "  %-30s " "Thread Blocking ([STDIN_BLOCK])"
+    if grep -q '\[STDIN_BLOCK\]' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "detected"
     else
         echo "not found (no stdin read blocking needed)"
     fi
 
-    printf "  %-30s " "Thread Wake (w marker)"
-    if grep -q 'w' "$SERIAL_OUTPUT" 2>/dev/null; then
+    printf "  %-30s " "Thread Wake ([STDIN_WAKE])"
+    if grep -q '\[STDIN_WAKE\]' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "detected"
     else
         echo "not found (no thread was woken)"
@@ -687,33 +826,33 @@ if [ "$TEST_MODE" = "schedule" ]; then
     echo ""
     echo "Input Wake Mechanism:"
 
-    # Check for VirtIO keyboard polling (V marker)
-    printf "  %-30s " "VirtIO Key Events (V marker)"
-    if grep -q 'V' "$SERIAL_OUTPUT" 2>/dev/null; then
+    # Check for VirtIO keyboard polling ([VIRTIO_KEY] marker)
+    printf "  %-30s " "VirtIO Key Events ([VIRTIO_KEY])"
+    if grep -q '\[VIRTIO_KEY\]' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "detected"
     else
         echo "not found (no keyboard input)"
     fi
 
-    # Check for stdin push (P marker)
-    printf "  %-30s " "Stdin Push (P marker)"
-    if grep -q 'P' "$SERIAL_OUTPUT" 2>/dev/null; then
+    # Check for stdin push ([STDIN_PUSH] marker)
+    printf "  %-30s " "Stdin Push ([STDIN_PUSH])"
+    if grep -q '\[STDIN_PUSH\]' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "detected"
     else
         echo "not found (no data pushed to stdin)"
     fi
 
-    # Check for waking readers (W1, W2, etc. markers)
-    printf "  %-30s " "Wake Readers (W marker)"
-    if grep -qE 'W[0-9]' "$SERIAL_OUTPUT" 2>/dev/null; then
+    # Check for waking readers ([WAKE_READERS:N] markers)
+    printf "  %-30s " "Wake Readers ([WAKE_READERS:N])"
+    if grep -qE '\[WAKE_READERS:[0-9N]\]' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "detected"
     else
         echo "not found"
     fi
 
-    # Check for UART interrupt (U marker)
-    printf "  %-30s " "UART Interrupt (U marker)"
-    if grep -q 'U' "$SERIAL_OUTPUT" 2>/dev/null; then
+    # Check for UART interrupt ([UART_IRQ] marker)
+    printf "  %-30s " "UART Interrupt ([UART_IRQ])"
+    if grep -q '\[UART_IRQ\]' "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "detected"
     else
         echo "not found"
@@ -761,12 +900,12 @@ if [ "$TEST_MODE" = "schedule" ]; then
     echo "Scheduling Tests: $SCHED_PASSED/$SCHED_TOTAL passed"
     echo "========================================"
 
-    # Extract raw debug markers for diagnostics
+    # Extract debug markers for diagnostics
     echo ""
-    echo "Debug Markers in Output (first 500 chars):"
+    echo "Debug Markers Found:"
     echo "----------------------------------------"
-    # Show first 500 chars with markers highlighted
-    head -c 500 "$SERIAL_OUTPUT" 2>/dev/null | tr -cd 'rbwVPWU0-9\n' | head -20 || echo "(no markers found)"
+    # List all unique debug markers found in the output
+    grep -oE '\[STDIN_READ\]|\[STDIN_BLOCK\]|\[STDIN_WAKE\]|\[STDIN_PUSH\]|\[VIRTIO_KEY\]|\[UART_IRQ\]|\[UART_RX\]|\[NEED_RESCHED\]|\[WAKE_READERS:[0-9N]\]|\[TIMER_COUNT:[0-9]+\]' "$SERIAL_OUTPUT" 2>/dev/null | sort | uniq -c || echo "(no markers found)"
     echo ""
     echo "----------------------------------------"
 
@@ -780,6 +919,28 @@ fi
 if [ "$TEST_MODE" = "signal" ]; then
     echo "[4/4] Signal Delivery Tests:"
     echo "========================================"
+    echo ""
+
+    # ===========================================
+    # HARD REQUIREMENT: EL0_CONFIRMED must be present
+    # Without userspace execution, signal tests are meaningless
+    # ===========================================
+    if ! grep -q "EL0_CONFIRMED" "$SERIAL_OUTPUT" 2>/dev/null; then
+        echo "FATAL: EL0_CONFIRMED marker not found"
+        echo "       Userspace did not execute - tests are meaningless"
+        echo ""
+        echo "Without EL0_CONFIRMED, we cannot verify:"
+        echo "  - Signals are delivered to actual user processes"
+        echo "  - Signal handlers execute in userspace context"
+        echo "  - sigreturn correctly restores userspace state"
+        echo ""
+        echo "Debug: First 30 lines of output:"
+        head -30 "$SERIAL_OUTPUT" 2>/dev/null || echo "(no output)"
+        echo ""
+        exit 1
+    fi
+
+    echo "PREREQUISITE: EL0_CONFIRMED found - userspace executed"
     echo ""
 
     SIG_PASSED=0
@@ -800,15 +961,10 @@ if [ "$TEST_MODE" = "signal" ]; then
         SIG_FAILED=$((SIG_FAILED + 1))
     fi
 
-    # EL0 entry is required for userspace signals
+    # EL0 entry is required for userspace signals (guaranteed by prerequisite check)
     printf "  %-35s " "EL0 (Userspace) Ready"
-    if grep -q "EL0_CONFIRMED" "$SERIAL_OUTPUT" 2>/dev/null; then
-        echo "PASS"
-        SIG_PASSED=$((SIG_PASSED + 1))
-    else
-        echo "FAIL (no EL0 entry detected)"
-        SIG_FAILED=$((SIG_FAILED + 1))
-    fi
+    echo "PASS (verified at start)"
+    SIG_PASSED=$((SIG_PASSED + 1))
 
     # Check for scheduler (needed for signal-based thread wake)
     printf "  %-35s " "Scheduler Ready"
@@ -827,6 +983,7 @@ if [ "$TEST_MODE" = "signal" ]; then
     echo "Signal Delivery:"
 
     # Look for any signal delivery messages
+    # OPTIONAL: Signals may not be sent during boot test
     # Pattern: "Delivering signal N (NAME) to process P"
     printf "  %-35s " "Signal Delivery Logged"
     if grep -qE "Delivering signal [0-9]+" "$SERIAL_OUTPUT" 2>/dev/null; then
@@ -836,7 +993,7 @@ if [ "$TEST_MODE" = "signal" ]; then
         SIG_DEL=$(grep -E "Delivering signal [0-9]+" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
         echo "    > $SIG_DEL"
     else
-        echo "not found (may be expected)"
+        echo "(no signals sent during test)"
     fi
 
     # Look for signal handler setup
@@ -881,6 +1038,7 @@ if [ "$TEST_MODE" = "signal" ]; then
     fi
 
     # Look for alternate stack usage
+    # OPTIONAL: sigaltstack is an advanced feature not always used
     printf "  %-35s " "Alternate Stack"
     if grep -qE "ALTERNATE STACK" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "DETECTED"
@@ -889,7 +1047,7 @@ if [ "$TEST_MODE" = "signal" ]; then
     elif grep -qE "sigaltstack" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "syscall available"
     else
-        echo "not found (may be expected)"
+        echo "(not used)"
     fi
 
     # ===========================================
@@ -926,6 +1084,7 @@ if [ "$TEST_MODE" = "signal" ]; then
     echo "Signal Termination:"
 
     # Look for process termination by signal
+    # OPTIONAL: Signal termination is not expected during normal boot
     # Pattern: "Process P terminated by signal N (NAME)"
     printf "  %-35s " "Process Terminated by Signal"
     if grep -qE "terminated by signal" "$SERIAL_OUTPUT" 2>/dev/null; then
@@ -933,7 +1092,7 @@ if [ "$TEST_MODE" = "signal" ]; then
         TERM=$(grep -E "terminated by signal" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
         echo "    > $TERM"
     else
-        echo "not found (may be expected)"
+        echo "(no termination - normal)"
     fi
 
     # Look for SIGKILL handling
@@ -1064,6 +1223,28 @@ if [ "$TEST_MODE" = "network" ]; then
 
     NET_PASSED=0
     NET_FAILED=0
+    # Track critical failures that should immediately fail the test
+    CRITICAL_FAILURE=""
+
+    # ===========================================
+    # SECTION 0: Critical Pre-checks
+    # ===========================================
+    # Check for no network device - this is a HARD FAIL
+    if grep -qE "No network device available|No VirtIO network device found" "$SERIAL_OUTPUT" 2>/dev/null; then
+        echo "CRITICAL FAILURE: No network device detected"
+        echo ""
+        echo "The kernel reports no network device is available."
+        echo "Network tests cannot run without a network device."
+        echo ""
+        echo "To fix: Ensure QEMU is started with network device options:"
+        echo "  -device virtio-net-device,netdev=net0"
+        echo "  -netdev user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15"
+        echo ""
+        echo "========================================"
+        echo "FAIL: No network device - cannot run network tests"
+        echo "========================================"
+        exit 1
+    fi
 
     # ===========================================
     # SECTION 1: VirtIO Network Driver
@@ -1142,11 +1323,12 @@ if [ "$TEST_MODE" = "network" ]; then
     fi
 
     # Check for ARP init
+    # OPTIONAL: ARP only happens when communicating with gateway/other hosts
     printf "  %-35s " "ARP Cache Initialized"
     if grep -qE "ARP.*init|Sending ARP request" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "PASS"
     else
-        echo "not found (may be expected without gateway)"
+        echo "(no gateway communication)"
     fi
 
     # Check for IP address configuration
@@ -1181,47 +1363,77 @@ if [ "$TEST_MODE" = "network" ]; then
     fi
 
     # ===========================================
-    # SECTION 3: TCP/IP Functionality
+    # SECTION 3: Network Connectivity Verification
     # ===========================================
     echo ""
-    echo "TCP/IP Functionality:"
+    echo "Network Connectivity Verification:"
+    echo "  (Tests actual packet send AND receive)"
+    echo ""
 
-    # Check for ARP request sent (indicates network is active)
+    # Track connectivity verification results
+    ARP_REQUEST_SENT=false
+    ARP_REPLY_RECEIVED=false
+    ICMP_REQUEST_SENT=false
+    ICMP_REPLY_RECEIVED=false
+
+    # Check for ARP request sent
     printf "  %-35s " "ARP Request Sent"
-    if grep -qE "Sending ARP request|ARP request sent" "$SERIAL_OUTPUT" 2>/dev/null; then
+    if grep -qE "Sending ARP request|ARP request sent|ARP: Sending request" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "PASS"
-        NET_PASSED=$((NET_PASSED + 1))
+        ARP_REQUEST_SENT=true
+        ARP_REQ_LINE=$(grep -E "Sending ARP request|ARP request sent|ARP: Sending request" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
+        echo "    > $ARP_REQ_LINE"
     else
         echo "not found"
     fi
 
-    # Check for ARP reply received
+    # Check for ARP reply received - REQUIRED if request was sent
     printf "  %-35s " "ARP Reply Received"
-    if grep -qE "ARP resolved|gateway MAC" "$SERIAL_OUTPUT" 2>/dev/null; then
+    if grep -qE "ARP resolved|ARP reply received|ARP: Resolved|gateway MAC|ARP: Got reply" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "PASS"
         NET_PASSED=$((NET_PASSED + 1))
-        ARP_LINE=$(grep -E "ARP resolved|gateway MAC" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
-        echo "    > $ARP_LINE"
+        ARP_REPLY_RECEIVED=true
+        ARP_REPLY_LINE=$(grep -E "ARP resolved|ARP reply received|ARP: Resolved|gateway MAC|ARP: Got reply" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
+        echo "    > $ARP_REPLY_LINE"
     else
-        echo "not found (QEMU SLIRP may not respond)"
+        if [ "$ARP_REQUEST_SENT" = true ]; then
+            echo "FAIL (request sent but no reply received)"
+            NET_FAILED=$((NET_FAILED + 1))
+            CRITICAL_FAILURE="ARP request sent but no reply received - network not functional"
+        else
+            echo "not found (no ARP activity)"
+        fi
     fi
 
-    # Check for ICMP ping sent
+    # Check for ICMP echo request sent
     printf "  %-35s " "ICMP Echo Request Sent"
-    if grep -qE "Sending ICMP echo|ping.*gateway" "$SERIAL_OUTPUT" 2>/dev/null; then
+    if grep -qE "Sending ICMP echo|ICMP: Sending echo request|ping.*sending|ICMP echo request sent" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "PASS"
+        ICMP_REQUEST_SENT=true
+        ICMP_REQ_LINE=$(grep -E "Sending ICMP echo|ICMP: Sending echo request|ping.*sending|ICMP echo request sent" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
+        echo "    > $ICMP_REQ_LINE"
     else
         echo "not found"
     fi
 
-    # Check for no network device available warning
-    printf "  %-35s " "Network Device Available"
-    if grep -qE "No network device available|No VirtIO network device found" "$SERIAL_OUTPUT" 2>/dev/null; then
-        echo "FAIL (no device)"
-        NET_FAILED=$((NET_FAILED + 1))
-    else
+    # Check for ICMP echo reply received - REQUIRED if request was sent
+    printf "  %-35s " "ICMP Echo Reply Received"
+    if grep -qE "ICMP echo reply|ICMP: Got reply|ping.*reply|ICMP reply received|pong received" "$SERIAL_OUTPUT" 2>/dev/null; then
         echo "PASS"
         NET_PASSED=$((NET_PASSED + 1))
+        ICMP_REPLY_RECEIVED=true
+        ICMP_REPLY_LINE=$(grep -E "ICMP echo reply|ICMP: Got reply|ping.*reply|ICMP reply received|pong received" "$SERIAL_OUTPUT" 2>/dev/null | head -1)
+        echo "    > $ICMP_REPLY_LINE"
+    else
+        if [ "$ICMP_REQUEST_SENT" = true ]; then
+            echo "FAIL (request sent but no reply received)"
+            NET_FAILED=$((NET_FAILED + 1))
+            if [ -z "$CRITICAL_FAILURE" ]; then
+                CRITICAL_FAILURE="ICMP echo request sent but no reply received - network not functional"
+            fi
+        else
+            echo "not found (no ICMP activity)"
+        fi
     fi
 
     # ===========================================
@@ -1246,6 +1458,36 @@ if [ "$TEST_MODE" = "network" ]; then
     fi
 
     # ===========================================
+    # SECTION 5: Connectivity Summary
+    # ===========================================
+    echo ""
+    echo "Connectivity Summary:"
+    echo "----------------------------------------"
+
+    # Determine if actual network activity succeeded
+    CONNECTIVITY_VERIFIED=false
+
+    if [ "$ARP_REQUEST_SENT" = true ] && [ "$ARP_REPLY_RECEIVED" = true ]; then
+        echo "  ARP Resolution:    SUCCESS (request sent AND reply received)"
+        CONNECTIVITY_VERIFIED=true
+    elif [ "$ARP_REQUEST_SENT" = true ]; then
+        echo "  ARP Resolution:    FAILED (request sent, NO reply)"
+    else
+        echo "  ARP Resolution:    NOT TESTED (no ARP activity)"
+    fi
+
+    if [ "$ICMP_REQUEST_SENT" = true ] && [ "$ICMP_REPLY_RECEIVED" = true ]; then
+        echo "  ICMP Ping:         SUCCESS (request sent AND reply received)"
+        CONNECTIVITY_VERIFIED=true
+    elif [ "$ICMP_REQUEST_SENT" = true ]; then
+        echo "  ICMP Ping:         FAILED (request sent, NO reply)"
+    else
+        echo "  ICMP Ping:         NOT TESTED (no ICMP activity)"
+    fi
+
+    echo "----------------------------------------"
+
+    # ===========================================
     # Summary
     # ===========================================
     echo ""
@@ -1254,15 +1496,40 @@ if [ "$TEST_MODE" = "network" ]; then
     echo "Network Tests: $NET_PASSED/$NET_TOTAL passed"
     echo ""
 
+    # Check for critical failures first
+    if [ -n "$CRITICAL_FAILURE" ]; then
+        echo "NETWORK STACK: CONNECTIVITY FAILED"
+        echo "  $CRITICAL_FAILURE"
+        echo ""
+        echo "  Network tests verify actual connectivity, not just driver loading."
+        echo "  A packet was sent but no response was received."
+        echo "========================================"
+
+        # Show relevant log entries for debugging
+        echo ""
+        echo "Network-related log entries:"
+        echo "----------------------------------------"
+        grep -iE "net|virtio.*net|network|MAC|ARP|IP address|gateway|ICMP|ping" "$SERIAL_OUTPUT" 2>/dev/null | head -40 || echo "(no entries found)"
+        echo "----------------------------------------"
+
+        exit 1
+    fi
+
     # Detailed analysis of network readiness
-    if [ $NET_PASSED -ge 6 ]; then
-        echo "NETWORK STACK: FULLY OPERATIONAL"
-        echo "  VirtIO network driver and TCP/IP stack initialized successfully."
-        if grep -qE "ARP resolved|gateway MAC" "$SERIAL_OUTPUT" 2>/dev/null; then
-            echo "  Gateway ARP resolution successful - network connectivity confirmed."
-        else
-            echo "  Gateway ARP not resolved - connectivity may be limited."
+    if [ "$CONNECTIVITY_VERIFIED" = true ]; then
+        echo "NETWORK STACK: CONNECTIVITY VERIFIED"
+        echo "  Network packets successfully sent AND received."
+        if [ "$ARP_REPLY_RECEIVED" = true ]; then
+            echo "  - ARP resolution: WORKING"
         fi
+        if [ "$ICMP_REPLY_RECEIVED" = true ]; then
+            echo "  - ICMP ping: WORKING"
+        fi
+    elif [ $NET_PASSED -ge 6 ]; then
+        echo "NETWORK STACK: INITIALIZED (connectivity not verified)"
+        echo "  VirtIO network driver and TCP/IP stack initialized."
+        echo "  No network activity was observed to verify connectivity."
+        echo "  This may be expected if no network operations were performed."
     elif [ $NET_PASSED -ge 4 ]; then
         echo "NETWORK STACK: PARTIALLY OPERATIONAL"
         echo "  Basic network infrastructure present but some features missing."
@@ -1276,15 +1543,16 @@ if [ "$TEST_MODE" = "network" ]; then
 
     echo "========================================"
 
-    # Show relevant log entries for debugging
+    # Show relevant log entries for debugging if there were failures
     if [ $NET_FAILED -gt 0 ]; then
         echo ""
         echo "Network-related log entries:"
         echo "----------------------------------------"
-        grep -iE "net|virtio.*net|network|MAC|ARP|IP address|gateway" "$SERIAL_OUTPUT" 2>/dev/null | head -30 || echo "(no entries found)"
+        grep -iE "net|virtio.*net|network|MAC|ARP|IP address|gateway|ICMP|ping" "$SERIAL_OUTPUT" 2>/dev/null | head -40 || echo "(no entries found)"
         echo "----------------------------------------"
     fi
 
+    # Fail if too many failures
     if [ $NET_FAILED -gt 2 ]; then
         exit 1
     fi
