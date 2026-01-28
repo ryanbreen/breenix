@@ -27,7 +27,6 @@ use crate::drivers::e1000;
 #[cfg(target_arch = "aarch64")]
 use crate::drivers::virtio::net_mmio;
 
-#[cfg(target_arch = "x86_64")]
 use crate::task::softirqd::{register_softirq_handler, SoftirqType};
 
 // Logging macros that work on both architectures
@@ -158,23 +157,15 @@ pub fn drain_loopback_queue() {
 }
 
 /// Softirq handler for network RX processing
-/// Called from softirq context when NetRx softirq is raised by e1000 interrupt handler
-#[cfg(target_arch = "x86_64")]
+/// Called from softirq context when NetRx softirq is raised by network interrupt handler
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
     process_rx();
 }
 
 /// Re-register the network softirq handler.
 /// This is needed after tests that override the handler for testing purposes.
-#[cfg(target_arch = "x86_64")]
 pub fn register_net_softirq() {
     register_softirq_handler(SoftirqType::NetRx, net_rx_softirq_handler);
-}
-
-/// Re-register the network softirq handler (no-op on ARM64).
-#[cfg(target_arch = "aarch64")]
-pub fn register_net_softirq() {
-    // ARM64 uses polling for now, no softirq registration needed
 }
 
 /// Initialize the network stack
@@ -182,7 +173,7 @@ pub fn register_net_softirq() {
 pub fn init() {
     // Register NET_RX softirq handler FIRST - before any network operations
     // This ensures the handler is ready before e1000 can raise the softirq
-    register_softirq_handler(SoftirqType::NetRx, net_rx_softirq_handler);
+    register_net_softirq();
 
     log::info!("NET: Initializing network stack...");
 
@@ -199,6 +190,10 @@ pub fn init() {
 /// Initialize the network stack (ARM64 version)
 #[cfg(target_arch = "aarch64")]
 pub fn init() {
+    // Register NET_RX softirq handler FIRST - before any network operations
+    // This ensures the handler is ready before virtio-net can raise the softirq
+    register_net_softirq();
+
     crate::serial_println!("[net] Initializing network stack...");
 
     if let Some(mac) = net_mmio::mac_address() {

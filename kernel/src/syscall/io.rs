@@ -91,6 +91,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         PtySlave(u32),
         Ebadf,
         Enotconn,
+        Eisdir,
         Eopnotsupp,
     }
 
@@ -118,7 +119,16 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 WriteOperation::Pipe { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
             }
             FdKind::PipeRead(_) => WriteOperation::Ebadf,
+            FdKind::FifoWrite(_path, pipe_buffer) => {
+                WriteOperation::Pipe { pipe_buffer: pipe_buffer.clone(), is_nonblocking: (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0 }
+            }
+            FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp,
+            FdKind::RegularFile(_) => WriteOperation::Eopnotsupp,
+            FdKind::Device(_) => WriteOperation::Eopnotsupp,
+            FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } => {
+                WriteOperation::Eisdir
+            }
             FdKind::UnixStream(socket) => WriteOperation::UnixStream { socket: socket.clone() },
             FdKind::UnixSocket(_) => WriteOperation::Enotconn,
             FdKind::UnixListener(_) => WriteOperation::Enotconn,
@@ -131,6 +141,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         WriteOperation::StdIo => write_to_stdio(fd, &buffer),
         WriteOperation::Ebadf => SyscallResult::Err(9),
         WriteOperation::Enotconn => SyscallResult::Err(super::errno::ENOTCONN as u64),
+        WriteOperation::Eisdir => SyscallResult::Err(super::errno::EISDIR as u64),
         WriteOperation::Eopnotsupp => SyscallResult::Err(95),
         WriteOperation::Pipe { pipe_buffer, is_nonblocking } => {
             let mut pipe = pipe_buffer.lock();
@@ -303,8 +314,28 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             }
         }
         FdKind::PipeWrite(_) => SyscallResult::Err(9),
+        FdKind::FifoRead(_path, pipe_buffer) => {
+            let mut pipe = pipe_buffer.lock();
+            let mut buf = alloc::vec![0u8; count as usize];
+            match pipe.read(&mut buf) {
+                Ok(n) => {
+                    if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
+                        return SyscallResult::Err(14);
+                    }
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => SyscallResult::Err(e as u64),
+            }
+        }
+        FdKind::FifoWrite(_, _) => SyscallResult::Err(9),
         FdKind::UdpSocket(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
             SyscallResult::Err(super::errno::ENOTCONN as u64)
+        }
+        FdKind::RegularFile(_) | FdKind::Device(_) => {
+            SyscallResult::Err(super::errno::EOPNOTSUPP as u64)
+        }
+        FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } => {
+            SyscallResult::Err(super::errno::EISDIR as u64)
         }
         FdKind::UnixStream(socket) => {
             let sock = socket.lock();
