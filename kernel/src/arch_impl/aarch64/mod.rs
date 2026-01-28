@@ -49,6 +49,7 @@ pub use syscall_entry::{is_el0_confirmed, syscall_return_to_userspace_aarch64};
 #[allow(unused_imports)]
 pub use context_switch::{
     check_need_resched_and_switch_arm64,
+    create_saved_regs_from_frame,
     idle_loop_arm64,
     perform_context_switch,
     switch_to_new_thread,

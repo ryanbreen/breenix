@@ -116,14 +116,11 @@ impl PipeBuffer {
     /// Wake all threads waiting to read from this pipe
     fn wake_read_waiters(&mut self) {
         let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
-        #[cfg(target_arch = "x86_64")]
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
         }
-        #[cfg(target_arch = "aarch64")]
-        let _ = waiters; // On ARM64 we don't have a scheduler yet
     }
 
     /// Check if pipe is readable (has data or EOF)

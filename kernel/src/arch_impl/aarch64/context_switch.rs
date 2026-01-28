@@ -96,7 +96,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // No reschedule needed
         if from_el0 {
             // Check for pending signals before returning to userspace
-            // TODO: Implement signal delivery for ARM64
+            check_and_deliver_signals_for_current_thread_arm64(frame);
         }
         return;
     }
@@ -110,12 +110,20 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     // Handle "no switch needed" case
     if schedule_result.is_none() {
+        // Even though no context switch happens, check for signals
+        // when returning to userspace
+        if from_el0 {
+            check_and_deliver_signals_for_current_thread_arm64(frame);
+        }
         return;
     }
 
     if let Some((old_thread_id, new_thread_id)) = schedule_result {
         if old_thread_id == new_thread_id {
-            // Same thread continues running
+            // Same thread continues running, but check for pending signals
+            if from_el0 {
+                check_and_deliver_signals_for_current_thread_arm64(frame);
+            }
             return;
         }
 
@@ -762,5 +770,176 @@ fn emit_el0_entry_marker() {
     if !EMITTED_EL0_MARKER.swap(true, Ordering::Relaxed) {
         raw_uart_str("EL0_ENTER: First userspace entry\n");
         raw_uart_str("[ OK ] EL0_SMOKE: userspace executed + syscall path verified\n");
+    }
+}
+
+// =============================================================================
+// ARM64 Signal Delivery
+// =============================================================================
+
+/// Check and deliver pending signals for the current thread (ARM64)
+///
+/// Called when returning to userspace (EL0) without a context switch.
+/// This ensures signals are delivered promptly even when the same thread keeps running.
+///
+/// Key differences from x86_64:
+/// - User stack pointer is in SP_EL0, not in the exception frame
+/// - Uses TTBR0_EL1 instead of CR3 for page table switching
+/// - SPSR contains processor state instead of RFLAGS
+fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64ExceptionFrame) {
+    // Get current thread ID
+    let current_thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return,
+    };
+
+    // Thread 0 is the idle thread - it doesn't have a process with signals
+    if current_thread_id == 0 {
+        return;
+    }
+
+    // Try to acquire process manager lock
+    let mut manager_guard = match crate::process::try_manager() {
+        Some(guard) => guard,
+        None => return, // Lock held, skip signal check this time
+    };
+
+    // Track if signal termination happened (for parent notification after borrow ends)
+    let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+
+    if let Some(ref mut manager) = *manager_guard {
+        // Find the process for this thread
+        if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
+            // Check for expired timers
+            crate::signal::delivery::check_and_fire_alarm(process);
+            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
+            if crate::signal::delivery::has_deliverable_signals(process) {
+                // Read current SP_EL0 (user stack pointer)
+                let sp_el0: u64;
+                unsafe {
+                    core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
+                }
+
+                // Switch to process's page table for signal delivery
+                // On ARM64, this is TTBR0_EL1
+                if let Some(ref page_table) = process.page_table {
+                    let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                    unsafe {
+                        // Write new TTBR0
+                        core::arch::asm!(
+                            "msr ttbr0_el1, {}",
+                            "dsb ish",
+                            "isb",
+                            in(reg) ttbr0_value,
+                            options(nomem, nostack)
+                        );
+                    }
+                }
+
+                // Create SavedRegisters from exception frame for signal delivery
+                let mut saved_regs = create_saved_regs_from_frame(frame, sp_el0);
+
+                // Deliver signals
+                let signal_result = crate::signal::delivery::deliver_pending_signals(
+                    process,
+                    frame,
+                    &mut saved_regs,
+                );
+
+                // If signals were delivered, update SP_EL0 with new stack pointer
+                // The signal frame was pushed onto the user stack
+                if !matches!(signal_result, crate::signal::delivery::SignalDeliveryResult::NoAction) {
+                    unsafe {
+                        core::arch::asm!(
+                            "msr sp_el0, {}",
+                            in(reg) saved_regs.sp,
+                            options(nomem, nostack)
+                        );
+                    }
+                }
+
+                match signal_result {
+                    crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
+                        // Signal terminated the process
+                        crate::task::scheduler::set_need_resched();
+                        signal_termination_info = Some(notification);
+                        setup_idle_return_arm64(frame);
+                        crate::task::scheduler::switch_to_idle();
+                        // Don't return here - fall through to handle notification
+                    }
+                    crate::signal::delivery::SignalDeliveryResult::Delivered => {
+                        if process.is_terminated() {
+                            crate::task::scheduler::set_need_resched();
+                            setup_idle_return_arm64(frame);
+                            crate::task::scheduler::switch_to_idle();
+                        }
+                    }
+                    crate::signal::delivery::SignalDeliveryResult::NoAction => {}
+                }
+            }
+        }
+        // process borrow has ended here
+
+        // Drop manager guard first to avoid deadlock when notifying parent
+        drop(manager_guard);
+
+        // Notify parent if signal terminated a child
+        if let Some(notification) = signal_termination_info {
+            crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
+        }
+    }
+}
+
+/// Create SavedRegisters from an Aarch64ExceptionFrame and SP_EL0
+///
+/// This is needed because the signal delivery code operates on SavedRegisters,
+/// which includes the stack pointer that isn't in the exception frame on ARM64.
+///
+/// This function is the core of ARM64 signal delivery - it converts the
+/// exception frame (used by hardware) to SavedRegisters (used by the signal
+/// infrastructure). This conversion is ARM64-specific because:
+/// - ARM64 exception frames don't include SP_EL0 (user stack pointer)
+/// - The register mapping is completely different from x86_64
+/// - SPSR/ELR have ARM64-specific semantics
+pub fn create_saved_regs_from_frame(
+    frame: &Aarch64ExceptionFrame,
+    sp_el0: u64,
+) -> crate::task::process_context::SavedRegisters {
+    crate::task::process_context::SavedRegisters {
+        x0: frame.x0,
+        x1: frame.x1,
+        x2: frame.x2,
+        x3: frame.x3,
+        x4: frame.x4,
+        x5: frame.x5,
+        x6: frame.x6,
+        x7: frame.x7,
+        x8: frame.x8,
+        x9: frame.x9,
+        x10: frame.x10,
+        x11: frame.x11,
+        x12: frame.x12,
+        x13: frame.x13,
+        x14: frame.x14,
+        x15: frame.x15,
+        x16: frame.x16,
+        x17: frame.x17,
+        x18: frame.x18,
+        x19: frame.x19,
+        x20: frame.x20,
+        x21: frame.x21,
+        x22: frame.x22,
+        x23: frame.x23,
+        x24: frame.x24,
+        x25: frame.x25,
+        x26: frame.x26,
+        x27: frame.x27,
+        x28: frame.x28,
+        x29: frame.x29,
+        x30: frame.x30,
+        sp: sp_el0,
+        elr: frame.elr,
+        spsr: frame.spsr,
     }
 }
