@@ -172,7 +172,15 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
                         crate::task::scheduler::spawn(Box::new(main_thread.clone()));
                         crate::serial_println!("create_user_process: scheduler::spawn completed");
 
-                        // Note: ARM64 doesn't have TTY support yet, so no foreground pgrp setting
+                        // Set this process as the foreground process group for the console TTY
+                        // This ensures Ctrl+C (SIGINT) and other TTY signals go to this process
+                        if let Some(tty) = crate::tty::console() {
+                            tty.set_foreground_pgrp(pid.as_u64());
+                            log::debug!(
+                                "create_user_process: Set PID {} as foreground pgrp for TTY (ARM64)",
+                                pid.as_u64()
+                            );
+                        }
 
                         log::info!(
                             "create_user_process: User thread {} enqueued for scheduling",

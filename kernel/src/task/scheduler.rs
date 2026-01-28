@@ -21,6 +21,23 @@ static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 /// Global need_resched flag for timer interrupt
 static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 
+/// Counter for unblock() calls - used for testing pipe wake mechanism
+/// This is a global atomic because:
+/// 1. unblock() is called via with_scheduler() which already holds the scheduler lock
+/// 2. Tests need to read this outside the scheduler lock
+/// 3. AtomicU64 ensures visibility across threads without additional locking
+static UNBLOCK_CALL_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Get the current unblock() call count (for testing)
+///
+/// This function is used by the test framework to verify that pipe wake
+/// mechanisms actually call scheduler.unblock(). It's only called when
+/// the boot_tests feature is enabled.
+#[allow(dead_code)] // Used by test_framework when boot_tests feature is enabled
+pub fn unblock_call_count() -> u64 {
+    UNBLOCK_CALL_COUNT.load(Ordering::SeqCst)
+}
+
 /// The kernel scheduler
 pub struct Scheduler {
     /// All threads in the system
@@ -293,6 +310,9 @@ impl Scheduler {
 
     /// Unblock a thread by ID
     pub fn unblock(&mut self, thread_id: u64) {
+        // Increment the call counter for testing (tracks that unblock was called)
+        UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
