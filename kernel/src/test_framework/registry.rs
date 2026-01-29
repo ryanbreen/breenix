@@ -10,6 +10,8 @@ pub enum TestResult {
     Pass,
     /// Test failed with a message
     Fail(&'static str),
+    /// Test skipped - infrastructure not available
+    Skip(&'static str),
     /// Test exceeded its time limit
     Timeout,
     /// Test caused a panic
@@ -28,7 +30,20 @@ impl TestResult {
             TestResult::Fail(msg) => Some(msg),
             TestResult::Timeout => Some("test timed out"),
             TestResult::Panic => Some("test panicked"),
-            TestResult::Pass => None,
+            TestResult::Pass | TestResult::Skip(_) => None,
+        }
+    }
+
+    /// Check if this result is a skip
+    pub fn is_skip(&self) -> bool {
+        matches!(self, TestResult::Skip(_))
+    }
+
+    /// Get skip message if any
+    pub fn skip_message(&self) -> Option<&'static str> {
+        match self {
+            TestResult::Skip(msg) => Some(msg),
+            _ => None,
         }
     }
 }
@@ -417,6 +432,80 @@ fn test_cow_flags_aarch64() -> TestResult {
         return TestResult::Pass;
     }
     #[cfg(not(target_arch = "aarch64"))]
+    {
+        TestResult::Pass
+    }
+}
+
+/// Test CoW (Copy-on-Write) fork behavior on x86_64.
+///
+/// Verifies the CoW flag manipulation functions work correctly for fork():
+/// - make_cow_flags: converts writable page to CoW (sets marker, clears writable)
+/// - is_cow_page: detects CoW pages
+/// - make_private_flags: restores writable after CoW fault
+fn test_cow_fork_behavior() -> TestResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use x86_64::structures::paging::PageTableFlags;
+        use crate::memory::process_memory::{is_cow_page, make_cow_flags, make_private_flags};
+
+        // Test 1: make_cow_flags converts writable to CoW
+        let base_flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE;
+
+        let cow_flags = make_cow_flags(base_flags);
+        if !is_cow_page(cow_flags) {
+            return TestResult::Fail("make_cow_flags did not set COW marker");
+        }
+        if cow_flags.contains(PageTableFlags::WRITABLE) {
+            return TestResult::Fail("make_cow_flags left page writable");
+        }
+        if !cow_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            return TestResult::Fail("make_cow_flags cleared user bit");
+        }
+
+        // Test 2: is_cow_page distinguishes CoW from ordinary read-only
+        let readonly_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        if is_cow_page(readonly_flags) {
+            return TestResult::Fail("is_cow_page false positive on ordinary read-only page");
+        }
+
+        // Test 3: make_private_flags restores writable
+        let private_flags = make_private_flags(cow_flags);
+        if is_cow_page(private_flags) {
+            return TestResult::Fail("make_private_flags did not clear COW marker");
+        }
+        if !private_flags.contains(PageTableFlags::WRITABLE) {
+            return TestResult::Fail("make_private_flags did not restore writable");
+        }
+        if !private_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+            return TestResult::Fail("make_private_flags cleared user bit");
+        }
+
+        // Test 4: Verify BIT_9 is the COW marker
+        if !cow_flags.contains(PageTableFlags::BIT_9) {
+            return TestResult::Fail("COW marker not using BIT_9");
+        }
+        if private_flags.contains(PageTableFlags::BIT_9) {
+            return TestResult::Fail("private flags still has BIT_9 set");
+        }
+
+        // Test 5: Idempotency - applying make_cow_flags twice is safe
+        let double_cow = make_cow_flags(cow_flags);
+        if !is_cow_page(double_cow) {
+            return TestResult::Fail("double make_cow_flags broke CoW marker");
+        }
+
+        // Test 6: make_private_flags on non-CoW adds writable
+        let private_from_readonly = make_private_flags(readonly_flags);
+        if !private_from_readonly.contains(PageTableFlags::WRITABLE) {
+            return TestResult::Fail("make_private_flags on non-CoW didn't add writable");
+        }
+
+        TestResult::Pass
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     {
         TestResult::Pass
     }

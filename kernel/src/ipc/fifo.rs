@@ -80,14 +80,11 @@ impl FifoEntry {
         self.readers += 1;
         // Wake writers waiting for a reader
         let waiters: Vec<u64> = self.write_waiters.drain(..).collect();
-        #[cfg(target_arch = "x86_64")]
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
         }
-        #[cfg(target_arch = "aarch64")]
-        let _ = waiters; // On ARM64 we don't have a scheduler yet
     }
 
     /// Add a writer and wake any waiting readers
@@ -95,14 +92,11 @@ impl FifoEntry {
         self.writers += 1;
         // Wake readers waiting for a writer
         let waiters: Vec<u64> = self.read_waiters.drain(..).collect();
-        #[cfg(target_arch = "x86_64")]
         for tid in waiters {
             crate::task::scheduler::with_scheduler(|sched| {
                 sched.unblock(tid);
             });
         }
-        #[cfg(target_arch = "aarch64")]
-        let _ = waiters; // On ARM64 we don't have a scheduler yet
     }
 
     /// Remove a reader
