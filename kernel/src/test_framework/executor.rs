@@ -189,6 +189,10 @@ fn run_subsystem_tests(id: SubsystemId) {
                 serial_println!("[TEST:{}:{}:PASS]", id_name, test_name);
                 passed_count += 1;
             }
+            TestResult::Skip(msg) => {
+                serial_println!("[TEST:{}:{}:SKIP:{}]", id_name, test_name, msg);
+                // Skipped tests are not counted as passed or failed
+            }
             TestResult::Fail(msg) => {
                 serial_println!("[TEST:{}:{}:FAIL:{}]", id_name, test_name, msg);
                 mark_failed(id);

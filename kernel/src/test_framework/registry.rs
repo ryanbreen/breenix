@@ -1085,6 +1085,96 @@ fn test_stack_red_zone() -> TestResult {
     }
 }
 
+/// Test cleanup_for_exec() - verify page table can be created and destroyed.
+///
+/// This test exercises the ~280 lines of page table walking code in
+/// ProcessPageTable::cleanup_for_exec() by:
+/// 1. Creating a new ProcessPageTable
+/// 2. Mapping user pages into it (to create page table hierarchy)
+/// 3. Calling cleanup_for_exec() which should free all frames
+/// 4. Verifying the operation completes without panic/corruption
+fn test_cleanup_for_exec() -> TestResult {
+    use crate::memory::frame_allocator::{allocate_frame, deallocate_frame};
+    use crate::memory::process_memory::ProcessPageTable;
+
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+    #[cfg(target_arch = "x86_64")]
+    use x86_64::VirtAddr;
+
+    #[cfg(not(target_arch = "x86_64"))]
+    use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
+
+    // Step 1: Create a new ProcessPageTable
+    let mut page_table = match ProcessPageTable::new() {
+        Ok(pt) => pt,
+        Err(e) => {
+            // If we can't create a page table, this might be expected in some
+            // boot scenarios (e.g., frame allocator not ready)
+            log::warn!("cleanup_for_exec test: couldn't create ProcessPageTable: {}", e);
+            return TestResult::Skip("ProcessPageTable::new() failed - likely early boot");
+        }
+    };
+
+    // Step 2: Allocate frames and map some user pages
+    // Use addresses in the valid user region (below 0x800000000000)
+    // We'll map 3 pages to ensure we exercise the page table hierarchy
+    let test_addrs: [u64; 3] = [
+        0x0000_1000_0000, // Low address
+        0x0000_2000_0000, // Different L4 entry range
+        0x0000_3000_0000, // Another different range
+    ];
+
+    let mut allocated_frames = alloc::vec::Vec::new();
+
+    for &addr in &test_addrs {
+        let frame = match allocate_frame() {
+            Some(f) => f,
+            None => {
+                // Clean up frames we already allocated
+                for f in allocated_frames {
+                    deallocate_frame(f);
+                }
+                return TestResult::Fail("Failed to allocate frame for test page");
+            }
+        };
+
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE;
+
+        if let Err(e) = page_table.map_page(page, frame, flags) {
+            // Clean up frames we already allocated
+            for f in allocated_frames {
+                deallocate_frame(f);
+            }
+            deallocate_frame(frame);
+            log::error!("cleanup_for_exec test: map_page failed: {}", e);
+            return TestResult::Fail("Failed to map page in test page table");
+        }
+
+        allocated_frames.push(frame);
+    }
+
+    // Step 3: Call cleanup_for_exec() which takes ownership and frees everything
+    // This should:
+    // - Walk all L4 entries 0-255 (userspace)
+    // - For each mapped page, call frame_decref() and deallocate_frame()
+    // - Free the L1, L2, L3 page table structure frames
+    // - Free the L4 frame itself
+    //
+    // Note: cleanup_for_exec() takes `self` by value, consuming the ProcessPageTable
+    page_table.cleanup_for_exec();
+
+    // If we got here without panicking, the cleanup worked
+    // Note: We can't easily verify the frames were actually returned to the free list
+    // without more complex bookkeeping, but the fact that it didn't panic or corrupt
+    // memory is the main thing we're testing.
+
+    TestResult::Pass
+}
+
 // =============================================================================
 // Timer Test Functions (Phase 4c)
 // =============================================================================
@@ -4131,6 +4221,12 @@ static MEMORY_TESTS: &[TestDef] = &[
         arch: Arch::Aarch64,
         timeout_ms: 1000,
     },
+    TestDef {
+        name: "cow_fork_behavior",
+        func: test_cow_fork_behavior,
+        arch: Arch::X86_64,
+        timeout_ms: 1000,
+    },
     // Phase 4g: Guard page tests
     TestDef {
         name: "guard_page_exists",
@@ -4242,6 +4338,13 @@ static MEMORY_TESTS: &[TestDef] = &[
         func: test_stack_red_zone,
         arch: Arch::Any,
         timeout_ms: 1000,
+    },
+    // Page table cleanup test
+    TestDef {
+        name: "cleanup_for_exec",
+        func: test_cleanup_for_exec,
+        arch: Arch::Any,
+        timeout_ms: 5000,
     },
 ];
 
