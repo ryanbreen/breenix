@@ -1583,6 +1583,286 @@ impl ProcessPageTable {
 
         Ok(())
     }
+
+    /// Clean up page table resources during exec()
+    ///
+    /// This walks the entire page table hierarchy and:
+    /// 1. Decrements reference counts for all user pages (CoW support)
+    /// 2. Deallocates frames that are no longer shared (refcount=0)
+    /// 3. Deallocates the page table structure frames (L1/L2/L3 tables)
+    /// 4. Deallocates the L4 frame itself
+    ///
+    /// Call this on the OLD page table after installing the new one during exec().
+    #[cfg(target_arch = "x86_64")]
+    pub fn cleanup_for_exec(self) {
+        use crate::memory::frame_allocator::deallocate_frame;
+        use crate::memory::frame_metadata::frame_decref;
+        use alloc::vec::Vec;
+
+        let phys_offset = crate::memory::physical_memory_offset();
+        let mut user_frames_freed = 0u64;
+        let mut user_frames_still_shared = 0u64;
+        let mut table_frames_freed = 0u64;
+
+        // Collect page table structure frames to free after walking
+        let mut l3_frames: Vec<PhysFrame> = Vec::new();
+        let mut l2_frames: Vec<PhysFrame> = Vec::new();
+        let mut l1_frames: Vec<PhysFrame> = Vec::new();
+
+        unsafe {
+            // Get the L4 table
+            let l4_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+            let l4_table = &*(l4_virt.as_ptr() as *const PageTable);
+
+            // Walk L4 entries 0-255 (userspace only, 256-511 is kernel - don't touch)
+            for l4_idx in 0..256usize {
+                let l4_entry = &l4_table[l4_idx];
+                if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
+                    continue;
+                }
+
+                // Get L3 table and mark for cleanup
+                let l3_phys = l4_entry.addr();
+                let l3_frame = PhysFrame::containing_address(l3_phys);
+                l3_frames.push(l3_frame);
+
+                let l3_virt = phys_offset + l3_phys.as_u64();
+                let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
+
+                for l3_idx in 0..512usize {
+                    let l3_entry = &l3_table[l3_idx];
+                    if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
+                        continue;
+                    }
+
+                    // 1GB huge page - handle CoW for the frame
+                    if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        let frame = PhysFrame::containing_address(l3_entry.addr());
+                        if frame_decref(frame) {
+                            deallocate_frame(frame);
+                            user_frames_freed += 1;
+                        } else {
+                            user_frames_still_shared += 1;
+                        }
+                        continue;
+                    }
+
+                    // Get L2 table and mark for cleanup
+                    let l2_phys = l3_entry.addr();
+                    let l2_frame = PhysFrame::containing_address(l2_phys);
+                    l2_frames.push(l2_frame);
+
+                    let l2_virt = phys_offset + l2_phys.as_u64();
+                    let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
+
+                    for l2_idx in 0..512usize {
+                        let l2_entry = &l2_table[l2_idx];
+                        if l2_entry.is_unused() || !l2_entry.flags().contains(PageTableFlags::PRESENT) {
+                            continue;
+                        }
+
+                        // 2MB huge page - handle CoW for the frame
+                        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                            let frame = PhysFrame::containing_address(l2_entry.addr());
+                            if frame_decref(frame) {
+                                deallocate_frame(frame);
+                                user_frames_freed += 1;
+                            } else {
+                                user_frames_still_shared += 1;
+                            }
+                            continue;
+                        }
+
+                        // Get L1 table and mark for cleanup
+                        let l1_phys = l2_entry.addr();
+                        let l1_frame = PhysFrame::containing_address(l1_phys);
+                        l1_frames.push(l1_frame);
+
+                        let l1_virt = phys_offset + l1_phys.as_u64();
+                        let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
+
+                        for l1_idx in 0..512usize {
+                            let l1_entry = &l1_table[l1_idx];
+                            if l1_entry.is_unused() || !l1_entry.flags().contains(PageTableFlags::PRESENT) {
+                                continue;
+                            }
+
+                            // 4KB page - handle CoW for the frame
+                            let frame = PhysFrame::containing_address(l1_entry.addr());
+                            if frame_decref(frame) {
+                                deallocate_frame(frame);
+                                user_frames_freed += 1;
+                            } else {
+                                user_frames_still_shared += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Free page table structure frames (L1 first, then L2, then L3)
+            for frame in l1_frames {
+                deallocate_frame(frame);
+                table_frames_freed += 1;
+            }
+            for frame in l2_frames {
+                deallocate_frame(frame);
+                table_frames_freed += 1;
+            }
+            for frame in l3_frames {
+                deallocate_frame(frame);
+                table_frames_freed += 1;
+            }
+
+            // Free the L4 frame itself
+            deallocate_frame(self.level_4_frame);
+            table_frames_freed += 1;
+        }
+
+        log::info!(
+            "cleanup_for_exec: freed {} user frames, {} still shared, {} table frames",
+            user_frames_freed,
+            user_frames_still_shared,
+            table_frames_freed
+        );
+    }
+
+    /// Clean up page table resources during exec() (ARM64 version)
+    ///
+    /// ARM64 uses different page table naming (L0/L1/L2/L3) but same structure.
+    #[cfg(target_arch = "aarch64")]
+    pub fn cleanup_for_exec(self) {
+        use crate::memory::frame_allocator::deallocate_frame;
+        use crate::memory::frame_metadata::frame_decref;
+        use alloc::vec::Vec;
+
+        let phys_offset = crate::memory::physical_memory_offset();
+        let mut user_frames_freed = 0u64;
+        let mut user_frames_still_shared = 0u64;
+        let mut table_frames_freed = 0u64;
+
+        // Collect page table structure frames to free after walking
+        let mut l1_frames: Vec<PhysFrame> = Vec::new();
+        let mut l2_frames: Vec<PhysFrame> = Vec::new();
+        let mut l3_frames: Vec<PhysFrame> = Vec::new();
+
+        unsafe {
+            // Get the L0 table (TTBR0 - userspace only on ARM64)
+            let l0_virt = phys_offset + self.level_4_frame.start_address().as_u64();
+            let l0_table = &*(l0_virt.as_ptr() as *const PageTable);
+
+            // Walk all L0 entries (all are userspace on ARM64 TTBR0)
+            for l0_idx in 0..512usize {
+                let l0_entry = &l0_table[l0_idx];
+                if l0_entry.is_unused() || !l0_entry.flags().contains(PageTableFlags::PRESENT) {
+                    continue;
+                }
+
+                // Get L1 table and mark for cleanup
+                let l1_phys = l0_entry.addr();
+                let l1_frame = PhysFrame::containing_address(l1_phys);
+                l1_frames.push(l1_frame);
+
+                let l1_virt = phys_offset + l1_phys.as_u64();
+                let l1_table = &*(l1_virt.as_ptr() as *const PageTable);
+
+                for l1_idx in 0..512usize {
+                    let l1_entry = &l1_table[l1_idx];
+                    if l1_entry.is_unused() || !l1_entry.flags().contains(PageTableFlags::PRESENT) {
+                        continue;
+                    }
+
+                    // Check for 1GB block (huge page equivalent)
+                    if l1_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        let frame = PhysFrame::containing_address(l1_entry.addr());
+                        if frame_decref(frame) {
+                            deallocate_frame(frame);
+                            user_frames_freed += 1;
+                        } else {
+                            user_frames_still_shared += 1;
+                        }
+                        continue;
+                    }
+
+                    // Get L2 table and mark for cleanup
+                    let l2_phys = l1_entry.addr();
+                    let l2_frame = PhysFrame::containing_address(l2_phys);
+                    l2_frames.push(l2_frame);
+
+                    let l2_virt = phys_offset + l2_phys.as_u64();
+                    let l2_table = &*(l2_virt.as_ptr() as *const PageTable);
+
+                    for l2_idx in 0..512usize {
+                        let l2_entry = &l2_table[l2_idx];
+                        if l2_entry.is_unused() || !l2_entry.flags().contains(PageTableFlags::PRESENT) {
+                            continue;
+                        }
+
+                        // Check for 2MB block
+                        if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                            let frame = PhysFrame::containing_address(l2_entry.addr());
+                            if frame_decref(frame) {
+                                deallocate_frame(frame);
+                                user_frames_freed += 1;
+                            } else {
+                                user_frames_still_shared += 1;
+                            }
+                            continue;
+                        }
+
+                        // Get L3 table and mark for cleanup
+                        let l3_phys = l2_entry.addr();
+                        let l3_frame = PhysFrame::containing_address(l3_phys);
+                        l3_frames.push(l3_frame);
+
+                        let l3_virt = phys_offset + l3_phys.as_u64();
+                        let l3_table = &*(l3_virt.as_ptr() as *const PageTable);
+
+                        for l3_idx in 0..512usize {
+                            let l3_entry = &l3_table[l3_idx];
+                            if l3_entry.is_unused() || !l3_entry.flags().contains(PageTableFlags::PRESENT) {
+                                continue;
+                            }
+
+                            // 4KB page
+                            let frame = PhysFrame::containing_address(l3_entry.addr());
+                            if frame_decref(frame) {
+                                deallocate_frame(frame);
+                                user_frames_freed += 1;
+                            } else {
+                                user_frames_still_shared += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Free page table structure frames (L3 first, then L2, then L1)
+            for frame in l3_frames {
+                deallocate_frame(frame);
+                table_frames_freed += 1;
+            }
+            for frame in l2_frames {
+                deallocate_frame(frame);
+                table_frames_freed += 1;
+            }
+            for frame in l1_frames {
+                deallocate_frame(frame);
+                table_frames_freed += 1;
+            }
+
+            // Free the L0 frame itself
+            deallocate_frame(self.level_4_frame);
+            table_frames_freed += 1;
+        }
+
+        log::info!(
+            "cleanup_for_exec [ARM64]: freed {} user frames, {} still shared, {} table frames",
+            user_frames_freed,
+            user_frames_still_shared,
+            table_frames_freed
+        );
+    }
 }
 
 /// Switch to a process's page table (ARM64 version)

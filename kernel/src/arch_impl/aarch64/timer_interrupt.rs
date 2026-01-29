@@ -44,6 +44,9 @@ static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
 /// Total timer interrupt count (for frequency verification)
 static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "boot_tests")]
+static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Interval for printing timer count (every N interrupts for frequency verification)
 /// Printing on every interrupt adds overhead; reduce frequency for more accurate measurement
 /// At 200 Hz: print interval 200 = print once per second
@@ -226,7 +229,21 @@ fn poll_keyboard_to_stdin() {
 
 /// Reset the quantum counter (called when switching threads)
 pub fn reset_quantum() {
+    #[cfg(feature = "boot_tests")]
+    RESET_QUANTUM_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
     CURRENT_QUANTUM.store(TIME_QUANTUM, Ordering::Relaxed);
+}
+
+/// Get reset_quantum() call count for tests.
+#[cfg(feature = "boot_tests")]
+pub fn reset_quantum_call_count() -> u64 {
+    RESET_QUANTUM_CALL_COUNT.load(Ordering::SeqCst)
+}
+
+/// Reset reset_quantum() call count for tests.
+#[cfg(feature = "boot_tests")]
+pub fn reset_quantum_call_count_reset() {
+    RESET_QUANTUM_CALL_COUNT.store(0, Ordering::SeqCst);
 }
 
 /// Check if the timer is initialized

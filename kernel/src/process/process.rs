@@ -332,7 +332,7 @@ impl Process {
         }
     }
 
-    /// Close all file descriptors in this process (ARM64 stub)
+    /// Close all file descriptors in this process (ARM64)
     #[cfg(not(target_arch = "x86_64"))]
     fn close_all_fds(&mut self) {
         use crate::ipc::FdKind;
@@ -378,6 +378,52 @@ impl Process {
                     FdKind::PtySlave(_) => {
                         // Slave cleanup handled by PTY subsystem
                         log::debug!("Process::close_all_fds() - closed PTY slave fd {}", fd);
+                    }
+                    FdKind::RegularFile(_) => {
+                        // Regular file cleanup handled by Arc refcount
+                        log::debug!("Process::close_all_fds() - released regular file fd {}", fd);
+                    }
+                    FdKind::Directory(_) => {
+                        // Directory cleanup handled by Arc refcount
+                        log::debug!("Process::close_all_fds() - released directory fd {}", fd);
+                    }
+                    FdKind::Device(_) => {
+                        // Device files don't need cleanup
+                        log::debug!("Process::close_all_fds() - released device fd {}", fd);
+                    }
+                    FdKind::DevfsDirectory { .. } => {
+                        // Devfs directory doesn't need cleanup
+                        log::debug!("Process::close_all_fds() - released devfs directory fd {}", fd);
+                    }
+                    FdKind::DevptsDirectory { .. } => {
+                        // Devpts directory doesn't need cleanup
+                        log::debug!("Process::close_all_fds() - released devpts directory fd {}", fd);
+                    }
+                    FdKind::FifoRead(path, buffer) => {
+                        // Close FIFO read end
+                        crate::ipc::fifo::close_fifo_read(&path);
+                        buffer.lock().close_read();
+                        log::debug!("Process::close_all_fds() - closed FIFO read fd {} ({})", fd, path);
+                    }
+                    FdKind::FifoWrite(path, buffer) => {
+                        // Close FIFO write end
+                        crate::ipc::fifo::close_fifo_write(&path);
+                        buffer.lock().close_write();
+                        log::debug!("Process::close_all_fds() - closed FIFO write fd {} ({})", fd, path);
+                    }
+                    FdKind::TcpSocket(_) => {
+                        // Unbound TCP socket doesn't need cleanup
+                        log::debug!("Process::close_all_fds() - closed TCP socket fd {}", fd);
+                    }
+                    FdKind::TcpListener(port) => {
+                        // Remove from listener table
+                        crate::net::tcp::TCP_LISTENERS.lock().remove(&port);
+                        log::debug!("Process::close_all_fds() - closed TCP listener fd {} port {}", fd, port);
+                    }
+                    FdKind::TcpConnection(conn_id) => {
+                        // Close TCP connection
+                        let _ = crate::net::tcp::tcp_close(&conn_id);
+                        log::debug!("Process::close_all_fds() - closed TCP connection fd {}", fd);
                     }
                 }
             }
