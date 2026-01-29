@@ -185,20 +185,17 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     log::debug!("sys_open: resolved path={:?}", path);
 
     // Check for /dev directory itself
-    #[cfg(target_arch = "x86_64")]
     if path == "/dev" || path == "/dev/" {
         return handle_devfs_directory_open(flags);
     }
 
     // Check for /dev/* paths - route to devfs
-    #[cfg(target_arch = "x86_64")]
     if path.starts_with("/dev/") {
         let device_name = &path[5..]; // Remove "/dev/" prefix
         return handle_devfs_open(device_name, flags);
     }
 
     // Check if this is a FIFO (named pipe)
-    #[cfg(target_arch = "x86_64")]
     if crate::ipc::fifo::FIFO_REGISTRY.exists(&path) {
         return handle_fifo_open(&path, flags);
     }
