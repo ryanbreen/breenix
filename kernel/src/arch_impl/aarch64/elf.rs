@@ -281,11 +281,8 @@ pub fn load_elf_into_page_table(
     // Validate ELF header
     let header = validate_elf_header(data)?;
 
-    crate::serial_println!(
-        "[elf-arm64] Loading ELF into process page table: entry={:#x}, {} program headers",
-        header.entry,
-        header.phnum
-    );
+    // Minimal debug - just note that we're loading ELF
+    log::debug!("[elf-arm64] Loading ELF: entry={:#x}, {} segments", header.entry, header.phnum);
 
     let mut max_segment_end: u64 = 0;
     let mut min_load_addr: u64 = u64::MAX;
@@ -323,12 +320,8 @@ pub fn load_elf_into_page_table(
     // Page-align the heap start (4KB alignment)
     let heap_start = (max_segment_end + 0xfff) & !0xfff;
 
-    crate::serial_println!(
-        "[elf-arm64] Loaded: base={:#x}, end={:#x}, entry={:#x}",
-        if min_load_addr == u64::MAX { 0 } else { min_load_addr },
-        heap_start,
-        header.entry
-    );
+    log::debug!("[elf-arm64] Loaded: base={:#x}, end={:#x}",
+        if min_load_addr == u64::MAX { 0 } else { min_load_addr }, heap_start);
 
     Ok(LoadedElf {
         entry_point: header.entry,
@@ -359,13 +352,7 @@ fn load_segment_into_page_table(
         return Err("Segment data out of bounds");
     }
 
-    crate::serial_println!(
-        "[elf-arm64] Loading segment: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}",
-        vaddr.as_u64(),
-        file_size,
-        mem_size,
-        ph.p_flags
-    );
+    log::trace!("[elf-arm64] Segment: vaddr={:#x}, memsz={:#x}", vaddr.as_u64(), mem_size);
 
     // Calculate page range
     let start_page = Page::<Size4KiB>::containing_address(vaddr);
@@ -373,7 +360,7 @@ fn load_segment_into_page_table(
     let end_page = Page::<Size4KiB>::containing_address(end_addr);
 
     // Determine page flags based on ELF segment flags
-    let segment_readable = ph.p_flags & flags::PF_R != 0;
+    let _segment_readable = ph.p_flags & flags::PF_R != 0;
     let segment_writable = ph.p_flags & flags::PF_W != 0;
     let segment_executable = ph.p_flags & flags::PF_X != 0;
 
@@ -388,12 +375,7 @@ fn load_segment_into_page_table(
         page_flags |= PageTableFlags::NO_EXECUTE;
     }
 
-    crate::serial_println!(
-        "[elf-arm64] Segment permissions: R={}, W={}, X={}",
-        segment_readable,
-        segment_writable,
-        segment_executable
-    );
+    // Permissions are encoded in page_flags, no need to log
 
     // Get physical memory offset for kernel-space access to physical frames
     let physical_memory_offset = crate::memory::physical_memory_offset();
@@ -411,22 +393,11 @@ fn load_segment_into_page_table(
 
         let (frame, already_mapped) = if let Some(existing_phys) = existing_phys_opt {
             let existing_frame = PhysFrame::containing_address(PhysAddr::new(existing_phys.as_u64()));
-            crate::serial_println!(
-                "[elf-arm64] Page {:#x} already mapped to frame {:#x}, reusing",
-                page_vaddr.as_u64(),
-                existing_frame.start_address().as_u64()
-            );
             (existing_frame, true)
         } else {
             // Allocate a new physical frame
             let new_frame = crate::memory::frame_allocator::allocate_frame()
                 .ok_or("Out of memory allocating frame for ELF segment")?;
-
-            crate::serial_println!(
-                "[elf-arm64] Allocated frame {:#x} for page {:#x}",
-                new_frame.start_address().as_u64(),
-                page_vaddr.as_u64()
-            );
 
             // Map the page in the process page table
             page_table.map_page(page, new_frame, page_flags)?;
@@ -473,13 +444,7 @@ fn load_segment_into_page_table(
                 core::ptr::copy_nonoverlapping(src, dst, copy_size);
             }
 
-            crate::serial_println!(
-                "[elf-arm64] Copied {} bytes to frame {:#x} (page {:#x}) at offset {}",
-                copy_size,
-                frame_phys_addr.as_u64(),
-                page_vaddr.as_u64(),
-                page_offset
-            );
+            // Copied data to frame (no logging for performance)
         }
     }
 
@@ -491,10 +456,7 @@ fn load_segment_into_page_table(
         count
     };
 
-    crate::serial_println!(
-        "[elf-arm64] Successfully loaded segment with {} pages",
-        page_count
-    );
+    log::trace!("[elf-arm64] Segment loaded: {} pages", page_count);
 
     Ok(())
 }

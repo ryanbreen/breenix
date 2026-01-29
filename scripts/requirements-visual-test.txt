@@ -1,0 +1,17 @@
+# Dependencies for ARM64 visual terminal testing
+#
+# Install with: pip install -r scripts/requirements-visual-test.txt
+#
+# System dependencies also required:
+#   macOS: brew install tesseract
+#   Linux: apt install tesseract-ocr
+#   QEMU:  qemu-system-aarch64 must be in PATH
+
+# Required for test-arm64-visual.py (QEMU monitor approach)
+pexpect>=4.8.0
+pillow>=9.0.0
+pytesseract>=0.3.10
+
+# Optional: for test-arm64-vnc.py (VNC approach)
+# vncdotool has more dependencies (Twisted framework)
+vncdotool>=1.0.0

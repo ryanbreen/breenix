@@ -401,6 +401,25 @@ sync_exception_handler:
     eret
 
 irq_handler:
+    /*
+     * CRITICAL: Only switch to kernel stack when coming from EL0 (userspace).
+     * When IRQ is taken from EL1 (kernel), SP is already the kernel stack.
+     * Check SPSR_EL1.M[3:0] field: EL0 = 0b0000, EL1h = 0b0101
+     *
+     * If we switch stacks while in kernel mode, we corrupt the current stack frame!
+     */
+    mrs x9, spsr_el1            // x9 = saved PSTATE
+    and x9, x9, #0xF            // x9 = exception level field (M[3:0])
+    cbnz x9, .Lirq_no_stack_switch  // If not EL0 (0), skip stack switch
+
+    // Coming from EL0 - need to switch to kernel stack
+    mrs x9, tpidr_el1           // x9 = per-CPU base
+    cbz x9, .Lirq_no_stack_switch
+    ldr x10, [x9, #16]          // x10 = kernel_stack_top (offset 16)
+    cbz x10, .Lirq_no_stack_switch
+    mov sp, x10                 // Switch to kernel stack
+
+.Lirq_no_stack_switch:
     // Save caller-saved registers
     sub sp, sp, #272
     stp x0, x1, [sp, #0]
@@ -465,11 +484,13 @@ irq_handler:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
 
-    // Load SP from user_rsp_scratch (contains new thread's SP if switched, or old SP+272 if not)
-    // Use x16 as scratch (x0 was already restored and contains thread argument)
-    mrs x16, tpidr_el1
-    ldr x16, [x16, #40]
-    mov sp, x16
+    // For kernel-mode returns: just restore SP by adding back frame size
+    // For userspace returns: SP was set by Rust context switch code if needed
+    // The user_rsp_scratch is only relevant when we switch threads
+    //
+    // However, we always store SP+272 to user_rsp_scratch, so this should be safe.
+    // But for robustness, let's just do simple stack pop for now.
+    add sp, sp, #272
     eret
 
 unhandled_exception:

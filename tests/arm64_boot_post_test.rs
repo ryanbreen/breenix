@@ -1206,3 +1206,131 @@ fn test_arm64_signal_infrastructure() {
 
     println!("\nSignal infrastructure test complete!");
 }
+
+/// ARM64 timer continues during blocking syscall test
+///
+/// This is a REGRESSION TEST for a critical bug where timer interrupts stopped
+/// firing after userspace entry. The root cause was that syscall entry masks IRQs
+/// (`msr daifset, #0x2`), and the WFI loop in blocking syscalls didn't re-enable them.
+///
+/// The fix adds `msr daifclr, #2` before WFI in blocking syscall paths (io.rs).
+///
+/// This test validates that timer tick markers appear AFTER userspace entry,
+/// specifically after `[STDIN_BLOCK]` which indicates the shell is blocked
+/// waiting for keyboard input in a WFI loop.
+#[test]
+#[ignore]
+fn test_arm64_timer_during_blocking_syscall() {
+    println!("\n========================================");
+    println!("  ARM64 Timer During Blocking Syscall");
+    println!("========================================\n");
+
+    let output = get_arm64_kernel_output();
+
+    // Check for errors
+    if output.starts_with("BUILD_ERROR:") || output.starts_with("QEMU_ERROR:") {
+        panic!("Failed to get kernel output");
+    }
+
+    // Find the position of key markers in the output
+    let stdin_block_pos = output.find("[STDIN_BLOCK]");
+    let t10_pos = output.find("[T10]");
+    let timer_diag_pos = output.find("[TIMER_DIAG]");
+
+    // Find heartbeat dots after STDIN_BLOCK
+    let dots_after_block = if let Some(block_pos) = stdin_block_pos {
+        let after_block = &output[block_pos..];
+        after_block.matches('.').count()
+    } else {
+        0
+    };
+
+    println!("  Marker Analysis:");
+
+    // Check 1: STDIN_BLOCK marker exists (shell entered blocking read)
+    print!("  {:.<40} ", "Shell entered blocking read");
+    if stdin_block_pos.is_some() {
+        println!("PASS");
+    } else {
+        println!("FAIL (no [STDIN_BLOCK] marker)");
+    }
+
+    // Check 2: [T10] marker appears after STDIN_BLOCK (timer fires during block)
+    print!("  {:.<40} ", "[T10] after blocking syscall");
+    let t10_after_block = match (stdin_block_pos, t10_pos) {
+        (Some(block), Some(t10)) => t10 > block,
+        _ => false,
+    };
+    if t10_after_block {
+        println!("PASS");
+    } else {
+        println!("FAIL (timer not ticking after userspace entry)");
+    }
+
+    // Check 3: [TIMER_DIAG] marker appears (timer reached tick 100)
+    print!("  {:.<40} ", "[TIMER_DIAG] marker (tick 100)");
+    let timer_diag_after_block = match (stdin_block_pos, timer_diag_pos) {
+        (Some(block), Some(diag)) => diag > block,
+        _ => false,
+    };
+    if timer_diag_after_block {
+        println!("PASS");
+    } else if timer_diag_pos.is_some() {
+        println!("WARN (appears but not after [STDIN_BLOCK])");
+    } else {
+        println!("FAIL (no [TIMER_DIAG] marker)");
+    }
+
+    // Check 4: Heartbeat dots appear after block (timer continues firing)
+    print!("  {:.<40} ", "Heartbeat dots after blocking");
+    if dots_after_block >= 3 {
+        println!("PASS ({} dots)", dots_after_block);
+    } else if dots_after_block > 0 {
+        println!("PARTIAL ({} dots, expected >= 3)", dots_after_block);
+    } else {
+        println!("FAIL (no heartbeat dots after [STDIN_BLOCK])");
+    }
+
+    // Check 5: Context switching occurs (idle thread runs)
+    print!("  {:.<40} ", "Context switch to idle thread");
+    let context_switch = output.contains("Switching from thread 2 to thread 0")
+        || output.contains("Idle thread 0 is alone");
+    if context_switch {
+        println!("PASS");
+    } else {
+        println!("FAIL (no context switch observed)");
+    }
+
+    // Print diagnostic info if any checks failed
+    if !t10_after_block || dots_after_block < 3 {
+        eprintln!("\nDiagnostic: Timer-related output after [STDIN_BLOCK]:");
+        if let Some(block_pos) = stdin_block_pos {
+            let after_block = &output[block_pos..];
+            for line in after_block.lines().take(20) {
+                eprintln!("  {}", line);
+            }
+        }
+    }
+
+    // Assertions for regression testing
+    assert!(
+        stdin_block_pos.is_some(),
+        "Shell must enter blocking read syscall"
+    );
+    assert!(
+        t10_after_block,
+        "Timer tick [T10] must appear after [STDIN_BLOCK] - if this fails, \
+         the IRQ masking bug in blocking syscalls may have regressed. \
+         Check that io.rs has `msr daifclr, #2` before WFI on ARM64."
+    );
+    assert!(
+        dots_after_block >= 1,
+        "At least one heartbeat dot must appear after blocking syscall - \
+         timer interrupts are not firing in userspace"
+    );
+
+    println!("\nTimer-during-blocking-syscall test passed!");
+    println!("\nNote: This test guards against regression of the ARM64 IRQ masking bug");
+    println!("where syscall entry (`msr daifset, #0x2`) masked interrupts and WFI");
+    println!("loops didn't re-enable them, causing timer interrupts to stop.");
+}

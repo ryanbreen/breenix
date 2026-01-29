@@ -15,7 +15,7 @@
 //! 5. On exception return, check need_resched and perform context switch if needed
 
 use crate::task::scheduler;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Virtual timer interrupt ID (PPI 27)
 pub const TIMER_IRQ: u32 = 27;
@@ -43,6 +43,9 @@ static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
 
 /// Total timer interrupt count (for frequency verification)
 static TIMER_INTERRUPT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// One-time diagnostic printed flag
+static DIAGNOSTIC_PRINTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "boot_tests")]
 static RESET_QUANTUM_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -132,9 +135,52 @@ pub extern "C" fn timer_interrupt_handler() {
     crate::time::timer_interrupt();
 
     // Increment timer interrupt counter (used for debugging when needed)
-    let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    // Note: [TIMER_COUNT:N] output disabled - interrupt handlers must be minimal
-    // To enable: uncomment and rebuild with TIMER_COUNT_PRINT_INTERVAL check
+    let count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // Early one-time marker at tick 10 (~50ms) to confirm timer is running
+    if count == 10 {
+        raw_serial_str(b"[T10]");
+    }
+
+    // One-time diagnostic at tick 100 (~0.5 seconds) to confirm interrupt system works
+    if count == 100 && !DIAGNOSTIC_PRINTED.swap(true, Ordering::Relaxed) {
+        raw_serial_str(b"\n[TIMER_DIAG] Timer IRQs working, tick 100\n");
+
+        // Check VirtIO keyboard state
+        if crate::drivers::virtio::input_mmio::is_initialized() {
+            raw_serial_str(b"[TIMER_DIAG] VirtIO keyboard: INITIALIZED\n");
+            let (avail, used, last_seen) = crate::drivers::virtio::input_mmio::debug_ring_state();
+            raw_serial_str(b"[TIMER_DIAG] Ring: avail=");
+            print_timer_count_decimal(avail as u64);
+            raw_serial_str(b" used=");
+            print_timer_count_decimal(used as u64);
+            raw_serial_str(b" last_seen=");
+            print_timer_count_decimal(last_seen as u64);
+            raw_serial_str(b"\n");
+        } else {
+            raw_serial_str(b"[TIMER_DIAG] VirtIO keyboard: NOT INITIALIZED\n");
+        }
+
+        raw_serial_str(b"[TIMER_DIAG] Type in QEMU window for VirtIO, terminal for UART\n");
+    }
+
+    // Periodic heartbeat every 200 ticks (~1 second) to confirm timer is running
+    if count > 0 && count % 200 == 0 {
+        raw_serial_char(b'.');
+    }
+
+    // Periodic ring state check every 1000 ticks (~5 seconds)
+    // This helps diagnose if VirtIO device is returning events
+    if count > 0 && count % 1000 == 0 && crate::drivers::virtio::input_mmio::is_initialized() {
+        let (avail, used, last_seen) = crate::drivers::virtio::input_mmio::debug_ring_state();
+        raw_serial_str(b"[RING:");
+        print_timer_count_decimal(avail as u64);
+        raw_serial_char(b'/');
+        print_timer_count_decimal(used as u64);
+        raw_serial_char(b'/');
+        print_timer_count_decimal(last_seen as u64);
+        raw_serial_str(b"]");
+    }
 
     // Poll VirtIO keyboard and push to stdin
     // VirtIO MMIO devices don't generate interrupts on ARM64 virt machine,

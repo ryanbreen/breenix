@@ -233,6 +233,68 @@ pub fn init_pic() {
                 break;
             }
         }
+
+        // Enable keyboard interrupts on the PS/2 controller (i8042)
+        // This is needed because OVMF may not enable keyboard interrupts
+        init_ps2_keyboard(&mut kb_status, &mut kb_data);
+    }
+}
+
+/// Initialize the PS/2 keyboard controller to enable interrupts
+///
+/// The i8042 controller has its own configuration byte that controls
+/// whether keyboard interrupts are enabled. UEFI/OVMF may leave this
+/// disabled, so we explicitly enable it.
+fn init_ps2_keyboard(status_port: &mut x86_64::instructions::port::Port<u8>,
+                     data_port: &mut x86_64::instructions::port::Port<u8>) {
+    use x86_64::instructions::port::Port;
+    let mut cmd_port: Port<u8> = Port::new(0x64);
+
+    unsafe {
+        // Wait for controller to be ready to accept command
+        while (status_port.read() & 0x02) != 0 {}
+
+        // Send command 0x20: Read controller configuration byte
+        cmd_port.write(0x20);
+
+        // Wait for data to be available
+        while (status_port.read() & 0x01) == 0 {}
+
+        // Read current configuration
+        let mut config = data_port.read();
+
+        // Set bit 0: Enable keyboard interrupt (IRQ1)
+        // Set bit 4: Enable keyboard (not disabled)
+        // Clear bit 5: Enable keyboard clock
+        config |= 0x01;  // Enable keyboard interrupt
+        config &= !0x10; // Clear "Disable keyboard" bit
+
+        // Wait for controller to be ready
+        while (status_port.read() & 0x02) != 0 {}
+
+        // Send command 0x60: Write controller configuration byte
+        cmd_port.write(0x60);
+
+        // Wait for controller to be ready for data
+        while (status_port.read() & 0x02) != 0 {}
+
+        // Write new configuration
+        data_port.write(config);
+
+        // Wait for controller to be ready
+        while (status_port.read() & 0x02) != 0 {}
+
+        // Send command 0xAE: Enable keyboard interface
+        cmd_port.write(0xAE);
+
+        // Drain any pending data that might have arrived during init
+        for _ in 0..10 {
+            if (status_port.read() & 0x01) != 0 {
+                let _ = data_port.read();
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -472,6 +534,21 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         kb_port.read()
     };
 
+    // DEBUG: Log keyboard interrupt with scancode (lock-free)
+    unsafe {
+        let mut port: Port<u8> = Port::new(0x3F8);
+        port.write(b'[');
+        port.write(b'K');
+        port.write(b'B');
+        port.write(b':');
+        // Write scancode as hex
+        let high = (scancode >> 4) & 0xF;
+        let low = scancode & 0xF;
+        port.write(if high < 10 { b'0' + high } else { b'a' + high - 10 });
+        port.write(if low < 10 { b'0' + low } else { b'a' + low - 10 });
+        port.write(b']');
+    }
+
     // Enter hardware IRQ context
     crate::per_cpu::irq_enter();
 
@@ -492,6 +569,16 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     if let Some(event) = crate::keyboard::process_scancode(scancode) {
         if let Some(character) = event.character {
             let c = character as u8;
+            // DEBUG: Log character (lock-free)
+            unsafe {
+                let mut port: Port<u8> = Port::new(0x3F8);
+                port.write(b'[');
+                port.write(b'C');
+                port.write(b'H');
+                port.write(b':');
+                port.write(c);
+                port.write(b']');
+            }
             // Route through TTY
             let _ = crate::tty::driver::push_char_nonblock(c);
         }
@@ -518,6 +605,17 @@ extern "x86-interrupt" fn serial_interrupt_handler(_stack_frame: InterruptStackF
     // Check if data is available (bit 0 of LSR)
     while unsafe { lsr_port.read() } & 0x01 != 0 {
         let byte = unsafe { data_port.read() };
+        // DEBUG: Log serial input (lock-free, write to port directly)
+        // Use COM2 (0x2F8) to avoid interfering with COM1 we're reading from
+        unsafe {
+            let mut out_port: Port<u8> = Port::new(0x2F8);
+            out_port.write(b'[');
+            out_port.write(b'S');
+            out_port.write(b'R');
+            out_port.write(b':');
+            out_port.write(byte);
+            out_port.write(b']');
+        }
         // Add to serial queue for async serial console processing
         // Note: Serial input is kept separate from stdin (keyboard input)
         // This follows proper Unix design where serial and keyboard are different devices

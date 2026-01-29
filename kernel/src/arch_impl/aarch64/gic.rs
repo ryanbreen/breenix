@@ -185,10 +185,12 @@ impl Gicv2 {
 
         // Route all SPIs to CPU 0 (target mask = 0x01)
         // SGIs and PPIs (0-31) have fixed targets
+        // Note: On QEMU single-CPU virt, ITARGETSR writes may not stick but IRQs still route correctly
         let num_target_regs = (num_irqs + 3) / 4;
         for i in 8..num_target_regs {
             // Start at reg 8 (IRQ 32) for SPIs
-            gicd_write(GICD_ITARGETSR + (i as usize * 4), 0x0101_0101);
+            let offset = GICD_ITARGETSR + (i as usize * 4);
+            gicd_write(offset, 0x0101_0101);
         }
 
         // Configure all SPIs as level-triggered (default)
@@ -243,6 +245,22 @@ impl InterruptController for Gicv2 {
         let irq = irq as u32;
         let reg_index = irq / IRQS_PER_ENABLE_REG;
         let bit = irq % IRQS_PER_ENABLE_REG;
+
+        // For SPIs (IRQ 32+), set the target CPU to CPU 0
+        // ITARGETSR has 4 IRQs per register, 8 bits each
+        // Note: On QEMU single-CPU virt, this may not stick but IRQs route correctly anyway
+        if irq >= 32 {
+            let target_reg_index = irq / 4;
+            let target_byte_index = irq % 4;
+            let shift = target_byte_index * 8;
+            let offset = GICD_ITARGETSR + (target_reg_index as usize * 4);
+
+            // Read-modify-write to set just this IRQ's target byte
+            let current = gicd_read(offset);
+            let mask = !(0xFF << shift);
+            let new_val = (current & mask) | (0x01 << shift); // Target CPU 0
+            gicd_write(offset, new_val);
+        }
 
         // Write 1 to ISENABLER to enable (writes of 0 have no effect)
         gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
@@ -387,3 +405,4 @@ pub fn dump_irq_state(irq: u32) {
     crate::serial_println!("  priority={:#x}, target={:#x}", priority, target);
     crate::serial_println!("  GICD_CTLR={:#x}, GICC_CTLR={:#x}, GICC_PMR={:#x}", gicd_ctlr, gicc_ctlr, gicc_pmr);
 }
+

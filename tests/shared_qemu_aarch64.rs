@@ -47,6 +47,8 @@ pub fn build_arm64_kernel(config: &Arm64BuildConfig) -> Result<String, String> {
         "kernel",
         "--bin",
         "kernel-aarch64",
+        "--features",
+        "testing,external_test_bins",
     ];
 
     if config.release {
@@ -96,6 +98,15 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
 
     println!("Starting QEMU with ARM64 kernel: {}", kernel_path);
 
+    // Construct path to ext2 disk (same location as run.sh uses)
+    let ext2_disk = "target/ext2-aarch64.img";
+    let has_ext2 = std::path::Path::new(ext2_disk).exists();
+    if has_ext2 {
+        println!("Using ext2 disk: {}", ext2_disk);
+    } else {
+        println!("Warning: No ext2 disk - init_shell won't load");
+    }
+
     // Start QEMU with ARM64 virt machine
     // -M virt: Standard ARM virtual machine
     // -cpu cortex-a72: 64-bit ARMv8-A CPU
@@ -103,21 +114,47 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
     // -nographic: No GUI
     // -kernel: Load ELF directly
     // -serial file: Capture serial output to file
+    let mut qemu_args = vec![
+        "-M",
+        "virt",
+        "-cpu",
+        "cortex-a72",
+        "-m",
+        "512M",
+        "-nographic",
+        "-no-reboot",
+        "-kernel",
+        kernel_path,
+        "-serial",
+    ];
+    let serial_arg = format!("file:{}", serial_output_file);
+    qemu_args.push(&serial_arg);
+
+    // Add ext2 disk if available (needed for init_shell)
+    let ext2_args;
+    if has_ext2 {
+        ext2_args = [
+            "-device",
+            "virtio-blk-device,drive=ext2disk",
+            "-blockdev",
+            "driver=file,node-name=ext2file,filename=target/ext2-aarch64.img",
+            "-blockdev",
+            "driver=raw,node-name=ext2disk,file=ext2file",
+        ];
+        qemu_args.extend_from_slice(&ext2_args);
+    }
+
+    // Add network device (needed for full boot)
+    let net_args = [
+        "-device",
+        "virtio-net-device,netdev=net0",
+        "-netdev",
+        "user,id=net0,net=10.0.2.0/24,dhcpstart=10.0.2.15",
+    ];
+    qemu_args.extend_from_slice(&net_args);
+
     let mut qemu = Command::new("qemu-system-aarch64")
-        .args([
-            "-M",
-            "virt",
-            "-cpu",
-            "cortex-a72",
-            "-m",
-            "512M",
-            "-nographic",
-            "-no-reboot",
-            "-kernel",
-            kernel_path,
-            "-serial",
-            &format!("file:{}", serial_output_file),
-        ])
+        .args(&qemu_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -142,17 +179,38 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
 
     // Poll for POST_COMPLETE marker or timeout
     let mut post_complete = false;
+    #[allow(unused_assignments)]
+    let mut userspace_started = false;
     while start.elapsed() < timeout {
         if let Ok(content) = fs::read_to_string(serial_output_file) {
-            // Check for ARM64-specific POST completion or boot completion
-            if content.contains("[CHECKPOINT:POST_COMPLETE]")
-                || content.contains("Breenix ARM64 Boot Complete")
-                || content.contains("Hello from ARM64")
+            // First check for boot completion (kernel ready)
+            if !post_complete
+                && (content.contains("[CHECKPOINT:POST_COMPLETE]")
+                    || content.contains("Breenix ARM64 Boot Complete")
+                    || content.contains("Hello from ARM64"))
             {
                 post_complete = true;
                 println!("Kernel reached boot completion marker");
-                // Give it a moment to finish writing any final output
-                thread::sleep(Duration::from_millis(500));
+            }
+
+            // Then check for userspace entry markers (init_shell running)
+            if post_complete
+                && !userspace_started
+                && (content.contains("[STDIN_BLOCK]")
+                    || content.contains("EL0_CONFIRMED")
+                    || content.contains("Breenix OS Interactive Shell"))
+            {
+                userspace_started = true;
+                println!("Userspace started, waiting 2s for timer ticks...");
+                // Wait 2 seconds to capture timer ticks during blocking syscall
+                thread::sleep(Duration::from_secs(2));
+                break;
+            }
+
+            // If boot complete but userspace not started yet, keep waiting
+            if post_complete && start.elapsed() > Duration::from_secs(timeout_secs - 2) {
+                // Timeout approaching, stop even without userspace markers
+                println!("Timeout approaching, stopping without userspace markers");
                 break;
             }
         }
@@ -173,8 +231,12 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
 
     println!("Captured {} bytes of ARM64 kernel output", output.len());
 
-    // Clean up output file
-    let _ = fs::remove_file(serial_output_file);
+    // Keep output file for debugging (use PRESERVE_TEST_OUTPUT=1 to keep)
+    if std::env::var("PRESERVE_TEST_OUTPUT").is_err() {
+        let _ = fs::remove_file(serial_output_file);
+    } else {
+        println!("Preserving test output file: {}", serial_output_file);
+    }
 
     Ok(output)
 }

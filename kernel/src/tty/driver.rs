@@ -25,6 +25,20 @@ use super::termios::Termios;
 use crate::process::ProcessId;
 use crate::signal::constants::{SIGINT, SIGQUIT, SIGTSTP};
 
+// =============================================================================
+// Architecture-specific serial output
+// =============================================================================
+
+/// Write a byte to the serial port (architecture-specific)
+#[inline]
+fn serial_write_byte(byte: u8) {
+    #[cfg(target_arch = "x86_64")]
+    crate::serial::write_byte(byte);
+
+    #[cfg(target_arch = "aarch64")]
+    crate::serial_aarch64::write_byte(byte);
+}
+
 /// POSIX error codes
 /// Used by TtyDevice::read() for the line discipline read path.
 /// Currently unused because keyboard input bypasses TTY (uses stdin directly).
@@ -333,15 +347,19 @@ impl TtyDevice {
         // Handle NL -> CR-NL translation if ONLCR is set
         let termios = self.ldisc.lock().termios().clone();
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
-            crate::serial::write_byte(b'\r');
+            serial_write_byte(b'\r');
             // Queue CR for deferred framebuffer rendering
             #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
+            #[cfg(target_arch = "aarch64")]
+            let _ = crate::graphics::render_queue_aarch64::queue_byte(b'\r');
         }
-        crate::serial::write_byte(c);
+        serial_write_byte(c);
         // Queue for deferred framebuffer rendering
         #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
+        #[cfg(target_arch = "aarch64")]
+        let _ = crate::graphics::render_queue_aarch64::queue_byte(c);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -360,30 +378,21 @@ impl TtyDevice {
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
 
-        // Build processed buffer for graphical output (with CR-NL translation)
-        #[cfg(target_arch = "aarch64")]
-        let mut processed_buf = alloc::vec::Vec::with_capacity(buf.len() + buf.len() / 10);
-
         // Write to serial and queue for deferred framebuffer rendering
+        // Both x86_64 and ARM64 use the render queue for graphical output
         for &c in buf {
             if do_onlcr && c == b'\n' {
-                crate::serial::write_byte(b'\r');
+                serial_write_byte(b'\r');
                 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
                 let _ = crate::graphics::render_queue::queue_byte(b'\r');
                 #[cfg(target_arch = "aarch64")]
-                processed_buf.push(b'\r');
+                let _ = crate::graphics::render_queue_aarch64::queue_byte(b'\r');
             }
-            crate::serial::write_byte(c);
+            serial_write_byte(c);
             #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(c);
             #[cfg(target_arch = "aarch64")]
-            processed_buf.push(c);
-        }
-
-        // ARM64: Write to graphical terminal if available
-        #[cfg(target_arch = "aarch64")]
-        {
-            let _ = crate::graphics::terminal_manager::write_bytes_to_shell(&processed_buf);
+            let _ = crate::graphics::render_queue_aarch64::queue_byte(c);
         }
     }
 
@@ -398,13 +407,17 @@ impl TtyDevice {
     fn output_byte_with_termios(&self, c: u8, termios: &Termios) {
         // Handle NL -> CR-NL translation if OPOST and ONLCR are set
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
-            crate::serial::write_byte(b'\r');
+            serial_write_byte(b'\r');
             #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
+            #[cfg(target_arch = "aarch64")]
+            let _ = crate::graphics::render_queue_aarch64::queue_byte(b'\r');
         }
-        crate::serial::write_byte(c);
+        serial_write_byte(c);
         #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
+        #[cfg(target_arch = "aarch64")]
+        let _ = crate::graphics::render_queue_aarch64::queue_byte(c);
     }
 
     /// Write a character to the terminal output (non-blocking)
@@ -418,15 +431,19 @@ impl TtyDevice {
             drop(ldisc);
 
             if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
-                crate::serial::write_byte(b'\r');
+                serial_write_byte(b'\r');
                 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
                 let _ = crate::graphics::render_queue::queue_byte(b'\r');
+                #[cfg(target_arch = "aarch64")]
+                let _ = crate::graphics::render_queue_aarch64::queue_byte(b'\r');
             }
         }
-        crate::serial::write_byte(c);
+        serial_write_byte(c);
         // Queue for deferred framebuffer rendering
         #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
+        #[cfg(target_arch = "aarch64")]
+        let _ = crate::graphics::render_queue_aarch64::queue_byte(c);
     }
 
     /// Send a signal to the foreground process group
@@ -705,7 +722,7 @@ pub fn write_output(buf: &[u8]) -> usize {
     } else {
         // Fallback: write directly to serial if TTY not initialized
         for &c in buf {
-            crate::serial::write_byte(c);
+            serial_write_byte(c);
         }
         buf.len()
     }

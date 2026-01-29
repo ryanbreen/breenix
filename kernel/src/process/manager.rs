@@ -282,140 +282,77 @@ impl ProcessManager {
         // For ARM64, stack allocation uses arch_stub::ThreadPrivilege
         use crate::memory::arch_stub::ThreadPrivilege as StackPrivilege;
 
-        crate::serial_println!("manager.create_process [ARM64]: ENTRY - name='{}', elf_size={}", name, elf_data.len());
+        // CRITICAL: Disable preemption during process creation.
+        crate::per_cpu_aarch64::preempt_disable();
 
         // Generate a new PID
         let pid = ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst));
-        crate::serial_println!("manager.create_process [ARM64]: Generated PID {}", pid.as_u64());
 
-        // Create a new page table for this process
-        // On ARM64, this creates a TTBR0 page table for userspace only
-        // Kernel mappings are handled automatically via TTBR1
-        crate::serial_println!("manager.create_process [ARM64]: Creating ProcessPageTable");
+        // Create a new page table for this process (TTBR0 for userspace)
         let mut page_table = Box::new(
             crate::memory::process_memory::ProcessPageTable::new().map_err(|e| {
-                log::error!(
-                    "ARM64: Failed to create process page table for PID {}: {}",
-                    pid.as_u64(),
-                    e
-                );
-                crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable creation failed: {}", e);
+                log::error!("ARM64: Failed to create process page table for PID {}: {}", pid.as_u64(), e);
                 "Failed to create process page table"
             })?,
         );
-        crate::serial_println!("manager.create_process [ARM64]: ProcessPageTable created");
 
         // Load the ELF binary into the process's page table
-        // Use the ARM64-specific ELF loader
-        crate::serial_println!("manager.create_process [ARM64]: Loading ELF into page table");
         let loaded_elf = crate::arch_impl::aarch64::elf::load_elf_into_page_table(
             elf_data,
             page_table.as_mut(),
         )?;
-        crate::serial_println!(
-            "manager.create_process [ARM64]: ELF loaded, entry={:#x}",
-            loaded_elf.entry_point
-        );
-
-        // NOTE: On ARM64, we skip kernel mapping restoration because:
-        // - TTBR1_EL1 always holds kernel mappings (upper half addresses: 0xFFFF...)
-        // - TTBR0_EL1 holds userspace mappings (lower half addresses: 0x0000...)
-        // - The hardware automatically selects the correct translation table based on address
-        // This is a key simplification compared to x86_64 where CR3 holds all mappings
 
         // Create the process
-        crate::serial_println!("manager.create_process [ARM64]: Creating Process struct");
         let entry_point = VirtAddr::new(loaded_elf.entry_point);
         let mut process = Process::new(pid, name.clone(), entry_point);
         process.page_table = Some(page_table);
 
-        // Initialize heap tracking - heap starts at end of loaded segments (page aligned)
+        // Initialize heap tracking
         let heap_base = loaded_elf.segments_end;
         process.heap_start = heap_base;
         process.heap_end = heap_base;
-        crate::serial_println!(
-            "manager.create_process [ARM64]: Process struct created, heap_start={:#x}",
-            heap_base
-        );
-
-        // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
         // Allocate a stack for the process
         use crate::memory::stack;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
         let user_stack =
             stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
-                .map_err(|_| {
-                    crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
-                    "Failed to allocate user stack"
-                })?;
-        crate::serial_println!(
-            "manager.create_process [ARM64]: User stack allocated at {:#x}",
-            user_stack.top().as_u64()
-        );
+                .map_err(|_| "Failed to allocate user stack")?;
 
         let stack_top = user_stack.top();
         process.memory_usage.stack_size = USER_STACK_SIZE;
-
-        // Store the stack in the process
         process.stack = Some(Box::new(user_stack));
 
         // Map the user stack pages into the process page table
-        log::debug!("ARM64: Mapping user stack pages into process page table...");
-        crate::serial_println!("manager.create_process [ARM64]: Mapping user stack into process page table");
         if let Some(ref mut page_table) = process.page_table {
             let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
-            crate::serial_println!(
-                "manager.create_process [ARM64]: map_user_stack_to_process stack_bottom={:#x} stack_top={:#x} size={}",
-                stack_bottom.as_u64(),
-                stack_top.as_u64(),
-                USER_STACK_SIZE
-            );
             crate::memory::process_memory::map_user_stack_to_process(
                 page_table,
                 stack_bottom,
                 stack_top,
             )
             .map_err(|e| {
-                crate::serial_println!(
-                    "manager.create_process [ARM64]: map_user_stack_to_process FAILED: {}",
-                    e
-                );
                 log::error!("ARM64: Failed to map user stack to process page table: {}", e);
                 "Failed to map user stack in process page table"
             })?;
-            log::debug!("ARM64: User stack mapped in process page table");
-            crate::serial_println!("manager.create_process [ARM64]: User stack mapped successfully");
         } else {
             return Err("Process page table not available for stack mapping");
         }
 
         // Create the main thread
-        crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
         let thread = self.create_main_thread(&mut process, stack_top)?;
-        crate::serial_println!("manager.create_process [ARM64]: Main thread created");
         process.set_main_thread(thread);
-        crate::serial_println!("manager.create_process [ARM64]: Main thread set on process");
 
-        // Add to ready queue
-        crate::serial_println!(
-            "manager.create_process [ARM64]: Adding PID {} to ready queue",
-            pid.as_u64()
-        );
+        // Add to ready queue and process table
         self.ready_queue.push(pid);
-
-        // Insert into process table
-        crate::serial_println!("manager.create_process [ARM64]: Inserting process into process table");
         self.processes.insert(pid, process);
 
         log::info!("ARM64: Created process {} (PID {})", name, pid.as_u64());
-        crate::serial_println!(
-            "manager.create_process [ARM64]: SUCCESS - returning PID {}",
-            pid.as_u64()
-        );
+
+        // Re-enable preemption
+        crate::per_cpu_aarch64::preempt_enable();
 
         Ok(pid)
     }

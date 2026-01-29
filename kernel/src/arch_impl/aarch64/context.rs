@@ -201,6 +201,21 @@ extern "C" {
 /// - Interrupts should be properly configured
 #[inline(never)]
 pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
+    // Re-arm the timer explicitly before entering userspace to ensure interrupts will fire
+    let freq: u64;
+    core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+    let ticks = freq / 200; // Same as timer_interrupt.rs
+    core::arch::asm!(
+        "msr cntv_tval_el0, {}",
+        "msr cntv_ctl_el0, {ctl}",
+        in(reg) ticks,
+        ctl = in(reg) 1u64, // ENABLE=1, IMASK=0
+        options(nomem, nostack)
+    );
+
+    // Enable IRQs explicitly before ERET (clear DAIF.I bit in case it's set)
+    core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+
     asm!(
         // Set up ELR_EL1 (return address)
         "msr elr_el1, {entry}",
@@ -253,6 +268,7 @@ pub unsafe fn return_to_userspace(entry: u64, user_sp: u64) -> ! {
         options(noreturn)
     )
 }
+
 
 /// Save the current userspace context from an exception frame.
 ///

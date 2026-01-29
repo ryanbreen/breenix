@@ -269,7 +269,22 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // 2. Context switch to another thread via timer interrupt
                         loop {
                             crate::task::scheduler::yield_current();
-                            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+
+                            // CRITICAL (ARM64): Enable IRQs before WFI!
+                            // On ARM64, the syscall entry path disables interrupts (msr daifset, #0x2).
+                            // Unlike x86 where STI is implicit in HLT semantics, ARM64's WFI only
+                            // wakes on interrupts but doesn't unmask them. We must explicitly clear
+                            // the DAIF.I bit so timer interrupts can be delivered.
+                            #[cfg(target_arch = "aarch64")]
+                            unsafe {
+                                core::arch::asm!(
+                                    "msr daifclr, #2",  // Clear IRQ mask (enable interrupts)
+                                    "wfi",               // Wait for interrupt
+                                    options(nomem, nostack)
+                                );
+                            }
+                            #[cfg(target_arch = "x86_64")]
+                            unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
 
                             // Check if we've been unblocked (thread state changed from Blocked)
                             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {

@@ -130,11 +130,22 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
 }
 
 /// Try to wake blocked readers without blocking (for interrupt context)
+///
+/// IMPORTANT: This does NOT remove readers from the blocked list. Readers
+/// are responsible for unregistering themselves via `unregister_blocked_reader()`
+/// when they successfully read data or encounter an error. This avoids a race
+/// condition where:
+/// 1. Keyboard IRQ wakes reader and removes it from list
+/// 2. More keyboard data arrives before reader runs
+/// 3. Second IRQ sees no readers, data is buffered but reader isn't woken
+/// 4. Reader runs, reads first byte, returns to userspace
+/// 5. Reader calls read() again but wasn't woken for subsequent data
 #[cfg(target_arch = "x86_64")]
 fn wake_blocked_readers_try() {
+    // Clone the reader list without draining - readers stay registered
     let readers: alloc::vec::Vec<u64> = {
-        if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
-            blocked.drain(..).collect()
+        if let Some(blocked) = BLOCKED_READERS.try_lock() {
+            blocked.iter().copied().collect()
         } else {
             return; // Can't get lock, readers will be woken when they retry
         }
@@ -166,11 +177,22 @@ fn raw_serial_str(s: &[u8]) {
 }
 
 /// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
+///
+/// IMPORTANT: This does NOT remove readers from the blocked list. Readers
+/// are responsible for unregistering themselves via `unregister_blocked_reader()`
+/// when they successfully read data or encounter an error. This avoids a race
+/// condition where:
+/// 1. Keyboard IRQ wakes reader and removes it from list
+/// 2. More keyboard data arrives before reader runs
+/// 3. Second IRQ sees no readers, data is buffered but reader isn't woken
+/// 4. Reader runs, reads first byte, returns to userspace
+/// 5. Reader calls read() again but wasn't woken for subsequent data
 #[cfg(target_arch = "aarch64")]
 fn wake_blocked_readers_try() {
+    // Clone the reader list without draining - readers stay registered
     let readers: alloc::vec::Vec<u64> = {
-        if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
-            blocked.drain(..).collect()
+        if let Some(blocked) = BLOCKED_READERS.try_lock() {
+            blocked.iter().copied().collect()
         } else {
             // Debug marker: couldn't get lock
             raw_serial_str(b"[STDIN_LOCK_FAIL]");
@@ -250,12 +272,16 @@ pub fn unregister_blocked_reader(thread_id: u64) {
 ///
 /// Note: With TTY integration, blocked readers are woken through
 /// TtyDevice::wake_blocked_readers. This function is kept for fallback.
+///
+/// IMPORTANT: This does NOT remove readers from the blocked list. Readers
+/// are responsible for unregistering themselves via `unregister_blocked_reader()`.
 #[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
+    // Clone the reader list without draining - readers stay registered
     let readers: Vec<u64> = {
-        let mut blocked = BLOCKED_READERS.lock();
-        blocked.drain(..).collect()
+        let blocked = BLOCKED_READERS.lock();
+        blocked.iter().copied().collect()
     };
 
     if readers.is_empty() {
@@ -266,8 +292,8 @@ fn wake_blocked_readers() {
 
     // Wake each blocked thread
     crate::task::scheduler::with_scheduler(|sched| {
-        for thread_id in readers {
-            sched.unblock(thread_id);
+        for thread_id in &readers {
+            sched.unblock(*thread_id);
             log::trace!("stdin: Woke thread {}", thread_id);
         }
     });
@@ -277,14 +303,18 @@ fn wake_blocked_readers() {
 }
 
 /// Wake blocked readers on ARM64
+///
+/// IMPORTANT: This does NOT remove readers from the blocked list. Readers
+/// are responsible for unregistering themselves via `unregister_blocked_reader()`.
 #[cfg(target_arch = "aarch64")]
 #[allow(dead_code)]
 fn wake_blocked_readers() {
     use alloc::vec::Vec;
 
+    // Clone the reader list without draining - readers stay registered
     let readers: Vec<u64> = {
-        let mut blocked = BLOCKED_READERS.lock();
-        blocked.drain(..).collect()
+        let blocked = BLOCKED_READERS.lock();
+        blocked.iter().copied().collect()
     };
 
     if readers.is_empty() {
@@ -293,8 +323,8 @@ fn wake_blocked_readers() {
 
     // Wake each blocked thread
     crate::task::scheduler::with_scheduler(|sched| {
-        for thread_id in readers {
-            sched.unblock(thread_id);
+        for thread_id in &readers {
+            sched.unblock(*thread_id);
         }
     });
 

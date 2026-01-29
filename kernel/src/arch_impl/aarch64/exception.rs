@@ -282,6 +282,12 @@ fn raw_serial_str(s: &[u8]) {
     crate::serial_aarch64::raw_serial_str(s);
 }
 
+/// Raw serial write - write a single char without locks, for use in interrupt handlers
+#[inline(always)]
+fn raw_serial_char(c: u8) {
+    crate::serial_aarch64::raw_serial_char(c);
+}
+
 /// Handle IRQ interrupts
 ///
 /// Called from assembly after saving registers.
@@ -305,20 +311,33 @@ pub extern "C" fn handle_irq() {
 
             // UART0 receive interrupt (SPI 1 = IRQ 33)
             UART0_IRQ => {
+                // DEBUG: Log UART interrupt
+                raw_serial_str(b"[UART_IRQ]");
                 handle_uart_interrupt();
+            }
+
+            // Any other PPI or unknown SPI - log for debugging
+            16..=31 | 34..=47 => {
+                // Debug: show unexpected IRQ IDs
+                raw_serial_str(b"[IRQ:");
+                // Print decimal IRQ ID
+                if irq_id >= 10 {
+                    raw_serial_char(b'0' + ((irq_id / 10) % 10) as u8);
+                }
+                raw_serial_char(b'0' + (irq_id % 10) as u8);
+                raw_serial_str(b"]");
             }
 
             // SGIs (0-15) - Inter-processor interrupts
             0..=15 => {}
-
-            // PPIs (16-31) - Private peripheral interrupts (excluding timer)
-            16..=31 => {}
 
             // SPIs (32-1019) - Shared peripheral interrupts
             32..=1019 => {
                 // Check if this is the VirtIO input device IRQ
                 if let Some(input_irq) = crate::drivers::virtio::input_mmio::get_irq() {
                     if irq_id == input_irq {
+                        // DEBUG: Log VirtIO input interrupt
+                        crate::serial_aarch64::raw_serial_str(b"[VIRTIO_INPUT_IRQ]");
                         crate::drivers::virtio::input_mmio::handle_interrupt();
                     }
                 }
@@ -376,16 +395,33 @@ fn check_need_resched_on_irq_exit() {
 
 /// Handle UART receive interrupt
 ///
-/// Read all available bytes from the UART and push to stdin buffer.
-/// Echo is handled by the consumer (kernel shell or userspace tty driver).
+/// Read all available bytes from the UART and route through TTY layer.
+/// The TTY layer handles echo, line discipline, and signals, then pushes to stdin.
 fn handle_uart_interrupt() {
     use crate::serial_aarch64;
 
+    // Track if we've ever received UART input (one-time debug message)
+    static UART_FIRST_INPUT: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+
+    let mut byte_count = 0u8;
+
     // Read all available bytes from the UART FIFO
     while let Some(byte) = serial_aarch64::get_received_byte() {
-        // Push to stdin buffer for kernel shell or userspace read() syscall
-        // This wakes any blocked readers waiting for input
-        crate::ipc::stdin::push_byte_from_irq(byte);
+        // Route through TTY layer for echo, line discipline, and signals
+        // This is what x86_64 does with keyboard input
+        // The TTY layer will push to stdin after processing
+        if !crate::tty::push_char_nonblock(byte) {
+            // TTY not available or lock contention - fall back to direct stdin
+            // This ensures we don't lose characters during early boot
+            crate::ipc::stdin::push_byte_from_irq(byte);
+        }
+        byte_count += 1;
+    }
+
+    // One-time message confirming UART input is working
+    if byte_count > 0 && !UART_FIRST_INPUT.swap(true, core::sync::atomic::Ordering::Relaxed) {
+        raw_serial_str(b"\n[UART] First input received - UART working!\n");
     }
 
     // Clear the interrupt

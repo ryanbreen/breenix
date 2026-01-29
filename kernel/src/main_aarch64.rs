@@ -33,65 +33,31 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     use core::arch::asm;
     use kernel::arch_impl::aarch64::context::return_to_userspace;
 
-    // Raw serial character output - no locks, minimal code
-    fn raw_char(c: u8) {
-        // Use constant HHDM base instead of calling physical_memory_offset()
-        // to minimize code paths
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
-        unsafe { core::ptr::write_volatile(addr, c as u32); }
-    }
-
-    // Markers: A=entry, B=got fs, C=resolved, D=read inode, E=read content,
-    // F=ELF ok, G=process created, H=info extracted, I=scheduler reg,
-    // J=percpu set, K=pid set, L=ttbr0 set, M=jumping to userspace
-
-    raw_char(b'A'); // Entry - about to call root_fs()
-    raw_char(b'a'); // Calling root_fs() now
     let fs_guard = kernel::fs::ext2::root_fs();
-    raw_char(b'b'); // root_fs() returned, checking if Some
     let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
-    raw_char(b'B'); // Got fs
 
     let inode_num = fs.resolve_path(path).map_err(|_| "init_shell not found")?;
-    raw_char(b'C'); // Path resolved
 
     let inode = fs.read_inode(inode_num).map_err(|_| "failed to read inode")?;
-    raw_char(b'D'); // Inode read
 
     if inode.is_dir() {
         return Err("init_shell is a directory");
     }
 
-    raw_char(b'd'); // About to read file content
-
     // Disable interrupts during large file read to prevent timer overhead
     unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
 
-    let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
-    raw_char(b'E'); // File content read
+    let elf_data = fs.read_file_content(&inode).map_err(|_| {
+        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+        "failed to read init_shell"
+    })?;
 
     // Re-enable interrupts
-    raw_char(b'e'); // About to enable interrupts
-
-    // Check timer status before enabling
-    let timer_ctl: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) timer_ctl);
-    }
-    // Print timer status: bit 0 = enabled, bit 1 = masked, bit 2 = pending
-    raw_char(if timer_ctl & 1 != 0 { b'E' } else { b'-' });  // Timer enabled?
-    raw_char(if timer_ctl & 2 != 0 { b'M' } else { b'-' });  // Timer masked?
-    raw_char(if timer_ctl & 4 != 0 { b'P' } else { b'-' });  // Timer pending?
-
     unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
-    raw_char(b'f'); // Interrupts enabled
 
     if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
         return Err("init_shell is not a valid ELF file");
     }
-    raw_char(b'F'); // ELF verified
 
     let proc_name = path.rsplit('/').next().unwrap_or(path);
     let pid = {
@@ -102,7 +68,6 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             return Err("process manager not initialized");
         }
     };
-    raw_char(b'G'); // Process created
 
     let (entry_point, user_stack_top, ttbr0_phys, main_thread_id, main_thread_clone) = {
         let manager_guard = kernel::process::manager();
@@ -129,11 +94,9 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             return Err("process manager not available");
         }
     };
-    raw_char(b'H'); // Process info extracted
 
     // Register the userspace thread with the scheduler as the current running thread.
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
-    raw_char(b'I'); // Scheduler registered
 
     // Set per-CPU pointers to the thread in the scheduler
     kernel::task::scheduler::with_thread_mut(main_thread_id, |thread| {
@@ -143,7 +106,6 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             kernel::per_cpu_aarch64::set_kernel_stack_top(kernel_stack_top.as_u64());
         }
     });
-    raw_char(b'J'); // Per-CPU set
 
     // Mark the process as running.
     {
@@ -152,14 +114,11 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
             manager.set_current_pid(pid);
         }
     }
-    raw_char(b'K'); // Current PID set
 
     unsafe {
         asm!("msr ttbr0_el1, {0}", "isb", in(reg) ttbr0_phys, options(nostack, preserves_flags));
     }
-    raw_char(b'L'); // TTBR0 set
 
-    raw_char(b'M'); // Jumping to userspace
     unsafe { return_to_userspace(entry_point, user_stack_top); }
 }
 
@@ -261,6 +220,9 @@ pub extern "C" fn kernel_main() -> ! {
     let irq_enabled = Aarch64Cpu::interrupts_enabled();
     serial_println!("[boot] Interrupts enabled: {}", irq_enabled);
 
+    // GIC test passed - we can now receive IRQ 33 when software-triggered
+    // Skip the software trigger test in normal operation
+
     // Initialize device drivers (VirtIO MMIO enumeration)
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
@@ -325,6 +287,17 @@ pub extern "C" fn kernel_main() -> ! {
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
 
+    // Initialize ARM64 render queue for deferred framebuffer rendering
+    // All TTY output goes through the render queue to avoid the double-rendering
+    // bug where both write_bytes() and the render task would write to the terminal.
+    if kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER.get().is_some() {
+        serial_println!("[boot] Initializing ARM64 render queue...");
+        kernel::graphics::render_queue_aarch64::init();
+        if let Err(e) = kernel::graphics::render_task_aarch64::spawn_render_thread() {
+            serial_println!("[boot] Failed to spawn render thread: {}", e);
+        }
+    }
+
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
     {
@@ -342,24 +315,13 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("  Breenix ARM64 Boot Complete!");
     serial_println!("========================================");
     serial_println!();
-    serial_println!("Hello from ARM64!");
-    serial_println!();
 
-    // Raw char helper for debugging
-    fn boot_raw_char(c: u8) {
-        const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-        const PL011_BASE: u64 = 0x0900_0000;
-        let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
-        unsafe { core::ptr::write_volatile(addr, c as u32); }
-    }
-
-    boot_raw_char(b'1'); // Before if statement
+    // Use raw serial for reliability in this critical section
+    kernel::serial_aarch64::raw_serial_str(b"Hello from ARM64!\n\n");
 
     // Try to load and run userspace init_shell from ext2 or test disk
     if device_count > 0 {
-        boot_raw_char(b'2'); // Inside if
         serial_println!("[boot] Loading userspace init_shell from ext2...");
-        boot_raw_char(b'3'); // After serial_println
         match run_userspace_from_ext2("/bin/init_shell") {
             Err(e) => {
                 serial_println!("[boot] Failed to load init_shell from ext2: {}", e);
@@ -398,6 +360,9 @@ pub extern "C" fn kernel_main() -> ! {
         serial_println!();
         serial_print!("breenix> ");
     }
+
+    // Heartbeat counter for debugging
+    let mut loop_count = 0u64;
 
     // Input sources:
     // 1. VirtIO keyboard - polled from virtqueue, used with graphics mode
@@ -466,6 +431,13 @@ pub extern "C" fn kernel_main() -> ! {
         // WFI will wake on any interrupt (timer, UART RX, VirtIO, etc.)
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
+        }
+
+        // Heartbeat every 1000 iterations - show ring state
+        loop_count += 1;
+        if loop_count % 1000 == 0 {
+            let (avail, used, last_seen) = input_mmio::debug_ring_state();
+            serial_println!("[hb] avail={} used={} last_seen={}", avail, used, last_seen);
         }
     }
 }

@@ -7,6 +7,7 @@ FROM ubuntu:24.04
 # Install QEMU with display support and OVMF
 RUN apt-get update && apt-get install -y \
     qemu-system-x86 \
+    qemu-system-arm \
     ovmf \
     expect \
     # X11 and SDL support for graphical display

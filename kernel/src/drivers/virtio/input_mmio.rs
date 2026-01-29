@@ -14,6 +14,32 @@
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering, fence};
 use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
 
+// =============================================================================
+// ARM64 Memory Barriers
+// =============================================================================
+
+/// Data Synchronization Barrier (DSB) for ARM64
+///
+/// On ARM64, `fence(Ordering::SeqCst)` generates `dmb ish` which only guarantees
+/// order of execution, not completion. For VirtIO to work correctly, we need
+/// `dsb sy` which ensures that all prior memory accesses have completed before
+/// proceeding. This is critical for:
+/// - Ensuring our writes to the available ring are visible to the device
+/// - Ensuring device writes to the used ring are visible to us
+#[inline(always)]
+fn dsb_sy() {
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+/// Full memory barrier: DSB + fence for VirtIO operations
+#[inline(always)]
+fn virtio_mb() {
+    dsb_sy();
+    fence(Ordering::SeqCst);
+}
+
 /// VirtIO descriptor flags
 const DESC_F_WRITE: u16 = 2;  // Device writes (vs reads)
 #[allow(dead_code)]
@@ -171,14 +197,15 @@ pub fn init() -> Result<(), &'static str> {
                 crate::serial_println!("[virtio-input] Found input device at {:#x} (slot {})", base, i);
                 crate::serial_println!("[virtio-input] Device version: {}", device.version());
 
-                // Initialize the device
-                init_device(&mut device)?;
-
+                // Set DEVICE_BASE BEFORE init_device so post_event_buffers can notify
                 unsafe {
-                let mmio_base = crate::memory::physical_memory_offset().as_u64() + base;
-                *(&raw mut DEVICE_BASE) = mmio_base;
+                    let mmio_base = crate::memory::physical_memory_offset().as_u64() + base;
+                    *(&raw mut DEVICE_BASE) = mmio_base;
                     *(&raw mut DEVICE_SLOT) = i;
                 }
+
+                // Initialize the device
+                init_device(&mut device)?;
 
                 // Enable the device's interrupt in the GIC
                 let irq = VIRTIO_IRQ_BASE + i as u32;
@@ -230,6 +257,8 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<(), &'static str> {
     let desc_addr = queue_phys;
     let avail_addr = queue_phys + core::mem::offset_of!(QueueMemory, avail_flags) as u64;
     let used_addr = queue_phys + core::mem::offset_of!(QueueMemory, used_flags) as u64;
+    crate::serial_println!("[virtio-input] Queue setup: virt={:#x} phys={:#x} used_offset={}",
+        queue_addr, queue_phys, core::mem::offset_of!(QueueMemory, used_flags));
 
     if version == 1 {
         // Legacy: use PFN-based setup
@@ -244,43 +273,91 @@ fn init_device(device: &mut VirtioMmioDevice) -> Result<(), &'static str> {
         device.set_queue_ready(true);
     }
 
-    // Post event buffers to the queue
+    // Setup event buffers in the queue (but don't notify yet)
     unsafe {
-        post_event_buffers(actual_size);
+        setup_event_buffers(actual_size);
     }
 
-    // Mark driver ready
+    // Mark driver ready BEFORE notifying
     device.driver_ok();
+
+    // Debug: Check device status after init
+    let status = device.read_status();
+    crate::serial_println!("[virtio-input] Device status after init: {:#x}", status);
+    crate::serial_println!("[virtio-input] Status bits: ACK={} DRV={} FEAT_OK={} DRV_OK={}",
+        (status & 1) != 0, (status & 2) != 0, (status & 8) != 0, (status & 4) != 0);
+
+    // Also read the device features to see what's available
+    let features = device.read_device_features();
+    crate::serial_println!("[virtio-input] Device features: {:#x}", features);
+
+    // NOW notify the device (after DRIVER_OK is set)
+    unsafe {
+        notify_device();
+    }
 
     Ok(())
 }
 
-/// Post event buffers to the available ring
-unsafe fn post_event_buffers(count: usize) {
-    let event_base = virt_to_phys((&raw const EVENT_BUFFERS).cast::<VirtioInputEvent>() as u64);
+/// Setup event buffers in the available ring (but don't notify yet)
+unsafe fn setup_event_buffers(count: usize) {
+    let event_virt = (&raw const EVENT_BUFFERS).cast::<VirtioInputEvent>() as u64;
+    let event_base = virt_to_phys(event_virt);
     let queue_mem = &raw mut QUEUE_MEM;
-    let device_base = &raw const DEVICE_BASE;
+
+    crate::serial_println!("[virtio-input] EVENT_BUFFERS virt={:#x} phys={:#x}", event_virt, event_base);
+    crate::serial_println!("[virtio-input] HHDM_BASE={:#x}, offset={:#x}",
+        crate::memory::physical_memory_offset().as_u64(),
+        event_virt.wrapping_sub(crate::memory::physical_memory_offset().as_u64()));
 
     for i in 0..count {
         // Setup descriptor: device writes events to our buffer
         let event_addr = event_base + (i * EVENT_SIZE) as u64;
         write_descriptor(i, event_addr, EVENT_SIZE as u32, DESC_F_WRITE, 0);
 
+        // Debug first descriptor
+        if i == 0 {
+            crate::serial_println!("[virtio-input] Desc[0]: addr={:#x} len={} flags={:#x}",
+                event_addr, EVENT_SIZE, DESC_F_WRITE);
+        }
+
         // Add to available ring
         (*queue_mem).avail_ring[i] = i as u16;
     }
 
-    // Update available index
-    fence(Ordering::SeqCst);
+    // Update available index with full memory barrier
+    // DSB ensures writes to descriptors and avail_ring are complete before updating idx
+    virtio_mb();
     (*queue_mem).avail_idx = count as u16;
-    fence(Ordering::SeqCst);
+    // DSB ensures avail_idx write is complete before we notify the device
+    virtio_mb();
 
-    // Notify device (queue 0)
+    crate::serial_println!("[virtio-input] setup_event_buffers: count={}, avail_idx={}", count, count);
+}
+
+/// Notify the device that there are new buffers available
+unsafe fn notify_device() {
+    let device_base = &raw const DEVICE_BASE;
     let base = *device_base;
+    crate::serial_println!("[virtio-input] notify_device: DEVICE_BASE={:#x}", base);
     if base != 0 {
+        // DSB ensures all prior writes are complete before notifying
+        virtio_mb();
         let notify_addr = (base + 0x50) as *mut u32;
-        core::ptr::write_volatile(notify_addr, 0);
+        core::ptr::write_volatile(notify_addr, 0); // Queue 0
+        // DSB ensures the notification write is complete
+        virtio_mb();
+        crate::serial_println!("[virtio-input] Notified device at {:#x}", notify_addr as u64);
+    } else {
+        crate::serial_println!("[virtio-input] WARNING: DEVICE_BASE is 0, notification skipped!");
     }
+}
+
+/// Post event buffers to the available ring (legacy function for compatibility)
+#[allow(dead_code)]
+unsafe fn post_event_buffers(count: usize) {
+    setup_event_buffers(count);
+    notify_device();
 }
 
 /// Poll for new input events
@@ -302,9 +379,10 @@ pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
 
         let last_seen = LAST_USED_IDX.load(Ordering::Relaxed);
 
-        fence(Ordering::SeqCst);
+        // DSB ensures device writes to used ring are visible before we read
+        virtio_mb();
         let current_used = (*queue_mem).used_idx;
-        fence(Ordering::SeqCst);
+        virtio_mb();
 
         if current_used != last_seen {
             // Process new events
@@ -324,7 +402,7 @@ pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
                     // Re-post the buffer
                     let avail_idx = (*queue_mem).avail_idx as usize;
                     (*queue_mem).avail_ring[avail_idx % NUM_EVENT_BUFFERS] = desc_idx as u16;
-                    fence(Ordering::SeqCst);
+                    virtio_mb();
                     (*queue_mem).avail_idx = (*queue_mem).avail_idx.wrapping_add(1);
                 }
 
@@ -333,12 +411,13 @@ pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
 
             LAST_USED_IDX.store(current_used, Ordering::Release);
 
-            // Notify device of re-posted buffers
+            // Notify device of re-posted buffers with proper barrier
             let base = *device_base;
             if count > 0 && base != 0 {
-                fence(Ordering::SeqCst);
+                virtio_mb();
                 let notify_addr = (base + 0x50) as *mut u32;
                 core::ptr::write_volatile(notify_addr, 0);
+                virtio_mb();
             }
         }
     }
@@ -533,8 +612,20 @@ pub fn handle_interrupt() {
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = keycode_to_char(keycode, shift) {
-                    // Push to stdin buffer so userspace can read it
-                    crate::ipc::stdin::push_byte_from_irq(c as u8);
+                    // DEBUG: Log received keystroke
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        crate::serial_aarch64::raw_serial_str(b"[VIRTIO_KEY:");
+                        crate::serial_aarch64::raw_serial_char(c as u8);
+                        crate::serial_aarch64::raw_serial_str(b"]");
+                    }
+                    // Route through TTY layer for echo, line discipline, and signals
+                    // This matches how x86_64 keyboard input is handled
+                    // The TTY layer will push to stdin after processing
+                    if !crate::tty::push_char_nonblock(c as u8) {
+                        // TTY not available or lock contention - fall back to direct stdin
+                        crate::ipc::stdin::push_byte_from_irq(c as u8);
+                    }
                 }
             }
         }

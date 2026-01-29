@@ -81,3 +81,8 @@ pub fn list_active() -> alloc::vec::Vec<u32> {
         None => alloc::vec::Vec::new(),
     }
 }
+
+/// Check if the PTY subsystem has been initialized
+pub fn is_initialized() -> bool {
+    PTY_ALLOCATOR.get().is_some()
+}

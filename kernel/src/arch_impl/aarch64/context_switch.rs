@@ -10,7 +10,7 @@
 //! - Uses TPIDR_EL1 for per-CPU data (like GS segment on x86)
 //! - Memory barriers (DSB, ISB) required after page table switches
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::exception_frame::Aarch64ExceptionFrame;
 use super::percpu::Aarch64PerCpu;
@@ -37,6 +37,27 @@ fn raw_uart_char(c: u8) {
 fn raw_uart_str(s: &str) {
     for byte in s.bytes() {
         raw_uart_char(byte);
+    }
+}
+
+/// Print a decimal number using raw serial output (lock-free)
+#[inline(always)]
+fn print_decimal_raw(n: u64) {
+    if n == 0 {
+        crate::serial_aarch64::raw_serial_char(b'0');
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut i = 0;
+    let mut val = n;
+    while val > 0 {
+        digits[i] = (val % 10) as u8 + b'0';
+        val /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        crate::serial_aarch64::raw_serial_char(digits[i]);
     }
 }
 
@@ -100,10 +121,6 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         }
         return;
     }
-
-    // Track reschedule attempts for diagnostics
-    static RESCHED_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let _count = RESCHED_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     // Perform scheduling decision
     let schedule_result = crate::task::scheduler::schedule();
@@ -262,6 +279,14 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         })
         .unwrap_or(false);
 
+    // Check if thread was blocked inside a syscall (e.g., read() waiting for keyboard)
+    // If so, we must NOT restore userspace context - the thread needs to
+    // continue executing the syscall code and return through the normal path.
+    let blocked_in_syscall = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+        thread.blocked_in_syscall
+    })
+    .unwrap_or(false);
+
     if is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop_arm64), restore that context
@@ -289,6 +314,18 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         }
     } else if is_kernel_thread {
         setup_kernel_thread_return_arm64(thread_id, frame);
+    } else if blocked_in_syscall {
+        // CRITICAL: Thread was blocked inside a syscall (like read() waiting for keyboard).
+        // The exception frame already contains the correct kernel ELR/SPSR from when the
+        // IRQ was taken during the syscall. We must NOT call restore_userspace_context_arm64
+        // which would overwrite ELR with a userspace address, causing a data abort when
+        // the user stack page isn't mapped.
+        //
+        // We need to:
+        // 1. Check for pending signals - if any, deliver them with saved userspace context
+        // 2. Otherwise, resume the kernel syscall code (don't modify ELR)
+        // 3. Always switch TTBR0 to the process's page table
+        handle_blocked_in_syscall_arm64(thread_id, frame);
     } else {
         restore_userspace_context_arm64(thread_id, frame);
     }
@@ -445,6 +482,284 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
         log::error!(
             "KTHREAD_SWITCH: Failed to get thread info for thread {}",
             thread_id
+        );
+    }
+}
+
+/// Handle context switch for a user thread that was blocked inside a syscall.
+///
+/// When a user thread blocks in a syscall (e.g., read() waiting for keyboard input),
+/// it's running KERNEL code. The exception frame already has the kernel ELR from when
+/// the IRQ was taken during the syscall. We must NOT restore userspace context because:
+/// 1. The userspace address might point to an unmapped page (data abort)
+/// 2. The syscall hasn't completed yet - we need to continue executing kernel code
+///
+/// This function handles two cases:
+/// - If there are pending signals AND saved userspace context, deliver signals
+/// - Otherwise, resume the kernel syscall code (keep ELR as-is)
+fn handle_blocked_in_syscall_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
+    crate::serial_println!(
+        "ARM64: handle_blocked_in_syscall_arm64 thread={} elr={:#x}",
+        thread_id,
+        frame.elr
+    );
+
+    // Get saved userspace context from the scheduler's Thread (single source of truth)
+    let saved_context_from_scheduler = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+        thread.saved_userspace_context.clone()
+    })
+    .flatten();
+
+    // Try to get the process for this thread
+    let guard_option = crate::process::try_manager();
+    if let Some(mut manager_guard) = guard_option {
+        if let Some(ref mut manager) = *manager_guard {
+            if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                // Check for expired timers
+                crate::signal::delivery::check_and_fire_alarm(process);
+                crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
+                let has_pending_signals = crate::signal::delivery::has_deliverable_signals(process);
+                let has_saved_context = saved_context_from_scheduler.is_some()
+                    || process
+                        .main_thread
+                        .as_ref()
+                        .is_some_and(|t| t.saved_userspace_context.is_some());
+
+                if has_pending_signals && has_saved_context {
+                    // SIGNAL DELIVERY PATH: Use saved userspace context for signal delivery
+                    crate::serial_println!(
+                        "ARM64: thread {} has pending signals - delivering via saved userspace context",
+                        thread_id
+                    );
+
+                    // Get the saved context
+                    let saved_ctx_option = saved_context_from_scheduler.as_ref().or_else(|| {
+                        process
+                            .main_thread
+                            .as_ref()
+                            .and_then(|t| t.saved_userspace_context.as_ref())
+                    });
+
+                    if let Some(saved_ctx) = saved_ctx_option {
+                        // Restore userspace registers from saved context
+                        // Set X0 = -EINTR for the interrupted syscall
+                        frame.x0 = (-4i64) as u64; // -EINTR
+
+                        // Restore callee-saved registers
+                        frame.x19 = saved_ctx.x19;
+                        frame.x20 = saved_ctx.x20;
+                        frame.x21 = saved_ctx.x21;
+                        frame.x22 = saved_ctx.x22;
+                        frame.x23 = saved_ctx.x23;
+                        frame.x24 = saved_ctx.x24;
+                        frame.x25 = saved_ctx.x25;
+                        frame.x26 = saved_ctx.x26;
+                        frame.x27 = saved_ctx.x27;
+                        frame.x28 = saved_ctx.x28;
+                        frame.x29 = saved_ctx.x29;
+                        frame.x30 = saved_ctx.x30;
+
+                        // Restore ELR and SPSR for userspace return
+                        frame.elr = saved_ctx.elr_el1;
+                        // SPSR for EL0t (userspace, interrupts enabled)
+                        frame.spsr = 0x0;
+
+                        // Restore SP_EL0 (user stack pointer)
+                        unsafe {
+                            core::arch::asm!(
+                                "msr sp_el0, {}",
+                                in(reg) saved_ctx.sp_el0,
+                                options(nomem, nostack)
+                            );
+                        }
+
+                        crate::serial_println!(
+                            "ARM64: Restored userspace context for signal delivery: ELR={:#x} SP_EL0={:#x} X0=-EINTR",
+                            saved_ctx.elr_el1,
+                            saved_ctx.sp_el0
+                        );
+                    }
+
+                    // Clear blocked_in_syscall and saved context
+                    if let Some(ref mut thread) = process.main_thread {
+                        thread.blocked_in_syscall = false;
+                        thread.saved_userspace_context = None;
+                    }
+                    crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+                        thread.blocked_in_syscall = false;
+                        thread.saved_userspace_context = None;
+                    });
+
+                    // Switch to process's page table for signal delivery
+                    if let Some(ref page_table) = process.page_table {
+                        let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                        unsafe {
+                            core::arch::asm!(
+                                "msr ttbr0_el1, {}",
+                                "dsb ish",
+                                "isb",
+                                in(reg) ttbr0_value,
+                                options(nomem, nostack)
+                            );
+                        }
+                        crate::serial_println!(
+                            "ARM64: Switched to process TTBR0 {:#x} for signal delivery",
+                            ttbr0_value
+                        );
+                    }
+
+                    // Read current SP_EL0 for creating SavedRegisters
+                    let sp_el0: u64;
+                    unsafe {
+                        core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
+                    }
+
+                    // Create SavedRegisters and deliver signals
+                    let mut saved_regs = create_saved_regs_from_frame(frame, sp_el0);
+                    let signal_result =
+                        crate::signal::delivery::deliver_pending_signals(process, frame, &mut saved_regs);
+
+                    // Update SP_EL0 if signals were delivered (signal frame pushed onto stack)
+                    if !matches!(
+                        signal_result,
+                        crate::signal::delivery::SignalDeliveryResult::NoAction
+                    ) {
+                        unsafe {
+                            core::arch::asm!(
+                                "msr sp_el0, {}",
+                                in(reg) saved_regs.sp,
+                                options(nomem, nostack)
+                            );
+                        }
+                    }
+
+                    match signal_result {
+                        crate::signal::delivery::SignalDeliveryResult::Terminated(_notification) => {
+                            crate::serial_println!(
+                                "ARM64: Signal terminated process, thread {}",
+                                thread_id
+                            );
+                            crate::task::scheduler::set_need_resched();
+                            setup_idle_return_arm64(frame);
+                            crate::task::scheduler::switch_to_idle();
+                            // Note: Parent notification happens elsewhere
+                        }
+                        crate::signal::delivery::SignalDeliveryResult::Delivered => {
+                            crate::serial_println!(
+                                "ARM64: Signal delivered to thread {}",
+                                thread_id
+                            );
+                            if process.is_terminated() {
+                                crate::task::scheduler::set_need_resched();
+                                setup_idle_return_arm64(frame);
+                                crate::task::scheduler::switch_to_idle();
+                            }
+                        }
+                        crate::signal::delivery::SignalDeliveryResult::NoAction => {}
+                    }
+                } else {
+                    // NO PENDING SIGNALS: Resume at saved kernel context
+                    // CRITICAL: The current exception frame is from the CURRENT interrupt,
+                    // not from when the thread originally blocked. We MUST restore the
+                    // saved kernel context to the frame so the thread resumes at the
+                    // correct location (e.g., the WFI loop in sys_read).
+
+                    // Get the saved kernel context from the thread
+                    let saved_context = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+                        thread.context.clone()
+                    });
+
+                    if let Some(context) = saved_context {
+                        // Restore ALL general-purpose registers from saved context
+                        frame.x0 = context.x0;
+                        frame.x1 = context.x1;
+                        frame.x2 = context.x2;
+                        frame.x3 = context.x3;
+                        frame.x4 = context.x4;
+                        frame.x5 = context.x5;
+                        frame.x6 = context.x6;
+                        frame.x7 = context.x7;
+                        frame.x8 = context.x8;
+                        frame.x9 = context.x9;
+                        frame.x10 = context.x10;
+                        frame.x11 = context.x11;
+                        frame.x12 = context.x12;
+                        frame.x13 = context.x13;
+                        frame.x14 = context.x14;
+                        frame.x15 = context.x15;
+                        frame.x16 = context.x16;
+                        frame.x17 = context.x17;
+                        frame.x18 = context.x18;
+                        frame.x19 = context.x19;
+                        frame.x20 = context.x20;
+                        frame.x21 = context.x21;
+                        frame.x22 = context.x22;
+                        frame.x23 = context.x23;
+                        frame.x24 = context.x24;
+                        frame.x25 = context.x25;
+                        frame.x26 = context.x26;
+                        frame.x27 = context.x27;
+                        frame.x28 = context.x28;
+                        frame.x29 = context.x29;
+                        frame.x30 = context.x30;
+
+                        // Restore ELR and SPSR from saved context
+                        frame.elr = context.elr_el1;
+                        frame.spsr = context.spsr_el1;
+
+                        // Store kernel SP for restoration after ERET
+                        unsafe {
+                            Aarch64PerCpu::set_user_rsp_scratch(context.sp);
+                        }
+
+                        crate::serial_println!(
+                            "ARM64: No pending signals for thread {}, restored kernel context ELR={:#x} SP={:#x}",
+                            thread_id,
+                            context.elr_el1,
+                            context.sp
+                        );
+                    } else {
+                        crate::serial_println!(
+                            "ARM64: WARNING: No saved context for thread {}, using frame ELR={:#x}",
+                            thread_id,
+                            frame.elr
+                        );
+                    }
+
+                    // CRITICAL: Switch TTBR0 to process's page table!
+                    // The kernel syscall code may access userspace memory (like read() buffer).
+                    // Without switching TTBR0, we'd be using the previous process's page tables.
+                    if let Some(ref page_table) = process.page_table {
+                        let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                        unsafe {
+                            core::arch::asm!(
+                                "msr ttbr0_el1, {}",
+                                "dsb ish",
+                                "isb",
+                                in(reg) ttbr0_value,
+                                options(nomem, nostack)
+                            );
+                        }
+                        crate::serial_println!(
+                            "ARM64: Switched to process TTBR0 {:#x} for kernel syscall resume",
+                            ttbr0_value
+                        );
+                    }
+                }
+            } else {
+                crate::serial_println!(
+                    "ARM64: handle_blocked_in_syscall_arm64: No process found for thread {}",
+                    thread_id
+                );
+            }
+        }
+    } else {
+        // Couldn't get process manager lock - just resume with current frame
+        // This is safe because the frame already has kernel context
+        crate::serial_println!(
+            "ARM64: handle_blocked_in_syscall_arm64: Couldn't get process manager, resuming at ELR={:#x}",
+            frame.elr
         );
     }
 }
