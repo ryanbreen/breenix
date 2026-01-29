@@ -89,15 +89,12 @@ pub enum FdKind {
     UdpSocket(Arc<Mutex<crate::socket::udp::UdpSocket>>),
     /// TCP socket (unbound, or bound but not connected/listening)
     /// The u16 is the bound local port (0 if unbound)
-    #[cfg(target_arch = "x86_64")]
     TcpSocket(u16),
     /// TCP listener (bound and listening socket)
     /// The u16 is the listening port
-    #[cfg(target_arch = "x86_64")]
     TcpListener(u16),
     /// TCP connection (established connection)
     /// Contains the connection ID for lookup in the global TCP connection table
-    #[cfg(target_arch = "x86_64")]
     TcpConnection(crate::net::tcp::ConnectionId),
     /// Regular file descriptor
     #[allow(dead_code)] // Will be constructed when open() is fully implemented
@@ -140,11 +137,8 @@ impl core::fmt::Debug for FdKind {
             FdKind::PipeRead(_) => write!(f, "PipeRead"),
             FdKind::PipeWrite(_) => write!(f, "PipeWrite"),
             FdKind::UdpSocket(_) => write!(f, "UdpSocket"),
-            #[cfg(target_arch = "x86_64")]
             FdKind::TcpSocket(port) => write!(f, "TcpSocket(port={})", port),
-            #[cfg(target_arch = "x86_64")]
             FdKind::TcpListener(port) => write!(f, "TcpListener(port={})", port),
-            #[cfg(target_arch = "x86_64")]
             FdKind::TcpConnection(id) => write!(f, "TcpConnection({:?})", id),
             FdKind::RegularFile(_) => write!(f, "RegularFile"),
             FdKind::Directory(_) => write!(f, "Directory"),
@@ -259,7 +253,6 @@ impl Clone for FdTable {
                         }
                         buffer.lock().add_writer();
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::PtyMaster(pty_num) => {
                         // Increment PTY master reference count for the clone
                         if let Some(pair) = crate::tty::pty::get(*pty_num) {
@@ -268,7 +261,6 @@ impl Clone for FdTable {
                                 pty_num, old_count, old_count + 1);
                         }
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::TcpConnection(conn_id) => {
                         // Increment TCP connection reference count for the clone
                         crate::net::tcp::tcp_add_ref(conn_id);
@@ -534,18 +526,15 @@ impl Drop for FdTable {
                         // Socket cleanup handled by UdpSocket::Drop when Arc refcount reaches 0
                         log::debug!("FdTable::drop() - releasing UDP socket fd {}", i);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::TcpSocket(_) => {
                         // Unbound TCP socket doesn't need cleanup
                         log::debug!("FdTable::drop() - releasing TCP socket fd {}", i);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::TcpListener(port) => {
                         // Remove from listener table
                         crate::net::tcp::TCP_LISTENERS.lock().remove(&port);
                         log::debug!("FdTable::drop() - closed TCP listener fd {} on port {}", i, port);
                     }
-                    #[cfg(target_arch = "x86_64")]
                     FdKind::TcpConnection(conn_id) => {
                         // Close the TCP connection
                         let _ = crate::net::tcp::tcp_close(&conn_id);

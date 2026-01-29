@@ -2698,22 +2698,32 @@ fn test_arm64_socket_reset_quantum() -> TestResult {
 // ARM64 Parity Tests
 // =============================================================================
 
-/// Verify filesystem syscalls are wired on ARM64 (no x86_64-only gating).
+/// Verify filesystem operations work correctly on ARM64.
 ///
-/// **RIGOROUS TEST**: This test uses sentinel errno checks to ensure the
-/// ARM64 filesystem syscalls are real implementations (not ENOSYS stubs).
-/// It will FAIL if x86_64 gating is re-added.
+/// **RIGOROUS TEST**: This test verifies actual file operations, not just
+/// that syscalls don't return ENOSYS. It will FAIL if:
+/// - The ext2 filesystem is not mounted
+/// - File paths cannot be resolved
+/// - File content cannot be read
+/// - File content does not match expected values
+///
+/// The test exercises the full filesystem stack:
+/// 1. Path resolution (resolve_path)
+/// 2. Inode reading (read_inode)
+/// 3. File content reading (read_file_content)
+/// 4. Content verification (byte-by-byte comparison)
 #[cfg(target_arch = "aarch64")]
 fn test_filesystem_syscalls_aarch64() -> TestResult {
-    use crate::memory::arch_stub::{Page, Size4KiB, ThreadPrivilege, VirtAddr};
-    use crate::memory::{frame_allocator, layout, paging};
+    use crate::fs::ext2;
     use crate::syscall::errno::{EBADF, EFAULT, ENOSYS, ESRCH};
-    use crate::syscall::fs::{sys_fstat, sys_getdents64, sys_lseek, sys_open, O_RDONLY, SEEK_SET};
+    use crate::syscall::fs::{sys_fstat, sys_getdents64, sys_lseek, SEEK_SET};
     use crate::syscall::SyscallResult;
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Part 1: Verify syscalls are wired (not returning ENOSYS)
+    // =========================================================================
+
     // 1) sys_fstat: null statbuf must return EFAULT (NOT ENOSYS)
-    // -------------------------------------------------------------------------
     match sys_fstat(0, 0) {
         SyscallResult::Err(code) if code == EFAULT as u64 => {}
         SyscallResult::Err(code) if code == ENOSYS as u64 => {
@@ -2722,9 +2732,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
         _ => return TestResult::Fail("sys_fstat returned unexpected result"),
     }
 
-    // -------------------------------------------------------------------------
     // 2) sys_getdents64: null dirp must return EFAULT (NOT ENOSYS)
-    // -------------------------------------------------------------------------
     match sys_getdents64(0, 0, 1) {
         SyscallResult::Err(code) if code == EFAULT as u64 => {}
         SyscallResult::Err(code) if code == ENOSYS as u64 => {
@@ -2733,9 +2741,7 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
         _ => return TestResult::Fail("sys_getdents64 returned unexpected result"),
     }
 
-    // -------------------------------------------------------------------------
     // 3) sys_lseek: should NOT be ENOSYS when syscall is wired
-    // -------------------------------------------------------------------------
     match sys_lseek(0, 0, SEEK_SET) {
         SyscallResult::Err(code) if code == ENOSYS as u64 => {
             return TestResult::Fail("sys_lseek still gated (ENOSYS)");
@@ -2745,40 +2751,177 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
         _ => return TestResult::Fail("sys_lseek returned unexpected result"),
     }
 
-    // -------------------------------------------------------------------------
-    // 4) sys_open: map a userspace path and ensure ENOSYS is NOT returned
-    // -------------------------------------------------------------------------
-    const TEST_PATH: &str = "/dev/null";
-    let user_addr = layout::USERSPACE_BASE + 0x2000;
+    // =========================================================================
+    // Part 2: Verify actual file content (the rigorous part)
+    // =========================================================================
 
-    let frame = match frame_allocator::allocate_frame() {
-        Some(frame) => frame,
-        None => return TestResult::Fail("failed to allocate frame for sys_open test"),
+    // Check if ext2 filesystem is mounted
+    if !ext2::is_mounted() {
+        return TestResult::Fail("ext2 filesystem not mounted");
+    }
+
+    // Access the root filesystem
+    let fs_guard = ext2::root_fs();
+    let fs = match fs_guard.as_ref() {
+        Some(fs) => fs,
+        None => return TestResult::Fail("ext2 root_fs() returned None"),
     };
 
-    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(user_addr));
-    unsafe {
-        let mut mapper = paging::get_mapper();
-        if paging::map_page(&mut mapper, page, frame, ThreadPrivilege::User, true).is_err() {
-            return TestResult::Fail("failed to map user page for sys_open test");
+    // -------------------------------------------------------------------------
+    // Test 1: Read /hello.txt and verify content
+    // Expected content: "Hello from ext2!\n" (17 bytes)
+    // -------------------------------------------------------------------------
+    const HELLO_PATH: &str = "/hello.txt";
+    const HELLO_EXPECTED: &[u8] = b"Hello from ext2!\n";
+
+    // Step 1a: Resolve the path to an inode number
+    let hello_inode_num = match fs.resolve_path(HELLO_PATH) {
+        Ok(ino) => ino,
+        Err(e) => {
+            log::error!("Failed to resolve {}: {}", HELLO_PATH, e);
+            return TestResult::Fail("resolve_path failed for /hello.txt");
+        }
+    };
+
+    // Step 1b: Read the inode
+    let hello_inode = match fs.read_inode(hello_inode_num) {
+        Ok(inode) => inode,
+        Err(e) => {
+            log::error!("Failed to read inode {}: {}", hello_inode_num, e);
+            return TestResult::Fail("read_inode failed for /hello.txt");
+        }
+    };
+
+    // Step 1c: Verify it's a regular file
+    if !hello_inode.is_file() {
+        return TestResult::Fail("/hello.txt is not a regular file");
+    }
+
+    // Step 1d: Read the file content
+    let hello_content = match fs.read_file_content(&hello_inode) {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Failed to read content of /hello.txt: {}", e);
+            return TestResult::Fail("read_file_content failed for /hello.txt");
+        }
+    };
+
+    // Step 1e: Verify content length
+    if hello_content.len() != HELLO_EXPECTED.len() {
+        log::error!(
+            "/hello.txt length mismatch: expected {}, got {}",
+            HELLO_EXPECTED.len(),
+            hello_content.len()
+        );
+        return TestResult::Fail("/hello.txt has wrong content length");
+    }
+
+    // Step 1f: Verify content bytes
+    if hello_content.as_slice() != HELLO_EXPECTED {
+        log::error!(
+            "/hello.txt content mismatch: expected {:?}, got {:?}",
+            core::str::from_utf8(HELLO_EXPECTED),
+            core::str::from_utf8(&hello_content)
+        );
+        return TestResult::Fail("/hello.txt content does not match expected");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 2: Read /test/nested.txt and verify content
+    // Expected content: "Nested file content\n" (20 bytes)
+    // -------------------------------------------------------------------------
+    const NESTED_PATH: &str = "/test/nested.txt";
+    const NESTED_EXPECTED: &[u8] = b"Nested file content\n";
+
+    // Step 2a: Resolve the path
+    let nested_inode_num = match fs.resolve_path(NESTED_PATH) {
+        Ok(ino) => ino,
+        Err(e) => {
+            log::error!("Failed to resolve {}: {}", NESTED_PATH, e);
+            return TestResult::Fail("resolve_path failed for /test/nested.txt");
+        }
+    };
+
+    // Step 2b: Read the inode
+    let nested_inode = match fs.read_inode(nested_inode_num) {
+        Ok(inode) => inode,
+        Err(e) => {
+            log::error!("Failed to read inode {}: {}", nested_inode_num, e);
+            return TestResult::Fail("read_inode failed for /test/nested.txt");
+        }
+    };
+
+    // Step 2c: Read and verify content
+    let nested_content = match fs.read_file_content(&nested_inode) {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Failed to read content of /test/nested.txt: {}", e);
+            return TestResult::Fail("read_file_content failed for /test/nested.txt");
+        }
+    };
+
+    if nested_content.as_slice() != NESTED_EXPECTED {
+        log::error!(
+            "/test/nested.txt content mismatch: expected {:?}, got {:?}",
+            core::str::from_utf8(NESTED_EXPECTED),
+            core::str::from_utf8(&nested_content)
+        );
+        return TestResult::Fail("/test/nested.txt content mismatch");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 3: Read a deeply nested file to test multi-level path resolution
+    // Expected content: "Deep nested content\n" (20 bytes)
+    // -------------------------------------------------------------------------
+    const DEEP_PATH: &str = "/deep/path/to/file/data.txt";
+    const DEEP_EXPECTED: &[u8] = b"Deep nested content\n";
+
+    let deep_inode_num = match fs.resolve_path(DEEP_PATH) {
+        Ok(ino) => ino,
+        Err(e) => {
+            log::error!("Failed to resolve {}: {}", DEEP_PATH, e);
+            return TestResult::Fail("resolve_path failed for deep path");
+        }
+    };
+
+    let deep_inode = match fs.read_inode(deep_inode_num) {
+        Ok(inode) => inode,
+        Err(e) => {
+            log::error!("Failed to read deep inode: {}", e);
+            return TestResult::Fail("read_inode failed for deep path");
+        }
+    };
+
+    let deep_content = match fs.read_file_content(&deep_inode) {
+        Ok(content) => content,
+        Err(e) => {
+            log::error!("Failed to read deep file content: {}", e);
+            return TestResult::Fail("read_file_content failed for deep path");
+        }
+    };
+
+    if deep_content.as_slice() != DEEP_EXPECTED {
+        return TestResult::Fail("deep file content mismatch");
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 4: Verify error handling for non-existent file
+    // -------------------------------------------------------------------------
+    const NONEXISTENT_PATH: &str = "/this/path/does/not/exist.txt";
+
+    match fs.resolve_path(NONEXISTENT_PATH) {
+        Ok(_) => {
+            return TestResult::Fail("resolve_path succeeded for non-existent file");
+        }
+        Err(_) => {
+            // Expected - file should not exist
         }
     }
 
-    unsafe {
-        let buf = user_addr as *mut u8;
-        core::ptr::copy_nonoverlapping(TEST_PATH.as_ptr(), buf, TEST_PATH.len());
-        *buf.add(TEST_PATH.len()) = 0;
-    }
-
-    match sys_open(user_addr, O_RDONLY, 0) {
-        SyscallResult::Err(code) if code == ENOSYS as u64 => {
-            return TestResult::Fail("sys_open still gated (ENOSYS)");
-        }
-        SyscallResult::Err(code) if code == EFAULT as u64 => {
-            return TestResult::Fail("sys_open rejected mapped userspace pointer");
-        }
-        _ => {}
-    }
+    log::info!(
+        "ARM64 filesystem test passed: verified {} files with correct content",
+        3
+    );
 
     TestResult::Pass
 }

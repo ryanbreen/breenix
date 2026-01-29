@@ -658,7 +658,6 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFDIR | 0o755; // Directory with rwxr-xr-x
             stat.st_nlink = 2; // . and ..
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpSocket(_) | FdKind::TcpListener(_) | FdKind::TcpConnection(_) => {
             // TCP sockets
             static TCP_SOCKET_INODE_COUNTER: core::sync::atomic::AtomicU64 =

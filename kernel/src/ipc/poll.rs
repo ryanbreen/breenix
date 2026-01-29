@@ -173,14 +173,12 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLIN;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpSocket(_) => {
             // Unconnected TCP socket - always writable (for connect attempt)
             if (events & events::POLLOUT) != 0 {
                 revents |= events::POLLOUT;
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpListener(port) => {
             // Listening socket - check for pending connections
             if (events & events::POLLIN) != 0 {
@@ -189,7 +187,6 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             }
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpConnection(conn_id) => {
             // Connected socket - check for data and connection state
             let connections = crate::net::tcp::TCP_CONNECTIONS.lock();

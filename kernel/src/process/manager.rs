@@ -2180,10 +2180,9 @@ impl ProcessManager {
         }
 
         // Clean up old page table resources
-        if let Some(_old_pt) = old_page_table {
-            // TODO: Properly free all frames mapped by the old page table
-            // This requires walking the page table and deallocating frames
-            log::info!("exec_process: Old page table cleanup needed (TODO)");
+        if let Some(old_pt) = old_page_table {
+            log::info!("exec_process: Cleaning up old page table");
+            old_pt.cleanup_for_exec();
         }
 
         // Add the process back to the ready queue if it's not already there
@@ -2421,8 +2420,9 @@ impl ProcessManager {
         }
 
         // Clean up old page table resources
-        if let Some(_old_pt) = old_page_table {
-            log::info!("exec_process_with_argv: Old page table cleanup needed (TODO)");
+        if let Some(old_pt) = old_page_table {
+            log::info!("exec_process_with_argv: Cleaning up old page table");
+            old_pt.cleanup_for_exec();
         }
 
         // Add the process back to the ready queue if it's not already there
@@ -2620,8 +2620,9 @@ impl ProcessManager {
             );
         }
 
-        if let Some(_old_pt) = old_page_table {
-            log::info!("exec_process_with_argv [ARM64]: Old page table cleanup needed (TODO)");
+        if let Some(old_pt) = old_page_table {
+            log::info!("exec_process_with_argv [ARM64]: Cleaning up old page table");
+            old_pt.cleanup_for_exec();
         }
 
         if !self.ready_queue.contains(&pid) {
@@ -2872,8 +2873,9 @@ impl ProcessManager {
         }
 
         // Clean up old page table resources
-        if let Some(_old_pt) = old_page_table {
-            log::info!("exec_process [ARM64]: Old page table cleanup needed (TODO)");
+        if let Some(old_pt) = old_page_table {
+            log::info!("exec_process [ARM64]: Cleaning up old page table");
+            old_pt.cleanup_for_exec();
         }
 
         // Add the process back to the ready queue if it's not already there

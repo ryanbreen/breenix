@@ -6,7 +6,6 @@ use super::errno::{
     EAFNOSUPPORT, EAGAIN, EBADF, EFAULT, EINVAL, ENOTSOCK, EADDRINUSE, EISCONN, EOPNOTSUPP,
     ECONNREFUSED, ENOENT, ENETUNREACH,
 };
-#[cfg(target_arch = "x86_64")]
 use super::errno::{EINPROGRESS, ENOTCONN, ETIMEDOUT};
 use super::{ErrorCode, SyscallResult};
 use crate::socket::types::{AF_INET, AF_UNIX, SOCK_DGRAM, SOCK_STREAM, SockAddrIn, SockAddrUn};
@@ -96,16 +95,8 @@ pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> SyscallResult 
                     (FdKind::UdpSocket(socket), "UDP")
                 }
                 SOCK_STREAM => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        // Create TCP socket (initially unbound, port = 0)
-                        (FdKind::TcpSocket(0), "TCP")
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        log::debug!("sys_socket: TCP not supported on this architecture");
-                        return SyscallResult::Err(EOPNOTSUPP as u64);
-                    }
+                    // Create TCP socket (initially unbound, port = 0)
+                    (FdKind::TcpSocket(0), "TCP")
                 }
                 _ => {
                     log::debug!("sys_socket: unsupported type {} for AF_INET", base_type);
@@ -243,7 +234,6 @@ pub fn sys_bind(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
                         Err(e) => SyscallResult::Err(e as u64),
                     }
                 }
-                #[cfg(target_arch = "x86_64")]
                 FdKind::TcpSocket(existing_port) => {
                     // TCP socket binding - update the socket's port
                     if *existing_port != 0 {
@@ -778,8 +768,6 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
             return SyscallResult::Err(ErrorCode::NoSuchProcess as u64);
         }
     };
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = pid;
 
     // Get the socket from fd table
     let fd_entry = match process.fd_table.get(fd as i32) {
@@ -789,7 +777,6 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
 
     // Handle listen based on socket type
     match &fd_entry.kind {
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpSocket(port) => {
             if *port == 0 {
                 // Not bound
@@ -809,7 +796,6 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
             log::info!("TCP: Socket now listening on port {}", port);
             SyscallResult::Ok(0)
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpListener(_) => {
             // Already listening
             SyscallResult::Err(EINVAL as u64)
@@ -862,7 +848,6 @@ pub fn sys_listen(fd: u64, backlog: u64) -> SyscallResult {
 
 /// Internal enum to track listener type for accept
 enum ListenerType {
-    #[cfg(target_arch = "x86_64")]
     Tcp(u16),
     Unix(alloc::sync::Arc<spin::Mutex<crate::socket::unix::UnixListener>>),
 }
@@ -883,8 +868,6 @@ enum ListenerType {
 /// The blocking pattern follows the same double-check approach as UDP recvfrom.
 pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     log::debug!("sys_accept: fd={}", fd);
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = (addr_ptr, addrlen_ptr);
 
     // Drain loopback queue for localhost connections (127.x.x.x, own IP).
     crate::net::drain_loopback_queue();
@@ -927,7 +910,6 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 
         // Determine listener type
         let lt = match &fd_entry.kind {
-            #[cfg(target_arch = "x86_64")]
             FdKind::TcpListener(p) => ListenerType::Tcp(*p),
             FdKind::UnixListener(l) => ListenerType::Unix(l.clone()),
             _ => return SyscallResult::Err(EOPNOTSUPP as u64),
@@ -938,7 +920,6 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 
     // Dispatch based on listener type
     match listener_type {
-        #[cfg(target_arch = "x86_64")]
         ListenerType::Tcp(port) => {
             sys_accept_tcp(fd, port, is_nonblocking, thread_id, addr_ptr, addrlen_ptr)
         }
@@ -949,7 +930,6 @@ pub fn sys_accept(fd: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
 }
 
 /// Accept on TCP listener
-#[cfg(target_arch = "x86_64")]
 fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr_ptr: u64, addrlen_ptr: u64) -> SyscallResult {
     // Blocking accept loop
     loop {
@@ -1259,17 +1239,7 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
     // Dispatch based on address family
     match family {
-        AF_INET => {
-            #[cfg(target_arch = "x86_64")]
-            {
-                sys_connect_tcp(fd, addr_ptr, addrlen)
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                log::debug!("sys_connect: TCP not supported on this architecture");
-                SyscallResult::Err(EOPNOTSUPP as u64)
-            }
-        }
+        AF_INET => sys_connect_tcp(fd, addr_ptr, addrlen),
         AF_UNIX => sys_connect_unix(fd, addr_ptr, addrlen),
         _ => {
             log::debug!("sys_connect: unsupported address family {}", family);
@@ -1279,7 +1249,6 @@ pub fn sys_connect(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 }
 
 /// Connect TCP socket
-#[cfg(target_arch = "x86_64")]
 fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
     // Validate address length for IPv4
     if addrlen < 16 {
@@ -1662,7 +1631,6 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
 
     // Must be a TCP connection
     match &fd_entry.kind {
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpConnection(conn_id) => {
             // Set shutdown flags on the connection
             let shut_rd = how == 0 || how == 2; // SHUT_RD or SHUT_RDWR
@@ -1673,7 +1641,6 @@ pub fn sys_shutdown(fd: u64, how: u64) -> SyscallResult {
             log::info!("TCP: Shutdown fd={} how={}", fd, how);
             SyscallResult::Ok(0)
         }
-        #[cfg(target_arch = "x86_64")]
         FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
             // Not connected
             SyscallResult::Err(ENOTCONN as u64)

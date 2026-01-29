@@ -134,6 +134,9 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::UnixListener(_) => WriteOperation::Enotconn,
             FdKind::PtyMaster(pty_num) => WriteOperation::PtyMaster(*pty_num),
             FdKind::PtySlave(pty_num) => WriteOperation::PtySlave(*pty_num),
+            // TCP sockets - write not directly supported, use send/sendto
+            FdKind::TcpSocket(_) | FdKind::TcpListener(_) => WriteOperation::Enotconn,
+            FdKind::TcpConnection(_) => WriteOperation::Eopnotsupp,
         }
     };
 
@@ -387,6 +390,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             } else {
                 SyscallResult::Err(5) // EIO
             }
+        }
+        // TCP sockets - read not directly supported, use recv/recvfrom
+        FdKind::TcpSocket(_) | FdKind::TcpListener(_) => {
+            SyscallResult::Err(super::errno::ENOTCONN as u64)
+        }
+        FdKind::TcpConnection(_) => {
+            SyscallResult::Err(super::errno::EOPNOTSUPP as u64)
         }
     }
 }
