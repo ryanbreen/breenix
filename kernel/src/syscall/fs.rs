@@ -1671,7 +1671,6 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-#[cfg(target_arch = "x86_64")]
 fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devfs;
@@ -1743,7 +1742,6 @@ fn handle_devfs_open(device_name: &str, _flags: u32) -> SyscallResult {
 ///
 /// # Returns
 /// File descriptor on success, negative errno on failure
-#[cfg(target_arch = "x86_64")]
 fn handle_devpts_open(pty_name: &str) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
     use crate::fs::devptsfs;
@@ -1800,7 +1798,6 @@ fn handle_devpts_open(pty_name: &str) -> SyscallResult {
 /// Handle opening the /dev/pts directory itself
 ///
 /// Returns a directory fd that can be used with getdents64 to list PTY slaves.
-#[cfg(target_arch = "x86_64")]
 fn handle_devpts_directory_open() -> SyscallResult {
     use super::errno::EMFILE;
 

@@ -1086,7 +1086,15 @@ fn sys_exec_aarch64(
             let bin_path = alloc::format!("/bin/{}", program_name);
             match load_elf_from_ext2(&bin_path) {
                 Ok(data) => data,
-                Err(_) => crate::userspace_test::get_test_binary(&program_name),
+                Err(errno) => {
+                    // ARM64 doesn't have userspace_test module fallback
+                    log::error!(
+                        "sys_exec_aarch64: Failed to load /bin/{}: {}",
+                        program_name,
+                        errno
+                    );
+                    return (-(errno as i64)) as u64;
+                }
             }
         };
 

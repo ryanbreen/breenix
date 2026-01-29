@@ -3235,8 +3235,8 @@ fn test_softirq_aarch64() -> TestResult {
     // Use softirq number 5 (arbitrary, within valid range 0-31)
     const TEST_SOFTIRQ: u32 = 5;
 
-    // Get initial pending state
-    let initial_pending = per_cpu_aarch64::softirq_pending();
+    // Get initial pending state (captured for debugging, not actively compared)
+    let _initial_pending = per_cpu_aarch64::softirq_pending();
 
     // Raise the test softirq
     per_cpu_aarch64::raise_softirq(TEST_SOFTIRQ);
@@ -3504,7 +3504,6 @@ fn test_future_basics() -> TestResult {
 /// - Scheduler initialized (for spawn())
 fn test_tty_foreground_pgrp() -> TestResult {
     use crate::tty;
-    use alloc::string::String;
 
     // =========================================================================
     // Step 1: Verify prerequisites
@@ -3572,6 +3571,8 @@ fn test_tty_foreground_pgrp() -> TestResult {
 
     #[cfg(feature = "testing")]
     {
+        use alloc::string::String;
+
         log::info!(
             "[TTY_PGRP_TEST] Loaded test binary ({} bytes), creating process...",
             elf_data.len()
