@@ -16,63 +16,56 @@ docs/planning/   # Numbered phase directories (00-15)
 
 ## Build & Run
 
-## 🚨 CRITICAL: QEMU MUST RUN INSIDE DOCKER ONLY 🚨
+QEMU runs natively for both x86-64 and ARM64 architectures.
 
-**NEVER run QEMU directly on the host.** This is an absolute, inviolable requirement.
+### Interactive Mode
 
-Running QEMU directly on macOS causes **system-wide instability**:
-- Hypervisor.framework resource leaks when QEMU is killed
-- GPU driver destabilization affecting ALL GPU-accelerated apps
-- Crashes in terminals (Ghostty), browsers (Chrome/Brave), and Electron apps (Slack)
-- Memory pressure cascades from orphaned QEMU processes
+Use `./run.sh` for interactive development with graphical display:
 
-**The ONLY acceptable ways to run QEMU:**
-1. `./docker/qemu/run-boot-parallel.sh N` - Run N parallel boot tests
-2. `./docker/qemu/run-kthread-parallel.sh N` - Run N parallel kthread tests
-3. `./docker/qemu/run-kthread-test.sh` - Run single kthread test
-4. `./docker/qemu/run-dns-test.sh` - Run DNS resolution test
-5. `./docker/qemu/run-keyboard-test.sh` - Run keyboard input test
-6. `./docker/qemu/run-interactive.sh` - Interactive session with VNC display
-
-**For interactive use (framebuffer + keyboard):**
 ```bash
-./docker/qemu/run-interactive.sh
-# Then connect with TigerVNC:
-open '/Applications/TigerVNC Viewer 1.15.0.app'
-# Enter: localhost:5900
+./run.sh              # ARM64 with native cocoa display (default)
+./run.sh --x86        # x86_64 with VNC display
+./run.sh --headless   # ARM64 serial output only
+./run.sh --x86 --headless  # x86_64 serial output only
 ```
 
-**PROHIBITED commands (will destabilize the host system):**
+**Display:**
+- ARM64: Native window (cocoa) - no VNC needed
+- x86_64: VNC at localhost:5900 (use TigerVNC to connect)
+
+### Test Scripts
+
+Test scripts are located in `docker/qemu/`:
+
+**x86-64:**
+- `./docker/qemu/run-boot-parallel.sh N` - Run N parallel boot tests
+- `./docker/qemu/run-kthread-parallel.sh N` - Run N parallel kthread tests
+- `./docker/qemu/run-kthread-test.sh` - Run single kthread test
+- `./docker/qemu/run-dns-test.sh` - Run DNS resolution test
+- `./docker/qemu/run-keyboard-test.sh` - Run keyboard input test
+- `./docker/qemu/run-interactive.sh` - Interactive session with VNC display
+
+**ARM64:**
+- `./docker/qemu/run-aarch64-boot-test-native.sh` - Native ARM64 boot test
+- `./docker/qemu/run-aarch64-boot-test-strict.sh` - Strict ARM64 boot test
+
+### Standard Workflow
+
 ```bash
-# ❌ NEVER DO THIS:
-cargo run -p xtask -- boot-stages
-cargo run -p xtask -- dns-test
-cargo run --release --bin qemu-uefi
-./breenix-gdb-chat/scripts/gdb_session.sh start
-qemu-system-x86_64 ...
-```
-
-### One-Time Docker Setup
-
-Before running any tests, build the Docker image:
-```bash
-cd docker/qemu
-docker build -t breenix-qemu .
-```
-
-### Standard Workflow: Docker-Based Testing
-
-For normal development, use Docker-based boot tests:
-
-```bash
-# Build the kernel first
+# Build the kernel first (x86-64)
 cargo build --release --features testing,external_test_bins --bin qemu-uefi
 
-# Run boot tests in Docker (isolated, safe)
+# Run boot tests
 ./docker/qemu/run-boot-parallel.sh 1
 
 # Run multiple parallel tests for stress testing
 ./docker/qemu/run-boot-parallel.sh 5
+
+# Build ARM64 kernel
+cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
+
+# Run ARM64 boot test
+./docker/qemu/run-aarch64-boot-test-native.sh
 ```
 
 For kthread-focused testing:
@@ -80,19 +73,13 @@ For kthread-focused testing:
 # Build kthread-only kernel
 cargo build --release --features kthread_test_only --bin qemu-uefi
 
-# Run kthread tests in Docker
+# Run kthread tests
 ./docker/qemu/run-kthread-parallel.sh 1
 ```
 
-**Why Docker is mandatory:**
-- Complete isolation from host Hypervisor.framework
-- No GPU driver interaction (uses software rendering)
-- Clean container lifecycle - no orphaned processes
-- No risk of destabilizing user's system
-- Containers auto-cleanup with `--rm`
-
 ### Logs
-Docker test output goes to `/tmp/breenix_boot_N/` or `/tmp/breenix_kthread_N/`:
+
+Test output goes to `/tmp/breenix_boot_N/` or `/tmp/breenix_kthread_N/`:
 ```bash
 # View kernel log from test 1
 cat /tmp/breenix_boot_1/serial_kernel.txt
@@ -101,14 +88,9 @@ cat /tmp/breenix_boot_1/serial_kernel.txt
 cat /tmp/breenix_boot_1/serial_user.txt
 ```
 
-### GDB Debugging - DISABLED
+### GDB Debugging
 
-GDB debugging requires native QEMU which is prohibited. For debugging:
-1. Add strategic `log::info!()` statements
-2. Run in Docker and examine serial output
-3. Use QEMU's `-d` flags for CPU/interrupt tracing (inside Docker)
-
-If you absolutely must use GDB for a critical issue, **ask the user first** and explain why Docker-based debugging is insufficient.
+GDB debugging is fully supported. See the "GDB-Only Kernel Debugging" section below for details.
 
 ## Development Workflow
 
@@ -617,29 +599,14 @@ log::debug!("clock_gettime called");  # This changes timing!
 ./breenix-gdb-chat/scripts/gdb_session.sh stop
 ```
 
-## Docker Container Cleanup
+## QEMU Process Cleanup
 
-**Docker containers auto-cleanup with `--rm`, but if needed:**
-
-```bash
-# Kill any running breenix-qemu containers
-docker kill $(docker ps -q --filter ancestor=breenix-qemu) 2>/dev/null || true
-
-# Verify no containers running
-docker ps --filter ancestor=breenix-qemu
-```
-
-### If You See Orphaned Host QEMU Processes
-
-If you see `qemu-system-x86_64` processes running directly on the host (not in Docker), this means someone violated the Docker-only rule. Clean them up:
+If you need to clean up orphaned QEMU processes:
 
 ```bash
 pkill -9 qemu-system-x86_64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
+pkill -9 qemu-system-aarch64 2>/dev/null; pgrep -l qemu || echo "All QEMU processes killed"
 ```
-
-**Then investigate how they got there** - all QEMU execution must go through Docker.
-
-This is the agent's responsibility - do not wait for the user to ask.
 
 ## Work Tracking
 

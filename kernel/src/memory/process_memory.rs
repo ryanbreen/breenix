@@ -2029,6 +2029,16 @@ pub fn map_user_stack_to_process(
         stack_top.as_u64()
     );
 
+    // Validate stack address range to prevent capacity overflow in Page::range_inclusive()
+    if stack_bottom.as_u64() >= stack_top.as_u64() {
+        log::error!(
+            "Invalid stack address range: stack_bottom ({:#x}) >= stack_top ({:#x})",
+            stack_bottom.as_u64(),
+            stack_top.as_u64()
+        );
+        return Err("Invalid stack address range: stack_bottom >= stack_top");
+    }
+
     // Calculate page range to copy
     let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
     let end_page = Page::<Size4KiB>::containing_address(stack_top - 1u64);

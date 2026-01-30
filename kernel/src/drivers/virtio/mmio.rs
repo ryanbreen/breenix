@@ -181,6 +181,11 @@ impl VirtioMmioDevice {
         self.read32(regs::VENDOR_ID)
     }
 
+    /// Get device features (must be called after init())
+    pub fn device_features(&self) -> u64 {
+        self.device_features
+    }
+
     /// Read device status
     pub fn read_status(&self) -> u32 {
         self.read32(regs::STATUS)

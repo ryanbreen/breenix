@@ -1476,6 +1476,102 @@ fn test_directory_list() -> TestResult {
 }
 
 // =============================================================================
+// VirtIO Block Device Test Functions (ARM64)
+// =============================================================================
+
+/// Test VirtIO block multi-read stress test (ARM64 only).
+///
+/// This test exercises the DSB barrier and descriptor/notification path
+/// by reading sector 0 multiple times in rapid succession.
+#[cfg(target_arch = "aarch64")]
+fn test_virtio_blk_multi_read() -> TestResult {
+    match crate::drivers::virtio::block_mmio::test_multi_read() {
+        Ok(()) => TestResult::Pass,
+        Err(e) => TestResult::Fail(e),
+    }
+}
+
+/// Stub for x86_64 - VirtIO block MMIO is ARM64-only.
+#[cfg(not(target_arch = "aarch64"))]
+fn test_virtio_blk_multi_read() -> TestResult {
+    TestResult::Pass
+}
+
+/// Test VirtIO block sequential read (ARM64 only).
+///
+/// Tests sequential sector reads to verify queue index wrap-around behavior.
+/// Reading 32+ sectors causes the available ring index to wrap around twice
+/// for a 16-entry queue.
+#[cfg(target_arch = "aarch64")]
+fn test_virtio_blk_sequential_read() -> TestResult {
+    match crate::drivers::virtio::block_mmio::test_sequential_read() {
+        Ok(()) => TestResult::Pass,
+        Err(e) => TestResult::Fail(e),
+    }
+}
+
+/// Stub for x86_64 - VirtIO block MMIO is ARM64-only.
+#[cfg(not(target_arch = "aarch64"))]
+fn test_virtio_blk_sequential_read() -> TestResult {
+    TestResult::Pass
+}
+
+/// Test VirtIO block write-read-verify cycle (ARM64 only).
+///
+/// Tests the write path by writing a test pattern to a high sector,
+/// reading it back, and verifying the data matches byte-for-byte.
+#[cfg(target_arch = "aarch64")]
+fn test_virtio_blk_write_read_verify() -> TestResult {
+    match crate::drivers::virtio::block_mmio::test_write_read_verify() {
+        Ok(()) => TestResult::Pass,
+        Err(e) => TestResult::Fail(e),
+    }
+}
+
+/// Stub for x86_64 - VirtIO block MMIO is ARM64-only.
+#[cfg(not(target_arch = "aarch64"))]
+fn test_virtio_blk_write_read_verify() -> TestResult {
+    TestResult::Pass
+}
+
+/// Test VirtIO block invalid sector handling (ARM64 only).
+///
+/// Tests error handling by attempting to read a sector beyond the
+/// device capacity and verifying an appropriate error is returned.
+#[cfg(target_arch = "aarch64")]
+fn test_virtio_blk_invalid_sector() -> TestResult {
+    match crate::drivers::virtio::block_mmio::test_invalid_sector() {
+        Ok(()) => TestResult::Pass,
+        Err(e) => TestResult::Fail(e),
+    }
+}
+
+/// Stub for x86_64 - VirtIO block MMIO is ARM64-only.
+#[cfg(not(target_arch = "aarch64"))]
+fn test_virtio_blk_invalid_sector() -> TestResult {
+    TestResult::Pass
+}
+
+/// Test VirtIO block uninitialized read handling (ARM64 only).
+///
+/// Documents that read_sector() correctly returns an error when called
+/// before device initialization. In normal boot, the device is already
+/// initialized so this test just verifies the code path is present.
+#[cfg(target_arch = "aarch64")]
+fn test_virtio_blk_uninitialized_read() -> TestResult {
+    match crate::drivers::virtio::block_mmio::test_uninitialized_read() {
+        Ok(()) => TestResult::Pass,
+        Err(e) => TestResult::Fail(e),
+    }
+}
+
+/// Stub for x86_64 - VirtIO block MMIO is ARM64-only.
+#[cfg(not(target_arch = "aarch64"))]
+fn test_virtio_blk_uninitialized_read() -> TestResult {
+    TestResult::Pass
+}
+
+// =============================================================================
 // Network Test Functions (Phase 4k)
 // =============================================================================
 
@@ -4320,6 +4416,13 @@ static LOGGING_TESTS: &[TestDef] = &[
 /// - devfs_mounted: Verify devfs is initialized and mounted at /dev
 /// - file_open_close: Verify basic file operations work
 /// - directory_list: Verify directory listing works
+///
+/// ARM64 VirtIO block device tests:
+/// - virtio_blk_multi_read: Multi-read stress test (DSB barrier exercise)
+/// - virtio_blk_sequential_read: Sequential sector read (queue wrap-around)
+/// - virtio_blk_write_read_verify: Write-read-verify cycle
+/// - virtio_blk_invalid_sector: Error handling for out-of-range sectors
+/// - virtio_blk_uninitialized_read: Error handling documentation test
 static FILESYSTEM_TESTS: &[TestDef] = &[
     TestDef {
         name: "vfs_init",
@@ -4349,6 +4452,37 @@ static FILESYSTEM_TESTS: &[TestDef] = &[
     TestDef {
         name: "filesystem_syscalls_aarch64",
         func: test_filesystem_syscalls_aarch64,
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+    },
+    // ARM64 VirtIO block device tests
+    TestDef {
+        name: "virtio_blk_multi_read",
+        func: test_virtio_blk_multi_read,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000, // Multiple reads can take time
+    },
+    TestDef {
+        name: "virtio_blk_sequential_read",
+        func: test_virtio_blk_sequential_read,
+        arch: Arch::Aarch64,
+        timeout_ms: 60000, // 32 sectors with potential retries
+    },
+    TestDef {
+        name: "virtio_blk_write_read_verify",
+        func: test_virtio_blk_write_read_verify,
+        arch: Arch::Aarch64,
+        timeout_ms: 30000, // Write + read cycle
+    },
+    TestDef {
+        name: "virtio_blk_invalid_sector",
+        func: test_virtio_blk_invalid_sector,
+        arch: Arch::Aarch64,
+        timeout_ms: 5000,
+    },
+    TestDef {
+        name: "virtio_blk_uninitialized_read",
+        func: test_virtio_blk_uninitialized_read,
         arch: Arch::Aarch64,
         timeout_ms: 5000,
     },

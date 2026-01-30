@@ -145,7 +145,8 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
         // Reset timer quantum for the new thread
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
 
-        crate::serial_println!("CTX_SWITCH: returning to assembly, will ERET");
+        // NOTE: Do NOT use serial_println! here - causes deadlock if timer fires
+        // while boot code holds serial lock. Use raw_uart_char for debugging only.
     }
 }
 
@@ -271,20 +272,16 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         // switch back to idle, we need to restore the boot thread's context (sitting in
         // kthread_join's WFI loop) rather than jumping to idle_loop_arm64.
         let idle_loop_addr = idle_loop_arm64 as *const () as u64;
-        let (has_saved_context, saved_elr) = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+        let has_saved_context = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
             // Has saved context if ELR is non-zero AND not pointing to idle_loop_arm64
-            let has_ctx = thread.context.elr_el1 != 0 && thread.context.elr_el1 != idle_loop_addr;
-            (has_ctx, thread.context.elr_el1)
-        }).unwrap_or((false, 0));
+            thread.context.elr_el1 != 0 && thread.context.elr_el1 != idle_loop_addr
+        }).unwrap_or(false);
 
         if has_saved_context {
             // Restore idle thread's saved context (like a kthread)
-            crate::serial_println!("IDLE: restoring to elr={:#x}", saved_elr);
             setup_kernel_thread_return_arm64(thread_id, frame);
-            crate::serial_println!("IDLE: after setup, frame.elr={:#x}", frame.elr);
         } else {
             // No saved context or was in idle_loop - go to idle loop
-            crate::serial_println!("IDLE: no saved ctx, elr={:#x} idle_loop={:#x}", saved_elr, idle_loop_addr);
             setup_idle_return_arm64(frame);
         }
     } else if is_kernel_thread {
@@ -305,7 +302,8 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     })
     .flatten()
     .unwrap_or_else(|| {
-        log::error!("Failed to get idle thread's kernel stack!");
+        // NOTE: No logging - context switch path must be lock-free
+        // Use raw_uart_char(b'!') if debugging needed
         Aarch64PerCpu::kernel_stack_top()
     });
 
@@ -359,7 +357,7 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
         Aarch64PerCpu::clear_preempt_active();
     }
 
-    log::trace!("Set up return to idle loop");
+    // NOTE: No logging here - context switch path must be lock-free
 }
 
 /// Set up exception frame to return to kernel thread.
@@ -442,28 +440,22 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
         // Memory barrier to ensure all writes are visible
         core::sync::atomic::fence(Ordering::SeqCst);
     } else {
-        log::error!(
-            "KTHREAD_SWITCH: Failed to get thread info for thread {}",
-            thread_id
-        );
+        // NOTE: No logging - context switch path must be lock-free
+        // This indicates a serious bug but we can't safely log here
+        raw_uart_str("KTHREAD_ERR\n");
     }
 }
 
 /// Restore userspace context for a thread.
 fn restore_userspace_context_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
-    crate::serial_println!(
-        "ARM64: enter restore_userspace_context_arm64 thread={}",
-        thread_id
-    );
-    log::trace!("restore_userspace_context_arm64: thread {}", thread_id);
+    // NOTE: No logging here - context switch path must be lock-free
 
     // Check if this thread has ever run
     let has_started = crate::task::scheduler::with_thread_mut(thread_id, |thread| thread.has_started)
         .unwrap_or(false);
 
     if !has_started {
-        // First run for this thread
-        log::info!("First run: thread {} entering userspace", thread_id);
+        // First run for this thread - no logging (use raw_uart_char for debugging)
 
         // Mark thread as started
         crate::task::scheduler::with_thread_mut(thread_id, |thread| {
@@ -567,12 +559,8 @@ fn setup_first_userspace_entry_arm64(thread_id: u64, frame: &mut Aarch64Exceptio
         frame.x29 = 0;
         frame.x30 = 0;
 
-        log::info!(
-            "FIRST_ENTRY: thread {} ELR={:#x} SP_EL0={:#x}",
-            thread_id,
-            thread.context.elr_el1,
-            thread.context.sp_el0
-        );
+        // NOTE: No logging - context switch path must be lock-free
+        // Use raw_uart_char for debugging if needed
     });
 
     // Set TTBR0 target for this thread's process address space
@@ -581,7 +569,7 @@ fn setup_first_userspace_entry_arm64(thread_id: u64, frame: &mut Aarch64Exceptio
     // Switch TTBR0 for this thread's address space
     switch_ttbr0_if_needed(thread_id);
 
-    log::info!("First userspace entry setup complete for thread {}", thread_id);
+    // NOTE: No logging - context switch path must be lock-free
 }
 
 /// Switch TTBR0_EL1 if the thread requires a different address space.
@@ -589,7 +577,7 @@ fn setup_first_userspace_entry_arm64(thread_id: u64, frame: &mut Aarch64Exceptio
 /// On ARM64, TTBR0 holds the user page table base and TTBR1 holds the kernel
 /// page table base. We only need to switch TTBR0 when switching between
 /// processes with different address spaces.
-fn switch_ttbr0_if_needed(thread_id: u64) {
+fn switch_ttbr0_if_needed(_thread_id: u64) {
     // TODO: Integrate with process management to get page table base
     // For now, we assume all userspace threads share the same page table
 
@@ -608,18 +596,7 @@ fn switch_ttbr0_if_needed(thread_id: u64) {
     }
 
     if current_ttbr0 != next_ttbr0 {
-        crate::serial_println!(
-            "ARM64: TTBR0 switch thread={} {:#x} -> {:#x}",
-            thread_id,
-            current_ttbr0,
-            next_ttbr0
-        );
-        log::trace!(
-            "TTBR0 switch: {:#x} -> {:#x} for thread {}",
-            current_ttbr0,
-            next_ttbr0,
-            thread_id
-        );
+        // NOTE: No logging - context switch path must be lock-free
 
         unsafe {
             // Write new TTBR0
@@ -670,23 +647,13 @@ fn set_next_ttbr0_for_thread(thread_id: u64) {
     };
 
     if let Some(ttbr0) = next_ttbr0 {
-        crate::serial_println!(
-            "ARM64: set_next_ttbr0_for_thread thread={} ttbr0={:#x}",
-            thread_id,
-            ttbr0
-        );
         unsafe {
             Aarch64PerCpu::set_next_cr3(ttbr0);
         }
     } else {
-        crate::serial_println!(
-            "ARM64: set_next_ttbr0_for_thread thread={} ttbr0=NONE",
-            thread_id
-        );
-        log::error!(
-            "ARM64: Failed to determine TTBR0 for thread {} (process/page table missing)",
-            thread_id
-        );
+        // NOTE: No logging - context switch path must be lock-free
+        // This indicates a bug but we can't safely log here
+        raw_uart_str("TTBR0_ERR\n");
     }
 }
 
