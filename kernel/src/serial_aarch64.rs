@@ -217,8 +217,30 @@ pub fn write_byte(byte: u8) {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
+
+    // CRITICAL: Disable interrupts during serial output to prevent deadlock.
+    // On ARM64, unlike x86_64, there's only one serial port (SERIAL1).
+    // Both serial_println! and log_serial_println! use the same lock.
+    // If a timer interrupt fires while holding the lock and something in
+    // the timer path tries to log, we get a deadlock.
+    //
+    // The interrupt disable is done via DAIF (Debug/Abort/IRQ/FIQ mask) bits.
+    let daif_before: u64;
+    unsafe {
+        // Read current interrupt state
+        core::arch::asm!("mrs {}, DAIF", out(reg) daif_before, options(nomem, nostack));
+        // Mask IRQ (bit 7) and FIQ (bit 6)
+        core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
+    }
+
     let mut serial = SERIAL1.lock();
     let _ = write!(serial, "{}", args);
+    drop(serial);
+
+    // Restore previous interrupt state
+    unsafe {
+        core::arch::asm!("msr DAIF, {}", in(reg) daif_before, options(nomem, nostack));
+    }
 }
 
 /// Try to print without blocking - returns Err if lock is held

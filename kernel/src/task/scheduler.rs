@@ -77,6 +77,10 @@ impl Scheduler {
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         self.threads.push(thread);
         self.ready_queue.push_back(thread_id);
+        // CRITICAL: Only log on x86_64. On ARM64, log_serial_println! uses the same
+        // SERIAL1 lock as serial_println!, causing deadlock if timer fires while
+        // boot code is printing.
+        #[cfg(target_arch = "x86_64")]
         log_serial_println!(
             "Added thread {} '{}' to scheduler (user: {}, ready_queue: {:?})",
             thread_id,
@@ -84,6 +88,8 @@ impl Scheduler {
             is_user,
             self.ready_queue
         );
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = (thread_id, thread_name, is_user);
     }
 
     /// Add a thread as the current running thread without scheduling.
@@ -101,11 +107,15 @@ impl Scheduler {
         thread.has_started = true;
         self.threads.push(thread);
         self.current_thread = Some(thread_id);
+        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+        #[cfg(target_arch = "x86_64")]
         log_serial_println!(
             "Added thread {} '{}' as current (not in ready_queue)",
             thread_id,
             thread_name,
         );
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = (thread_id, thread_name);
     }
 
     /// Get a mutable thread by ID
@@ -147,11 +157,17 @@ impl Scheduler {
         // Serial output is ~960 bytes/sec, so each log line can take 50-100ms!
         static SCHEDULE_COUNT: core::sync::atomic::AtomicU64 =
             core::sync::atomic::AtomicU64::new(0);
-        let count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let _count = SCHEDULE_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-        // Only log first 5 calls (boot debugging) and then every 500th call
-        // CRITICAL: Excessive logging here causes timing issues with kthreads
-        let debug_log = count < 5 || (count % 500 == 0);
+        // CRITICAL: Logging disabled on ARM64 - schedule() is called from context switch
+        // path which may be holding the serial lock. On ARM64, log_serial_println! uses
+        // the same SERIAL1 lock as serial_println!, causing deadlock if timer fires
+        // while boot code is printing.
+        // On x86_64, log_serial goes to a separate UART (COM2), so it's safe.
+        #[cfg(target_arch = "x86_64")]
+        let debug_log = _count < 5 || (_count % 500 == 0);
+        #[cfg(not(target_arch = "x86_64"))]
+        let debug_log = false;
 
         // If current thread is still runnable, put it back in ready queue
         if let Some(current_id) = self.current_thread {
@@ -318,6 +334,8 @@ impl Scheduler {
                 thread.set_ready();
                 if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
                     self.ready_queue.push_back(thread_id);
+                    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+                    #[cfg(target_arch = "x86_64")]
                     log_serial_println!("unblock({}): Added to ready_queue", thread_id);
                 }
             }
@@ -360,18 +378,14 @@ impl Scheduler {
                 // the context is already saved and ready for signal delivery.
                 if let Some(ctx) = userspace_context {
                     thread.saved_userspace_context = Some(ctx);
+                    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
                         "Thread {} saving userspace context: RIP={:#x}",
                         current_id,
                         thread.saved_userspace_context.as_ref().unwrap().rip
                     );
-                    #[cfg(target_arch = "aarch64")]
-                    log_serial_println!(
-                        "Thread {} saving userspace context: ELR={:#x}",
-                        current_id,
-                        thread.saved_userspace_context.as_ref().unwrap().elr_el1
-                    );
+                    // ARM64: No logging - would cause deadlock
                 }
                 thread.state = ThreadState::BlockedOnSignal;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
@@ -379,6 +393,8 @@ impl Scheduler {
                 // because that would return to the pre-syscall location instead of
                 // letting the syscall complete and return properly.
                 thread.blocked_in_syscall = true;
+                // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+                #[cfg(target_arch = "x86_64")]
                 log_serial_println!("Thread {} blocked waiting for signal (blocked_in_syscall=true)", current_id);
             }
             // Remove from ready queue (shouldn't be there but make sure)
@@ -396,6 +412,8 @@ impl Scheduler {
     /// unblocked to ensure it gets scheduled promptly. This is critical for pause()
     /// to wake up in a timely manner when a signal arrives.
     pub fn unblock_for_signal(&mut self, thread_id: u64) {
+        // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+        #[cfg(target_arch = "x86_64")]
         log_serial_println!(
             "unblock_for_signal: Checking thread {} (current={:?}, ready_queue={:?})",
             thread_id,
@@ -403,6 +421,7 @@ impl Scheduler {
             self.ready_queue
         );
         if let Some(thread) = self.get_thread_mut(thread_id) {
+            #[cfg(target_arch = "x86_64")]
             log_serial_println!(
                 "unblock_for_signal: Thread {} state is {:?}, blocked_in_syscall={}",
                 thread_id,
@@ -416,12 +435,14 @@ impl Scheduler {
                 // blocked_in_syscall will be cleared when the syscall actually returns.
                 if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
                     self.ready_queue.push_back(thread_id);
+                    #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
                         "unblock_for_signal: Thread {} unblocked, added to ready_queue={:?}",
                         thread_id,
                         self.ready_queue
                     );
                 } else {
+                    #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
                         "unblock_for_signal: Thread {} already in queue or is idle",
                         thread_id
@@ -433,6 +454,7 @@ impl Scheduler {
                 // the next timer tick instead of waking up immediately.
                 set_need_resched();
             } else {
+                #[cfg(target_arch = "x86_64")]
                 log_serial_println!(
                     "unblock_for_signal: Thread {} not BlockedOnSignal, state={:?}",
                     thread_id,
@@ -440,6 +462,7 @@ impl Scheduler {
                 );
             }
         } else {
+            #[cfg(target_arch = "x86_64")]
             log_serial_println!("unblock_for_signal: Thread {} not found!", thread_id);
         }
     }
@@ -459,6 +482,8 @@ impl Scheduler {
                 // because that would return to the pre-syscall location instead of
                 // letting the syscall complete and return properly.
                 thread.blocked_in_syscall = true;
+                // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+                #[cfg(target_arch = "x86_64")]
                 log_serial_println!("Thread {} blocked waiting for child exit (blocked_in_syscall=true)", current_id);
             }
             // Remove from ready queue (shouldn't be there but make sure)
@@ -481,6 +506,8 @@ impl Scheduler {
                 thread.set_ready();
                 if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
                     self.ready_queue.push_back(thread_id);
+                    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+                    #[cfg(target_arch = "x86_64")]
                     log_serial_println!("Thread {} unblocked by child exit", thread_id);
                 }
                 // CRITICAL: Request reschedule so the unblocked thread can run promptly.
@@ -548,6 +575,8 @@ impl Scheduler {
 pub fn init(idle_thread: Box<Thread>) {
     let mut scheduler_lock = SCHEDULER.lock();
     *scheduler_lock = Some(Scheduler::new(idle_thread));
+    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+    #[cfg(target_arch = "x86_64")]
     log_serial_println!("Scheduler initialized");
 }
 
@@ -556,13 +585,17 @@ pub fn init(idle_thread: Box<Thread>) {
 pub fn init_with_current(current_thread: Box<Thread>) {
     let mut scheduler_lock = SCHEDULER.lock();
     let thread_id = current_thread.id();
-    
+
     // Create scheduler with current thread as both idle and current
     let mut scheduler = Scheduler::new(current_thread);
     scheduler.current_thread = Some(thread_id);
-    
+
     *scheduler_lock = Some(scheduler);
+    // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
+    #[cfg(target_arch = "x86_64")]
     log_serial_println!("Scheduler initialized with current thread {} as idle task", thread_id);
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = thread_id;
 }
 
 /// Add a thread to the scheduler

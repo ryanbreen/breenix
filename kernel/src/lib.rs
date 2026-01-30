@@ -69,6 +69,8 @@ pub mod graphics;
 pub mod shell;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
+// Lock-free tracing for critical paths (interrupt handlers, context switch, etc.)
+pub mod trace;
 // Parallel boot test framework
 #[cfg(feature = "boot_tests")]
 pub mod test_framework;
