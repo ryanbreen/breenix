@@ -47,6 +47,9 @@ CRITICAL_FILES=(
     "per_cpu.rs"
     "per_cpu_aarch64.rs"
     "arch_impl/aarch64/percpu.rs"
+
+    # Scheduler (called from context switch during timer interrupt)
+    "task/scheduler.rs"
 )
 
 # Prohibited patterns - these use locks or formatting which is forbidden

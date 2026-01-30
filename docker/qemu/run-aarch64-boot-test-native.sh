@@ -2,8 +2,9 @@
 # Native ARM64 boot test (runs QEMU directly on host)
 # Much faster than Docker version but only works on macOS ARM64
 #
-# NOTE: There is a known timing-related bug that causes some runs to hang.
-# The test will retry up to 3 times before failing.
+# The retry mechanism provides robustness for local testing against
+# transient host resource contention. If retries are frequently needed,
+# investigate for potential regressions.
 #
 # Usage: ./run-aarch64-boot-test-native.sh
 
@@ -110,8 +111,8 @@ echo "========================================="
 echo "ARM64 BOOT TEST: FAILED (after $MAX_RETRIES attempts)"
 echo "========================================="
 echo ""
-echo "NOTE: ARM64 boot has a known timing bug causing intermittent hangs."
-echo "The kernel is functional but may require multiple attempts to boot."
+echo "NOTE: If this test frequently requires retries or fails repeatedly,"
+echo "there may be a regression. Check recent changes to boot code."
 echo ""
 echo "Last output:"
 tail -10 /tmp/breenix_aarch64_boot_native/serial.txt 2>/dev/null || echo "(no output)"

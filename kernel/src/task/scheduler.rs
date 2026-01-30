@@ -871,6 +871,7 @@ pub fn switch_to_idle() {
             log::error!("Exception handler: Failed to get idle thread {} from scheduler!", idle_id);
         }
 
+        #[cfg(target_arch = "x86_64")]
         log::info!("Exception handler: Switched scheduler to idle thread {}", idle_id);
     });
 }
