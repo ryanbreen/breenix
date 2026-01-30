@@ -1,10 +1,10 @@
 #!/bin/bash
 # Breenix Interactive Runner
 # ===========================
-# Runs Breenix with a graphical display (VNC by default)
+# Runs Breenix with a graphical display
 #
 # Usage:
-#   ./run.sh              # ARM64 with VNC display (default)
+#   ./run.sh              # ARM64 with native cocoa display (default)
 #   ./run.sh --x86        # x86_64 with VNC display
 #   ./run.sh --headless   # ARM64 with serial output only
 #   ./run.sh --x86 --headless  # x86_64 with serial output only
@@ -13,8 +13,7 @@
 #   ARM64:  Native window (cocoa) - no VNC needed
 #   x86_64: VNC at localhost:5900
 #
-# NOTE: x86_64 QEMU runs inside Docker for system stability (Hypervisor.framework issues).
-# ARM64 QEMU runs natively (no Hypervisor.framework, better performance).
+# Both architectures run QEMU natively on the host.
 
 set -e
 
@@ -69,31 +68,19 @@ done
 
 # Route to architecture-specific runner
 if [ "$ARCH" = "arm64" ]; then
-    # ARM64 path
+    # ARM64 path - direct kernel boot
     KERNEL="$BREENIX_ROOT/target/aarch64-breenix/release/kernel-aarch64"
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
-    IMAGE_NAME="breenix-qemu-aarch64"
-    DOCKERFILE="$BREENIX_ROOT/docker/qemu/Dockerfile.aarch64"
-    VNC_PORT=5901
 
     # Build command for ARM64
     BUILD_CMD="cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
-
-    # QEMU command for ARM64
-    QEMU_CMD="qemu-system-aarch64"
-    QEMU_MACHINE="-M virt -cpu cortex-a72"
 else
-    # x86_64 path - uses UEFI boot, not direct kernel
+    # x86_64 path - uses UEFI boot
     EXT2_DISK="$BREENIX_ROOT/target/ext2.img"
-    IMAGE_NAME="breenix-qemu"
-    DOCKERFILE="$BREENIX_ROOT/docker/qemu/Dockerfile"
     VNC_PORT=5900
 
     # Build command for x86_64
     BUILD_CMD="cargo build --release --features testing,external_test_bins,interactive --bin qemu-uefi"
-
-    # QEMU command for x86_64
-    QEMU_CMD="qemu-system-x86_64"
 
     # x86_64 needs to find UEFI image
     UEFI_IMG=$(ls -t "$BREENIX_ROOT/target/release/build/breenix-"*/out/breenix-uefi.img 2>/dev/null | head -1)
@@ -131,39 +118,19 @@ fi
 
 echo "Kernel: $KERNEL"
 
-# Docker setup only needed for x86_64
-if [ "$ARCH" = "x86_64" ]; then
-    # Check for Docker image
-    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-        echo ""
-        echo "Docker image '$IMAGE_NAME' not found."
-        echo "Building..."
-        docker build -t "$IMAGE_NAME" -f "$DOCKERFILE" "$(dirname "$DOCKERFILE")"
-    fi
-
-    # Kill any existing containers
-    EXISTING=$(docker ps -q --filter ancestor="$IMAGE_NAME" 2>/dev/null)
-    if [ -n "$EXISTING" ]; then
-        echo "Stopping existing containers..."
-        docker kill $EXISTING 2>/dev/null || true
-    fi
-fi
-
 # Create output directory
 OUTPUT_DIR=$(mktemp -d)
 echo "Serial output: $OUTPUT_DIR/serial.txt"
 
 # Add ext2 disk if it exists
 DISK_OPTS=""
-EXT2_VOLUME=""
 if [ -f "$EXT2_DISK" ]; then
     echo "Disk image: $EXT2_DISK"
-    EXT2_VOLUME="-v $EXT2_DISK:/breenix/ext2.img:ro"
     if [ "$ARCH" = "arm64" ]; then
-        DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img"
+        DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,readonly=on,file=$EXT2_DISK"
     else
         # x86_64 uses virtio-blk-pci for UEFI compatibility
-        DISK_OPTS="-drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off"
+        DISK_OPTS="-drive if=none,id=ext2disk,format=raw,readonly=on,file=$EXT2_DISK -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off"
     fi
 else
     echo "Disk image: (none - shell commands will be limited)"
@@ -172,23 +139,19 @@ else
     fi
 fi
 
-# Build display and port options based on architecture and headless mode
+# Build display options based on architecture and headless mode
 if [ "$ARCH" = "arm64" ]; then
     if [ "$HEADLESS" = true ]; then
         DISPLAY_OPTS="-display none"
-        PORT_OPTS=""
     else
-        DISPLAY_OPTS="-device virtio-gpu-device -vnc :0 -device virtio-keyboard-device"
-        PORT_OPTS="-p ${VNC_PORT}:5900"
+        DISPLAY_OPTS="-display cocoa -device virtio-gpu-device -device virtio-keyboard-device"
     fi
 else
     # x86_64 uses virtio-vga
     if [ "$HEADLESS" = true ]; then
         DISPLAY_OPTS="-display none"
-        PORT_OPTS=""
     else
         DISPLAY_OPTS="-device virtio-vga -vnc :0 -k en-us"
-        PORT_OPTS="-p ${VNC_PORT}:5900"
     fi
 fi
 
@@ -210,67 +173,47 @@ fi
 
 # Build the full QEMU command based on architecture
 if [ "$ARCH" = "arm64" ]; then
-    # ARM64 QEMU invocation - NATIVE (no Docker needed, no Hypervisor.framework issues)
-    if [ "$HEADLESS" = true ]; then
-        ARM64_DISPLAY="-display none"
-    else
-        ARM64_DISPLAY="-display cocoa -device virtio-gpu-device -device virtio-keyboard-device"
-    fi
-
-    ARM64_DISK=""
-    if [ -f "$EXT2_DISK" ]; then
-        ARM64_DISK="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,readonly=on,file=$EXT2_DISK"
-    fi
-
+    # ARM64 QEMU invocation (native)
     qemu-system-aarch64 \
         -M virt -cpu cortex-a72 \
         -m 512M \
         -kernel "$KERNEL" \
-        $ARM64_DISPLAY \
-        $ARM64_DISK \
+        $DISPLAY_OPTS \
+        $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
         -netdev user,id=net0 \
         -serial mon:stdio \
         -no-reboot \
         &
 else
-    # x86_64 QEMU invocation (UEFI boot)
-    # Copy OVMF firmware to output dir
+    # x86_64 QEMU invocation (UEFI boot, native)
+    # Copy OVMF firmware to output dir (pflash needs writable files)
     cp "$BREENIX_ROOT/target/ovmf/x64/code.fd" "$OUTPUT_DIR/OVMF_CODE.fd"
     cp "$BREENIX_ROOT/target/ovmf/x64/vars.fd" "$OUTPUT_DIR/OVMF_VARS.fd"
 
-    # Build test binaries volume if it exists
+    # Build test binaries options if it exists
     TEST_BIN_OPTS=""
-    TEST_BIN_VOLUME=""
     if [ -f "$BREENIX_ROOT/target/test_binaries.img" ]; then
-        TEST_BIN_VOLUME="-v $BREENIX_ROOT/target/test_binaries.img:/breenix/test_binaries.img:ro"
-        TEST_BIN_OPTS="-drive if=none,id=testdisk,format=raw,readonly=on,file=/breenix/test_binaries.img -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off"
+        TEST_BIN_OPTS="-drive if=none,id=testdisk,format=raw,readonly=on,file=$BREENIX_ROOT/target/test_binaries.img -device virtio-blk-pci,drive=testdisk,disable-modern=on,disable-legacy=off"
     fi
 
-    docker run --rm -it \
-        $PORT_OPTS \
-        -v "$UEFI_IMG:/breenix/breenix-uefi.img:ro" \
-        -v "$OUTPUT_DIR:/output" \
-        $EXT2_VOLUME \
-        $TEST_BIN_VOLUME \
-        "$IMAGE_NAME" \
-        qemu-system-x86_64 \
-            -pflash /output/OVMF_CODE.fd \
-            -pflash /output/OVMF_VARS.fd \
-            -drive if=none,id=hd,format=raw,media=disk,readonly=on,file=/breenix/breenix-uefi.img \
-            -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
-            $TEST_BIN_OPTS \
-            $DISK_OPTS \
-            -machine pc,accel=tcg \
-            -cpu qemu64 \
-            -smp 1 \
-            -m 512 \
-            $DISPLAY_OPTS \
-            -no-reboot \
-            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-            -netdev user,id=net0 \
-            -device e1000,netdev=net0,mac=52:54:00:12:34:56 \
-            -serial mon:stdio \
+    qemu-system-x86_64 \
+        -pflash "$OUTPUT_DIR/OVMF_CODE.fd" \
+        -pflash "$OUTPUT_DIR/OVMF_VARS.fd" \
+        -drive if=none,id=hd,format=raw,media=disk,readonly=on,file="$UEFI_IMG" \
+        -device virtio-blk-pci,drive=hd,bootindex=0,disable-modern=on,disable-legacy=off \
+        $TEST_BIN_OPTS \
+        $DISK_OPTS \
+        -machine pc,accel=tcg \
+        -cpu qemu64 \
+        -smp 1 \
+        -m 512 \
+        $DISPLAY_OPTS \
+        -no-reboot \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+        -netdev user,id=net0 \
+        -device e1000,netdev=net0,mac=52:54:00:12:34:56 \
+        -serial mon:stdio \
         &
 fi
 
