@@ -367,7 +367,12 @@ impl ProcessManager {
         log::debug!("ARM64: Mapping user stack pages into process page table...");
         crate::serial_println!("manager.create_process [ARM64]: Mapping user stack into process page table");
         if let Some(ref mut page_table) = process.page_table {
-            let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
+            // Use checked_sub to prevent integer underflow if stack_top is too small
+            let stack_bottom_value = stack_top
+                .as_u64()
+                .checked_sub(USER_STACK_SIZE as u64)
+                .ok_or("Stack address underflow - stack_top too small")?;
+            let stack_bottom = VirtAddr::new(stack_bottom_value);
             crate::serial_println!(
                 "manager.create_process [ARM64]: map_user_stack_to_process stack_bottom={:#x} stack_top={:#x} size={}",
                 stack_bottom.as_u64(),

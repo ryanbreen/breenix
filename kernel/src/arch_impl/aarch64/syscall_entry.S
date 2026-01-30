@@ -183,7 +183,20 @@ syscall_entry_from_el0:
     bl check_need_resched_and_switch_aarch64
 
     /*
-     * Restore all registers from exception frame.
+     * Restore registers from exception frame.
+     *
+     * CRITICAL: Do TTBR0 switch BEFORE restoring x0/x1 and deallocating frame.
+     * If a context switch occurred, SP/TTBR0 must be consistent. By doing the
+     * TTBR0 switch while the frame is still valid, we avoid the race condition
+     * where x0/x1 would be saved to a stack address that becomes invalid after
+     * the TTBR0 switch.
+     *
+     * Order:
+     * 1. Restore system registers (SPSR, ELR)
+     * 2. Restore x2-x30 (skip x0/x1 for now)
+     * 3. Do TTBR0 switch using x0/x1 as scratch (they're not restored yet)
+     * 4. Restore x0/x1 from frame (still valid - frame not deallocated)
+     * 5. Deallocate frame and ERET
      */
 
     /* Restore SPSR_EL1 first */
@@ -236,33 +249,25 @@ syscall_entry_from_el0:
     /* Restore x4, x5 */
     ldp x4, x5, [sp, #32]
 
-    /* Restore x2, x3 */
+    /* Restore x2, x3 - skip x0/x1 for now */
     ldp x2, x3, [sp, #16]
-
-    /* Restore x0, x1 last (x0 = return value) */
-    ldp x0, x1, [sp, #0]
-
-    /* Deallocate frame */
-    add sp, sp, #272
 
     /*
      * Check if TTBR0 switch is needed (for context switch).
      * Read next_cr3 from per-CPU data at offset 64.
+     * Use x0/x1 as scratch since they haven't been restored yet.
      */
-    mrs x9, tpidr_el1
-    cbz x9, .Lno_ttbr_switch
+    mrs x0, tpidr_el1
+    cbz x0, .Lno_ttbr_switch
 
-    /* Temporarily save x0-x1 (syscall return value and arg) */
-    stp x0, x1, [sp, #-16]!
-
-    ldr x10, [x9, #64]          /* next_cr3 offset = 64 */
-    cbz x10, .Lrestore_saved_ttbr
+    ldr x1, [x0, #64]           /* next_cr3 offset = 64 */
+    cbz x1, .Lrestore_saved_ttbr
 
     /* Clear next_cr3 BEFORE switching (avoid accessing after switch) */
-    str xzr, [x9, #64]
+    str xzr, [x0, #64]
 
     /* Perform TTBR0 switch with proper barriers */
-    msr ttbr0_el1, x10
+    msr ttbr0_el1, x1
     isb
     tlbi vmalle1is              /* Invalidate TLB */
     dsb ish
@@ -271,16 +276,19 @@ syscall_entry_from_el0:
 
 .Lrestore_saved_ttbr:
     /* No context switch - restore original process TTBR0 */
-    ldr x10, [x9, #80]          /* saved_process_cr3 offset = 80 */
-    cbz x10, .Lafter_ttbr_check
-    msr ttbr0_el1, x10
+    ldr x1, [x0, #80]           /* saved_process_cr3 offset = 80 */
+    cbz x1, .Lafter_ttbr_check
+    msr ttbr0_el1, x1
     isb
 
 .Lafter_ttbr_check:
-    /* Restore x0, x1 */
-    ldp x0, x1, [sp], #16
-
 .Lno_ttbr_switch:
+
+    /* Now restore x0/x1 from the frame (frame still valid on kernel stack) */
+    ldp x0, x1, [sp, #0]
+
+    /* Deallocate frame */
+    add sp, sp, #272
     /*
      * Clear PREEMPT_ACTIVE now that registers are restored.
      * Without this, PREEMPT_ACTIVE persists and blocks scheduling.
