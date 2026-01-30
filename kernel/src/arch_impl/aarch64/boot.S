@@ -444,11 +444,13 @@ irq_handler:
     bl check_need_resched_and_switch_arm64
 
     // Restore registers from exception frame (may have been modified by Rust for new thread)
-    ldp x0, x1, [sp, #240]
+    // First restore ELR and SPSR
+    ldp x0, x1, [sp, #240]   // x0 = frame.x30, x1 = frame.elr
     msr elr_el1, x1
-    ldr x1, [sp, #256]
+    ldr x1, [sp, #256]       // x1 = frame.spsr
     msr spsr_el1, x1
-    ldp x0, x1, [sp, #0]
+
+    // Restore x2-x30 from frame (x0, x1 still available as temporaries)
     ldp x2, x3, [sp, #16]
     ldp x4, x5, [sp, #32]
     ldp x6, x7, [sp, #48]

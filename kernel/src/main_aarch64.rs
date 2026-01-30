@@ -135,6 +135,20 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     kernel::task::scheduler::spawn_as_current(alloc::boxed::Box::new(main_thread_clone));
     raw_char(b'I'); // Scheduler registered
 
+    // CRITICAL: Reset the idle thread's (thread 0) saved context to point to idle_loop_arm64.
+    // Without this, timer interrupts during boot may have saved thread 0's ELR pointing to
+    // somewhere in kernel_main. When we later switch back to thread 0, it would resume
+    // kernel_main and potentially create multiple init_shell processes.
+    // By resetting elr_el1 to idle_loop_arm64, we ensure thread 0 always goes to the idle loop.
+    kernel::task::scheduler::with_thread_mut(0, |idle_thread| {
+        // Get the address of the idle loop function
+        let idle_loop_addr = kernel::arch_impl::aarch64::context_switch::idle_loop_arm64 as *const () as u64;
+        idle_thread.context.elr_el1 = idle_loop_addr;
+        // Also set SPSR for EL1h with interrupts enabled
+        idle_thread.context.spsr_el1 = 0x5; // EL1h, DAIF clear
+        serial_println!("[boot] Reset idle thread context to idle_loop_arm64 at {:#x}", idle_loop_addr);
+    });
+
     // Set per-CPU pointers to the thread in the scheduler
     kernel::task::scheduler::with_thread_mut(main_thread_id, |thread| {
         let thread_ptr = thread as *mut kernel::task::thread::Thread;
@@ -324,6 +338,10 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing timer interrupt...");
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
+
+    // TODO: ARM64 render queue for async framebuffer rendering
+    // The render_queue_aarch64 and render_task_aarch64 modules need to be created
+    // to enable graphical terminal echo via a dedicated render thread.
 
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
