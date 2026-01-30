@@ -67,3 +67,4 @@ coverage/
 ovmf/
 
 **/target/*
+scripts/__pycache__
