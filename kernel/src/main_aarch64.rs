@@ -193,7 +193,9 @@ use kernel::arch_impl::traits::{CpuOps, InterruptController};
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::arm64_fb;
 #[cfg(target_arch = "aarch64")]
-use kernel::graphics::primitives::{draw_vline, fill_rect, Canvas, Color, Rect};
+use kernel::graphics::particles;
+#[cfg(target_arch = "aarch64")]
+use kernel::graphics::primitives::{draw_vline, fill_rect, Color, Rect};
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::terminal_manager;
 #[cfg(target_arch = "aarch64")]
@@ -339,10 +341,6 @@ pub extern "C" fn kernel_main() -> ! {
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
 
-    // TODO: ARM64 render queue for async framebuffer rendering
-    // The render_queue_aarch64 and render_task_aarch64 modules need to be created
-    // to enable graphical terminal echo via a dedicated render thread.
-
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
     {
@@ -369,6 +367,22 @@ pub extern "C" fn kernel_main() -> ! {
         const PL011_BASE: u64 = 0x0900_0000;
         let addr = (HHDM_BASE + PL011_BASE) as *mut u32;
         unsafe { core::ptr::write_volatile(addr, c as u32); }
+    }
+
+    // Spawn particle animation thread (if graphics is available and not running boot tests)
+    // This MUST be done BEFORE userspace loading because run_userspace_from_ext2 never returns
+    // DISABLED: Investigating EC=0x0 crash during fill_rect memcpy
+    #[cfg(not(feature = "boot_tests"))]
+    #[cfg(feature = "particle_animation")]  // Disabled by default - crashes with EC=0x0
+    {
+        let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER.get().is_some();
+        if has_graphics {
+            serial_println!("[graphics] Starting particle animation...");
+            match kernel::task::spawn::spawn_thread("particles", particles::animation_thread_entry) {
+                Ok(tid) => serial_println!("[graphics] Particle animation started (tid={})", tid),
+                Err(e) => serial_println!("[graphics] Failed to start animation: {}", e),
+            }
+        }
     }
 
     boot_raw_char(b'1'); // Before if statement
@@ -459,8 +473,8 @@ pub extern "C" fn kernel_main() -> ! {
             }
         }
 
-        // Read any bytes from stdin buffer (populated by UART interrupt handler)
-        // This handles serial input for the kernel shell.
+        // Read any bytes from stdin buffer (populated by UART interrupt handler
+        // or VirtIO keyboard via timer interrupt polling)
         let mut stdin_buf = [0u8; 16];
         if let Ok(n) = kernel::ipc::stdin::read_bytes(&mut stdin_buf) {
             for i in 0..n {
@@ -763,7 +777,7 @@ fn init_graphics() -> Result<(), &'static str> {
     let right_x = divider_x + divider_width;
     let right_width = width.saturating_sub(right_x);
 
-    // Get the framebuffer and draw
+    // Get the framebuffer and draw initial frame
     if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
         let mut fb_guard = fb.lock();
 
@@ -776,11 +790,8 @@ fn init_graphics() -> Result<(), &'static str> {
                 width: width as u32,
                 height: height as u32,
             },
-            Color::rgb(20, 30, 50),
+            Color::rgb(15, 20, 35),
         );
-
-        // Draw graphics demo on left pane
-        draw_graphics_demo(&mut *fb_guard, 0, 0, left_width, height);
 
         // Draw vertical divider
         let divider_color = Color::rgb(60, 80, 100);
@@ -791,6 +802,17 @@ fn init_graphics() -> Result<(), &'static str> {
         // Flush to display
         fb_guard.flush();
     }
+
+    // Initialize particle system for left pane (animation will start later)
+    // Leave a small margin from edges
+    let margin = 10;
+    particles::start_animation(
+        margin as i32,
+        margin as i32,
+        (left_width - margin) as i32,
+        (height - margin) as i32,
+    );
+    serial_println!("[graphics] Particle system initialized");
 
     // Initialize terminal manager for the right side
     terminal_manager::init_terminal_manager(right_x, 0, right_width, height);
@@ -809,123 +831,6 @@ fn init_graphics() -> Result<(), &'static str> {
 
     serial_println!("[graphics] Split-screen terminal UI initialized");
     Ok(())
-}
-
-/// Draw a graphics demo on the left pane
-#[cfg(target_arch = "aarch64")]
-fn draw_graphics_demo(canvas: &mut impl Canvas, x: usize, y: usize, width: usize, height: usize) {
-    let padding = 20;
-
-    // Title area
-    let title_y = y + padding;
-
-    // Draw title background
-    fill_rect(
-        canvas,
-        Rect {
-            x: (x + padding) as i32,
-            y: title_y as i32,
-            width: (width - padding * 2) as u32,
-            height: 40,
-        },
-        Color::rgb(40, 60, 80),
-    );
-
-    // Draw colored rectangles as demo
-    let box_width = 120;
-    let box_height = 80;
-    let box_y = y + 100;
-    let box_spacing = 20;
-
-    // Red box
-    fill_rect(
-        canvas,
-        Rect {
-            x: (x + padding) as i32,
-            y: box_y as i32,
-            width: box_width,
-            height: box_height,
-        },
-        Color::RED,
-    );
-
-    // Green box
-    fill_rect(
-        canvas,
-        Rect {
-            x: (x + padding + box_width as usize + box_spacing) as i32,
-            y: box_y as i32,
-            width: box_width,
-            height: box_height,
-        },
-        Color::GREEN,
-    );
-
-    // Blue box
-    fill_rect(
-        canvas,
-        Rect {
-            x: (x + padding) as i32,
-            y: (box_y + box_height as usize + box_spacing) as i32,
-            width: box_width,
-            height: box_height,
-        },
-        Color::BLUE,
-    );
-
-    // Yellow box
-    fill_rect(
-        canvas,
-        Rect {
-            x: (x + padding + box_width as usize + box_spacing) as i32,
-            y: (box_y + box_height as usize + box_spacing) as i32,
-            width: box_width,
-            height: box_height,
-        },
-        Color::rgb(255, 255, 0), // Yellow
-    );
-
-    // Draw some gradient bars at the bottom
-    let bar_y = y + height - 100;
-    let bar_height = 20;
-    for i in 0..width.saturating_sub(padding * 2) {
-        let intensity = ((i * 255) / (width - padding * 2)) as u8;
-        let color = Color::rgb(intensity, intensity, intensity);
-        fill_rect(
-            canvas,
-            Rect {
-                x: (x + padding + i) as i32,
-                y: bar_y as i32,
-                width: 1,
-                height: bar_height,
-            },
-            color,
-        );
-    }
-
-    // Draw color bars
-    let colors = [
-        Color::RED,
-        Color::GREEN,
-        Color::BLUE,
-        Color::rgb(0, 255, 255),   // Cyan
-        Color::rgb(255, 0, 255),   // Magenta
-        Color::rgb(255, 255, 0),   // Yellow
-    ];
-    let color_bar_y = bar_y + bar_height as usize + 10;
-    let color_bar_width = (width - padding * 2) / colors.len();
-    for (i, &color) in colors.iter().enumerate() {
-        fill_rect(
-            canvas,
-            Rect {
-                x: (x + padding + i * color_bar_width) as i32,
-                y: color_bar_y as i32,
-                width: color_bar_width as u32,
-                height: bar_height,
-            },
-            color,
-        );
-    }
 }
 
 /// Panic handler

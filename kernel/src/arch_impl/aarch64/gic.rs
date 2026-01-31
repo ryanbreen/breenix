@@ -244,6 +244,19 @@ impl InterruptController for Gicv2 {
         let reg_index = irq / IRQS_PER_ENABLE_REG;
         let bit = irq % IRQS_PER_ENABLE_REG;
 
+        // For SPIs (32+), ensure CPU target is set to CPU 0
+        if irq >= 32 {
+            let target_reg = irq / 4;
+            let target_byte = irq % 4;
+            let current = gicd_read(GICD_ITARGETSR + (target_reg as usize * 4));
+            let mask = 0xFFu32 << (target_byte * 8);
+            let target_val = 0x01u32 << (target_byte * 8); // CPU 0
+            gicd_write(
+                GICD_ITARGETSR + (target_reg as usize * 4),
+                (current & !mask) | target_val,
+            );
+        }
+
         // Write 1 to ISENABLER to enable (writes of 0 have no effect)
         gicd_write(GICD_ISENABLER + (reg_index as usize * 4), 1 << bit);
     }

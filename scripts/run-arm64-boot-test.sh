@@ -89,6 +89,8 @@ if [ "$TEST_MODE" = "network" ]; then
 fi
 
 # Start QEMU in background
+# Always include VirtIO GPU and keyboard so the kernel's MMIO enumeration
+# discovers them (needed for interactive shell and device driver tests)
 qemu-system-aarch64 \
     -M virt \
     -cpu cortex-a72 \
@@ -96,6 +98,8 @@ qemu-system-aarch64 \
     -nographic \
     -no-reboot \
     -kernel "$KERNEL_PATH" \
+    -device virtio-gpu-device \
+    -device virtio-keyboard-device \
     $DISK_OPTS \
     $NET_OPTS \
     -serial "file:$SERIAL_OUTPUT" &

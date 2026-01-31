@@ -341,48 +341,71 @@ impl ProcessManager {
         // Update memory usage
         process.memory_usage.code_size = elf_data.len();
 
-        // Allocate a stack for the process
+        // Allocate physical frames for the stack
+        // On ARM64, we need to:
+        // 1. Allocate physical memory for the stack
+        // 2. Map it at USERSPACE addresses (not kernel HHDM addresses)
+        // 3. Use the userspace addresses for the thread's SP
         use crate::memory::stack;
+        use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
 
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
-        let user_stack =
+
+        // allocate_stack_with_privilege returns HHDM addresses (kernel-accessible)
+        // We need to extract the physical frames and map them to userspace addresses
+        let kernel_stack =
             stack::allocate_stack_with_privilege(USER_STACK_SIZE, StackPrivilege::User)
                 .map_err(|_| {
                     crate::serial_println!("manager.create_process [ARM64]: Stack allocation failed");
                     "Failed to allocate user stack"
                 })?;
+
+        // The kernel_stack.top() is an HHDM address - extract physical address
+        let kernel_stack_top = kernel_stack.top().as_u64();
+        let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+        let stack_phys_top = kernel_stack_top - hhdm_base;
+        let stack_phys_bottom = stack_phys_top - USER_STACK_SIZE as u64;
+
         crate::serial_println!(
-            "manager.create_process [ARM64]: User stack allocated at {:#x}",
-            user_stack.top().as_u64()
+            "manager.create_process [ARM64]: Stack physical range {:#x}-{:#x}",
+            stack_phys_bottom,
+            stack_phys_top
         );
 
-        let stack_top = user_stack.top();
+        // Calculate userspace stack addresses
+        // Stack grows down, so stack_top is the highest address
+        let user_stack_top = USER_STACK_REGION_START;
+        let user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
+
+        crate::serial_println!(
+            "manager.create_process [ARM64]: User stack will be at {:#x}-{:#x}",
+            user_stack_bottom,
+            user_stack_top
+        );
+
         process.memory_usage.stack_size = USER_STACK_SIZE;
 
-        // Store the stack in the process
-        process.stack = Some(Box::new(user_stack));
+        // Store the kernel-accessible stack (for potential kernel access later)
+        process.stack = Some(Box::new(kernel_stack));
 
-        // Map the user stack pages into the process page table
+        // Map the physical stack frames into the process page table at USERSPACE addresses
         log::debug!("ARM64: Mapping user stack pages into process page table...");
         crate::serial_println!("manager.create_process [ARM64]: Mapping user stack into process page table");
         if let Some(ref mut page_table) = process.page_table {
-            // Use checked_sub to prevent integer underflow if stack_top is too small
-            let stack_bottom_value = stack_top
-                .as_u64()
-                .checked_sub(USER_STACK_SIZE as u64)
-                .ok_or("Stack address underflow - stack_top too small")?;
-            let stack_bottom = VirtAddr::new(stack_bottom_value);
             crate::serial_println!(
-                "manager.create_process [ARM64]: map_user_stack_to_process stack_bottom={:#x} stack_top={:#x} size={}",
-                stack_bottom.as_u64(),
-                stack_top.as_u64(),
-                USER_STACK_SIZE
+                "manager.create_process [ARM64]: map_user_stack_to_process user_bottom={:#x} user_top={:#x} phys_bottom={:#x}",
+                user_stack_bottom,
+                user_stack_top,
+                stack_phys_bottom
             );
-            crate::memory::process_memory::map_user_stack_to_process(
+
+            // Map physical frames to userspace addresses
+            crate::memory::process_memory::map_user_stack_to_process_with_phys(
                 page_table,
-                stack_bottom,
-                stack_top,
+                VirtAddr::new(user_stack_bottom),
+                VirtAddr::new(user_stack_top),
+                stack_phys_bottom,
             )
             .map_err(|e| {
                 crate::serial_println!(
@@ -398,9 +421,10 @@ impl ProcessManager {
             return Err("Process page table not available for stack mapping");
         }
 
-        // Create the main thread
+        // Create the main thread with USERSPACE stack top
         crate::serial_println!("manager.create_process [ARM64]: Creating main thread");
-        let thread = self.create_main_thread(&mut process, stack_top)?;
+        let user_stack_top_vaddr = VirtAddr::new(user_stack_top);
+        let thread = self.create_main_thread(&mut process, user_stack_top_vaddr)?;
         crate::serial_println!("manager.create_process [ARM64]: Main thread created");
         process.set_main_thread(thread);
         crate::serial_println!("manager.create_process [ARM64]: Main thread set on process");

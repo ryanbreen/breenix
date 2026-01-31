@@ -206,9 +206,14 @@ mod aarch64 {
     use super::VirtAddr;
 
     /// ARM64 kernel stack base (in high-half direct map)
-    /// Physical range: 0x5100_0000 .. 0x5200_0000 (16MB for kernel stacks)
-    const ARM64_KERNEL_STACK_PHYS_BASE: u64 = 0x5100_0000;
-    const ARM64_KERNEL_STACK_PHYS_END: u64 = 0x5200_0000;
+    /// Physical range: 0x5200_0000 .. 0x5400_0000 (32MB for kernel stacks)
+    ///
+    /// IMPORTANT: This must be AFTER the heap region to avoid collision!
+    /// - Heap: 0x5000_0000 to 0x5200_0000 (32MB)
+    /// - Kernel stacks: 0x5200_0000 to 0x5400_0000 (32MB)
+    /// - RAM ends at 0x6000_0000 (512MB starting at 0x4000_0000)
+    const ARM64_KERNEL_STACK_PHYS_BASE: u64 = 0x5200_0000;
+    const ARM64_KERNEL_STACK_PHYS_END: u64 = 0x5400_0000;
     const ARM64_KERNEL_STACK_BASE: u64 =
         crate::arch_impl::aarch64::constants::HHDM_BASE + ARM64_KERNEL_STACK_PHYS_BASE;
     const ARM64_KERNEL_STACK_END: u64 =

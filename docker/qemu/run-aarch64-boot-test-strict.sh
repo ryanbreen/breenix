@@ -45,18 +45,21 @@ run_single_test() {
     mkdir -p "$OUTPUT_DIR"
 
     # Run QEMU with 20s timeout (shorter since we expect consistent success)
+    # Always include GPU and keyboard so kernel VirtIO enumeration finds them
     timeout 20 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
         -kernel "$KERNEL" \
         -display none -no-reboot \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,readonly=on,file="$EXT2_DISK" \
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
 
-    # Wait for kernel output (15s max, checking every 1.5s)
+    # Wait for kernel output (18s max, checking every 1.5s)
     local BOOT_COMPLETE=false
-    for i in $(seq 1 10); do
+    for i in $(seq 1 12); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
             if grep -qE "(breenix>|Welcome to Breenix|Interactive Shell)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 BOOT_COMPLETE=true

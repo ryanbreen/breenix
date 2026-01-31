@@ -217,8 +217,6 @@ fn poll_keyboard_to_stdin() {
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = input_mmio::keycode_to_char(keycode, shift) {
-                    // Debug marker: VirtIO key event -> stdin
-                    raw_serial_str(b"[VIRTIO_KEY]");
                     // Push to stdin buffer so userspace can read it
                     crate::ipc::stdin::push_byte_from_irq(c as u8);
                 }

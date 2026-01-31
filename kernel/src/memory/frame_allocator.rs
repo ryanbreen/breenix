@@ -151,17 +151,42 @@ impl BootInfoFrameAllocator {
 
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        let current = NEXT_FREE_FRAME.fetch_add(1, Ordering::SeqCst);
-        log::trace!("Frame allocator: Attempting to allocate frame #{}", current);
-        let frame = Self::get_usable_frame(current);
-        if let Some(f) = frame {
-            log::trace!(
-                "Frame allocator: Allocated frame {:#x} (allocation #{})",
-                f.start_address().as_u64(),
-                current
-            );
+        // Use compare-exchange loop to avoid wasting frame slots on failure
+        loop {
+            let current = NEXT_FREE_FRAME.load(Ordering::SeqCst);
+            log::trace!("Frame allocator: Attempting to allocate frame #{}", current);
+
+            // Try to get the frame at this index
+            let frame = Self::get_usable_frame(current);
+            if frame.is_none() {
+                // No more frames available - don't increment counter
+                return None;
+            }
+
+            // Try to claim this frame atomically
+            match NEXT_FREE_FRAME.compare_exchange(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    // Successfully claimed the frame
+                    if let Some(f) = &frame {
+                        log::trace!(
+                            "Frame allocator: Allocated frame {:#x} (allocation #{})",
+                            f.start_address().as_u64(),
+                            current
+                        );
+                    }
+                    return frame;
+                }
+                Err(_) => {
+                    // Another thread got there first, retry
+                    continue;
+                }
+            }
         }
-        frame
     }
 }
 
@@ -292,8 +317,11 @@ pub fn allocate_frame() -> Option<PhysFrame> {
         return None;
     }
 
-    // First, try to reuse a frame from the free list
+    // ARM64: Skip free list reuse for now - investigating potential corruption
+    // The free list Vec allocation during concurrent access may be causing issues
+    #[cfg(not(target_arch = "aarch64"))]
     {
+        // First, try to reuse a frame from the free list
         if let Some(mut free_list) = FREE_FRAMES.try_lock() {
             if let Some(frame) = free_list.pop() {
                 log::trace!(

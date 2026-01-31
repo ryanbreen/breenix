@@ -8,6 +8,8 @@ pub mod arm64_fb;
 pub mod demo;
 pub mod double_buffer;
 pub mod font;
+#[cfg(target_arch = "aarch64")]
+pub mod particles;
 pub mod primitives;
 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 pub mod render_queue;

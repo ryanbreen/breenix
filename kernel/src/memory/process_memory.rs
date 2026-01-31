@@ -2204,3 +2204,80 @@ pub fn map_user_stack_to_process(
     );
     Ok(())
 }
+
+/// Map user stack to process page table using known physical addresses (ARM64).
+///
+/// This variant takes the physical address of the stack bottom and maps
+/// the physical frames to userspace virtual addresses. This is needed on ARM64
+/// where the kernel allocates stack frames via HHDM but they need to be
+/// accessible at userspace addresses in TTBR0.
+///
+/// # Arguments
+/// * `process_page_table` - The process's page table to map into
+/// * `user_stack_bottom` - Userspace virtual address for stack bottom
+/// * `user_stack_top` - Userspace virtual address for stack top (SP points here)
+/// * `phys_bottom` - Physical address of the stack bottom
+#[cfg(target_arch = "aarch64")]
+pub fn map_user_stack_to_process_with_phys(
+    process_page_table: &mut ProcessPageTable,
+    user_stack_bottom: VirtAddr,
+    user_stack_top: VirtAddr,
+    phys_bottom: u64,
+) -> Result<(), &'static str> {
+    use crate::memory::arch_stub::{Page, PageTableFlags, PhysAddr, PhysFrame, Size4KiB};
+
+    let stack_size = user_stack_top.as_u64() - user_stack_bottom.as_u64();
+    let num_pages = stack_size / 4096;
+
+    crate::serial_println!(
+        "map_user_stack_to_process_with_phys: user {:#x}-{:#x}, phys {:#x}, {} pages",
+        user_stack_bottom.as_u64(),
+        user_stack_top.as_u64(),
+        phys_bottom,
+        num_pages
+    );
+
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE;
+
+    for i in 0..num_pages {
+        let page_offset = i * 4096;
+        let user_vaddr = VirtAddr::new(user_stack_bottom.as_u64() + page_offset);
+        let phys_addr = PhysAddr::new(phys_bottom + page_offset);
+        let page = Page::<Size4KiB>::containing_address(user_vaddr);
+        let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
+
+        crate::serial_println!(
+            "  page {}: user {:#x} -> phys {:#x}",
+            i,
+            user_vaddr.as_u64(),
+            phys_addr.as_u64()
+        );
+
+        match process_page_table.map_page(page, frame, flags) {
+            Ok(()) => {
+                log::trace!(
+                    "Mapped user stack page {:#x} -> frame {:#x}",
+                    user_vaddr.as_u64(),
+                    phys_addr.as_u64()
+                );
+            }
+            Err(e) => {
+                crate::serial_println!(
+                    "  FAILED to map page {:#x} -> {:#x}: {}",
+                    user_vaddr.as_u64(),
+                    phys_addr.as_u64(),
+                    e
+                );
+                return Err("Failed to map user stack page");
+            }
+        }
+    }
+
+    crate::serial_println!(
+        "map_user_stack_to_process_with_phys: mapped {} pages successfully",
+        num_pages
+    );
+    Ok(())
+}

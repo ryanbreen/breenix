@@ -316,7 +316,14 @@ pub extern "C" fn handle_irq() {
 
             // SPIs (32-1019) - Shared peripheral interrupts
             // Note: No logging here - interrupt handlers must be < 1000 cycles
-            32..=1019 => {}
+            32..=1019 => {
+                // VirtIO input (keyboard) interrupt dispatch
+                if let Some(input_irq) = crate::drivers::virtio::input_mmio::get_irq() {
+                    if irq_id == input_irq {
+                        crate::drivers::virtio::input_mmio::handle_interrupt();
+                    }
+                }
+            }
 
             // Should not happen - GIC filters invalid IDs (1020+)
             _ => {}
