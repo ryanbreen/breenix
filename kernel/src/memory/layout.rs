@@ -115,8 +115,12 @@ pub const KERNEL_HIGHER_HALF_BASE: u64 = 0xFFFF_8000_0000_0000;
 pub const KERNEL_HIGHER_HALF_BASE: u64 = aarch64_const::KERNEL_HIGHER_HALF_BASE;
 
 /// Base address for per-CPU kernel stacks region
-/// This is at PML4[402] = 0xffffc90000000000 - matching existing kernel stack region
+/// x86_64: PML4[402] = 0xffffc90000000000 - matching existing kernel stack region
+/// ARM64: Uses the same virtual address (mapped appropriately)
+#[cfg(target_arch = "x86_64")]
 pub const PERCPU_STACK_REGION_BASE: u64 = 0xffffc90000000000;
+#[cfg(target_arch = "aarch64")]
+pub const PERCPU_STACK_REGION_BASE: u64 = aarch64_const::PERCPU_STACK_REGION_BASE;
 
 /// Size of each per-CPU kernel stack (32 KiB)
 /// This is sufficient for kernel operations including interrupt handling
@@ -133,10 +137,16 @@ pub const PERCPU_STACK_STRIDE: usize = 2 * 1024 * 1024; // 2 MiB
 
 /// Maximum number of CPUs supported
 /// This determines how much virtual address space to reserve for stacks
+#[cfg(target_arch = "x86_64")]
 pub const MAX_CPUS: usize = 256;
+#[cfg(target_arch = "aarch64")]
+pub const MAX_CPUS: usize = aarch64_const::MAX_CPUS;
 
 /// Total size of virtual address space reserved for all CPU stacks
+#[cfg(target_arch = "x86_64")]
 pub const PERCPU_STACK_REGION_SIZE: usize = MAX_CPUS * PERCPU_STACK_STRIDE;
+#[cfg(target_arch = "aarch64")]
+pub const PERCPU_STACK_REGION_SIZE: usize = aarch64_const::PERCPU_STACK_REGION_SIZE;
 
 /// Base address for kernel TLS (Thread-Local Storage) allocation
 /// This is placed within the same PML4 entry AND same PDPT entry as per-CPU stacks.

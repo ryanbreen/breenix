@@ -47,6 +47,8 @@ docker run --rm \
         -m 512 \
         -kernel /breenix/kernel \
         -display none \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
         -no-reboot \
         -serial file:/output/serial.txt \
         &

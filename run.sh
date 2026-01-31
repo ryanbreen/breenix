@@ -141,8 +141,10 @@ fi
 
 # Build display options based on architecture and headless mode
 if [ "$ARCH" = "arm64" ]; then
+    # ARM64: Always add GPU and keyboard devices (needed for VirtIO enumeration)
+    # The -display option only controls whether a window appears
     if [ "$HEADLESS" = true ]; then
-        DISPLAY_OPTS="-display none"
+        DISPLAY_OPTS="-display none -device virtio-gpu-device -device virtio-keyboard-device"
     else
         DISPLAY_OPTS="-display cocoa -device virtio-gpu-device -device virtio-keyboard-device"
     fi

@@ -11,9 +11,10 @@ pub const HEAP_START: u64 = 0x_4444_4444_0000;
 #[cfg(target_arch = "aarch64")]
 // ARM64 heap uses the direct-mapped region from boot.S.
 // boot.S maps TTBR1 L1[1] = physical 0x4000_0000..0x7FFF_FFFF to virtual 0xFFFF_0000_4000_0000..
-// We place heap at physical 0x4800_0000 (virtual 0xFFFF_0000_4800_0000) to avoid
-// collision with frame allocator starting at 0x4200_0000.
-pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x4800_0000;
+// Frame allocator uses: physical 0x4200_0000 to 0x5000_0000
+// Heap must be placed AFTER the frame allocator to avoid collision!
+// Physical 0x5000_0000 = virtual 0xFFFF_0000_5000_0000
+pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5000_0000;
 
 /// Heap size of 4 MiB.
 ///

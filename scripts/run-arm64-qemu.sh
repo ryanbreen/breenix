@@ -76,12 +76,13 @@ if [ "${BREENIX_VIRTIO_TRACE:-0}" = "1" ]; then
     DEBUG_OPTS="$DEBUG_OPTS -trace virtio_*"
 fi
 
-# Graphics options (set BREENIX_GRAPHICS=1 to enable headed display with VirtIO GPU)
-GRAPHICS_OPTS=""
-DISPLAY_OPTS="-nographic"
+# VirtIO GPU and keyboard are always added on ARM64 so the kernel's
+# VirtIO MMIO enumeration finds them.  The -display flag controls
+# whether a host window is created, not whether the devices exist.
+VIRTIO_DISPLAY_OPTS="-device virtio-gpu-device -device virtio-keyboard-device"
+
 if [ "${BREENIX_GRAPHICS:-0}" = "1" ]; then
     echo "Graphics mode enabled - VirtIO GPU with native window"
-    GRAPHICS_OPTS="-device virtio-gpu-device -device virtio-keyboard-device"
     # Use Cocoa display on macOS, SDL on Linux
     case "$(uname)" in
         Darwin)
@@ -91,6 +92,8 @@ if [ "${BREENIX_GRAPHICS:-0}" = "1" ]; then
             DISPLAY_OPTS="-display sdl -serial mon:stdio"
             ;;
     esac
+else
+    DISPLAY_OPTS="-nographic"
 fi
 
 exec qemu-system-aarch64 \
@@ -98,7 +101,7 @@ exec qemu-system-aarch64 \
     -cpu cortex-a72 \
     -m 512M \
     $DISPLAY_OPTS \
-    $GRAPHICS_OPTS \
+    $VIRTIO_DISPLAY_OPTS \
     -kernel "$KERNEL" \
     $DISK_OPTS \
     $NET_OPTS \

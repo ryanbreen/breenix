@@ -177,3 +177,33 @@ pub const KERNEL_STACK_SIZE: usize = 512 * 1024;
 
 /// Guard page size between stacks.
 pub const STACK_GUARD_SIZE: usize = PAGE_SIZE;
+
+// ============================================================================
+// Per-CPU Stack Region Constants
+// ============================================================================
+
+/// Base address for per-CPU kernel stacks region (ARM64).
+/// Uses a region within the HHDM (higher-half direct map) that is mapped
+/// by the boot page tables. Placed at physical 0x4100_0000 (16MB into RAM
+/// after kernel) to stay within typical 512MB QEMU RAM configs.
+///
+/// QEMU virt RAM layout: physical 0x4000_0000 (1GB mark) for N MB
+/// With 512MB RAM: physical 0x4000_0000 to 0x6000_0000
+///
+/// Stack layout in RAM:
+/// - 0x4000_0000 - 0x4100_0000: Kernel image (~16MB)
+/// - 0x4100_0000 - 0x4200_0000: Per-CPU stacks (16MB for 8 CPUs)
+/// - 0x4200_0000 - 0x6000_0000: Heap and dynamic allocations
+///
+/// Virtual: 0xFFFF_0000_4100_0000
+/// Physical: 0x4100_0000
+pub const PERCPU_STACK_REGION_BASE: u64 = HHDM_BASE + 0x4100_0000;
+
+/// Maximum number of CPUs supported on ARM64.
+/// Limited to 8 to keep stack region within 512MB RAM constraint.
+/// (8 CPUs * 2MB stride = 16MB total)
+pub const MAX_CPUS: usize = 8;
+
+/// Total size of per-CPU stack region (ARM64).
+/// 8 CPUs * 2MB stride = 16MB
+pub const PERCPU_STACK_REGION_SIZE: usize = MAX_CPUS * 2 * 1024 * 1024;

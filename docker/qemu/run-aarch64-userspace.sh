@@ -61,10 +61,9 @@ fi
 echo "Starting QEMU ARM64 with VirtIO devices..."
 
 # Run QEMU with ARM64 virt machine and VirtIO devices
-# QEMU virt machine VirtIO MMIO addresses:
-#   0x0a000000 - 0x0a003fff: virtio@a000000 (device 0)
-#   0x0a004000 - 0x0a007fff: virtio@a004000 (device 1)
-#   etc.
+# QEMU virt machine provides 32 VirtIO MMIO slots at:
+#   0x0a000000 + n*0x200  for n=0..31
+# Devices are assigned from slot 31 downward.
 docker run --rm \
     -v "$KERNEL:/breenix/kernel:ro" \
     -v "$EXT2_DISK:/breenix/ext2.img:ro" \
@@ -77,6 +76,8 @@ docker run --rm \
         -kernel /breenix/kernel \
         -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img \
         -device virtio-blk-device,drive=ext2disk \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
         -display none \
         -no-reboot \
         -serial file:/output/serial.txt \

@@ -114,11 +114,6 @@ pub fn push_byte_from_irq(byte: u8) -> bool {
     // Try to acquire the buffer lock - don't block in interrupt context
     if let Some(mut buffer) = STDIN_BUFFER.try_lock() {
         if buffer.push_byte(byte) {
-            // Debug marker: byte successfully pushed to stdin
-            #[cfg(target_arch = "aarch64")]
-            {
-                crate::serial_aarch64::raw_serial_str(b"[STDIN_PUSH]");
-            }
             drop(buffer);
 
             // Try to wake blocked readers (may fail if scheduler lock is held)
@@ -158,13 +153,6 @@ fn wake_blocked_readers_try() {
     crate::task::scheduler::set_need_resched();
 }
 
-/// Raw serial output for debugging - write a string without locks
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn raw_serial_str(s: &[u8]) {
-    crate::serial_aarch64::raw_serial_str(s);
-}
-
 /// Wake blocked readers on ARM64 (non-blocking version for interrupt context)
 #[cfg(target_arch = "aarch64")]
 fn wake_blocked_readers_try() {
@@ -172,30 +160,12 @@ fn wake_blocked_readers_try() {
         if let Some(mut blocked) = BLOCKED_READERS.try_lock() {
             blocked.drain(..).collect()
         } else {
-            // Debug marker: couldn't get lock
-            raw_serial_str(b"[STDIN_LOCK_FAIL]");
             return; // Can't get lock, readers will be woken when they retry
         }
     };
 
     if readers.is_empty() {
-        // Debug marker: no readers to wake
-        raw_serial_str(b"[STDIN_NO_READERS]");
         return;
-    }
-
-    // Debug marker: waking readers with count
-    match readers.len() {
-        1 => raw_serial_str(b"[WAKE_READERS:1]"),
-        2 => raw_serial_str(b"[WAKE_READERS:2]"),
-        3 => raw_serial_str(b"[WAKE_READERS:3]"),
-        4 => raw_serial_str(b"[WAKE_READERS:4]"),
-        5 => raw_serial_str(b"[WAKE_READERS:5]"),
-        6 => raw_serial_str(b"[WAKE_READERS:6]"),
-        7 => raw_serial_str(b"[WAKE_READERS:7]"),
-        8 => raw_serial_str(b"[WAKE_READERS:8]"),
-        9 => raw_serial_str(b"[WAKE_READERS:9]"),
-        _ => raw_serial_str(b"[WAKE_READERS:N]"),
     }
 
     // Try to wake threads via the scheduler

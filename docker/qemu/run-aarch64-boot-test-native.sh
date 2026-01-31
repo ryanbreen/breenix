@@ -35,10 +35,13 @@ run_single_test() {
     mkdir -p "$OUTPUT_DIR"
 
     # Run QEMU with 30s timeout
+    # Always include GPU and keyboard so kernel VirtIO enumeration finds them
     timeout 30 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
         -kernel "$KERNEL" \
         -display none -no-reboot \
+        -device virtio-gpu-device \
+        -device virtio-keyboard-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,readonly=on,file="$EXT2_DISK" \
         -serial file:"$OUTPUT_DIR/serial.txt" &
