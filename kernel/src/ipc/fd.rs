@@ -223,14 +223,8 @@ impl Default for FdTable {
 
 impl Clone for FdTable {
     fn clone(&self) -> Self {
-        // Log what we're cloning
-        log::debug!("FdTable::clone() - cloning fd_table with entries:");
-        for i in 0..10 {
-            if let Some(fd_entry) = self.fds[i].as_ref() {
-                log::debug!("  fd[{}] = {:?}", i, fd_entry.kind);
-            }
-        }
-
+        // CRITICAL: No logging here - this runs during fork() with potential timer interrupts
+        // Logging can cause deadlock if timer fires while holding logger lock
         let cloned_fds = alloc::boxed::Box::new((*self.fds).clone());
 
         // Increment reference counts for all cloned fds that need it
@@ -255,10 +249,9 @@ impl Clone for FdTable {
                     }
                     FdKind::PtyMaster(pty_num) => {
                         // Increment PTY master reference count for the clone
+                        // No logging - this runs during fork()
                         if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                            let old_count = pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-                            log::debug!("FdTable::clone() - PTY master {} refcount {} -> {}",
-                                pty_num, old_count, old_count + 1);
+                            pair.master_refcount.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                         }
                     }
                     FdKind::TcpConnection(conn_id) => {

@@ -9,11 +9,12 @@ use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 #[cfg(target_arch = "x86_64")]
 pub const HEAP_START: u64 = 0x_4444_4444_0000;
 #[cfg(target_arch = "aarch64")]
-// ARM64 heap uses the direct-mapped region from boot.S.
+// ARM64 heap uses the direct-mapped region from boot.S (TTBR1 high-half).
+// The heap MUST be in TTBR1 because TTBR0 gets switched to process page tables.
+//
 // boot.S maps TTBR1 L1[1] = physical 0x4000_0000..0x7FFF_FFFF to virtual 0xFFFF_0000_4000_0000..
 // Frame allocator uses: physical 0x4200_0000 to 0x5000_0000
 // Heap must be placed AFTER the frame allocator to avoid collision!
-// Physical 0x5000_0000 = virtual 0xFFFF_0000_5000_0000
 pub const HEAP_START: u64 = crate::arch_impl::aarch64::constants::HHDM_BASE + 0x5000_0000;
 
 /// Heap size of 4 MiB.

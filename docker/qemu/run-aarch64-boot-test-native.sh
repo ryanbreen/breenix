@@ -47,11 +47,13 @@ run_single_test() {
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
 
-    # Wait for kernel output (20s timeout)
+    # Wait for USERSPACE shell prompt (20s timeout)
+    # ONLY accept "breenix>" - the actual userspace shell prompt
+    # DO NOT accept "Interactive Shell" - that's the KERNEL FALLBACK when userspace FAILS
     local BOOT_COMPLETE=false
     for i in $(seq 1 10); do
         if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-            if grep -qE "(breenix>|Welcome to Breenix|Interactive Shell)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
+            if grep -q "breenix>" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
                 BOOT_COMPLETE=true
                 break
             fi

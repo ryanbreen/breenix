@@ -48,27 +48,16 @@ pub fn is_el0_confirmed() -> bool {
 /// The frame must be properly aligned and contain saved register state.
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    // Increment preempt count FIRST (prevents scheduling during syscall)
+    // CRITICAL: No logging before this point - timer interrupt + logger lock = deadlock
+    Aarch64PerCpu::preempt_disable();
+
     // Check if this is from EL0 (userspace) by examining SPSR
     let from_el0 = (frame.spsr & 0xF) == 0; // M[3:0] = 0 means EL0
 
-    // Emit EL0_CONFIRMED marker on FIRST EL0 syscall only
-    if from_el0 && !EL0_CONFIRMED.swap(true, Ordering::SeqCst) {
-        log::info!(
-            "EL0_CONFIRMED: First syscall received from EL0 (SPSR={:#x})",
-            frame.spsr
-        );
-        crate::serial_println!(
-            "EL0_CONFIRMED: First syscall received from EL0 (SPSR={:#x})",
-            frame.spsr
-        );
-    }
-
-    // Increment preempt count on syscall entry
-    Aarch64PerCpu::preempt_disable();
-
     // Verify this came from userspace (security check)
     if !from_el0 {
-        log::warn!("Syscall from kernel mode (EL1) - this shouldn't happen!");
+        // Don't log here - just return error
         frame.set_return_value(u64::MAX); // Error
         Aarch64PerCpu::preempt_enable();
         return;

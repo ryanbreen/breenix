@@ -62,7 +62,13 @@ fn main() {
     // Use our custom linker script for x86_64
     // Temporarily disabled to test with bootloader's default
     // println!("cargo:rustc-link-arg=-Tkernel/linker.ld");
-    
+
+    // Use our custom linker script for ARM64
+    if target.contains("aarch64") {
+        let linker_script = kernel_dir.join("src/arch_impl/aarch64/linker.ld");
+        println!("cargo:rustc-link-arg=-T{}", linker_script.display());
+    }
+
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");
