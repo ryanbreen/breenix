@@ -48,27 +48,16 @@ pub fn is_el0_confirmed() -> bool {
 /// The frame must be properly aligned and contain saved register state.
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    // Increment preempt count FIRST (prevents scheduling during syscall)
+    // CRITICAL: No logging before this point - timer interrupt + logger lock = deadlock
+    Aarch64PerCpu::preempt_disable();
+
     // Check if this is from EL0 (userspace) by examining SPSR
     let from_el0 = (frame.spsr & 0xF) == 0; // M[3:0] = 0 means EL0
 
-    // Emit EL0_CONFIRMED marker on FIRST EL0 syscall only
-    if from_el0 && !EL0_CONFIRMED.swap(true, Ordering::SeqCst) {
-        log::info!(
-            "EL0_CONFIRMED: First syscall received from EL0 (SPSR={:#x})",
-            frame.spsr
-        );
-        crate::serial_println!(
-            "EL0_CONFIRMED: First syscall received from EL0 (SPSR={:#x})",
-            frame.spsr
-        );
-    }
-
-    // Increment preempt count on syscall entry
-    Aarch64PerCpu::preempt_disable();
-
     // Verify this came from userspace (security check)
     if !from_el0 {
-        log::warn!("Syscall from kernel mode (EL1) - this shouldn't happen!");
+        // Don't log here - just return error
         frame.set_return_value(u64::MAX); // Error
         Aarch64PerCpu::preempt_enable();
         return;
@@ -333,19 +322,42 @@ fn dispatch_syscall(
         syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
             let exit_code = arg1 as i32;
             crate::serial_println!("[syscall] exit({})", exit_code);
-            crate::serial_println!();
-            crate::serial_println!("========================================");
-            crate::serial_println!("  Userspace Test Complete!");
-            crate::serial_println!("  Exit code: {}", exit_code);
-            crate::serial_println!("========================================");
-            crate::serial_println!();
 
-            // For now, halt - real implementation would terminate process
-            loop {
-                unsafe {
-                    core::arch::asm!("wfi");
+            // Proper process termination (inlined from sys_exit since handlers module is x86_64-only)
+            if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+                // Handle thread exit through ProcessScheduler
+                crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
+
+                // Mark current thread as terminated
+                crate::task::scheduler::with_scheduler(|scheduler| {
+                    if let Some(thread) = scheduler.current_thread_mut() {
+                        thread.set_terminated();
+                    }
+                });
+
+                // Check if there are any other userspace threads to run
+                let has_other_userspace_threads =
+                    crate::task::scheduler::with_scheduler(|sched| sched.has_userspace_threads())
+                        .unwrap_or(false);
+
+                if !has_other_userspace_threads {
+                    crate::serial_println!();
+                    crate::serial_println!("========================================");
+                    crate::serial_println!("  Userspace Test Complete!");
+                    crate::serial_println!("  Exit code: {}", exit_code);
+                    crate::serial_println!("========================================");
+                    crate::serial_println!();
+
+                    // Halt if no more userspace threads
+                    loop {
+                        unsafe { core::arch::asm!("wfi"); }
+                    }
                 }
             }
+
+            // Force reschedule to run waiting parents
+            crate::task::scheduler::set_need_resched();
+            0
         }
 
         syscall_nums::WRITE | syscall_nums::ARM64_WRITE => {

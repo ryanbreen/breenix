@@ -323,11 +323,8 @@ pub fn allocate_stack_with_privilege(
     // Calculate number of pages needed for the stack (guard page is implicit)
     let stack_pages = size / 4096;
 
-    log::debug!(
-        "ARM64 allocate_stack: size={:#x} ({} stack pages + 1 guard)",
-        size,
-        stack_pages
-    );
+    // CRITICAL: No logging in stack allocation path - timer interrupt + logger lock = deadlock
+    // This function is called during process creation which may have interrupts enabled
 
     // Allocate physical frames for the stack
     // We track all frames and verify they're contiguous
@@ -340,18 +337,9 @@ pub fn allocate_stack_with_privilege(
 
         if i == 0 {
             first_frame_phys = Some(phys);
-            log::debug!("ARM64 stack: first frame at phys {:#x}", phys);
-        } else if let Some(prev) = prev_frame_phys {
-            // Verify frames are contiguous
-            if phys != prev + 4096 {
-                log::warn!(
-                    "ARM64 stack: non-contiguous frames: prev={:#x}, curr={:#x}",
-                    prev, phys
-                );
-                // For now, just use the memory anyway - it won't be truly contiguous
-                // but for simple stacks this should work
-            }
         }
+        // Note: We don't log non-contiguous frames here - just accept them
+        // For simple stacks this works fine even if frames aren't contiguous
         prev_frame_phys = Some(phys);
 
         // Zero the frame via HHDM
@@ -368,17 +356,9 @@ pub fn allocate_stack_with_privilege(
     // Layout: [guard page][stack pages...]
     // Stack top is at the END of the last allocated frame
     let allocation_start = VirtAddr::new(HHDM_BASE + stack_phys - 4096); // Guard page (unallocated)
-    let stack_start = VirtAddr::new(HHDM_BASE + stack_phys);
     let stack_top = VirtAddr::new(HHDM_BASE + last_frame_phys + 4096);
 
-    log::debug!(
-        "ARM64 stack allocated: guard={:#x}, stack={:#x}-{:#x} (phys {:#x}-{:#x})",
-        allocation_start.as_u64(),
-        stack_start.as_u64(),
-        stack_top.as_u64(),
-        stack_phys,
-        last_frame_phys + 4096
-    );
+    // No logging here - see comment at function start
 
     Ok(GuardedStack {
         allocation_start,

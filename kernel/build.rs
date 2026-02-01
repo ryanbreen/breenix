@@ -62,7 +62,8 @@ fn main() {
     // Use our custom linker script for x86_64
     // Temporarily disabled to test with bootloader's default
     // println!("cargo:rustc-link-arg=-Tkernel/linker.ld");
-    
+
+
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
     println!("cargo:rerun-if-changed=src/interrupts/timer_entry.asm");

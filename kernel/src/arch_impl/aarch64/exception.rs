@@ -73,12 +73,19 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         exception_class::DATA_ABORT_LOWER | exception_class::DATA_ABORT_SAME => {
+            // Try to handle as CoW fault first
+            if handle_cow_fault_arm64(far, iss) {
+                // CoW fault handled successfully, return to userspace
+                return;
+            }
+
+            // Not a CoW fault or couldn't be handled - print debug info and hang
             let frame = unsafe { &*frame };
             crate::serial_println!("[exception] Data abort at address {:#x}", far);
             crate::serial_println!("  ELR: {:#x}, ESR: {:#x}", frame.elr, esr);
             crate::serial_println!("  ISS: {:#x} (WnR={}, DFSC={:#x})",
                 iss, (iss >> 6) & 1, iss & 0x3F);
-            // For now, hang
+            // Hang on unhandled data abort
             loop { unsafe { core::arch::asm!("wfi"); } }
         }
 
@@ -406,5 +413,172 @@ fn exception_class_name(ec: u32) -> &'static str {
         exception_class::SP_ALIGNMENT => "SP alignment fault",
         exception_class::BRK_AARCH64 => "BRK (breakpoint)",
         _ => "Other",
+    }
+}
+
+/// Handle CoW (Copy-on-Write) page fault for ARM64
+///
+/// Returns true if the fault was handled (page was copied or made writable)
+/// Returns false if this wasn't a CoW fault or couldn't be handled
+fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
+    use crate::memory::arch_stub::{VirtAddr, Page, Size4KiB};
+    use crate::memory::frame_allocator::allocate_frame;
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::process_memory::{is_cow_page, make_private_flags};
+
+    // Check if this is a CoW fault:
+    // - WnR bit (bit 6) = 1 (caused by write)
+    // - DFSC (bits 5:0) = 0x0D/0x0E/0x0F (Permission fault at level 1/2/3)
+    let is_write = (iss >> 6) & 1 == 1;
+    let dfsc = iss & 0x3F;
+    let is_permission_fault = dfsc == 0x0D || dfsc == 0x0E || dfsc == 0x0F;
+
+    if !is_write || !is_permission_fault {
+        return false;
+    }
+
+    let faulting_addr = VirtAddr::new(far);
+
+    // Get current TTBR0 (user page table base)
+    let ttbr0: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+    }
+
+    // Mask off ASID to get physical address
+    let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+
+    crate::serial_println!(
+        "[COW ARM64] fault at {:#x}, ttbr0={:#x}, pt_phys={:#x}",
+        far,
+        ttbr0,
+        page_table_phys
+    );
+
+    // Try to acquire process manager lock
+    match crate::process::try_manager() {
+        Some(mut guard) => {
+            let pm = match guard.as_mut() {
+                Some(pm) => pm,
+                None => return false,
+            };
+
+            // Find process by page table
+            let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
+                Some(p) => p,
+                None => {
+                    crate::serial_println!("[COW] No process found for TTBR0");
+                    return false;
+                }
+            };
+
+            let page_table = match &mut process.page_table {
+                Some(pt) => pt,
+                None => return false,
+            };
+
+            let page: Page<Size4KiB> = Page::containing_address(faulting_addr);
+
+            // Get current page info
+            let (old_frame, old_flags) = match page_table.get_page_info(page) {
+                Some(info) => info,
+                None => {
+                    crate::serial_println!("[COW] No page info for {:#x}", far);
+                    return false;
+                }
+            };
+
+            // Check if this is a CoW page
+            if !is_cow_page(old_flags) {
+                crate::serial_println!("[COW] Not a CoW page");
+                return false;
+            }
+
+            crate::serial_println!(
+                "[COW] Handling page {:#x}, frame={:#x}, shared={}",
+                far,
+                old_frame.start_address().as_u64(),
+                frame_is_shared(old_frame)
+            );
+
+            // If we're the sole owner, just make it writable
+            if !frame_is_shared(old_frame) {
+                let new_flags = make_private_flags(old_flags);
+                if page_table.update_page_flags(page, new_flags).is_err() {
+                    return false;
+                }
+                // Flush TLB
+                unsafe {
+                    let va_for_tlbi = faulting_addr.as_u64() >> 12;
+                    core::arch::asm!(
+                        "dsb ishst",
+                        "tlbi vale1is, {0}",
+                        "dsb ish",
+                        "isb",
+                        in(reg) va_for_tlbi,
+                        options(nostack)
+                    );
+                }
+                crate::serial_println!("[COW] Made sole-owner page writable");
+                return true;
+            }
+
+            // Need to copy the page
+            let new_frame = match allocate_frame() {
+                Some(f) => f,
+                None => {
+                    crate::serial_println!("[COW] Failed to allocate frame");
+                    return false;
+                }
+            };
+
+            // Copy page contents via HHDM
+            let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+            let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
+            let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, 4096);
+            }
+
+            // Unmap old page and map new one with write permissions
+            let new_flags = make_private_flags(old_flags);
+            if page_table.unmap_page(page).is_err() {
+                crate::serial_println!("[COW] Failed to unmap old page");
+                return false;
+            }
+            if page_table.map_page(page, new_frame, new_flags).is_err() {
+                crate::serial_println!("[COW] Failed to map new page");
+                return false;
+            }
+
+            // Decrement reference count on old frame
+            frame_decref(old_frame);
+
+            // Flush TLB
+            unsafe {
+                let va_for_tlbi = faulting_addr.as_u64() >> 12;
+                core::arch::asm!(
+                    "dsb ishst",
+                    "tlbi vale1is, {0}",
+                    "dsb ish",
+                    "isb",
+                    in(reg) va_for_tlbi,
+                    options(nostack)
+                );
+            }
+
+            crate::serial_println!(
+                "[COW] Copied page from {:#x} to {:#x}",
+                old_frame.start_address().as_u64(),
+                new_frame.start_address().as_u64()
+            );
+
+            true
+        }
+        None => {
+            crate::serial_println!("[COW] Manager lock held, cannot handle");
+            false
+        }
     }
 }

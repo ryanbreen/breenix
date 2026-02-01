@@ -46,6 +46,10 @@ if [[ "$ARCH" == "aarch64" ]]; then
     USERSPACE_DIR="$PROJECT_ROOT/userspace/tests/aarch64"
     OUTPUT_FILE="$TARGET_DIR/ext2-aarch64.img"
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2-aarch64.img"
+    # ARM64 has 100+ binaries, need larger default image
+    if [[ "$SIZE_MB" == "4" ]]; then
+        SIZE_MB=16
+    fi
 else
     USERSPACE_DIR="$PROJECT_ROOT/userspace/tests"
     OUTPUT_FILE="$TARGET_DIR/ext2.img"
@@ -108,63 +112,27 @@ if [[ "$(uname)" == "Darwin" ]]; then
             mkdir -p /mnt/ext2/bin
             mkdir -p /mnt/ext2/sbin
 
-            # Copy coreutils binaries to /bin (excluding true which goes to /sbin)
-            echo "Installing coreutils in /bin..."
-            for bin in cat ls echo mkdir rmdir rm cp mv false head tail wc which; do
-                if [ -f /binaries/${bin}.elf ]; then
-                    cp /binaries/${bin}.elf /mnt/ext2/bin/${bin}
-                    chmod 755 /mnt/ext2/bin/${bin}
-                    echo "  /bin/${bin} installed"
-                else
-                    echo "  WARNING: ${bin}.elf not found in /binaries/"
+            # Copy ALL binaries from /binaries directory
+            # Special handling: true and telnetd go to /sbin, everything else to /bin
+            echo "Installing all binaries..."
+            bin_count=0
+            sbin_count=0
+            for elf_file in /binaries/*.elf; do
+                if [ -f "$elf_file" ]; then
+                    bin_name=$(basename "$elf_file" .elf)
+                    if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ]; then
+                        cp "$elf_file" /mnt/ext2/sbin/${bin_name}
+                        chmod 755 /mnt/ext2/sbin/${bin_name}
+                        sbin_count=$((sbin_count + 1))
+                    else
+                        cp "$elf_file" /mnt/ext2/bin/${bin_name}
+                        chmod 755 /mnt/ext2/bin/${bin_name}
+                        bin_count=$((bin_count + 1))
+                    fi
                 fi
             done
-
-            # Install true in /sbin to test PATH lookup order
-            echo "Installing binaries in /sbin..."
-            if [ -f /binaries/true.elf ]; then
-                cp /binaries/true.elf /mnt/ext2/sbin/true
-                chmod 755 /mnt/ext2/sbin/true
-                echo "  /sbin/true installed"
-            else
-                echo "  WARNING: true.elf not found in /binaries/"
-            fi
-
-            # Copy hello_world for exec testing
-            if [ -f /binaries/hello_world.elf ]; then
-                cp /binaries/hello_world.elf /mnt/ext2/bin/hello_world
-                chmod 755 /mnt/ext2/bin/hello_world
-                echo "  /bin/hello_world installed"
-            else
-                echo "  WARNING: hello_world.elf not found"
-            fi
-
-            # Copy init_shell for interactive use and telnet
-            if [ -f /binaries/init_shell.elf ]; then
-                cp /binaries/init_shell.elf /mnt/ext2/bin/init_shell
-                chmod 755 /mnt/ext2/bin/init_shell
-                echo "  /bin/init_shell installed"
-            else
-                echo "  WARNING: init_shell.elf not found"
-            fi
-
-            # Copy telnetd for remote access (system daemon, goes in /sbin)
-            if [ -f /binaries/telnetd.elf ]; then
-                cp /binaries/telnetd.elf /mnt/ext2/sbin/telnetd
-                chmod 755 /mnt/ext2/sbin/telnetd
-                echo "  /sbin/telnetd installed"
-            else
-                echo "  WARNING: telnetd.elf not found"
-            fi
-
-            # Copy test binaries to /bin
-            for test_bin in pty_test signal_test fork_test udp_socket_test; do
-                if [ -f /binaries/${test_bin}.elf ]; then
-                    cp /binaries/${test_bin}.elf /mnt/ext2/bin/${test_bin}
-                    chmod 755 /mnt/ext2/bin/${test_bin}
-                    echo "  /bin/${test_bin} installed"
-                fi
-            done
+            echo "  Installed $bin_count binaries in /bin"
+            echo "  Installed $sbin_count binaries in /sbin"
 
             # Create test files for filesystem testing
             echo "Hello from ext2!" > /mnt/ext2/hello.txt
@@ -239,48 +207,27 @@ else
     mkdir -p "$MOUNT_DIR/bin"
     mkdir -p "$MOUNT_DIR/sbin"
 
-    # Copy coreutils binaries to /bin (excluding true which goes to /sbin)
-    echo "Installing coreutils in /bin..."
-    for bin in cat ls echo mkdir rmdir rm cp mv false head tail wc which; do
-        if [ -f "$USERSPACE_DIR/${bin}.elf" ]; then
-            cp "$USERSPACE_DIR/${bin}.elf" "$MOUNT_DIR/bin/${bin}"
-            chmod 755 "$MOUNT_DIR/bin/${bin}"
-            echo "  /bin/${bin} installed"
-        else
-            echo "  WARNING: ${bin}.elf not found"
+    # Copy ALL binaries from userspace directory
+    # Special handling: true and telnetd go to /sbin, everything else to /bin
+    echo "Installing all binaries..."
+    bin_count=0
+    sbin_count=0
+    for elf_file in "$USERSPACE_DIR"/*.elf; do
+        if [ -f "$elf_file" ]; then
+            bin_name=$(basename "$elf_file" .elf)
+            if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ]; then
+                cp "$elf_file" "$MOUNT_DIR/sbin/${bin_name}"
+                chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
+                sbin_count=$((sbin_count + 1))
+            else
+                cp "$elf_file" "$MOUNT_DIR/bin/${bin_name}"
+                chmod 755 "$MOUNT_DIR/bin/${bin_name}"
+                bin_count=$((bin_count + 1))
+            fi
         fi
     done
-
-    # Install true in /sbin to test PATH lookup order
-    echo "Installing binaries in /sbin..."
-    if [ -f "$USERSPACE_DIR/true.elf" ]; then
-        cp "$USERSPACE_DIR/true.elf" "$MOUNT_DIR/sbin/true"
-        chmod 755 "$MOUNT_DIR/sbin/true"
-        echo "  /sbin/true installed"
-    else
-        echo "  WARNING: true.elf not found"
-    fi
-
-    # Copy hello_world for exec testing
-    if [ -f "$USERSPACE_DIR/hello_world.elf" ]; then
-        cp "$USERSPACE_DIR/hello_world.elf" "$MOUNT_DIR/bin/hello_world"
-        chmod 755 "$MOUNT_DIR/bin/hello_world"
-        echo "  /bin/hello_world installed"
-    fi
-
-    # Copy init_shell for interactive use and telnet
-    if [ -f "$USERSPACE_DIR/init_shell.elf" ]; then
-        cp "$USERSPACE_DIR/init_shell.elf" "$MOUNT_DIR/bin/init_shell"
-        chmod 755 "$MOUNT_DIR/bin/init_shell"
-        echo "  /bin/init_shell installed"
-    fi
-
-    # Copy telnetd for remote access (system daemon, goes in /sbin)
-    if [ -f "$USERSPACE_DIR/telnetd.elf" ]; then
-        cp "$USERSPACE_DIR/telnetd.elf" "$MOUNT_DIR/sbin/telnetd"
-        chmod 755 "$MOUNT_DIR/sbin/telnetd"
-        echo "  /sbin/telnetd installed"
-    fi
+    echo "  Installed $bin_count binaries in /bin"
+    echo "  Installed $sbin_count binaries in /sbin"
 
     # Create test files
     echo "Hello from ext2!" > "$MOUNT_DIR/hello.txt"
@@ -334,11 +281,8 @@ if [[ -f "$OUTPUT_FILE" ]]; then
     echo "  Size: $SIZE"
     echo ""
     echo "Contents:"
-    echo "  /bin/cat, ls, echo, mkdir, rmdir, rm, cp, mv - file coreutils"
-    echo "  /sbin/true, /bin/false - exit status coreutils"
-    echo "  /bin/head, tail, wc, which - text processing coreutils"
-    echo "  /bin/hello_world - exec test binary (exit code 42)"
-    echo "  /bin/init_shell - interactive shell"
+    echo "  /bin/* - All userspace binaries (coreutils, tests, demos)"
+    echo "  /sbin/true - exit status coreutil (for PATH testing)"
     echo "  /sbin/telnetd - telnet daemon"
     echo "  /hello.txt - test file (1 line)"
     echo "  /lines.txt - multi-line test file (15 lines) for head/tail/wc"

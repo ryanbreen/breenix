@@ -148,19 +148,13 @@ pub fn is_ring3_confirmed() -> bool {
 /// See CLAUDE.md "Interrupt and Syscall Development - CRITICAL PATH REQUIREMENTS"
 #[no_mangle]
 pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
-    // CRITICAL MARKER: Emit RING3_CONFIRMED marker on FIRST Ring 3 syscall only
-    // This proves userspace executed and triggered INT 0x80
-    if (frame.cs & 3) == 3 && !RING3_CONFIRMED.swap(true, Ordering::SeqCst) {
-        log::info!("🎯 RING3_CONFIRMED: First syscall received from Ring 3 (CS={:#x}, RPL=3)", frame.cs);
-        crate::serial_println!("🎯 RING3_CONFIRMED: First syscall received from Ring 3 (CS={:#x}, RPL=3)", frame.cs);
-    }
-
-    // Increment preempt count on syscall entry (prevents scheduling during syscall)
+    // Increment preempt count FIRST (prevents scheduling during syscall)
+    // CRITICAL: No logging before this point - timer interrupt + logger lock = deadlock
     crate::per_cpu::preempt_disable();
 
     // Verify this came from userspace (security check)
     if !frame.is_from_userspace() {
-        log::warn!("Syscall from kernel mode - this shouldn't happen!");
+        // Don't log here - just return error
         frame.set_return_value(u64::MAX); // Error
         crate::per_cpu::preempt_enable();
         return;

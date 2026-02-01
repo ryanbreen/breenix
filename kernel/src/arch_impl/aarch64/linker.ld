@@ -73,12 +73,12 @@ SECTIONS
 
     /* BSS - zero initialized */
     . = ALIGN(4K);
+    __bss_start = .;
     .bss (NOLOAD) : AT(ADDR(.bss) - VMLINUX_OFFSET) {
-        __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
-        __bss_end = .;
     }
+    __bss_end = .;
 
     /* Stack section - 64KB stack */
     . = ALIGN(16);
