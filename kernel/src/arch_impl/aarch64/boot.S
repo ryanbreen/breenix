@@ -444,13 +444,15 @@ irq_handler:
     bl check_need_resched_and_switch_arm64
 
     // Restore registers from exception frame (may have been modified by Rust for new thread)
-    // First restore ELR and SPSR
-    ldp x0, x1, [sp, #240]   // x0 = frame.x30, x1 = frame.elr
-    msr elr_el1, x1
-    ldr x1, [sp, #256]       // x1 = frame.spsr
-    msr spsr_el1, x1
+    // First restore ELR and SPSR using x16 as scratch
+    ldr x16, [sp, #248]      // x16 = frame.elr (offset 248 = 240 + 8)
+    msr elr_el1, x16
+    ldr x16, [sp, #256]      // x16 = frame.spsr
+    msr spsr_el1, x16
 
-    // Restore x2-x30 from frame (x0, x1 still available as temporaries)
+    // Restore all general-purpose registers from the exception frame
+    // x0 is particularly critical - it contains the fork() return value!
+    ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
     ldp x4, x5, [sp, #32]
     ldp x6, x7, [sp, #48]
@@ -467,8 +469,10 @@ irq_handler:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
 
-    // Load SP from user_rsp_scratch (contains new thread's SP if switched, or old SP+272 if not)
-    // Use x16 as scratch (x0 was already restored and contains thread argument)
+    // Load new SP from user_rsp_scratch
+    // For userspace returns: this is sp+272 (just popping the exception frame)
+    // For kernel thread switches: this may be a different thread's saved SP
+    // Use x16 as scratch - it's an intra-procedure scratch register in ARM64 ABI
     mrs x16, tpidr_el1
     ldr x16, [x16, #40]
     mov sp, x16

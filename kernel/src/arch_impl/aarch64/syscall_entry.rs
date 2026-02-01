@@ -322,19 +322,42 @@ fn dispatch_syscall(
         syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
             let exit_code = arg1 as i32;
             crate::serial_println!("[syscall] exit({})", exit_code);
-            crate::serial_println!();
-            crate::serial_println!("========================================");
-            crate::serial_println!("  Userspace Test Complete!");
-            crate::serial_println!("  Exit code: {}", exit_code);
-            crate::serial_println!("========================================");
-            crate::serial_println!();
 
-            // For now, halt - real implementation would terminate process
-            loop {
-                unsafe {
-                    core::arch::asm!("wfi");
+            // Proper process termination (inlined from sys_exit since handlers module is x86_64-only)
+            if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+                // Handle thread exit through ProcessScheduler
+                crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
+
+                // Mark current thread as terminated
+                crate::task::scheduler::with_scheduler(|scheduler| {
+                    if let Some(thread) = scheduler.current_thread_mut() {
+                        thread.set_terminated();
+                    }
+                });
+
+                // Check if there are any other userspace threads to run
+                let has_other_userspace_threads =
+                    crate::task::scheduler::with_scheduler(|sched| sched.has_userspace_threads())
+                        .unwrap_or(false);
+
+                if !has_other_userspace_threads {
+                    crate::serial_println!();
+                    crate::serial_println!("========================================");
+                    crate::serial_println!("  Userspace Test Complete!");
+                    crate::serial_println!("  Exit code: {}", exit_code);
+                    crate::serial_println!("========================================");
+                    crate::serial_println!();
+
+                    // Halt if no more userspace threads
+                    loop {
+                        unsafe { core::arch::asm!("wfi"); }
+                    }
                 }
             }
+
+            // Force reschedule to run waiting parents
+            crate::task::scheduler::set_need_resched();
+            0
         }
 
         syscall_nums::WRITE | syscall_nums::ARM64_WRITE => {
