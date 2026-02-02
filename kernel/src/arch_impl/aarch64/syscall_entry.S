@@ -284,6 +284,15 @@ syscall_entry_from_el0:
 .Lafter_ttbr_check:
 .Lno_ttbr_switch:
 
+    /*
+     * Trace: about to return to userspace.
+     * Call trace function BEFORE restoring x0/x1 (it will clobber them).
+     * Pass ELR and SPSR for debugging if needed.
+     */
+    mrs x0, elr_el1
+    mrs x1, spsr_el1
+    bl trace_eret_to_el0
+
     /* Now restore x0/x1 from the frame (frame still valid on kernel stack) */
     ldp x0, x1, [sp, #0]
 

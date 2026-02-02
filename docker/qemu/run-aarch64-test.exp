@@ -1,0 +1,86 @@
+#!/usr/bin/expect -f
+
+# Run a single ARM64 userspace test
+# Usage: ./run-aarch64-test.exp <test_name>
+
+set timeout 60
+set test_name [lindex $argv 0]
+
+if {$test_name eq ""} {
+    puts "Usage: ./run-aarch64-test.exp <test_name>"
+    exit 1
+}
+
+# Get paths
+set script_dir [file dirname [file normalize [info script]]]
+set breenix_root [file dirname [file dirname $script_dir]]
+set kernel "$breenix_root/target/aarch64-breenix/release/kernel-aarch64"
+set ext2_disk "$breenix_root/target/ext2-aarch64.img"
+
+# Start QEMU
+spawn qemu-system-aarch64 \
+    -M virt -cpu cortex-a72 -m 512 \
+    -kernel $kernel \
+    -display none -no-reboot \
+    -device virtio-gpu-device \
+    -device virtio-keyboard-device \
+    -device virtio-blk-device,drive=ext2 \
+    -drive if=none,id=ext2,format=raw,readonly=on,file=$ext2_disk \
+    -serial mon:stdio
+
+# Wait for shell prompt
+expect {
+    "breenix>" {
+        puts "\n\[expect\] Shell prompt found"
+    }
+    timeout {
+        puts "\n\[expect\] Timeout waiting for shell prompt"
+        exit 1
+    }
+    eof {
+        puts "\n\[expect\] QEMU exited unexpectedly"
+        exit 1
+    }
+}
+
+# Send the test command
+send "$test_name\r"
+puts "\n\[expect\] Sent command: $test_name"
+
+# Wait for test result
+set test_result "UNKNOWN"
+expect {
+    -re "PASS|: OK|passed:" {
+        set test_result "PASS"
+        puts "\n\[expect\] Test passed marker found"
+    }
+    -re "FAIL|ERROR|panic" {
+        set test_result "FAIL"
+        puts "\n\[expect\] Test failed marker found"
+    }
+    "breenix>" {
+        # Test completed, check output
+        puts "\n\[expect\] Test completed (shell returned)"
+    }
+    timeout {
+        puts "\n\[expect\] Timeout waiting for test completion"
+        set test_result "TIMEOUT"
+    }
+    eof {
+        puts "\n\[expect\] QEMU exited"
+    }
+}
+
+# Wait a bit more to capture remaining output
+sleep 2
+
+puts "\n========================================="
+puts "TEST RESULT: $test_result"
+puts "========================================="
+
+# Exit with appropriate code
+if {$test_result eq "PASS"} {
+    exit 0
+} else {
+    exit 1
+}
