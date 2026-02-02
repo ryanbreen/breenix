@@ -334,8 +334,89 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::UdpSocket(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
             SyscallResult::Err(super::errno::ENOTCONN as u64)
         }
-        FdKind::RegularFile(_) | FdKind::Device(_) => {
-            SyscallResult::Err(super::errno::EOPNOTSUPP as u64)
+        FdKind::RegularFile(file_ref) => {
+            // Read from ext2 regular file
+            //
+            // Get file info under the lock, then drop lock before filesystem operations
+            let (inode_num, position) = {
+                let file = file_ref.lock();
+                (file.inode_num, file.position)
+            };
+
+            // Drop the process manager lock before filesystem operations
+            drop(manager_guard);
+
+            // Access the mounted ext2 filesystem
+            let root_fs = crate::fs::ext2::root_fs();
+            let fs = match root_fs.as_ref() {
+                Some(fs) => fs,
+                None => {
+                    return SyscallResult::Err(super::errno::ENOSYS as u64);
+                }
+            };
+
+            // Read the inode
+            let inode = match fs.read_inode(inode_num as u32) {
+                Ok(inode) => inode,
+                Err(_) => {
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
+            };
+
+            // Read the file data
+            let data = match fs.read_file_range(&inode, position, count as usize) {
+                Ok(data) => data,
+                Err(_) => {
+                    return SyscallResult::Err(super::errno::EIO as u64);
+                }
+            };
+
+            // Drop the filesystem lock before copying to userspace
+            drop(root_fs);
+
+            let bytes_read = data.len();
+
+            // Copy data to userspace
+            if bytes_read > 0 {
+                if copy_to_user_bytes(buf_ptr, &data).is_err() {
+                    return SyscallResult::Err(14); // EFAULT
+                }
+            }
+
+            // Update file position - need to re-acquire process manager lock
+            {
+                let manager_guard = crate::process::manager();
+                if let Some(manager) = &*manager_guard {
+                    if let Some((_, process)) = manager.find_process_by_thread(thread_id) {
+                        if let Some(fd_entry) = process.fd_table.get(fd as i32) {
+                            if let FdKind::RegularFile(file_ref) = &fd_entry.kind {
+                                let mut file = file_ref.lock();
+                                file.position += bytes_read as u64;
+                            }
+                        }
+                    }
+                }
+            }
+
+            SyscallResult::Ok(bytes_read as u64)
+        }
+        FdKind::Device(device_type) => {
+            // Read from devfs device (/dev/null, /dev/zero, /dev/console, /dev/tty)
+            let mut user_buf = alloc::vec![0u8; count as usize];
+            match crate::fs::devfs::device_read(*device_type, &mut user_buf) {
+                Ok(n) => {
+                    if n > 0 {
+                        // Copy to userspace
+                        if copy_to_user_bytes(buf_ptr, &user_buf[..n]).is_err() {
+                            return SyscallResult::Err(14); // EFAULT
+                        }
+                    }
+                    SyscallResult::Ok(n as u64)
+                }
+                Err(e) => {
+                    SyscallResult::Err((-e) as u64)
+                }
+            }
         }
         FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } => {
             SyscallResult::Err(super::errno::EISDIR as u64)

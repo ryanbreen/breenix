@@ -22,6 +22,12 @@ RESULTS_DIR="/tmp/breenix_arm64_test_results"
 rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 
+# Create a writable copy of the ext2 disk for tests that need write access
+# This prevents corruption of the master image while allowing write tests to pass
+EXT2_DISK_WRITABLE="$RESULTS_DIR/ext2-writable.img"
+echo "Creating writable copy of ext2 disk..."
+cp "$EXT2_DISK" "$EXT2_DISK_WRITABLE"
+
 # Get list of tests
 if [ "$1" = "--all" ]; then
     # Get all test binaries from ext2 disk
@@ -66,14 +72,17 @@ FAILED_TESTS=""
 run_test() {
     local test_name="$1"
     local output_file="$RESULTS_DIR/${test_name}.txt"
-    
+
     echo ""
     echo "=========================================="
     echo "Running: $test_name"
     echo "=========================================="
-    
-    # Restore original first
+
+    # Restore original kernel source
     cp "$KERNEL_SRC.bak" "$KERNEL_SRC"
+
+    # Reset writable ext2 disk to clean state for each test
+    cp "$EXT2_DISK" "$EXT2_DISK_WRITABLE"
     
     # Modify kernel to load this test using Python for reliable replacement
     python3 - "$KERNEL_SRC" "$test_name" << 'PYTHON'
@@ -106,7 +115,7 @@ PYTHON
         return 1
     fi
     
-    # Run QEMU with timeout
+    # Run QEMU with timeout (using writable ext2 copy to allow write tests)
     echo "Running test..."
     timeout 30 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
@@ -115,7 +124,7 @@ PYTHON
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-blk-device,drive=ext2 \
-        -drive if=none,id=ext2,format=raw,readonly=on,file="$EXT2_DISK" \
+        -drive if=none,id=ext2,format=raw,file="$EXT2_DISK_WRITABLE" \
         -serial file:"$output_file" 2>&1 &
     QEMU_PID=$!
     
