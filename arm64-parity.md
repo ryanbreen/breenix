@@ -257,6 +257,86 @@ which_test            wnohang_timing_test
 
 ---
 
+## New Infrastructure: DTrace-Style Tracing Framework
+
+**Added**: 2026-02-02
+
+A comprehensive lock-free tracing framework has been implemented for kernel observability on both x86-64 and ARM64. This infrastructure was originally created during ARM64 debugging (exec spinlock deadlock) and has been generalized into a production-quality subsystem.
+
+### Features
+
+| Component | Description |
+|-----------|-------------|
+| Per-CPU Ring Buffers | 1024 events × 16 bytes per CPU, lock-free writes |
+| Provider/Probe Model | Subsystems define their own trace points |
+| Atomic Counters | Per-CPU counters with 64-byte cache alignment |
+| GDB Integration | `#[no_mangle]` symbols for direct inspection |
+| /proc Integration | `/proc/trace/{enable,events,buffer,counters,providers}` |
+| Serial Output | Lock-free panic-safe dump functions |
+
+### Built-in Providers
+
+| Provider | Events |
+|----------|--------|
+| SYSCALL_PROVIDER | SYSCALL_ENTRY, SYSCALL_EXIT |
+| SCHED_PROVIDER | CTX_SWITCH_ENTRY, CTX_SWITCH_EXIT, SCHED_PICK |
+| IRQ_PROVIDER | IRQ_ENTRY, IRQ_EXIT, TIMER_TICK |
+
+### Built-in Counters
+
+- `SYSCALL_TOTAL` - Total syscall invocations
+- `IRQ_TOTAL` - Total interrupt invocations
+- `CTX_SWITCH_TOTAL` - Total context switches
+- `TIMER_TICK_TOTAL` - Total timer tick interrupts
+
+### Validation
+
+GDB-based memory dump testing confirms the framework works correctly:
+- 278 events captured during kernel boot on x86-64
+- TIMER_TICK events with incrementing tick counts
+- CTX_SWITCH_ENTRY events showing thread context switches
+- Timestamps are monotonically increasing
+
+### Files Added
+
+```
+kernel/src/tracing/           # Core framework (~2500 lines)
+  mod.rs                      # Public API and re-exports
+  core.rs                     # TraceEvent, ring buffers, global state
+  buffer.rs                   # Per-CPU TraceCpuBuffer
+  timestamp.rs                # RDTSC (x86) / CNTVCT (ARM64) timestamps
+  provider.rs                 # TraceProvider, TraceProbe registration
+  counter.rs                  # Atomic per-CPU counters
+  output.rs                   # Serial dump, GDB helpers
+  macros.rs                   # trace_event!, define_trace_counter!
+  providers/                  # Built-in providers (syscall, sched, irq)
+
+kernel/src/fs/procfs/         # Virtual filesystem
+  mod.rs                      # procfs core infrastructure
+  trace.rs                    # /proc/trace/* content generators
+
+scripts/                      # Testing infrastructure
+  trace_memory_dump.py        # Parse trace buffer memory dumps
+  test_tracing_via_gdb.sh     # Automated GDB-based validation
+
+docs/planning/
+  TRACING_FRAMEWORK_DESIGN.md        # Design document
+  TRACING_FRAMEWORK_IMPLEMENTATION.md # Implementation guide
+```
+
+### Cross-Architecture Support
+
+| Feature | x86-64 | ARM64 |
+|---------|--------|-------|
+| Timestamp source | RDTSC | CNTVCT_EL0 |
+| Serial output | COM1 (0x3F8) | PL011 UART |
+| Tracing enabled at boot | Yes | TODO |
+| /proc/trace | Yes | TODO |
+
+**Note**: ARM64 tracing init call needs to be added to `main_aarch64.rs`.
+
+---
+
 ## Completed Work (Previous Session)
 
 ### Bugs Fixed
