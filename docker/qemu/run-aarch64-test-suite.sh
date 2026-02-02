@@ -125,6 +125,8 @@ PYTHON
         -device virtio-keyboard-device \
         -device virtio-blk-device,drive=ext2 \
         -drive if=none,id=ext2,format=raw,file="$EXT2_DISK_WRITABLE" \
+        -device virtio-net-device,netdev=net0 \
+        -netdev user,id=net0 \
         -serial file:"$output_file" 2>&1 &
     QEMU_PID=$!
     

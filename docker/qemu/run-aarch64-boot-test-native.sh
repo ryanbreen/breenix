@@ -34,8 +34,13 @@ run_single_test() {
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
 
+    # Create writable copy of ext2 disk to allow filesystem write tests
+    local EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
+    cp "$EXT2_DISK" "$EXT2_WRITABLE"
+
     # Run QEMU with 30s timeout
-    # Always include GPU and keyboard so kernel VirtIO enumeration finds them
+    # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
+    # Use writable disk copy (no readonly=on) to allow filesystem writes
     timeout 30 qemu-system-aarch64 \
         -M virt -cpu cortex-a72 -m 512 \
         -kernel "$KERNEL" \
@@ -43,7 +48,9 @@ run_single_test() {
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-blk-device,drive=ext2 \
-        -drive if=none,id=ext2,format=raw,readonly=on,file="$EXT2_DISK" \
+        -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
+        -device virtio-net-device,netdev=net0 \
+        -netdev user,id=net0 \
         -serial file:"$OUTPUT_DIR/serial.txt" &
     local QEMU_PID=$!
 
