@@ -71,6 +71,8 @@ pub mod shell;
 pub mod boot;
 // Lock-free tracing for critical paths (interrupt handlers, context switch, etc.)
 pub mod trace;
+// DTrace-style tracing framework with per-CPU ring buffers
+pub mod tracing;
 // Parallel boot test framework
 #[cfg(feature = "boot_tests")]
 pub mod test_framework;

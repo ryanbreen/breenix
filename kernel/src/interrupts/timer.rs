@@ -27,6 +27,7 @@
 #![cfg(target_arch = "x86_64")]
 
 use crate::task::scheduler;
+use crate::tracing::providers::irq::trace_timer_tick;
 
 /// Time quantum in timer ticks (5ms per tick @ 200 Hz, 50ms quantum = 10 ticks)
 const TIME_QUANTUM: u32 = 10;
@@ -44,6 +45,10 @@ pub extern "C" fn timer_interrupt_handler(_from_userspace: u8) {
 
     // Core time bookkeeping: increment TICKS counter (single atomic operation)
     crate::time::timer_interrupt();
+
+    // Trace timer tick - compiles to ~5 instructions when disabled
+    // Uses the TICKS counter value as payload for timing analysis
+    trace_timer_tick(crate::time::get_ticks());
 
     // Decrement current thread's quantum and check for reschedule
     unsafe {

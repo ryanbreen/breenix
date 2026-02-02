@@ -122,6 +122,8 @@ mod time;
 #[cfg(target_arch = "x86_64")]
 mod time_test;
 #[cfg(target_arch = "x86_64")]
+mod tracing;
+#[cfg(target_arch = "x86_64")]
 mod tls;
 #[cfg(target_arch = "x86_64")]
 mod tty;
@@ -424,6 +426,11 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // no timer interrupts can fire and the scheduler will not run.
     time::init();
     log::info!("Timer initialized");
+
+    // Initialize DTrace-style tracing framework
+    // This must be after per_cpu::init() and time::init() for timestamps
+    tracing::init();
+    log::info!("Tracing subsystem initialized");
 
     // CHECKPOINT A: Verify PIT Configuration
     log::info!("CHECKPOINT A: PIT initialized at {} Hz", 100);
