@@ -11,6 +11,7 @@ use crate::task::process_context::{
 };
 use crate::task::scheduler;
 use crate::task::thread::ThreadPrivilege;
+use crate::tracing::providers::sched::trace_ctx_switch;
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::VirtAddr;
 
@@ -190,6 +191,9 @@ pub extern "C" fn check_need_resched_and_switch(
     if let Some((old_thread_id, new_thread_id)) = schedule_result {
         // Clear exception cleanup context since we're doing a context switch
         crate::per_cpu::clear_exception_cleanup_context();
+
+        // Trace context switch - compiles to ~5 instructions when disabled
+        trace_ctx_switch(old_thread_id, new_thread_id);
 
         if old_thread_id == new_thread_id {
             // Same thread continues running, but check for pending signals

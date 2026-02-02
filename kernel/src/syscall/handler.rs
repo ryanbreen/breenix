@@ -29,6 +29,9 @@ use super::{SyscallNumber, SyscallResult};
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::VirtAddr;
 
+// Import tracing - these are inlined to ~5 instructions when disabled
+use crate::tracing::providers::syscall::{trace_entry, trace_exit};
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct SyscallFrame {
@@ -162,6 +165,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
 
     let syscall_num = frame.syscall_number();
     let args = frame.args();
+
+    // Trace syscall entry - compiles to ~5 instructions when tracing disabled
+    // (2 atomic loads + branch, no function call on fast path)
+    trace_entry(syscall_num);
 
     // Dispatch to the appropriate syscall handler
     // NOTE: No logging here! This is the hot path.
@@ -326,8 +333,14 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
 
     // Set return value in RAX
     match result {
-        SyscallResult::Ok(val) => frame.set_return_value(val),
+        SyscallResult::Ok(val) => {
+            // Trace syscall exit with success value
+            trace_exit(val as i64);
+            frame.set_return_value(val);
+        }
         SyscallResult::Err(errno) => {
+            // Trace syscall exit with error (negative errno)
+            trace_exit(-(errno as i64));
             // Return -errno in RAX for errors (Linux convention)
             frame.set_return_value((-(errno as i64)) as u64);
         }
