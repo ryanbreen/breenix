@@ -366,15 +366,93 @@ Real-world example: Adding 230 lines of page table diagnostics to `trace_iretq_t
 **Stub functions for assembly references:**
 If assembly code calls logging functions that were removed, provide empty `#[no_mangle]` stubs rather than modifying assembly. See `kernel/src/interrupts/timer.rs` for examples.
 
-### Approved Debugging Alternatives
+### 🚨 MANDATORY: Use the Tracing Framework for Debugging 🚨
 
-1. **QEMU interrupt tracing**: `BREENIX_QEMU_DEBUG_FLAGS="int,cpu_reset"` logs to file without affecting kernel timing
-2. **GDB breakpoints**: `BREENIX_GDB=1` enables GDB server
-3. **Post-mortem analysis**: Analyze logs after crashes, not during execution
-4. **Dedicated diagnostic threads**: Run diagnostics in separate threads with proper scheduling
-5. **raw_serial_char()**: Lock-free single-character output for critical paths (see below)
+**DO NOT add log statements to debug kernel issues.** The tracing framework exists specifically for this purpose and is the ONLY acceptable approach for kernel observability.
 
-### 🔴 CRITICAL: raw_serial_char() is the ONLY Acceptable Logging in Critical Paths
+**Why logs are FORBIDDEN:**
+- `log::*` and `serial_println!` use locks → deadlocks in interrupt/syscall paths
+- Logging changes timing behavior → heisenbugs (bugs that disappear when you try to observe them)
+- Log output is ephemeral → you lose the data when the system crashes
+- Logs pollute the codebase → technical debt accumulates
+
+**What to use instead:**
+
+#### 1. DTrace-Style Tracing Framework (PRIMARY)
+
+The kernel has a lock-free tracing subsystem in `kernel/src/tracing/`:
+
+```rust
+// Events are automatically recorded if tracing is enabled
+// Built-in providers: SYSCALL_PROVIDER, SCHED_PROVIDER, IRQ_PROVIDER
+
+// To add custom trace points:
+use kernel::tracing::{trace_event, trace_count};
+trace_event!(MY_PROVIDER, MY_EVENT, payload as u32);
+trace_count!(MY_COUNTER);
+```
+
+**Inspect via GDB:**
+```gdb
+# Dump all trace data to serial
+call trace_dump()
+
+# Dump last 20 events
+call trace_dump_latest(20)
+
+# Dump counters
+call trace_dump_counters()
+
+# Direct memory inspection
+print TRACE_ENABLED
+print SYSCALL_TOTAL.per_cpu[0].value
+x/100xg &TRACE_BUFFERS
+```
+
+**Inspect via /proc:**
+```bash
+cat /proc/trace/enable      # Check if tracing is enabled
+cat /proc/trace/events      # List available trace points
+cat /proc/trace/buffer      # Read trace buffer
+cat /proc/trace/counters    # Read counter values
+```
+
+**Automated testing:**
+```bash
+# Dump and validate tracing state via GDB
+./scripts/test_tracing_via_gdb.sh
+
+# Parse a memory dump
+python3 scripts/trace_memory_dump.py --parse /tmp/trace_buffers.bin --validate
+```
+
+#### 2. GDB Breakpoints and Memory Inspection
+
+```bash
+./breenix-gdb-chat/scripts/gdb_session.sh start
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "break kernel::syscall::handler::syscall_handler"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "continue"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "info registers"
+```
+
+#### 3. QEMU Interrupt Tracing (for interrupt-level issues)
+
+```bash
+BREENIX_QEMU_DEBUG_FLAGS="int,cpu_reset" ./run.sh --headless
+```
+
+#### 4. raw_serial_char() (LAST RESORT for truly critical paths)
+
+Only use this when the tracing framework itself cannot be used (e.g., in the tracing code itself). See section below.
+
+### 🔴 LAST RESORT: raw_serial_char() for Truly Critical Paths
+
+**PREFER THE TRACING FRAMEWORK** (`kernel/src/tracing/`) over raw_serial_char(). The tracing framework is lock-free and designed for exactly this purpose.
+
+Only use raw_serial_char() when:
+- Debugging the tracing framework itself
+- Debugging code that runs before tracing is initialized
+- You need single-character breadcrumbs and the tracing framework is insufficient
 
 **The standard logging infrastructure (`log::*`, `serial_println!`) CANNOT be used in:**
 - Context switch code (`context_switch.rs`)
@@ -451,6 +529,11 @@ Use `gdb_session.sh` for persistent, interactive debugging sessions:
 ./breenix-gdb-chat/scripts/gdb_session.sh cmd "print/x \$rdi"
 ./breenix-gdb-chat/scripts/gdb_session.sh cmd "backtrace 10"
 
+# IMPORTANT: Use tracing framework for kernel observability
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "call trace_dump()"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "call trace_dump_latest(20)"
+./breenix-gdb-chat/scripts/gdb_session.sh cmd "call trace_dump_counters()"
+
 # Get all serial output (kernel print statements)
 ./breenix-gdb-chat/scripts/gdb_session.sh serial
 
@@ -459,6 +542,23 @@ Use `gdb_session.sh` for persistent, interactive debugging sessions:
 ```
 
 This is **conversational debugging** - you send a command, see the result, think about it, and decide what to do next. Just like a human sitting at a GDB terminal.
+
+### Tracing Framework Memory Dump (VALIDATION)
+
+For automated testing and validation, use the tracing memory dump scripts:
+
+```bash
+# Run automated GDB test that dumps and validates tracing state
+./scripts/test_tracing_via_gdb.sh
+
+# Parse an existing memory dump
+python3 scripts/trace_memory_dump.py --parse /tmp/breenix_trace_test/trace_buffers.bin --validate
+```
+
+This captures an atomic snapshot of the tracing buffers and validates:
+- Event counts and types
+- Timestamp monotonicity
+- Expected events (TIMER_TICK, CTX_SWITCH, etc.)
 
 ### GDB Chat Tool (Underlying Engine)
 
