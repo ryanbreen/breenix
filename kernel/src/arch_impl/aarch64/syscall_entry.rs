@@ -76,7 +76,10 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     let result = if syscall_num == syscall_nums::FORK {
         sys_fork_aarch64(frame)
     } else if syscall_num == syscall_nums::EXEC {
-        sys_exec_aarch64(frame, arg1, arg2)
+        let exec_result = sys_exec_aarch64(frame, arg1, arg2);
+        // Trace: exec syscall handler returned to dispatcher
+        super::trace::trace_exec(b'H');
+        exec_result
     } else if syscall_num == syscall_nums::SIGRETURN {
         // SIGRETURN restores ALL registers from signal frame - don't overwrite X0 after
         match crate::syscall::signal::sys_sigreturn_with_frame_aarch64(frame) {
@@ -108,6 +111,9 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     // Check for pending signals before returning to userspace
     check_and_deliver_signals_aarch64(frame);
 
+    // Trace: about to return from syscall handler to assembly (will ERET)
+    super::trace::trace_exec(b'D');
+
     // Decrement preempt count on syscall exit
     Aarch64PerCpu::preempt_enable();
 }
@@ -118,6 +124,8 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
 /// This is the ARM64 equivalent of `check_need_resched_and_switch`.
 #[no_mangle]
 pub extern "C" fn check_need_resched_and_switch_aarch64(frame: &mut Aarch64ExceptionFrame) {
+    // Trace: context switch check called (from assembly)
+    super::trace::trace_exec(b'C');
     crate::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64(frame, true);
 }
 
@@ -126,7 +134,8 @@ pub extern "C" fn check_need_resched_and_switch_aarch64(frame: &mut Aarch64Excep
 /// This is intentionally minimal to avoid slowing down the return path.
 #[no_mangle]
 pub extern "C" fn trace_eret_to_el0(_elr: u64, _spsr: u64) {
-    // Intentionally empty - diagnostics would slow down syscall return
+    // Trace: about to ERET back to userspace
+    super::trace::trace_exec(b'B');
 }
 
 // =============================================================================
@@ -994,6 +1003,9 @@ fn sys_exec_aarch64(
     program_name_ptr: u64,
     argv_ptr: u64,
 ) -> u64 {
+    // Trace: exec syscall entered
+    super::trace::trace_exec(b'E');
+
     log::info!(
         "sys_exec_aarch64: program_name_ptr={:#x}, argv_ptr={:#x}",
         program_name_ptr,
@@ -1032,10 +1044,14 @@ fn sys_exec_aarch64(
         let program_name = match copy_cstr_from_user(program_name_ptr) {
             Ok(name) => name,
             Err(errno) => {
+                super::trace::trace_exec(b'X'); // Error path
                 log::error!("sys_exec_aarch64: Failed to read program name: {}", errno);
                 return (-(errno as i64)) as u64;
             }
         };
+
+        // Trace: program name parsed successfully
+        super::trace::trace_exec(b'N');
 
         log::info!("sys_exec_aarch64: Loading program '{}'", program_name);
 
@@ -1089,16 +1105,23 @@ fn sys_exec_aarch64(
             argv_vec.push(arg0);
         }
 
+        // Trace: attempting to open ELF file
+        super::trace::trace_exec(b'O');
+
         let elf_vec = if program_name.contains('/') {
             match load_elf_from_ext2(&program_name) {
                 Ok(data) => data,
-                Err(errno) => return (-(errno as i64)) as u64,
+                Err(errno) => {
+                    super::trace::trace_exec(b'X'); // Error path
+                    return (-(errno as i64)) as u64;
+                }
             }
         } else {
             let bin_path = alloc::format!("/bin/{}", program_name);
             match load_elf_from_ext2(&bin_path) {
                 Ok(data) => data,
                 Err(errno) => {
+                    super::trace::trace_exec(b'X'); // Error path
                     // ARM64 doesn't have userspace_test module fallback
                     log::error!(
                         "sys_exec_aarch64: Failed to load /bin/{}: {}",
@@ -1109,6 +1132,9 @@ fn sys_exec_aarch64(
                 }
             }
         };
+
+        // Trace: ELF file loaded from filesystem
+        super::trace::trace_exec(b'L');
 
         let boxed_slice = elf_vec.into_boxed_slice();
         let elf_data = Box::leak(boxed_slice) as &'static [u8];
@@ -1144,8 +1170,14 @@ fn sys_exec_aarch64(
         without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
+                // Trace: calling exec_process_with_argv (process manager)
+                super::trace::trace_exec(b'M');
+
                 match manager.exec_process_with_argv(current_pid, elf_data, Some(leaked_name), &argv_slices) {
                     Ok((new_entry_point, new_rsp)) => {
+                        // Trace: exec_process_with_argv succeeded
+                        super::trace::trace_exec(b'S');
+
                         log::info!(
                             "sys_exec_aarch64: Successfully replaced process address space, entry point: {:#x}",
                             new_entry_point
@@ -1195,6 +1227,9 @@ fn sys_exec_aarch64(
 
                         frame.spsr = 0x0; // EL0t, DAIF clear
 
+                        // Trace: frame registers zeroed, SPSR set
+                        super::trace::trace_exec(b'F');
+
                         if let Some(process) = manager.get_process(current_pid) {
                             if let Some(ref page_table) = process.page_table {
                                 let new_ttbr0 = page_table.level_4_frame().start_address().as_u64();
@@ -1211,6 +1246,8 @@ fn sys_exec_aarch64(
                                         options(nostack)
                                     );
                                 }
+                                // Trace: TTBR0 page table switched
+                                super::trace::trace_exec(b'P');
                             }
                         }
 
@@ -1219,6 +1256,9 @@ fn sys_exec_aarch64(
                             frame.elr,
                             new_rsp
                         );
+
+                        // Trace: about to return 0 from exec syscall
+                        super::trace::trace_exec(b'R');
 
                         0
                     }
@@ -1245,29 +1285,54 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     use crate::fs::ext2;
     use crate::syscall::errno::{EACCES, EIO, ENOENT, ENOTDIR};
 
+    // Trace: entering load_elf_from_ext2
+    super::trace::trace_exec(b'1');
+
     let fs_guard = ext2::root_fs();
+    // Trace: got fs_guard
+    super::trace::trace_exec(b'2');
+
     let fs = fs_guard.as_ref().ok_or(EIO)?;
+    // Trace: got fs reference
+    super::trace::trace_exec(b'3');
 
     let inode_num = fs.resolve_path(path).map_err(|e| {
+        super::trace::trace_exec(b'!'); // Error in resolve_path
         if e.contains("not found") {
             ENOENT
         } else {
             EIO
         }
     })?;
+    // Trace: resolved path
+    super::trace::trace_exec(b'4');
 
-    let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
+    let inode = fs.read_inode(inode_num).map_err(|_| {
+        super::trace::trace_exec(b'@'); // Error in read_inode
+        EIO
+    })?;
+    // Trace: got inode
+    super::trace::trace_exec(b'5');
 
     if inode.is_dir() {
+        super::trace::trace_exec(b'#'); // Is directory
         return Err(ENOTDIR);
     }
 
     let perms = inode.permissions();
     if (perms & 0o100) == 0 {
+        super::trace::trace_exec(b'$'); // No exec permission
         return Err(EACCES);
     }
+    // Trace: permissions OK
+    super::trace::trace_exec(b'6');
 
-    let data = fs.read_file_content(&inode).map_err(|_| EIO)?;
+    let data = fs.read_file_content(&inode).map_err(|_| {
+        super::trace::trace_exec(b'%'); // Error reading content
+        EIO
+    })?;
+    // Trace: read complete
+    super::trace::trace_exec(b'7');
 
     Ok(data)
 }

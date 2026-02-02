@@ -72,6 +72,11 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     let elf_data = fs.read_file_content(&inode).map_err(|_| "failed to read init_shell")?;
     raw_char(b'E'); // File content read
 
+    // CRITICAL: Release ext2 lock BEFORE creating process and jumping to userspace.
+    // return_to_userspace() never returns, so fs_guard would never be dropped.
+    // If we hold the lock, fork/exec in userspace will deadlock trying to acquire it.
+    drop(fs_guard);
+
     // Re-enable interrupts
     raw_char(b'e'); // About to enable interrupts
 

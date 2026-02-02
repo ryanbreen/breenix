@@ -25,6 +25,7 @@ pub mod mmu;
 pub mod context;
 pub mod context_switch;
 pub mod syscall_entry;
+pub mod trace;
 
 // Re-export commonly used items
 // These re-exports are part of the complete HAL API
