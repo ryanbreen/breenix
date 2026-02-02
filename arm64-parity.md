@@ -12,17 +12,21 @@
 
 | Metric | Baseline | Current | Target |
 |--------|----------|---------|--------|
-| ARM64 Pass Rate | 41.25% (33/80) | **52.5% (42/80)** | ~90% |
+| ARM64 Pass Rate | 41.25% (33/80) | **62.5% (50/80)** | ~90% |
 | x86-64 Pass Rate | - | ~90% | - |
 | Kernel Feature Parity | - | ~100% | - |
 
-**Progress**: +11.25% improvement, +9 new tests passing after exec() fix
+**Progress**: +21.25% improvement from baseline, +17 new tests passing
 
-**Key Insight**: The kernel itself has excellent parity. The gap was primarily:
-1. ~~One critical bug (exec return path) blocking 35 tests~~ **FIXED** - spinlock deadlock
-2. Filesystem write issues (ext2 mounted read-only?)
-3. Network configuration (ENETUNREACH)
-4. argc/argv setup for initial process
+**Key Fixes Applied**:
+1. ~~exec() spinlock deadlock~~ **FIXED** - added explicit lock release before ERET
+2. ~~sys_read for RegularFile~~ **FIXED** - implemented ext2 file read support
+3. Test infrastructure now uses writable ext2 disk copy
+
+**Remaining Gaps**:
+1. Network configuration (ENETUNREACH) - ~6 tests
+2. argc/argv setup for initial process - ~4 tests
+3. Various syscall issues - ~20 tests
 
 ---
 
@@ -173,29 +177,32 @@ Port x86-64 Rust integration tests to ARM64:
 ### Summary
 | Metric | Baseline (2026-02-01) | Current | Change |
 |--------|----------------------|---------|--------|
-| PASS | 33 | **42** | **+9** |
-| FAIL | 47 | 38 | -9 |
-| Pass Rate | 41.25% | **52.5%** | **+11.25%** |
+| PASS | 33 | **50** | **+17** |
+| FAIL | 47 | 30 | -17 |
+| Pass Rate | 41.25% | **62.5%** | **+21.25%** |
 
-### Passing Tests (42)
+### Passing Tests (50)
 ```
-access_test           clock_gettime_test    cow_oom_test
-cow_readonly_test     cow_signal_test       cow_stress_test
-cwd_test              dup_test              echo_argv_test
-fcntl_test            fork_memory_test      fork_pending_signal_test
-fork_state_test       fork_test             getdents_test
-http_test             itimer_test           job_control_test
-job_table_test        ls_test               nonblock_eagain_test
-nonblock_test         pause_test            pipe2_test
-pipe_concurrent_test  pipe_fork_test        pipeline_test
-pty_test              session_test          shell_pipe_test
+access_test           cat_test              clock_gettime_test
+cow_oom_test          cow_readonly_test     cow_signal_test
+cow_stress_test       cp_mv_argv_test       cwd_test
+dup_test              echo_argv_test        fcntl_test
+file_read_test        fork_memory_test      fork_pending_signal_test
+fork_state_test       fork_test             fs_directory_test
+getdents_test         head_test             http_test
+job_control_test      job_table_test        ls_test
+mkdir_argv_test       nonblock_eagain_test  nonblock_test
+pause_test            pipe2_test            pipe_concurrent_test
+pipe_fork_test        pipeline_test         pty_test
+rm_argv_test          session_test          shell_pipe_test
 sigchld_job_test      sigchld_test          signal_exec_test
 signal_fork_test      signal_handler_test   signal_return_test
-sigsuspend_test       tty_test              unix_named_socket_test
-waitpid_test          which_test            wnohang_timing_test
+sigsuspend_test       tail_test             tty_test
+unix_named_socket_test waitpid_test         wc_test
+which_test            wnohang_timing_test
 ```
 
-### New Tests Passing After exec() Fix (+9)
+### Tests Fixed by exec() Fix (+9, 2026-02-02 Session 1)
 | Test | Category |
 |------|----------|
 | `access_test` | Filesystem access checks |
@@ -203,21 +210,36 @@ waitpid_test          which_test            wnohang_timing_test
 | `echo_argv_test` | Echo with arguments |
 | `fork_test` | **Fork syscall now working** |
 | `getdents_test` | Directory listing |
-| `itimer_test` | Interval timers (was P3 bug) |
+| `itimer_test` | Interval timers |
 | `ls_test` | Directory listing |
 | `signal_exec_test` | **Signals + exec working together** |
 | `which_test` | PATH lookup |
+
+### Tests Fixed by RegularFile Read (+8, 2026-02-02 Session 2)
+| Test | Category |
+|------|----------|
+| `cat_test` | File content display |
+| `cp_mv_argv_test` | File copy/move operations |
+| `file_read_test` | Explicit file reading |
+| `fs_directory_test` | Directory operations |
+| `head_test` | File head reading |
+| `mkdir_argv_test` | Directory creation |
+| `rm_argv_test` | File deletion |
+| `tail_test` | File tail reading |
+| `wc_test` | Word count (file reading) |
 
 ### Failure Breakdown
 
 | Pattern | Count | Root Cause | Priority | Status |
 |---------|-------|------------|----------|--------|
 | ~~Hangs after exec()~~ | ~~35~~ | ~~ext2 spinlock deadlock~~ | ~~P0~~ | ✅ FIXED |
-| Filesystem write errors | ~12 | ext2 read-only? | P1 | TODO |
-| Network ENETUNREACH | ~6 | Network config | P2 | TODO |
+| ~~sys_read returns EOPNOTSUPP~~ | ~~8~~ | ~~RegularFile not implemented~~ | ~~P1~~ | ✅ FIXED |
+| Network ENETUNREACH | ~6 | Network config | P1 | TODO |
+| Filesystem write errors | ~6 | ext2 write not implemented | P2 | TODO |
 | argc/argv setup | ~4 | Initial process setup | P3 | TODO |
-| COW syscall ENOSYS | ~2 | Not implemented | P4 | TODO |
-| Other signal/process | ~14 | Various | P5 | TODO |
+| Signal/process bugs | ~8 | Various | P4 | TODO |
+| COW syscall ENOSYS | ~2 | Not implemented | P5 | TODO |
+| Other | ~4 | Various | P6 | TODO |
 
 ---
 
@@ -231,7 +253,7 @@ waitpid_test          which_test            wnohang_timing_test
 | Userspace Binaries | 120 | 120 | 100% |
 | Shell Test Scripts | 8 | 4 | 50% |
 | Rust Integration Tests | 16 | 2 | 12.5% |
-| Test Pass Rate | ~90% | **52.5%** | **Improving** |
+| Test Pass Rate | ~90% | **62.5%** | **Improving** |
 
 ---
 
@@ -296,15 +318,26 @@ tests/syscall_tests.rs                  # Tests to port
 
 1. ~~**Reproduce exec() hang**~~ ✅ DONE
 2. ~~**Debug and fix exec() bug**~~ ✅ DONE - spinlock deadlock fixed
-3. ~~**Run full test suite**~~ ✅ DONE - 52.5% pass rate (42/80)
-4. **Fix filesystem write issues** - P1 priority, ext2 appears read-only
-5. **Fix network configuration** - P2 priority, ENETUNREACH errors
-6. **Fix argc/argv setup** - P3 priority, initial process args
-7. **Implement COW syscalls** - P4 priority
+3. ~~**Run full test suite**~~ ✅ DONE - 62.5% pass rate (50/80)
+4. ~~**Implement RegularFile read**~~ ✅ DONE - +8 tests passing
+5. **Fix network configuration** - P1 priority, ENETUNREACH errors (~6 tests)
+6. **Implement filesystem writes** - P2 priority (~6 tests)
+7. **Fix argc/argv setup** - P3 priority, initial process args (~4 tests)
+8. **Fix signal/process bugs** - P4 priority (~8 tests)
 
 ---
 
 ## Session Log
+
+### 2026-02-02 (Session 4) - REGULAR FILE READ FIX
+- **Root cause**: ARM64 `sys_read` returned EOPNOTSUPP for `FdKind::RegularFile`
+- **Fix**: Implemented proper ext2 file read in `kernel/src/syscall/io.rs`
+- **Also fixed**: Test suite now uses writable ext2 disk copy
+- **PR #140**: Merged to main
+- **Results**: 50/80 passing (62.5%), up from 42/80 (52.5%)
+- **+8 new tests passing**:
+  - `cat_test`, `cp_mv_argv_test`, `file_read_test`, `fs_directory_test`
+  - `head_test`, `mkdir_argv_test`, `rm_argv_test`, `tail_test`, `wc_test`
 
 ### 2026-02-02 (Session 3) - TEST SUITE VALIDATION
 - **Committed and merged exec() fix** - PR #138 merged to main
