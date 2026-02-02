@@ -2,7 +2,7 @@
 
 **Tracking Document for ARM64 vs x86-64 Feature Parity**
 
-## Last Updated: 2026-02-01
+## Last Updated: 2026-02-02
 
 ---
 
@@ -10,19 +10,19 @@
 
 **Goal**: Achieve ARM64 test parity with x86-64
 
-| Metric | Current | Target |
-|--------|---------|--------|
-| ARM64 Pass Rate | 41.25% (33/80) | ~90% |
-| x86-64 Pass Rate | ~90% | - |
-| Kernel Feature Parity | ~100% | - |
+| Metric | Baseline | Current | Target |
+|--------|----------|---------|--------|
+| ARM64 Pass Rate | 41.25% (33/80) | **52.5% (42/80)** | ~90% |
+| x86-64 Pass Rate | - | ~90% | - |
+| Kernel Feature Parity | - | ~100% | - |
 
-**Critical Blocker**: ~~35 tests hang after `exec()`~~ **FIXED 2026-02-01**
+**Progress**: +11.25% improvement, +9 new tests passing after exec() fix
 
 **Key Insight**: The kernel itself has excellent parity. The gap was primarily:
 1. ~~One critical bug (exec return path) blocking 35 tests~~ **FIXED** - spinlock deadlock
-2. Test infrastructure gaps (not kernel functionality)
-
-**Post-Fix Status**: exec() syscall now works. Need to re-run full test suite to measure new pass rate.
+2. Filesystem write issues (ext2 mounted read-only?)
+3. Network configuration (ENETUNREACH)
+4. argc/argv setup for initial process
 
 ---
 
@@ -131,13 +131,13 @@ Create `docker/qemu/run-aarch64-kthread-parallel.sh` modeled on x86-64 version.
 ---
 
 ### Priority 3: Fix Specific Syscall Bugs
-**Status**: NOT STARTED
+**Status**: PARTIALLY FIXED
 **Effort**: Medium (individual investigations)
 
-| Syscall | Issue | Test |
-|---------|-------|------|
-| getitimer | Returns uninitialized memory (0xCCCCCCCC) | `itimer_test` |
-| socketpair | Returns EFAULT (14) | `unix_socket_test` |
+| Syscall | Issue | Test | Status |
+|---------|-------|------|--------|
+| ~~getitimer~~ | ~~Returns uninitialized memory~~ | `itimer_test` | ✅ FIXED |
+| socketpair | Returns EFAULT (14) | `unix_socket_test` | TODO |
 
 ---
 
@@ -168,38 +168,56 @@ Port x86-64 Rust integration tests to ARM64:
 
 ---
 
-## Test Results (Current Baseline)
+## Test Results (2026-02-02)
 
 ### Summary
-| Metric | Value |
-|--------|-------|
-| PASS | 33 |
-| FAIL | 47 |
-| Pass Rate | **41.25%** |
+| Metric | Baseline (2026-02-01) | Current | Change |
+|--------|----------------------|---------|--------|
+| PASS | 33 | **42** | **+9** |
+| FAIL | 47 | 38 | -9 |
+| Pass Rate | 41.25% | **52.5%** | **+11.25%** |
 
-### Passing Tests (33)
+### Passing Tests (42)
 ```
-clock_gettime_test    cow_oom_test          cow_readonly_test
-cow_signal_test       cow_stress_test       dup_test
+access_test           clock_gettime_test    cow_oom_test
+cow_readonly_test     cow_signal_test       cow_stress_test
+cwd_test              dup_test              echo_argv_test
 fcntl_test            fork_memory_test      fork_pending_signal_test
-fork_state_test       http_test             job_control_test
-job_table_test        nonblock_eagain_test  nonblock_test
-pause_test            pipe2_test            pipe_concurrent_test
-pipe_fork_test        pipeline_test         pty_test
-session_test          shell_pipe_test       sigchld_job_test
-sigchld_test          signal_fork_test      signal_handler_test
-signal_return_test    sigsuspend_test       tty_test
-unix_named_socket_test waitpid_test         wnohang_timing_test
+fork_state_test       fork_test             getdents_test
+http_test             itimer_test           job_control_test
+job_table_test        ls_test               nonblock_eagain_test
+nonblock_test         pause_test            pipe2_test
+pipe_concurrent_test  pipe_fork_test        pipeline_test
+pty_test              session_test          shell_pipe_test
+sigchld_job_test      sigchld_test          signal_exec_test
+signal_fork_test      signal_handler_test   signal_return_test
+sigsuspend_test       tty_test              unix_named_socket_test
+waitpid_test          which_test            wnohang_timing_test
 ```
+
+### New Tests Passing After exec() Fix (+9)
+| Test | Category |
+|------|----------|
+| `access_test` | Filesystem access checks |
+| `cwd_test` | Current working directory |
+| `echo_argv_test` | Echo with arguments |
+| `fork_test` | **Fork syscall now working** |
+| `getdents_test` | Directory listing |
+| `itimer_test` | Interval timers (was P3 bug) |
+| `ls_test` | Directory listing |
+| `signal_exec_test` | **Signals + exec working together** |
+| `which_test` | PATH lookup |
 
 ### Failure Breakdown
 
 | Pattern | Count | Root Cause | Priority | Status |
 |---------|-------|------------|----------|--------|
-| Hangs after exec() | ~35 | ext2 spinlock deadlock | **P0** | ✅ FIXED |
-| COW syscall ENOSYS | 6 | Not implemented | P1 | TODO |
-| Specific syscall bugs | 3 | Individual fixes | P3 | TODO |
-| Network ENETUNREACH | 3 | Network config | P4 | TODO |
+| ~~Hangs after exec()~~ | ~~35~~ | ~~ext2 spinlock deadlock~~ | ~~P0~~ | ✅ FIXED |
+| Filesystem write errors | ~12 | ext2 read-only? | P1 | TODO |
+| Network ENETUNREACH | ~6 | Network config | P2 | TODO |
+| argc/argv setup | ~4 | Initial process setup | P3 | TODO |
+| COW syscall ENOSYS | ~2 | Not implemented | P4 | TODO |
+| Other signal/process | ~14 | Various | P5 | TODO |
 
 ---
 
@@ -213,7 +231,7 @@ unix_named_socket_test waitpid_test         wnohang_timing_test
 | Userspace Binaries | 120 | 120 | 100% |
 | Shell Test Scripts | 8 | 4 | 50% |
 | Rust Integration Tests | 16 | 2 | 12.5% |
-| Test Pass Rate | ~90% | 41% | **Gap** |
+| Test Pass Rate | ~90% | **52.5%** | **Improving** |
 
 ---
 
@@ -278,13 +296,30 @@ tests/syscall_tests.rs                  # Tests to port
 
 1. ~~**Reproduce exec() hang**~~ ✅ DONE
 2. ~~**Debug and fix exec() bug**~~ ✅ DONE - spinlock deadlock fixed
-3. **Run full test suite** - Re-test all 80 tests to measure new pass rate
-4. **Implement COW syscalls** - P1 priority, should unblock 6 more tests
-5. **Create kthread parallel test** - P2 priority
+3. ~~**Run full test suite**~~ ✅ DONE - 52.5% pass rate (42/80)
+4. **Fix filesystem write issues** - P1 priority, ext2 appears read-only
+5. **Fix network configuration** - P2 priority, ENETUNREACH errors
+6. **Fix argc/argv setup** - P3 priority, initial process args
+7. **Implement COW syscalls** - P4 priority
 
 ---
 
 ## Session Log
+
+### 2026-02-02 (Session 3) - TEST SUITE VALIDATION
+- **Committed and merged exec() fix** - PR #138 merged to main
+- **Ran full ARM64 test suite** - 80 tests
+- **Results**: 42/80 passing (52.5%), up from 33/80 (41.25%)
+- **+9 new tests passing** after exec() fix:
+  - `access_test`, `cwd_test`, `echo_argv_test`, `fork_test`
+  - `getdents_test`, `itimer_test`, `ls_test`, `signal_exec_test`, `which_test`
+- **Notable**: `itimer_test` now passes (was listed as P3 bug)
+- **Remaining failures** categorized:
+  - Filesystem write errors (~12 tests) - ext2 mounted read-only?
+  - Network errors (~6 tests) - ENETUNREACH
+  - argc/argv setup (~4 tests)
+  - COW syscalls (~2 tests)
+  - Other (~14 tests)
 
 ### 2026-02-01 (Session 2) - MAJOR BREAKTHROUGH
 - **FIXED P0 exec() bug** - Root cause was ext2 spinlock deadlock, not return-to-userspace
