@@ -60,13 +60,18 @@ fi
 
 echo "Starting QEMU ARM64 with VirtIO devices..."
 
+# Create writable copy of ext2 disk to allow filesystem write tests
+EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
+cp "$EXT2_DISK" "$EXT2_WRITABLE"
+
 # Run QEMU with ARM64 virt machine and VirtIO devices
 # QEMU virt machine provides 32 VirtIO MMIO slots at:
 #   0x0a000000 + n*0x200  for n=0..31
 # Devices are assigned from slot 31 downward.
+# Use writable disk copy (no readonly=on) to allow filesystem writes
 docker run --rm \
     -v "$KERNEL:/breenix/kernel:ro" \
-    -v "$EXT2_DISK:/breenix/ext2.img:ro" \
+    -v "$EXT2_WRITABLE:/breenix/ext2.img" \
     -v "$OUTPUT_DIR:/output" \
     breenix-qemu-aarch64 \
     qemu-system-aarch64 \
@@ -74,10 +79,12 @@ docker run --rm \
         -cpu cortex-a72 \
         -m 512 \
         -kernel /breenix/kernel \
-        -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img \
+        -drive if=none,id=ext2disk,format=raw,file=/breenix/ext2.img \
         -device virtio-blk-device,drive=ext2disk \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
+        -device virtio-net-device,netdev=net0 \
+        -netdev user,id=net0 \
         -display none \
         -no-reboot \
         -serial file:/output/serial.txt \

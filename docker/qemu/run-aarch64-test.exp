@@ -26,6 +26,8 @@ spawn qemu-system-aarch64 \
     -device virtio-keyboard-device \
     -device virtio-blk-device,drive=ext2 \
     -drive if=none,id=ext2,format=raw,readonly=on,file=$ext2_disk \
+    -device virtio-net-device,netdev=net0 \
+    -netdev user,id=net0 \
     -serial mon:stdio
 
 # Wait for shell prompt

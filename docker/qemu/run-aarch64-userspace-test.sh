@@ -39,6 +39,10 @@ fi
 OUTPUT_DIR="/tmp/breenix_aarch64_test_$$"
 mkdir -p "$OUTPUT_DIR"
 
+# Create writable copy of ext2 disk to allow filesystem write tests
+EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
+cp "$EXT2_DISK" "$EXT2_WRITABLE"
+
 # Create FIFOs for monitor control
 MONITOR_IN="$OUTPUT_DIR/monitor.in"
 MONITOR_OUT="$OUTPUT_DIR/monitor.out"
@@ -48,6 +52,7 @@ mkfifo "$MONITOR_OUT"
 # Start QEMU in background
 # Use -serial file for output capture
 # Use -monitor pipe for sending commands
+# Use writable disk copy (no readonly=on) to allow filesystem writes
 timeout "$TIMEOUT" qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 \
     -kernel "$KERNEL" \
@@ -55,7 +60,9 @@ timeout "$TIMEOUT" qemu-system-aarch64 \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-blk-device,drive=ext2 \
-    -drive if=none,id=ext2,format=raw,readonly=on,file="$EXT2_DISK" \
+    -drive if=none,id=ext2,format=raw,file="$EXT2_WRITABLE" \
+    -device virtio-net-device,netdev=net0 \
+    -netdev user,id=net0 \
     -serial file:"$OUTPUT_DIR/serial.txt" \
     -monitor pipe:"$OUTPUT_DIR/monitor" \
     &

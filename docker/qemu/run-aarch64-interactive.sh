@@ -63,11 +63,15 @@ echo ""
 # Port 5901 to avoid conflict with x86_64 on 5900
 
 # Build disk options
+# Create writable copy for the container to use
 DISK_VOLUME=""
 DISK_OPTS="-device virtio-blk-device,drive=hd0 -drive if=none,id=hd0,format=raw,file=/dev/null"
 if [ -f "$EXT2_DISK" ]; then
-    DISK_VOLUME="-v $EXT2_DISK:/breenix/ext2.img:ro"
-    DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,readonly=on,file=/breenix/ext2.img"
+    # Create a writable copy in /tmp for container use
+    EXT2_WRITABLE="/tmp/breenix_aarch64_interactive_ext2.img"
+    cp "$EXT2_DISK" "$EXT2_WRITABLE"
+    DISK_VOLUME="-v $EXT2_WRITABLE:/breenix/ext2.img"
+    DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=/breenix/ext2.img"
 fi
 
 docker run --rm \

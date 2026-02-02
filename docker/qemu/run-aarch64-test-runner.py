@@ -41,6 +41,8 @@ def run_test(test_name, timeout=45):
         "-device", "virtio-keyboard-device",
         "-device", "virtio-blk-device,drive=ext2",
         "-drive", f"if=none,id=ext2,format=raw,readonly=on,file={ext2_disk}",
+        "-device", "virtio-net-device,netdev=net0",
+        "-netdev", "user,id=net0",
         "-serial", "stdio"
     ]
     

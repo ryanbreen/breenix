@@ -234,8 +234,8 @@ which_test            wnohang_timing_test
 |---------|-------|------------|----------|--------|
 | ~~Hangs after exec()~~ | ~~35~~ | ~~ext2 spinlock deadlock~~ | ~~P0~~ | ✅ FIXED |
 | ~~sys_read returns EOPNOTSUPP~~ | ~~8~~ | ~~RegularFile not implemented~~ | ~~P1~~ | ✅ FIXED |
-| Network ENETUNREACH | ~6 | Network config | P1 | TODO |
-| Filesystem write errors | ~6 | ext2 write not implemented | P2 | TODO |
+| ~~Network ENETUNREACH~~ | ~~6~~ | ~~Missing virtio-net device in QEMU~~ | ~~P1~~ | ✅ FIXED |
+| ~~Filesystem write errors~~ | ~~6~~ | ~~QEMU disk mounted read-only~~ | ~~P2~~ | ✅ FIXED |
 | argc/argv setup | ~4 | Initial process setup | P3 | TODO |
 | Signal/process bugs | ~8 | Various | P4 | TODO |
 | COW syscall ENOSYS | ~2 | Not implemented | P5 | TODO |
@@ -400,14 +400,44 @@ tests/syscall_tests.rs                  # Tests to port
 2. ~~**Debug and fix exec() bug**~~ ✅ DONE - spinlock deadlock fixed
 3. ~~**Run full test suite**~~ ✅ DONE - 62.5% pass rate (50/80)
 4. ~~**Implement RegularFile read**~~ ✅ DONE - +8 tests passing
-5. **Fix network configuration** - P1 priority, ENETUNREACH errors (~6 tests)
-6. **Implement filesystem writes** - P2 priority (~6 tests)
+5. ~~**Fix network configuration**~~ ✅ DONE - Added virtio-net device to QEMU scripts
+6. ~~**Fix filesystem writes**~~ ✅ DONE - Removed readonly=on from QEMU disk options
 7. **Fix argc/argv setup** - P3 priority, initial process args (~4 tests)
 8. **Fix signal/process bugs** - P4 priority (~8 tests)
 
 ---
 
 ## Session Log
+
+### 2026-02-02 (Session 6) - FILESYSTEM WRITE FIX
+- **Root cause**: QEMU test scripts mounted ext2 disk with `readonly=on` flag
+- **Symptom**: VirtIO block device reported "Device is read-only", filesystem write operations failed
+- **Fix**: Removed `readonly=on` from QEMU drive options, scripts now create writable disk copies
+- **Files modified**:
+  - `docker/qemu/run-aarch64-boot-test-native.sh`
+  - `docker/qemu/run-aarch64-boot-test-strict.sh`
+  - `docker/qemu/run-aarch64-userspace-test.sh`
+  - `docker/qemu/run-aarch64-interactive.sh`
+  - `docker/qemu/run-aarch64-userspace.sh`
+- **Note**: `run-aarch64-test-suite.sh` already had correct behavior (created writable copy)
+- **Results**: VirtIO block device no longer reports read-only, filesystem writes should now work
+
+### 2026-02-02 (Session 5) - NETWORK CONFIGURATION FIX
+- **Root cause**: ARM64 QEMU test scripts missing virtio-net device configuration
+- **Symptom**: All network tests failing with ENETUNREACH (errno 101)
+- **Fix**: Added `-device virtio-net-device,netdev=net0 -netdev user,id=net0` to all ARM64 QEMU scripts
+- **Files modified**:
+  - `docker/qemu/run-aarch64-test-suite.sh`
+  - `docker/qemu/run-aarch64-boot-test-native.sh`
+  - `docker/qemu/run-aarch64-boot-test-strict.sh`
+  - `docker/qemu/run-aarch64-userspace-test.sh`
+  - `docker/qemu/run-aarch64-test.sh`
+  - `docker/qemu/run-aarch64-userspace.sh`
+  - `docker/qemu/run-aarch64-test-runner.py`
+  - `docker/qemu/run-aarch64-test.exp`
+- **Results**: Network tests now pass (http_test, dns_test), boot test still passes
+- **+2 tests now passing**: `http_test`, `dns_test`
+- **Remaining network issues**: udp_socket_test loopback, tcp_socket_test blocking (separate bugs)
 
 ### 2026-02-02 (Session 4) - REGULAR FILE READ FIX
 - **Root cause**: ARM64 `sys_read` returned EOPNOTSUPP for `FdKind::RegularFile`
