@@ -437,3 +437,83 @@ pub fn snapshot_all_counters() -> ([CounterSnapshot; MAX_COUNTERS], usize) {
 
     (snapshots, count)
 }
+
+// =============================================================================
+// Unit Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test counter for unit tests - not registered globally
+    static TEST_COUNTER: TraceCounter = TraceCounter::new("test_counter", "Test counter for unit tests");
+
+    #[test_case]
+    fn test_counter_initial_value() {
+        // A fresh counter should have zero in all slots
+        let total = TEST_COUNTER.aggregate();
+        // Note: can't guarantee zero if other tests ran, but structure should be valid
+        assert!(total >= 0); // Just verify it doesn't panic
+    }
+
+    #[test_case]
+    fn test_counter_increment() {
+        let before = TEST_COUNTER.aggregate();
+        TEST_COUNTER.increment();
+        let after = TEST_COUNTER.aggregate();
+        assert_eq!(after, before + 1);
+    }
+
+    #[test_case]
+    fn test_counter_add() {
+        let before = TEST_COUNTER.aggregate();
+        TEST_COUNTER.add(10);
+        let after = TEST_COUNTER.aggregate();
+        assert_eq!(after, before + 10);
+    }
+
+    #[test_case]
+    fn test_counter_per_cpu_isolation() {
+        // Each CPU slot should be independent
+        // We can only test CPU 0 in single-threaded tests
+        let cpu0_before = TEST_COUNTER.get_cpu(0);
+        TEST_COUNTER.increment(); // Increments current CPU (0 in test)
+        let cpu0_after = TEST_COUNTER.get_cpu(0);
+
+        // Verify CPU 0 was incremented
+        assert_eq!(cpu0_after, cpu0_before + 1);
+    }
+
+    #[test_case]
+    fn test_counter_reset() {
+        // Add some value
+        TEST_COUNTER.add(100);
+        let before = TEST_COUNTER.aggregate();
+        assert!(before >= 100);
+
+        // Reset
+        TEST_COUNTER.reset();
+        let after = TEST_COUNTER.aggregate();
+        assert_eq!(after, 0);
+    }
+
+    #[test_case]
+    fn test_counter_snapshot() {
+        TEST_COUNTER.reset();
+        TEST_COUNTER.add(42);
+
+        let snapshot = CounterSnapshot::from_counter(&TEST_COUNTER);
+        assert_eq!(snapshot.name, "test_counter");
+        assert_eq!(snapshot.total, 42);
+    }
+
+    #[test_case]
+    fn test_cache_line_alignment() {
+        // Verify CpuCounterSlot is 64 bytes (cache line aligned)
+        assert_eq!(core::mem::size_of::<CpuCounterSlot>(), 64);
+
+        // Verify alignment
+        assert_eq!(core::mem::align_of::<CpuCounterSlot>(), 64);
+    }
+}

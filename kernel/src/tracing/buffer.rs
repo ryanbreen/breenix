@@ -248,3 +248,115 @@ const _: () = {
     // With 64-byte alignment, actual size should be a multiple of 64
     assert!(actual % 64 == 0, "TraceCpuBuffer not 64-byte aligned");
 };
+
+// =============================================================================
+// Unit Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn test_buffer_new() {
+        let buffer = TraceCpuBuffer::new();
+        assert_eq!(buffer.write_index(), 0);
+        assert_eq!(buffer.count(), 0);
+        assert!(buffer.is_empty());
+    }
+
+    #[test_case]
+    fn test_buffer_record_single() {
+        let buffer = TraceCpuBuffer::new();
+        let event = TraceEvent::new(0x0300, 0, 0, 42);
+
+        buffer.record(event);
+
+        assert_eq!(buffer.write_index(), 1);
+        assert_eq!(buffer.count(), 1);
+        assert!(!buffer.is_empty());
+
+        let retrieved = buffer.get_event(0);
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.event_type, 0x0300);
+        assert_eq!(retrieved.payload, 42);
+    }
+
+    #[test_case]
+    fn test_buffer_record_multiple() {
+        let buffer = TraceCpuBuffer::new();
+
+        for i in 0..10 {
+            let event = TraceEvent::new(0x0300, 0, 0, i as u32);
+            buffer.record(event);
+        }
+
+        assert_eq!(buffer.write_index(), 10);
+        assert_eq!(buffer.count(), 10);
+
+        // Verify each event
+        for i in 0..10 {
+            let event = buffer.get_event(i).unwrap();
+            assert_eq!(event.payload, i as u32);
+        }
+    }
+
+    #[test_case]
+    fn test_buffer_wraparound() {
+        let buffer = TraceCpuBuffer::new();
+
+        // Fill buffer beyond capacity to test wraparound
+        for i in 0..(TRACE_BUFFER_SIZE + 100) {
+            let event = TraceEvent::new(0x0300, 0, 0, i as u32);
+            buffer.record(event);
+        }
+
+        // Write index should be past buffer size
+        assert_eq!(buffer.write_index(), TRACE_BUFFER_SIZE + 100);
+
+        // Count should be capped at buffer size
+        assert_eq!(buffer.count(), TRACE_BUFFER_SIZE);
+
+        // Oldest events should be overwritten
+        // The buffer now contains events from index 100 to TRACE_BUFFER_SIZE+99
+        let first_idx = 100 & TRACE_BUFFER_MASK;
+        let event = buffer.get_event(first_idx).unwrap();
+        assert_eq!(event.payload, 100);
+    }
+
+    #[test_case]
+    fn test_buffer_iter_events() {
+        let buffer = TraceCpuBuffer::new();
+
+        for i in 0..5 {
+            let event = TraceEvent::new(0x0300, 0, 0, i as u32);
+            buffer.record(event);
+        }
+
+        let events: alloc::vec::Vec<_> = buffer.iter_events().collect();
+        assert_eq!(events.len(), 5);
+
+        for (i, event) in events.iter().enumerate() {
+            assert_eq!(event.payload, i as u32);
+        }
+    }
+
+    #[test_case]
+    fn test_buffer_clear() {
+        let buffer = TraceCpuBuffer::new();
+
+        for i in 0..10 {
+            let event = TraceEvent::new(0x0300, 0, 0, i as u32);
+            buffer.record(event);
+        }
+
+        assert_eq!(buffer.count(), 10);
+
+        buffer.clear();
+
+        assert_eq!(buffer.write_index(), 0);
+        assert_eq!(buffer.count(), 0);
+        assert!(buffer.is_empty());
+    }
+}

@@ -236,11 +236,8 @@ pub fn dump_on_panic() {
 
 | File | Lines | Description |
 |------|-------|-------------|
-| `kernel/src/fs/procfs/mod.rs` | ~220 | procfs initialization and API |
-| `kernel/src/fs/procfs/entries.rs` | ~250 | Entry types, content generators |
-| `kernel/src/fs/procfs/inode.rs` | ~150 | Inode allocation scheme |
-| `kernel/src/fs/procfs/pid.rs` | ~230 | Per-process entries |
-| `kernel/src/fs/procfs/trace.rs` | ~180 | Trace-specific content generators |
+| `kernel/src/fs/procfs/mod.rs` | ~400 | procfs core: initialization, entry types, content generators, inode allocation |
+| `kernel/src/fs/procfs/trace.rs` | ~240 | Trace-specific /proc/trace/* content generators |
 
 **/proc/trace Entries:**
 
@@ -439,11 +436,8 @@ Memory footprint:
 
 | File | Purpose |
 |------|---------|
-| `mod.rs` | procfs core, initialization |
-| `entries.rs` | Entry types, system generators |
-| `inode.rs` | Inode allocation |
-| `pid.rs` | Per-process entries |
-| `trace.rs` | /proc/trace generators |
+| `mod.rs` | procfs core: initialization, entry types, content generators, inode allocation |
+| `trace.rs` | /proc/trace/* content generators |
 
 ### Modified Files
 

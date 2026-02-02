@@ -345,3 +345,115 @@ pub fn is_event_enabled(event_type: u16) -> bool {
         true
     }
 }
+
+// =============================================================================
+// Unit Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test provider - not registered globally to avoid interference
+    static TEST_PROVIDER: TraceProvider = TraceProvider::new(0xFE, "test_provider");
+
+    #[test_case]
+    fn test_provider_new() {
+        assert_eq!(TEST_PROVIDER.id, 0xFE);
+        assert_eq!(TEST_PROVIDER.name, "test_provider");
+        // Initially all probes are disabled
+        assert_eq!(TEST_PROVIDER.enabled.load(Ordering::Relaxed), 0);
+    }
+
+    #[test_case]
+    fn test_provider_enable_probe() {
+        TEST_PROVIDER.disable_all(); // Reset state
+
+        // Enable probe 0
+        TEST_PROVIDER.enable_probe(0);
+        assert!(TEST_PROVIDER.is_probe_enabled(0));
+        assert!(!TEST_PROVIDER.is_probe_enabled(1));
+
+        // Enable probe 5
+        TEST_PROVIDER.enable_probe(5);
+        assert!(TEST_PROVIDER.is_probe_enabled(0));
+        assert!(TEST_PROVIDER.is_probe_enabled(5));
+        assert!(!TEST_PROVIDER.is_probe_enabled(2));
+    }
+
+    #[test_case]
+    fn test_provider_disable_probe() {
+        TEST_PROVIDER.enable_all();
+
+        // All probes should be enabled
+        assert!(TEST_PROVIDER.is_probe_enabled(0));
+        assert!(TEST_PROVIDER.is_probe_enabled(63));
+
+        // Disable probe 10
+        TEST_PROVIDER.disable_probe(10);
+        assert!(TEST_PROVIDER.is_probe_enabled(0));
+        assert!(!TEST_PROVIDER.is_probe_enabled(10));
+        assert!(TEST_PROVIDER.is_probe_enabled(11));
+    }
+
+    #[test_case]
+    fn test_provider_enable_all() {
+        TEST_PROVIDER.disable_all();
+        assert_eq!(TEST_PROVIDER.enabled.load(Ordering::Relaxed), 0);
+
+        TEST_PROVIDER.enable_all();
+        assert_eq!(TEST_PROVIDER.enabled.load(Ordering::Relaxed), u64::MAX);
+
+        // All probes should be enabled
+        for i in 0..64 {
+            assert!(TEST_PROVIDER.is_probe_enabled(i));
+        }
+    }
+
+    #[test_case]
+    fn test_provider_disable_all() {
+        TEST_PROVIDER.enable_all();
+        assert_eq!(TEST_PROVIDER.enabled.load(Ordering::Relaxed), u64::MAX);
+
+        TEST_PROVIDER.disable_all();
+        assert_eq!(TEST_PROVIDER.enabled.load(Ordering::Relaxed), 0);
+
+        // All probes should be disabled
+        for i in 0..64 {
+            assert!(!TEST_PROVIDER.is_probe_enabled(i));
+        }
+    }
+
+    #[test_case]
+    fn test_probe_id_overflow() {
+        TEST_PROVIDER.disable_all();
+
+        // Probe IDs >= 64 should wrap (modulo 64)
+        TEST_PROVIDER.enable_probe(64); // Same as probe 0
+        assert!(TEST_PROVIDER.is_probe_enabled(0));
+
+        TEST_PROVIDER.enable_probe(65); // Same as probe 1
+        assert!(TEST_PROVIDER.is_probe_enabled(1));
+    }
+
+    #[test_case]
+    fn test_trace_probe_struct() {
+        let probe = TraceProbe::new(0x0300, "SYSCALL_ENTRY");
+        assert_eq!(probe.id, 0x0300);
+        assert_eq!(probe.name, "SYSCALL_ENTRY");
+        assert_eq!(probe.provider_id(), 0x03);
+        assert_eq!(probe.probe_index(), 0x00);
+    }
+
+    #[test_case]
+    fn test_trace_probe_provider_extraction() {
+        // Test various event type values
+        let probe1 = TraceProbe::new(0x0102, "test1");
+        assert_eq!(probe1.provider_id(), 0x01);
+        assert_eq!(probe1.probe_index(), 0x02);
+
+        let probe2 = TraceProbe::new(0xFF3F, "test2");
+        assert_eq!(probe2.provider_id(), 0xFF);
+        assert_eq!(probe2.probe_index(), 0x3F);
+    }
+}
