@@ -563,8 +563,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // WFI loop - wait for data to arrive
                 loop {
-                    crate::task::scheduler::yield_current();
-                    unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+                    // CRITICAL: Drain loopback queue - ARM64 has no NIC interrupts,
+                    // so we must poll for localhost packets during blocking waits
+                    crate::net::drain_loopback_queue();
 
                     let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                         if let Some(thread) = sched.current_thread_mut() {
@@ -578,7 +579,13 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         crate::per_cpu::preempt_disable();
                         break;
                     }
+
+                    crate::task::scheduler::yield_current();
+                    unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
                 }
+
+                // Reset quantum after blocking wait to prevent immediate preemption
+                crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
 
                 // Clear blocked_in_syscall
                 crate::task::scheduler::with_scheduler(|sched| {

@@ -815,36 +815,18 @@ fn sys_gettid() -> u64 {
     crate::task::scheduler::current_thread_id().unwrap_or(0)
 }
 
-/// sys_clock_gettime implementation - uses architecture-independent time module
+/// sys_clock_gettime implementation - delegates to shared syscall/time.rs
 fn sys_clock_gettime(clock_id: u32, user_timespec_ptr: *mut Timespec) -> u64 {
-    // Validate pointer
-    if user_timespec_ptr.is_null() {
-        return (-14_i64) as u64; // -EFAULT
+    // Use the shared implementation which properly uses copy_to_user
+    // This is critical for CoW (Copy-on-Write) support - writing directly
+    // to userspace memory would fail on CoW pages in forked children.
+    match crate::syscall::time::sys_clock_gettime(
+        clock_id,
+        user_timespec_ptr as *mut crate::syscall::time::Timespec,
+    ) {
+        crate::syscall::SyscallResult::Ok(v) => v,
+        crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
     }
-
-    // Get time from arch-agnostic time module
-    let (tv_sec, tv_nsec) = match clock_id {
-        0 => {
-            // CLOCK_REALTIME
-            crate::time::get_real_time_ns()
-        }
-        1 => {
-            // CLOCK_MONOTONIC
-            let (secs, nanos) = crate::time::get_monotonic_time_ns();
-            (secs as i64, nanos as i64)
-        }
-        _ => {
-            return (-22_i64) as u64; // -EINVAL
-        }
-    };
-
-    // Write to userspace
-    unsafe {
-        (*user_timespec_ptr).tv_sec = tv_sec;
-        (*user_timespec_ptr).tv_nsec = tv_nsec;
-    }
-
-    0
 }
 
 // =============================================================================

@@ -254,9 +254,9 @@ impl Process {
                         log::debug!("Process::close_all_fds() - released TCP socket fd {}", fd);
                     }
                     FdKind::TcpListener(port) => {
-                        // Remove from listener table
-                        crate::net::tcp::TCP_LISTENERS.lock().remove(&port);
-                        log::debug!("Process::close_all_fds() - closed TCP listener fd {} on port {}", fd, port);
+                        // Decrement ref count, remove only if it reaches 0
+                        crate::net::tcp::tcp_listener_ref_dec(port);
+                        log::debug!("Process::close_all_fds() - released TCP listener fd {} on port {}", fd, port);
                     }
                     FdKind::TcpConnection(conn_id) => {
                         // Close the TCP connection
@@ -416,9 +416,9 @@ impl Process {
                         log::debug!("Process::close_all_fds() - closed TCP socket fd {}", fd);
                     }
                     FdKind::TcpListener(port) => {
-                        // Remove from listener table
-                        crate::net::tcp::TCP_LISTENERS.lock().remove(&port);
-                        log::debug!("Process::close_all_fds() - closed TCP listener fd {} port {}", fd, port);
+                        // Decrement ref count, remove only if it reaches 0
+                        crate::net::tcp::tcp_listener_ref_dec(port);
+                        log::debug!("Process::close_all_fds() - released TCP listener fd {} port {}", fd, port);
                     }
                     FdKind::TcpConnection(conn_id) => {
                         // Close TCP connection
