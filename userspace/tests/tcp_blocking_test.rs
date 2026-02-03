@@ -14,9 +14,10 @@
 //! will FAIL clearly rather than silently working through retries.
 //!
 //! Timeout Watchdog Mechanism:
-//! The child process acts as a watchdog - after completing its work, it waits
-//! an additional delay and then sends SIGKILL to the parent if still alive.
-//! This prevents infinite hangs if blocking is broken.
+//! Child processes act as watchdogs - if they encounter an error before
+//! completing their task, they kill the parent to prevent infinite hangs.
+//! Once a child completes successfully, it exits immediately (no post-work
+//! delay) so the parent's waitpid() can return and the test can continue.
 
 #![no_std]
 #![no_main]
@@ -27,10 +28,7 @@ use libbreenix::io::{fcntl_getfl, fcntl_setfl, status_flags::O_NONBLOCK};
 use libbreenix::process;
 use libbreenix::signal::{kill, SIGKILL};
 use libbreenix::socket::{accept, bind, connect, listen, socket, SockAddrIn, AF_INET, SOCK_STREAM};
-
-/// Timeout delay iterations for the watchdog
-/// This should be significantly longer than the normal test delays
-const WATCHDOG_TIMEOUT_ITERATIONS: usize = 500;
+use libbreenix::time::{now_monotonic, sleep_ms};
 
 // Errno constants
 const EAGAIN: i32 = 11;
@@ -80,6 +78,13 @@ fn delay_yield(iterations: usize) {
             core::hint::spin_loop();
         }
     }
+}
+
+/// Calculate elapsed time in milliseconds between two Timespec values
+fn elapsed_ms(start: &libbreenix::types::Timespec, end: &libbreenix::types::Timespec) -> i64 {
+    let sec_diff = end.tv_sec - start.tv_sec;
+    let nsec_diff = end.tv_nsec - start.tv_nsec;
+    (sec_diff * 1000) + (nsec_diff / 1_000_000)
 }
 
 #[no_mangle]
@@ -210,30 +215,13 @@ pub extern "C" fn _start() -> ! {
         // Close socket
         io::close(client_fd as u64);
 
-        // =========================================================================
-        // WATCHDOG: Wait a bit longer and kill parent if still alive
-        // If blocking I/O is working, the parent should have already completed
-        // and exited (or at least be past the blocking calls). If the parent
-        // is stuck in a blocking call that never returns, we kill it.
-        // =========================================================================
-        print("  [CHILD] Starting watchdog timer...\n");
-        delay_yield(WATCHDOG_TIMEOUT_ITERATIONS);
-
-        // Check if parent is still alive and kill it
-        // kill(pid, 0) checks if process exists without sending a signal
-        if kill(parent_pid, 0).is_ok() {
-            print("  [CHILD] WATCHDOG TIMEOUT: Parent still alive after ");
-            print_num(WATCHDOG_TIMEOUT_ITERATIONS as i64);
-            print(" iterations!\n");
-            print("  [CHILD] WATCHDOG: Blocking call did not complete in time - killing parent\n");
-            print("TCP_BLOCKING_TEST: TIMEOUT - blocking I/O appears to be broken!\n");
-            print("TCP_BLOCKING_TEST: FAIL\n");
-            let _ = kill(parent_pid, SIGKILL);
-            process::exit(99); // Special exit code for watchdog timeout
-        } else {
-            print("  [CHILD] Watchdog: Parent completed normally\n");
-        }
-
+        // Child's job is done - exit immediately.
+        // Error-path watchdogs above (lines 171-204) handle killing parent if child fails.
+        //
+        // We do NOT run a post-work watchdog here because the parent will call
+        // waitpid() to wait for us after TEST 2 completes. If we delay here and
+        // check if parent is alive, we'd see it waiting in waitpid (for us!) and
+        // incorrectly kill it - preventing TEST 3, 4, 4b, 5, 6 from running.
         print("  [CHILD] Exiting successfully\n");
         process::exit(0);
 
@@ -577,105 +565,273 @@ pub extern "C" fn _start() -> ! {
     }
 
     // =========================================================================
-    // Test 4b: Non-blocking read() returns EAGAIN when no data
+    // Test 4b: Non-blocking read() returns EAGAIN IMMEDIATELY (Unfalsifiable)
     //
-    // This tests that read() on a TCP connection returns EAGAIN when
-    // O_NONBLOCK is set and no data is available.
+    // This is an UNFALSIFIABLE test that proves O_NONBLOCK actually works.
+    // Simply checking for EAGAIN is insufficient because a buggy kernel could:
+    //   - Always return EAGAIN regardless of O_NONBLOCK flag
+    //   - Return EAGAIN after blocking for some time
+    //
+    // To be unfalsifiable, this test proves TWO things:
+    //   Part A: Blocking read actually blocks (~200ms when child delays send)
+    //   Part B: Non-blocking read returns EAGAIN in < 50ms
+    //
+    // If both pass, we KNOW O_NONBLOCK is the reason for the fast return.
+    //
+    // This test WILL FAIL if:
+    //   - O_NONBLOCK check is removed (Part B would block ~200ms)
+    //   - Always-return-EAGAIN bug exists (Part A would return EAGAIN, not block)
+    //   - Non-blocking path is slow (Part B timing check fails)
     // =========================================================================
-    print("=== TEST 4b: Non-blocking read() returns EAGAIN ===\n");
+    print("=== TEST 4b: Non-blocking read() returns EAGAIN IMMEDIATELY (Unfalsifiable) ===\n");
+    print("  This test proves O_NONBLOCK works by comparing blocking vs non-blocking timing.\n\n");
     {
-        // Create server socket
-        let server_fd = match socket(AF_INET, SOCK_STREAM, 0) {
+        // Timing thresholds
+        const CHILD_DELAY_MS: u64 = 300;   // Child waits 300ms after connecting before sending
+        const BLOCKING_MIN_MS: i64 = 100;  // Blocking read must take at least this long
+        const NONBLOCK_MAX_MS: i64 = 100;  // Non-blocking read must complete within this
+
+        let mut part_a_passed = false;
+        let mut part_b_passed = false;
+
+        // =====================================================================
+        // Part A: Prove blocking read actually blocks (counterfactual)
+        // =====================================================================
+        print("  --- Part A: Proving blocking read actually blocks ---\n");
+
+        let server_a = match socket(AF_INET, SOCK_STREAM, 0) {
             Ok(fd) if fd >= 0 => fd,
             _ => {
-                print("  FAIL - server socket creation failed\n");
-                print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                failed += 1;
+                print("  FAIL - Part A server socket creation failed\n");
                 -1
             }
         };
 
-        if server_fd >= 0 {
-            let server_addr = SockAddrIn::new([0, 0, 0, 0], 9104);
-            if bind(server_fd, &server_addr).is_err() || listen(server_fd, 128).is_err() {
-                print("  FAIL - server bind/listen failed\n");
-                print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                failed += 1;
+        if server_a >= 0 {
+            let server_a_addr = SockAddrIn::new([0, 0, 0, 0], 9104);
+            if bind(server_a, &server_a_addr).is_ok() && listen(server_a, 128).is_ok() {
+                print("  Server A listening on port 9104 (blocking test)\n");
+
+                let parent_pid = process::getpid() as i32;
+                let fork_a = process::fork();
+
+                if fork_a == 0 {
+                    // ===== CHILD for Part A =====
+                    print("  [CHILD-A] Started, will delay then send data\n");
+
+                    // Create client and connect
+                    let client = match socket(AF_INET, SOCK_STREAM, 0) {
+                        Ok(fd) if fd >= 0 => fd,
+                        _ => {
+                            print("  [CHILD-A] FAIL - socket creation failed\n");
+                            let _ = kill(parent_pid, SIGKILL);
+                            process::exit(20);
+                        }
+                    };
+
+                    let loopback = SockAddrIn::new([127, 0, 0, 1], 9104);
+                    if connect(client, &loopback).is_err() {
+                        // May get EINPROGRESS, wait a bit
+                        delay_yield(10);
+                    }
+                    print("  [CHILD-A] Connected\n");
+
+                    // DELAY before sending using wall-clock time
+                    // This ensures parent has time to accept and start blocking read
+                    print("  [CHILD-A] Sleeping ");
+                    print_num(CHILD_DELAY_MS as i64);
+                    print("ms before send...\n");
+                    sleep_ms(CHILD_DELAY_MS);
+
+                    // Send data
+                    let data = b"BLOCKING_TEST";
+                    let written = io::write(client as u64, data);
+                    if written < 0 {
+                        print("  [CHILD-A] FAIL - write failed\n");
+                        let _ = kill(parent_pid, SIGKILL);
+                        process::exit(21);
+                    }
+                    print("  [CHILD-A] Sent data, exiting\n");
+                    io::close(client as u64);
+                    process::exit(0);
+
+                } else if fork_a > 0 {
+                    // ===== PARENT for Part A =====
+                    // Yield to let child start and connect
+                    // This ensures child connects BEFORE we try to accept
+                    delay_yield(20);
+
+                    // Accept connection (child should have connected by now)
+                    match accept(server_a, None) {
+                        Ok(conn_fd) if conn_fd >= 0 => {
+                            print("  [PARENT-A] Accepted connection\n");
+
+                            // BLOCKING read - measure how long it takes
+                            let mut buf = [0u8; 64];
+                            print("  [PARENT-A] Starting BLOCKING read (should wait for child)...\n");
+
+                            let start = now_monotonic();
+                            let result = io::read(conn_fd as u64, &mut buf);
+                            let end = now_monotonic();
+
+                            let elapsed = elapsed_ms(&start, &end);
+
+                            if result > 0 {
+                                print("  [PARENT-A] Blocking read returned ");
+                                print_num(result);
+                                print(" bytes in ");
+                                print_num(elapsed);
+                                print("ms\n");
+
+                                if elapsed >= BLOCKING_MIN_MS {
+                                    print("  [PARENT-A] PASS - blocking read took >= ");
+                                    print_num(BLOCKING_MIN_MS);
+                                    print("ms (proves blocking works)\n");
+                                    part_a_passed = true;
+                                } else {
+                                    print("  [PARENT-A] FAIL - blocking read too fast (");
+                                    print_num(elapsed);
+                                    print("ms < ");
+                                    print_num(BLOCKING_MIN_MS);
+                                    print("ms)\n");
+                                    print("  This suggests blocking is broken or child sent too fast\n");
+                                }
+                            } else if result == -(EAGAIN as i64) {
+                                print("  [PARENT-A] FAIL - blocking read returned EAGAIN!\n");
+                                print("  This proves 'always return EAGAIN' bug exists!\n");
+                            } else {
+                                print("  [PARENT-A] FAIL - blocking read error: ");
+                                print_num(-result);
+                                print("\n");
+                            }
+                            io::close(conn_fd as u64);
+                        }
+                        _ => {
+                            print("  [PARENT-A] FAIL - accept failed\n");
+                        }
+                    }
+
+                    // Wait for child
+                    let mut status: i32 = 0;
+                    let _ = process::waitpid(fork_a as i32, &mut status, 0);
+                }
             } else {
-                print("  Server listening on port 9104\n");
+                print("  FAIL - Part A bind/listen failed\n");
+            }
+            io::close(server_a as u64);
+        }
+
+        print("\n");
+
+        // =====================================================================
+        // Part B: Prove non-blocking read returns IMMEDIATELY
+        // =====================================================================
+        print("  --- Part B: Proving non-blocking read returns immediately ---\n");
+
+        let server_b = match socket(AF_INET, SOCK_STREAM, 0) {
+            Ok(fd) if fd >= 0 => fd,
+            _ => {
+                print("  FAIL - Part B server socket creation failed\n");
+                -1
+            }
+        };
+
+        if server_b >= 0 {
+            let server_b_addr = SockAddrIn::new([0, 0, 0, 0], 9105);
+            if bind(server_b, &server_b_addr).is_ok() && listen(server_b, 128).is_ok() {
+                print("  Server B listening on port 9105 (non-blocking test)\n");
 
                 // Create client and connect
-                let client_fd = match socket(AF_INET, SOCK_STREAM, 0) {
+                let client_b = match socket(AF_INET, SOCK_STREAM, 0) {
                     Ok(fd) if fd >= 0 => fd,
                     _ => {
-                        print("  FAIL - client socket creation failed\n");
-                        print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                        failed += 1;
+                        print("  FAIL - Part B client socket creation failed\n");
                         -1
                     }
                 };
 
-                if client_fd >= 0 {
-                    let loopback = SockAddrIn::new([127, 0, 0, 1], 9104);
-                    if connect(client_fd, &loopback).is_ok() || connect(client_fd, &loopback).is_err() {
-                        // Accept the connection on server side
-                        match accept(server_fd, None) {
-                            Ok(accepted_fd) if accepted_fd >= 0 => {
-                                print("  Connection established\n");
+                if client_b >= 0 {
+                    let loopback = SockAddrIn::new([127, 0, 0, 1], 9105);
+                    let _ = connect(client_b, &loopback); // May return EINPROGRESS
+                    delay_yield(10); // Let connection complete
 
-                                // Set the accepted socket to non-blocking
-                                let current_flags = fcntl_getfl(accepted_fd as u64);
-                                if current_flags >= 0 {
-                                    let new_flags = (current_flags as i32) | O_NONBLOCK;
-                                    if fcntl_setfl(accepted_fd as u64, new_flags) >= 0 {
-                                        print("  Accepted socket set to non-blocking\n");
+                    match accept(server_b, None) {
+                        Ok(conn_fd) if conn_fd >= 0 => {
+                            print("  Connection established\n");
 
-                                        // Try to read when NO data has been sent
-                                        // Should immediately return EAGAIN
-                                        let mut buf = [0u8; 64];
-                                        print("  Calling read() with no data available...\n");
-                                        let result = io::read(accepted_fd as u64, &mut buf);
+                            // Set O_NONBLOCK
+                            let flags = fcntl_getfl(conn_fd as u64);
+                            if flags >= 0 && fcntl_setfl(conn_fd as u64, (flags as i32) | O_NONBLOCK) >= 0 {
+                                print("  Socket set to O_NONBLOCK\n");
 
-                                        if result == -(EAGAIN as i64) {
-                                            print("  read() returned EAGAIN (-11) as expected!\n");
-                                            print("  TEST 4b (non-blocking read EAGAIN): PASS\n\n");
-                                        } else if result >= 0 {
-                                            print("  FAIL - read() returned ");
-                                            print_num(result);
-                                            print(" bytes but no data was sent!\n");
-                                            print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                                            failed += 1;
-                                        } else {
-                                            print("  FAIL - read() returned unexpected error, errno=");
-                                            print_num(-result);
-                                            print("\n");
-                                            print("  Expected EAGAIN (-11)\n");
-                                            print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                                            failed += 1;
-                                        }
+                                // NON-BLOCKING read with NO data pending - measure timing
+                                let mut buf = [0u8; 64];
+                                print("  Starting NON-BLOCKING read (no data pending)...\n");
+
+                                let start = now_monotonic();
+                                let result = io::read(conn_fd as u64, &mut buf);
+                                let end = now_monotonic();
+
+                                let elapsed = elapsed_ms(&start, &end);
+
+                                print("  Non-blocking read returned in ");
+                                print_num(elapsed);
+                                print("ms with result ");
+                                print_num(result);
+                                print("\n");
+
+                                if result == -(EAGAIN as i64) {
+                                    if elapsed < NONBLOCK_MAX_MS {
+                                        print("  PASS - returned EAGAIN in < ");
+                                        print_num(NONBLOCK_MAX_MS);
+                                        print("ms (proves O_NONBLOCK works)\n");
+                                        part_b_passed = true;
                                     } else {
-                                        print("  FAIL - fcntl(F_SETFL) failed\n");
-                                        print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                                        failed += 1;
+                                        print("  FAIL - returned EAGAIN but took too long (");
+                                        print_num(elapsed);
+                                        print("ms >= ");
+                                        print_num(NONBLOCK_MAX_MS);
+                                        print("ms)\n");
                                     }
+                                } else if result >= 0 {
+                                    print("  FAIL - read returned data but none was sent!\n");
                                 } else {
-                                    print("  FAIL - fcntl(F_GETFL) failed\n");
-                                    print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                                    failed += 1;
+                                    print("  FAIL - unexpected error: ");
+                                    print_num(-result);
+                                    print("\n");
                                 }
-                                io::close(accepted_fd as u64);
+                            } else {
+                                print("  FAIL - fcntl failed\n");
                             }
-                            _ => {
-                                print("  FAIL - accept() failed\n");
-                                print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
-                                failed += 1;
-                            }
+                            io::close(conn_fd as u64);
+                        }
+                        _ => {
+                            print("  FAIL - Part B accept failed\n");
                         }
                     }
-                    io::close(client_fd as u64);
+                    io::close(client_b as u64);
                 }
+            } else {
+                print("  FAIL - Part B bind/listen failed\n");
             }
-            io::close(server_fd as u64);
+            io::close(server_b as u64);
+        }
+
+        // Final verdict
+        print("\n  --- TEST 4b VERDICT ---\n");
+        if part_a_passed && part_b_passed {
+            print("  Part A (blocking proof): PASS\n");
+            print("  Part B (non-blocking proof): PASS\n");
+            print("  TEST 4b: PASS (unfalsifiable - both paths verified)\n\n");
+        } else {
+            if !part_a_passed {
+                print("  Part A (blocking proof): FAIL\n");
+            }
+            if !part_b_passed {
+                print("  Part B (non-blocking proof): FAIL\n");
+            }
+            print("  TEST 4b: FAIL\n\n");
+            failed += 1;
         }
     }
 
