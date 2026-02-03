@@ -153,10 +153,29 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 /// Save userspace context for the current thread.
 fn save_userspace_context_arm64(thread_id: u64, frame: &Aarch64ExceptionFrame) {
     crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-        // Save X0 (return value register) - important for fork/syscall returns
+        // Save ALL general-purpose registers from exception frame.
+        // CRITICAL: When a userspace thread is context-switched (e.g., for blocking I/O
+        // or preemption), its caller-saved registers (x1-x18) may contain important
+        // values that must be preserved for correct execution when resumed.
         thread.context.x0 = frame.x0;
-
-        // Save callee-saved registers from exception frame
+        thread.context.x1 = frame.x1;
+        thread.context.x2 = frame.x2;
+        thread.context.x3 = frame.x3;
+        thread.context.x4 = frame.x4;
+        thread.context.x5 = frame.x5;
+        thread.context.x6 = frame.x6;
+        thread.context.x7 = frame.x7;
+        thread.context.x8 = frame.x8;
+        thread.context.x9 = frame.x9;
+        thread.context.x10 = frame.x10;
+        thread.context.x11 = frame.x11;
+        thread.context.x12 = frame.x12;
+        thread.context.x13 = frame.x13;
+        thread.context.x14 = frame.x14;
+        thread.context.x15 = frame.x15;
+        thread.context.x16 = frame.x16;
+        thread.context.x17 = frame.x17;
+        thread.context.x18 = frame.x18;
         thread.context.x19 = frame.x19;
         thread.context.x20 = frame.x20;
         thread.context.x21 = frame.x21;
@@ -468,11 +487,30 @@ fn restore_userspace_context_arm64(thread_id: u64, frame: &mut Aarch64ExceptionF
 
     // Restore saved context
     crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-        // Restore X0 - important for fork() return value
-        // For forked children, x0 is set to 0; for parent, it will be the child PID
+        // Restore ALL general-purpose registers
+        // CRITICAL: For forked children, the caller-saved registers (x1-x18) contain
+        // important values from the parent's execution state that must be preserved.
+        // Only restoring callee-saved registers (x19-x30) would leave x1-x18 with
+        // garbage values from the previous thread's exception frame, causing crashes.
         frame.x0 = thread.context.x0;
-
-        // Restore callee-saved registers
+        frame.x1 = thread.context.x1;
+        frame.x2 = thread.context.x2;
+        frame.x3 = thread.context.x3;
+        frame.x4 = thread.context.x4;
+        frame.x5 = thread.context.x5;
+        frame.x6 = thread.context.x6;
+        frame.x7 = thread.context.x7;
+        frame.x8 = thread.context.x8;
+        frame.x9 = thread.context.x9;
+        frame.x10 = thread.context.x10;
+        frame.x11 = thread.context.x11;
+        frame.x12 = thread.context.x12;
+        frame.x13 = thread.context.x13;
+        frame.x14 = thread.context.x14;
+        frame.x15 = thread.context.x15;
+        frame.x16 = thread.context.x16;
+        frame.x17 = thread.context.x17;
+        frame.x18 = thread.context.x18;
         frame.x19 = thread.context.x19;
         frame.x20 = thread.context.x20;
         frame.x21 = thread.context.x21;
