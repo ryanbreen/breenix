@@ -181,10 +181,14 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             if let Some(ref page_table) = process.page_table {
                 let ttbr0 = page_table.level_4_frame().start_address().as_u64();
                 unsafe {
+                    // CRITICAL: Flush TLB after TTBR0 switch for CoW correctness
                     core::arch::asm!(
-                        "dsb ishst",
-                        "msr ttbr0_el1, {}",
-                        "isb",
+                        "dsb ishst",           // Ensure previous stores complete
+                        "msr ttbr0_el1, {}",   // Set new page table
+                        "isb",                 // Synchronize context
+                        "tlbi vmalle1is",      // FLUSH ENTIRE TLB
+                        "dsb ish",             // Ensure TLB flush completes
+                        "isb",                 // Synchronize instruction stream
                         in(reg) ttbr0,
                         options(nostack)
                     );
@@ -741,9 +745,12 @@ fn dispatch_syscall(
             }
         }
 
-        // Testing syscalls (stubs)
-        syscall_nums::COW_STATS | syscall_nums::SIMULATE_OOM => {
-            (-38_i64) as u64 // -ENOSYS
+        // Testing/diagnostic syscalls
+        syscall_nums::COW_STATS => {
+            sys_cow_stats_aarch64(arg1)
+        }
+        syscall_nums::SIMULATE_OOM => {
+            sys_simulate_oom_aarch64(arg1)
         }
 
         syscall_nums::GETPID => sys_getpid(),
@@ -1358,6 +1365,104 @@ extern "C" {
         stack_ptr: u64,
         pstate: u64,
     ) -> !;
+}
+
+// =============================================================================
+// Testing/diagnostic syscall implementations for ARM64
+// =============================================================================
+
+/// CowStatsResult structure returned by sys_cow_stats
+/// Matches the layout expected by userspace
+#[repr(C)]
+struct CowStatsResultAarch64 {
+    total_faults: u64,
+    manager_path: u64,
+    direct_path: u64,
+    pages_copied: u64,
+    sole_owner_opt: u64,
+}
+
+/// sys_cow_stats - Get Copy-on-Write statistics (for testing) - ARM64 implementation
+///
+/// This syscall is used to verify that the CoW optimization paths are working.
+/// It returns the current CoW statistics to userspace.
+///
+/// Parameters:
+/// - stats_ptr: pointer to a CowStatsResult structure in userspace
+///
+/// Returns: 0 on success, negative error code on failure
+fn sys_cow_stats_aarch64(stats_ptr: u64) -> u64 {
+    use crate::memory::cow_stats;
+
+    if stats_ptr == 0 {
+        return (-14_i64) as u64; // -EFAULT - null pointer
+    }
+
+    // Validate the address is in userspace
+    if !crate::memory::layout::is_valid_user_address(stats_ptr) {
+        log::error!("sys_cow_stats_aarch64: Invalid userspace address {:#x}", stats_ptr);
+        return (-14_i64) as u64; // -EFAULT
+    }
+
+    // Get the current stats from the shared module
+    let stats = cow_stats::get_stats();
+
+    // Copy to userspace
+    unsafe {
+        let user_stats = stats_ptr as *mut CowStatsResultAarch64;
+        (*user_stats).total_faults = stats.total_faults;
+        (*user_stats).manager_path = stats.manager_path;
+        (*user_stats).direct_path = stats.direct_path;
+        (*user_stats).pages_copied = stats.pages_copied;
+        (*user_stats).sole_owner_opt = stats.sole_owner_opt;
+    }
+
+    log::debug!(
+        "sys_cow_stats_aarch64: total={}, manager={}, direct={}, copied={}, sole_owner={}",
+        stats.total_faults,
+        stats.manager_path,
+        stats.direct_path,
+        stats.pages_copied,
+        stats.sole_owner_opt
+    );
+
+    0
+}
+
+/// sys_simulate_oom - Enable or disable OOM simulation (for testing) - ARM64 implementation
+///
+/// This syscall is used to test the kernel's behavior when frame allocation fails
+/// during Copy-on-Write page faults. When OOM simulation is enabled, all frame
+/// allocations will return None, causing CoW faults to fail and processes to be
+/// terminated with SIGSEGV.
+///
+/// Parameters:
+/// - enable: 1 to enable OOM simulation, 0 to disable
+///
+/// Returns: 0 on success, -ENOSYS if testing feature is not compiled in
+///
+/// # Safety
+/// Only enable OOM simulation briefly for testing! Extended OOM simulation will
+/// crash the kernel because it affects ALL frame allocations.
+fn sys_simulate_oom_aarch64(enable: u64) -> u64 {
+    #[cfg(feature = "testing")]
+    {
+        if enable != 0 {
+            crate::memory::frame_allocator::enable_oom_simulation();
+            log::info!("sys_simulate_oom_aarch64: OOM simulation ENABLED");
+        } else {
+            crate::memory::frame_allocator::disable_oom_simulation();
+            log::info!("sys_simulate_oom_aarch64: OOM simulation disabled");
+        }
+        0
+    }
+
+    #[cfg(not(feature = "testing"))]
+    {
+        let _ = enable; // suppress unused warning
+        log::warn!("sys_simulate_oom_aarch64: testing feature not compiled in");
+        (-38_i64) as u64 // -ENOSYS - function not implemented
+    }
 }
 
 #[cfg(test)]

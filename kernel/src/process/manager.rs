@@ -1271,29 +1271,94 @@ impl ProcessManager {
             child_sp_aligned
         );
 
-        // Copy the parent's stack contents to the child's stack
+        // Copy the parent's stack contents to the child's stack using HHDM-based physical access.
+        // CRITICAL: We cannot use virtual addresses directly because TTBR0 still points to the
+        // parent's page table. Writing to child virtual addresses would actually write to parent
+        // physical frames. Instead, we must:
+        // 1. Translate parent VA -> parent PA using parent's page table
+        // 2. Translate child VA -> child PA using child's page table
+        // 3. Copy using HHDM addresses: (HHDM_BASE + phys_addr)
         if parent_stack_used > 0 && parent_stack_used <= (64 * 1024) {
-            let parent_stack_src = parent_sp as *const u8;
-            let child_stack_dst = child_sp_aligned as *mut u8;
-
             log::debug!(
-                "ARM64 fork: Copying {} bytes of stack from {:#x} to {:#x}",
+                "ARM64 fork: Copying {} bytes of stack from {:#x} to {:#x} via HHDM",
                 parent_stack_used,
                 parent_sp,
                 child_sp_aligned
             );
 
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    parent_stack_src,
-                    child_stack_dst,
-                    parent_stack_used as usize,
+            let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+
+            // Get parent's page table for address translation
+            let parent_page_table = self
+                .processes
+                .get(&parent_pid)
+                .and_then(|p| p.page_table.as_ref())
+                .ok_or("Parent process page table not found for stack copy")?;
+
+            // Get child's page table for address translation
+            let child_page_table = child_process
+                .page_table
+                .as_ref()
+                .ok_or("Child process page table not found for stack copy")?;
+
+            // Copy stack page by page
+            // Start from the page containing SP (page-align down)
+            let start_page_addr = parent_sp & !0xFFF;
+            let mut parent_page_addr = start_page_addr;
+            let parent_stack_top_u64 = parent_thread.stack_top.as_u64();
+            let child_stack_top_u64 = child_stack_top.as_u64();
+
+            while parent_page_addr < parent_stack_top_u64 {
+                // Calculate corresponding child page address (same offset from stack top)
+                let offset_from_top = parent_stack_top_u64 - parent_page_addr;
+                let child_page_addr = child_stack_top_u64 - offset_from_top;
+
+                // Translate parent virtual address to physical
+                let parent_phys = match parent_page_table.translate_page(VirtAddr::new(parent_page_addr)) {
+                    Some(phys) => phys,
+                    None => {
+                        log::warn!(
+                            "ARM64 fork: parent stack page {:#x} not mapped, skipping",
+                            parent_page_addr
+                        );
+                        parent_page_addr += 4096;
+                        continue;
+                    }
+                };
+
+                // Translate child virtual address to physical
+                let child_phys = match child_page_table.translate_page(VirtAddr::new(child_page_addr)) {
+                    Some(phys) => phys,
+                    None => {
+                        log::error!(
+                            "ARM64 fork: child stack page {:#x} not mapped!",
+                            child_page_addr
+                        );
+                        return Err("Child stack page not mapped");
+                    }
+                };
+
+                // Copy via HHDM (kernel's direct physical memory mapping)
+                let parent_hhdm_addr = (hhdm_base + parent_phys.as_u64()) as *const u8;
+                let child_hhdm_addr = (hhdm_base + child_phys.as_u64()) as *mut u8;
+
+                unsafe {
+                    core::ptr::copy_nonoverlapping(parent_hhdm_addr, child_hhdm_addr, 4096);
+                }
+
+                log::trace!(
+                    "ARM64 fork: copied stack page {:#x} (phys {:#x}) -> {:#x} (phys {:#x})",
+                    parent_page_addr,
+                    parent_phys.as_u64(),
+                    child_page_addr,
+                    child_phys.as_u64()
                 );
+
+                parent_page_addr += 4096;
             }
 
             log::info!(
-                "ARM64 fork: Copied {} bytes of stack from parent to child",
-                parent_stack_used
+                "ARM64 fork: Copied stack pages from parent to child via HHDM"
             );
         }
 

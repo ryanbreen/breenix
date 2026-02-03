@@ -487,14 +487,61 @@ impl Process {
         }
     }
 
-    /// Clean up Copy-on-Write frame references (ARM64 stub)
+    /// Clean up Copy-on-Write frame references when process exits (ARM64)
+    ///
+    /// Walks all user pages in the process's page table and decrements their
+    /// reference counts. Frames that are no longer shared (refcount reaches 0)
+    /// are returned to the frame allocator for reuse.
     #[cfg(not(target_arch = "x86_64"))]
     fn cleanup_cow_frames(&mut self) {
-        // ARM64 stub - CoW not yet implemented
-        log::debug!(
-            "Process {}: CoW cleanup not implemented for ARM64",
-            self.id.as_u64()
-        );
+        use crate::memory::frame_allocator::deallocate_frame;
+        use crate::memory::frame_metadata::frame_decref;
+        use crate::memory::arch_stub::{PageTableFlags, PhysFrame};
+
+        // Get the page table for this process
+        let page_table = match self.page_table.as_ref() {
+            Some(pt) => pt,
+            None => {
+                log::debug!(
+                    "Process {}: No page table to clean up",
+                    self.id.as_u64()
+                );
+                return;
+            }
+        };
+
+        let mut freed_count = 0;
+        let mut shared_count = 0;
+
+        // Walk all user pages and decrement refcounts
+        let _ = page_table.walk_mapped_pages(|_virt_addr, phys_addr, flags| {
+            // Only process user-accessible pages
+            if !flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                return;
+            }
+
+            let frame = PhysFrame::containing_address(phys_addr);
+
+            // Decrement reference count
+            // If this was the last reference (frame was tracked and refcount reached 0),
+            // deallocate the frame. frame_decref returns false for untracked frames
+            // to prevent corruption from freeing potentially in-use frames.
+            if frame_decref(frame) {
+                deallocate_frame(frame);
+                freed_count += 1;
+            } else {
+                shared_count += 1;
+            }
+        });
+
+        if freed_count > 0 || shared_count > 0 {
+            log::debug!(
+                "Process {}: CoW cleanup - freed {} frames, {} still shared",
+                self.id.as_u64(),
+                freed_count,
+                shared_count
+            );
+        }
     }
 
     /// Check if process is terminated
