@@ -258,6 +258,10 @@ impl Clone for FdTable {
                         // Increment TCP connection reference count for the clone
                         crate::net::tcp::tcp_add_ref(conn_id);
                     }
+                    FdKind::TcpListener(port) => {
+                        // Increment TCP listener reference count for the clone
+                        crate::net::tcp::tcp_listener_ref_inc(*port);
+                    }
                     _ => {}
                 }
             }
@@ -524,9 +528,9 @@ impl Drop for FdTable {
                         log::debug!("FdTable::drop() - releasing TCP socket fd {}", i);
                     }
                     FdKind::TcpListener(port) => {
-                        // Remove from listener table
-                        crate::net::tcp::TCP_LISTENERS.lock().remove(&port);
-                        log::debug!("FdTable::drop() - closed TCP listener fd {} on port {}", i, port);
+                        // Decrement ref count, remove only if it reaches 0
+                        crate::net::tcp::tcp_listener_ref_dec(port);
+                        log::debug!("FdTable::drop() - released TCP listener fd {} on port {}", i, port);
                     }
                     FdKind::TcpConnection(conn_id) => {
                         // Close the TCP connection

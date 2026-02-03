@@ -389,6 +389,9 @@ pub struct ListenSocket {
     pub owner_pid: crate::process::process::ProcessId,
     /// Threads waiting for incoming connections (accept() blocking)
     pub waiting_threads: Mutex<Vec<u64>>,
+    /// Reference count - number of fds pointing to this listener (for fork support)
+    /// When this reaches 0, the listener is removed from TCP_LISTENERS
+    pub ref_count: core::sync::atomic::AtomicUsize,
 }
 
 /// Global TCP connection table
@@ -901,6 +904,7 @@ pub fn tcp_listen(
         pending: VecDeque::new(),
         owner_pid,
         waiting_threads: Mutex::new(Vec::new()),
+        ref_count: core::sync::atomic::AtomicUsize::new(1),
     });
 
     log::info!("TCP: Listening on port {}", local_port);
@@ -1299,4 +1303,30 @@ fn wake_connection_waiters(conn: &TcpConnection) {
         crate::task::scheduler::set_need_resched();
         log::debug!("TCP: Woke {} connection waiters", readers.len());
     }
+}
+
+/// Increment the reference count for a TCP listener (called when fd is duplicated via fork)
+pub fn tcp_listener_ref_inc(port: u16) {
+    let listeners = TCP_LISTENERS.lock();
+    if let Some(listener) = listeners.get(&port) {
+        let old = listener.ref_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        log::debug!("TCP: Listener port {} ref_count {} -> {}", port, old, old + 1);
+    }
+}
+
+/// Decrement the reference count for a TCP listener and remove if it reaches 0
+/// Returns true if the listener was removed, false otherwise
+pub fn tcp_listener_ref_dec(port: u16) -> bool {
+    let mut listeners = TCP_LISTENERS.lock();
+    if let Some(listener) = listeners.get(&port) {
+        let old = listener.ref_count.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+        log::debug!("TCP: Listener port {} ref_count {} -> {}", port, old, old - 1);
+        if old == 1 {
+            // Reference count reached 0, remove the listener
+            listeners.remove(&port);
+            log::info!("TCP: Removed listener on port {} (ref_count reached 0)", port);
+            return true;
+        }
+    }
+    false
 }

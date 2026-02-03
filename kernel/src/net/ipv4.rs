@@ -15,11 +15,9 @@ pub const IPV4_HEADER_MIN_SIZE: usize = 20;
 pub const PROTOCOL_ICMP: u8 = 1;
 
 /// IPv4 protocol number for TCP
-#[allow(dead_code)]
 pub const PROTOCOL_TCP: u8 = 6;
 
 /// IPv4 protocol number for UDP
-#[allow(dead_code)]
 pub const PROTOCOL_UDP: u8 = 17;
 
 /// Default TTL for outgoing packets
@@ -174,16 +172,13 @@ pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
                 icmp::handle_icmp(eth_frame, ip, &icmp_packet);
             }
         }
-        #[cfg(target_arch = "x86_64")]
         PROTOCOL_TCP => {
             super::tcp::handle_tcp(ip, ip.payload);
         }
-        #[cfg(target_arch = "x86_64")]
         PROTOCOL_UDP => {
             super::udp::handle_udp(ip, ip.payload);
         }
         _ => {
-            #[cfg(target_arch = "x86_64")]
             log::debug!("IPv4: Unknown protocol {}", ip.protocol);
         }
     }

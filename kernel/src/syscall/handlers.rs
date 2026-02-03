@@ -864,9 +864,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             SyscallResult::Err(super::errno::ENOTCONN as u64)
         }
         FdKind::TcpConnection(conn_id) => {
-            // Read from TCP connection with blocking
-            // Clone conn_id so we can drop the manager_guard before blocking
+            // Read from TCP connection with blocking/non-blocking support
+            // Clone conn_id and capture flags before dropping manager_guard
             let conn_id = *conn_id;
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
             drop(manager_guard);
 
             // Drain loopback queue for localhost connections (127.x.x.x, own IP).
@@ -874,7 +875,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
-            // Blocking read loop
+            // Read loop (may block if O_NONBLOCK not set)
             loop {
                 // Register as waiter FIRST to avoid race condition
                 crate::net::tcp::tcp_register_recv_waiter(&conn_id, thread_id);
@@ -899,7 +900,14 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         return SyscallResult::Ok(0);
                     }
                     Err(_) => {
-                        // No data available - block
+                        // No data available
+                        if is_nonblocking {
+                            // O_NONBLOCK set: return EAGAIN immediately
+                            crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+                            log::debug!("sys_read: TCP no data, O_NONBLOCK set - returning EAGAIN");
+                            return SyscallResult::Err(super::errno::EAGAIN as u64);
+                        }
+                        // Will block below
                     }
                     _ => unreachable!(),
                 }
