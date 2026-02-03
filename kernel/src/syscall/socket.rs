@@ -1763,8 +1763,8 @@ pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -
     let sv: [i32; 2] = [fd_a, fd_b];
     unsafe {
         let sv_user = sv_ptr as *mut [i32; 2];
-        // Validate pointer is in userspace range
-        if sv_ptr < 0x1000 || sv_ptr > 0x7FFFFFFFFFFF {
+        // Validate pointer is in valid userspace range (code/data, mmap, or stack)
+        if !crate::memory::layout::is_valid_user_address(sv_ptr) {
             let _ = process.fd_table.close(fd_a);
             let _ = process.fd_table.close(fd_b);
             return SyscallResult::Err(EFAULT as u64);
