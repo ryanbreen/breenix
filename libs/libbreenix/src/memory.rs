@@ -51,7 +51,9 @@ pub fn get_brk() -> u64 {
 pub fn sbrk(size: usize) -> *mut u8 {
     let current = get_brk();
     let new_break = brk(current + size as u64);
-    if new_break == current + size as u64 {
+    // Check that the new break is >= requested (kernel may page-align up)
+    // On failure, kernel returns the old break which will be < current + size
+    if new_break >= current + size as u64 {
         current as *mut u8
     } else {
         core::ptr::null_mut()

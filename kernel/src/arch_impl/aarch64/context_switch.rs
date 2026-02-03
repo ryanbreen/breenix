@@ -599,20 +599,19 @@ fn switch_ttbr0_if_needed(_thread_id: u64) {
         // NOTE: No logging - context switch path must be lock-free
 
         unsafe {
-            // Write new TTBR0
+            // CRITICAL: On ARM64, changing TTBR0 does NOT automatically flush the TLB
+            // (unlike x86-64's CR3). We MUST flush the TLB after switching TTBR0,
+            // otherwise the parent process may use stale TLB entries from the child
+            // after a fork/exit cycle, causing CoW memory corruption.
             core::arch::asm!(
-                "msr ttbr0_el1, {}",
+                "dsb ishst",           // Ensure previous stores complete
+                "msr ttbr0_el1, {}",   // Set new page table
+                "isb",                 // Synchronize context
+                "tlbi vmalle1is",      // FLUSH ENTIRE TLB - critical for CoW correctness
+                "dsb ish",             // Ensure TLB flush completes
+                "isb",                 // Synchronize instruction stream
                 in(reg) next_ttbr0,
                 options(nomem, nostack)
-            );
-
-            // Memory barriers required after page table switch
-            // DSB ISH: Ensure the write to TTBR0 is complete
-            // ISB: Flush instruction pipeline
-            core::arch::asm!(
-                "dsb ish",
-                "isb",
-                options(nomem, nostack, preserves_flags)
             );
         }
 
@@ -793,11 +792,14 @@ fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aarch64Excepti
                 if let Some(ref page_table) = process.page_table {
                     let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
                     unsafe {
-                        // Write new TTBR0
+                        // CRITICAL: Flush TLB after TTBR0 switch for CoW correctness
                         core::arch::asm!(
-                            "msr ttbr0_el1, {}",
-                            "dsb ish",
-                            "isb",
+                            "dsb ishst",           // Ensure previous stores complete
+                            "msr ttbr0_el1, {}",   // Set new page table
+                            "isb",                 // Synchronize context
+                            "tlbi vmalle1is",      // FLUSH ENTIRE TLB
+                            "dsb ish",             // Ensure TLB flush completes
+                            "isb",                 // Synchronize instruction stream
                             in(reg) ttbr0_value,
                             options(nomem, nostack)
                         );

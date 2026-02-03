@@ -340,10 +340,18 @@ pub fn is_user_stack_address(addr: u64) -> bool {
 }
 
 // ARM64: stack is in high user range (lower half canonical space).
+// Note: On ARM64, stacks are allocated starting at USER_STACK_REGION_START (the top)
+// and growing down, so actual stack addresses are BELOW USER_STACK_REGION_START.
+// The valid range is [USER_STACK_REGION_START - max_stack_size, USER_STACK_REGION_START).
+// We allow up to 1MB of stack space per process to account for multiple stacks.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn is_user_stack_address(addr: u64) -> bool {
-    addr >= USER_STACK_REGION_START && addr < USER_STACK_REGION_END
+    // Stack region extends downward from USER_STACK_REGION_START
+    // Allow addresses from START-1MB to START
+    const MAX_STACK_REGION_SIZE: u64 = 1024 * 1024; // 1 MB for multiple stacks
+    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_STACK_REGION_SIZE);
+    addr >= region_bottom && addr < USER_STACK_REGION_START
 }
 
 /// Check if an address is in userspace mmap region

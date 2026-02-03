@@ -1,3 +1,4 @@
+pub mod cow_stats;
 pub mod frame_allocator;
 pub mod frame_metadata;
 pub mod heap;

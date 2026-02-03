@@ -7,13 +7,16 @@
 //!
 //! Test mechanism:
 //! 1. Parent allocates and writes to heap memory (establishes page)
-//! 2. Parent enables OOM simulation via syscall
-//! 3. Parent forks child (heap pages become CoW-shared)
-//! 4. Parent immediately disables OOM simulation (so parent doesn't crash)
-//! 5. Child attempts to write to heap (triggers CoW fault)
-//! 6. CoW fault handler tries to allocate frame, fails (OOM simulation)
-//! 7. Kernel terminates child with SIGSEGV (exit code -11)
-//! 8. Parent verifies child was killed by SIGSEGV, not normal exit
+//! 2. Parent forks child (heap pages become CoW-shared)
+//! 3. Child enables OOM simulation (AFTER fork succeeds - fork needs frames for page tables)
+//! 4. Child attempts to write to heap (triggers CoW fault)
+//! 5. CoW fault handler tries to allocate frame, fails (OOM simulation)
+//! 6. Kernel terminates child with SIGSEGV (exit code -11)
+//! 7. Parent verifies child was killed by SIGSEGV, not normal exit
+//!
+//! IMPORTANT: OOM must be enabled AFTER fork, not before! Fork requires frame
+//! allocation for the child's page tables. If OOM is enabled before fork,
+//! fork() fails with ENOMEM and we never reach the CoW test scenario.
 //!
 //! Expected behavior:
 //! - Child is killed with exit status indicating SIGSEGV (not normal exit)
@@ -142,40 +145,37 @@ pub extern "C" fn _start() -> ! {
         }
         io::print("  Heap allocated and initialized\n");
 
-        // Step 3: Enable OOM simulation BEFORE fork
-        io::print("\nStep 3: Enabling OOM simulation\n");
-        let oom_result = memory::simulate_oom(true);
-        if oom_result != 0 {
-            io::print("  FAIL: simulate_oom(true) returned ");
-            print_signed(oom_result as i64);
-            io::print("\n");
-            io::print("COW_OOM_TEST_FAILED\n");
-            process::exit(1);
-        }
-        io::print("  OOM simulation enabled\n");
-
-        // Step 4: Fork - child inherits CoW-shared pages
-        // Fork should succeed because it doesn't allocate new page frames
-        // (it shares parent's pages with CoW semantics)
-        io::print("\nStep 4: Forking process...\n");
+        // Step 3: Fork FIRST - child inherits CoW-shared pages
+        // IMPORTANT: Fork must happen BEFORE OOM is enabled because fork()
+        // requires frame allocation for the child's page tables.
+        io::print("\nStep 3: Forking process...\n");
         let fork_result = process::fork();
 
         if fork_result < 0 {
             io::print("  FAIL: fork() failed with error ");
             print_signed(fork_result);
             io::print("\n");
-            // Disable OOM before exiting
-            memory::simulate_oom(false);
             io::print("COW_OOM_TEST_FAILED\n");
             process::exit(1);
         }
 
         if fork_result == 0 {
             // ========== CHILD PROCESS ==========
-            // OOM simulation is still active (inherited from parent)
-            // Any CoW fault will fail due to frame allocation failure
+            io::print("[CHILD] Process started\n");
 
-            io::print("[CHILD] Process started, about to trigger CoW fault...\n");
+            // Step 4 (child): Enable OOM simulation AFTER fork succeeded
+            // Now that we have our own page tables, enable OOM so the CoW
+            // fault during heap write will fail.
+            io::print("[CHILD] Enabling OOM simulation...\n");
+            let oom_result = memory::simulate_oom(true);
+            if oom_result != 0 {
+                io::print("[CHILD] FAIL: simulate_oom(true) returned ");
+                print_signed(oom_result as i64);
+                io::print("\n");
+                io::print("COW_OOM_TEST_FAILED\n");
+                process::exit(98); // Different code to distinguish this failure
+            }
+            io::print("[CHILD] OOM simulation enabled\n");
 
             // Attempt to write to heap - this triggers a CoW page fault
             // With OOM simulation active, allocate_frame() returns None
@@ -190,17 +190,13 @@ pub extern "C" fn _start() -> ! {
             process::exit(99); // Special exit code to indicate test failure
         } else {
             // ========== PARENT PROCESS ==========
+            // Parent never has OOM enabled - only the child does
             io::print("  Forked child PID: ");
             print_number(fork_result as u64);
             io::print("\n");
 
-            // Step 5: Immediately disable OOM simulation so parent doesn't crash
-            io::print("\nStep 5: Disabling OOM simulation in parent\n");
-            memory::simulate_oom(false);
-            io::print("  OOM simulation disabled\n");
-
-            // Step 6: Wait for child and verify it was killed by SIGSEGV
-            io::print("\nStep 6: Waiting for child...\n");
+            // Step 4 (parent): Wait for child and verify it was killed by SIGSEGV
+            io::print("\nStep 4: Waiting for child...\n");
             let mut status: i32 = 0;
             let wait_result = process::waitpid(fork_result as i32, &mut status as *mut i32, 0);
 
@@ -216,8 +212,8 @@ pub extern "C" fn _start() -> ! {
             print_signed(status as i64);
             io::print("\n");
 
-            // Step 7: Verify child was killed by signal (not normal exit)
-            io::print("\nStep 7: Verifying child was killed by SIGSEGV\n");
+            // Step 5: Verify child was killed by signal (not normal exit)
+            io::print("\nStep 5: Verifying child was killed by SIGSEGV\n");
 
             if process::wifexited(status) {
                 let exit_code = process::wexitstatus(status);
