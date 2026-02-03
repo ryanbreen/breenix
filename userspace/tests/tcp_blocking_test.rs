@@ -577,6 +577,109 @@ pub extern "C" fn _start() -> ! {
     }
 
     // =========================================================================
+    // Test 4b: Non-blocking read() returns EAGAIN when no data
+    //
+    // This tests that read() on a TCP connection returns EAGAIN when
+    // O_NONBLOCK is set and no data is available.
+    // =========================================================================
+    print("=== TEST 4b: Non-blocking read() returns EAGAIN ===\n");
+    {
+        // Create server socket
+        let server_fd = match socket(AF_INET, SOCK_STREAM, 0) {
+            Ok(fd) if fd >= 0 => fd,
+            _ => {
+                print("  FAIL - server socket creation failed\n");
+                print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                failed += 1;
+                -1
+            }
+        };
+
+        if server_fd >= 0 {
+            let server_addr = SockAddrIn::new([0, 0, 0, 0], 9104);
+            if bind(server_fd, &server_addr).is_err() || listen(server_fd, 128).is_err() {
+                print("  FAIL - server bind/listen failed\n");
+                print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                failed += 1;
+            } else {
+                print("  Server listening on port 9104\n");
+
+                // Create client and connect
+                let client_fd = match socket(AF_INET, SOCK_STREAM, 0) {
+                    Ok(fd) if fd >= 0 => fd,
+                    _ => {
+                        print("  FAIL - client socket creation failed\n");
+                        print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                        failed += 1;
+                        -1
+                    }
+                };
+
+                if client_fd >= 0 {
+                    let loopback = SockAddrIn::new([127, 0, 0, 1], 9104);
+                    if connect(client_fd, &loopback).is_ok() || connect(client_fd, &loopback).is_err() {
+                        // Accept the connection on server side
+                        match accept(server_fd, None) {
+                            Ok(accepted_fd) if accepted_fd >= 0 => {
+                                print("  Connection established\n");
+
+                                // Set the accepted socket to non-blocking
+                                let current_flags = fcntl_getfl(accepted_fd as u64);
+                                if current_flags >= 0 {
+                                    let new_flags = (current_flags as i32) | O_NONBLOCK;
+                                    if fcntl_setfl(accepted_fd as u64, new_flags) >= 0 {
+                                        print("  Accepted socket set to non-blocking\n");
+
+                                        // Try to read when NO data has been sent
+                                        // Should immediately return EAGAIN
+                                        let mut buf = [0u8; 64];
+                                        print("  Calling read() with no data available...\n");
+                                        let result = io::read(accepted_fd as u64, &mut buf);
+
+                                        if result == -(EAGAIN as i64) {
+                                            print("  read() returned EAGAIN (-11) as expected!\n");
+                                            print("  TEST 4b (non-blocking read EAGAIN): PASS\n\n");
+                                        } else if result >= 0 {
+                                            print("  FAIL - read() returned ");
+                                            print_num(result);
+                                            print(" bytes but no data was sent!\n");
+                                            print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                                            failed += 1;
+                                        } else {
+                                            print("  FAIL - read() returned unexpected error, errno=");
+                                            print_num(-result);
+                                            print("\n");
+                                            print("  Expected EAGAIN (-11)\n");
+                                            print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                                            failed += 1;
+                                        }
+                                    } else {
+                                        print("  FAIL - fcntl(F_SETFL) failed\n");
+                                        print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                                        failed += 1;
+                                    }
+                                } else {
+                                    print("  FAIL - fcntl(F_GETFL) failed\n");
+                                    print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                                    failed += 1;
+                                }
+                                io::close(accepted_fd as u64);
+                            }
+                            _ => {
+                                print("  FAIL - accept() failed\n");
+                                print("  TEST 4b (non-blocking read EAGAIN): FAIL\n\n");
+                                failed += 1;
+                            }
+                        }
+                    }
+                    io::close(client_fd as u64);
+                }
+            }
+            io::close(server_fd as u64);
+        }
+    }
+
+    // =========================================================================
     // Test 5: connect() with invalid fd returns EBADF
     //
     // Validates error handling for bad file descriptors.
