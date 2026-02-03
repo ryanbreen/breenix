@@ -72,16 +72,22 @@ pub fn sleep_ms(ms: u64) {
 
     loop {
         let now = now_monotonic();
-        let elapsed_sec = now.tv_sec - start.tv_sec;
-        let elapsed_nsec = if now.tv_nsec >= start.tv_nsec {
-            now.tv_nsec - start.tv_nsec
-        } else {
-            // Handle nanosecond underflow
-            1_000_000_000 - (start.tv_nsec - now.tv_nsec)
-        };
 
-        let elapsed_ns = (elapsed_sec as u64) * 1_000_000_000 + (elapsed_nsec as u64);
-        if elapsed_ns >= target_ns {
+        // Calculate elapsed time in nanoseconds using signed arithmetic.
+        // This handles all edge cases including timer jitter where nanoseconds
+        // might appear to briefly go backwards within the same second.
+        let total_start_ns = (start.tv_sec as i128) * 1_000_000_000 + (start.tv_nsec as i128);
+        let total_now_ns = (now.tv_sec as i128) * 1_000_000_000 + (now.tv_nsec as i128);
+        let elapsed_ns = total_now_ns - total_start_ns;
+
+        // If elapsed time is negative (shouldn't happen with monotonic clock,
+        // but could due to jitter or bugs), treat as 0 and keep waiting
+        if elapsed_ns < 0 {
+            crate::process::yield_now();
+            continue;
+        }
+
+        if elapsed_ns as u64 >= target_ns {
             break;
         }
 

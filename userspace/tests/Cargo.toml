@@ -504,6 +504,10 @@ path = "sigsuspend_test.rs"
 name = "itimer_test"
 path = "itimer_test.rs"
 
+[[bin]]
+name = "sleep_debug_test"
+path = "sleep_debug_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = true
