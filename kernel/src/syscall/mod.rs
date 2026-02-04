@@ -296,6 +296,31 @@ pub extern "x86-interrupt" fn syscall_handler(stack_frame: InterruptStackFrame) 
     }
 }
 
+/// Check if current thread has pending signals that should interrupt a syscall.
+/// Returns Some(EINTR) if syscall should be interrupted, None otherwise.
+///
+/// This should be called in the blocking wait loop of syscalls like read, recvfrom,
+/// accept, connect, and waitpid. If it returns Some(EINTR), the syscall should:
+/// 1. Clean up any waiter registrations
+/// 2. Return -EINTR to userspace
+/// 3. The signal will be delivered when the syscall returns
+pub fn check_signals_for_eintr() -> Option<i32> {
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return None,
+    };
+
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            if crate::signal::delivery::has_deliverable_signals(process) {
+                return Some(errno::EINTR);
+            }
+        }
+    }
+    None
+}
+
 /// Initialize the system call infrastructure
 #[cfg(target_arch = "x86_64")]
 pub fn init() {

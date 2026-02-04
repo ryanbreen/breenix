@@ -283,6 +283,21 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // 1. Wake us via wake_blocked_readers_try() when keyboard data arrives
                         // 2. Context switch to another thread via timer interrupt
                         loop {
+                            // Check for pending signals that should interrupt this syscall
+                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                                // Signal pending - unblock and return EINTR
+                                crate::ipc::stdin::unregister_blocked_reader(thread_id);
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                crate::per_cpu::preempt_disable();
+                                raw_serial_str(b"[STDIN_EINTR]");
+                                return SyscallResult::Err(e as u64);
+                            }
+
                             crate::task::scheduler::yield_current();
                             unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
 
@@ -563,6 +578,20 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // WFI loop - wait for data to arrive
                 loop {
+                    // Check for pending signals that should interrupt this syscall
+                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                        // Signal pending - unblock and return EINTR
+                        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
+                            }
+                        });
+                        crate::per_cpu::preempt_disable();
+                        return SyscallResult::Err(e as u64);
+                    }
+
                     // CRITICAL: Drain loopback queue - ARM64 has no NIC interrupts,
                     // so we must poll for localhost packets during blocking waits
                     crate::net::drain_loopback_queue();

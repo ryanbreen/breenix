@@ -2601,6 +2601,20 @@ fn handle_fifo_open(path: &str, flags: u32) -> SyscallResult {
                 // HLT loop - wait for timer interrupt which will switch to another thread
                 // When other end opens, add_reader/add_writer will call unblock(tid)
                 loop {
+                    // Check for pending signals that should interrupt this syscall
+                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                        // Signal pending - clean up thread state and return EINTR
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
+                            }
+                        });
+                        crate::per_cpu::preempt_disable();
+                        log::debug!("handle_fifo_open: Thread {} interrupted by signal (EINTR)", thread_id);
+                        return SyscallResult::Err(e as u64);
+                    }
+
                     crate::task::scheduler::yield_current();
                     Cpu::halt_with_interrupts();
 
