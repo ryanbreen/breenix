@@ -96,28 +96,55 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
 
     println!("Starting QEMU with ARM64 kernel: {}", kernel_path);
 
-    // Start QEMU with ARM64 virt machine
+    // Check for ext2 disk with userspace programs
+    let ext2_disk = "target/ext2-aarch64.img";
+    let has_ext2 = std::path::Path::new(ext2_disk).exists();
+    if has_ext2 {
+        println!("Using ext2 disk: {}", ext2_disk);
+    } else {
+        println!("Warning: ext2 disk not found - userspace tests will be limited");
+    }
+
+    // Build QEMU arguments
     // -M virt: Standard ARM virtual machine
     // -cpu cortex-a72: 64-bit ARMv8-A CPU
     // -m 512M: 512MB RAM
     // -nographic: No GUI
     // -kernel: Load ELF directly
     // -serial file: Capture serial output to file
-    let mut qemu = Command::new("qemu-system-aarch64")
-        .args([
-            "-M",
-            "virt",
-            "-cpu",
-            "cortex-a72",
-            "-m",
-            "512M",
-            "-nographic",
-            "-no-reboot",
-            "-kernel",
-            kernel_path,
-            "-serial",
-            &format!("file:{}", serial_output_file),
-        ])
+    // -device virtio-blk: ext2 disk with userspace programs (if available)
+    let serial_arg = format!("file:{}", serial_output_file);
+    let ext2_drive_spec = format!("if=none,id=ext2,format=raw,file={}", ext2_disk);
+
+    let mut qemu_cmd = Command::new("qemu-system-aarch64");
+    qemu_cmd
+        .arg("-M")
+        .arg("virt")
+        .arg("-cpu")
+        .arg("cortex-a72")
+        .arg("-m")
+        .arg("512M")
+        .arg("-nographic")
+        .arg("-no-reboot")
+        .arg("-kernel")
+        .arg(kernel_path)
+        .arg("-device")
+        .arg("virtio-gpu-device")
+        .arg("-device")
+        .arg("virtio-keyboard-device")
+        .arg("-serial")
+        .arg(&serial_arg);
+
+    // Add ext2 disk if available (contains init_shell and other userspace programs)
+    if has_ext2 {
+        qemu_cmd
+            .arg("-device")
+            .arg("virtio-blk-device,drive=ext2")
+            .arg("-drive")
+            .arg(&ext2_drive_spec);
+    }
+
+    let mut qemu = qemu_cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -140,19 +167,42 @@ pub fn run_arm64_qemu(kernel_path: &str, timeout_secs: u64) -> Result<String, St
         thread::sleep(poll_interval);
     }
 
-    // Poll for POST_COMPLETE marker or timeout
+    // Poll for boot completion AND userspace execution markers
     let mut post_complete = false;
+    let mut userspace_executed = false;
     while start.elapsed() < timeout {
         if let Ok(content) = fs::read_to_string(serial_output_file) {
             // Check for ARM64-specific POST completion or boot completion
-            if content.contains("[CHECKPOINT:POST_COMPLETE]")
-                || content.contains("Breenix ARM64 Boot Complete")
-                || content.contains("Hello from ARM64")
+            if !post_complete
+                && (content.contains("[CHECKPOINT:POST_COMPLETE]")
+                    || content.contains("Breenix ARM64 Boot Complete")
+                    || content.contains("Hello from ARM64"))
             {
                 post_complete = true;
                 println!("Kernel reached boot completion marker");
+            }
+
+            // Check for userspace execution markers
+            // EL0_SYSCALL is printed when first syscall from userspace is received
+            // breenix> is the shell prompt (proves userspace is running)
+            if post_complete
+                && (content.contains("EL0_SYSCALL:")
+                    || content.contains("syscall path verified")
+                    || content.contains("breenix>")
+                    || content.contains("[STDIN_BLOCK]"))
+            {
+                userspace_executed = true;
+                println!("Userspace execution confirmed");
                 // Give it a moment to finish writing any final output
                 thread::sleep(Duration::from_millis(500));
+                break;
+            }
+
+            // If we've been waiting 5+ seconds after boot completion, proceed anyway
+            if post_complete && start.elapsed() > Duration::from_secs(15) {
+                println!(
+                    "Warning: Userspace execution not detected after boot (waited 15s total)"
+                );
                 break;
             }
         }
@@ -484,10 +534,10 @@ pub fn arm64_syscall_checks() -> Vec<Arm64PostCheck> {
             "EL0_SMOKE: userspace executed",
             "Userspace code ran successfully",
         ),
-        // EL0_CONFIRMED is the definitive marker (like RING3_CONFIRMED on x86_64)
+        // EL0_SYSCALL is the definitive marker (like RING3_CONFIRMED on x86_64)
         Arm64PostCheck::new(
             "EL0 Confirmed",
-            "EL0_CONFIRMED: First syscall received from EL0",
+            "EL0_SYSCALL: First syscall from userspace",
             "Syscall from EL0 - definitive userspace proof!",
         ),
     ]
@@ -496,10 +546,10 @@ pub fn arm64_syscall_checks() -> Vec<Arm64PostCheck> {
 /// Check if ARM64 kernel has confirmed EL0 (userspace) execution
 ///
 /// This is the ARM64 equivalent of checking for RING3_CONFIRMED on x86_64.
-/// Returns true if the EL0_CONFIRMED marker was found.
+/// Returns true if the EL0_SYSCALL marker was found.
 #[allow(dead_code)]
 pub fn has_el0_confirmed(output: &str) -> bool {
-    output.contains("EL0_CONFIRMED: First syscall received from EL0")
+    output.contains("EL0_SYSCALL: First syscall from userspace")
 }
 
 /// Check if ARM64 kernel has any evidence of EL0 entry
@@ -507,5 +557,5 @@ pub fn has_el0_confirmed(output: &str) -> bool {
 /// Returns true if any EL0-related marker was found.
 #[allow(dead_code)]
 pub fn has_el0_evidence(output: &str) -> bool {
-    output.contains("EL0_CONFIRMED") || output.contains("EL0_ENTER") || output.contains("EL0_SMOKE")
+    output.contains("EL0_SYSCALL:") || output.contains("EL0_ENTER") || output.contains("EL0_SMOKE")
 }
