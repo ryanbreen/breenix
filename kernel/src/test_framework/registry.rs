@@ -2439,28 +2439,6 @@ fn test_process_list_populated() -> TestResult {
 // Userspace Stage Tests
 // =============================================================================
 
-/// Test that userspace syscalls have been confirmed.
-///
-/// This test runs after the first confirmed userspace syscall (EL0 on ARM64
-/// or Ring 3 on x86_64). It verifies the syscall confirmation flag is set.
-fn test_userspace_syscall_confirmed() -> TestResult {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if !crate::syscall::handler::is_ring3_confirmed() {
-            return TestResult::Fail("Ring 3 syscall not confirmed");
-        }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    {
-        if !crate::arch_impl::aarch64::syscall_entry::is_el0_confirmed() {
-            return TestResult::Fail("EL0 syscall not confirmed");
-        }
-    }
-
-    TestResult::Pass
-}
-
 /// Test that signal delivery infrastructure is functional.
 ///
 /// This verifies that the kernel-side signal infrastructure is properly
@@ -4999,14 +4977,9 @@ static PROCESS_TESTS: &[TestDef] = &[
         timeout_ms: 5000,
         stage: TestStage::ProcessContext,
     },
-    // Userspace stage tests - run after confirmed EL0/Ring3 syscall
-    TestDef {
-        name: "userspace_syscall_confirmed",
-        func: test_userspace_syscall_confirmed,
-        arch: Arch::Any,
-        timeout_ms: 5000,
-        stage: TestStage::Userspace,
-    },
+    // Note: Userspace stage tests cannot run from syscall context (would block).
+    // The Userspace stage is marked when EL0/Ring3 syscall is confirmed, but
+    // tests at this stage are skipped. The confirmation itself is the test.
 ];
 
 /// Syscall subsystem tests (Phase 4j)

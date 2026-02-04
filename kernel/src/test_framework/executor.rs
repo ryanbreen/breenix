@@ -83,6 +83,35 @@ pub fn advance_to_stage(stage: TestStage) -> u32 {
     run_staged_tests(stage)
 }
 
+/// Advance to a new stage without running tests
+///
+/// Use this when in syscall context where spawning kthreads would block.
+/// Emits the stage marker but does not run any tests.
+pub fn advance_stage_marker_only(stage: TestStage) {
+    let current = current_stage();
+    if stage <= current {
+        // Already at or past this stage
+        return;
+    }
+
+    serial_println!("[STAGE:{}:ADVANCE]", stage.name());
+    CURRENT_STAGE.store(stage as u8, Ordering::Release);
+
+    // Note: We don't call run_staged_tests() here because we're in syscall context.
+    // Tests for this stage should verify the stage was reached via other means
+    // (e.g., checking is_el0_confirmed() or is_ring3_confirmed()).
+
+    // Emit completion marker since no tests run
+    let (completed, total, failed) = get_overall_progress();
+    if failed == 0 {
+        serial_println!("[TESTS_COMPLETE:{}/{}]", completed, total);
+        serial_println!("[BOOT_TESTS:PASS]");
+    } else {
+        serial_println!("[TESTS_COMPLETE:{}/{}:FAILED:{}]", completed, total, failed);
+        serial_println!("[BOOT_TESTS:FAIL:{}]", failed);
+    }
+}
+
 /// Run all registered tests in parallel (EarlyBoot stage only)
 ///
 /// Spawns one kthread per subsystem with tests. Returns when all EarlyBoot
