@@ -534,10 +534,10 @@ pub fn arm64_syscall_checks() -> Vec<Arm64PostCheck> {
             "EL0_SMOKE: userspace executed",
             "Userspace code ran successfully",
         ),
-        // EL0_CONFIRMED is the definitive marker (like RING3_CONFIRMED on x86_64)
+        // EL0_SYSCALL is the definitive marker (like RING3_CONFIRMED on x86_64)
         Arm64PostCheck::new(
             "EL0 Confirmed",
-            "EL0_CONFIRMED: First syscall received from EL0",
+            "EL0_SYSCALL: First syscall from userspace",
             "Syscall from EL0 - definitive userspace proof!",
         ),
     ]
@@ -546,10 +546,10 @@ pub fn arm64_syscall_checks() -> Vec<Arm64PostCheck> {
 /// Check if ARM64 kernel has confirmed EL0 (userspace) execution
 ///
 /// This is the ARM64 equivalent of checking for RING3_CONFIRMED on x86_64.
-/// Returns true if the EL0_CONFIRMED marker was found.
+/// Returns true if the EL0_SYSCALL marker was found.
 #[allow(dead_code)]
 pub fn has_el0_confirmed(output: &str) -> bool {
-    output.contains("EL0_CONFIRMED: First syscall received from EL0")
+    output.contains("EL0_SYSCALL: First syscall from userspace")
 }
 
 /// Check if ARM64 kernel has any evidence of EL0 entry
@@ -557,5 +557,5 @@ pub fn has_el0_confirmed(output: &str) -> bool {
 /// Returns true if any EL0-related marker was found.
 #[allow(dead_code)]
 pub fn has_el0_evidence(output: &str) -> bool {
-    output.contains("EL0_CONFIRMED") || output.contains("EL0_ENTER") || output.contains("EL0_SMOKE")
+    output.contains("EL0_SYSCALL:") || output.contains("EL0_ENTER") || output.contains("EL0_SMOKE")
 }

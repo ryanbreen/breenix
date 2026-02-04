@@ -1099,7 +1099,7 @@ fn test_arm64_syscall_infrastructure() {
 
     // Check for EL0_SYSCALL_VERIFIED which proves SVC from userspace works
     print!("  {:.<35} ", "SVC from EL0 (userspace)");
-    if output.contains("EL0_SYSCALL_VERIFIED") {
+    if output.contains("EL0_SYSCALL:") {
         println!("PASS - SVC instruction working!");
     } else {
         println!("not verified (no userspace syscall detected)");
@@ -1197,7 +1197,7 @@ fn test_arm64_process_creation() {
 
     // Check if process actually ran (via EL0 confirmation)
     print!("  {:.<35} ", "Process executed (EL0)");
-    if output.contains("EL0_SYSCALL_VERIFIED") || output.contains("EL0_SMOKE") {
+    if output.contains("EL0_SYSCALL:") || output.contains("EL0_SMOKE") {
         println!("PASS - Userspace code ran!");
     } else {
         println!("not verified");
@@ -1230,7 +1230,7 @@ fn test_arm64_syscall_returns() {
 
     // Look for evidence of syscall execution
     print!("  {:.<35} ", "Syscall execution evidence");
-    if output.contains("EL0_SYSCALL_VERIFIED")
+    if output.contains("EL0_SYSCALL:")
         || output.contains("syscall")
         || output.contains("[user]")
         || output.contains("sys_")
@@ -1569,7 +1569,7 @@ fn test_arm64_enosys() {
         output.contains("Breenix ARM64 Boot Complete") || output.contains("Hello from ARM64");
 
     // Check for EL0 execution evidence (ARM64 equivalent of Ring 3)
-    let el0_evidence = output.contains("EL0_SYSCALL_VERIFIED")
+    let el0_evidence = output.contains("EL0_SYSCALL:")
         || output.contains("EL0_ENTER")
         || output.contains("EL0_SMOKE");
 
