@@ -2,7 +2,7 @@
 
 **Tracking Document for ARM64 vs x86-64 Feature Parity**
 
-## Last Updated: 2026-02-02
+## Last Updated: 2026-02-04
 
 ---
 
@@ -10,23 +10,166 @@
 
 **Goal**: Achieve ARM64 test parity with x86-64
 
+### Test Inventory Comparison
+
+| Category | x86-64 | ARM64 | Gap |
+|----------|--------|-------|-----|
+| Kernel Test Framework | 91 | 91* | 0* |
+| Userspace Test Binaries | 122 | 100 | **-22** |
+| Rust Integration Tests | 72 | 2 | **-70** |
+| **Total Potential Tests** | **285** | **193** | **-92** |
+
+*\*Kernel test framework exists on ARM64 but many tests may be arch-gated*
+
+### Current ARM64 Userspace Results
+
 | Metric | Baseline | Current | Target |
 |--------|----------|---------|--------|
-| ARM64 Pass Rate | 41.25% (33/80) | **62.5% (50/80)** | ~90% |
-| x86-64 Pass Rate | - | ~90% | - |
-| Kernel Feature Parity | - | ~100% | - |
+| Userspace Pass Rate | 41.25% (33/80) | **62.5% (50/80)** | ~90% |
+| Tests in Suite | 80 | 80 | 100+ |
 
 **Progress**: +21.25% improvement from baseline, +17 new tests passing
 
-**Key Fixes Applied**:
+### Key Fixes Applied ✅
 1. ~~exec() spinlock deadlock~~ **FIXED** - added explicit lock release before ERET
 2. ~~sys_read for RegularFile~~ **FIXED** - implemented ext2 file read support
-3. Test infrastructure now uses writable ext2 disk copy
+3. ~~Network ENETUNREACH~~ **FIXED** - added virtio-net to QEMU scripts
+4. ~~Filesystem readonly~~ **FIXED** - removed readonly=on from QEMU disk
+5. ~~argc/argv setup~~ **FIXED** - implemented create_process_with_argv()
+6. ~~COW syscalls~~ **ALREADY IMPLEMENTED** - no changes needed
 
-**Remaining Gaps**:
-1. Network configuration (ENETUNREACH) - ~6 tests
-2. argc/argv setup for initial process - ~4 tests
-3. Various syscall issues - ~20 tests
+---
+
+## Priority Queue: Ordered by Tests Unblocked
+
+**Principle**: Each priority level is chosen because it unblocks the largest number of tests for the effort required.
+
+### PRIORITY 1: Port Rust Integration Tests to ARM64 [+70 tests]
+**Status**: NOT STARTED
+**Effort**: High (infrastructure + test porting)
+**Tests Unblocked**: 70
+
+The Rust integration tests (`tests/*.rs`) provide 72 tests on x86-64 but only 2 on ARM64. This is the single largest gap in test coverage.
+
+**What's needed**:
+1. Create ARM64 QEMU test harness (like `shared_qemu.rs` but for ARM64)
+2. Port architecture-specific test setup code
+3. Verify each test file works on ARM64:
+
+| Test File | x86-64 Tests | ARM64 Status |
+|-----------|--------------|--------------|
+| syscall_tests.rs | 1 | Not ported |
+| memory_tests.rs | 3 | Not ported |
+| system_tests.rs | 4 | Not ported |
+| exception_tests.rs | ~8 | Not ported |
+| guard_page_tests.rs | ~5 | Not ported |
+| interrupt_tests.rs | ~6 | Not ported |
+| timer_tests.rs | ~4 | Not ported |
+| keyboard_tests.rs | ~3 | Not ported |
+| logging_tests.rs | ~2 | Not ported |
+| stack_bounds_tests.rs | ~4 | Not ported |
+| async_executor_tests.rs | ~5 | Not ported |
+| boot_post_test.rs | 1 | **Ported** |
+| arm64_boot_post_test.rs | 1 | **ARM64 native** |
+| shared_qemu.rs | - | x86-64 only |
+| shared_qemu_aarch64.rs | - | **Exists** |
+| simple_kernel_test.rs | ~2 | Not ported |
+| kernel_build_test.rs | ~1 | Not ported |
+| ring3_smoke_test.rs | ~3 | Not ported |
+| ring3_enosys_test.rs | ~2 | Not ported |
+
+---
+
+### PRIORITY 2: Port x86-64 Assembly Tests to libbreenix [+12 tests]
+**Status**: NOT STARTED
+**Effort**: Medium (rewrite tests to use libbreenix syscall wrappers)
+**Tests Unblocked**: 12
+
+These tests are excluded from ARM64 because they use x86-64 inline assembly (`int 0x80`, register manipulation). They need to be rewritten to use libbreenix syscall wrappers.
+
+| Test | Current Issue | Porting Approach |
+|------|---------------|------------------|
+| `pipe_test` | Uses `int 0x80` for syscalls | Use `libbreenix::io::pipe()` |
+| `pipe_refcount_test` | Uses `int 0x80` | Use `libbreenix::io::pipe()` |
+| `poll_test` | Uses `int 0x80` | Use `libbreenix::io::poll()` |
+| `select_test` | Uses `int 0x80` | Use `libbreenix::io::select()` |
+| `brk_test` | Uses `int 0x80` | Use `libbreenix::memory::brk()` |
+| `stdin_test` | Uses `int 0x80` | Use `libbreenix::io::read()` |
+| `timer_test` | Uses `int 0x80` | Use `libbreenix::time` |
+| `register_init_test` | x86-64 register checks | Rewrite for ARM64 regs (x0-x30) |
+| `syscall_diagnostic_test` | Uses `int 0x80` | Use libbreenix syscalls |
+| `syscall_enosys` | Uses `int 0x80` | Use libbreenix syscalls |
+| `signal_regs_test` | Uses r12-r15 (x86-64) | Rewrite for x19-x28 (ARM64) |
+| `sigaltstack_test` | Uses RSP access | Rewrite for SP access (ARM64) |
+
+---
+
+### PRIORITY 3: Fix Signal Delivery [+5 tests]
+**Status**: NOT STARTED
+**Effort**: Medium (kernel debugging)
+**Tests Unblocked**: 5 (of the 30 currently failing)
+
+Signal delivery via `kill()` is not working on ARM64. SIGCHLD works (sigchld_test passes), so some signal paths are functional.
+
+**Debugging approach**:
+1. Trace `kill()` syscall on ARM64
+2. Compare with x86-64 signal delivery path
+3. Fix the delivery mechanism
+
+**Tests that will pass once fixed**:
+| Test | What it tests |
+|------|---------------|
+| `signal_test` | `kill(pid, SIGTERM)` to child |
+| `ctrl_c_test` | `kill(pid, SIGINT)` to child |
+| `alarm_test` | SIGALRM after timer expires |
+| `itimer_test` | setitimer/getitimer + SIGALRM |
+| `kill_process_group_test` | `kill(0, sig)`, `kill(-pgid, sig)` |
+
+---
+
+### PRIORITY 4: Remaining Userspace Test Failures [~25 tests]
+**Status**: INVESTIGATION NEEDED
+**Effort**: Variable
+**Tests Unblocked**: ~25
+
+After P1-P3, approximately 25 tests may still be failing. These need individual investigation:
+
+| Category | Est. Count | Notes |
+|----------|------------|-------|
+| Filesystem write bugs | ~6 | May already be fixed by readonly fix |
+| Process/fork edge cases | ~5 | Need investigation |
+| Network edge cases | ~4 | May need virtio-net driver fixes |
+| TTY/PTY issues | ~3 | Need investigation |
+| Other | ~7 | Need investigation |
+
+---
+
+### PRIORITY 5: Kernel Test Framework on ARM64 [+91 tests potentially]
+**Status**: NOT STARTED
+**Effort**: Medium-High
+**Tests Unblocked**: Up to 91 (if not already running)
+
+Verify the kernel test framework runs on ARM64 boot and all arch-agnostic tests pass.
+
+**What's needed**:
+1. Verify test framework initializes on ARM64
+2. Identify which tests are x86-64 only vs arch-agnostic
+3. Run and fix arch-agnostic tests
+4. Port x86-64-specific tests where valuable
+
+---
+
+## Test Gap Summary
+
+| Priority | Work Item | Tests Unblocked | Effort | Cumulative |
+|----------|-----------|-----------------|--------|------------|
+| P1 | Port Rust integration tests | +70 | High | 70 |
+| P2 | Port x86-64 asm tests | +12 | Medium | 82 |
+| P3 | Fix signal delivery | +5 | Medium | 87 |
+| P4 | Fix remaining failures | +25 | Variable | 112 |
+| P5 | Kernel test framework | +91 | Medium-High | 203 |
+
+**Total potential improvement**: From current 50 passing to 203+ tests
 
 ---
 
