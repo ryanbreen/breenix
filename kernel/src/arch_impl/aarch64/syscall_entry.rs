@@ -39,6 +39,7 @@ pub fn is_el0_confirmed() -> bool {
 
 /// Emit one-time marker when first syscall from EL0 (userspace) is received.
 /// Uses raw UART writes to avoid any locks (safe in syscall context).
+/// Also advances test framework to Userspace stage if boot_tests is enabled.
 #[inline(never)]
 fn emit_el0_syscall_marker() {
     // PL011 UART virtual address (physical 0x0900_0000 mapped via HHDM)
@@ -51,6 +52,17 @@ fn emit_el0_syscall_marker() {
     for &byte in msg {
         unsafe {
             core::ptr::write_volatile(PL011_VIRT as *mut u8, byte);
+        }
+    }
+
+    // Advance test framework to Userspace stage - we have confirmed EL0 execution
+    #[cfg(feature = "boot_tests")]
+    {
+        let failures = crate::test_framework::advance_to_stage(
+            crate::test_framework::TestStage::Userspace
+        );
+        if failures > 0 {
+            crate::serial_println!("[boot_tests] {} Userspace test(s) failed", failures);
         }
     }
 }

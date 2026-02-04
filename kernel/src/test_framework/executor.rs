@@ -139,7 +139,15 @@ pub fn run_all_tests() -> u32 {
     }
 
     // Run EarlyBoot tests
-    run_staged_tests(TestStage::EarlyBoot)
+    let early_failures = run_staged_tests(TestStage::EarlyBoot);
+
+    // Now advance to PostScheduler stage - by this point kthreads are working
+    // (we just used them to run EarlyBoot tests)
+    serial_println!("[STAGE:{}:ADVANCE]", TestStage::PostScheduler.name());
+    CURRENT_STAGE.store(TestStage::PostScheduler as u8, Ordering::Release);
+    let post_failures = run_staged_tests(TestStage::PostScheduler);
+
+    early_failures + post_failures
 }
 
 /// Run tests for a specific stage (and mark them as run)
