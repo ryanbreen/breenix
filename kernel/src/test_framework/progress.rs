@@ -3,9 +3,11 @@
 //! Uses atomic counters to track test completion without requiring locks,
 //! which is essential since test kthreads run concurrently with potential
 //! timer interrupts.
+//!
+//! Tracks per-stage completion counts for color-coded progress display.
 
 use core::sync::atomic::{AtomicU32, Ordering};
-use super::registry::SubsystemId;
+use super::registry::{SubsystemId, TestStage};
 
 /// Progress counters for a single subsystem
 ///
@@ -20,6 +22,11 @@ struct SubsystemProgress {
     failed: AtomicU32,
     /// Whether this subsystem has started executing
     started: AtomicU32, // Using u32 for alignment, 0 = false, 1 = true
+    /// Per-stage completion counts for color-coded display
+    /// Index by TestStage as usize
+    stage_completed: [AtomicU32; TestStage::COUNT],
+    /// Per-stage total counts
+    stage_total: [AtomicU32; TestStage::COUNT],
 }
 
 impl SubsystemProgress {
@@ -29,6 +36,18 @@ impl SubsystemProgress {
             total: AtomicU32::new(0),
             failed: AtomicU32::new(0),
             started: AtomicU32::new(0),
+            stage_completed: [
+                AtomicU32::new(0), // EarlyBoot
+                AtomicU32::new(0), // PostScheduler
+                AtomicU32::new(0), // ProcessContext
+                AtomicU32::new(0), // Userspace
+            ],
+            stage_total: [
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+            ],
         }
     }
 }
@@ -59,6 +78,20 @@ pub fn init_subsystem(id: SubsystemId, total_tests: u32) {
     PROGRESS[idx].completed.store(0, Ordering::Release);
     PROGRESS[idx].failed.store(0, Ordering::Release);
     PROGRESS[idx].started.store(0, Ordering::Release);
+    // Reset per-stage counters
+    for stage_idx in 0..TestStage::COUNT {
+        PROGRESS[idx].stage_completed[stage_idx].store(0, Ordering::Release);
+        PROGRESS[idx].stage_total[stage_idx].store(0, Ordering::Release);
+    }
+}
+
+/// Initialize per-stage totals for a subsystem
+///
+/// Called by the executor to set up stage-specific test counts.
+pub fn init_subsystem_stage(id: SubsystemId, stage: TestStage, count: u32) {
+    let idx = id as usize;
+    let stage_idx = stage as usize;
+    PROGRESS[idx].stage_total[stage_idx].store(count, Ordering::Release);
 }
 
 /// Mark a subsystem as started
@@ -75,6 +108,15 @@ pub fn mark_started(id: SubsystemId) {
 pub fn increment_completed(id: SubsystemId) {
     let idx = id as usize;
     PROGRESS[idx].completed.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Increment the completed counter for a specific stage
+///
+/// Called after each test finishes to track per-stage progress.
+pub fn increment_stage_completed(id: SubsystemId, stage: TestStage) {
+    let idx = id as usize;
+    let stage_idx = stage as usize;
+    PROGRESS[idx].stage_completed[stage_idx].fetch_add(1, Ordering::AcqRel);
 }
 
 /// Increment the failed counter for a subsystem
@@ -94,6 +136,23 @@ pub fn get_progress(id: SubsystemId) -> (u32, u32, u32) {
     let total = PROGRESS[idx].total.load(Ordering::Acquire);
     let failed = PROGRESS[idx].failed.load(Ordering::Acquire);
     (completed, total, failed)
+}
+
+/// Get per-stage progress for a subsystem
+///
+/// Returns array of (completed, total) for each stage.
+/// Index by TestStage as usize.
+#[cfg_attr(all(target_arch = "x86_64", not(feature = "interactive")), allow(dead_code))]
+pub fn get_stage_progress(id: SubsystemId) -> [(u32, u32); TestStage::COUNT] {
+    let idx = id as usize;
+    let mut result = [(0u32, 0u32); TestStage::COUNT];
+    for stage_idx in 0..TestStage::COUNT {
+        result[stage_idx] = (
+            PROGRESS[idx].stage_completed[stage_idx].load(Ordering::Acquire),
+            PROGRESS[idx].stage_total[stage_idx].load(Ordering::Acquire),
+        );
+    }
+    result
 }
 
 /// Check if a subsystem has started executing

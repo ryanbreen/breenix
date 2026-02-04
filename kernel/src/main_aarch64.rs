@@ -114,6 +114,18 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     };
     raw_char(b'G'); // Process created
 
+    // Advance test stage to ProcessContext - a user process now exists with an fd_table
+    // This allows tests that need process context (like sys_socket) to run
+    #[cfg(feature = "boot_tests")]
+    {
+        let failures = kernel::test_framework::advance_to_stage(
+            kernel::test_framework::TestStage::ProcessContext
+        );
+        if failures > 0 {
+            kernel::serial_println!("[boot_tests] {} ProcessContext test(s) failed", failures);
+        }
+    }
+
     let (entry_point, user_sp, ttbr0_phys, main_thread_id, main_thread_clone) = {
         let manager_guard = kernel::process::manager();
         if let Some(ref manager) = *manager_guard {

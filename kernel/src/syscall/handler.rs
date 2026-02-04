@@ -145,6 +145,42 @@ pub fn is_ring3_confirmed() -> bool {
     RING3_CONFIRMED.load(Ordering::Relaxed)
 }
 
+/// Raw serial string output - no locks, no allocations.
+/// Used for boot markers where locking would deadlock.
+#[inline(always)]
+fn raw_serial_str_local(s: &str) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut port: Port<u8> = Port::new(0x3F8);
+        for &byte in s.as_bytes() {
+            port.write(byte);
+        }
+    }
+}
+
+/// Emit one-time marker when first syscall from Ring 3 (userspace) is received.
+/// This is out-of-line to keep the hot path clean.
+/// Also advances test framework to Userspace stage if boot_tests is enabled.
+#[inline(never)]
+#[cold]
+fn emit_ring3_syscall_marker() {
+    // Use raw serial output for the marker (no locks)
+    raw_serial_str_local("RING3_SYSCALL: First syscall from userspace\n");
+    raw_serial_str_local("[ OK ] syscall path verified\n");
+
+    // Advance test framework to Userspace stage - we have confirmed Ring 3 execution
+    // Note: We use advance_stage_marker_only() instead of advance_to_stage() because
+    // we're in syscall context and cannot spawn kthreads or block on joins here.
+    // The Userspace stage tests verify is_ring3_confirmed() which is already true.
+    #[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+    {
+        crate::test_framework::advance_stage_marker_only(
+            crate::test_framework::TestStage::Userspace
+        );
+    }
+}
+
 /// Main syscall handler called from assembly
 ///
 /// CRITICAL: This is a hot path. NO logging, NO serial output, NO allocations.
@@ -161,6 +197,12 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         frame.set_return_value(u64::MAX); // Error
         crate::per_cpu::preempt_enable();
         return;
+    }
+
+    // One-time marker for first syscall from Ring 3 (userspace confirmed)
+    // This is called out-of-line only on the first syscall via swap
+    if !RING3_CONFIRMED.swap(true, Ordering::Relaxed) {
+        emit_ring3_syscall_marker();
     }
 
     let syscall_num = frame.syscall_number();

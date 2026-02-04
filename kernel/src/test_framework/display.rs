@@ -8,8 +8,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use super::registry::SubsystemId;
-use super::progress::{get_progress, is_started, is_complete, get_overall_progress};
+use super::registry::{SubsystemId, TestStage};
+use super::progress::{get_progress, get_stage_progress, is_started, is_complete, get_overall_progress};
 
 /// Whether graphical display is available and initialized
 static DISPLAY_READY: AtomicBool = AtomicBool::new(false);
@@ -102,8 +102,13 @@ fn render_to_framebuffer() {
     const COLOR_FAIL: Color = Color::rgb(255, 0, 0);
     const COLOR_RUN: Color = Color::rgb(0, 191, 255);
     const COLOR_PEND: Color = Color::rgb(128, 128, 128);
-    const COLOR_BAR_FILLED: Color = Color::rgb(0, 200, 100);
     const COLOR_BAR_EMPTY: Color = Color::rgb(64, 64, 64);
+
+    // Stage colors for progress bar segments
+    const COLOR_STAGE_EARLY: Color = Color::rgb(0, 200, 100);    // Green - EarlyBoot
+    const COLOR_STAGE_SCHED: Color = Color::rgb(0, 150, 255);    // Blue - PostScheduler
+    const COLOR_STAGE_PROC: Color = Color::rgb(255, 200, 0);     // Yellow - ProcessContext
+    const COLOR_STAGE_USER: Color = Color::rgb(180, 100, 255);   // Purple - Userspace
 
     // Layout constants
     const PANEL_MARGIN_X: i32 = 40;
@@ -209,10 +214,11 @@ fn render_to_framebuffer() {
         let name_style = TextStyle::new().with_color(COLOR_TEXT);
         draw_text(canvas, x, y, name, &name_style);
 
-        // Draw progress bar
+        // Draw progress bar with stage-colored segments
         let bar_x = x + NAME_WIDTH;
         let bar_y = y + (ROW_HEIGHT - BAR_HEIGHT as i32) / 2 - 2;
-        render_progress_bar(canvas, bar_x, bar_y, completed, total);
+        let stage_progress = get_stage_progress(id);
+        render_progress_bar(canvas, bar_x, bar_y, total, &stage_progress);
 
         // Draw percentage
         let percent = if total > 0 {
@@ -231,8 +237,24 @@ fn render_to_framebuffer() {
         draw_text(canvas, status_x, y, status_text, &status_style);
     }
 
-    /// Render a progress bar
-    fn render_progress_bar<C: Canvas>(canvas: &mut C, x: i32, y: i32, completed: u32, total: u32) {
+    /// Render a progress bar with stage-colored segments
+    ///
+    /// Each stage gets its own color segment showing completed tests for that stage.
+    fn render_progress_bar<C: Canvas>(
+        canvas: &mut C,
+        x: i32,
+        y: i32,
+        total: u32,
+        stage_progress: &[(u32, u32); TestStage::COUNT],
+    ) {
+        // Stage colors in order
+        const STAGE_COLORS: [Color; TestStage::COUNT] = [
+            COLOR_STAGE_EARLY,  // EarlyBoot - Green
+            COLOR_STAGE_SCHED,  // PostScheduler - Blue
+            COLOR_STAGE_PROC,   // ProcessContext - Yellow
+            COLOR_STAGE_USER,   // Userspace - Purple
+        ];
+
         // Draw background (empty bar)
         fill_rect(
             canvas,
@@ -245,22 +267,36 @@ fn render_to_framebuffer() {
             COLOR_BAR_EMPTY,
         );
 
-        // Draw filled portion
-        if total > 0 && completed > 0 {
-            let filled_width = ((completed as u64 * BAR_WIDTH as u64) / total as u64) as u32;
-            let filled_width = filled_width.min(BAR_WIDTH);
+        // Draw colored segments for each stage
+        if total > 0 {
+            let mut current_x = x;
 
-            if filled_width > 0 {
-                fill_rect(
-                    canvas,
-                    Rect {
-                        x,
-                        y,
-                        width: filled_width,
-                        height: BAR_HEIGHT,
-                    },
-                    COLOR_BAR_FILLED,
-                );
+            for (stage_idx, &(completed, _stage_total)) in stage_progress.iter().enumerate() {
+                if completed > 0 {
+                    // Calculate width for this stage's completed tests
+                    let segment_width =
+                        ((completed as u64 * BAR_WIDTH as u64) / total as u64) as u32;
+
+                    if segment_width > 0 {
+                        // Ensure we don't overflow the bar
+                        let remaining = BAR_WIDTH.saturating_sub((current_x - x) as u32);
+                        let actual_width = segment_width.min(remaining);
+
+                        if actual_width > 0 {
+                            fill_rect(
+                                canvas,
+                                Rect {
+                                    x: current_x,
+                                    y,
+                                    width: actual_width,
+                                    height: BAR_HEIGHT,
+                                },
+                                STAGE_COLORS[stage_idx],
+                            );
+                            current_x += actual_width as i32;
+                        }
+                    }
+                }
             }
         }
 

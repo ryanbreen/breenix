@@ -28,7 +28,9 @@ pub mod progress;
 pub mod display;
 
 #[cfg(feature = "boot_tests")]
-pub use executor::run_all_tests;
+pub use executor::{run_all_tests, advance_to_stage, advance_stage_marker_only, current_stage};
+#[cfg(feature = "boot_tests")]
+pub use registry::TestStage;
 #[cfg(feature = "boot_tests")]
 pub use progress::get_overall_progress;
 #[cfg(feature = "boot_tests")]
