@@ -204,12 +204,15 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
 
     crate::serial_println!("[boot] Creating process via process manager...");
 
+    // Set up argv with the program name as argv[0]
+    let argv: [&[u8]; 1] = [binary_name.as_bytes()];
+
     // Create a process using the process manager - this properly registers
     // the process and thread so fork() can find them
     let pid = {
         let mut manager_guard = crate::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            manager.create_process(String::from(binary_name), &elf_data)?
+            manager.create_process_with_argv(String::from(binary_name), &elf_data, &argv)?
         } else {
             return Err("Process manager not initialized");
         }
@@ -218,7 +221,7 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
     crate::serial_println!("[boot] Created process with PID {}", pid.as_u64());
 
     // Get the process entry point and thread info
-    let (entry_point, thread_id, user_stack_top) = {
+    let (entry_point, thread_id, user_sp) = {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
@@ -226,9 +229,9 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
                 let thread = process.main_thread.as_ref()
                     .ok_or("Process has no main thread")?;
                 let tid = thread.id;
-                // Stack is at top of allocated stack region
-                let stack_top = thread.stack_top.as_u64();
-                (entry, tid, stack_top)
+                // Get the SP from the thread's context (points to argc on the stack)
+                let sp = thread.context.sp_el0;
+                (entry, tid, sp)
             } else {
                 return Err("Process not found after creation");
             }
@@ -238,8 +241,8 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
     };
 
     crate::serial_println!(
-        "[boot] Process ready: entry={:#x}, thread={}, stack={:#x}",
-        entry_point, thread_id, user_stack_top
+        "[boot] Process ready: entry={:#x}, thread={}, sp={:#x}",
+        entry_point, thread_id, user_sp
     );
 
     // Register the thread with the scheduler so fork() can find it
@@ -307,7 +310,7 @@ pub fn run_userspace_from_disk(binary_name: &str) -> Result<core::convert::Infal
 
     // Jump to userspace! (never returns)
     unsafe {
-        return_to_userspace(entry_point, user_stack_top);
+        return_to_userspace(entry_point, user_sp);
     }
 }
 

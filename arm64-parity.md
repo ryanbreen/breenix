@@ -243,6 +243,239 @@ which_test            wnohang_timing_test
 
 ---
 
+## P4 Signal/Process Bugs - Detailed Enumeration
+
+**Last Updated**: 2026-02-04
+
+This section catalogs the failing tests related to signal handling and process management on ARM64. The tests are organized by root cause category to enable systematic debugging.
+
+### Summary
+
+| Category | Count | Tests | Notes |
+|----------|-------|-------|-------|
+| Signal Delivery | 4 | alarm_test, ctrl_c_test, signal_test, itimer_test | Built, need kernel fixes |
+| Signal Handling (registers/stack) | 2 | signal_regs_test, sigaltstack_test | **NOT BUILT** - need ARM64 port |
+| Process Group Kill | 1 | kill_process_group_test | Built, depends on signal delivery |
+| Signal + Exec | 1 | signal_exec_check | Built, may be false positive |
+
+**Total**: 8 tests in signal/process category
+- **6 tests built for ARM64** - need kernel signal delivery fixes
+- **2 tests need porting** - use x86-64 inline assembly
+
+### Category 1: Signal Delivery (4 tests)
+
+These tests fail because signals are not being delivered to userspace on ARM64, or the signal delivery timing is incorrect.
+
+#### 1.1 alarm_test
+- **Description**: Tests the `alarm()` syscall which schedules SIGALRM delivery after N seconds
+- **What it tests**:
+  - Register SIGALRM handler via `sigaction()`
+  - Call `alarm(1)` to schedule signal in 1 second
+  - Wait (via yield loop) for signal delivery
+  - Verify handler was invoked
+  - Test `alarm(0)` to cancel pending alarm
+- **Syscalls used**: `sigaction`, `alarm`, `yield`
+- **Likely root cause**: ARM64 timer interrupt not triggering signal delivery, or `alarm()` syscall not implemented/wired up for ARM64
+- **Priority**: High - foundational signal delivery mechanism
+
+#### 1.2 ctrl_c_test
+- **Description**: Tests SIGINT delivery to a child process (simulating Ctrl-C)
+- **What it tests**:
+  - Fork a child process
+  - Parent sends `SIGINT` to child via `kill()`
+  - Child should be terminated by default SIGINT handler
+  - Parent calls `waitpid()` and verifies `WIFSIGNALED` with `WTERMSIG == SIGINT`
+- **Syscalls used**: `fork`, `kill`, `waitpid`
+- **Likely root cause**: Either `kill()` syscall not queueing signals on ARM64, or default signal disposition not terminating process
+- **Priority**: High - core signal delivery path
+
+#### 1.3 signal_test
+- **Description**: Tests basic signal delivery with SIGTERM
+- **What it tests**:
+  - Check process existence via `kill(pid, 0)`
+  - Fork child process
+  - Parent sends `SIGTERM` to child
+  - Verify child terminated by signal via `waitpid`
+- **Syscalls used**: `fork`, `kill`, `waitpid`
+- **Likely root cause**: Same as ctrl_c_test - signal delivery path on ARM64
+- **Priority**: High - same root cause as ctrl_c_test
+
+#### 1.4 itimer_test
+- **Description**: Tests interval timers (`setitimer`/`getitimer`)
+- **What it tests**:
+  - `ITIMER_VIRTUAL`/`ITIMER_PROF` should return ENOSYS
+  - `ITIMER_REAL` should fire SIGALRM repeatedly at specified intervals
+  - `getitimer()` should return remaining time
+  - Setting timer to zero should cancel it
+- **Syscalls used**: `sigaction`, `setitimer`, `getitimer`
+- **Likely root cause**: Timer subsystem not triggering SIGALRM delivery on ARM64
+- **Priority**: Medium - depends on timer infrastructure
+- **Note**: Listed as passing in some runs but failing in others - may be timing-sensitive
+
+### Category 2: Signal Handling - Registers/Stack (2 tests)
+
+These tests verify that register state and stack are correctly managed during signal delivery and return.
+
+**IMPORTANT**: Both tests use x86-64 inline assembly and are **NOT BUILT** for ARM64. They are excluded from `build-aarch64.sh`. These need ARM64 ports before they can be tested.
+
+#### 2.1 signal_regs_test [NOT BUILT FOR ARM64]
+- **Description**: Tests that callee-saved registers (r12-r15) are preserved across signal delivery
+- **What it tests**:
+  - Set r12-r15 to known values
+  - Register signal handler that clobbers these registers
+  - Send SIGUSR1 to self
+  - Handler runs and intentionally corrupts r12-r15
+  - After `sigreturn`, verify original values restored
+- **Syscalls used**: `sigaction`, `kill`, `sigreturn` (implicit)
+- **Status**: **NOT BUILT** - uses x86-64 inline asm
+- **Porting required**: Rewrite with ARM64 assembly (x19-x28 are callee-saved on ARM64)
+- **Priority**: High - validates sigreturn correctness, but requires porting first
+
+#### 2.2 sigaltstack_test [NOT BUILT FOR ARM64]
+- **Description**: Tests alternate signal stack functionality
+- **What it tests**:
+  - Set alternate stack via `sigaltstack()`
+  - Query stack configuration
+  - Register handler with `SA_ONSTACK` flag
+  - Verify handler executes on alternate stack (check RSP/SP within alt stack range)
+  - Test `SS_DISABLE` flag
+  - Test minimum stack size validation (MINSIGSTKSZ)
+- **Syscalls used**: `sigaltstack`, `sigaction`, `kill`
+- **Status**: **NOT BUILT** - uses x86-64 inline asm (`mov {0}, rsp`)
+- **Porting required**: Replace `mov {0}, rsp` with ARM64 equivalent (`mrs {0}, sp` or similar)
+- **Priority**: Medium - used for stack overflow handling, but requires porting first
+
+### Category 3: Process Group Kill (1 test)
+
+#### 3.1 kill_process_group_test
+- **Description**: Tests comprehensive process group signal delivery semantics
+- **What it tests**:
+  - `kill(pid, 0)` - check if process exists
+  - `kill(0, sig)` - send signal to own process group
+  - `kill(-pgid, sig)` - send signal to specific process group
+  - `kill(-1, sig)` - broadcast signal to all processes
+- **Syscalls used**: `sigaction`, `kill`, `setpgid`, `getpgrp`, `getpgid`, `fork`, `waitpid`, `sigsuspend`, `sigprocmask`
+- **Likely root cause**: Process group handling in `kill()` syscall may not iterate process list correctly on ARM64
+- **Priority**: Medium - complex test with multiple sub-tests; may pass partially
+
+### Category 4: Signal + Exec (1 test)
+
+#### 4.1 signal_exec_check
+- **Description**: Helper program exec'd by `signal_exec_test` to verify signal handler reset after exec
+- **What it tests**:
+  - Query SIGUSR1 handler state via `sigaction(SIGUSR1, None, &mut old)`
+  - Verify handler is `SIG_DFL` (reset after exec per POSIX)
+- **Syscalls used**: `sigaction`
+- **Likely root cause**: Not really a signal bug - this is the child program. The parent test (`signal_exec_test`) passes, so this may be a false positive or the test is being run standalone incorrectly.
+- **Priority**: Low - investigate if actually failing
+
+---
+
+### Tests Excluded from ARM64 Build (x86-64 Assembly)
+
+The following tests use x86-64 inline assembly (`int 0x80`, `rax/rdi/rsi/rdx` registers) and are **NOT BUILT** for ARM64:
+
+| Test | Reason | Porting Effort |
+|------|--------|----------------|
+| `signal_regs_test` | x86-64 register manipulation | Medium - rewrite for ARM64 registers |
+| `sigaltstack_test` | x86-64 RSP access | Low - simple SP access |
+| `register_init_test` | x86-64 naked assembly | High - full rewrite |
+| `pipe_test` | `int 0x80` syscalls | Medium - use libbreenix |
+| `pipe_refcount_test` | `int 0x80` syscalls | Medium - use libbreenix |
+| `poll_test` | `int 0x80` syscalls | Medium - use libbreenix |
+| `select_test` | `int 0x80` syscalls | Medium - use libbreenix |
+| `brk_test` | `int 0x80` syscalls | Medium - use libbreenix |
+| `stdin_test` | `int 0x80` syscalls | Low - use libbreenix |
+| `timer_test` | `int 0x80` syscalls | Medium - use libbreenix |
+| `syscall_diagnostic_test` | Direct syscall testing | Medium |
+| `syscall_enosys` | Direct syscall testing | Low |
+
+**Note**: These tests need to be ported to use `libbreenix` syscall wrappers instead of raw x86-64 inline assembly. The libbreenix library already supports ARM64 via `svc #0`.
+
+---
+
+### Related Tests That ARE Passing
+
+For context, these signal/process tests pass on ARM64:
+
+| Test | What it validates |
+|------|------------------|
+| `fork_test` | Basic fork/waitpid |
+| `fork_memory_test` | COW memory after fork |
+| `fork_pending_signal_test` | Pending signals across fork |
+| `fork_state_test` | Process state after fork |
+| `signal_exec_test` | Signal reset across exec |
+| `signal_fork_test` | Signal handlers across fork |
+| `signal_handler_test` | Basic signal handler registration |
+| `signal_return_test` | Signal handler return path |
+| `sigchld_test` | SIGCHLD delivery on child exit |
+| `sigchld_job_test` | SIGCHLD with job control |
+| `sigsuspend_test` | sigsuspend() syscall |
+| `waitpid_test` | waitpid() variants |
+| `wnohang_timing_test` | WNOHANG behavior |
+| `job_control_test` | Process groups + SIGTTOU/SIGTTIN |
+| `pause_test` | pause() syscall |
+
+This suggests:
+- Basic signal handler registration works
+- Fork + waitpid work
+- SIGCHLD delivery works
+- The issue is specifically with:
+  - Signal delivery via `kill()` to terminate processes
+  - Timer-based signal delivery (alarm, itimer)
+  - Register preservation in sigreturn
+  - Alternate signal stack
+
+---
+
+### Debugging Priority Order
+
+**Phase 1: Fix kernel signal delivery (4 tests)**
+
+1. **signal_test / ctrl_c_test** (same root cause)
+   - Start here - simplest signal delivery test
+   - Debug with GDB: breakpoint on `sys_kill`, trace signal queue
+   - Verify signals are being queued and delivered on ARM64
+
+2. **alarm_test / itimer_test** (same root cause)
+   - Timer-based signal delivery
+   - Check ARM64 timer interrupt handler for signal delivery trigger
+   - Depends on Phase 1 fixes
+
+3. **kill_process_group_test**
+   - Complex test - fix after simpler ones pass
+   - May "just work" once signal delivery is fixed
+
+**Phase 2: Port tests to ARM64 (2 tests)**
+
+4. **sigaltstack_test** [NEEDS PORTING]
+   - Port x86-64 `mov {0}, rsp` to ARM64
+   - Then test alternate stack functionality
+   - Lower priority - stack overflow handling
+
+5. **signal_regs_test** [NEEDS PORTING]
+   - Port x86-64 r12-r15 manipulation to ARM64 x19-x28
+   - Validates sigreturn register restoration
+   - Important but blocked on porting
+
+---
+
+### Investigation Notes
+
+**ARM64 vs x86-64 Differences**:
+- Syscall entry: ARM64 uses `svc #0`, x86-64 uses `int 0x80` or `syscall`
+- Registers: ARM64 x0-x30 vs x86-64 rax/rbx/etc
+- Signal frame layout may differ
+- `sigaltstack_test` and `signal_regs_test` have x86-64 inline assembly that needs porting
+
+**Key Files to Investigate**:
+- `kernel/src/arch_impl/aarch64/syscall_entry.rs` - ARM64 syscall handler
+- `kernel/src/syscall/signal.rs` - Signal syscall implementations
+- `kernel/src/process/signal.rs` - Signal delivery logic
+- `kernel/src/arch_impl/aarch64/process.rs` - ARM64 process/signal frame setup
+
+---
+
 ## Architecture Parity Matrix
 
 | Dimension | x86-64 | ARM64 | Parity |

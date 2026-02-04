@@ -99,17 +99,22 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     raw_char(b'F'); // ELF verified
 
     let proc_name = path.rsplit('/').next().unwrap_or(path);
+
+    // Set up argv with the program name as argv[0]
+    // The path (e.g., "/bin/init_shell") becomes argv[0]
+    let argv: [&[u8]; 1] = [path.as_bytes()];
+
     let pid = {
         let mut manager_guard = kernel::process::manager();
         if let Some(ref mut manager) = *manager_guard {
-            manager.create_process(String::from(proc_name), &elf_data)?
+            manager.create_process_with_argv(String::from(proc_name), &elf_data, &argv)?
         } else {
             return Err("process manager not initialized");
         }
     };
     raw_char(b'G'); // Process created
 
-    let (entry_point, user_stack_top, ttbr0_phys, main_thread_id, main_thread_clone) = {
+    let (entry_point, user_sp, ttbr0_phys, main_thread_id, main_thread_clone) = {
         let manager_guard = kernel::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some(process) = manager.get_process(pid) {
@@ -118,7 +123,9 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
                     .main_thread
                     .as_ref()
                     .ok_or("process has no main thread")?;
-                let stack_top = thread.stack_top.as_u64();
+                // Get the SP from the thread's context (points to argc on the stack)
+                // For ARM64 userspace threads, the initial SP is stored in sp_el0
+                let sp = thread.context.sp_el0;
                 let ttbr0 = process
                     .page_table
                     .as_ref()
@@ -126,7 +133,7 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
                     .level_4_frame()
                     .start_address()
                     .as_u64();
-                (entry, stack_top, ttbr0, thread.id, thread.clone())
+                (entry, sp, ttbr0, thread.id, thread.clone())
             } else {
                 return Err("process not found after creation");
             }
@@ -179,7 +186,7 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     raw_char(b'L'); // TTBR0 set
 
     raw_char(b'M'); // Jumping to userspace
-    unsafe { return_to_userspace(entry_point, user_stack_top); }
+    unsafe { return_to_userspace(entry_point, user_sp); }
 }
 
 
