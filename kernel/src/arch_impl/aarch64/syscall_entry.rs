@@ -37,6 +37,24 @@ pub fn is_el0_confirmed() -> bool {
     EL0_CONFIRMED.load(Ordering::Relaxed)
 }
 
+/// Emit one-time marker when first syscall from EL0 (userspace) is received.
+/// Uses raw UART writes to avoid any locks (safe in syscall context).
+#[inline(never)]
+fn emit_el0_syscall_marker() {
+    // PL011 UART virtual address (physical 0x0900_0000 mapped via HHDM)
+    // The HHDM base is 0xFFFF_0000_0000_0000, so UART is at that + 0x0900_0000
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const PL011_PHYS: u64 = 0x0900_0000;
+    const PL011_VIRT: u64 = HHDM_BASE + PL011_PHYS;
+
+    let msg = b"EL0_SYSCALL: First syscall from userspace (SPSR confirms EL0)\n[ OK ] syscall path verified\n";
+    for &byte in msg {
+        unsafe {
+            core::ptr::write_volatile(PL011_VIRT as *mut u8, byte);
+        }
+    }
+}
+
 /// Main syscall handler called from assembly.
 ///
 /// This is the ARM64 equivalent of `rust_syscall_handler` for x86_64.
@@ -61,6 +79,13 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
         frame.set_return_value(u64::MAX); // Error
         Aarch64PerCpu::preempt_enable();
         return;
+    }
+
+    // One-time marker for first syscall from EL0 (userspace confirmed)
+    // This is the ARM64 equivalent of x86_64's RING3_CONFIRMED marker
+    if !EL0_CONFIRMED.swap(true, Ordering::Relaxed) {
+        // First syscall from userspace! Print marker via raw UART (no locks)
+        emit_el0_syscall_marker();
     }
 
     let syscall_num = frame.syscall_number();
