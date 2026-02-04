@@ -41,7 +41,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use crate::task::kthread::{kthread_run, kthread_join, KthreadHandle};
 use crate::serial_println;
 use super::registry::{SUBSYSTEMS, Subsystem, SubsystemId, TestResult, TestStage};
-use super::progress::{init_subsystem, mark_started, increment_completed, mark_failed, get_overall_progress};
+use super::progress::{init_subsystem, init_subsystem_stage, mark_started, increment_completed, increment_stage_completed, mark_failed, get_overall_progress};
 
 /// Current boot stage - tests with stage <= this can run
 static CURRENT_STAGE: AtomicU8 = AtomicU8::new(TestStage::EarlyBoot as u8);
@@ -128,6 +128,13 @@ pub fn run_all_tests() -> u32 {
         let test_count = count_arch_filtered_tests(subsystem);
         if test_count > 0 {
             init_subsystem(subsystem.id, test_count);
+            // Initialize per-stage totals for color-coded display
+            for stage_idx in 0..TestStage::COUNT {
+                if let Some(stage) = TestStage::from_u8(stage_idx as u8) {
+                    let stage_count = count_stage_filtered_tests(subsystem, stage);
+                    init_subsystem_stage(subsystem.id, stage, stage_count);
+                }
+            }
         }
     }
 
@@ -337,6 +344,7 @@ fn run_subsystem_stage_tests(id: SubsystemId, target_stage: TestStage) {
         }
 
         increment_completed(id);
+        increment_stage_completed(id, target_stage);
 
         // Refresh display after each test
         super::display::request_refresh();
