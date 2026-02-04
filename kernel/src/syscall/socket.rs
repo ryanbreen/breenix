@@ -684,6 +684,23 @@ pub fn sys_recvfrom(
         // HLT loop - wait for timer interrupt which will switch to another thread
         // When packet arrives via softirq, enqueue_packet() will unblock us
         loop {
+            // Check for pending signals that should interrupt this syscall
+            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                // Signal pending - unblock and return EINTR
+                Cpu::without_interrupts(|| {
+                    socket_ref.lock().unregister_waiter(thread_id);
+                });
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.set_ready();
+                    }
+                });
+                crate::per_cpu::preempt_disable();
+                log::debug!("UDP: Thread {} interrupted by signal (EINTR)", thread_id);
+                return SyscallResult::Err(e as u64);
+            }
+
             crate::task::scheduler::yield_current();
             Cpu::halt_with_interrupts();
 
@@ -1021,6 +1038,21 @@ fn sys_accept_tcp(fd: u64, port: u16, is_nonblocking: bool, thread_id: u64, addr
 
         // HLT loop - wait for SYN to arrive
         loop {
+            // Check for pending signals that should interrupt this syscall
+            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                // Signal pending - unblock and return EINTR
+                crate::net::tcp::tcp_unregister_accept_waiter(port, thread_id);
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.set_ready();
+                    }
+                });
+                crate::per_cpu::preempt_disable();
+                log::debug!("TCP accept: Thread {} interrupted by signal (EINTR)", thread_id);
+                return SyscallResult::Err(e as u64);
+            }
+
             // Drain loopback queue - essential for single-threaded tests where
             // no other thread processes packets. This may wake other threads'
             // connections but that's OK - they'll re-check and re-block if needed.
@@ -1167,6 +1199,24 @@ fn sys_accept_unix(
 
         // HLT loop - wait for connection to arrive
         loop {
+            // Check for pending signals that should interrupt this syscall
+            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                // Signal pending - unblock and return EINTR
+                {
+                    let l = listener.lock();
+                    l.unregister_waiter(thread_id);
+                }
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.set_ready();
+                    }
+                });
+                crate::per_cpu::preempt_disable();
+                log::debug!("Unix accept: Thread {} interrupted by signal (EINTR)", thread_id);
+                return SyscallResult::Err(e as u64);
+            }
+
             // Check if we were woken
             let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
                 if let Some(thread) = sched.current_thread_mut() {
@@ -1433,6 +1483,21 @@ fn sys_connect_tcp(fd: u64, addr_ptr: u64, addrlen: u64) -> SyscallResult {
 
         // HLT loop - wait for SYN+ACK to arrive
         loop {
+            // Check for pending signals that should interrupt this syscall
+            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                // Signal pending - unblock and return EINTR
+                crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                        thread.set_ready();
+                    }
+                });
+                crate::per_cpu::preempt_disable();
+                log::debug!("TCP connect: Thread {} interrupted by signal (EINTR)", thread_id);
+                return SyscallResult::Err(e as u64);
+            }
+
             // Drain loopback queue - essential for single-threaded tests where
             // no other thread processes packets. This may wake other threads'
             // connections but that's OK - they'll re-check and re-block if needed.

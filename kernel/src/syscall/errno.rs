@@ -12,6 +12,9 @@ pub const ENOENT: i32 = 2;
 #[allow(dead_code)]
 pub const ESRCH: i32 = 3;
 
+/// Interrupted system call
+pub const EINTR: i32 = 4;
+
 /// I/O error
 pub const EIO: i32 = 5;
 

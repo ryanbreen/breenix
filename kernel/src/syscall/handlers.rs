@@ -551,6 +551,21 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                         // HLT loop - wait for timer interrupt which will switch to another thread
                         // When keyboard data arrives, the interrupt handler will unblock us
                         loop {
+                            // Check for pending signals that should interrupt this syscall
+                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                                // Signal pending - unblock and return EINTR
+                                crate::ipc::stdin::unregister_blocked_reader(thread_id);
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                crate::per_cpu::preempt_disable();
+                                log::debug!("sys_read: Thread {} interrupted by signal (EINTR)", thread_id);
+                                return SyscallResult::Err(e as u64);
+                            }
+
                             crate::task::scheduler::yield_current();
                             Cpu::halt_with_interrupts();
 
@@ -719,6 +734,24 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         // HLT loop - wait for data or EOF
                         loop {
+                            // Check for pending signals that should interrupt this syscall
+                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                                // Signal pending - clean up and return EINTR
+                                {
+                                    let mut pipe = pipe_buffer_clone.lock();
+                                    pipe.remove_read_waiter(thread_id);
+                                }
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                crate::per_cpu::preempt_disable();
+                                log::debug!("sys_read: FIFO thread {} interrupted by signal (EINTR)", thread_id);
+                                return SyscallResult::Err(e as u64);
+                            }
+
                             crate::task::scheduler::yield_current();
                             Cpu::halt_with_interrupts();
 
@@ -942,6 +975,21 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                 // HLT loop - wait for data to arrive
                 loop {
+                    // Check for pending signals that should interrupt this syscall
+                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                        // Signal pending - clean up and return EINTR
+                        crate::net::tcp::tcp_unregister_recv_waiter(&conn_id, thread_id);
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
+                            }
+                        });
+                        crate::per_cpu::preempt_disable();
+                        log::debug!("sys_read: TCP thread {} interrupted by signal (EINTR)", thread_id);
+                        return SyscallResult::Err(e as u64);
+                    }
+
                     crate::task::scheduler::yield_current();
                     Cpu::halt_with_interrupts();
 
@@ -1107,6 +1155,23 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
                         // HLT loop
                         loop {
+                            // Check for pending signals that should interrupt this syscall
+                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                                // Signal pending - clean up and return EINTR
+                                let socket = socket_clone.lock();
+                                socket.unregister_waiter(thread_id);
+                                drop(socket);
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                crate::per_cpu::preempt_disable();
+                                log::debug!("sys_read: Unix socket thread {} interrupted by signal (EINTR)", thread_id);
+                                return SyscallResult::Err(e as u64);
+                            }
+
                             crate::task::scheduler::yield_current();
                             Cpu::halt_with_interrupts();
 
@@ -2181,6 +2246,20 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             crate::per_cpu::preempt_enable();
 
             loop {
+                // Check for pending signals that should interrupt this syscall
+                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                    // Signal pending - clean up thread state and return EINTR
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    crate::per_cpu::preempt_disable();
+                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    return SyscallResult::Err(e as u64);
+                }
+
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
                 crate::task::scheduler::yield_current();
@@ -2251,6 +2330,20 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             crate::per_cpu::preempt_enable();
 
             loop {
+                // Check for pending signals that should interrupt this syscall
+                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                    // Signal pending - clean up thread state and return EINTR
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    crate::per_cpu::preempt_disable();
+                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    return SyscallResult::Err(e as u64);
+                }
+
                 // Yield and halt - timer interrupt will switch to another thread
                 // since current thread is blocked
                 crate::task::scheduler::yield_current();

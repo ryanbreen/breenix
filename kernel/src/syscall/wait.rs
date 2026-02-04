@@ -112,6 +112,20 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             crate::per_cpu::preempt_enable();
 
             loop {
+                // Check for pending signals that should interrupt this syscall
+                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                    // Signal pending - clean up thread state and return EINTR
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    crate::per_cpu::preempt_disable();
+                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    return SyscallResult::Err(e as u64);
+                }
+
                 crate::task::scheduler::yield_current();
                 Cpu::halt_with_interrupts();
 
@@ -167,6 +181,20 @@ pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
             crate::per_cpu::preempt_enable();
 
             loop {
+                // Check for pending signals that should interrupt this syscall
+                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                    // Signal pending - clean up thread state and return EINTR
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    crate::per_cpu::preempt_disable();
+                    log::debug!("sys_waitpid: Thread {} interrupted by signal (EINTR)", thread_id);
+                    return SyscallResult::Err(e as u64);
+                }
+
                 crate::task::scheduler::yield_current();
                 Cpu::halt_with_interrupts();
 
