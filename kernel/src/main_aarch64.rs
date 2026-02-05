@@ -864,6 +864,9 @@ fn init_graphics() -> Result<(), &'static str> {
     // This enables lock-free echo from interrupt context
     kernel::graphics::render_queue::init();
 
+    // Initialize log capture ring buffer for serial output tee
+    kernel::graphics::log_capture::init();
+
     serial_println!("[graphics] Split-screen terminal UI initialized");
     Ok(())
 }

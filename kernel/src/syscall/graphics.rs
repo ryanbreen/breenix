@@ -9,7 +9,7 @@ use crate::logger::SHELL_FRAMEBUFFER;
 use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
 
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
-use crate::graphics::primitives::{Canvas, Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
+use crate::graphics::primitives::{Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
 use super::SyscallResult;
 
 /// Framebuffer info structure returned by sys_fbinfo.

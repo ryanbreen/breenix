@@ -13,6 +13,8 @@ pub mod particles;
 pub mod primitives;
 // Render queue/task enabled for ARM64 always, x86_64 with interactive feature
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+pub mod log_capture;
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub mod render_queue;
 #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub mod render_task;

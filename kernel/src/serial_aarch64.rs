@@ -214,6 +214,19 @@ pub fn write_byte(byte: u8) {
     SERIAL1.lock().send(byte);
 }
 
+/// Writer that tees output to both UART and the log capture ring buffer.
+struct TeeWriter<'a>(&'a mut SerialPort);
+
+impl fmt::Write for TeeWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            self.0.send(byte);
+            crate::graphics::log_capture::capture_byte(byte);
+        }
+        Ok(())
+    }
+}
+
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
@@ -234,7 +247,9 @@ pub fn _print(args: fmt::Arguments) {
     }
 
     let mut serial = SERIAL1.lock();
-    let _ = write!(serial, "{}", args);
+    // Tee: write to both UART and log capture buffer
+    let mut tee = TeeWriter(&mut *serial);
+    let _ = write!(tee, "{}", args);
     drop(serial);
 
     // Restore previous interrupt state
