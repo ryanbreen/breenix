@@ -8,6 +8,45 @@ use crate::arch_impl::traits::CpuOps;
 #[cfg(target_arch = "aarch64")]
 type Cpu = crate::arch_impl::aarch64::Aarch64Cpu;
 
+/// Ensure TTBR0 is set to the current thread's process page tables.
+///
+/// After a syscall blocks and resumes (e.g., waitpid blocking until child exits),
+/// TTBR0 may have been changed by context switches to other processes. Before
+/// accessing user memory, we must restore TTBR0 to the current thread's page tables.
+#[cfg(target_arch = "aarch64")]
+fn ensure_current_address_space() {
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return,
+    };
+
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            if let Some(ref page_table) = process.page_table {
+                let ttbr0_value = page_table.level_4_frame().start_address().as_u64();
+                unsafe {
+                    core::arch::asm!(
+                        "dsb ishst",           // Ensure previous stores complete
+                        "msr ttbr0_el1, {}",   // Set page table
+                        "isb",                 // Synchronize context
+                        "tlbi vmalle1is",      // Flush TLB
+                        "dsb ish",             // Ensure TLB flush completes
+                        "isb",                 // Synchronize instruction stream
+                        in(reg) ttbr0_value,
+                        options(nomem, nostack)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn ensure_current_address_space() {
+    // On x86_64, CR3 handling is done differently
+}
+
 /// waitpid options constants
 pub const WNOHANG: u32 = 1;
 #[allow(dead_code)]
@@ -245,6 +284,12 @@ fn complete_wait(child_pid: crate::process::ProcessId, exit_code: i32, status_pt
     );
 
     if status_ptr != 0 {
+        // CRITICAL: Restore TTBR0 to current process's page tables before accessing user memory.
+        // After blocking in waitpid and resuming, TTBR0 may have been changed by context
+        // switches to other processes. Without this, we'd fault trying to access the
+        // parent's user stack through the wrong page tables.
+        ensure_current_address_space();
+
         let user_ptr = status_ptr as *mut i32;
         if userptr::copy_to_user(user_ptr, &wstatus).is_err() {
             log::error!("complete_wait: Failed to write status");
