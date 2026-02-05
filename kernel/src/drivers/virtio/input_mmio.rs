@@ -463,6 +463,64 @@ pub fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
     Some(c)
 }
 
+/// Convert Ctrl+keycode to control character
+///
+/// When Ctrl is held, alphabetic keys produce control characters:
+/// Ctrl+A = 0x01, Ctrl+B = 0x02, Ctrl+C = 0x03, etc.
+/// This follows the standard ASCII control character mapping.
+pub fn ctrl_char_from_keycode(code: u16) -> Option<char> {
+    // Map keycodes to their base letters, then convert to control chars
+    let base_char = match code {
+        // QWERTY row (keycodes 16-25 = q-p)
+        16 => 'q',
+        17 => 'w',
+        18 => 'e',
+        19 => 'r',
+        20 => 't',
+        21 => 'y',
+        22 => 'u',
+        23 => 'i',
+        24 => 'o',
+        25 => 'p',
+        // ASDF row (keycodes 30-38 = a-l)
+        30 => 'a',
+        31 => 's',
+        32 => 'd',
+        33 => 'f',
+        34 => 'g',
+        35 => 'h',
+        36 => 'j',
+        37 => 'k',
+        38 => 'l',
+        // ZXCV row (keycodes 44-50 = z-m)
+        44 => 'z',
+        45 => 'x',
+        46 => 'c',
+        47 => 'v',
+        48 => 'b',
+        49 => 'n',
+        50 => 'm',
+        // Special cases
+        26 => '[',  // Ctrl+[ = ESC (0x1B)
+        27 => ']',  // Ctrl+] = GS (0x1D)
+        43 => '\\', // Ctrl+\ = FS (0x1C)
+        _ => return None,
+    };
+
+    // Convert to control character:
+    // 'a'-'z' -> 0x01-0x1A (subtract 0x60 from lowercase ASCII)
+    // '[', '\', ']' -> 0x1B, 0x1C, 0x1D (subtract 0x40 from ASCII)
+    let ctrl_code = match base_char {
+        'a'..='z' => (base_char as u8) - 0x60,  // 'a'=0x61 -> 0x01, 'c'=0x63 -> 0x03
+        '[' => 0x1B,  // ESC
+        '\\' => 0x1C, // FS
+        ']' => 0x1D,  // GS
+        _ => return None,
+    };
+
+    Some(ctrl_code as char)
+}
+
 /// Check if a keycode is a modifier key
 pub fn is_modifier(code: u16) -> bool {
     matches!(code,
@@ -478,6 +536,11 @@ pub fn is_modifier(code: u16) -> bool {
 /// Check if keycode is left or right shift
 pub fn is_shift(code: u16) -> bool {
     code == 42 || code == 54
+}
+
+/// Check if keycode is left or right ctrl
+pub fn is_ctrl(code: u16) -> bool {
+    code == 29 || code == 97
 }
 
 /// Get the IRQ number for the input device (if initialized)
@@ -513,8 +576,10 @@ pub fn handle_interrupt() {
         }
     }
 
-    // Track shift state
+    // Track modifier key state
     static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    static CTRL_PRESSED: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
 
     // Process all pending events
@@ -529,10 +594,26 @@ pub fn handle_interrupt() {
                 continue;
             }
 
+            // Track ctrl key state
+            if is_ctrl(keycode) {
+                CTRL_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+
             // Only process key presses (not releases)
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
-                if let Some(c) = keycode_to_char(keycode, shift) {
+                let ctrl = CTRL_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
+
+                // Handle Ctrl+letter combinations -> control characters
+                let c = if ctrl {
+                    // Ctrl+letter produces control characters (Ctrl+C = 0x03, etc.)
+                    ctrl_char_from_keycode(keycode)
+                } else {
+                    keycode_to_char(keycode, shift)
+                };
+
+                if let Some(c) = c {
                     // Route through TTY for echo and line discipline processing.
                     // This is the non-blocking version safe for interrupt context.
                     // The TTY will:
