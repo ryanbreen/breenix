@@ -470,7 +470,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     use crate::memory::arch_stub::{VirtAddr, Page, Size4KiB};
     use crate::memory::cow_stats;
     use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::frame_metadata::frame_is_shared;
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
 
     // Check if this is a CoW fault:
@@ -554,22 +554,42 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
 
             // If we're the sole owner, just make it writable
             if !frame_is_shared(old_frame) {
+                // CRITICAL SECTION: Disable interrupts to prevent context switch during page table update
+                // A timer IRQ during update_page_flags could cause a context switch with partially
+                // modified page tables, leading to data corruption or incorrect CoW behavior.
+                let daif_saved: u64;
+                unsafe {
+                    core::arch::asm!("mrs {}, daif", out(reg) daif_saved, options(nomem, nostack));
+                    core::arch::asm!("msr daifset, #2", options(nomem, nostack));  // Disable IRQ
+                }
+
                 let new_flags = make_private_flags(old_flags);
                 if page_table.update_page_flags(page, new_flags).is_err() {
+                    // Restore interrupts on error path
+                    unsafe {
+                        core::arch::asm!("msr daif, {}", in(reg) daif_saved, options(nomem, nostack));
+                    }
                     return false;
                 }
-                // Flush TLB
+                // Flush TLB for all ASIDs
+                // COW requires full TLB flush because other processes may have stale
+                // entries pointing to the old frame. Using vmalle1is ensures all
+                // processes see the updated page table entry.
                 unsafe {
-                    let va_for_tlbi = faulting_addr.as_u64() >> 12;
                     core::arch::asm!(
-                        "dsb ishst",
-                        "tlbi vale1is, {0}",
-                        "dsb ish",
-                        "isb",
-                        in(reg) va_for_tlbi,
-                        options(nostack)
+                        "dsb ishst",           // Ensure stores complete
+                        "tlbi vmalle1is",      // Flush ALL TLB entries (all ASIDs)
+                        "dsb ish",             // Ensure flush completes
+                        "isb",                 // Synchronize
+                        options(nomem, nostack)
                     );
                 }
+
+                // END CRITICAL SECTION: Restore interrupts
+                unsafe {
+                    core::arch::asm!("msr daif, {}", in(reg) daif_saved, options(nomem, nostack));
+                }
+
                 cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 crate::serial_println!("[COW] Made sole-owner page writable");
                 return true;
@@ -593,31 +613,70 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
                 core::ptr::copy_nonoverlapping(src, dst, 4096);
             }
 
+            // CRITICAL SECTION: Disable interrupts to prevent context switch during page table operations
+            // A timer IRQ during unmap/map could cause a context switch with partially modified
+            // page tables, leading to data corruption or TLB inconsistencies.
+            let daif_saved: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, daif", out(reg) daif_saved, options(nomem, nostack));
+                core::arch::asm!("msr daifset, #2", options(nomem, nostack));  // Disable IRQ
+            }
+
             // Unmap old page and map new one with write permissions
             let new_flags = make_private_flags(old_flags);
             if page_table.unmap_page(page).is_err() {
                 crate::serial_println!("[COW] Failed to unmap old page");
+                // Restore interrupts on error path
+                unsafe {
+                    core::arch::asm!("msr daif, {}", in(reg) daif_saved, options(nomem, nostack));
+                }
                 return false;
             }
             if page_table.map_page(page, new_frame, new_flags).is_err() {
                 crate::serial_println!("[COW] Failed to map new page");
+                // Restore interrupts on error path
+                unsafe {
+                    core::arch::asm!("msr daif, {}", in(reg) daif_saved, options(nomem, nostack));
+                }
                 return false;
             }
 
-            // Decrement reference count on old frame
-            frame_decref(old_frame);
+            // CRITICAL FIX: Do NOT decrement refcount here!
+            //
+            // The refcount should only be decremented when:
+            // 1. A process terminates and its page table is cleaned up
+            // 2. An explicit unmap occurs (which happened above via unmap_page)
+            //
+            // Bug: Calling frame_decref here causes a race condition:
+            // - Process A forks -> frame refcount = 2 (shared by parent and child)
+            // - Process A faults -> copies page -> frame_decref() -> refcount = 1
+            // - Process B (child) faults -> sees refcount = 1 -> thinks it's sole owner
+            // - Process B makes page writable WITHOUT copying
+            // - Both processes now have writable access to SAME physical frame = corruption
+            //
+            // The unmap_page() call above already removed this process's mapping to the
+            // old frame. The frame will be freed when the OTHER process(es) also unmap it
+            // or terminate.
+            //
+            // frame_decref(old_frame);  // REMOVED - causes CoW corruption
 
-            // Flush TLB
+            // Flush TLB for all ASIDs
+            // COW requires full TLB flush because other processes may have stale
+            // entries pointing to the old frame. Using vmalle1is ensures all
+            // processes see the updated page table entry.
             unsafe {
-                let va_for_tlbi = faulting_addr.as_u64() >> 12;
                 core::arch::asm!(
-                    "dsb ishst",
-                    "tlbi vale1is, {0}",
-                    "dsb ish",
-                    "isb",
-                    in(reg) va_for_tlbi,
-                    options(nostack)
+                    "dsb ishst",           // Ensure stores complete
+                    "tlbi vmalle1is",      // Flush ALL TLB entries (all ASIDs)
+                    "dsb ish",             // Ensure flush completes
+                    "isb",                 // Synchronize
+                    options(nomem, nostack)
                 );
+            }
+
+            // END CRITICAL SECTION: Restore interrupts
+            unsafe {
+                core::arch::asm!("msr daif, {}", in(reg) daif_saved, options(nomem, nostack));
             }
 
             cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
