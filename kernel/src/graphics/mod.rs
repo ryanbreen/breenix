@@ -11,9 +11,10 @@ pub mod font;
 #[cfg(target_arch = "aarch64")]
 pub mod particles;
 pub mod primitives;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+// Render queue/task enabled for ARM64 always, x86_64 with interactive feature
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub mod render_queue;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub mod render_task;
 pub mod split_screen;
 pub mod terminal;

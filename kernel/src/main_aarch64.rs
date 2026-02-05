@@ -359,6 +359,13 @@ pub extern "C" fn kernel_main() -> ! {
     init_scheduler();
     serial_println!("[boot] Scheduler initialized");
 
+    // Spawn render thread for deferred framebuffer rendering
+    // This MUST come after scheduler is initialized (needs kthread infrastructure)
+    match kernel::graphics::render_task::spawn_render_thread() {
+        Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
+        Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),
+    }
+
     // Initialize timer interrupt for preemptive scheduling
     // This MUST come after per-CPU data and scheduler are initialized
     serial_println!("[boot] Initializing timer interrupt...");
@@ -852,6 +859,10 @@ fn init_graphics() -> Result<(), &'static str> {
         // Flush after terminal init
         fb_guard.flush();
     }
+
+    // Initialize the render queue for deferred framebuffer rendering
+    // This enables lock-free echo from interrupt context
+    kernel::graphics::render_queue::init();
 
     serial_println!("[graphics] Split-screen terminal UI initialized");
     Ok(())

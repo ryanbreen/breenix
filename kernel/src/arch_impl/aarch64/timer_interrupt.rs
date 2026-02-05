@@ -160,6 +160,7 @@ fn raw_serial_char(c: u8) {
 }
 
 /// Raw serial output - write a string without locks for debugging
+#[allow(dead_code)] // Debug utility, kept for future use
 #[inline(always)]
 fn raw_serial_str(s: &[u8]) {
     crate::serial_aarch64::raw_serial_str(s);
@@ -167,6 +168,7 @@ fn raw_serial_str(s: &[u8]) {
 
 /// Print a decimal number using raw serial output
 /// Used by timer interrupt handler to output [TIMER_COUNT:N] markers
+#[allow(dead_code)] // Debug utility, kept for future use
 fn print_timer_count_decimal(count: u64) {
     if count == 0 {
         raw_serial_char(b'0');
@@ -188,9 +190,12 @@ fn print_timer_count_decimal(count: u64) {
     }
 }
 
-/// Poll VirtIO keyboard and push characters to stdin buffer
+/// Poll VirtIO keyboard and push characters to TTY
 ///
-/// This allows keyboard input to reach userspace processes that call read(0, ...)
+/// This routes keyboard input through the TTY subsystem for:
+/// 1. Echo (so you can see what you type)
+/// 2. Line discipline processing (backspace, Ctrl-C, etc.)
+/// 3. Proper stdin delivery to userspace via TTY read
 fn poll_keyboard_to_stdin() {
     use crate::drivers::virtio::input_mmio::{self, event_type};
 
@@ -217,8 +222,17 @@ fn poll_keyboard_to_stdin() {
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = input_mmio::keycode_to_char(keycode, shift) {
-                    // Push to stdin buffer so userspace can read it
-                    crate::ipc::stdin::push_byte_from_irq(c as u8);
+                    // Route through TTY for echo and line discipline processing.
+                    // This is the non-blocking version safe for interrupt context.
+                    // The TTY will:
+                    // 1. Echo the character to the display
+                    // 2. Process it through line discipline (handle backspace, Ctrl-C, etc.)
+                    // 3. Add it to the TTY input buffer for userspace to read
+                    if !crate::tty::push_char_nonblock(c as u8) {
+                        // TTY busy - fall back to raw stdin buffer
+                        // (no echo, but at least input isn't lost)
+                        crate::ipc::stdin::push_byte_from_irq(c as u8);
+                    }
                 }
             }
         }

@@ -53,7 +53,7 @@ static PRODUCER_LOCK: AtomicBool = AtomicBool::new(false);
 /// Called during kernel initialization.
 pub fn init() {
     QUEUE_READY.store(true, Ordering::SeqCst);
-    log::info!("Render queue initialized ({}KB buffer)", QUEUE_SIZE / 1024);
+    crate::serial_println!("[render_queue] Initialized ({}KB buffer)", QUEUE_SIZE / 1024);
 }
 
 /// Check if the render queue is ready.
@@ -221,12 +221,16 @@ pub fn drain_and_render() -> usize {
 
 /// Render a batch of bytes to the framebuffer.
 /// This is where the deep call stack happens, but it's on the render task's stack.
+///
+/// Since this runs on the render thread (not in interrupt context), we can use
+/// blocking locks. This ensures echo characters always get rendered rather than
+/// being dropped due to lock contention.
 fn render_batch(bytes: &[u8]) {
-    // Use terminal manager if active - use internal (non-flushing) version
-    // since the render thread handles flushing after drain_and_render()
+    // Use terminal manager if active
+    // The render thread can use blocking writes since it's not in interrupt context
     if crate::graphics::terminal_manager::is_terminal_manager_active() {
-        // write_bytes_to_shell_internal does NOT flush - render thread flushes once after all batches
-        let _ = crate::graphics::terminal_manager::write_bytes_to_shell_internal(bytes);
+        // Use the blocking version that waits for locks
+        let _ = crate::graphics::terminal_manager::write_bytes_to_shell_blocking(bytes);
         return;
     }
 
@@ -238,7 +242,9 @@ fn render_batch(bytes: &[u8]) {
         return;
     }
 
-    // Fallback to direct framebuffer
+    // Fallback to direct framebuffer (x86_64 only)
+    // On ARM64, terminal_manager is always active, so this path won't be reached
+    #[cfg(target_arch = "x86_64")]
     if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
         if let Some(mut guard) = fb.try_lock() {
             for &byte in bytes {

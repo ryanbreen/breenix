@@ -83,6 +83,19 @@ fn render_thread_main_kthread() {
             // No work - park until woken by wake_render_thread()
             // This prevents busy-polling which would starve other kthreads like ksoftirqd
             RENDER_WAKE.store(false, Ordering::SeqCst);
+
+            // CRITICAL: Check for pending data again AFTER setting RENDER_WAKE = false.
+            // This closes a race condition where:
+            //   1. We check has_pending_data() = false
+            //   2. Timer interrupt queues a byte and calls wake_render_thread()
+            //   3. wake_render_thread() sees RENDER_WAKE = true (from last wake), does nothing
+            //   4. We then park and miss the byte
+            // By checking again after setting RENDER_WAKE = false, we catch any data
+            // that was queued while we were preparing to park.
+            if render_queue::has_pending_data() {
+                continue; // Go back to processing instead of parking
+            }
+
             crate::task::kthread::kthread_park();
         }
     }
@@ -112,10 +125,21 @@ pub fn wake_render_thread() {
 
 /// Flush the framebuffer's double buffer if present.
 fn flush_framebuffer() {
-    if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
-        if let Some(mut guard) = fb.try_lock() {
-            if let Some(db) = guard.double_buffer_mut() {
-                db.flush_if_dirty();
+    #[cfg(target_arch = "x86_64")]
+    {
+        if let Some(fb) = crate::logger::SHELL_FRAMEBUFFER.get() {
+            if let Some(mut guard) = fb.try_lock() {
+                if let Some(db) = guard.double_buffer_mut() {
+                    db.flush_if_dirty();
+                }
+            }
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
+            if let Some(guard) = fb.try_lock() {
+                let _ = guard.flush();
             }
         }
     }

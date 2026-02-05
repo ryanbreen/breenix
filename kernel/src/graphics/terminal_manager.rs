@@ -496,7 +496,11 @@ pub fn write_bytes_to_shell(bytes: &[u8]) -> bool {
             }
         }
         #[cfg(target_arch = "aarch64")]
-        if let Some(fb_guard) = fb.try_lock() {
+        {
+            // ARM64 VirtIO GPU requires explicit flush to display changes.
+            // Use blocking lock to ensure flush always happens - this is critical
+            // for prompts and other output that don't end in newline.
+            let fb_guard = fb.lock();
             fb_guard.flush();
         }
     }
@@ -527,6 +531,36 @@ pub fn write_bytes_to_shell_internal(bytes: &[u8]) -> bool {
 
     IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
     result
+}
+
+/// Write bytes to the shell terminal using blocking locks.
+///
+/// This version waits for locks rather than failing on contention.
+/// Safe to call from render thread context (not interrupt context).
+/// Does not flush - caller is responsible for flushing.
+///
+/// Note: This does NOT check IN_TERMINAL_CALL because the render thread
+/// is a separate thread that can safely wait for locks. The IN_TERMINAL_CALL
+/// guard is for preventing recursion within the same thread.
+pub fn write_bytes_to_shell_blocking(bytes: &[u8]) -> bool {
+    // Use blocking locks - this is safe because render thread is not in interrupt context
+    let mut guard = TERMINAL_MANAGER.lock();
+    let manager = match guard.as_mut() {
+        Some(m) => m,
+        None => return false,
+    };
+
+    let fb = match SHELL_FRAMEBUFFER.get() {
+        Some(f) => f,
+        None => return false,
+    };
+
+    let mut fb_guard = fb.lock();
+
+    // Use the batched method which hides cursor once, writes all, shows cursor once
+    manager.write_bytes_to_shell(&mut *fb_guard, bytes);
+
+    true
 }
 
 /// Add a log line to the logs terminal.

@@ -413,20 +413,31 @@ impl TtyDevice {
     /// Used by input_char_nonblock for echo in interrupt context.
     pub fn output_char_nonblock(&self, c: u8) {
         // Try to get termios settings without blocking
-        if let Some(ldisc) = self.ldisc.try_lock() {
+        let do_crlf = if let Some(ldisc) = self.ldisc.try_lock() {
             let termios = ldisc.termios().clone();
             drop(ldisc);
+            termios.is_opost() && termios.is_onlcr() && c == b'\n'
+        } else {
+            false
+        };
 
-            if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
-                crate::serial::write_byte(b'\r');
-                #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-                let _ = crate::graphics::render_queue::queue_byte(b'\r');
-            }
+        // Handle CR-LF translation
+        if do_crlf {
+            crate::serial::write_byte(b'\r');
+            // Queue for deferred framebuffer rendering
+            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+            let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
+
+        // Write the character
         crate::serial::write_byte(c);
+
         // Queue for deferred framebuffer rendering
-        #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-        let _ = crate::graphics::render_queue::queue_byte(c);
+        // This is lock-free and safe for interrupt context
+        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+        {
+            let _queued = crate::graphics::render_queue::queue_byte(c);
+        }
     }
 
     /// Send a signal to the foreground process group

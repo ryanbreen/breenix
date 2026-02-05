@@ -11,6 +11,7 @@ use crate::syscall::userptr::validate_user_buffer;
 
 /// Raw serial debug output - write a string without locks or allocations.
 /// Safe to call from any context including interrupt handlers and syscalls.
+#[allow(dead_code)] // Debug utility, kept for future use
 #[inline(always)]
 fn raw_serial_str(s: &[u8]) {
     let base = crate::memory::physical_memory_offset().as_u64();
@@ -235,9 +236,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             let mut user_buf = alloc::vec![0u8; count as usize];
 
-            // Debug marker: entering stdin read loop
-            raw_serial_str(b"[STDIN_READ]");
-
             loop {
                 crate::ipc::stdin::register_blocked_reader(thread_id);
 
@@ -255,9 +253,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                     }
                     Err(11) => {
                         // EAGAIN - no data available, need to block
-                        // Debug marker: blocking for input
-                        raw_serial_str(b"[STDIN_BLOCK]");
-
                         // Block the current thread AND set blocked_in_syscall flag.
                         // CRITICAL: Setting blocked_in_syscall is essential because:
                         // 1. The thread will enter a kernel-mode WFI loop below
@@ -294,11 +289,17 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                                     }
                                 });
                                 crate::per_cpu::preempt_disable();
-                                raw_serial_str(b"[STDIN_EINTR]");
                                 return SyscallResult::Err(e as u64);
                             }
 
                             crate::task::scheduler::yield_current();
+                            // CRITICAL: Enable interrupts before WFI!
+                            // preempt_enable() only modifies preempt counter, not DAIF.
+                            // Without enabling interrupts, WFI wakes immediately but
+                            // the timer interrupt handler never runs, causing the
+                            // thread to spin in a tight loop without ever yielding.
+                            #[cfg(target_arch = "aarch64")]
+                            unsafe { core::arch::asm!("msr daifclr, #0xf", options(nomem, nostack)); }
                             unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
 
                             // Check if we've been unblocked (thread state changed from Blocked)
@@ -309,8 +310,6 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }).unwrap_or(false);
 
                             if !still_blocked {
-                                // Debug marker: woken from block
-                                raw_serial_str(b"[STDIN_WAKE]");
                                 break; // We've been woken, try reading again
                             }
                         }
