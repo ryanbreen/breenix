@@ -282,6 +282,19 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         })
         .unwrap_or(false);
 
+    // CRITICAL: Check if thread is blocked in a syscall.
+    // A userspace thread blocked in syscall is temporarily in kernel mode (EL1).
+    // We must restore kernel context (SP, ELR pointing to kernel code), NOT
+    // userspace context. Using restore_userspace_context_arm64 would:
+    // 1. Restore SP_EL0 (wrong - we need kernel SP)
+    // 2. Not set user_rsp_scratch for kernel SP restoration
+    // This causes stack corruption and crashes when the syscall eventually returns.
+    let is_blocked_in_syscall =
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+            thread.blocked_in_syscall
+        })
+        .unwrap_or(false);
+
     if is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop_arm64), restore that context
@@ -303,7 +316,9 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
             // No saved context or was in idle_loop - go to idle loop
             setup_idle_return_arm64(frame);
         }
-    } else if is_kernel_thread {
+    } else if is_kernel_thread || is_blocked_in_syscall {
+        // Kernel threads and userspace threads blocked in syscall both need
+        // kernel context restoration (they're running in kernel mode)
         setup_kernel_thread_return_arm64(thread_id, frame);
     } else {
         restore_userspace_context_arm64(thread_id, frame);

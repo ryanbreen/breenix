@@ -533,8 +533,17 @@ pub fn handle_interrupt() {
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 if let Some(c) = keycode_to_char(keycode, shift) {
-                    // Push to stdin buffer so userspace can read it
-                    crate::ipc::stdin::push_byte_from_irq(c as u8);
+                    // Route through TTY for echo and line discipline processing.
+                    // This is the non-blocking version safe for interrupt context.
+                    // The TTY will:
+                    // 1. Echo the character to the display
+                    // 2. Process it through line discipline (handle backspace, Ctrl-C, etc.)
+                    // 3. Add it to the TTY input buffer for userspace to read
+                    if !crate::tty::push_char_nonblock(c as u8) {
+                        // TTY busy - fall back to raw stdin buffer
+                        // (no echo, but at least input isn't lost)
+                        crate::ipc::stdin::push_byte_from_irq(c as u8);
+                    }
                 }
             }
         }
