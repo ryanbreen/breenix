@@ -1051,16 +1051,7 @@ fn sys_exec_aarch64(
         return (-22_i64) as u64; // -EINVAL
     }
 
-    #[cfg(not(feature = "testing"))]
-    {
-        let _ = frame;
-        log::error!("sys_exec_aarch64: Testing feature not enabled");
-        return (-38_i64) as u64; // -ENOSYS
-    }
-
-    #[cfg(feature = "testing")]
-    {
-        use crate::syscall::userptr::{copy_cstr_from_user, copy_from_user};
+    use crate::syscall::userptr::{copy_cstr_from_user, copy_from_user};
 
         if program_name_ptr == 0 {
             log::error!("sys_exec_aarch64: NULL program name");
@@ -1298,7 +1289,6 @@ fn sys_exec_aarch64(
                 (-12_i64) as u64
             }
         })
-    }
 }
 
 /// Load ELF binary from ext2 filesystem path.
@@ -1306,7 +1296,6 @@ fn sys_exec_aarch64(
 /// Returns the file content as Vec<u8> on success, or an errno on failure.
 ///
 /// NOTE: This function intentionally has NO logging to avoid timing overhead.
-#[cfg(feature = "testing")]
 fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     use crate::fs::ext2;
     use crate::syscall::errno::{EACCES, EIO, ENOENT, ENOTDIR};
