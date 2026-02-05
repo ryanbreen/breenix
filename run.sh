@@ -73,7 +73,7 @@ if [ "$ARCH" = "arm64" ]; then
     EXT2_DISK="$BREENIX_ROOT/target/ext2-aarch64.img"
 
     # Build command for ARM64
-    BUILD_CMD="cargo build --release --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
+    BUILD_CMD="cargo build --release --features boot_tests --target aarch64-breenix.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64"
 else
     # x86_64 path - uses UEFI boot
     EXT2_DISK="$BREENIX_ROOT/target/ext2.img"
