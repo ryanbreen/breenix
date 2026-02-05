@@ -2,15 +2,21 @@
 //!
 //! Provides syscalls for querying and drawing to the framebuffer.
 
-#[cfg(feature = "interactive")]
+// On x86_64 with interactive feature, use logger's SHELL_FRAMEBUFFER
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
 use crate::logger::SHELL_FRAMEBUFFER;
-#[cfg(feature = "interactive")]
+
+// On ARM64, always use the arm64_fb module's SHELL_FRAMEBUFFER
+#[cfg(target_arch = "aarch64")]
+use crate::graphics::arm64_fb::SHELL_FRAMEBUFFER;
+
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 use crate::graphics::primitives::{Canvas, Color, Rect, fill_rect, draw_rect, fill_circle, draw_circle, draw_line};
 use super::SyscallResult;
 
 /// Framebuffer info structure returned by sys_fbinfo.
 /// This matches the userspace FbInfo struct in libbreenix.
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 #[repr(C)]
 pub struct FbInfo {
     /// Width in pixels
@@ -27,7 +33,7 @@ pub struct FbInfo {
 
 /// Maximum valid userspace address (canonical lower half)
 /// Addresses above this are kernel space and must be rejected.
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 const USER_SPACE_MAX: u64 = crate::memory::layout::USER_STACK_REGION_END;
 
 /// sys_fbinfo - Get framebuffer information
@@ -39,7 +45,7 @@ const USER_SPACE_MAX: u64 = crate::memory::layout::USER_STACK_REGION_END;
 /// * 0 on success
 /// * -EFAULT if info_ptr is invalid or in kernel space
 /// * -ENODEV if no framebuffer is available
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
     // Validate pointer: must be non-null and in userspace address range
     if info_ptr == 0 {
@@ -90,14 +96,14 @@ pub fn sys_fbinfo(info_ptr: u64) -> SyscallResult {
 }
 
 /// sys_fbinfo - Stub for non-interactive mode (returns ENODEV)
-#[cfg(not(feature = "interactive"))]
+#[cfg(not(any(target_arch = "aarch64", feature = "interactive")))]
 pub fn sys_fbinfo(_info_ptr: u64) -> SyscallResult {
     // No framebuffer available in non-interactive mode
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }
 
 /// Draw command operations for sys_fbdraw
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 #[repr(u32)]
 #[allow(dead_code)]
 pub enum FbDrawOp {
@@ -119,7 +125,7 @@ pub enum FbDrawOp {
 
 /// Draw command structure passed from userspace.
 /// Must match the FbDrawCmd struct in libbreenix.
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 #[repr(C)]
 pub struct FbDrawCmd {
     /// Operation code (FbDrawOp)
@@ -137,7 +143,7 @@ pub struct FbDrawCmd {
 }
 
 /// Get the width of the left (demo) pane
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 #[allow(dead_code)]
 fn left_pane_width() -> usize {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
@@ -149,7 +155,7 @@ fn left_pane_width() -> usize {
 }
 
 /// Get the height of the framebuffer
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 #[allow(dead_code)]
 fn fb_height() -> usize {
     if let Some(fb) = SHELL_FRAMEBUFFER.get() {
@@ -170,7 +176,7 @@ fn fb_height() -> usize {
 /// * -EFAULT if cmd_ptr is invalid
 /// * -ENODEV if no framebuffer is available
 /// * -EINVAL if operation is invalid
-#[cfg(feature = "interactive")]
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
 pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     // Validate pointer
     if cmd_ptr == 0 || cmd_ptr >= USER_SPACE_MAX {
@@ -299,7 +305,7 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
 }
 
 /// sys_fbdraw - Stub for non-interactive mode
-#[cfg(not(feature = "interactive"))]
+#[cfg(not(any(target_arch = "aarch64", feature = "interactive")))]
 pub fn sys_fbdraw(_cmd_ptr: u64) -> SyscallResult {
     SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
 }
