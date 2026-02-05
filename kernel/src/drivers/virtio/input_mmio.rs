@@ -480,6 +480,39 @@ pub fn is_shift(code: u16) -> bool {
     code == 42 || code == 54
 }
 
+/// Check if keycode is left or right ctrl
+pub fn is_ctrl(code: u16) -> bool {
+    code == 29 || code == 97
+}
+
+/// Convert Ctrl+keycode to control character
+///
+/// When Ctrl is held, alphabetic keys produce control characters:
+/// Ctrl+A = 0x01, Ctrl+B = 0x02, Ctrl+C = 0x03, etc.
+pub fn ctrl_char_from_keycode(code: u16) -> Option<char> {
+    let base_char = match code {
+        // QWERTY row
+        16 => 'q', 17 => 'w', 18 => 'e', 19 => 'r', 20 => 't',
+        21 => 'y', 22 => 'u', 23 => 'i', 24 => 'o', 25 => 'p',
+        // ASDF row
+        30 => 'a', 31 => 's', 32 => 'd', 33 => 'f', 34 => 'g',
+        35 => 'h', 36 => 'j', 37 => 'k', 38 => 'l',
+        // ZXCV row
+        44 => 'z', 45 => 'x', 46 => 'c', 47 => 'v', 48 => 'b',
+        49 => 'n', 50 => 'm',
+        // Special
+        26 => '[', 27 => ']', 43 => '\\',
+        _ => return None,
+    };
+
+    let ctrl_code = match base_char {
+        'a'..='z' => (base_char as u8) - 0x60,  // 'c' (0x63) -> 0x03
+        '[' => 0x1B, '\\' => 0x1C, ']' => 0x1D,
+        _ => return None,
+    };
+    Some(ctrl_code as char)
+}
+
 /// Get the IRQ number for the input device (if initialized)
 pub fn get_irq() -> Option<u32> {
     if DEVICE_INITIALIZED.load(Ordering::Acquire) {
@@ -513,8 +546,10 @@ pub fn handle_interrupt() {
         }
     }
 
-    // Track shift state
+    // Track modifier key state
     static SHIFT_PRESSED: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    static CTRL_PRESSED: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
 
     // Process all pending events
@@ -529,19 +564,27 @@ pub fn handle_interrupt() {
                 continue;
             }
 
+            // Track ctrl key state
+            if is_ctrl(keycode) {
+                CTRL_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+
             // Only process key presses (not releases)
             if pressed {
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
-                if let Some(c) = keycode_to_char(keycode, shift) {
+                let ctrl = CTRL_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
+
+                // Ctrl+letter -> control character (e.g., Ctrl+C = 0x03)
+                let c = if ctrl {
+                    ctrl_char_from_keycode(keycode)
+                } else {
+                    keycode_to_char(keycode, shift)
+                };
+
+                if let Some(c) = c {
                     // Route through TTY for echo and line discipline processing.
-                    // This is the non-blocking version safe for interrupt context.
-                    // The TTY will:
-                    // 1. Echo the character to the display
-                    // 2. Process it through line discipline (handle backspace, Ctrl-C, etc.)
-                    // 3. Add it to the TTY input buffer for userspace to read
                     if !crate::tty::push_char_nonblock(c as u8) {
-                        // TTY busy - fall back to raw stdin buffer
-                        // (no echo, but at least input isn't lost)
                         crate::ipc::stdin::push_byte_from_irq(c as u8);
                     }
                 }

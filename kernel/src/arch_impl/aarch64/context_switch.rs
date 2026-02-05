@@ -252,6 +252,14 @@ fn save_kernel_context_arm64(thread_id: u64, frame: &Aarch64ExceptionFrame) {
         // (see boot.S irq_handler: sub sp, sp, #272).
         // This is critical for resuming the thread at the correct stack position.
         thread.context.sp = frame as *const _ as u64 + 272;
+
+        // Also save SP_EL0 for userspace threads blocked in syscall.
+        // SP_EL0 holds the user stack pointer even when in kernel mode.
+        let sp_el0: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
+        }
+        thread.context.sp_el0 = sp_el0;
     });
 }
 
@@ -469,6 +477,20 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
         // Store kernel SP for restoration after ERET
         unsafe {
             Aarch64PerCpu::set_user_rsp_scratch(context.sp);
+        }
+
+        // CRITICAL: Restore SP_EL0 for userspace threads blocked in syscalls.
+        // Without this, SP_EL0 retains whatever the previously-running thread
+        // set (e.g., a child process after exec), causing signal delivery to
+        // read the wrong user stack pointer and crash.
+        if context.sp_el0 != 0 {
+            unsafe {
+                core::arch::asm!(
+                    "msr sp_el0, {}",
+                    in(reg) context.sp_el0,
+                    options(nomem, nostack)
+                );
+            }
         }
 
         // Memory barrier to ensure all writes are visible

@@ -202,6 +202,9 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
         None => return, // Lock held, skip - will happen on next interrupt
     };
 
+    // Track if signal termination happened (for parent notification after lock release)
+    let mut signal_termination_info: Option<crate::signal::delivery::ParentNotification> = None;
+
     if let Some(ref mut manager) = *manager_guard {
         // Find the process for this thread
         if let Some((_pid, process)) = manager.find_process_by_thread_mut(current_thread_id) {
@@ -256,12 +259,21 @@ fn check_and_deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) {
             }
 
             // Handle termination
-            if let crate::signal::delivery::SignalDeliveryResult::Terminated(_notification) = signal_result {
+            if let crate::signal::delivery::SignalDeliveryResult::Terminated(notification) = signal_result {
                 // Process was terminated by signal - switch to idle
                 crate::task::scheduler::set_need_resched();
-                // Note: We can't call switch_to_idle here - let the scheduler handle it
+                // Save notification to notify parent after releasing lock
+                signal_termination_info = Some(notification);
             }
         }
+    }
+
+    // Drop manager guard BEFORE notifying parent to avoid deadlock
+    drop(manager_guard);
+
+    // Notify parent if signal terminated a child - this unblocks waitpid()
+    if let Some(notification) = signal_termination_info {
+        crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
     }
 }
 

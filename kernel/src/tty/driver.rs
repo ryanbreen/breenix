@@ -577,16 +577,16 @@ impl TtyDevice {
                         pid.as_u64()
                     );
 
-                    // CRITICAL: Wake the thread if it's blocked waiting for a signal
-                    // Without this, a process blocked on pause() or a blocking syscall
-                    // won't receive the signal until it happens to be scheduled.
+                    // CRITICAL: Wake the thread if it's blocked so it can receive the signal.
+                    // Use unblock() instead of unblock_for_signal() because:
+                    // - unblock_for_signal() only handles BlockedOnSignal state
+                    // - unblock() handles BOTH Blocked (stdin read) and BlockedOnSignal
                     if let Some(ref thread) = proc.main_thread {
                         let thread_id = thread.id;
                         drop(manager);
 
-                        // Wake the thread if it's blocked on a signal
                         crate::task::scheduler::with_scheduler(|sched| {
-                            sched.unblock_for_signal(thread_id);
+                            sched.unblock(thread_id);
                         });
                     }
                 } else {

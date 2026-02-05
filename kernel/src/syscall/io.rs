@@ -310,7 +310,20 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                             }).unwrap_or(false);
 
                             if !still_blocked {
-                                break; // We've been woken, try reading again
+                                // CRITICAL: Check for signals AFTER waking up!
+                                // We might have been unblocked to deliver a signal.
+                                if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                                    crate::ipc::stdin::unregister_blocked_reader(thread_id);
+                                    crate::task::scheduler::with_scheduler(|sched| {
+                                        if let Some(thread) = sched.current_thread_mut() {
+                                            thread.blocked_in_syscall = false;
+                                            thread.set_ready();
+                                        }
+                                    });
+                                    crate::per_cpu::preempt_disable();
+                                    return SyscallResult::Err(e as u64);
+                                }
+                                break; // We've been woken for data, try reading again
                             }
                         }
 
