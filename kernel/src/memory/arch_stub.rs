@@ -1076,8 +1076,14 @@ where
             table[i].set_unused();
         }
 
+        // CRITICAL: Ensure zeroed table is visible before setting parent entry
+        core::arch::asm!("dsb ishst", options(nostack));
+
         // Set the entry to point to the new table
         entry.set_table(frame.start_address());
+
+        // CRITICAL: Ensure entry write is visible to page table walker
+        core::arch::asm!("dsb ishst", options(nostack));
 
         Ok(frame.start_address())
     } else {
@@ -1200,6 +1206,9 @@ impl<'a> Mapper<Size4KiB> for OffsetPageTable<'a> {
 
         // Map the page
         entry.set_frame(frame, flags);
+
+        // CRITICAL: Ensure page table entry is visible to page table walker
+        core::arch::asm!("dsb ishst", options(nostack));
 
         Ok(MapperFlush::new(page))
     }

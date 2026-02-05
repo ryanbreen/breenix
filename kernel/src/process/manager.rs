@@ -2831,7 +2831,8 @@ impl ProcessManager {
 
         {
             const STACK_SIZE: usize = 64 * 1024;
-            const STACK_TOP: u64 = 0x7FFF_FF01_0000;
+            // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
+            const STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
             let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
             let unmap_top = VirtAddr::new(STACK_TOP);
             if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
@@ -2849,7 +2850,8 @@ impl ProcessManager {
         );
 
         const USER_STACK_SIZE: usize = 64 * 1024;
-        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
+        // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
+        const USER_STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
 
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
         let stack_top = VirtAddr::new(USER_STACK_TOP);
@@ -3049,7 +3051,8 @@ impl ProcessManager {
         // Unmap the stack region before mapping new stack pages
         {
             const STACK_SIZE: usize = 64 * 1024; // 64KB stack
-            const STACK_TOP: u64 = 0x7FFF_FF01_0000;
+            // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
+            const STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
             let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
             let unmap_top = VirtAddr::new(STACK_TOP);
             if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
@@ -3071,7 +3074,8 @@ impl ProcessManager {
 
         // Allocate and map stack directly into the new process page table
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
+        // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
+        const USER_STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
 
         // Calculate stack range
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
