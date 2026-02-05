@@ -572,6 +572,21 @@ pub fn handle_interrupt() {
 
             // Only process key presses (not releases)
             if pressed {
+                // Handle function keys for terminal switching (F1=59, F2=60, etc.)
+                // Linux evdev keycodes 59-68 match PS/2 scancodes 0x3B-0x44
+                if keycode >= 59 && keycode <= 68 {
+                    if crate::graphics::terminal_manager::handle_terminal_key(keycode as u8) {
+                        continue;
+                    }
+                }
+
+                // Arrow keys for log scrolling (UP=103, DOWN=108)
+                if keycode == 103 || keycode == 108 {
+                    if crate::graphics::terminal_manager::handle_logs_arrow_key(keycode as u8) {
+                        continue;
+                    }
+                }
+
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
                 let ctrl = CTRL_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
 

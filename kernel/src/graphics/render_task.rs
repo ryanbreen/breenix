@@ -10,8 +10,10 @@
 //! which is sufficient for the rendering workload.
 
 use super::render_queue;
+#[cfg(any(target_arch = "aarch64", feature = "interactive"))]
+use super::log_capture;
 use crate::task::kthread::{kthread_run, kthread_should_stop, KthreadHandle};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
 /// Flag indicating if the render thread is running
@@ -74,7 +76,10 @@ fn render_thread_main_kthread() {
             total_rendered += rendered;
         }
 
-        // Flush the framebuffer if we rendered anything
+        // Drain captured serial output to the Logs terminal
+        drain_log_capture();
+
+        // Flush the framebuffer if we rendered anything or drained log output
         if total_rendered > 0 {
             flush_framebuffer();
             // Yield after doing work to give other threads a chance
@@ -92,7 +97,7 @@ fn render_thread_main_kthread() {
             //   4. We then park and miss the byte
             // By checking again after setting RENDER_WAKE = false, we catch any data
             // that was queued while we were preparing to park.
-            if render_queue::has_pending_data() {
+            if render_queue::has_pending_data() || log_capture::has_pending_data() {
                 continue; // Go back to processing instead of parking
             }
 
@@ -121,6 +126,56 @@ pub fn wake_render_thread() {
     }
     // If compare_exchange failed, RENDER_WAKE was already true,
     // meaning the thread is awake and will see our queued data
+}
+
+// =============================================================================
+// Log Capture Drain
+// =============================================================================
+
+/// Maximum line length for log capture line accumulation
+const LOG_LINE_MAX: usize = 256;
+
+/// Line accumulator buffer (persists across drain calls)
+static mut LOG_LINE_BUF: [u8; LOG_LINE_MAX] = [0u8; LOG_LINE_MAX];
+
+/// Current position in the line accumulator
+static LOG_LINE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Drain captured serial bytes from the log_capture ring buffer,
+/// split them into lines, and feed each line to the Logs terminal.
+///
+/// Line accumulation state persists across calls via static storage.
+fn drain_log_capture() {
+    let mut buf = [0u8; 512];
+
+    loop {
+        let n = log_capture::drain(&mut buf);
+        if n == 0 {
+            break;
+        }
+
+        let mut line_len = LOG_LINE_LEN.load(Ordering::Relaxed);
+
+        for &byte in &buf[..n] {
+            if byte == b'\n' {
+                // Complete line — send to terminal_manager logs
+                if line_len > 0 {
+                    let line = unsafe {
+                        core::str::from_utf8_unchecked(&LOG_LINE_BUF[..line_len])
+                    };
+                    let _ = crate::graphics::terminal_manager::write_str_to_logs_blocking(line);
+                }
+                line_len = 0;
+            } else if byte != b'\r' && line_len < LOG_LINE_MAX {
+                unsafe {
+                    LOG_LINE_BUF[line_len] = byte;
+                }
+                line_len += 1;
+            }
+        }
+
+        LOG_LINE_LEN.store(line_len, Ordering::Relaxed);
+    }
 }
 
 /// Flush the framebuffer's double buffer if present.

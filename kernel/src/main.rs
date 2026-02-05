@@ -323,6 +323,9 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
             // Initialize the render queue for deferred framebuffer rendering
             graphics::render_queue::init();
 
+            // Initialize log capture ring buffer for serial output tee
+            graphics::log_capture::init();
+
             // Flush to screen
             if let Some(db) = fb_guard.double_buffer_mut() {
                 db.flush_full();

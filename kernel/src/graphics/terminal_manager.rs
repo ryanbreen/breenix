@@ -23,7 +23,16 @@ const TAB_HEIGHT: usize = 24;
 const TAB_PADDING: usize = 12;
 
 /// Maximum log lines to keep in buffer
-const LOG_BUFFER_SIZE: usize = 50; // Reduced from 200 for faster tab switching
+const LOG_BUFFER_SIZE: usize = 1000;
+
+/// Scrollbar width in pixels
+const SCROLLBAR_WIDTH: usize = 6;
+
+/// Scrollbar track color
+const SCROLLBAR_TRACK_COLOR: Color = Color::rgb(30, 40, 55);
+
+/// Scrollbar thumb color
+const SCROLLBAR_THUMB_COLOR: Color = Color::rgb(100, 120, 150);
 
 /// Terminal identifiers
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +101,8 @@ pub struct TerminalManager {
     tab_shortcuts: [&'static str; 2],
     /// Unread indicators
     has_unread: [bool; 2],
+    /// Scroll offset for Logs tab (0 = following tail, >0 = scrolled up)
+    logs_scroll_offset: usize,
 }
 
 impl TerminalManager {
@@ -124,6 +135,7 @@ impl TerminalManager {
             tab_titles: ["Shell", "Logs"],
             tab_shortcuts: ["F1", "F2"],
             has_unread: [false, false],
+            logs_scroll_offset: 0,
         }
     }
 
@@ -157,17 +169,9 @@ impl TerminalManager {
                 self.terminal_pane.write_str(canvas, "breenix> ");
             }
             TerminalId::Logs => {
-                // Logs: replay from buffer
-                // Optimization: only replay lines that will be visible
-                // Skip early lines that would scroll off, avoiding expensive scroll operations
-                let visible_rows = self.terminal_pane.rows();
-                let total_lines = self.log_buffer.lines.len();
-                let skip_count = total_lines.saturating_sub(visible_rows);
-
-                for line in self.log_buffer.lines.iter().skip(skip_count) {
-                    self.terminal_pane.write_str(canvas, line);
-                    self.terminal_pane.write_str(canvas, "\r\n");
-                }
+                // Reset scroll to follow tail when switching to Logs
+                self.logs_scroll_offset = 0;
+                self.render_logs_view(canvas);
             }
         }
 
@@ -369,10 +373,19 @@ impl TerminalManager {
 
         // Display if Logs is active
         if self.active_idx == TerminalId::Logs as usize {
-            self.terminal_pane.draw_cursor(canvas, false);
-            self.terminal_pane.write_str(canvas, line);
-            self.terminal_pane.write_str(canvas, "\r\n");
-            self.terminal_pane.draw_cursor(canvas, self.cursor_visible);
+            if self.logs_scroll_offset == 0 {
+                // Following tail — render the new line at bottom
+                self.terminal_pane.draw_cursor(canvas, false);
+                self.terminal_pane.write_str(canvas, line);
+                self.terminal_pane.write_str(canvas, "\r\n");
+                self.terminal_pane.draw_cursor(canvas, self.cursor_visible);
+                // Redraw scrollbar since total lines changed
+                self.draw_scrollbar(canvas);
+            } else {
+                // User has scrolled up — keep view frozen, bump offset
+                // so they stay on the same lines
+                self.logs_scroll_offset += 1;
+            }
         } else {
             // Mark as unread
             if !self.has_unread[TerminalId::Logs as usize] {
@@ -380,6 +393,112 @@ impl TerminalManager {
                 self.draw_tab_bar(canvas);
             }
         }
+    }
+
+    /// Render the full Logs view based on scroll_offset.
+    ///
+    /// Clears the terminal area, renders the visible window of log lines,
+    /// and draws the scrollbar.
+    fn render_logs_view(&mut self, canvas: &mut impl Canvas) {
+        // Clear terminal content area
+        self.clear_terminal_area(canvas);
+
+        let visible_rows = self.terminal_pane.rows();
+        let total_lines = self.log_buffer.lines.len();
+
+        if total_lines == 0 {
+            self.draw_scrollbar(canvas);
+            return;
+        }
+
+        // Calculate the range of lines to display
+        // scroll_offset == 0 means show the last `visible_rows` lines (tail)
+        // scroll_offset == N means the bottom visible line is N lines above the tail
+        let end = total_lines.saturating_sub(self.logs_scroll_offset);
+        let start = end.saturating_sub(visible_rows);
+
+        for line in self.log_buffer.lines.iter().skip(start).take(end - start) {
+            self.terminal_pane.write_str(canvas, line);
+            self.terminal_pane.write_str(canvas, "\r\n");
+        }
+
+        self.draw_scrollbar(canvas);
+    }
+
+    /// Scroll the logs view up (toward older lines).
+    pub fn scroll_logs_up(&mut self, canvas: &mut impl Canvas) {
+        let visible_rows = self.terminal_pane.rows();
+        let total_lines = self.log_buffer.lines.len();
+        let max_offset = total_lines.saturating_sub(visible_rows);
+
+        if self.logs_scroll_offset < max_offset {
+            self.logs_scroll_offset += 1;
+            self.render_logs_view(canvas);
+        }
+    }
+
+    /// Scroll the logs view down (toward newer lines).
+    pub fn scroll_logs_down(&mut self, canvas: &mut impl Canvas) {
+        if self.logs_scroll_offset > 0 {
+            self.logs_scroll_offset -= 1;
+            self.render_logs_view(canvas);
+        }
+    }
+
+    /// Draw a scrollbar on the right edge of the terminal area.
+    fn draw_scrollbar(&self, canvas: &mut impl Canvas) {
+        let pane_y = self.region_y + TAB_HEIGHT + 2;
+        let pane_height = self.region_height.saturating_sub(TAB_HEIGHT + 2);
+
+        let track_x = self.region_x + self.region_width - SCROLLBAR_WIDTH;
+
+        // Draw track
+        fill_rect(
+            canvas,
+            Rect {
+                x: track_x as i32,
+                y: pane_y as i32,
+                width: SCROLLBAR_WIDTH as u32,
+                height: pane_height as u32,
+            },
+            SCROLLBAR_TRACK_COLOR,
+        );
+
+        let total_lines = self.log_buffer.lines.len();
+        let visible_rows = self.terminal_pane.rows();
+
+        if total_lines <= visible_rows {
+            // Everything fits — no thumb needed (or fill the whole track)
+            return;
+        }
+
+        // Thumb height: proportional to visible / total
+        let thumb_height = ((visible_rows as u64 * pane_height as u64) / total_lines as u64)
+            .max(8) as usize; // minimum 8px
+
+        // Thumb position: based on scroll_offset
+        // scroll_offset == 0 → thumb at bottom
+        // scroll_offset == max → thumb at top
+        let max_offset = total_lines.saturating_sub(visible_rows);
+        let scroll_range = pane_height.saturating_sub(thumb_height);
+        let thumb_y = if max_offset > 0 {
+            pane_y + (self.logs_scroll_offset as u64 * scroll_range as u64 / max_offset as u64) as usize
+        } else {
+            pane_y
+        };
+        // Invert: scroll_offset 0 = bottom, max = top
+        let thumb_y_inverted = pane_y + scroll_range - (thumb_y - pane_y);
+
+        fill_rect(
+            canvas,
+            Rect {
+                x: track_x as i32,
+                y: thumb_y_inverted as i32,
+                width: SCROLLBAR_WIDTH as u32,
+                height: thumb_height as u32,
+            },
+            SCROLLBAR_THUMB_COLOR,
+        );
     }
 
     /// Toggle cursor visibility.
@@ -592,6 +711,76 @@ pub fn write_str_to_logs(s: &str) -> bool {
 
     IN_TERMINAL_CALL.store(false, core::sync::atomic::Ordering::SeqCst);
     result
+}
+
+/// Add a log line to the logs terminal using blocking locks.
+///
+/// Safe to call from the render thread (not interrupt context).
+/// Does not flush — caller is responsible for flushing.
+pub fn write_str_to_logs_blocking(s: &str) -> bool {
+    let mut guard = TERMINAL_MANAGER.lock();
+    let manager = match guard.as_mut() {
+        Some(m) => m,
+        None => return false,
+    };
+
+    let fb = match SHELL_FRAMEBUFFER.get() {
+        Some(f) => f,
+        None => return false,
+    };
+
+    let mut fb_guard = fb.lock();
+
+    let line = s.trim_end_matches('\n').trim_end_matches('\r');
+    manager.add_log_line(&mut *fb_guard, line);
+
+    true
+}
+
+/// Handle UP/DOWN arrow keys for log scrolling.
+///
+/// Called from the input interrupt handler. Returns true if the key was
+/// consumed (i.e., Logs tab is active and scrolling was performed).
+///
+/// Linux evdev keycodes: UP=103, DOWN=108
+pub fn handle_logs_arrow_key(keycode: u8) -> bool {
+    // Only handle when Logs tab is active
+    let mut guard = match TERMINAL_MANAGER.try_lock() {
+        Some(g) => g,
+        None => return false,
+    };
+    let manager = match guard.as_mut() {
+        Some(m) => m,
+        None => return false,
+    };
+
+    if manager.active_idx != TerminalId::Logs as usize {
+        return false;
+    }
+
+    let fb = match SHELL_FRAMEBUFFER.get() {
+        Some(f) => f,
+        None => return false,
+    };
+    let mut fb_guard = match fb.try_lock() {
+        Some(g) => g,
+        None => return false,
+    };
+
+    match keycode {
+        103 => manager.scroll_logs_up(&mut *fb_guard),   // UP
+        108 => manager.scroll_logs_down(&mut *fb_guard), // DOWN
+        _ => return false,
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fb_guard.flush();
+    #[cfg(target_arch = "x86_64")]
+    if let Some(db) = fb_guard.double_buffer_mut() {
+        db.flush_if_dirty();
+    }
+
+    true
 }
 
 /// Toggle cursor in active terminal.
