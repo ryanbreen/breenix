@@ -189,6 +189,7 @@ BINARIES=(
     "fbinfo_test"
     "demo"
     "bounce"
+    "particles"
 )
 
 # Binaries that rely on the libbreenix runtime _start (no local _start)
