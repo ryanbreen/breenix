@@ -66,36 +66,62 @@ syscall_entry_from_el0:
      * ARM64 uses SP_EL1 for kernel exceptions, but we need to
      * ensure we're using a proper kernel stack for this thread.
      *
-     * Read kernel_stack_top from per-CPU data via TPIDR_EL1.
+     * CRITICAL: We must save x9/x10 BEFORE using them as scratch
+     * for the per-CPU lookup. Otherwise userspace gets kernel
+     * addresses leaked into x9/x10 on syscall return.
+     *
+     * Strategy: temporarily push x9/x10 to the current SP_EL1 stack,
+     * do the per-CPU lookup, then either:
+     *   - No switch: pop x9/x10 and save normally
+     *   - Switch: copy stashed x9/x10 from old stack into new frame
      */
-    mrs x9, tpidr_el1           /* x9 = per-CPU base */
-    cbz x9, .Lno_percpu_switch  /* Skip if not initialized */
+    stp x9, x10, [sp, #-16]!    /* Stash user x9/x10 on current stack */
 
-    /* Read kernel_stack_top from offset 16 */
+    mrs x9, tpidr_el1            /* x9 = per-CPU base */
+    cbz x9, .Lno_stack_switch
     ldr x10, [x9, #16]          /* x10 = kernel_stack_top */
-    cbz x10, .Lno_percpu_switch /* Skip if not set */
+    cbz x10, .Lno_stack_switch
 
-    /* Use the kernel stack */
-    mov sp, x10
-
-.Lno_percpu_switch:
     /*
-     * Allocate exception frame on stack.
-     * Frame size: 272 bytes (34 * 8, 16-byte aligned)
-     * This matches Aarch64ExceptionFrame layout.
+     * Stack switch needed: x10 = new kernel stack top.
+     * User x9/x10 are stashed at [sp] on the OLD stack.
+     * Save old SP so we can copy them into the new frame.
      */
-    sub sp, sp, #272
+    mov x9, sp                   /* x9 = old SP (stash location) */
+    mov sp, x10                  /* Switch to per-CPU kernel stack */
+    sub sp, sp, #272             /* Allocate exception frame */
 
+    /* Copy real user x9/x10 from old stack stash into frame */
+    ldr x10, [x9]               /* x10 = user x9 */
+    str x10, [sp, #72]          /* frame.x9 = user x9 */
+    ldr x10, [x9, #8]           /* x10 = user x10 */
+    str x10, [sp, #80]          /* frame.x10 = user x10 */
+    /* x8, x11 were NOT clobbered in this path */
+    str x8, [sp, #64]           /* frame.x8 = syscall number */
+    str x11, [sp, #88]          /* frame.x11 = user x11 */
+    b .Lsave_common
+
+.Lno_stack_switch:
     /*
-     * Save all general-purpose registers x0-x29.
-     * STP stores two 64-bit registers per instruction.
+     * No stack switch needed. Pop stashed x9/x10 (restoring
+     * their real user values) and save normally.
+     */
+    ldp x9, x10, [sp], #16      /* Pop user x9/x10 from stash */
+    sub sp, sp, #272             /* Allocate exception frame */
+    stp x8, x9, [sp, #64]       /* frame.x8 = syscall number, frame.x9 */
+    stp x10, x11, [sp, #80]     /* frame.x10, frame.x11 */
+
+.Lsave_common:
+    /*
+     * Save all other general-purpose registers.
+     * x8-x11 are already saved by the path-specific code above.
+     * All other registers are unclobbered in both paths.
      */
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]
     stp x6, x7, [sp, #48]
-    stp x8, x9, [sp, #64]       /* x8 = syscall number */
-    stp x10, x11, [sp, #80]
+    /* x8-x11 already saved above */
     stp x12, x13, [sp, #96]
     stp x14, x15, [sp, #112]
     stp x16, x17, [sp, #128]
@@ -174,6 +200,18 @@ syscall_entry_from_el0:
     orr w10, w10, #0x10000000   /* Set bit 28 */
     str w10, [x9, #32]
 .Lskip_preempt_set:
+
+    /*
+     * Pre-set user_rsp_scratch = sp + 272 (the return SP if no context switch).
+     * If a context switch occurs, the Rust code will overwrite this with the
+     * new thread's SP. This mirrors the IRQ handler's approach in boot.S.
+     * PERCPU_USER_RSP_SCRATCH_OFFSET = 40
+     */
+    mrs x9, tpidr_el1
+    cbz x9, .Lskip_rsp_scratch_set
+    add x10, sp, #272
+    str x10, [x9, #40]
+.Lskip_rsp_scratch_set:
 
     /*
      * Check if rescheduling is needed before returning to userspace.
@@ -285,37 +323,45 @@ syscall_entry_from_el0:
 .Lno_ttbr_switch:
 
     /*
-     * Trace: about to return to userspace.
-     * Call trace function BEFORE restoring x0/x1 (it will clobber them).
-     * Pass ELR and SPSR for debugging if needed.
+     * Clear PREEMPT_ACTIVE before restoring x0/x1.
+     * Use x0/x1 as scratch (they haven't been restored yet).
+     * Must clear BEFORE ERET so next IRQ can do context switches.
      */
-    mrs x0, elr_el1
-    mrs x1, spsr_el1
-    bl trace_eret_to_el0
-
-    /* Now restore x0/x1 from the frame (frame still valid on kernel stack) */
-    ldp x0, x1, [sp, #0]
-
-    /* Deallocate frame */
-    add sp, sp, #272
-    /*
-     * Clear PREEMPT_ACTIVE now that registers are restored.
-     * Without this, PREEMPT_ACTIVE persists and blocks scheduling.
-     */
-    mrs x9, tpidr_el1
-    cbz x9, .Lskip_preempt_final_clear
-    ldr w10, [x9, #32]
-    bic w10, w10, #0x10000000   /* Clear bit 28 */
-    str w10, [x9, #32]
+    mrs x0, tpidr_el1
+    cbz x0, .Lskip_preempt_final_clear
+    ldr w1, [x0, #32]
+    bic w1, w1, #0x10000000   /* Clear bit 28 */
+    str w1, [x0, #32]
 .Lskip_preempt_final_clear:
 
     /*
-     * Return to userspace via ERET.
-     * ERET will:
-     *   - Restore PSTATE from SPSR_EL1
-     *   - Jump to ELR_EL1
-     *   - Switch to EL0
+     * Restore x0/x1 and switch SP for ERET.
+     *
+     * Challenge: we need to set SP = user_rsp_scratch AND restore x0/x1
+     * from the frame, but after changing SP the frame may not be addressable
+     * (if a context switch moved us to a different kernel stack).
+     *
+     * Solution: save frame.x0 to per-CPU scratch (offset 96), restore x1
+     * from the frame, switch SP, then restore x0 from per-CPU scratch.
+     *
+     * x0 = tpidr_el1 from PREEMPT_ACTIVE clear above.
      */
+
+    /* Save frame.x0 to per-CPU ERET scratch */
+    ldr x1, [sp, #0]           /* x1 = frame.x0 */
+    str x1, [x0, #96]          /* percpu.eret_scratch = frame.x0 */
+
+    /* Restore x1 from frame (final value) */
+    ldr x1, [sp, #8]           /* x1 = frame.x1 */
+
+    /* Set SP from user_rsp_scratch */
+    ldr x0, [x0, #40]          /* x0 = user_rsp_scratch */
+    mov sp, x0                  /* SP = correct kernel stack top */
+
+    /* Restore x0 from per-CPU ERET scratch */
+    mrs x0, tpidr_el1
+    ldr x0, [x0, #96]          /* x0 = saved frame.x0 */
+
     eret
 
     /* Should never reach here - debug marker */

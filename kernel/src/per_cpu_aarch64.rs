@@ -48,8 +48,13 @@ pub struct PerCpuData {
     pub saved_process_ttbr0: u64,
     /// Exception cleanup context flag (offset 88)
     pub exception_cleanup_context: u8,
+    /// Padding to align eret_scratch to 8 bytes
+    _pad3a: [u8; 7],
+    /// Scratch register save area for ERET paths (offset 96)
+    /// Used by assembly to save one register across SP switches during ERET.
+    pub eret_scratch: u64,
     /// Padding to match x86_64 layout
-    _pad3: [u8; 103],
+    _pad3: [u8; 88],
 }
 
 const _: () = assert!(core::mem::size_of::<PerCpuData>() == 192, "PerCpuData must be 192 bytes");
@@ -73,7 +78,9 @@ impl PerCpuData {
             kernel_ttbr0: 0,
             saved_process_ttbr0: 0,
             exception_cleanup_context: 0,
-            _pad3: [0; 103],
+            _pad3a: [0; 7],
+            eret_scratch: 0,
+            _pad3: [0; 88],
         }
     }
 }

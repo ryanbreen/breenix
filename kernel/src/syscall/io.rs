@@ -9,18 +9,6 @@ use super::SyscallResult;
 use alloc::vec::Vec;
 use crate::syscall::userptr::validate_user_buffer;
 
-/// Raw serial debug output - write a string without locks or allocations.
-/// Safe to call from any context including interrupt handlers and syscalls.
-#[allow(dead_code)] // Debug utility, kept for future use
-#[inline(always)]
-fn raw_serial_str(s: &[u8]) {
-    let base = crate::memory::physical_memory_offset().as_u64();
-    let addr = (base + 0x0900_0000) as *mut u32;
-    for &c in s {
-        unsafe { core::ptr::write_volatile(addr, c as u32); }
-    }
-}
-
 /// Copy a byte buffer from userspace.
 fn copy_from_user_bytes(ptr: u64, len: usize) -> Result<Vec<u8>, u64> {
     if len == 0 {

@@ -1165,9 +1165,7 @@ fn sys_exec_aarch64(
         // Trace: ELF file loaded from filesystem
         super::trace::trace_exec(b'L');
 
-        let boxed_slice = elf_vec.into_boxed_slice();
-        let elf_data = Box::leak(boxed_slice) as &'static [u8];
-        let leaked_name: &'static str = Box::leak(program_name.into_boxed_str());
+        let elf_data = elf_vec.as_slice();
 
         let current_pid = {
             let manager_guard = crate::process::manager();
@@ -1202,7 +1200,7 @@ fn sys_exec_aarch64(
                 // Trace: calling exec_process_with_argv (process manager)
                 super::trace::trace_exec(b'M');
 
-                match manager.exec_process_with_argv(current_pid, elf_data, Some(leaked_name), &argv_slices) {
+                match manager.exec_process_with_argv(current_pid, elf_data, Some(&program_name), &argv_slices) {
                     Ok((new_entry_point, new_rsp)) => {
                         // Trace: exec_process_with_argv succeeded
                         super::trace::trace_exec(b'S');
@@ -1277,6 +1275,15 @@ fn sys_exec_aarch64(
                                 }
                                 // Trace: TTBR0 page table switched
                                 super::trace::trace_exec(b'P');
+
+                                // CRITICAL: Update saved_process_cr3 so the assembly ERET
+                                // path doesn't restore the OLD (now-freed) page table.
+                                // Without this, the .Lrestore_saved_ttbr path in syscall_entry.S
+                                // switches TTBR0 back to the pre-exec page table, which has
+                                // been deallocated by exec_process_with_argv.
+                                unsafe {
+                                    Aarch64PerCpu::set_saved_process_cr3(new_ttbr0);
+                                }
                             }
                         }
 

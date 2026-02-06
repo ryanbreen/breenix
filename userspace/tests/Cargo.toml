@@ -109,6 +109,10 @@ path = "../bin/coreutils/resolution.rs"
 name = "telnetd"
 path = "../bin/services/telnetd.rs"
 
+[[bin]]
+name = "init"
+path = "../bin/services/init.rs"
+
 # ============================================================================
 # TESTS - Actual test programs
 # ============================================================================
