@@ -1432,7 +1432,10 @@ pub fn sys_exec_with_frame(
 
         // Load the program by name from the test disk
         // We need both the ELF data and the program name for exec_process
-        let (elf_data, exec_program_name): (&'static [u8], Option<&'static str>) = if program_name_ptr != 0 {
+        // Owned data must live long enough for exec_process to borrow
+        let mut _elf_vec_storage: Option<alloc::vec::Vec<u8>> = None;
+        let mut _name_storage: Option<alloc::string::String> = None;
+        let (elf_data, exec_program_name): (&[u8], Option<&str>) = if program_name_ptr != 0 {
             // Read the program name from userspace
             log::info!("sys_exec: Reading program name from userspace");
 
@@ -1469,13 +1472,9 @@ pub fn sys_exec_with_frame(
             {
                 // Load the binary from the test disk by name
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
-                // Leak the vector to get a static slice (needed for exec_process)
-                let boxed_slice = elf_vec.into_boxed_slice();
-                let elf_data = Box::leak(boxed_slice) as &'static [u8];
-                // Also leak the program name so we can pass it to exec_process
-                let name_string = alloc::string::String::from(program_name);
-                let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
-                (elf_data, Some(leaked_name))
+                _elf_vec_storage = Some(elf_vec);
+                _name_storage = Some(alloc::string::String::from(program_name));
+                (_elf_vec_storage.as_ref().unwrap().as_slice(), Some(_name_storage.as_ref().unwrap().as_str()))
             }
             #[cfg(not(feature = "testing"))]
             {
@@ -1804,10 +1803,7 @@ pub fn sys_execv_with_frame(
                 }
             }
         };
-        let boxed_slice = elf_vec.into_boxed_slice();
-        let elf_data = Box::leak(boxed_slice) as &'static [u8];
-        let name_string = alloc::string::String::from(program_name);
-        let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
+        let elf_data = elf_vec.as_slice();
 
         // Find current process
         let current_pid = {
@@ -1839,7 +1835,7 @@ pub fn sys_execv_with_frame(
         Cpu::without_interrupts(|| {
             let mut manager_guard = crate::process::manager();
             if let Some(ref mut manager) = *manager_guard {
-                match manager.exec_process_with_argv(current_pid, elf_data, Some(leaked_name), &argv_slices) {
+                match manager.exec_process_with_argv(current_pid, elf_data, Some(program_name), &argv_slices) {
                     Ok((new_entry_point, new_rsp)) => {
                         log::info!(
                             "sys_execv: Successfully replaced process address space, entry={:#x}, rsp={:#x}",
@@ -1949,7 +1945,10 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
         // Load the program by name from the test disk
         // In a real implementation, this would come from the filesystem
         // We need both the ELF data and the program name for exec_process
-        let (_elf_data, _exec_program_name): (&'static [u8], Option<&'static str>) = if program_name_ptr != 0 {
+        // Owned data must live long enough for exec_process to borrow
+        let mut _elf_vec_storage2: Option<alloc::vec::Vec<u8>> = None;
+        let mut _name_storage2: Option<alloc::string::String> = None;
+        let (_elf_data, _exec_program_name): (&[u8], Option<&str>) = if program_name_ptr != 0 {
             // Read the program name from userspace
             log::info!("sys_exec: Reading program name from userspace");
 
@@ -1978,13 +1977,9 @@ pub fn sys_exec(program_name_ptr: u64, elf_data_ptr: u64) -> SyscallResult {
             {
                 // Load the binary from the test disk by name
                 let elf_vec = crate::userspace_test::get_test_binary(program_name);
-                // Leak the vector to get a static slice (needed for exec_process)
-                let boxed_slice = elf_vec.into_boxed_slice();
-                let elf_data = Box::leak(boxed_slice) as &'static [u8];
-                // Also leak the program name so we can pass it to exec_process
-                let name_string = alloc::string::String::from(program_name);
-                let leaked_name: &'static str = Box::leak(name_string.into_boxed_str());
-                (elf_data, Some(leaked_name))
+                _elf_vec_storage2 = Some(elf_vec);
+                _name_storage2 = Some(alloc::string::String::from(program_name));
+                (_elf_vec_storage2.as_ref().unwrap().as_slice(), Some(_name_storage2.as_ref().unwrap().as_str()))
             }
             #[cfg(not(feature = "testing"))]
             {

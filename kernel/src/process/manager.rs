@@ -2946,6 +2946,22 @@ impl ProcessManager {
                 "exec_process_with_argv [ARM64]: Updated thread {} context for new program",
                 thread_id
             );
+
+            // CRITICAL: Sync updated context to the scheduler's copy of this thread.
+            // The process manager and scheduler maintain SEPARATE Thread objects (cloned
+            // at process creation). Without this sync, the scheduler would restore stale
+            // context (e.g., elr_el1=0) on the next context switch, causing ELR=0x0 crashes.
+            let ctx = thread.context.clone();
+            let st = thread.stack_top;
+            let sb = thread.stack_bottom;
+            let kst = thread.kernel_stack_top;
+            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                sched_thread.context = ctx;
+                sched_thread.stack_top = st;
+                sched_thread.stack_bottom = sb;
+                sched_thread.kernel_stack_top = kst;
+                sched_thread.state = crate::task::thread::ThreadState::Ready;
+            });
         }
 
         if is_current_process {
@@ -3198,6 +3214,20 @@ impl ProcessManager {
                 "exec_process [ARM64]: Updated thread {} context for new program",
                 thread_id
             );
+
+            // CRITICAL: Sync updated context to the scheduler's copy of this thread.
+            // See exec_process_with_argv for detailed explanation of the dual-storage issue.
+            let ctx = thread.context.clone();
+            let st = thread.stack_top;
+            let sb = thread.stack_bottom;
+            let kst = thread.kernel_stack_top;
+            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                sched_thread.context = ctx;
+                sched_thread.stack_top = st;
+                sched_thread.stack_bottom = sb;
+                sched_thread.kernel_stack_top = kst;
+                sched_thread.state = crate::task::thread::ThreadState::Ready;
+            });
         }
 
         log::info!(

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"particle_animation\"))"] }
 
 [[bin]]
 name = "kernel"
@@ -49,6 +49,7 @@ log = { version = "0.4.17", default-features = false }
 spin = "0.9.8"
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3.17", default-features = false, features = ["alloc"] }
+linked_list_allocator = "0.10"
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "regular", "unicode-basic-latin", "unicode-specials"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

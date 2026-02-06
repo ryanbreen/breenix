@@ -23,10 +23,12 @@ use crate::task::thread::{CpuContext, ThreadPrivilege, ThreadState};
 #[inline(always)]
 #[allow(dead_code)]
 fn raw_uart_char(c: u8) {
-    // QEMU virt machine UART base address
-    const UART_BASE: u64 = 0x0900_0000;
+    // QEMU virt machine UART via HHDM (TTBR1-mapped, safe during context switch)
+    // Physical 0x0900_0000 is mapped at HHDM_BASE + 0x0900_0000
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const UART_VIRT: u64 = HHDM_BASE + 0x0900_0000;
     unsafe {
-        let ptr = UART_BASE as *mut u8;
+        let ptr = UART_VIRT as *mut u8;
         core::ptr::write_volatile(ptr, c);
     }
 }
@@ -328,6 +330,16 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         // Kernel threads and userspace threads blocked in syscall both need
         // kernel context restoration (they're running in kernel mode)
         setup_kernel_thread_return_arm64(thread_id, frame);
+
+        // CRITICAL: For userspace threads blocked in syscall, set up TTBR0 so
+        // the correct process page table is active when the syscall completes
+        // and returns to userspace. Without this, TTBR0 retains the previously-
+        // running process's page table, causing instruction aborts when the
+        // thread returns to EL0 with the wrong address space.
+        if is_blocked_in_syscall && !is_kernel_thread {
+            set_next_ttbr0_for_thread(thread_id);
+            switch_ttbr0_if_needed(thread_id);
+        }
     } else {
         restore_userspace_context_arm64(thread_id, frame);
     }

@@ -142,6 +142,8 @@ BINARIES=(
     "ls_test"
     # PTY telnet server
     "telnetd"
+    # Init system
+    "init"
     # PTY integration test
     "pty_test"
     # Graphics syscall tests

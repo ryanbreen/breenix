@@ -421,11 +421,11 @@ pub extern "C" fn kernel_main() -> ! {
     // Try to load and run userspace init_shell from ext2 or test disk
     if device_count > 0 {
         boot_raw_char(b'2'); // Inside if
-        serial_println!("[boot] Loading userspace init_shell from ext2...");
+        serial_println!("[boot] Loading userspace init from ext2...");
         boot_raw_char(b'3'); // After serial_println
-        match run_userspace_from_ext2("/bin/init_shell") {
+        match run_userspace_from_ext2("/sbin/init") {
             Err(e) => {
-                serial_println!("[boot] Failed to load init_shell from ext2: {}", e);
+                serial_println!("[boot] Failed to load init from ext2: {}", e);
                 serial_println!("[boot] Loading userspace init_shell from test disk...");
                 match kernel::boot::test_disk::run_userspace_from_disk("init_shell") {
                     Err(e) => {

@@ -133,6 +133,10 @@ pub const PERCPU_SAVED_PROCESS_CR3_OFFSET: usize = 80;
 /// Offset of exception_cleanup_context flag in PerCpuData.
 pub const PERCPU_EXCEPTION_CLEANUP_CONTEXT_OFFSET: usize = 88;
 
+/// Offset of scratch register save area in PerCpuData.
+/// Used by assembly ERET paths to save/restore one register across SP switches.
+pub const PERCPU_ERET_SCRATCH_OFFSET: usize = 96;
+
 // ============================================================================
 // Preempt Count Bit Layout (Linux-compatible)
 // ============================================================================

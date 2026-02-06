@@ -120,7 +120,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
             for elf_file in /binaries/*.elf; do
                 if [ -f "$elf_file" ]; then
                     bin_name=$(basename "$elf_file" .elf)
-                    if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ]; then
+                    if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ]; then
                         cp "$elf_file" /mnt/ext2/sbin/${bin_name}
                         chmod 755 /mnt/ext2/sbin/${bin_name}
                         sbin_count=$((sbin_count + 1))
@@ -215,7 +215,7 @@ else
     for elf_file in "$USERSPACE_DIR"/*.elf; do
         if [ -f "$elf_file" ]; then
             bin_name=$(basename "$elf_file" .elf)
-            if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ]; then
+            if [ "$bin_name" = "true" ] || [ "$bin_name" = "telnetd" ] || [ "$bin_name" = "init" ]; then
                 cp "$elf_file" "$MOUNT_DIR/sbin/${bin_name}"
                 chmod 755 "$MOUNT_DIR/sbin/${bin_name}"
                 sbin_count=$((sbin_count + 1))

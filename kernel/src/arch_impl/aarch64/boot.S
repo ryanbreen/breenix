@@ -212,7 +212,7 @@ curr_el_spx_serror:
 // Lower EL using AArch64 (user mode)
 .balign 0x80
 lower_el_aarch64_sync:
-    b sync_exception_handler
+    b lower_el_sync_dispatch
 .balign 0x80
 lower_el_aarch64_irq:
     b irq_handler
@@ -347,6 +347,25 @@ zero_table_loop:
 
 .section .text
 
+/*
+ * Dispatch handler for synchronous exceptions from EL0 (userspace).
+ *
+ * SVCs (syscalls) are routed to syscall_entry_from_el0 in syscall_entry.S,
+ * which has proper interrupt masking, reschedule checks, TTBR0 handling,
+ * and PREEMPT_ACTIVE management.
+ *
+ * All other sync exceptions (page faults, etc.) go to the generic
+ * sync_exception_handler which passes ESR/FAR to the Rust handler.
+ *
+ * Uses x16/x17 as scratch (intra-procedure call scratch registers per ABI).
+ */
+lower_el_sync_dispatch:
+    mrs x16, esr_el1
+    lsr x17, x16, #26          // Extract EC field (bits [31:26])
+    cmp x17, #0x15              // EC 0x15 = SVC instruction from AArch64
+    b.eq syscall_entry_from_el0
+    b sync_exception_handler
+
 sync_exception_handler:
     // Save all registers
     sub sp, sp, #272        // 33 registers × 8 bytes + 8 padding
@@ -452,6 +471,7 @@ irq_handler:
 
     // Restore all general-purpose registers from the exception frame
     // x0 is particularly critical - it contains the fork() return value!
+    // NOTE: x16 is restored LATER via per-CPU scratch (see below)
     ldp x0, x1, [sp, #0]
     ldp x2, x3, [sp, #16]
     ldp x4, x5, [sp, #32]
@@ -460,7 +480,8 @@ irq_handler:
     ldp x10, x11, [sp, #80]
     ldp x12, x13, [sp, #96]
     ldp x14, x15, [sp, #112]
-    ldp x16, x17, [sp, #128]
+    // Skip x16 here - will be restored via per-CPU scratch after SP switch
+    ldr x17, [sp, #136]      // Restore x17 only
     ldp x18, x19, [sp, #144]
     ldp x20, x21, [sp, #160]
     ldp x22, x23, [sp, #176]
@@ -469,13 +490,22 @@ irq_handler:
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
 
-    // Load new SP from user_rsp_scratch
-    // For userspace returns: this is sp+272 (just popping the exception frame)
-    // For kernel thread switches: this may be a different thread's saved SP
-    // Use x16 as scratch - it's an intra-procedure scratch register in ARM64 ABI
+    // Save frame.x16 to per-CPU ERET scratch (offset 96), using x16/x17 as scratch
+    mrs x16, tpidr_el1       // x16 = percpu base
+    ldr x17, [sp, #128]      // x17 = frame.x16 (temp)
+    str x17, [x16, #96]      // percpu.eret_scratch = frame.x16
+
+    // Re-restore x17 from frame (was used as temp above)
+    ldr x17, [sp, #136]      // x17 = frame.x17 (final value)
+
+    // Set SP from user_rsp_scratch (offset 40)
+    ldr x16, [x16, #40]      // x16 = user_rsp_scratch
+    mov sp, x16               // SP = correct stack top
+
+    // Restore x16 from per-CPU ERET scratch
     mrs x16, tpidr_el1
-    ldr x16, [x16, #40]
-    mov sp, x16
+    ldr x16, [x16, #96]      // x16 = saved frame.x16
+
     eret
 
 unhandled_exception:

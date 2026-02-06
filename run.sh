@@ -5,6 +5,7 @@
 #
 # Usage:
 #   ./run.sh              # ARM64 with native cocoa display (default)
+#   ./run.sh --clean      # Full rebuild (userspace + ext2 disk + kernel), then run
 #   ./run.sh --x86        # x86_64 with VNC display
 #   ./run.sh --headless   # ARM64 with serial output only
 #   ./run.sh --x86 --headless  # x86_64 with serial output only
@@ -23,6 +24,7 @@ BREENIX_ROOT="$SCRIPT_DIR"
 # Defaults: ARM64 with graphics
 ARCH="arm64"
 HEADLESS=false
+CLEAN=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -33,6 +35,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --arm64|--aarch64)
             ARCH="arm64"
+            shift
+            ;;
+        --clean)
+            CLEAN=true
             shift
             ;;
         --headless|--serial)
@@ -47,6 +53,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: ./run.sh [options]"
             echo ""
             echo "Options:"
+            echo "  --clean                    Full rebuild: userspace, ext2 disk, kernel"
             echo "  --x86, --x86_64, --amd64   Run x86_64 kernel (default: ARM64)"
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --headless, --serial       Run without display (serial only)"
@@ -94,6 +101,34 @@ echo "========================================="
 echo ""
 echo "Architecture: $ARCH"
 echo "Mode: $([ "$HEADLESS" = true ] && echo "headless (serial only)" || echo "graphics (VNC)")"
+
+# --clean: full rebuild of userspace, ext2 disk, and kernel
+if [ "$CLEAN" = true ]; then
+    echo ""
+    echo "Clean build: rebuilding everything..."
+    echo ""
+
+    if [ "$ARCH" = "arm64" ]; then
+        echo "[1/3] Building userspace binaries (aarch64)..."
+        (cd "$BREENIX_ROOT/userspace/tests" && ./build-aarch64.sh)
+
+        echo ""
+        echo "[2/3] Creating ext2 disk image..."
+        "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
+    else
+        echo "[1/3] Building userspace binaries (x86_64)..."
+        (cd "$BREENIX_ROOT/userspace/tests" && ./build.sh)
+
+        echo ""
+        echo "[2/3] Creating ext2 disk image..."
+        "$BREENIX_ROOT/scripts/create_ext2_disk.sh"
+    fi
+
+    echo ""
+    echo "[3/3] Building kernel..."
+    eval $BUILD_CMD
+    echo ""
+fi
 
 # Check if kernel exists, offer to build
 if [ ! -f "$KERNEL" ]; then
