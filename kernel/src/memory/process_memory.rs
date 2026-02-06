@@ -383,7 +383,6 @@ impl ProcessPageTable {
             Some(frame) => {
                 let frame_addr = frame.start_address().as_u64();
                 log::debug!("Successfully allocated frame: {:#x}", frame_addr);
-                crate::serial_println!("🔍 ProcessPageTable::new() allocated L4 frame={:#x}", frame_addr);
 
                 // Check for problematic frames
                 if frame_addr == 0x611000 {
@@ -404,8 +403,6 @@ impl ProcessPageTable {
             "Allocated L4 frame: {:#x}",
             level_4_frame.start_address().as_u64()
         );
-        crate::serial_println!("🔍 ProcessPageTable will use L4 frame={:#x}", level_4_frame.start_address().as_u64());
-
         // Get physical memory offset
         let phys_offset = crate::memory::physical_memory_offset();
 
@@ -2126,20 +2123,11 @@ pub fn map_user_stack_to_process(
     {
         // ARM64: user addresses live in TTBR0 and must be mapped directly into
         // the process page table, not copied from the kernel (TTBR1) mappings.
-        crate::serial_println!(
-            "map_user_stack_to_process [ARM64]: enter mapping {:#x} - {:#x}",
-            start_page.start_address().as_u64(),
-            end_page.start_address().as_u64()
-        );
         let flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
             | PageTableFlags::USER_ACCESSIBLE;
 
         for page in Page::range_inclusive(start_page, end_page) {
-            crate::serial_println!(
-                "map_user_stack_to_process [ARM64]: processing page {:#x}",
-                page.start_address().as_u64()
-            );
             if let Some(existing_frame) = process_page_table.translate_page(page.start_address()) {
                 let existing_frame = PhysFrame::<Size4KiB>::containing_address(existing_frame);
                 log::trace!(
@@ -2147,26 +2135,13 @@ pub fn map_user_stack_to_process(
                     page.start_address().as_u64(),
                     existing_frame.start_address().as_u64()
                 );
-                crate::serial_println!(
-                    "map_user_stack_to_process [ARM64]: page already mapped to frame {:#x}",
-                    existing_frame.start_address().as_u64()
-                );
                 mapped_pages += 1;
                 continue;
             }
 
             let frame = match allocate_frame() {
-                Some(frame) => {
-                    crate::serial_println!(
-                        "map_user_stack_to_process [ARM64]: allocated frame {:#x}",
-                        frame.start_address().as_u64()
-                    );
-                    frame
-                }
+                Some(frame) => frame,
                 None => {
-                    crate::serial_println!(
-                        "map_user_stack_to_process [ARM64]: allocate_frame failed (OOM)"
-                    );
                     return Err("Out of memory for user stack");
                 }
             };
@@ -2178,22 +2153,11 @@ pub fn map_user_stack_to_process(
                         page.start_address().as_u64(),
                         frame.start_address().as_u64()
                     );
-                    crate::serial_println!(
-                        "map_user_stack_to_process [ARM64]: map_page ok {:#x} -> {:#x}",
-                        page.start_address().as_u64(),
-                        frame.start_address().as_u64()
-                    );
                 }
                 Err(e) => {
                     log::error!(
                         "Failed to map user stack page {:#x}: {}",
                         page.start_address().as_u64(),
-                        e
-                    );
-                    crate::serial_println!(
-                        "map_user_stack_to_process [ARM64]: map_page FAILED {:#x} -> {:#x}: {}",
-                        page.start_address().as_u64(),
-                        frame.start_address().as_u64(),
                         e
                     );
                     return Err("Failed to map user stack page");
@@ -2233,14 +2197,6 @@ pub fn map_user_stack_to_process_with_phys(
     let stack_size = user_stack_top.as_u64() - user_stack_bottom.as_u64();
     let num_pages = stack_size / 4096;
 
-    crate::serial_println!(
-        "map_user_stack_to_process_with_phys: user {:#x}-{:#x}, phys {:#x}, {} pages",
-        user_stack_bottom.as_u64(),
-        user_stack_top.as_u64(),
-        phys_bottom,
-        num_pages
-    );
-
     let flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE;
@@ -2252,13 +2208,6 @@ pub fn map_user_stack_to_process_with_phys(
         let page = Page::<Size4KiB>::containing_address(user_vaddr);
         let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
-        crate::serial_println!(
-            "  page {}: user {:#x} -> phys {:#x}",
-            i,
-            user_vaddr.as_u64(),
-            phys_addr.as_u64()
-        );
-
         match process_page_table.map_page(page, frame, flags) {
             Ok(()) => {
                 log::trace!(
@@ -2268,8 +2217,8 @@ pub fn map_user_stack_to_process_with_phys(
                 );
             }
             Err(e) => {
-                crate::serial_println!(
-                    "  FAILED to map page {:#x} -> {:#x}: {}",
+                log::error!(
+                    "Failed to map page {:#x} -> {:#x}: {}",
                     user_vaddr.as_u64(),
                     phys_addr.as_u64(),
                     e
@@ -2279,9 +2228,5 @@ pub fn map_user_stack_to_process_with_phys(
         }
     }
 
-    crate::serial_println!(
-        "map_user_stack_to_process_with_phys: mapped {} pages successfully",
-        num_pages
-    );
     Ok(())
 }

@@ -163,6 +163,18 @@ impl TraceEventType {
     pub const LOCK_RELEASE: u16 = 0x0501;
     pub const LOCK_CONTEND: u16 = 0x0502;
 
+    // Process events (0x06xx)
+    pub const FORK_ENTRY: u16 = 0x0600;
+    pub const FORK_EXIT: u16 = 0x0601;
+    pub const EXEC_ENTRY: u16 = 0x0602;
+    pub const EXEC_EXIT: u16 = 0x0603;
+    pub const COW_FAULT: u16 = 0x0604;
+    pub const COW_COPY: u16 = 0x0605;
+    pub const STACK_MAP: u16 = 0x0606;
+    pub const DATA_ABORT: u16 = 0x0607;
+    pub const PROCESS_EXIT: u16 = 0x0608;
+    pub const COW_LOCK_FAIL: u16 = 0x0609;
+
     // Debug markers (0xFFxx)
     pub const MARKER_A: u16 = 0xFF00;
     pub const MARKER_B: u16 = 0xFF01;

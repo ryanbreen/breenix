@@ -1294,6 +1294,9 @@ impl ProcessManager {
         parent_context: crate::task::thread::CpuContext,
         mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
+        // Lock-free trace: fork entry
+        crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
+
         // Get the parent process info
         let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
             let parent = self
@@ -1433,12 +1436,7 @@ impl ProcessManager {
             log::error!("ARM64 fork: Failed to map user stack: {}", e);
             "Failed to map user stack in child's page table"
         })?;
-        crate::serial_println!(
-            "ARM64 fork: child stack mapped {:#x}-{:#x} in child page table (L4 frame={:#x})",
-            child_stack_bottom.as_u64(),
-            child_stack_top.as_u64(),
-            child_page_table_ref.level_4_frame().start_address().as_u64()
-        );
+        crate::tracing::providers::process::trace_stack_map(child_pid.as_u64() as u32);
 
         // Allocate a globally unique thread ID for the child's main thread
         let child_thread_id = crate::task::thread::allocate_thread_id();
@@ -1491,6 +1489,11 @@ impl ProcessManager {
         );
 
         child_thread.context = parent_context.clone();
+
+        // CRITICAL: Fork returns 0 to child. The parent_context captured x0 at
+        // SVC entry time, which is undefined (ARM64 syscall0 uses lateout("x0")).
+        // Without this, the child sees a random x0 and doesn't enter the child branch.
+        child_thread.context.x0 = 0;
 
         // CRITICAL: Set has_started=true for forked children
         child_thread.has_started = true;
@@ -1656,6 +1659,9 @@ impl ProcessManager {
             parent_pid.as_u64(),
             child_pid.as_u64()
         );
+
+        // Lock-free trace: fork exit with child PID
+        crate::tracing::providers::process::trace_fork_exit(child_pid.as_u64() as u32);
 
         Ok(child_pid)
     }
@@ -2995,6 +3001,9 @@ impl ProcessManager {
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
+        // Lock-free trace: exec entry
+        crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
+
         log::info!(
             "exec_process [ARM64]: Replacing process {} with new program",
             pid.as_u64()
@@ -3225,6 +3234,9 @@ impl ProcessManager {
                 pid.as_u64()
             );
         }
+
+        // Lock-free trace: exec exit
+        crate::tracing::providers::process::trace_exec_exit(pid.as_u64() as u32);
 
         Ok(new_entry_point)
     }

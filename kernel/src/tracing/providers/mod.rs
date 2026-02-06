@@ -28,11 +28,13 @@
 
 pub mod counters;
 pub mod irq;
+pub mod process;
 pub mod sched;
 pub mod syscall;
 
 // Re-export providers for convenient access
 pub use irq::IRQ_PROVIDER;
+pub use process::PROCESS_PROVIDER;
 pub use sched::SCHED_PROVIDER;
 pub use syscall::SYSCALL_PROVIDER;
 
@@ -47,13 +49,15 @@ pub fn init() {
     syscall::init();
     sched::init();
     irq::init();
+    process::init();
     counters::init();
 
     log::info!(
-        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}",
+        "Tracing providers initialized: syscall={:#x}, sched={:#x}, irq={:#x}, process={:#x}",
         syscall::PROVIDER_ID,
         sched::PROVIDER_ID,
-        irq::PROVIDER_ID
+        irq::PROVIDER_ID,
+        process::PROVIDER_ID
     );
 }
 
@@ -63,6 +67,7 @@ pub fn enable_all() {
     SYSCALL_PROVIDER.enable_all();
     SCHED_PROVIDER.enable_all();
     IRQ_PROVIDER.enable_all();
+    PROCESS_PROVIDER.enable_all();
 }
 
 /// Disable all built-in providers.
@@ -71,4 +76,5 @@ pub fn disable_all() {
     SYSCALL_PROVIDER.disable_all();
     SCHED_PROVIDER.disable_all();
     IRQ_PROVIDER.disable_all();
+    PROCESS_PROVIDER.disable_all();
 }

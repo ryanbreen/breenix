@@ -1970,8 +1970,31 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    println("PANIC in init shell!");
+fn panic(info: &PanicInfo) -> ! {
+    print("PANIC in init shell!");
+    if let Some(location) = info.location() {
+        print(" at ");
+        print(location.file());
+        print(":");
+        // Print line number as decimal
+        let mut line = location.line();
+        if line == 0 {
+            print("0");
+        } else {
+            let mut buf = [0u8; 10];
+            let mut i = 10;
+            while line > 0 {
+                i -= 1;
+                buf[i] = b'0' + (line % 10) as u8;
+                line /= 10;
+            }
+            // Safety: buf[i..10] contains valid ASCII digits
+            if let Ok(s) = core::str::from_utf8(&buf[i..10]) {
+                print(s);
+            }
+        }
+    }
+    println("");
     // Init cannot exit, so just loop forever
     loop {
         core::hint::spin_loop();
