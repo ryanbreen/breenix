@@ -81,36 +81,35 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             // Not a CoW fault or couldn't be handled
             let frame_ref = unsafe { &mut *frame };
-            crate::serial_println!("[exception] Data abort at address {:#x}", far);
-            crate::serial_println!("  ELR: {:#x}, ESR: {:#x}", frame_ref.elr, esr);
-            crate::serial_println!("  ISS: {:#x} (WnR={}, DFSC={:#x})",
-                iss, (iss >> 6) & 1, iss & 0x3F);
+            let dfsc = (iss & 0x3F) as u16;
 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            let ttbr0: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+            }
+
+            // Lock-free trace: data abort event
+            crate::tracing::providers::process::trace_data_abort(0, dfsc);
+
+            // One condensed serial_println for fatal crash visibility
+            crate::serial_println!("[DATA_ABORT] FAR={:#x} ESR={:#x} DFSC={:#x}", far, esr, dfsc);
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
-                crate::serial_println!("[exception] Terminating userspace process with SIGSEGV");
-
                 // Get current TTBR0 to find the process
-                let ttbr0: u64;
-                unsafe {
-                    core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
-                }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
                 // Find and terminate the process
                 let mut terminated = false;
                 crate::process::with_process_manager(|pm| {
-                    if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
-                        let name = process.name.clone();
-                        crate::serial_println!("[exception] Killing process {} (PID {}) due to data abort",
-                            name, pid.as_u64());
+                    if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
+                        crate::tracing::providers::process::trace_process_exit(pid.as_u64() as u16, (-11i16) as u16);
                         pm.exit_process(pid, -11); // SIGSEGV exit code
                         terminated = true;
                     } else {
-                        crate::serial_println!("[exception] Could not find process with TTBR0={:#x}", page_table_phys);
+                        // trace_data_abort already captured the fault
                     }
                 });
 
@@ -136,10 +135,51 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         exception_class::INSTRUCTION_ABORT_LOWER | exception_class::INSTRUCTION_ABORT_SAME => {
-            let frame = unsafe { &*frame };
-            crate::serial_println!("[exception] Instruction abort at address {:#x}", far);
-            crate::serial_println!("  ELR: {:#x}, ESR: {:#x}", frame.elr, esr);
-            // For now, hang
+            let frame_ref = unsafe { &mut *frame };
+            let ifsc = (iss & 0x3F) as u16;
+            let from_el0 = (frame_ref.spsr & 0xF) == 0;
+
+            let ttbr0: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+            }
+
+            crate::serial_println!(
+                "[INSTRUCTION_ABORT] FAR={:#x} ELR={:#x} ESR={:#x} IFSC={:#x} TTBR0={:#x} from_el0={}",
+                far, frame_ref.elr, esr, ifsc, ttbr0, from_el0
+            );
+
+            if from_el0 {
+                // From userspace - terminate the process with SIGSEGV
+                let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+
+                let mut terminated = false;
+                crate::process::with_process_manager(|pm| {
+                    if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
+                        crate::serial_println!(
+                            "[INSTRUCTION_ABORT] Terminating PID {} (SIGSEGV)",
+                            pid.as_u64()
+                        );
+                        crate::tracing::providers::process::trace_process_exit(
+                            pid.as_u64() as u16,
+                            (-11i16) as u16,
+                        );
+                        pm.exit_process(pid, -11); // SIGSEGV
+                        terminated = true;
+                    }
+                });
+
+                if terminated {
+                    crate::task::scheduler::set_need_resched();
+                    crate::task::scheduler::switch_to_idle();
+                    frame_ref.elr =
+                        crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+                    frame_ref.spsr = 0x3c5; // EL1h, interrupts enabled
+                    return;
+                }
+            }
+
+            // From kernel or couldn't terminate - hang
             loop { unsafe { core::arch::asm!("wfi"); } }
         }
 
@@ -509,12 +549,8 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     // Mask off ASID to get physical address
     let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
-    crate::serial_println!(
-        "[COW ARM64] fault at {:#x}, ttbr0={:#x}, pt_phys={:#x}",
-        far,
-        ttbr0,
-        page_table_phys
-    );
+    // Lock-free trace: CoW fault entry (pid unknown yet, page index from far)
+    crate::tracing::providers::process::trace_cow_fault(0, (far >> 12) as u16);
 
     // Try to acquire process manager lock
     match crate::process::try_manager() {
@@ -529,7 +565,6 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
                 Some(p) => p,
                 None => {
-                    crate::serial_println!("[COW] No process found for TTBR0");
                     return false;
                 }
             };
@@ -545,23 +580,17 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             let (old_frame, old_flags) = match page_table.get_page_info(page) {
                 Some(info) => info,
                 None => {
-                    crate::serial_println!("[COW] No page info for {:#x}", far);
                     return false;
                 }
             };
 
             // Check if this is a CoW page
             if !is_cow_page(old_flags) {
-                crate::serial_println!("[COW] Not a CoW page");
                 return false;
             }
 
-            crate::serial_println!(
-                "[COW] Handling page {:#x}, frame={:#x}, shared={}",
-                far,
-                old_frame.start_address().as_u64(),
-                frame_is_shared(old_frame)
-            );
+            // Lock-free trace: CoW handling with known PID
+            crate::tracing::providers::process::trace_cow_fault(_pid.as_u64() as u16, (far >> 12) as u16);
 
             // If we're the sole owner, just make it writable
             if !frame_is_shared(old_frame) {
@@ -582,7 +611,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
                     );
                 }
                 cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                crate::serial_println!("[COW] Made sole-owner page writable");
+                crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
                 return true;
             }
 
@@ -590,7 +619,6 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             let new_frame = match allocate_frame() {
                 Some(f) => f,
                 None => {
-                    crate::serial_println!("[COW] Failed to allocate frame");
                     return false;
                 }
             };
@@ -607,11 +635,9 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             // Unmap old page and map new one with write permissions
             let new_flags = make_private_flags(old_flags);
             if page_table.unmap_page(page).is_err() {
-                crate::serial_println!("[COW] Failed to unmap old page");
                 return false;
             }
             if page_table.map_page(page, new_frame, new_flags).is_err() {
-                crate::serial_println!("[COW] Failed to map new page");
                 return false;
             }
 
@@ -632,17 +658,13 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             }
 
             cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            crate::serial_println!(
-                "[COW] Copied page from {:#x} to {:#x}",
-                old_frame.start_address().as_u64(),
-                new_frame.start_address().as_u64()
-            );
+            crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
 
             true
         }
         None => {
             cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            crate::serial_println!("[COW] Manager lock held, cannot handle");
+            crate::tracing::providers::process::trace_cow_lock_fail(0);
             false
         }
     }

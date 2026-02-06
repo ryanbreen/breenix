@@ -1294,6 +1294,9 @@ impl ProcessManager {
         parent_context: crate::task::thread::CpuContext,
         mut child_page_table: Box<ProcessPageTable>,
     ) -> Result<ProcessId, &'static str> {
+        // Lock-free trace: fork entry
+        crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
+
         // Get the parent process info
         let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
             let parent = self
@@ -1433,6 +1436,7 @@ impl ProcessManager {
             log::error!("ARM64 fork: Failed to map user stack: {}", e);
             "Failed to map user stack in child's page table"
         })?;
+        crate::tracing::providers::process::trace_stack_map(child_pid.as_u64() as u32);
 
         // Allocate a globally unique thread ID for the child's main thread
         let child_thread_id = crate::task::thread::allocate_thread_id();
@@ -1485,6 +1489,11 @@ impl ProcessManager {
         );
 
         child_thread.context = parent_context.clone();
+
+        // CRITICAL: Fork returns 0 to child. The parent_context captured x0 at
+        // SVC entry time, which is undefined (ARM64 syscall0 uses lateout("x0")).
+        // Without this, the child sees a random x0 and doesn't enter the child branch.
+        child_thread.context.x0 = 0;
 
         // CRITICAL: Set has_started=true for forked children
         child_thread.has_started = true;
@@ -1650,6 +1659,9 @@ impl ProcessManager {
             parent_pid.as_u64(),
             child_pid.as_u64()
         );
+
+        // Lock-free trace: fork exit with child PID
+        crate::tracing::providers::process::trace_fork_exit(child_pid.as_u64() as u32);
 
         Ok(child_pid)
     }
@@ -2775,6 +2787,7 @@ impl ProcessManager {
         program_name: Option<&str>,
         argv: &[&[u8]],
     ) -> Result<(u64, u64), &'static str> {
+        use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
         log::info!(
@@ -2829,12 +2842,12 @@ impl ProcessManager {
             log::warn!("ARM64: Failed to unmap old user data pages: {}", e);
         }
 
+        let user_stack_top = USER_STACK_REGION_START;
+
         {
             const STACK_SIZE: usize = 64 * 1024;
-            // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-            const STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
-            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
-            let unmap_top = VirtAddr::new(STACK_TOP);
+            let unmap_bottom = VirtAddr::new(user_stack_top - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(user_stack_top);
             if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
                 log::warn!("ARM64: Failed to unmap old stack pages: {}", e);
             }
@@ -2850,11 +2863,9 @@ impl ProcessManager {
         );
 
         const USER_STACK_SIZE: usize = 64 * 1024;
-        // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-        const USER_STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
 
-        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
-        let stack_top = VirtAddr::new(USER_STACK_TOP);
+        let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(user_stack_top);
 
         log::info!("exec_process_with_argv [ARM64]: Mapping stack pages into new process page table");
         let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
@@ -2873,7 +2884,7 @@ impl ProcessManager {
             )?;
         }
 
-        let initial_rsp = self.setup_argv_on_stack(&new_page_table, USER_STACK_TOP, argv)?;
+        let initial_rsp = self.setup_argv_on_stack(&new_page_table, user_stack_top, argv)?;
 
         log::info!(
             "exec_process_with_argv [ARM64]: argc/argv set up on stack, SP_EL0={:#x}",
@@ -2987,7 +2998,11 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
     ) -> Result<u64, &'static str> {
+        use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
+
+        // Lock-free trace: exec entry
+        crate::tracing::providers::process::trace_exec_entry(pid.as_u64() as u32);
 
         log::info!(
             "exec_process [ARM64]: Replacing process {} with new program",
@@ -3049,12 +3064,12 @@ impl ProcessManager {
         }
 
         // Unmap the stack region before mapping new stack pages
+        let user_stack_top = USER_STACK_REGION_START;
+
         {
             const STACK_SIZE: usize = 64 * 1024; // 64KB stack
-            // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-            const STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
-            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
-            let unmap_top = VirtAddr::new(STACK_TOP);
+            let unmap_bottom = VirtAddr::new(user_stack_top - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(user_stack_top);
             if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
                 log::warn!("ARM64: Failed to unmap old stack pages: {}", e);
             }
@@ -3074,12 +3089,10 @@ impl ProcessManager {
 
         // Allocate and map stack directly into the new process page table
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-        const USER_STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
 
         // Calculate stack range
-        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
-        let stack_top = VirtAddr::new(USER_STACK_TOP);
+        let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(user_stack_top);
 
         // Map stack pages into the NEW process page table
         log::info!("exec_process [ARM64]: Mapping stack pages into new process page table");
@@ -3221,6 +3234,9 @@ impl ProcessManager {
                 pid.as_u64()
             );
         }
+
+        // Lock-free trace: exec exit
+        crate::tracing::providers::process::trace_exec_exit(pid.as_u64() as u32);
 
         Ok(new_entry_point)
     }

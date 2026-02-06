@@ -22,7 +22,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use libbreenix::fs::{access, open, O_DIRECTORY, O_RDONLY, O_WRONLY, X_OK};
 use libbreenix::io::{close, dup2, pipe, print, println, read, write};
 use libbreenix::process::{
-    chdir, exec, execv, fork, getcwd, getpgrp, setpgid, waitpid, wexitstatus, wifexited,
+    chdir, exec, execv, fork, getcwd, getpgrp, getpid, setpgid, waitpid, wexitstatus, wifexited,
     wifsignaled, wifstopped, yield_now, WNOHANG, WUNTRACED,
 };
 use libbreenix::signal::{kill, sigaction, Sigaction, SIGCHLD, SIGCONT, SIGINT};
@@ -1370,8 +1370,18 @@ fn read_line() -> Option<&'static str> {
             let mut c = [0u8; 1];
             let n = read(STDIN, &mut c);
 
-            if n == -EAGAIN || n == 0 {
+            if n == -EAGAIN {
                 // No data available - yield and retry
+                yield_now();
+                continue;
+            }
+
+            if n == 0 {
+                // EOF on stdin - if we're not PID 1 (e.g., running over telnet),
+                // exit gracefully. PID 1 (init) must never exit.
+                if getpid() != 1 {
+                    libbreenix::process::exit(0);
+                }
                 yield_now();
                 continue;
             }
@@ -1960,8 +1970,31 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    println("PANIC in init shell!");
+fn panic(info: &PanicInfo) -> ! {
+    print("PANIC in init shell!");
+    if let Some(location) = info.location() {
+        print(" at ");
+        print(location.file());
+        print(":");
+        // Print line number as decimal
+        let mut line = location.line();
+        if line == 0 {
+            print("0");
+        } else {
+            let mut buf = [0u8; 10];
+            let mut i = 10;
+            while line > 0 {
+                i -= 1;
+                buf[i] = b'0' + (line % 10) as u8;
+                line /= 10;
+            }
+            // Safety: buf[i..10] contains valid ASCII digits
+            if let Ok(s) = core::str::from_utf8(&buf[i..10]) {
+                print(s);
+            }
+        }
+    }
+    println("");
     // Init cannot exit, so just loop forever
     loop {
         core::hint::spin_loop();

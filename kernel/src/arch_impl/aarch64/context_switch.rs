@@ -580,6 +580,15 @@ fn restore_userspace_context_arm64(thread_id: u64, frame: &mut Aarch64ExceptionF
 
     // Switch TTBR0 if needed for different address space
     switch_ttbr0_if_needed(thread_id);
+
+    // CRITICAL: Set user_rsp_scratch to this thread's kernel stack top.
+    // The IRQ return path (boot.S) uses `mov sp, [user_rsp_scratch]` before ERET.
+    // Without this, SP_EL1 retains the switching-out thread's stack pointer,
+    // causing the next IRQ from EL0 to allocate its exception frame on the
+    // wrong kernel stack — corrupting memory and other threads' SVC frames.
+    unsafe {
+        Aarch64PerCpu::set_user_rsp_scratch(Aarch64PerCpu::kernel_stack_top());
+    }
 }
 
 /// Set up exception frame for first entry to userspace.
@@ -644,7 +653,12 @@ fn setup_first_userspace_entry_arm64(thread_id: u64, frame: &mut Aarch64Exceptio
     // Switch TTBR0 for this thread's address space
     switch_ttbr0_if_needed(thread_id);
 
-    // NOTE: No logging - context switch path must be lock-free
+    // CRITICAL: Set user_rsp_scratch to this thread's kernel stack top.
+    // Same as restore_userspace_context_arm64 — the IRQ return path uses
+    // user_rsp_scratch for SP after ERET. Without this, SP_EL1 is wrong.
+    unsafe {
+        Aarch64PerCpu::set_user_rsp_scratch(Aarch64PerCpu::kernel_stack_top());
+    }
 }
 
 /// Switch TTBR0_EL1 if the thread requires a different address space.

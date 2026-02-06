@@ -281,6 +281,18 @@ pub fn event_type_name(event_type: u16) -> &'static str {
         TraceEventType::LOCK_RELEASE => "LOCK_RELEASE",
         TraceEventType::LOCK_CONTEND => "LOCK_CONTEND",
 
+        // Process events (0x06xx)
+        TraceEventType::FORK_ENTRY => "FORK_ENTRY",
+        TraceEventType::FORK_EXIT => "FORK_EXIT",
+        TraceEventType::EXEC_ENTRY => "EXEC_ENTRY",
+        TraceEventType::EXEC_EXIT => "EXEC_EXIT",
+        TraceEventType::COW_FAULT => "COW_FAULT",
+        TraceEventType::COW_COPY => "COW_COPY",
+        TraceEventType::STACK_MAP => "STACK_MAP",
+        TraceEventType::DATA_ABORT => "DATA_ABORT",
+        TraceEventType::PROCESS_EXIT => "PROCESS_EXIT",
+        TraceEventType::COW_LOCK_FAIL => "COW_LOCK_FAIL",
+
         // Debug markers (0xFFxx)
         TraceEventType::MARKER_A => "MARKER_A",
         TraceEventType::MARKER_B => "MARKER_B",
@@ -315,6 +327,16 @@ fn payload_description(event_type: u16) -> &'static str {
         TraceEventType::LOCK_ACQUIRE => "lock_id",
         TraceEventType::LOCK_RELEASE => "lock_id",
         TraceEventType::LOCK_CONTEND => "lock_id",
+        TraceEventType::FORK_ENTRY => "parent_pid",
+        TraceEventType::FORK_EXIT => "child_pid",
+        TraceEventType::EXEC_ENTRY => "pid",
+        TraceEventType::EXEC_EXIT => "pid",
+        TraceEventType::COW_FAULT => "pid<<16|page_idx",
+        TraceEventType::COW_COPY => "pid<<16|page_idx",
+        TraceEventType::STACK_MAP => "pid",
+        TraceEventType::DATA_ABORT => "pid<<16|dfsc",
+        TraceEventType::PROCESS_EXIT => "pid<<16|exit_code",
+        TraceEventType::COW_LOCK_FAIL => "pid",
         TraceEventType::MARKER_A => "user_data",
         TraceEventType::MARKER_B => "user_data",
         TraceEventType::MARKER_C => "user_data",
@@ -719,6 +741,7 @@ pub fn dump_event_summary() {
         (0x03, "Syscall"),
         (0x04, "Memory"),
         (0x05, "Lock"),
+        (0x06, "Process"),
         (0xFF, "Marker/Debug"),
     ];
 

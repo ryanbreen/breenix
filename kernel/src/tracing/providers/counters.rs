@@ -87,6 +87,42 @@ pub static TIMER_TICK_TOTAL: TraceCounter = TraceCounter::new(
     "Total timer tick interrupts",
 );
 
+/// Total fork operations across all CPUs.
+///
+/// Incremented at fork entry, before the fork is performed.
+/// Use `aggregate()` to get the total count across all CPUs.
+///
+/// GDB: `print FORK_TOTAL`
+#[no_mangle]
+pub static FORK_TOTAL: TraceCounter = TraceCounter::new(
+    "FORK_TOTAL",
+    "Total fork operations",
+);
+
+/// Total exec operations across all CPUs.
+///
+/// Incremented at exec entry, before the exec is performed.
+/// Use `aggregate()` to get the total count across all CPUs.
+///
+/// GDB: `print EXEC_TOTAL`
+#[no_mangle]
+pub static EXEC_TOTAL: TraceCounter = TraceCounter::new(
+    "EXEC_TOTAL",
+    "Total exec operations",
+);
+
+/// Total CoW fault operations across all CPUs.
+///
+/// Incremented when a copy-on-write fault is triggered.
+/// Use `aggregate()` to get the total count across all CPUs.
+///
+/// GDB: `print COW_FAULT_TOTAL`
+#[no_mangle]
+pub static COW_FAULT_TOTAL: TraceCounter = TraceCounter::new(
+    "COW_FAULT_TOTAL",
+    "Total CoW fault operations",
+);
+
 // =============================================================================
 // Initialization
 // =============================================================================
@@ -99,9 +135,12 @@ pub fn init() {
     register_counter(&IRQ_TOTAL);
     register_counter(&CTX_SWITCH_TOTAL);
     register_counter(&TIMER_TICK_TOTAL);
+    register_counter(&FORK_TOTAL);
+    register_counter(&EXEC_TOTAL);
+    register_counter(&COW_FAULT_TOTAL);
 
     log::info!(
-        "Tracing counters initialized: SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL"
+        "Tracing counters initialized: SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL, FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL"
     );
 }
 
@@ -145,6 +184,33 @@ pub fn count_timer_tick() {
     TIMER_TICK_TOTAL.increment();
 }
 
+/// Increment the fork counter.
+///
+/// This is an inline function for use in the fork path.
+/// Compiles to a single atomic add instruction.
+#[inline(always)]
+pub fn count_fork() {
+    FORK_TOTAL.increment();
+}
+
+/// Increment the exec counter.
+///
+/// This is an inline function for use in the exec path.
+/// Compiles to a single atomic add instruction.
+#[inline(always)]
+pub fn count_exec() {
+    EXEC_TOTAL.increment();
+}
+
+/// Increment the CoW fault counter.
+///
+/// This is an inline function for use in the CoW fault handler.
+/// Compiles to a single atomic add instruction.
+#[inline(always)]
+pub fn count_cow_fault() {
+    COW_FAULT_TOTAL.increment();
+}
+
 /// Get all counter values as a summary.
 ///
 /// Returns a tuple of (syscall_total, irq_total, ctx_switch_total, timer_tick_total).
@@ -157,6 +223,17 @@ pub fn get_all_counters() -> (u64, u64, u64, u64) {
     )
 }
 
+/// Get process-related counter values.
+///
+/// Returns a tuple of (fork_total, exec_total, cow_fault_total).
+pub fn get_process_counters() -> (u64, u64, u64) {
+    (
+        FORK_TOTAL.aggregate(),
+        EXEC_TOTAL.aggregate(),
+        COW_FAULT_TOTAL.aggregate(),
+    )
+}
+
 /// Reset all built-in counters to zero.
 ///
 /// This is not atomic across counters - some increments may be
@@ -166,4 +243,7 @@ pub fn reset_all() {
     IRQ_TOTAL.reset();
     CTX_SWITCH_TOTAL.reset();
     TIMER_TICK_TOTAL.reset();
+    FORK_TOTAL.reset();
+    EXEC_TOTAL.reset();
+    COW_FAULT_TOTAL.reset();
 }
