@@ -5,7 +5,7 @@
 
 use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
 use core::ptr::read_volatile;
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{AtomicBool, fence, Ordering};
 
 /// VirtIO network header flags
 #[allow(dead_code)]
@@ -162,6 +162,19 @@ static mut TX_BUFFER: TxBuffer = TxBuffer {
 /// Network device state
 static mut NET_DEVICE: Option<NetDeviceState> = None;
 
+/// MMIO slot index for IRQ calculation
+static mut DEVICE_SLOT: usize = 0;
+
+/// Virtual (HHDM-mapped) base address for direct register access in interrupt context
+static mut DEVICE_BASE_VIRT: u64 = 0;
+
+/// Whether the device is initialized
+static DEVICE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Base IRQ for VirtIO MMIO devices on QEMU virt machine
+/// IRQ = VIRTIO_IRQ_BASE + slot_number
+const VIRTIO_IRQ_BASE: u32 = 48;
+
 struct NetDeviceState {
     base: u64,
     mac: [u8; 6],
@@ -183,8 +196,24 @@ pub fn init() -> Result<(), &'static str> {
         let base = VIRTIO_MMIO_BASE + (i as u64) * VIRTIO_MMIO_SIZE;
         if let Some(mut device) = VirtioMmioDevice::probe(base) {
             if device.device_id() == device_id::NETWORK {
-                crate::serial_println!("[virtio-net] Found network device at {:#x}", base);
-                return init_device(&mut device, base);
+                crate::serial_println!("[virtio-net] Found network device at {:#x} (slot {})", base, i);
+                init_device(&mut device, base)?;
+
+                // Track the slot and virtual base for IRQ handling
+                unsafe {
+                    *(&raw mut DEVICE_SLOT) = i;
+                    *(&raw mut DEVICE_BASE_VIRT) =
+                        crate::memory::physical_memory_offset().as_u64() + base;
+                }
+
+                // Note: IRQ will be enabled later by enable_net_irq() after
+                // the network stack is fully initialized.
+                let irq = VIRTIO_IRQ_BASE + i as u32;
+                crate::serial_println!("[virtio-net] Network device IRQ {} (will enable after net init)", irq);
+
+                DEVICE_INITIALIZED.store(true, Ordering::Release);
+
+                return Ok(());
             }
         }
     }
@@ -351,6 +380,25 @@ fn rx_buffer_data(idx: usize) -> Option<&'static [u8]> {
     }
 }
 
+/// Re-post a single RX buffer back to the available ring after it's been consumed.
+fn repost_rx_buffer(desc_idx: usize, device: &VirtioMmioDevice) {
+    if desc_idx >= 4 {
+        return;
+    }
+
+    unsafe {
+        let queue_ptr = &raw mut RX_QUEUE;
+        let avail_idx = (*queue_ptr).avail.idx;
+        (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = desc_idx as u16;
+        fence(Ordering::SeqCst);
+        (*queue_ptr).avail.idx = avail_idx.wrapping_add(1);
+        fence(Ordering::SeqCst);
+    }
+
+    // Notify device about the new available buffer
+    device.notify_queue(0);
+}
+
 /// Post RX buffers to the device for receiving packets
 fn post_rx_buffers() -> Result<(), &'static str> {
     let state = unsafe {
@@ -510,11 +558,50 @@ pub fn receive() -> Option<&'static [u8]> {
     // Get packet data (skip header)
     let hdr_size = core::mem::size_of::<VirtioNetHdr>();
     if packet_len <= hdr_size {
-        return None;  // Invalid packet
+        repost_rx_buffer(desc_idx, &device);
+        return None;
     }
 
     let data_len = packet_len - hdr_size;
     rx_buffer_data(desc_idx).map(|buf| &buf[..data_len])
+}
+
+/// Re-post all consumed RX buffers back to the device.
+///
+/// Call this after processing a batch of received packets to make the
+/// buffers available for new incoming packets.
+pub fn recycle_rx_buffers() {
+    let state = unsafe {
+        let ptr = &raw mut NET_DEVICE;
+        match (*ptr).as_mut() {
+            Some(s) => s,
+            None => return,
+        }
+    };
+
+    let device = match VirtioMmioDevice::probe(state.base) {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Re-post all 4 buffers unconditionally — the descriptors are still
+    // set up correctly from post_rx_buffers(), we just need to add them
+    // back to the available ring.
+    unsafe {
+        let queue_ptr = &raw mut RX_QUEUE;
+        let mut avail_idx = (*queue_ptr).avail.idx;
+
+        for i in 0..4u16 {
+            (*queue_ptr).avail.ring[(avail_idx % 16) as usize] = i;
+            avail_idx = avail_idx.wrapping_add(1);
+        }
+
+        fence(Ordering::SeqCst);
+        (*queue_ptr).avail.idx = avail_idx;
+        fence(Ordering::SeqCst);
+    }
+
+    device.notify_queue(0);
 }
 
 /// Get the MAC address
@@ -523,6 +610,63 @@ pub fn mac_address() -> Option<[u8; 6]> {
         let ptr = &raw const NET_DEVICE;
         (*ptr).as_ref().map(|s| s.mac)
     }
+}
+
+/// Enable the network device's interrupt in the GIC.
+///
+/// Called after the network stack is fully initialized (ARP resolved, etc.)
+/// to avoid interrupt storms during the synchronous init polling loop.
+pub fn enable_net_irq() {
+    if !DEVICE_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+    let slot = unsafe { *(&raw const DEVICE_SLOT) };
+    let irq = VIRTIO_IRQ_BASE + slot as u32;
+    crate::serial_println!("[virtio-net] Enabling IRQ {} for network device", irq);
+    use crate::arch_impl::aarch64::gic;
+    use crate::arch_impl::traits::InterruptController;
+    gic::Gicv2::enable_irq(irq as u8);
+}
+
+/// Get the IRQ number for the network device (if initialized)
+pub fn get_irq() -> Option<u32> {
+    if DEVICE_INITIALIZED.load(Ordering::Acquire) {
+        let slot = unsafe { *(&raw const DEVICE_SLOT) };
+        Some(VIRTIO_IRQ_BASE + slot as u32)
+    } else {
+        None
+    }
+}
+
+/// Interrupt handler for VirtIO network device
+///
+/// Called from the GIC interrupt dispatcher when the network device generates
+/// an interrupt. Acknowledges the device interrupt and raises the NetRx softirq
+/// for deferred packet processing (same pattern as x86_64 E1000 driver).
+///
+/// Uses direct volatile MMIO access (no probe/lock) — safe in interrupt context.
+pub fn handle_interrupt() {
+    if !DEVICE_INITIALIZED.load(Ordering::Acquire) {
+        return;
+    }
+
+    // Acknowledge the interrupt from the device using direct MMIO access
+    // VirtIO MMIO register offsets: InterruptStatus=0x60, InterruptACK=0x64
+    unsafe {
+        let base = *(&raw const DEVICE_BASE_VIRT);
+        if base != 0 {
+            let status_addr = (base + 0x60) as *const u32;
+            let status = core::ptr::read_volatile(status_addr);
+            if status != 0 {
+                let ack_addr = (base + 0x64) as *mut u32;
+                core::ptr::write_volatile(ack_addr, status);
+            }
+        }
+    }
+
+    // Raise NetRx softirq to process received packets in softirq context
+    // This defers packet processing to avoid doing heavy work in interrupt context
+    crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
 }
 
 /// Test the network device

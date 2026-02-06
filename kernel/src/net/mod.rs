@@ -286,6 +286,12 @@ fn init_common() {
     }
 
     net_log!("NET: Network initialization complete");
+
+    // Enable network device interrupt now that init polling is done.
+    // This must happen AFTER the synchronous ARP/ICMP polling loop so
+    // interrupt-driven RX doesn't interfere with the polling.
+    #[cfg(target_arch = "aarch64")]
+    net_mmio::enable_net_irq();
 }
 
 /// Get the current network configuration
@@ -308,12 +314,18 @@ pub fn process_rx() {
     }
 }
 
-/// Process incoming packets (ARM64 - polling based)
+/// Process incoming packets (ARM64 - polling or interrupt driven)
 #[cfg(target_arch = "aarch64")]
 pub fn process_rx() {
-    // VirtIO net driver returns borrowed slice
+    // VirtIO net driver returns borrowed slice into static RX buffer.
+    // Process each packet, then recycle all buffers back to the device.
+    let mut processed = false;
     while let Some(data) = net_mmio::receive() {
         process_packet(data);
+        processed = true;
+    }
+    if processed {
+        net_mmio::recycle_rx_buffers();
     }
 }
 

@@ -583,6 +583,11 @@ static PROGRAM_REGISTRY: &[ProgramEntry] = &[
     },
     // === Network Tools ===
     ProgramEntry {
+        name: "dns_test",
+        binary_name: b"dns_test\0",
+        description: "Test DNS resolution (google.com, example.com)",
+    },
+    ProgramEntry {
         name: "tcpclient",
         binary_name: b"tcp_client_test\0",
         description: "Send TCP message to 10.0.2.2:18888",

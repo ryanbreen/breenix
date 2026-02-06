@@ -376,6 +376,12 @@ pub extern "C" fn handle_irq() {
                         crate::drivers::virtio::input_mmio::handle_interrupt();
                     }
                 }
+                // VirtIO network interrupt dispatch
+                if let Some(net_irq) = crate::drivers::virtio::net_mmio::get_irq() {
+                    if irq_id == net_irq {
+                        crate::drivers::virtio::net_mmio::handle_interrupt();
+                    }
+                }
             }
 
             // Should not happen - GIC filters invalid IDs (1020+)
@@ -384,6 +390,11 @@ pub extern "C" fn handle_irq() {
 
         // Signal end of interrupt
         gic::end_of_interrupt(irq_id);
+
+        // Process pending softirqs (deferred work from interrupt handlers)
+        // This must happen after EOI but before rescheduling, while still
+        // in the IRQ exit path. Network RX processing runs here.
+        crate::task::softirqd::do_softirq();
 
         // Check if we need to reschedule after handling the interrupt
         // This is the ARM64 equivalent of x86's check_need_resched_and_switch
