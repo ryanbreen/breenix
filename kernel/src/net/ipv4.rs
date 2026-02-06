@@ -173,6 +173,10 @@ pub fn handle_ipv4(eth_frame: &EthernetFrame, ip: &Ipv4Packet) {
             }
         }
         PROTOCOL_TCP => {
+            crate::serial_println!("[IPv4] TCP packet from {}.{}.{}.{}  -> {}.{}.{}.{} ({} bytes)",
+                ip.src_ip[0], ip.src_ip[1], ip.src_ip[2], ip.src_ip[3],
+                ip.dst_ip[0], ip.dst_ip[1], ip.dst_ip[2], ip.dst_ip[3],
+                ip.payload.len());
             super::tcp::handle_tcp(ip, ip.payload);
         }
         PROTOCOL_UDP => {

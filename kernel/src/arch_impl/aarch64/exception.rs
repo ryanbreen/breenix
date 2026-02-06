@@ -88,16 +88,22 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
             // Check if from userspace (EL0) - SPSR[3:0] indicates source EL
             let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            let ttbr0: u64;
+            unsafe {
+                core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
+            }
+            crate::serial_println!(
+                "[DATA_ABORT] TTBR0_EL1={:#x}, FAR={:#x}, ESR={:#x}",
+                ttbr0,
+                far,
+                esr
+            );
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
                 crate::serial_println!("[exception] Terminating userspace process with SIGSEGV");
 
                 // Get current TTBR0 to find the process
-                let ttbr0: u64;
-                unsafe {
-                    core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
-                }
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
                 // Find and terminate the process

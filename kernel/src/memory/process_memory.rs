@@ -1019,8 +1019,12 @@ impl ProcessPageTable {
             let l4_virt = phys_offset + self.level_4_frame.start_address().as_u64();
             let l4_table = &*(l4_virt.as_ptr() as *const PageTable);
 
-            // Walk L4 entries 0-255 (userspace only, 256-511 is kernel)
-            for l4_idx in 0..256u64 {
+            // Walk userspace L4 entries (x86_64: 0-255; ARM64 TTBR0 uses 0-511)
+            #[cfg(target_arch = "x86_64")]
+            let l4_range = 0..256u64;
+            #[cfg(target_arch = "aarch64")]
+            let l4_range = 0..512u64;
+            for l4_idx in l4_range {
                 let l4_entry = &l4_table[l4_idx as usize];
                 if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
                     continue;

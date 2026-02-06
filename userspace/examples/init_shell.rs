@@ -22,7 +22,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use libbreenix::fs::{access, open, O_DIRECTORY, O_RDONLY, O_WRONLY, X_OK};
 use libbreenix::io::{close, dup2, pipe, print, println, read, write};
 use libbreenix::process::{
-    chdir, exec, execv, fork, getcwd, getpgrp, setpgid, waitpid, wexitstatus, wifexited,
+    chdir, exec, execv, fork, getcwd, getpgrp, getpid, setpgid, waitpid, wexitstatus, wifexited,
     wifsignaled, wifstopped, yield_now, WNOHANG, WUNTRACED,
 };
 use libbreenix::signal::{kill, sigaction, Sigaction, SIGCHLD, SIGCONT, SIGINT};
@@ -1370,8 +1370,18 @@ fn read_line() -> Option<&'static str> {
             let mut c = [0u8; 1];
             let n = read(STDIN, &mut c);
 
-            if n == -EAGAIN || n == 0 {
+            if n == -EAGAIN {
                 // No data available - yield and retry
+                yield_now();
+                continue;
+            }
+
+            if n == 0 {
+                // EOF on stdin - if we're not PID 1 (e.g., running over telnet),
+                // exit gracefully. PID 1 (init) must never exit.
+                if getpid() != 1 {
+                    libbreenix::process::exit(0);
+                }
                 yield_now();
                 continue;
             }

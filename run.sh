@@ -183,7 +183,7 @@ if [ "$ARCH" = "arm64" ]; then
         $DISPLAY_OPTS \
         $DISK_OPTS \
         -device virtio-net-device,netdev=net0 \
-        -netdev user,id=net0 \
+        -netdev user,id=net0,hostfwd=tcp::2323-:2323 \
         -serial mon:stdio \
         -no-reboot \
         &

@@ -1433,6 +1433,12 @@ impl ProcessManager {
             log::error!("ARM64 fork: Failed to map user stack: {}", e);
             "Failed to map user stack in child's page table"
         })?;
+        crate::serial_println!(
+            "ARM64 fork: child stack mapped {:#x}-{:#x} in child page table (L4 frame={:#x})",
+            child_stack_bottom.as_u64(),
+            child_stack_top.as_u64(),
+            child_page_table_ref.level_4_frame().start_address().as_u64()
+        );
 
         // Allocate a globally unique thread ID for the child's main thread
         let child_thread_id = crate::task::thread::allocate_thread_id();
@@ -2775,6 +2781,7 @@ impl ProcessManager {
         program_name: Option<&str>,
         argv: &[&[u8]],
     ) -> Result<(u64, u64), &'static str> {
+        use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
         log::info!(
@@ -2829,12 +2836,12 @@ impl ProcessManager {
             log::warn!("ARM64: Failed to unmap old user data pages: {}", e);
         }
 
+        let user_stack_top = USER_STACK_REGION_START;
+
         {
             const STACK_SIZE: usize = 64 * 1024;
-            // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-            const STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
-            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
-            let unmap_top = VirtAddr::new(STACK_TOP);
+            let unmap_bottom = VirtAddr::new(user_stack_top - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(user_stack_top);
             if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
                 log::warn!("ARM64: Failed to unmap old stack pages: {}", e);
             }
@@ -2850,11 +2857,9 @@ impl ProcessManager {
         );
 
         const USER_STACK_SIZE: usize = 64 * 1024;
-        // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-        const USER_STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
 
-        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
-        let stack_top = VirtAddr::new(USER_STACK_TOP);
+        let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(user_stack_top);
 
         log::info!("exec_process_with_argv [ARM64]: Mapping stack pages into new process page table");
         let start_page = Page::<Size4KiB>::containing_address(stack_bottom);
@@ -2873,7 +2878,7 @@ impl ProcessManager {
             )?;
         }
 
-        let initial_rsp = self.setup_argv_on_stack(&new_page_table, USER_STACK_TOP, argv)?;
+        let initial_rsp = self.setup_argv_on_stack(&new_page_table, user_stack_top, argv)?;
 
         log::info!(
             "exec_process_with_argv [ARM64]: argc/argv set up on stack, SP_EL0={:#x}",
@@ -2987,6 +2992,7 @@ impl ProcessManager {
         elf_data: &[u8],
         program_name: Option<&str>,
     ) -> Result<u64, &'static str> {
+        use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB};
 
         log::info!(
@@ -3049,12 +3055,12 @@ impl ProcessManager {
         }
 
         // Unmap the stack region before mapping new stack pages
+        let user_stack_top = USER_STACK_REGION_START;
+
         {
             const STACK_SIZE: usize = 64 * 1024; // 64KB stack
-            // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-            const STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
-            let unmap_bottom = VirtAddr::new(STACK_TOP - STACK_SIZE as u64);
-            let unmap_top = VirtAddr::new(STACK_TOP);
+            let unmap_bottom = VirtAddr::new(user_stack_top - STACK_SIZE as u64);
+            let unmap_top = VirtAddr::new(user_stack_top);
             if let Err(e) = new_page_table.unmap_user_pages(unmap_bottom, unmap_top) {
                 log::warn!("ARM64: Failed to unmap old stack pages: {}", e);
             }
@@ -3074,12 +3080,10 @@ impl ProcessManager {
 
         // Allocate and map stack directly into the new process page table
         const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
-        // ARM64 canonical user address (not x86_64's 0x7FFF_FF01_0000)
-        const USER_STACK_TOP: u64 = 0x0000_FFFF_FF01_0000;
 
         // Calculate stack range
-        let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
-        let stack_top = VirtAddr::new(USER_STACK_TOP);
+        let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
+        let stack_top = VirtAddr::new(user_stack_top);
 
         // Map stack pages into the NEW process page table
         log::info!("exec_process [ARM64]: Mapping stack pages into new process page table");
