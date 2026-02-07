@@ -213,6 +213,7 @@ if [ "$ARCH" = "arm64" ]; then
     # ARM64 QEMU invocation (native)
     qemu-system-aarch64 \
         -M virt -cpu cortex-a72 \
+        -smp 4 \
         -m 512M \
         -kernel "$KERNEL" \
         $DISPLAY_OPTS \
@@ -243,7 +244,7 @@ else
         $DISK_OPTS \
         -machine pc,accel=tcg \
         -cpu qemu64 \
-        -smp 1 \
+        -smp 4 \
         -m 512 \
         $DISPLAY_OPTS \
         -no-reboot \
