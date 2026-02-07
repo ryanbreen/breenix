@@ -168,6 +168,23 @@ STD_BINARIES=(
     "cow_stress_test"
     "cow_readonly_test"
     "cow_signal_test"
+
+    # Phase 3: Coreutils
+    "true"
+    "false"
+    "echo"
+    "cat"
+    "head"
+    "tail"
+    "wc"
+    "which"
+    "ls"
+    "mkdir"
+    "rmdir"
+    "rm"
+    "cp"
+    "mv"
+    "resolution"
 )
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"

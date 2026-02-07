@@ -233,6 +233,67 @@ path = "src/cow_readonly_test.rs"
 name = "cow_signal_test"
 path = "src/cow_signal_test.rs"
 
+# Phase 3: Coreutils
+[[bin]]
+name = "true"
+path = "src/true.rs"
+
+[[bin]]
+name = "false"
+path = "src/false.rs"
+
+[[bin]]
+name = "echo"
+path = "src/echo.rs"
+
+[[bin]]
+name = "cat"
+path = "src/cat.rs"
+
+[[bin]]
+name = "head"
+path = "src/head.rs"
+
+[[bin]]
+name = "tail"
+path = "src/tail.rs"
+
+[[bin]]
+name = "wc"
+path = "src/wc.rs"
+
+[[bin]]
+name = "which"
+path = "src/which.rs"
+
+[[bin]]
+name = "ls"
+path = "src/ls.rs"
+
+[[bin]]
+name = "mkdir"
+path = "src/mkdir.rs"
+
+[[bin]]
+name = "rmdir"
+path = "src/rmdir.rs"
+
+[[bin]]
+name = "rm"
+path = "src/rm.rs"
+
+[[bin]]
+name = "cp"
+path = "src/cp.rs"
+
+[[bin]]
+name = "mv"
+path = "src/mv.rs"
+
+[[bin]]
+name = "resolution"
+path = "src/resolution.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"
