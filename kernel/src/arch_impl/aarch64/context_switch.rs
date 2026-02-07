@@ -89,6 +89,43 @@ pub fn raw_uart_dec(val: u64) {
 ///
 /// * `frame` - The exception frame containing saved registers
 /// * `from_el0` - Whether the exception came from EL0 (userspace)
+/// DIAGNOSTIC: Check for cpu_state/frame SPSR mismatch.
+/// Fix cpu_state before returning from check_need_resched_and_switch_arm64.
+///
+/// If frame SPSR says EL0 but cpu_state says idle, we have a mismatch:
+/// the per-CPU thread pointer knows the real user thread, but cpu_state
+/// was flipped to idle by a preemption that occurred between the thread
+/// being re-dispatched and this return point. Without fixing this, the
+/// next timer IRQ from EL0 would see old_tid=idle (SCHED_BUG).
+///
+/// Fix: look up the real thread from the per-CPU pointer and call
+/// commit_schedule_after_save to update cpu_state.
+#[inline(always)]
+fn fix_eret_cpu_state(frame: &Aarch64ExceptionFrame, _caller: u8) {
+    // Check if frame will ERET to EL0 (SPSR.M[3:0] == 0)
+    let to_el0 = (frame.spsr & 0xF) == 0;
+    if !to_el0 {
+        return; // ERET to EL1 - no mismatch possible
+    }
+    // Check if cpu_state says idle for this CPU
+    let current_tid = crate::task::scheduler::current_thread_id();
+    if let Some(tid) = current_tid {
+        if crate::task::scheduler::is_idle_thread(tid) {
+            // cpu_state says idle but we're about to ERET to EL0.
+            // Look up the real thread from the per-CPU thread pointer.
+            let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
+            if !real_thread_ptr.is_null() {
+                let real_thread = unsafe { &*(real_thread_ptr as *const crate::task::thread::Thread) };
+                let real_tid = real_thread.id();
+                if !crate::task::scheduler::is_idle_thread(real_tid) {
+                    // Fix cpu_state to reflect the actual running thread
+                    crate::task::scheduler::commit_schedule_after_save(real_tid);
+                }
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn check_need_resched_and_switch_arm64(
     frame: &mut Aarch64ExceptionFrame,
@@ -101,7 +138,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
     if preempt_active {
         // We're in the middle of returning from a syscall or handling
-        // another exception - don't context switch now
+        // another exception - don't context switch now.
+        // Fix stale cpu_state if returning to EL0 (see fix_eret_cpu_state).
+        fix_eret_cpu_state(frame, b'P');
         return;
     }
 
@@ -111,6 +150,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     // when they're in a safe state (like spinning in kthread_join with WFI).
     if !from_el0 && preempt_depth > 0 {
         // Kernel code holding locks - not safe to preempt
+        fix_eret_cpu_state(frame, b'L');
         return;
     }
 
@@ -138,6 +178,7 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
             // Check for pending signals before returning to userspace
             check_and_deliver_signals_for_current_thread_arm64(frame);
         }
+        fix_eret_cpu_state(frame, b'N');
         return;
     }
 
@@ -145,34 +186,109 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
     static RESCHED_COUNTER: AtomicU64 = AtomicU64::new(0);
     let _count = RESCHED_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // Perform scheduling decision
-    let schedule_result = crate::task::scheduler::schedule();
+    // CRITICAL SMP FIX: If this IRQ came from EL0 (userspace) but cpu_state
+    // says idle, look up the real thread from the per-CPU pointer. Pass it to
+    // schedule_deferred_with_fixup so cpu_state is fixed atomically (under the
+    // same lock hold) before the scheduling decision. This prevents the TOCTOU
+    // race where separate lock acquisitions allow state to change between the
+    // fixup and the scheduling decision.
+    let real_tid_fixup = if from_el0 && (frame.spsr & 0xF) == 0 {
+        let real_thread_ptr = Aarch64PerCpu::current_thread_ptr();
+        if !real_thread_ptr.is_null() {
+            let real_thread = unsafe { &*(real_thread_ptr as *const crate::task::thread::Thread) };
+            Some(real_thread.id())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Perform scheduling decision with DEFERRED requeue and optional cpu_state fixup.
+    //
+    // CRITICAL SMP FIX: We use schedule_deferred() instead of schedule() to prevent
+    // a race condition on ARM64 SMP where:
+    //   1. schedule() adds old thread to ready_queue and releases the scheduler lock
+    //   2. Another CPU acquires the lock, pops the old thread, dispatches it
+    //   3. The old thread runs on CPU B with stale context (save hasn't happened yet)
+    //   4. CPU A finally calls save_kernel_context_arm64, but it's too late
+    //
+    // With deferred requeue, the old thread stays OUT of the ready queue until
+    // after its context has been fully saved. Only then do we call
+    // requeue_old_thread() to make it available for other CPUs.
+    let schedule_result = crate::task::scheduler::schedule_deferred_with_fixup(real_tid_fixup);
 
     // Handle "no switch needed" case
     if schedule_result.is_none() {
-        // Even though no context switch happens, check for signals
-        // when returning to userspace
         if from_el0 {
             check_and_deliver_signals_for_current_thread_arm64(frame);
         }
+        fix_eret_cpu_state(frame, b'S');
         return;
     }
 
-    if let Some((old_thread_id, new_thread_id)) = schedule_result {
+    if let Some((old_thread_id, new_thread_id, should_requeue_old)) = schedule_result {
         if old_thread_id == new_thread_id {
-            // Same thread continues running, but check for pending signals
+            // Same thread continues running — requeue it immediately since
+            // no context switch happens (context is already correct)
+            if should_requeue_old {
+                crate::task::scheduler::requeue_old_thread(old_thread_id);
+            }
             if from_el0 {
                 check_and_deliver_signals_for_current_thread_arm64(frame);
             }
+            fix_eret_cpu_state(frame, b'E');
             return;
         }
 
-        // Save current thread's context
+        // Save current thread's context FIRST (before updating cpu_state or requeuing)
+        //
+        // SMP SAFETY: If from_el0=true but old_thread_id is an idle thread,
+        // the scheduler state is inconsistent — cpu_state said idle but the
+        // frame has user registers. This is a rare SMP race where a user
+        // thread's cpu_state was flipped to idle by a preemption, then the
+        // thread was re-dispatched via setup_kernel_thread_return_arm64 and
+        // ERETed to EL0, but cpu_state wasn't updated back.
+        //
+        // CRITICAL: Do NOT save user context into idle thread — that would
+        // corrupt the idle thread's context with userspace ELR/SPSR, causing
+        // instruction aborts when idle is next dispatched.
         if from_el0 {
-            save_userspace_context_arm64(old_thread_id, frame);
+            let is_old_idle = crate::task::scheduler::is_idle_thread(old_thread_id);
+            if is_old_idle {
+                // Skip saving — idle thread context must not be overwritten
+                // with user registers. Fall through to context switch.
+            } else {
+                save_userspace_context_arm64(old_thread_id, frame);
+            }
         } else {
             save_kernel_context_arm64(old_thread_id, frame);
         }
+
+        // NOW update cpu_state to reflect the new thread as "current" on this CPU.
+        // This must happen AFTER context save because:
+        //   - While cpu_state still shows old_thread as "current", unblock() on
+        //     other CPUs sees is_current_on_any_cpu()=true and won't add it to
+        //     the ready queue (preventing stale-context dispatch).
+        //   - After this call, the old thread is no longer protected, but its
+        //     context is now safely saved, so it's safe to dispatch.
+        crate::task::scheduler::commit_schedule_after_save(new_thread_id);
+
+        // NOW it's safe to requeue the old thread — its context is fully saved,
+        // cpu_state is updated, and another CPU can safely dispatch it.
+        //
+        // CRITICAL: Always attempt requeue, not just when should_requeue_old is true.
+        // Between schedule_deferred() releasing the lock and commit_schedule_after_save()
+        // running, another CPU may have called unblock() on the old thread. Since
+        // cpu_state still showed the old thread as "current", unblock() set state=Ready
+        // but did NOT add it to the ready queue (is_current_on_any_cpu check). After
+        // commit_schedule_after_save() updates cpu_state, the thread is Ready, not in
+        // the queue, and not current anywhere — it would be permanently lost.
+        //
+        // requeue_thread_after_save() is safe to call unconditionally: it checks the
+        // thread's state (Ready) and queue membership before adding. For Blocked/
+        // Terminated threads, it's a no-op.
+        crate::task::scheduler::requeue_old_thread(old_thread_id);
 
         // Switch to the new thread
         switch_to_thread_arm64(new_thread_id, frame);
@@ -184,6 +300,9 @@ pub extern "C" fn check_need_resched_and_switch_arm64(
 
         // Reset timer quantum for the new thread
         crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+
+        // DIAGNOSTIC: Check consistency after context switch
+        fix_eret_cpu_state(frame, b'X');
 
         // NOTE: Do NOT use serial_println! here - causes deadlock if timer fires
         // while boot code holds serial lock. Use raw_uart_char for debugging only.
@@ -369,24 +488,39 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         .unwrap_or(false);
 
     if is_idle {
-        // Check if idle thread has a saved context to restore
-        // If it was preempted while running actual code (not idle_loop_arm64), restore that context
+        // Idle thread dispatch strategy depends on CPU:
         //
-        // This is critical for kthread_join(): when the boot thread (which IS the idle task)
-        // calls kthread_join() and waits, it gets preempted. When all kthreads finish and we
-        // switch back to idle, we need to restore the boot thread's context (sitting in
-        // kthread_join's WFI loop) rather than jumping to idle_loop_arm64.
-        let idle_loop_addr = idle_loop_arm64 as *const () as u64;
-        let has_saved_context = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
-            // Has saved context if ELR is non-zero AND not pointing to idle_loop_arm64
-            thread.context.elr_el1 != 0 && thread.context.elr_el1 != idle_loop_addr
-        }).unwrap_or(false);
+        // CPU 0 (boot thread): May be preempted while running meaningful kernel
+        // code (e.g., kthread_join's polling loop during test execution). In that
+        // case we need to restore the saved context so the boot thread resumes
+        // where it left off. If no meaningful context exists, fall through to
+        // idle_loop_arm64.
+        //
+        // Secondary CPUs (1+): Their idle threads only run a WFI loop in
+        // secondary_cpu_entry_rust, which is functionally equivalent to
+        // idle_loop_arm64. Always dispatch to idle_loop_arm64 with a clean
+        // state and the correct boot stack. This avoids a class of SMP bugs
+        // where the saved context becomes corrupted (userspace register values
+        // leaking into idle context, wrong stack pointer) due to races between
+        // context save/restore across CPUs.
+        let cpu_id = Aarch64PerCpu::cpu_id();
 
-        if has_saved_context {
-            // Restore idle thread's saved context (like a kthread)
-            setup_kernel_thread_return_arm64(thread_id, frame);
+        if cpu_id == 0 {
+            // CPU 0: check if boot thread has meaningful saved context
+            let idle_loop_addr = idle_loop_arm64 as *const () as u64;
+            let has_saved_context = crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+                thread.context.elr_el1 != 0 && thread.context.elr_el1 != idle_loop_addr
+            }).unwrap_or(false);
+
+            if has_saved_context {
+                // Restore boot thread's saved context (e.g., resume in kthread_join)
+                setup_kernel_thread_return_arm64(thread_id, frame);
+            } else {
+                // No saved context or was in idle_loop — go to idle loop
+                setup_idle_return_arm64(frame);
+            }
         } else {
-            // No saved context or was in idle_loop - go to idle loop
+            // Secondary CPUs: always use clean idle return
             setup_idle_return_arm64(frame);
         }
     } else if is_kernel_thread || is_blocked_in_syscall || is_in_kernel_mode {
@@ -551,29 +685,54 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
         // - For first run: use x30 (which is kthread_entry)
         // - For resumed thread: use elr_el1 (saved PC from when interrupted)
         //
-        // Defensive check: if elr_el1 is 0 for a started thread, fall back
-        // to x30 (entry point) to avoid ERET to address 0x0. This can happen
-        // if a kernel thread parks and is re-dispatched before
-        // save_kernel_context_arm64 saves its context.
+        // Defensive check: if elr_el1 is 0 or a suspiciously small value
+        // for a started thread, fall back to idle loop to avoid ERET to
+        // an invalid address. This can happen if a kernel thread's context
+        // was never properly saved (SMP race) or was corrupted.
+        const KERNEL_VIRT_BASE_CTX: u64 = 0xFFFF_0000_0000_0000;
         if !has_started {
             frame.elr = context.x30;  // First run: jump to entry point
-        } else if context.elr_el1 != 0 {
+        } else if context.elr_el1 >= KERNEL_VIRT_BASE_CTX {
             frame.elr = context.elr_el1;  // Resume: return to where we left off
+        } else if context.elr_el1 == 0 {
+            // Thread was dispatched with unsaved context (elr=0). Fall back to
+            // idle loop rather than crashing at address 0x0.
+            raw_uart_str("WARN: elr=0 for started kthread tid=");
+            raw_uart_dec(thread_id);
+            raw_uart_str(" name=");
+            raw_uart_str(&_name);
+            raw_uart_str(", redirecting to idle\n");
+            frame.elr = idle_loop_arm64 as *const () as u64;
         } else {
-            // BUG: Thread was dispatched with unsaved context. Fall back to
-            // entry point rather than crashing at address 0x0.
-            raw_uart_str("WARN: elr=0 for started kthread, using x30\n");
-            frame.elr = context.x30;
+            // BUG: elr_el1 is non-zero but not a valid kernel address.
+            // This indicates context corruption. Dump diagnostic and redirect
+            // to idle loop to prevent ERET to garbage address.
+            raw_uart_str("\n!!! BUG: invalid elr_el1 for kthread tid=");
+            raw_uart_dec(thread_id);
+            raw_uart_str(" name=");
+            raw_uart_str(&_name);
+            raw_uart_str("\n  elr_el1=");
+            raw_uart_hex(context.elr_el1);
+            raw_uart_str(" spsr_el1=");
+            raw_uart_hex(context.spsr_el1);
+            raw_uart_str(" x30=");
+            raw_uart_hex(context.x30);
+            raw_uart_str(" sp=");
+            raw_uart_hex(context.sp);
+            raw_uart_str("\n  has_started=1 cpu=");
+            raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+            raw_uart_str("\n");
+            frame.elr = idle_loop_arm64 as *const () as u64;
         }
 
         // SPSR for EL1h with interrupts ENABLED so kthreads can be preempted
         // For first run, enable interrupts; for resumed, use saved SPSR
         if !has_started {
             frame.spsr = 0x5;  // EL1h, DAIF clear (interrupts enabled)
-        } else if context.elr_el1 != 0 {
+        } else if context.elr_el1 >= KERNEL_VIRT_BASE_CTX {
             frame.spsr = context.spsr_el1;  // Restore saved processor state
         } else {
-            frame.spsr = 0x5;  // EL1h, DAIF clear (fallback for unsaved context)
+            frame.spsr = 0x5;  // EL1h, DAIF clear (fallback for invalid context)
         }
 
         // Store kernel SP for restoration after ERET
@@ -712,6 +871,35 @@ fn restore_userspace_context_arm64(thread_id: u64, frame: &mut Aarch64ExceptionF
             );
         }
     });
+
+    // SAFETY GUARD: Check for corrupted ELR before committing to dispatch.
+    // If frame.elr is 0 or < 0x1000, the thread's context was corrupted or never
+    // saved. This can happen if a kernel thread was misclassified as a user thread
+    // (privilege mismatch), or if a save was skipped due to an SMP race.
+    // Also check for EL1h SPSR on a user thread — this means the context was saved
+    // from kernel mode but the thread was dispatched via the user path.
+    if frame.elr < 0x1000 || (frame.spsr & 0xF) != 0 {
+        raw_uart_str("\n[BUG] restore_userspace: bad context tid=");
+        raw_uart_dec(thread_id);
+        raw_uart_str(" elr=");
+        raw_uart_hex(frame.elr);
+        raw_uart_str(" spsr=");
+        raw_uart_hex(frame.spsr);
+        raw_uart_str(" cpu=");
+        raw_uart_dec(Aarch64PerCpu::cpu_id() as u64);
+        raw_uart_str(", redirecting to idle\n");
+
+        // Redirect to idle instead of ERETing to a garbage address
+        frame.elr = idle_loop_arm64 as *const () as u64;
+        frame.spsr = 0x5; // EL1h, interrupts enabled
+        let cpu_id = Aarch64PerCpu::cpu_id() as u64;
+        let boot_stack_top = 0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id + 1) * 0x20_0000;
+        unsafe {
+            Aarch64PerCpu::set_user_rsp_scratch(boot_stack_top);
+        }
+        crate::task::scheduler::switch_to_idle_best_effort();
+        return;
+    }
 
     // Set TTBR0 target for this thread's process address space
     set_next_ttbr0_for_thread(thread_id);

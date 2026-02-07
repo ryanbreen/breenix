@@ -1,6 +1,50 @@
 //! Preemptive scheduler implementation
 //!
 //! This module implements a round-robin scheduler for kernel threads.
+//!
+//! # Lock Ordering Discipline
+//!
+//! The kernel uses a strict lock ordering hierarchy to prevent deadlocks.
+//! Locks must ALWAYS be acquired in the order listed below. Never acquire a
+//! higher-priority (lower-numbered) lock while holding a lower-priority
+//! (higher-numbered) lock.
+//!
+//! ```text
+//! Level 1: SCHEDULER       (kernel/src/task/scheduler.rs)     — highest priority
+//! Level 2: PROCESS_MANAGER (kernel/src/process/mod.rs)
+//! Level 3: STDIN_BUFFER / BLOCKED_READERS (kernel/src/ipc/stdin.rs)
+//! Level 4: SERIAL1         (kernel/src/serial_aarch64.rs)     — lowest priority
+//! ```
+//!
+//! ## Key Rules
+//!
+//! - **Never acquire SERIAL1 while holding SCHEDULER or PROCESS_MANAGER.**
+//!   This means no `serial_println!`, `log_serial_println!`, or `write_byte()`
+//!   calls from code that holds the scheduler lock. Use `raw_uart_char()` /
+//!   `raw_uart_str()` from `serial_aarch64.rs` or `context_switch.rs` for
+//!   lock-free debug output instead.
+//!
+//! - **Never acquire SCHEDULER while holding SERIAL1.** Timer interrupts that
+//!   fire while SERIAL1 is held must not try to acquire SCHEDULER. On ARM64,
+//!   `write_byte()` and `_print()` disable interrupts before acquiring SERIAL1
+//!   to prevent this.
+//!
+//! - **IRQ context must use lock-free output.** Interrupt handlers (keyboard,
+//!   timer, UART RX) must use `raw_serial_char()` / `raw_serial_str()` or the
+//!   lock-free `raw_uart_char()` / `raw_uart_str()` for any diagnostic output.
+//!   They must never call `serial_println!` or `crate::serial::write_byte()`.
+//!
+//! ## Rationale
+//!
+//! On ARM64 SMP, there is a single PL011 UART shared by all CPUs. If CPU 0
+//! holds SERIAL1 (via `serial_println!`) and CPU 1 holds SCHEDULER, then:
+//! - CPU 0's timer interrupt tries to acquire SCHEDULER → spins on CPU 1
+//! - CPU 1 tries to log via `serial_println!` → spins on SERIAL1 held by CPU 0
+//! - Classic ABBA deadlock.
+//!
+//! On x86_64, kernel logging goes to COM2 (separate from COM1 user I/O), so
+//! the SERIAL1 contention is less severe. The `#[cfg(target_arch = "x86_64")]`
+//! guards on `log_serial_println!` calls in this file reflect that difference.
 
 use super::thread::{Thread, ThreadState};
 use crate::log_serial_println;
@@ -43,6 +87,75 @@ pub fn unblock_call_count() -> u64 {
 const MAX_CPUS: usize = 8;
 #[cfg(not(target_arch = "aarch64"))]
 const MAX_CPUS: usize = 1;
+
+/// DIAGNOSTIC: Circular buffer tracking last N cpu_state changes per CPU.
+/// Each entry: (setter_id, old_thread, new_thread)
+/// Setter IDs:
+///   1 = commit_cpu_state_after_save
+///   2 = switch_to_idle
+///   3 = switch_to_idle_best_effort
+///   4 = register_idle_thread
+///   5 = init_with_current / Scheduler::new
+///   6 = set_current_thread / add_thread_as_current
+const HISTORY_SIZE: usize = 8;
+#[cfg(target_arch = "aarch64")]
+static CPU_STATE_HISTORY: [[core::sync::atomic::AtomicU64; HISTORY_SIZE * 3]; MAX_CPUS] = {
+    const INIT_ENTRY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    const INIT_CPU: [core::sync::atomic::AtomicU64; HISTORY_SIZE * 3] = [INIT_ENTRY; HISTORY_SIZE * 3];
+    [INIT_CPU; MAX_CPUS]
+};
+#[cfg(target_arch = "aarch64")]
+static CPU_STATE_HISTORY_IDX: [core::sync::atomic::AtomicU64; MAX_CPUS] = {
+    const INIT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// Record a cpu_state change for diagnostics (circular buffer).
+#[cfg(target_arch = "aarch64")]
+fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u64) {
+    if cpu < MAX_CPUS {
+        let idx = CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
+        let slot = idx % HISTORY_SIZE;
+        let base = slot * 3;
+        CPU_STATE_HISTORY[cpu][base].store(setter_id, core::sync::atomic::Ordering::Relaxed);
+        CPU_STATE_HISTORY[cpu][base + 1].store(old_val, core::sync::atomic::Ordering::Relaxed);
+        CPU_STATE_HISTORY[cpu][base + 2].store(new_val, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Dump the cpu_state change history for a CPU (debug utility).
+#[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
+pub fn dump_cpu_state_history(cpu: usize) {
+    use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
+    if cpu >= MAX_CPUS { return; }
+    let total = CPU_STATE_HISTORY_IDX[cpu].load(core::sync::atomic::Ordering::Relaxed) as usize;
+    let count = if total < HISTORY_SIZE { total } else { HISTORY_SIZE };
+    let start = if total < HISTORY_SIZE { 0 } else { total - HISTORY_SIZE };
+    raw_uart_str("  cpu_state_history[");
+    raw_uart_dec(cpu as u64);
+    raw_uart_str("] (last ");
+    raw_uart_dec(count as u64);
+    raw_uart_str(" of ");
+    raw_uart_dec(total as u64);
+    raw_uart_str("):\n");
+    for i in 0..count {
+        let slot = (start + i) % HISTORY_SIZE;
+        let base = slot * 3;
+        let setter = CPU_STATE_HISTORY[cpu][base].load(core::sync::atomic::Ordering::Relaxed);
+        let old = CPU_STATE_HISTORY[cpu][base + 1].load(core::sync::atomic::Ordering::Relaxed);
+        let new = CPU_STATE_HISTORY[cpu][base + 2].load(core::sync::atomic::Ordering::Relaxed);
+        raw_uart_str("    [");
+        raw_uart_dec((start + i) as u64);
+        raw_uart_str("] setter=");
+        raw_uart_dec(setter);
+        raw_uart_str(" ");
+        raw_uart_dec(old);
+        raw_uart_str("->");
+        raw_uart_dec(new);
+        raw_uart_str("\n");
+    }
+}
 
 /// Per-CPU scheduler state.
 struct CpuSchedulerState {
@@ -362,6 +475,151 @@ impl Scheduler {
             let new_thread = &*(*threads_ptr.add(new_idx)).as_ref();
 
             Some((old_thread, new_thread))
+        }
+    }
+
+    /// Schedule the next thread, but do NOT add the old thread to the ready queue.
+    ///
+    /// This is used on ARM64 SMP to prevent a race condition where another CPU
+    /// picks up the old thread from the ready queue before the current CPU has
+    /// finished saving its context. The caller must call `requeue_thread_after_save()`
+    /// after saving the old thread's context.
+    ///
+    /// Returns (old_thread_id, new_thread_id, should_requeue_old) where
+    /// should_requeue_old indicates whether the old thread should be added to
+    /// the ready queue after its context is saved.
+    #[cfg(target_arch = "aarch64")]
+    pub fn schedule_deferred_requeue(&mut self) -> Option<(u64, u64, bool)> {
+        // If current thread is still runnable, mark it as Ready but DON'T add to queue
+        let mut should_requeue_old = false;
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
+                let (is_terminated, is_blocked) =
+                    if let Some(current) = self.get_thread_mut(current_id) {
+                        let was_terminated = current.state == ThreadState::Terminated;
+                        let was_blocked = current.state == ThreadState::Blocked
+                            || current.state == ThreadState::BlockedOnSignal
+                            || current.state == ThreadState::BlockedOnChildExit;
+                        if !was_terminated && !was_blocked {
+                            current.set_ready();
+                        }
+                        (was_terminated, was_blocked)
+                    } else {
+                        (true, false)
+                    };
+
+                let in_queue = self.ready_queue.contains(&current_id);
+                // Instead of adding to ready_queue, just record whether we SHOULD
+                should_requeue_old = !is_terminated && !is_blocked && !in_queue;
+                // NOTE: We intentionally do NOT push to ready_queue here.
+                // The caller will do so after saving context via requeue_thread_after_save().
+            }
+        }
+
+        // Get next thread from ready queue
+        let mut next_thread_id = if let Some(n) = self.ready_queue.pop_front() {
+            n
+        } else {
+            self.cpu_state[Self::current_cpu_id()].idle_thread
+        };
+
+        // Handle same-thread cases
+        if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread && !self.ready_queue.is_empty() {
+            // Current thread was popped but other threads are waiting.
+            // DON'T push current back to queue yet — defer until after context save.
+            // Just pop the next different thread.
+            should_requeue_old = true;
+            next_thread_id = match self.ready_queue.pop_front() {
+                Some(id) => id,
+                None => return None,
+            };
+        } else if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread {
+            if next_thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
+                let is_userspace = self
+                    .get_thread(next_thread_id)
+                    .map(|t| t.privilege == super::thread::ThreadPrivilege::User)
+                    .unwrap_or(false);
+                if is_userspace {
+                    // No switch needed. The current thread continues running on
+                    // this CPU. Don't requeue — it's still "current" and will be
+                    // handled next time schedule_deferred_requeue is called.
+                    return None;
+                }
+                // For non-userspace same-thread-alone: switch to idle.
+                // The old thread (which was popped) must be requeued AFTER
+                // context save — same deferred-requeue logic applies. Whether
+                // the thread was in the queue from unblock() or from the
+                // deferred push, either way we must save context first.
+                should_requeue_old = true;
+                next_thread_id = self.cpu_state[Self::current_cpu_id()].idle_thread;
+                crate::per_cpu_aarch64::set_need_resched(true);
+            } else {
+                return None;
+            }
+        }
+
+        let old_thread_id = self.cpu_state[Self::current_cpu_id()].current_thread
+            .unwrap_or(self.cpu_state[Self::current_cpu_id()].idle_thread);
+
+        // CRITICAL SMP FIX: Do NOT update cpu_state[cpu].current_thread here!
+        //
+        // Previously we did:  self.cpu_state[cpu].current_thread = Some(next_thread_id);
+        //
+        // The problem: updating cpu_state removes the old thread from is_current_on_any_cpu().
+        // If the old thread is Blocked (e.g., parked render thread or userspace thread blocked
+        // in sys_read), unblock() on another CPU sees it's not "current" anywhere and adds it
+        // to the ready queue. A third CPU then dispatches it with STALE context (we haven't
+        // saved the context yet!). This causes ERET to address 0x0.
+        //
+        // The fix: defer the cpu_state update until AFTER context is saved. The caller must
+        // call commit_cpu_state_after_save() to finalize the switch. While cpu_state still
+        // shows the old thread as "current", unblock() will see is_current_on_any_cpu()=true
+        // and skip the ready_queue addition (the CPU running the thread will handle it).
+
+        if let Some(next) = self.get_thread_mut(next_thread_id) {
+            next.set_running();
+        }
+
+        Some((old_thread_id, next_thread_id, should_requeue_old))
+    }
+
+    /// Finalize cpu_state after context save.
+    ///
+    /// This must be called after save_kernel_context_arm64 / save_userspace_context_arm64
+    /// and BEFORE requeue_thread_after_save. It updates cpu_state[cpu].current_thread
+    /// to the new thread, which allows unblock() on other CPUs to see the old thread
+    /// as no longer "current" and add it to the ready queue.
+    #[cfg(target_arch = "aarch64")]
+    pub fn commit_cpu_state_after_save(&mut self, new_thread_id: u64) {
+        let cpu = Self::current_cpu_id();
+        let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
+        record_cpu_state_change(cpu, 1, old_val, new_thread_id);
+        self.cpu_state[cpu].current_thread = Some(new_thread_id);
+    }
+
+    /// Add a thread to the ready queue after its context has been saved.
+    ///
+    /// This completes the deferred requeue from `schedule_deferred_requeue()`.
+    /// Must be called only after the thread's context has been fully saved
+    /// to prevent other CPUs from dispatching it with stale state.
+    #[cfg(target_arch = "aarch64")]
+    pub fn requeue_thread_after_save(&mut self, thread_id: u64) {
+        // Don't requeue idle threads (they are never in the ready queue)
+        if (0..MAX_CPUS).any(|cpu| self.cpu_state[cpu].idle_thread == thread_id) {
+            return;
+        }
+        // Safety checks: only requeue if the thread is in Ready state and not already queued
+        if let Some(thread) = self.get_thread(thread_id) {
+            if thread.state != ThreadState::Ready {
+                return; // Thread state changed (terminated/blocked) - don't requeue
+            }
+        } else {
+            return;
+        }
+        if !self.ready_queue.contains(&thread_id) {
+            self.ready_queue.push_back(thread_id);
+            // Send IPI to wake an idle CPU to pick up the requeued thread
+            self.send_resched_ipi();
         }
     }
 
@@ -819,6 +1077,97 @@ pub fn schedule() -> Option<(u64, u64)> {
     result
 }
 
+/// Schedule with deferred requeue for ARM64 SMP.
+///
+/// Like `schedule()`, but does NOT add the old thread to the ready queue.
+/// Returns `(old_thread_id, new_thread_id, should_requeue_old)`.
+///
+/// CRITICAL: The caller MUST call `requeue_old_thread()` after saving the old
+/// thread's context. Failure to do so will leak the thread (it will never be
+/// scheduled again).
+///
+/// This prevents the SMP race where another CPU picks up the old thread from
+/// the ready queue before its context has been saved, causing:
+/// - Double-scheduling (same thread on two CPUs with same kernel stack)
+/// - Stale context dispatch (thread runs with initial/outdated register values)
+/// - ELR=0 crashes (ERET to address 0 from unsaved elr_el1)
+#[cfg(target_arch = "aarch64")]
+pub fn schedule_deferred() -> Option<(u64, u64, bool)> {
+    schedule_deferred_with_fixup(None)
+}
+
+/// Schedule with optional cpu_state fixup for stale idle state.
+///
+/// When `real_thread_id` is Some(tid), and the current cpu_state says idle,
+/// fix cpu_state to tid BEFORE making the scheduling decision. This prevents
+/// the TOCTOU race where cpu_state is stale (says idle) but the real user
+/// thread is running on this CPU.
+///
+/// This must run under a single lock hold with schedule_deferred_requeue to
+/// prevent another CPU from changing state between the fixup and the decision.
+#[cfg(target_arch = "aarch64")]
+pub fn schedule_deferred_with_fixup(real_thread_id: Option<u64>) -> Option<(u64, u64, bool)> {
+    // Already in interrupt context on ARM64 (called from IRQ handler)
+    let mut scheduler_lock = SCHEDULER.lock();
+    if let Some(scheduler) = scheduler_lock.as_mut() {
+        // Fix stale cpu_state if needed (atomically with the scheduling decision)
+        if let Some(real_tid) = real_thread_id {
+            let cpu = Scheduler::current_cpu_id();
+            let current = scheduler.cpu_state[cpu].current_thread;
+            let idle = scheduler.cpu_state[cpu].idle_thread;
+            if current == Some(idle) && real_tid != idle {
+                record_cpu_state_change(cpu, 1, idle, real_tid);
+                scheduler.cpu_state[cpu].current_thread = Some(real_tid);
+            }
+        }
+        scheduler.schedule_deferred_requeue()
+    } else {
+        None
+    }
+}
+
+/// Finalize the cpu_state update after saving context.
+///
+/// CRITICAL: Must be called after save_kernel_context_arm64 / save_userspace_context_arm64
+/// and BEFORE requeue_old_thread. This updates cpu_state[cpu].current_thread to the new
+/// thread, which:
+/// 1. Removes the old thread from is_current_on_any_cpu() protection
+/// 2. Allows unblock() on other CPUs to add the old thread to the ready queue
+///
+/// The ordering is: schedule_deferred -> save_context -> commit_schedule -> requeue_old
+#[cfg(target_arch = "aarch64")]
+pub fn commit_schedule_after_save(new_thread_id: u64) {
+    // Already in interrupt context on ARM64
+    let mut scheduler_lock = SCHEDULER.lock();
+    if let Some(scheduler) = scheduler_lock.as_mut() {
+        scheduler.commit_cpu_state_after_save(new_thread_id);
+    }
+}
+
+/// Complete the deferred requeue after saving context.
+///
+/// Must be called after `schedule_deferred()` returns `should_requeue_old = true`
+/// and the old thread's context has been fully saved.
+#[cfg(target_arch = "aarch64")]
+pub fn requeue_old_thread(thread_id: u64) {
+    // Already in interrupt context on ARM64
+    let mut scheduler_lock = SCHEDULER.lock();
+    if let Some(scheduler) = scheduler_lock.as_mut() {
+        scheduler.requeue_thread_after_save(thread_id);
+    }
+}
+
+/// Check if a thread is an idle thread on any CPU.
+#[cfg(target_arch = "aarch64")]
+pub fn is_idle_thread(thread_id: u64) -> bool {
+    let scheduler_lock = SCHEDULER.lock();
+    if let Some(scheduler) = scheduler_lock.as_ref() {
+        (0..MAX_CPUS).any(|cpu| scheduler.cpu_state[cpu].idle_thread == thread_id)
+    } else {
+        false
+    }
+}
+
 /// Special scheduling point called from IRQ exit path
 /// This is safe to call from IRQ context when returning to user or idle
 #[allow(dead_code)]
@@ -1011,6 +1360,10 @@ pub fn switch_to_idle() {
     with_scheduler(|sched| {
         let cpu_id = Scheduler::current_cpu_id();
         let idle_id = sched.cpu_state[cpu_id].idle_thread;
+        let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+        #[cfg(target_arch = "aarch64")]
+        record_cpu_state_change(cpu_id, 2, old_val, idle_id);
+        let _ = old_val; // suppress unused warning on non-aarch64
         sched.cpu_state[cpu_id].current_thread = Some(idle_id);
 
         // Also update per-CPU current thread pointer
@@ -1044,6 +1397,8 @@ pub fn switch_to_idle_best_effort() {
         if let Some(sched) = scheduler_lock.as_mut() {
             let cpu_id = Scheduler::current_cpu_id();
             let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            let old_val = sched.cpu_state[cpu_id].current_thread.unwrap_or(0xDEAD);
+            record_cpu_state_change(cpu_id, 3, old_val, idle_id);
             sched.cpu_state[cpu_id].current_thread = Some(idle_id);
         }
     }
