@@ -618,7 +618,7 @@ impl Scheduler {
     #[allow(dead_code)] // Will be used when voluntary preemption from syscall handlers is implemented
     /// Block current thread until a timer expires (nanosleep syscall)
     pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
-        if let Some(current_id) = self.current_thread {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 thread.state = ThreadState::BlockedOnTimer;
                 thread.wake_time_ns = Some(wake_time_ns);
@@ -649,7 +649,7 @@ impl Scheduler {
             if let Some(thread) = self.get_thread_mut(id) {
                 thread.state = ThreadState::Ready;
                 thread.wake_time_ns = None;
-                if id != self.idle_thread && !self.ready_queue.contains(&id) {
+                if id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&id) {
                     self.ready_queue.push_back(id);
                 }
             }
