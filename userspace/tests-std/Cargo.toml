@@ -16,12 +16,11 @@ path = "src/hello_std_real.rs"
 
 [profile.release]
 panic = "abort"
-lto = true
+lto = "thin"
 opt-level = "z"
 
 [workspace]
 
-# Override libc with our local version that has Linux x86_64 definitions
-# Needed because our custom target spec isn't automatically recognized
-[patch.crates-io]
-libc = { path = "../../libs/libc" }
+# Note: The libc patch is applied in rust-fork/library/Cargo.toml, not here.
+# That's because -Z build-std uses the library workspace's Cargo.toml for
+# dependency resolution, not the project's Cargo.toml.

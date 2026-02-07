@@ -690,6 +690,7 @@ impl ProcessManager {
             has_started: false,
             blocked_in_syscall: false,
             saved_userspace_context: None,
+            wake_time_ns: None,
         };
 
         Ok(thread)
@@ -756,6 +757,7 @@ impl ProcessManager {
             has_started: false,
             blocked_in_syscall: false,
             saved_userspace_context: None,
+            wake_time_ns: None,
         };
 
         Ok(thread)
@@ -832,6 +834,7 @@ impl ProcessManager {
             has_started: false,
             blocked_in_syscall: false,
             saved_userspace_context: None,
+            wake_time_ns: None,
         };
 
         Ok(thread)
@@ -852,6 +855,16 @@ impl ProcessManager {
         if let Some(process) = self.processes.get_mut(&pid) {
             process.set_running();
         }
+    }
+
+    /// Allocate a new process ID
+    pub fn allocate_pid(&self) -> ProcessId {
+        ProcessId::new(self.next_pid.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Insert a fully-constructed process into the manager
+    pub fn insert_process(&mut self, pid: ProcessId, process: Process) {
+        self.processes.insert(pid, process);
     }
 
     /// Get a reference to a process
@@ -2162,6 +2175,7 @@ impl ProcessManager {
             has_started: true,
             blocked_in_syscall: false, // Forked child is not blocked in syscall
             saved_userspace_context: None, // Child starts fresh
+            wake_time_ns: None,
         };
 
         // CRITICAL: Use the userspace RSP if provided (from syscall frame)

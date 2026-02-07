@@ -942,5 +942,307 @@ f! {
     }
 }
 
-// No external libc functions - Breenix uses direct syscalls via libbreenix-libc
-// The Rust std library will use these types, and libbreenix-libc provides the actual implementations.
+// ioctl request type
+pub type Ioctl = c_ulong;
+
+// TIOCGWINSZ for terminal size queries
+pub const TIOCGWINSZ: Ioctl = 0x5413;
+pub const FIONBIO: Ioctl = 0x5421;
+
+// sysconf constants
+pub const _SC_PAGESIZE: c_int = 30;
+pub const _SC_PAGE_SIZE: c_int = _SC_PAGESIZE;
+pub const _SC_NPROCESSORS_ONLN: c_int = 84;
+pub const _SC_NPROCESSORS_CONF: c_int = 83;
+pub const _SC_GETPW_R_SIZE_MAX: c_int = 70;
+pub const _SC_GETGR_R_SIZE_MAX: c_int = 69;
+
+// auxiliary vector types
+pub const AT_PAGESZ: c_ulong = 6;
+pub const AT_HWCAP: c_ulong = 16;
+pub const AT_HWCAP2: c_ulong = 26;
+
+// sched_yield, nanosleep request values
+pub const GRND_NONBLOCK: c_uint = 0x0001;
+pub const GRND_RANDOM: c_uint = 0x0002;
+
+// Socket listen backlog
+pub const SOMAXCONN: c_int = 4096;
+
+// ioctl constants
+pub const FIOCLEX: Ioctl = 0x5451;
+
+// utimensat constants
+pub const UTIME_NOW: c_long = (1 << 30) - 1;
+pub const UTIME_OMIT: c_long = (1 << 30) - 2;
+
+// pthread constants
+pub const PTHREAD_MUTEX_NORMAL: c_int = 0;
+pub const PTHREAD_MUTEX_RECURSIVE: c_int = 1;
+pub const PTHREAD_MUTEX_ERRORCHECK: c_int = 2;
+pub const PTHREAD_MUTEX_DEFAULT: c_int = PTHREAD_MUTEX_NORMAL;
+pub const PTHREAD_STACK_MIN: size_t = 16384;
+
+// pthread initializers (Linux x86_64 compatible - zero-initialized)
+pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
+    __size: [0; 40],
+};
+pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t {
+    __size: [0; 48],
+};
+
+// External libc functions provided by libbreenix-libc
+unsafe extern "C" {
+    pub fn abort() -> !;
+    pub fn exit(status: c_int) -> !;
+    pub fn _exit(status: c_int) -> !;
+
+    pub fn malloc(size: size_t) -> *mut c_void;
+    pub fn free(ptr: *mut c_void);
+    pub fn realloc(ptr: *mut c_void, size: size_t) -> *mut c_void;
+    pub fn posix_memalign(memptr: *mut *mut c_void, alignment: size_t, size: size_t) -> c_int;
+
+    pub fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t;
+    pub fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t;
+    pub fn writev(fd: c_int, iov: *const crate::iovec, iovcnt: c_int) -> ssize_t;
+    pub fn close(fd: c_int) -> c_int;
+    pub fn dup(oldfd: c_int) -> c_int;
+    pub fn dup2(oldfd: c_int, newfd: c_int) -> c_int;
+    pub fn pipe(pipefd: *mut c_int) -> c_int;
+    pub fn pipe2(pipefd: *mut c_int, flags: c_int) -> c_int;
+
+    pub fn open(path: *const c_char, oflag: c_int, ...) -> c_int;
+    pub fn openat(dirfd: c_int, path: *const c_char, oflag: c_int, ...) -> c_int;
+    pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    pub fn fstat(fd: c_int, buf: *mut stat) -> c_int;
+    pub fn stat(path: *const c_char, buf: *mut stat) -> c_int;
+    pub fn lstat(path: *const c_char, buf: *mut stat) -> c_int;
+    pub fn fstat64(fd: c_int, buf: *mut stat64) -> c_int;
+    pub fn stat64(path: *const c_char, buf: *mut stat64) -> c_int;
+    pub fn lstat64(path: *const c_char, buf: *mut stat64) -> c_int;
+    pub fn lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t;
+    pub fn lseek64(fd: c_int, offset: off_t, whence: c_int) -> off_t;
+    pub fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t;
+    pub fn unlink(path: *const c_char) -> c_int;
+    pub fn rename(oldpath: *const c_char, newpath: *const c_char) -> c_int;
+    pub fn mkdir(path: *const c_char, mode: mode_t) -> c_int;
+    pub fn rmdir(path: *const c_char) -> c_int;
+    pub fn link(oldpath: *const c_char, newpath: *const c_char) -> c_int;
+    pub fn symlink(target: *const c_char, linkpath: *const c_char) -> c_int;
+    pub fn access(path: *const c_char, mode: c_int) -> c_int;
+    pub fn getcwd(buf: *mut c_char, size: size_t) -> *mut c_char;
+    pub fn chdir(path: *const c_char) -> c_int;
+    pub fn isatty(fd: c_int) -> c_int;
+    pub fn ioctl(fd: c_int, request: Ioctl, ...) -> c_int;
+    pub fn getdents64(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t;
+    pub fn ftruncate(fd: c_int, length: off_t) -> c_int;
+    pub fn ftruncate64(fd: c_int, length: off_t) -> c_int;
+    pub fn fsync(fd: c_int) -> c_int;
+    pub fn fdatasync(fd: c_int) -> c_int;
+    pub fn fchmod(fd: c_int, mode: mode_t) -> c_int;
+    pub fn fchown(fd: c_int, owner: crate::uid_t, group: crate::gid_t) -> c_int;
+    pub fn chmod(path: *const c_char, mode: mode_t) -> c_int;
+    pub fn chown(path: *const c_char, owner: crate::uid_t, group: crate::gid_t) -> c_int;
+    pub fn utimes(path: *const c_char, times: *const crate::timeval) -> c_int;
+
+    pub fn mmap(
+        addr: *mut c_void,
+        len: size_t,
+        prot: c_int,
+        flags: c_int,
+        fd: c_int,
+        offset: off_t,
+    ) -> *mut c_void;
+    pub fn munmap(addr: *mut c_void, len: size_t) -> c_int;
+    pub fn mprotect(addr: *mut c_void, len: size_t, prot: c_int) -> c_int;
+    pub fn brk(addr: *mut c_void) -> c_int;
+    pub fn sbrk(increment: isize) -> *mut c_void;
+
+    pub fn getpid() -> crate::pid_t;
+    pub fn gettid() -> crate::pid_t;
+    pub fn getppid() -> crate::pid_t;
+    pub fn getuid() -> crate::uid_t;
+    pub fn geteuid() -> crate::uid_t;
+    pub fn getgid() -> crate::gid_t;
+    pub fn getegid() -> crate::gid_t;
+    pub fn fork() -> crate::pid_t;
+    pub fn execve(
+        path: *const c_char,
+        argv: *const *const c_char,
+        envp: *const *const c_char,
+    ) -> c_int;
+    pub fn waitpid(pid: crate::pid_t, status: *mut c_int, options: c_int) -> crate::pid_t;
+    pub fn kill(pid: crate::pid_t, sig: c_int) -> c_int;
+
+    pub fn sigaction(
+        signum: c_int,
+        act: *const sigaction,
+        oldact: *mut sigaction,
+    ) -> c_int;
+    pub fn sigaltstack(ss: *const stack_t, old_ss: *mut stack_t) -> c_int;
+    pub fn sigprocmask(
+        how: c_int,
+        set: *const sigset_t,
+        oldset: *mut sigset_t,
+    ) -> c_int;
+    pub fn signal(signum: c_int, handler: crate::sighandler_t) -> crate::sighandler_t;
+    pub fn raise(sig: c_int) -> c_int;
+
+    pub fn clock_gettime(clk_id: clockid_t, tp: *mut crate::timespec) -> c_int;
+    pub fn nanosleep(req: *const crate::timespec, rem: *mut crate::timespec) -> c_int;
+
+    pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
+    pub fn connect(sockfd: c_int, addr: *const sockaddr, addrlen: socklen_t) -> c_int;
+    pub fn bind(sockfd: c_int, addr: *const sockaddr, addrlen: socklen_t) -> c_int;
+    pub fn listen(sockfd: c_int, backlog: c_int) -> c_int;
+    pub fn accept(sockfd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t) -> c_int;
+    pub fn accept4(
+        sockfd: c_int,
+        addr: *mut sockaddr,
+        addrlen: *mut socklen_t,
+        flags: c_int,
+    ) -> c_int;
+    pub fn getsockname(sockfd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t) -> c_int;
+    pub fn getpeername(sockfd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t) -> c_int;
+    pub fn setsockopt(
+        sockfd: c_int,
+        level: c_int,
+        optname: c_int,
+        optval: *const c_void,
+        optlen: socklen_t,
+    ) -> c_int;
+    pub fn getsockopt(
+        sockfd: c_int,
+        level: c_int,
+        optname: c_int,
+        optval: *mut c_void,
+        optlen: *mut socklen_t,
+    ) -> c_int;
+    pub fn shutdown(sockfd: c_int, how: c_int) -> c_int;
+    pub fn send(sockfd: c_int, buf: *const c_void, len: size_t, flags: c_int) -> ssize_t;
+    pub fn recv(sockfd: c_int, buf: *mut c_void, len: size_t, flags: c_int) -> ssize_t;
+    pub fn sendto(
+        sockfd: c_int,
+        buf: *const c_void,
+        len: size_t,
+        flags: c_int,
+        dest_addr: *const sockaddr,
+        addrlen: socklen_t,
+    ) -> ssize_t;
+    pub fn recvfrom(
+        sockfd: c_int,
+        buf: *mut c_void,
+        len: size_t,
+        flags: c_int,
+        src_addr: *mut sockaddr,
+        addrlen: *mut socklen_t,
+    ) -> ssize_t;
+    pub fn sendmsg(sockfd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t;
+    pub fn recvmsg(sockfd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
+    pub fn socketpair(domain: c_int, ty: c_int, protocol: c_int, sv: *mut c_int) -> c_int;
+
+    pub fn poll(fds: *mut crate::pollfd, nfds: nfds_t, timeout: c_int) -> c_int;
+    pub fn select(
+        nfds: c_int,
+        readfds: *mut fd_set,
+        writefds: *mut fd_set,
+        exceptfds: *mut fd_set,
+        timeout: *mut crate::timeval,
+    ) -> c_int;
+
+    pub fn sysconf(name: c_int) -> c_long;
+    pub fn getenv(name: *const c_char) -> *mut c_char;
+    pub fn setenv(name: *const c_char, value: *const c_char, overwrite: c_int) -> c_int;
+    pub fn unsetenv(name: *const c_char) -> c_int;
+
+    pub fn getrandom(buf: *mut c_void, buflen: size_t, flags: c_uint) -> ssize_t;
+    pub fn getauxval(type_: c_ulong) -> c_ulong;
+
+    pub fn strlen(s: *const c_char) -> size_t;
+    pub fn memcmp(s1: *const c_void, s2: *const c_void, n: size_t) -> c_int;
+    pub fn strerror_r(errnum: c_int, buf: *mut c_char, buflen: size_t) -> c_int;
+    pub fn __xpg_strerror_r(errnum: c_int, buf: *mut c_char, buflen: size_t) -> c_int;
+    pub fn __errno_location() -> *mut c_int;
+
+    pub fn pthread_self() -> pthread_t;
+    pub fn pthread_create(
+        thread: *mut pthread_t,
+        attr: *const pthread_attr_t,
+        start_routine: extern "C" fn(*mut c_void) -> *mut c_void,
+        arg: *mut c_void,
+    ) -> c_int;
+    pub fn pthread_join(thread: pthread_t, retval: *mut *mut c_void) -> c_int;
+    pub fn pthread_detach(thread: pthread_t) -> c_int;
+    pub fn pthread_key_create(
+        key: *mut pthread_key_t,
+        destructor: Option<unsafe extern "C" fn(*mut c_void)>,
+    ) -> c_int;
+    pub fn pthread_key_delete(key: pthread_key_t) -> c_int;
+    pub fn pthread_getspecific(key: pthread_key_t) -> *mut c_void;
+    pub fn pthread_setspecific(key: pthread_key_t, value: *const c_void) -> c_int;
+    pub fn pthread_attr_init(attr: *mut pthread_attr_t) -> c_int;
+    pub fn pthread_attr_destroy(attr: *mut pthread_attr_t) -> c_int;
+    pub fn pthread_attr_setstacksize(attr: *mut pthread_attr_t, stacksize: size_t) -> c_int;
+    pub fn pthread_attr_getstack(
+        attr: *const pthread_attr_t,
+        stackaddr: *mut *mut c_void,
+        stacksize: *mut size_t,
+    ) -> c_int;
+    pub fn pthread_attr_setguardsize(attr: *mut pthread_attr_t, guardsize: size_t) -> c_int;
+    pub fn pthread_attr_getguardsize(attr: *const pthread_attr_t, guardsize: *mut size_t) -> c_int;
+    pub fn pthread_getattr_np(thread: pthread_t, attr: *mut pthread_attr_t) -> c_int;
+    pub fn pthread_setname_np(thread: pthread_t, name: *const c_char) -> c_int;
+    pub fn pthread_mutex_init(
+        mutex: *mut pthread_mutex_t,
+        attr: *const pthread_mutexattr_t,
+    ) -> c_int;
+    pub fn pthread_mutex_destroy(mutex: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutex_lock(mutex: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutex_trylock(mutex: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutex_unlock(mutex: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutexattr_init(attr: *mut pthread_mutexattr_t) -> c_int;
+    pub fn pthread_mutexattr_destroy(attr: *mut pthread_mutexattr_t) -> c_int;
+    pub fn pthread_mutexattr_settype(attr: *mut pthread_mutexattr_t, kind: c_int) -> c_int;
+    pub fn pthread_cond_init(
+        cond: *mut pthread_cond_t,
+        attr: *const pthread_condattr_t,
+    ) -> c_int;
+    pub fn pthread_cond_destroy(cond: *mut pthread_cond_t) -> c_int;
+    pub fn pthread_cond_signal(cond: *mut pthread_cond_t) -> c_int;
+    pub fn pthread_cond_broadcast(cond: *mut pthread_cond_t) -> c_int;
+    pub fn pthread_cond_wait(cond: *mut pthread_cond_t, mutex: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_cond_timedwait(
+        cond: *mut pthread_cond_t,
+        mutex: *mut pthread_mutex_t,
+        abstime: *const crate::timespec,
+    ) -> c_int;
+    pub fn pthread_condattr_init(attr: *mut pthread_condattr_t) -> c_int;
+    pub fn pthread_condattr_destroy(attr: *mut pthread_condattr_t) -> c_int;
+    pub fn pthread_condattr_setclock(attr: *mut pthread_condattr_t, clock: clockid_t) -> c_int;
+    pub fn pthread_rwlock_init(
+        rwlock: *mut pthread_rwlock_t,
+        attr: *const pthread_rwlockattr_t,
+    ) -> c_int;
+    pub fn pthread_rwlock_destroy(rwlock: *mut pthread_rwlock_t) -> c_int;
+    pub fn pthread_rwlock_rdlock(rwlock: *mut pthread_rwlock_t) -> c_int;
+    pub fn pthread_rwlock_tryrdlock(rwlock: *mut pthread_rwlock_t) -> c_int;
+    pub fn pthread_rwlock_wrlock(rwlock: *mut pthread_rwlock_t) -> c_int;
+    pub fn pthread_rwlock_trywrlock(rwlock: *mut pthread_rwlock_t) -> c_int;
+    pub fn pthread_rwlock_unlock(rwlock: *mut pthread_rwlock_t) -> c_int;
+
+    pub fn sched_yield() -> c_int;
+
+    pub fn readv(fd: c_int, iov: *const crate::iovec, iovcnt: c_int) -> ssize_t;
+
+    pub fn dirfd(dirp: *mut crate::DIR) -> c_int;
+    pub fn futimens(fd: c_int, times: *const crate::timespec) -> c_int;
+    pub fn setgroups(ngroups: size_t, grouplist: *const crate::gid_t) -> c_int;
+
+    pub fn getpwuid_r(
+        uid: crate::uid_t,
+        pwd: *mut passwd,
+        buf: *mut c_char,
+        buflen: size_t,
+        result: *mut *mut passwd,
+    ) -> c_int;
+}

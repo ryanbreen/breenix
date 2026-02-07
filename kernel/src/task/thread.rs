@@ -38,6 +38,8 @@ pub enum ThreadState {
     BlockedOnSignal,
     /// Thread is blocked waiting for a child to exit (waitpid syscall)
     BlockedOnChildExit,
+    /// Thread is blocked waiting for a timer to expire (nanosleep syscall)
+    BlockedOnTimer,
     /// Thread has terminated
     Terminated,
 }
@@ -395,6 +397,11 @@ pub struct Thread {
     /// userspace context here. If a signal arrives while blocked, we use this
     /// context to deliver the signal handler (with RAX = -EINTR).
     pub saved_userspace_context: Option<CpuContext>,
+
+    /// Absolute monotonic wake time in nanoseconds (for nanosleep)
+    /// When set, the scheduler will unblock this thread when the monotonic
+    /// clock reaches this value.
+    pub wake_time_ns: Option<u64>,
 }
 
 impl Clone for Thread {
@@ -416,6 +423,7 @@ impl Clone for Thread {
             has_started: self.has_started,
             blocked_in_syscall: self.blocked_in_syscall,
             saved_userspace_context: self.saved_userspace_context.clone(),
+            wake_time_ns: self.wake_time_ns,
         }
     }
 }
@@ -474,6 +482,7 @@ impl Thread {
             has_started: false, // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
+            wake_time_ns: None,
         })
     }
 
@@ -527,6 +536,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_userspace_context: None,
+            wake_time_ns: None,
         })
     }
 
@@ -567,6 +577,7 @@ impl Thread {
             has_started: false, // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
+            wake_time_ns: None,
         }
     }
 
@@ -610,6 +621,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_userspace_context: None,
+            wake_time_ns: None,
         }
     }
 
@@ -662,6 +674,7 @@ impl Thread {
             has_started: false, // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
+            wake_time_ns: None,
         }
     }
 
@@ -709,6 +722,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_userspace_context: None,
+            wake_time_ns: None,
         }
     }
 
@@ -781,6 +795,7 @@ impl Thread {
             has_started: false, // New thread hasn't run yet
             blocked_in_syscall: false, // New thread is not blocked in syscall
             saved_userspace_context: None,
+            wake_time_ns: None,
         }
     }
 
@@ -820,6 +835,7 @@ impl Thread {
             has_started: false,
             blocked_in_syscall: false,
             saved_userspace_context: None,
+            wake_time_ns: None,
         }
     }
 }

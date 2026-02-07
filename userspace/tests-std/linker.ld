@@ -3,7 +3,7 @@
  * This linker script is required to place userspace programs at 0x40000000
  * to avoid conflicts with kernel page table mappings at lower addresses.
  */
-ENTRY(main)
+ENTRY(_start)
 
 SECTIONS {
     . = 0x40000000; /* Start at 1GB (userspace area) */

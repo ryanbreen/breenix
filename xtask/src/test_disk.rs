@@ -162,7 +162,7 @@ pub fn create_test_disk() -> Result<()> {
     }
 
     if binaries.is_empty() {
-        bail!("No .elf files found in {}", userspace_dir.display());
+        bail!("No test binaries found (checked {}/**.elf and userspace/tests-std/)", userspace_dir.display());
     }
 
     if binaries.len() > MAX_BINARIES {

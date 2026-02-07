@@ -63,6 +63,13 @@ fn main() {
     // Temporarily disabled to test with bootloader's default
     // println!("cargo:rustc-link-arg=-Tkernel/linker.ld");
 
+    // AArch64 kernel linker script (moved from aarch64-breenix.json so the
+    // target JSON can be shared between kernel and userspace std builds)
+    if target.contains("aarch64") {
+        println!("cargo:rustc-link-arg=-Tkernel/src/arch_impl/aarch64/linker.ld");
+        println!("cargo:rustc-link-arg=--fix-cortex-a53-843419");
+    }
+
 
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");

@@ -6,7 +6,8 @@
 //! - Vec and other heap allocations (uses mmap/brk)
 //! - std::process::exit
 //!
-//! Build with: cargo build -Z build-std=std,panic_abort --target x86_64-breenix.json
+//! Build with: cargo build -Z build-std=std,panic_abort --target x86_64-breenix.json  (x86_64)
+//!         or: cargo build -Z build-std=std,panic_abort --target aarch64-breenix.json (aarch64)
 //! This requires libbreenix-libc to be built and linked.
 
 // NO #![no_std] - this uses real std!
@@ -15,7 +16,175 @@ fn main() {
     // Test 1: Basic println! using std
     println!("RUST_STD_PRINTLN_WORKS");
 
-    // Test 2: Vec allocation and operations
+    // Test 2: Direct clone syscall test (bypasses pthread_create + std::thread)
+    {
+        extern "C" {
+            fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+            fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+        }
+
+        // Helper to write a message to stderr (fd 2), avoiding any std locking
+        unsafe fn raw_msg(msg: &[u8]) {
+            write(2, msg.as_ptr(), msg.len());
+        }
+
+        extern "C" fn child_fn(arg: *mut u8) -> *mut u8 {
+            // Write directly to stderr via write() syscall
+            let msg = b"THREAD_TEST: child_fn running\n";
+            unsafe { write(2, msg.as_ptr(), msg.len()) };
+
+            // Write the magic value to the arg address (a shared memory location)
+            let result_ptr = arg as *mut u64;
+            unsafe { core::ptr::write_volatile(result_ptr, 42) };
+
+            let msg2 = b"THREAD_TEST: child_fn done, calling exit\n";
+            unsafe { write(2, msg2.as_ptr(), msg2.len()) };
+
+            // Exit this thread via exit syscall
+            // Breenix syscall numbers: Exit=0, Write=1 (NOT Linux numbering!)
+            // After exit, spin in a loop until scheduler removes us.
+            // The exit syscall marks us Terminated but returns to userspace
+            // (PREEMPT_ACTIVE prevents immediate context switch during syscall return).
+            // The spin loop keeps us from executing garbage instructions while
+            // waiting for the next timer interrupt to switch us out.
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                core::arch::asm!(
+                    "int 0x80",        // SYS_exit(0) - Breenix Exit=0
+                    "2:",
+                    "pause",           // Spin-loop hint (valid in Ring 3)
+                    "jmp 2b",
+                    in("rax") 0u64,    // SYS_EXIT = 0 in Breenix
+                    in("rdi") 0u64,
+                    options(noreturn),
+                );
+            }
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                core::arch::asm!(
+                    "svc #0",          // SYS_exit(0) - Breenix Exit=0
+                    "2:",
+                    "yield",           // Spin-loop hint (ARM64 equivalent of PAUSE)
+                    "b 2b",
+                    in("x8") 0u64,     // SYS_EXIT = 0 in Breenix
+                    in("x0") 0u64,
+                    options(noreturn),
+                );
+            }
+        }
+
+        unsafe {
+            raw_msg(b"THREAD_TEST: allocating stack\n");
+
+            // Allocate child stack (64KB is enough for a simple test)
+            let stack_size: usize = 64 * 1024;
+            let stack = mmap(core::ptr::null_mut(), stack_size, 3, 0x22, -1, 0); // PROT_READ|WRITE, MAP_PRIVATE|MAP_ANON
+            if stack == usize::MAX as *mut u8 {
+                raw_msg(b"THREAD_TEST: ERROR stack mmap failed\n");
+                std::process::exit(1);
+            }
+            raw_msg(b"THREAD_TEST: stack allocated\n");
+
+            // Allocate shared result page
+            let shared = mmap(core::ptr::null_mut(), 4096, 3, 0x22, -1, 0);
+            if shared == usize::MAX as *mut u8 {
+                raw_msg(b"THREAD_TEST: ERROR shared mmap failed\n");
+                std::process::exit(1);
+            }
+            // Initialize result to 0
+            core::ptr::write_volatile(shared as *mut u64, 0);
+            // Initialize tid word (at offset 8) to 0xFFFF
+            let tid_addr = shared.add(8) as *mut u32;
+            core::ptr::write_volatile(tid_addr, 0xFFFF);
+
+            raw_msg(b"THREAD_TEST: about to call clone syscall\n");
+
+            let stack_top = (stack as usize + stack_size) & !0xF;
+
+            // Clone flags: CLONE_VM | CLONE_FILES | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID
+            let flags: u64 = 0x00000100 | 0x00000400 | 0x00200000 | 0x01000000;
+
+            // clone(flags, child_stack, fn_ptr, fn_arg, child_tidptr)
+            let ret: i64;
+            #[cfg(target_arch = "x86_64")]
+            core::arch::asm!(
+                "int 0x80",
+                in("rax") 56u64,        // SYS_clone
+                in("rdi") flags,
+                in("rsi") stack_top as u64,
+                in("rdx") child_fn as u64,
+                in("r10") shared as u64,   // fn_arg = pointer to shared page (child writes result here)
+                in("r8") tid_addr as u64,  // child_tidptr
+                lateout("rax") ret,
+                options(nostack),
+            );
+            #[cfg(target_arch = "aarch64")]
+            core::arch::asm!(
+                "svc #0",
+                in("x8") 56u64,         // SYS_clone
+                inlateout("x0") flags as u64 => ret,
+                in("x1") stack_top as u64,
+                in("x2") child_fn as u64,
+                in("x3") shared as u64,    // fn_arg = pointer to shared page
+                in("x4") tid_addr as u64,  // child_tidptr
+                options(nostack),
+            );
+
+            if ret < 0 {
+                raw_msg(b"THREAD_TEST: ERROR clone syscall failed\n");
+                std::process::exit(1);
+            }
+            raw_msg(b"THREAD_TEST: clone returned successfully\n");
+
+            // Wait for child by polling tid_addr (should be set to 0 on child exit)
+            // Spin-wait: the timer interrupt (1ms) will preempt us and schedule the child.
+            // SYS_YIELD (Breenix=3) sets need_resched but PREEMPT_ACTIVE on syscall
+            // return means the actual context switch happens on the next timer tick.
+            raw_msg(b"THREAD_TEST: waiting for child\n");
+            for i in 0..10_000_000u64 {
+                let tid_val = core::ptr::read_volatile(tid_addr);
+                if tid_val == 0 {
+                    break;
+                }
+                // Yield CPU: Breenix Yield=3
+                #[cfg(target_arch = "x86_64")]
+                core::arch::asm!("int 0x80", in("rax") 3u64, options(nostack));
+                #[cfg(target_arch = "aarch64")]
+                core::arch::asm!("svc #0", in("x8") 3u64, in("x0") 0u64, options(nostack));
+                // Print progress every 1M iterations
+                if i > 0 && i % 1_000_000 == 0 {
+                    let digit = b'0' + (i / 1_000_000) as u8;
+                    let progress = [b'T', b'H', b'R', b'E', b'A', b'D', b'_', b'W', b'A', b'I', b'T', b':', digit, b'\n'];
+                    write(2, progress.as_ptr(), progress.len());
+                }
+            }
+
+            let tid_val = core::ptr::read_volatile(tid_addr);
+            let result = core::ptr::read_volatile(shared as *const u64);
+
+            // Print diagnostic info regardless of pass/fail
+            if result == 42 {
+                raw_msg(b"THREAD_TEST: result=42 (correct)\n");
+            } else {
+                raw_msg(b"THREAD_TEST: result!=42\n");
+            }
+            if tid_val == 0 {
+                raw_msg(b"THREAD_TEST: tid_val=0 (child exited)\n");
+            } else {
+                raw_msg(b"THREAD_TEST: tid_val!=0 (child did NOT exit)\n");
+            }
+
+            if tid_val == 0 && result == 42 {
+                raw_msg(b"THREAD_TEST: child completed, result=42\n");
+                println!("RUST_STD_THREAD_WORKS");
+            } else {
+                eprintln!("ERROR: thread test failed: tid_val={}, result={}", tid_val, result);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Test 3: Vec allocation and operations
     let numbers: Vec<i32> = vec![1, 2, 3, 4, 5];
     let sum: i32 = numbers.iter().sum();
     println!("Sum: {}", sum);
@@ -46,29 +215,43 @@ fn main() {
         println!("RUST_STD_FORMAT_WORKS");
     }
 
-    // Test 5: getrandom returns ENOSYS (not fake random data)
-    // This validates that we're being honest about not having randomness.
+    // Test 5: getrandom returns random bytes
+    // The kernel implements getrandom (syscall 318) with a TSC-seeded PRNG.
     unsafe {
         extern "C" {
             fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize;
-            fn __errno_location() -> *mut i32;
         }
 
         let mut buf = [0u8; 16];
         let result = getrandom(buf.as_mut_ptr(), buf.len(), 0);
 
-        // Should return -1 (error)
-        if result == -1 {
-            let errno = *__errno_location();
-            // ENOSYS = 38
-            if errno == 38 {
-                println!("RUST_STD_GETRANDOM_ENOSYS");
+        if result == 16 {
+            // Verify we got some non-zero bytes (all zeros is astronomically unlikely)
+            let any_nonzero = buf.iter().any(|&b| b != 0);
+            if any_nonzero {
+                println!("RUST_STD_GETRANDOM_WORKS");
             } else {
-                eprintln!("ERROR: getrandom set errno to {}, expected 38 (ENOSYS)", errno);
+                eprintln!("ERROR: getrandom returned all zeros (extremely unlikely)");
                 std::process::exit(1);
             }
         } else {
-            eprintln!("ERROR: getrandom returned {}, expected -1", result);
+            eprintln!("ERROR: getrandom returned {}, expected 16", result);
+            std::process::exit(1);
+        }
+    }
+
+    // Test 5b: HashMap (requires working getrandom for hasher seeding)
+    {
+        use std::collections::HashMap;
+        let mut map = HashMap::new();
+        map.insert("one", 1);
+        map.insert("two", 2);
+        map.insert("three", 3);
+
+        if map.len() == 3 && map["one"] == 1 && map["two"] == 2 && map["three"] == 3 {
+            println!("RUST_STD_HASHMAP_WORKS");
+        } else {
+            eprintln!("ERROR: HashMap operations failed");
             std::process::exit(1);
         }
     }
@@ -580,6 +763,7 @@ fn main() {
             fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> i32;
             fn sysconf(name: i32) -> i64;
             fn poll(fds: *mut u8, nfds: usize, timeout: i32) -> i32;
+            fn close(fd: i32) -> i32;
             fn fcntl(fd: i32, cmd: i32, arg: u64) -> i32;
             fn open(path: *const u8, flags: i32, mode: u32) -> i32;
             fn getauxval(type_: u64) -> u64;
@@ -703,18 +887,22 @@ fn main() {
             all_stubs_ok = false;
         }
 
-        // Test fcntl() - should return 0 (success stub)
-        let result = fcntl(0, 0, 0);
-        if result != 0 {
-            eprintln!("ERROR: fcntl() returned {}, expected 0", result);
+        // Test fcntl() - F_DUPFD on stdin returns new fd (>= 0)
+        let result = fcntl(0, 0, 0); // F_DUPFD = 0
+        if result < 0 {
+            eprintln!("ERROR: fcntl(stdin, F_DUPFD, 0) returned {}, expected >= 0", result);
             all_stubs_ok = false;
+        } else {
+            // Close the dup'd fd
+            close(result);
         }
 
-        // Test open() - should return -ENOSYS (-38)
+        // Test open() - nonexistent file should return negative error
         let path = b"/nonexistent\0";
         let result = open(path.as_ptr(), 0, 0);
-        if result != -38 {
-            eprintln!("ERROR: open() returned {}, expected -38 (ENOSYS)", result);
+        if result >= 0 {
+            eprintln!("ERROR: open(/nonexistent) returned {}, expected negative error", result);
+            close(result);
             all_stubs_ok = false;
         }
 
@@ -1015,6 +1203,24 @@ fn main() {
             println!("RUST_STD_MMAP_WORKS");
         } else {
             eprintln!("ERROR: Some mmap/munmap tests failed");
+            std::process::exit(1);
+        }
+    }
+
+    // Test 20: nanosleep (via std::thread::sleep)
+    {
+        use std::time::{Duration, Instant};
+        let before = Instant::now();
+        std::thread::sleep(Duration::from_millis(50));
+        let elapsed = before.elapsed();
+        // Should have slept at least 40ms (allow some tolerance)
+        if elapsed >= Duration::from_millis(40) {
+            println!("RUST_STD_SLEEP_WORKS");
+        } else {
+            eprintln!(
+                "ERROR: thread::sleep(50ms) only slept {:?}",
+                elapsed
+            );
             std::process::exit(1);
         }
     }

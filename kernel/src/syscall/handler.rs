@@ -243,7 +243,10 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         }
         Some(SyscallNumber::Exec) => super::handlers::sys_execv_with_frame(frame, args.0, args.1),
         Some(SyscallNumber::GetPid) => super::handlers::sys_getpid(),
+        Some(SyscallNumber::Getppid) => super::handlers::sys_getppid(),
         Some(SyscallNumber::GetTid) => super::handlers::sys_gettid(),
+        Some(SyscallNumber::SetTidAddress) => super::handlers::sys_set_tid_address(args.0),
+        Some(SyscallNumber::ExitGroup) => super::handlers::sys_exit_group(args.0 as i32),
         Some(SyscallNumber::ClockGetTime) => {
             // NOTE: No logging here! Serial I/O takes thousands of cycles
             // and would cause the sub-millisecond precision test to fail.
@@ -315,8 +318,20 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Shutdown) => {
             super::socket::sys_shutdown(args.0, args.1)
         }
+        Some(SyscallNumber::Getsockname) => {
+            super::socket::sys_getsockname(args.0, args.1, args.2)
+        }
+        Some(SyscallNumber::Getpeername) => {
+            super::socket::sys_getpeername(args.0, args.1, args.2)
+        }
         Some(SyscallNumber::Socketpair) => {
             super::socket::sys_socketpair(args.0, args.1, args.2, args.3)
+        }
+        Some(SyscallNumber::Setsockopt) => {
+            super::socket::sys_setsockopt(args.0, args.1, args.2, args.3, args.4)
+        }
+        Some(SyscallNumber::Getsockopt) => {
+            super::socket::sys_getsockopt(args.0, args.1, args.2, args.3, args.4)
         }
         Some(SyscallNumber::Poll) => super::handlers::sys_poll(args.0, args.1, args.2 as i32),
         Some(SyscallNumber::Select) => {
@@ -329,6 +344,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Dup2) => super::handlers::sys_dup2(args.0, args.1),
         Some(SyscallNumber::Fcntl) => super::handlers::sys_fcntl(args.0, args.1, args.2),
         Some(SyscallNumber::Pause) => super::signal::sys_pause_with_frame(frame),
+        Some(SyscallNumber::Nanosleep) => super::time::sys_nanosleep(args.0, args.1),
         Some(SyscallNumber::Getitimer) => super::signal::sys_getitimer(args.0 as i32, args.1),
         Some(SyscallNumber::Alarm) => super::signal::sys_alarm(args.0),
         Some(SyscallNumber::Setitimer) => super::signal::sys_setitimer(args.0 as i32, args.1, args.2),
@@ -364,6 +380,15 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Grantpt) => super::pty::sys_grantpt(args.0),
         Some(SyscallNumber::Unlockpt) => super::pty::sys_unlockpt(args.0),
         Some(SyscallNumber::Ptsname) => super::pty::sys_ptsname(args.0, args.1, args.2),
+        Some(SyscallNumber::GetRandom) => {
+            super::random::sys_getrandom(args.0, args.1, args.2 as u32)
+        }
+        Some(SyscallNumber::Clone) => {
+            super::clone::sys_clone(args.0, args.1, args.2, args.3, args.4)
+        }
+        Some(SyscallNumber::Futex) => {
+            super::futex::sys_futex(args.0, args.1 as u32, args.2 as u32, args.3, args.4, args.5 as u32)
+        }
         // Graphics syscalls
         Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
         Some(SyscallNumber::FbDraw) => super::graphics::sys_fbdraw(args.0),

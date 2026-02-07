@@ -1845,6 +1845,78 @@ pub fn sys_socketpair(domain: u64, sock_type: u64, protocol: u64, sv_ptr: u64) -
     SyscallResult::Ok(0)
 }
 
+/// sys_setsockopt - Set socket options
+///
+/// Minimal implementation: accepts and ignores most options (returns success).
+/// This is sufficient for basic Rust std networking support.
+pub fn sys_setsockopt(
+    _fd: u64,
+    _level: u64,
+    _optname: u64,
+    _optval: u64,
+    _optlen: u64,
+) -> SyscallResult {
+    // Return success for all options as a no-op.
+    // Many socket options (SO_REUSEADDR, TCP_NODELAY, etc.) are non-critical
+    // and can be safely ignored in a minimal implementation.
+    SyscallResult::Ok(0)
+}
+
+/// sys_getsockopt - Get socket options
+///
+/// Minimal implementation: returns success for SO_ERROR queries (returning 0 = no error),
+/// and ENOPROTOOPT for unrecognized options.
+pub fn sys_getsockopt(
+    _fd: u64,
+    level: u64,
+    optname: u64,
+    optval: u64,
+    optlen: u64,
+) -> SyscallResult {
+    const SOL_SOCKET: u64 = 1;
+    const SO_ERROR: u64 = 4;
+
+    if level == SOL_SOCKET && optname == SO_ERROR {
+        // Return 0 (no error) for SO_ERROR queries
+        if optval != 0 && optlen != 0 {
+            unsafe {
+                let optval_ptr = optval as *mut i32;
+                let optlen_ptr = optlen as *mut u32;
+                // Write 0 (no error) to the optval buffer
+                core::ptr::write(optval_ptr, 0);
+                // Update optlen to indicate we wrote 4 bytes
+                core::ptr::write(optlen_ptr, 4);
+            }
+        }
+        return SyscallResult::Ok(0);
+    }
+
+    // For other options, return success with zeroed value
+    if optval != 0 && optlen != 0 {
+        unsafe {
+            let optval_ptr = optval as *mut i32;
+            let optlen_ptr = optlen as *mut u32;
+            core::ptr::write(optval_ptr, 0);
+            core::ptr::write(optlen_ptr, 4);
+        }
+    }
+    SyscallResult::Ok(0)
+}
+
+/// sys_getpeername - Get the address of the peer connected to a socket
+///
+/// Minimal stub: returns EOPNOTSUPP.
+pub fn sys_getpeername(_fd: u64, _addr: u64, _addrlen: u64) -> SyscallResult {
+    SyscallResult::Err(EOPNOTSUPP as u64)
+}
+
+/// sys_getsockname - Get the current address bound to a socket
+///
+/// Minimal stub: returns EOPNOTSUPP.
+pub fn sys_getsockname(_fd: u64, _addr: u64, _addrlen: u64) -> SyscallResult {
+    SyscallResult::Err(EOPNOTSUPP as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

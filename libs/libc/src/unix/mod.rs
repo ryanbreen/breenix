@@ -588,6 +588,12 @@ cfg_if! {
         #[link(name = "bsd")]
         #[link(name = "pthread")]
         extern "C" {}
+    } else if #[cfg(target_os = "breenix")] {
+        // Breenix provides all libc functions in a single static libc.a
+        // (libbreenix-libc). No separate -lm, -lrt, -lpthread needed.
+        // The static library is linked via -L native= in .cargo/config.toml.
+        #[link(name = "c")]
+        extern "C" {}
     } else {
         #[link(name = "c")]
         #[link(name = "m")]

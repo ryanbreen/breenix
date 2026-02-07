@@ -31,8 +31,10 @@ pub mod handler;
 // - other modules are shared across architectures
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatcher;
+pub mod clone;
 pub mod fifo;
 pub mod fs;
+pub mod futex;
 pub mod graphics;
 // handlers module has deep dependencies on x86_64-only subsystems
 // ARM64 uses arch_impl/aarch64/syscall_entry.rs for dispatch
@@ -41,6 +43,7 @@ pub mod handlers;
 pub mod ioctl;
 pub mod pipe;
 pub mod pty;
+pub mod random;
 pub mod session;
 pub mod signal;
 // Socket syscalls - enabled for both architectures
@@ -75,6 +78,7 @@ pub enum SyscallNumber {
     Dup = 32,           // Linux syscall number for dup
     Dup2 = 33,          // Linux syscall number for dup2
     Pause = 34,         // Linux syscall number for pause
+    Nanosleep = 35,     // Linux syscall number for nanosleep
     Getitimer = 36,     // Linux syscall number for getitimer
     Alarm = 37,         // Linux syscall number for alarm
     Setitimer = 38,     // Linux syscall number for setitimer
@@ -92,7 +96,13 @@ pub enum SyscallNumber {
     Exec = 59,          // Linux syscall number for execve
     Wait4 = 61,         // Linux syscall number for wait4/waitpid
     Kill = 62,          // Linux syscall number for kill
+    Getsockname = 51,    // Linux syscall number for getsockname
+    Getpeername = 52,    // Linux syscall number for getpeername
+    Setsockopt = 54,     // Linux syscall number for setsockopt
+    Clone = 56,          // Linux syscall number for clone
+    Getsockopt = 55,     // Linux syscall number for getsockopt
     SetPgid = 109,      // Linux syscall number for setpgid
+    Getppid = 110,      // Linux syscall number for getppid
     SetSid = 112,       // Linux syscall number for setsid
     GetPgid = 121,      // Linux syscall number for getpgid
     GetSid = 124,       // Linux syscall number for getsid
@@ -100,8 +110,12 @@ pub enum SyscallNumber {
     Sigsuspend = 130,   // Linux syscall number for rt_sigsuspend
     Sigaltstack = 131,  // Linux syscall number for sigaltstack
     GetTid = 186,       // Linux syscall number for gettid
+    SetTidAddress = 218, // Linux syscall number for set_tid_address
     ClockGetTime = 228, // Linux syscall number for clock_gettime
+    ExitGroup = 231,    // Linux syscall number for exit_group
     Pipe2 = 293,        // Linux syscall number for pipe2
+    Futex = 202,        // Linux syscall number for futex
+    GetRandom = 318,    // Linux syscall number for getrandom
     // Filesystem syscalls
     Access = 21,        // Linux syscall number for access
     Getcwd = 79,        // Linux syscall number for getcwd
@@ -156,6 +170,7 @@ impl SyscallNumber {
             32 => Some(Self::Dup),
             33 => Some(Self::Dup2),
             34 => Some(Self::Pause),
+            35 => Some(Self::Nanosleep),
             36 => Some(Self::Getitimer),
             37 => Some(Self::Alarm),
             38 => Some(Self::Setitimer),
@@ -169,11 +184,17 @@ impl SyscallNumber {
             48 => Some(Self::Shutdown),
             49 => Some(Self::Bind),
             50 => Some(Self::Listen),
+            51 => Some(Self::Getsockname),
+            52 => Some(Self::Getpeername),
             53 => Some(Self::Socketpair),
+            54 => Some(Self::Setsockopt),
+            55 => Some(Self::Getsockopt),
+            56 => Some(Self::Clone),
             59 => Some(Self::Exec),
             61 => Some(Self::Wait4),
             62 => Some(Self::Kill),
             109 => Some(Self::SetPgid),
+            110 => Some(Self::Getppid),
             112 => Some(Self::SetSid),
             121 => Some(Self::GetPgid),
             124 => Some(Self::GetSid),
@@ -181,8 +202,12 @@ impl SyscallNumber {
             130 => Some(Self::Sigsuspend),
             131 => Some(Self::Sigaltstack),
             186 => Some(Self::GetTid),
+            202 => Some(Self::Futex),
+            218 => Some(Self::SetTidAddress),
             228 => Some(Self::ClockGetTime),
+            231 => Some(Self::ExitGroup),
             293 => Some(Self::Pipe2),
+            318 => Some(Self::GetRandom),
             // Filesystem syscalls
             21 => Some(Self::Access),
             79 => Some(Self::Getcwd),

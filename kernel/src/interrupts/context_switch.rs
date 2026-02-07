@@ -648,21 +648,19 @@ fn switch_to_thread(
                         // the process's page table to be active (not the kernel CR3).
                         // Without this, we get a page fault when trying to write the
                         // signal frame to user memory.
-                        if let Some(ref page_table) = process.page_table {
-                            let page_table_frame = page_table.level_4_frame();
-                            let cr3_value = page_table_frame.start_address().as_u64();
+                        if let Some(cr3_val) = process.cr3_value() {
                             unsafe {
                                 use x86_64::registers::control::{Cr3, Cr3Flags};
                                 use x86_64::structures::paging::PhysFrame;
                                 use x86_64::PhysAddr;
                                 Cr3::write(
-                                    PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                    PhysFrame::containing_address(PhysAddr::new(cr3_val)),
                                     Cr3Flags::empty(),
                                 );
                             }
                             log::debug!(
                                 "Switched to process CR3 {:#x} for signal delivery (blocked-in-syscall path)",
-                                cr3_value
+                                cr3_val
                             );
                         }
 
@@ -755,31 +753,26 @@ fn switch_to_thread(
                         // The kernel code (e.g., waitpid HLT loop) will access userspace memory
                         // (like the wstatus pointer). Without switching CR3 here, we'd be using
                         // the previous process's page tables and get a page fault.
-                        if let Some(ref page_table) = process.page_table {
-                            let page_table_frame = page_table.level_4_frame();
-                            let cr3_value = page_table_frame.start_address().as_u64();
+                        if let Some(cr3_val) = process.cr3_value() {
                             unsafe {
                                 use x86_64::registers::control::{Cr3, Cr3Flags};
                                 use x86_64::structures::paging::PhysFrame;
                                 use x86_64::PhysAddr;
                                 Cr3::write(
-                                    PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                    PhysFrame::containing_address(PhysAddr::new(cr3_val)),
                                     Cr3Flags::empty(),
                                 );
                             }
                             log::debug!(
                                 "Switched to process CR3 {:#x} for blocked-in-syscall kernel return (thread {})",
-                                cr3_value,
+                                cr3_val,
                                 thread_id
                             );
                         }
                     }
 
                     // Set up CR3 for the process's page table
-                    if let Some(ref page_table) = process.page_table {
-                        let page_table_frame = page_table.level_4_frame();
-                        let cr3_value = page_table_frame.start_address().as_u64();
-
+                    if let Some(cr3_value) = process.cr3_value() {
                         unsafe {
                             // Tell timer_entry.asm to switch CR3 before IRETQ
                             crate::per_cpu::set_next_cr3(cr3_value);
@@ -966,6 +959,9 @@ fn restore_userspace_thread_context(
     if let Some(mut manager_guard) = guard_option {
         if let Some(ref mut manager) = *manager_guard {
             if let Some((pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                // Get CR3 before borrowing main_thread mutably
+                let process_cr3 = process.cr3_value();
+
                 if let Some(ref mut thread) = process.main_thread {
                     if thread.privilege == ThreadPrivilege::User {
                         // Debug marker: restoring userspace context (raw serial, no locks)
@@ -980,22 +976,8 @@ fn restore_userspace_thread_context(
                         //
                         // Instead, we set next_cr3 and saved_process_cr3 to communicate
                         // the target CR3 to the assembly code.
-                        if let Some(ref page_table) = process.page_table {
-                            let page_table_frame = page_table.level_4_frame();
-                            let cr3_value = page_table_frame.start_address().as_u64();
-
+                        if let Some(cr3_value) = process_cr3 {
                             unsafe {
-                                use x86_64::registers::control::Cr3;
-                                let (current_frame, _flags) = Cr3::read();
-                                if current_frame != page_table_frame {
-                                    log::trace!(
-                                        "CR3 switch deferred: {:#x} -> {:#x} (pid {})",
-                                        current_frame.start_address().as_u64(),
-                                        cr3_value,
-                                        pid.as_u64()
-                                    );
-                                }
-
                                 // Tell timer_entry.asm to switch CR3 before IRETQ
                                 crate::per_cpu::set_next_cr3(cr3_value);
 
@@ -1037,21 +1019,19 @@ fn restore_userspace_thread_context(
                             // the process's page table to be active (not the kernel CR3).
                             // Without this, we get a page fault when trying to write the
                             // signal frame to user memory.
-                            if let Some(ref page_table) = process.page_table {
-                                let page_table_frame = page_table.level_4_frame();
-                                let cr3_value = page_table_frame.start_address().as_u64();
+                            if let Some(cr3_val) = process.cr3_value() {
                                 unsafe {
                                     use x86_64::registers::control::{Cr3, Cr3Flags};
                                     use x86_64::structures::paging::PhysFrame;
                                     use x86_64::PhysAddr;
                                     Cr3::write(
-                                        PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                                        PhysFrame::containing_address(PhysAddr::new(cr3_val)),
                                         Cr3Flags::empty(),
                                     );
                                 }
                                 log::debug!(
                                     "Switched to process CR3 {:#x} for signal delivery",
-                                    cr3_value
+                                    cr3_val
                                 );
                             }
 
@@ -1193,9 +1173,7 @@ fn setup_first_userspace_entry(
             // 1. Kernel can run on process page tables (they have kernel mappings)
             // 2. entry.asm (syscall_return_to_userspace) will perform the actual switch before IRETQ
             // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
-            if let Some(page_table) = process.page_table.as_ref() {
-                let new_frame = page_table.level_4_frame();
-                let cr3_value = new_frame.start_address().as_u64();
+            if let Some(cr3_value) = process.cr3_value() {
                 log::trace!("CR3 switch deferred to {:#x}", cr3_value);
 
                 unsafe {
@@ -1261,15 +1239,13 @@ fn check_and_deliver_signals_for_current_thread(
 
             if crate::signal::delivery::has_deliverable_signals(process) {
                 // Switch to process's page table for signal delivery
-                if let Some(ref page_table) = process.page_table {
-                    let page_table_frame = page_table.level_4_frame();
-                    let cr3_value = page_table_frame.start_address().as_u64();
+                if let Some(cr3_val) = process.cr3_value() {
                     unsafe {
                         use x86_64::registers::control::{Cr3, Cr3Flags};
                         use x86_64::structures::paging::PhysFrame;
                         use x86_64::PhysAddr;
                         Cr3::write(
-                            PhysFrame::containing_address(PhysAddr::new(cr3_value)),
+                            PhysFrame::containing_address(PhysAddr::new(cr3_val)),
                             Cr3Flags::empty(),
                         );
                     }

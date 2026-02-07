@@ -109,23 +109,42 @@ if [ "$CLEAN" = true ]; then
     echo ""
 
     if [ "$ARCH" = "arm64" ]; then
-        echo "[1/3] Building userspace binaries (aarch64)..."
+        echo "[1/4] Building userspace binaries (aarch64, no_std)..."
         (cd "$BREENIX_ROOT/userspace/tests" && ./build-aarch64.sh)
 
         echo ""
-        echo "[2/3] Creating ext2 disk image..."
+        echo "[2/4] Building std userspace binary (aarch64)..."
+        if [ -f "$BREENIX_ROOT/userspace/tests-std/build.sh" ]; then
+            "$BREENIX_ROOT/userspace/tests-std/build.sh" --arch aarch64
+        else
+            echo "  (skipped - userspace/tests-std/build.sh not found)"
+        fi
+
+        echo ""
+        echo "[3/4] Creating ext2 disk image..."
         "$BREENIX_ROOT/scripts/create_ext2_disk.sh" --arch aarch64
+
+        echo ""
+        echo "[4/4] Building kernel..."
     else
-        echo "[1/3] Building userspace binaries (x86_64)..."
+        echo "[1/4] Building userspace binaries (x86_64, no_std)..."
         (cd "$BREENIX_ROOT/userspace/tests" && ./build.sh)
 
         echo ""
-        echo "[2/3] Creating ext2 disk image..."
-        "$BREENIX_ROOT/scripts/create_ext2_disk.sh"
-    fi
+        echo "[2/4] Building std userspace binary..."
+        if [ -f "$BREENIX_ROOT/userspace/tests-std/build.sh" ]; then
+            "$BREENIX_ROOT/userspace/tests-std/build.sh"
+        else
+            echo "  (skipped - userspace/tests-std/build.sh not found)"
+        fi
 
-    echo ""
-    echo "[3/3] Building kernel..."
+        echo ""
+        echo "[3/4] Creating ext2 disk image..."
+        "$BREENIX_ROOT/scripts/create_ext2_disk.sh"
+
+        echo ""
+        echo "[4/4] Building kernel..."
+    fi
     eval $BUILD_CMD
     echo ""
 fi
