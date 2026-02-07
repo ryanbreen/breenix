@@ -473,29 +473,75 @@ fn generate_cpuinfo() -> String {
 
     #[cfg(target_arch = "x86_64")]
     {
-        format!(
-            "processor\t: 0\n\
-             vendor_id\t: GenuineBreenix\n\
-             cpu family\t: 6\n\
-             model\t\t: 0\n\
-             model name\t: Breenix Virtual CPU\n\
-             flags\t\t: fpu vme de pse tsc msr pae mce cx8\n\
-             bogomips\t: 3000.00\n\n"
-        )
+        if let Some(info) = crate::arch_impl::x86_64::cpuinfo::get() {
+            format!(
+                "processor\t: 0\n\
+                 vendor_id\t: {}\n\
+                 cpu family\t: {}\n\
+                 model\t\t: {}\n\
+                 model name\t: {}\n\
+                 stepping\t: {}\n\
+                 cpu MHz\t\t: 0.000\n\
+                 cache size\t: 0 KB\n\
+                 physical id\t: 0\n\
+                 siblings\t: {}\n\
+                 core id\t\t: 0\n\
+                 cpu cores\t: 1\n\
+                 fpu\t\t: {}\n\
+                 fpu_exception\t: {}\n\
+                 cpuid level\t: {}\n\
+                 clflush size\t: {}\n\
+                 flags\t\t: {}\n\
+                 bogomips\t: 0.00\n\n",
+                info.vendor_str(),
+                info.family,
+                info.model,
+                info.brand_str(),
+                info.stepping,
+                info.logical_processors,
+                if info.features_edx & 1 != 0 { "yes" } else { "no" },
+                if info.features_edx & 1 != 0 { "yes" } else { "no" },
+                info.max_leaf,
+                info.clflush_size,
+                info.flags_string(),
+            )
+        } else {
+            format!("processor\t: 0\nmodel name\t: Unknown (CPUID not initialized)\n\n")
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        format!(
-            "processor\t: 0\n\
-             BogoMIPS\t: 100.00\n\
-             Features\t: fp asimd\n\
-             CPU implementer\t: 0x00\n\
-             CPU architecture\t: 8\n\
-             CPU variant\t: 0x0\n\
-             CPU part\t: 0x000\n\
-             CPU revision\t: 0\n\n"
-        )
+        if let Some(info) = crate::arch_impl::aarch64::cpuinfo::get() {
+            let part_name = info.part_name();
+            let impl_name = info.implementer_name();
+            let model_name = if part_name != "Unknown" {
+                format!("{} {}", impl_name, part_name)
+            } else {
+                format!("{} (part 0x{:03x})", impl_name, info.part_number())
+            };
+            format!(
+                "processor\t: 0\n\
+                 BogoMIPS\t: 0.00\n\
+                 Features\t: {}\n\
+                 CPU implementer\t: 0x{:02x}\n\
+                 CPU architecture\t: 8\n\
+                 CPU variant\t: 0x{:x}\n\
+                 CPU part\t: 0x{:03x}\n\
+                 CPU revision\t: {}\n\
+                 Model name\t: {}\n\
+                 Address sizes\t: {} bits physical\n\n",
+                info.features_string(),
+                info.implementer(),
+                info.variant(),
+                info.part_number(),
+                info.revision(),
+                model_name,
+                info.pa_bits(),
+            )
+        } else {
+            format!("processor\t: 0\nmodel name\t: Unknown (CPU detection not initialized)\n\n")
+        }
     }
 }
 

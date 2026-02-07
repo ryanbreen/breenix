@@ -359,6 +359,12 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     crate::fs::devptsfs::init();
     log::info!("devptsfs initialized at /dev/pts");
 
+    // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
+    crate::arch_impl::x86_64::cpuinfo::init();
+    log::info!("CPU detected: {}", crate::arch_impl::x86_64::cpuinfo::get()
+        .map(|c| c.brand_str())
+        .unwrap_or("Unknown"));
+
     // Initialize procfs (/proc virtual filesystem)
     crate::fs::procfs::init();
     log::info!("procfs initialized at /proc");

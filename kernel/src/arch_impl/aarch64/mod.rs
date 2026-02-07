@@ -12,6 +12,7 @@ pub mod boot;
 #[allow(unused_imports)]
 pub mod constants;
 pub mod cpu;
+pub mod cpuinfo;
 pub mod elf;
 pub mod exception;
 pub mod exception_frame;

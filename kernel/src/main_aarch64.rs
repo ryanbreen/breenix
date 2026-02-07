@@ -327,6 +327,16 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::fs::devptsfs::init();
     serial_println!("[boot] devptsfs initialized at /dev/pts");
 
+    // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
+    kernel::arch_impl::aarch64::cpuinfo::init();
+    serial_println!("[boot] CPU detected: {} {}",
+        kernel::arch_impl::aarch64::cpuinfo::get()
+            .map(|c| c.implementer_name())
+            .unwrap_or("Unknown"),
+        kernel::arch_impl::aarch64::cpuinfo::get()
+            .map(|c| c.part_name())
+            .unwrap_or("Unknown"));
+
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
     serial_println!("[boot] procfs initialized at /proc");
