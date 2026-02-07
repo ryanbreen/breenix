@@ -499,6 +499,11 @@ impl FdTable {
         self.get(fd).map(|e| e.status_flags).ok_or(9) // EBADF
     }
 
+    /// Count the number of open file descriptors
+    pub fn open_fd_count(&self) -> usize {
+        self.fds.iter().filter(|slot| slot.is_some()).count()
+    }
+
     /// Set file status flags (for F_SETFL)
     /// Only modifies O_NONBLOCK and O_APPEND; other flags are ignored
     pub fn set_status_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
