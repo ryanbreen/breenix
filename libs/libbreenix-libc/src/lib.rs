@@ -45,7 +45,8 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 ///
 /// Note: This is a simple static for now. Thread-local storage (TLS) will be
 /// implemented in Phase 4 when we add threading support.
-static mut ERRNO: i32 = 0;
+#[no_mangle]
+pub static mut ERRNO: i32 = 0;
 
 /// Returns a pointer to the thread-local errno variable.
 #[no_mangle]
@@ -443,6 +444,21 @@ pub unsafe extern "C" fn link(oldpath: *const u8, newpath: *const u8) -> i32 {
         newpath as u64,
     ) as i64;
     syscall_result_to_c_int(result)
+}
+
+/// linkat - create a hard link relative to directory file descriptors
+///
+/// We ignore dirfd and flags, treating paths as absolute (Breenix doesn't
+/// support AT_FDCWD/AT_ operations yet). This is sufficient for std::fs::hard_link.
+#[no_mangle]
+pub unsafe extern "C" fn linkat(
+    _olddirfd: i32,
+    oldpath: *const u8,
+    _newdirfd: i32,
+    newpath: *const u8,
+    _flags: i32,
+) -> i32 {
+    link(oldpath, newpath)
 }
 
 /// symlink - create a symbolic link
@@ -2244,11 +2260,182 @@ pub unsafe extern "C" fn readv(fd: i32, iov: *const Iovec, iovcnt: i32) -> isize
     total
 }
 
+// =============================================================================
+// POSIX Directory Functions (opendir/readdir_r/closedir)
+// =============================================================================
+
+/// Internal DIR structure for directory iteration.
+///
+/// Contains a file descriptor, a buffer for getdents64 results,
+/// and position tracking within the buffer.
+#[repr(C)]
+pub struct Dir {
+    fd: i32,
+    buf: [u8; 2048],
+    buf_len: usize,   // How many valid bytes are in buf
+    buf_pos: usize,   // Current read position within buf
+    eof: bool,        // Whether getdents64 returned 0 (no more entries)
+}
+
+/// POSIX dirent structure
+///
+/// Note: d_name is a fixed-size array matching the Linux convention.
+#[repr(C)]
+pub struct Dirent {
+    pub d_ino: u64,
+    pub d_off: i64,
+    pub d_reclen: u16,
+    pub d_type: u8,
+    pub d_name: [u8; 256],
+}
+
+const O_RDONLY_DIR: i32 = 0;
+const O_DIRECTORY: i32 = 0o200000;
+
+/// opendir - open a directory stream
+#[no_mangle]
+pub unsafe extern "C" fn opendir(name: *const u8) -> *mut Dir {
+    if name.is_null() {
+        ERRNO = EFAULT;
+        return core::ptr::null_mut();
+    }
+
+    // Open the directory with O_RDONLY | O_DIRECTORY
+    let fd = open(name, O_RDONLY_DIR | O_DIRECTORY, 0);
+    if fd < 0 {
+        // errno already set by open()
+        return core::ptr::null_mut();
+    }
+
+    // Allocate a Dir struct using sbrk (we don't have malloc)
+    let dir_size = core::mem::size_of::<Dir>();
+    let ptr = sbrk(dir_size as isize) as *mut Dir;
+    if ptr.is_null() || (ptr as usize) == usize::MAX {
+        close(fd);
+        ERRNO = libbreenix::Errno::ENOMEM as i32;
+        return core::ptr::null_mut();
+    }
+
+    // Initialize the Dir struct
+    core::ptr::write_bytes(ptr as *mut u8, 0, dir_size);
+    (*ptr).fd = fd;
+    (*ptr).buf_len = 0;
+    (*ptr).buf_pos = 0;
+    (*ptr).eof = false;
+
+    ptr
+}
+
+/// readdir_r - reentrant read directory entry
+///
+/// Reads the next directory entry from the DIR stream into `entry`.
+/// On success, stores a pointer to `entry` in `*result`.
+/// At end of directory, `*result` is set to null.
+#[no_mangle]
+pub unsafe extern "C" fn readdir_r(
+    dirp: *mut Dir,
+    entry: *mut Dirent,
+    result: *mut *mut Dirent,
+) -> i32 {
+    if dirp.is_null() || entry.is_null() || result.is_null() {
+        return EINVAL;
+    }
+
+    let dir = &mut *dirp;
+
+    // If we've consumed all buffered data, fetch more
+    if dir.buf_pos >= dir.buf_len {
+        if dir.eof {
+            *result = core::ptr::null_mut();
+            return 0;
+        }
+
+        // Call getdents64 to fill the buffer
+        let ret = libbreenix::raw::syscall3(
+            libbreenix::syscall::nr::GETDENTS64,
+            dir.fd as u64,
+            dir.buf.as_mut_ptr() as u64,
+            dir.buf.len() as u64,
+        ) as i64;
+
+        if ret < 0 {
+            *result = core::ptr::null_mut();
+            return (-ret) as i32;
+        }
+
+        if ret == 0 {
+            dir.eof = true;
+            *result = core::ptr::null_mut();
+            return 0;
+        }
+
+        dir.buf_len = ret as usize;
+        dir.buf_pos = 0;
+    }
+
+    // Parse the next dirent64 from the buffer
+    let pos = dir.buf_pos;
+    if pos + 19 > dir.buf_len {
+        // Not enough data for a header
+        *result = core::ptr::null_mut();
+        return 0;
+    }
+
+    let buf_ptr = dir.buf.as_ptr().add(pos);
+
+    // Read fields from the kernel's linux_dirent64 format:
+    // d_ino: u64 at offset 0
+    // d_off: i64 at offset 8
+    // d_reclen: u16 at offset 16
+    // d_type: u8 at offset 18
+    // d_name: [u8] at offset 19
+    let d_ino = core::ptr::read_unaligned(buf_ptr as *const u64);
+    let d_off = core::ptr::read_unaligned(buf_ptr.add(8) as *const i64);
+    let d_reclen = core::ptr::read_unaligned(buf_ptr.add(16) as *const u16);
+    let d_type = core::ptr::read(buf_ptr.add(18));
+
+    // Copy d_name
+    let name_ptr = buf_ptr.add(19);
+    let name_max_len = (d_reclen as usize).saturating_sub(19).min(255);
+
+    (*entry).d_ino = d_ino;
+    (*entry).d_off = d_off;
+    (*entry).d_reclen = d_reclen;
+    (*entry).d_type = d_type;
+
+    // Zero the name first, then copy
+    core::ptr::write_bytes((*entry).d_name.as_mut_ptr(), 0, 256);
+    core::ptr::copy_nonoverlapping(name_ptr, (*entry).d_name.as_mut_ptr(), name_max_len);
+
+    // Advance buffer position by d_reclen
+    dir.buf_pos += d_reclen as usize;
+
+    *result = entry;
+    0
+}
+
+/// closedir - close a directory stream
+#[no_mangle]
+pub unsafe extern "C" fn closedir(dirp: *mut Dir) -> i32 {
+    if dirp.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+
+    let fd = (*dirp).fd;
+    // We can't free sbrk memory, but we can close the fd
+    close(fd);
+    0
+}
+
 /// dirfd - get directory file descriptor from DIR stream
 #[no_mangle]
-pub unsafe extern "C" fn dirfd(_dirp: *mut u8) -> i32 {
-    ERRNO = ENOSYS;
-    -1
+pub unsafe extern "C" fn dirfd(dirp: *mut Dir) -> i32 {
+    if dirp.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+    (*dirp).fd
 }
 
 /// futimens - change file timestamps with nanosecond precision

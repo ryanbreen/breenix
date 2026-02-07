@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build Rust std test binary for Breenix
+# Build Rust std test binaries for Breenix
 #
-# This script builds the std-based hello_world binary and copies it
-# to userspace/tests/ so it gets included in the ext2 disk image.
+# This script builds all std-based test binaries and copies them
+# to userspace/tests/ so they get included in the ext2 disk image.
 #
 # Dependencies:
 #   - rust-fork/library (forked Rust std with target_os = "breenix")
@@ -12,7 +12,7 @@
 #   ./userspace/tests-std/build.sh                  # x86_64 (default)
 #   ./userspace/tests-std/build.sh --arch aarch64   # aarch64
 #
-# The built binary replaces the no_std hello_world with a real Rust std program.
+# Built binaries replace their no_std counterparts in the ext2 disk.
 
 set -e
 
@@ -60,7 +60,7 @@ echo "  Architecture: $ARCH"
 echo ""
 
 # Step 1: Build libbreenix-libc (produces libc.a)
-echo "[1/2] Building libbreenix-libc ($ARCH)..."
+echo "[1/3] Building libbreenix-libc ($ARCH)..."
 LIBC_DIR="$PROJECT_ROOT/libs/libbreenix-libc"
 
 if [ ! -d "$LIBC_DIR" ]; then
@@ -78,8 +78,8 @@ fi
 echo "  libbreenix-libc built successfully"
 echo ""
 
-# Step 2: Build tests-std (produces hello_std_real)
-echo "[2/2] Building tests-std ($ARCH)..."
+# Step 2: Build all tests-std binaries
+echo "[2/3] Building tests-std ($ARCH)..."
 
 RUST_FORK_LIBRARY="$PROJECT_ROOT/rust-fork/library"
 if [ ! -d "$RUST_FORK_LIBRARY" ]; then
@@ -97,22 +97,107 @@ fi
     done
 )
 
-# Verify the binary exists
-STD_BINARY="$SCRIPT_DIR/target/$TARGET_DIR/release/hello_std_real"
-if [ ! -f "$STD_BINARY" ]; then
-    echo "  ERROR: Binary not found at $STD_BINARY"
-    exit 1
-fi
-
 echo "  tests-std built successfully"
 echo ""
 
-# Step 3: Copy as hello_world.elf to userspace/tests/ for ext2 inclusion
+# Step 3: Copy all binaries as .elf to userspace/tests/ for ext2 inclusion
+echo "[3/3] Installing std binaries..."
+
+# All std binaries to install
+# Format: "binary_name:elf_name" (elf_name defaults to binary_name.elf)
+STD_BINARIES=(
+    # hello_std_real replaces hello_world on disk
+    "hello_std_real:hello_world"
+
+    # Phase 1: No-fork programs
+    "syscall_enosys"
+    "clock_gettime_test"
+    "file_read_test"
+    "lseek_test"
+    "fs_write_test"
+    "fs_rename_test"
+    "fs_large_file_test"
+    "fs_directory_test"
+    "fs_link_test"
+    "access_test"
+    "devfs_test"
+    "cwd_test"
+    "getdents_test"
+    "pipe_test"
+    "pipe2_test"
+    "dup_test"
+    "fcntl_test"
+    "poll_test"
+    "select_test"
+    "nonblock_test"
+    "brk_test"
+    "signal_handler_test"
+    "signal_return_test"
+    "signal_regs_test"
+    "sigaltstack_test"
+    "sigsuspend_test"
+    "pause_test"
+    "tty_test"
+    "session_test"
+    "unix_socket_test"
+    "unix_named_socket_test"
+    "fifo_test"
+
+    # Phase 2: Fork-dependent programs
+    "fork_test"
+    "fork_memory_test"
+    "fork_state_test"
+    "waitpid_test"
+    "exec_argv_test"
+    "cloexec_test"
+    "kill_process_group_test"
+    "sigchld_test"
+    "sigchld_job_test"
+    "ctrl_c_test"
+    "job_control_test"
+    "signal_fork_test"
+    "signal_exec_test"
+    "wnohang_timing_test"
+    "fork_pending_signal_test"
+    "shell_pipe_test"
+    "pipeline_test"
+
+    # Phase 2: CoW tests
+    "cow_cleanup_test"
+    "cow_sole_owner_test"
+    "cow_stress_test"
+    "cow_readonly_test"
+    "cow_signal_test"
+)
+
+RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"
+INSTALLED=0
+FAILED=0
+
 if [ -d "$TESTS_DIR" ]; then
-    cp "$STD_BINARY" "$TESTS_DIR/hello_world.elf"
-    SIZE=$(stat -f%z "$TESTS_DIR/hello_world.elf" 2>/dev/null || stat -c%s "$TESTS_DIR/hello_world.elf")
-    echo "Installed std hello_world.elf ($SIZE bytes) -> $TESTS_DIR/"
-    echo "  This replaces the no_std hello_world in the ext2 disk"
+    for entry in "${STD_BINARIES[@]}"; do
+        # Parse "name:elf_name" or just "name"
+        if [[ "$entry" == *":"* ]]; then
+            BIN_NAME="${entry%%:*}"
+            ELF_NAME="${entry##*:}"
+        else
+            BIN_NAME="$entry"
+            ELF_NAME="$entry"
+        fi
+
+        SRC="$RELEASE_DIR/$BIN_NAME"
+        DST="$TESTS_DIR/${ELF_NAME}.elf"
+
+        if [ -f "$SRC" ]; then
+            cp "$SRC" "$DST"
+            SIZE=$(stat -f%z "$DST" 2>/dev/null || stat -c%s "$DST")
+            echo "  Installed ${ELF_NAME}.elf ($SIZE bytes)"
+            INSTALLED=$((INSTALLED + 1))
+        else
+            echo "  WARNING: $BIN_NAME not found at $SRC"
+            FAILED=$((FAILED + 1))
+        fi
+    done
 else
     echo "  WARNING: $TESTS_DIR not found, skipping ext2 copy"
 fi
@@ -120,4 +205,8 @@ fi
 echo ""
 echo "========================================"
 echo "  STD BUILD COMPLETE ($ARCH)"
+echo "  Installed: $INSTALLED binaries"
+if [ $FAILED -gt 0 ]; then
+    echo "  Failed: $FAILED binaries"
+fi
 echo "========================================"

@@ -6,6 +6,8 @@
 //! Design decisions:
 //! - Uses BTreeMap for sparse storage (only track shared frames)
 //! - Untracked frames are assumed to have refcount=1 (private)
+//! - Untracked frames CAN be freed: frame_decref on an untracked frame
+//!   returns true (refcount 1->0), allowing proper cleanup on process exit
 //! - Single global lock (acceptable for initial implementation)
 
 use alloc::collections::BTreeMap;
@@ -31,11 +33,27 @@ struct FrameMetadata {
 }
 
 impl FrameMetadata {
-    #[allow(dead_code)]
     fn new(initial_count: u32) -> Self {
         Self {
             refcount: AtomicU32::new(initial_count),
         }
+    }
+}
+
+/// Register a frame in the metadata system with refcount=1 (private)
+///
+/// Call this when allocating a new frame that will be tracked for cleanup.
+/// This is used by CoW fault handlers to register replacement frames so they
+/// can be properly freed when the process exits.
+///
+/// If the frame is already tracked, this is a no-op.
+#[allow(dead_code)] // Public API for explicit frame tracking
+pub fn frame_register(frame: PhysFrame) {
+    let addr = frame.start_address().as_u64();
+    let mut metadata = FRAME_METADATA.lock();
+
+    if !metadata.contains_key(&addr) {
+        metadata.insert(addr, FrameMetadata::new(1));
     }
 }
 
@@ -81,20 +99,15 @@ pub fn frame_decref(frame: PhysFrame) -> bool {
         // old_count > 1, still shared
         false
     } else {
-        // Frame wasn't tracked in CoW metadata.
-        // This could be:
-        // 1. A frame allocated by a child process after fork (could be freed)
-        // 2. A frame that was never part of CoW sharing (might be unsafe to free)
+        // Frame wasn't tracked in CoW metadata - it's a private frame with
+        // implicit refcount=1. This happens for:
+        // 1. Frames from initial ELF loading (before any fork)
+        // 2. Frames allocated by CoW fault handler (replacement pages)
+        // 3. Frames allocated by child processes after fork
         //
-        // SAFETY: Don't free untracked frames. This causes a memory leak for
-        // child-allocated pages, but prevents potential corruption if the frame
-        // is still in use by something else. The root cause needs further
-        // investigation.
-        log::trace!(
-            "frame_decref: frame {:#x} not tracked, refusing to free (leak to prevent corruption)",
-            addr
-        );
-        false
+        // All of these are safe to free: they belong to exactly one process
+        // (the one calling frame_decref during cleanup), so refcount 1->0.
+        true
     }
 }
 
@@ -182,5 +195,34 @@ mod tests {
         assert!(!frame_decref(frame)); // Now 1, not freeable
         assert!(frame_decref(frame)); // Now 0, freeable
         assert_eq!(frame_refcount(frame), 1); // Back to untracked
+    }
+
+    #[test_case]
+    fn test_untracked_decref_allows_free() {
+        // Untracked frames have implicit refcount=1, so decref should allow free
+        let frame = test_frame(0x5000_0000);
+        assert!(frame_decref(frame)); // Untracked -> freeable
+    }
+
+    #[test_case]
+    fn test_register_then_decref() {
+        let frame = test_frame(0x6000_0000);
+        frame_register(frame); // Explicitly tracked at refcount=1
+        assert_eq!(frame_refcount(frame), 1);
+        assert!(frame_decref(frame)); // 1->0, freeable
+        assert_eq!(frame_refcount(frame), 1); // Back to untracked
+    }
+
+    #[test_case]
+    fn test_register_idempotent() {
+        let frame = test_frame(0x7000_0000);
+        frame_register(frame);
+        frame_incref(frame); // Now 2
+        frame_register(frame); // Should be no-op (already tracked)
+        assert_eq!(frame_refcount(frame), 2); // Still 2, not reset to 1
+
+        // Cleanup
+        frame_decref(frame);
+        frame_decref(frame);
     }
 }

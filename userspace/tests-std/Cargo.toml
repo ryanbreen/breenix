@@ -14,6 +14,225 @@ description = "Test programs using the real Rust standard library"
 name = "hello_std_real"
 path = "src/hello_std_real.rs"
 
+[[bin]]
+name = "signal_handler_test"
+path = "src/signal_handler_test.rs"
+
+[[bin]]
+name = "signal_return_test"
+path = "src/signal_return_test.rs"
+
+[[bin]]
+name = "signal_regs_test"
+path = "src/signal_regs_test.rs"
+
+[[bin]]
+name = "sigaltstack_test"
+path = "src/sigaltstack_test.rs"
+
+[[bin]]
+name = "sigsuspend_test"
+path = "src/sigsuspend_test.rs"
+
+[[bin]]
+name = "pause_test"
+path = "src/pause_test.rs"
+
+[[bin]]
+name = "tty_test"
+path = "src/tty_test.rs"
+
+[[bin]]
+name = "session_test"
+path = "src/session_test.rs"
+
+[[bin]]
+name = "unix_socket_test"
+path = "src/unix_socket_test.rs"
+
+[[bin]]
+name = "fifo_test"
+path = "src/fifo_test.rs"
+
+[[bin]]
+name = "unix_named_socket_test"
+path = "src/unix_named_socket_test.rs"
+
+[[bin]]
+name = "syscall_enosys"
+path = "src/syscall_enosys.rs"
+
+[[bin]]
+name = "clock_gettime_test"
+path = "src/clock_gettime_test.rs"
+
+[[bin]]
+name = "file_read_test"
+path = "src/file_read_test.rs"
+
+[[bin]]
+name = "lseek_test"
+path = "src/lseek_test.rs"
+
+[[bin]]
+name = "fs_write_test"
+path = "src/fs_write_test.rs"
+
+[[bin]]
+name = "fs_rename_test"
+path = "src/fs_rename_test.rs"
+
+[[bin]]
+name = "fs_large_file_test"
+path = "src/fs_large_file_test.rs"
+
+[[bin]]
+name = "fs_directory_test"
+path = "src/fs_directory_test.rs"
+
+[[bin]]
+name = "fs_link_test"
+path = "src/fs_link_test.rs"
+
+[[bin]]
+name = "access_test"
+path = "src/access_test.rs"
+
+[[bin]]
+name = "devfs_test"
+path = "src/devfs_test.rs"
+
+[[bin]]
+name = "cwd_test"
+path = "src/cwd_test.rs"
+
+[[bin]]
+name = "getdents_test"
+path = "src/getdents_test.rs"
+
+[[bin]]
+name = "pipe_test"
+path = "src/pipe_test.rs"
+
+[[bin]]
+name = "pipe2_test"
+path = "src/pipe2_test.rs"
+
+[[bin]]
+name = "dup_test"
+path = "src/dup_test.rs"
+
+[[bin]]
+name = "fcntl_test"
+path = "src/fcntl_test.rs"
+
+[[bin]]
+name = "poll_test"
+path = "src/poll_test.rs"
+
+[[bin]]
+name = "select_test"
+path = "src/select_test.rs"
+
+[[bin]]
+name = "nonblock_test"
+path = "src/nonblock_test.rs"
+
+[[bin]]
+name = "brk_test"
+path = "src/brk_test.rs"
+
+# Phase 2: Fork-dependent programs
+[[bin]]
+name = "fork_test"
+path = "src/fork_test.rs"
+
+[[bin]]
+name = "fork_memory_test"
+path = "src/fork_memory_test.rs"
+
+[[bin]]
+name = "fork_state_test"
+path = "src/fork_state_test.rs"
+
+[[bin]]
+name = "waitpid_test"
+path = "src/waitpid_test.rs"
+
+[[bin]]
+name = "exec_argv_test"
+path = "src/exec_argv_test.rs"
+
+[[bin]]
+name = "cloexec_test"
+path = "src/cloexec_test.rs"
+
+# Phase 2b: Process/signal fork-dependent programs
+[[bin]]
+name = "kill_process_group_test"
+path = "src/kill_process_group_test.rs"
+
+[[bin]]
+name = "sigchld_test"
+path = "src/sigchld_test.rs"
+
+[[bin]]
+name = "sigchld_job_test"
+path = "src/sigchld_job_test.rs"
+
+[[bin]]
+name = "ctrl_c_test"
+path = "src/ctrl_c_test.rs"
+
+[[bin]]
+name = "job_control_test"
+path = "src/job_control_test.rs"
+
+[[bin]]
+name = "signal_fork_test"
+path = "src/signal_fork_test.rs"
+
+[[bin]]
+name = "signal_exec_test"
+path = "src/signal_exec_test.rs"
+
+[[bin]]
+name = "wnohang_timing_test"
+path = "src/wnohang_timing_test.rs"
+
+[[bin]]
+name = "fork_pending_signal_test"
+path = "src/fork_pending_signal_test.rs"
+
+[[bin]]
+name = "shell_pipe_test"
+path = "src/shell_pipe_test.rs"
+
+[[bin]]
+name = "pipeline_test"
+path = "src/pipeline_test.rs"
+
+# Phase 3: Copy-on-Write test programs
+[[bin]]
+name = "cow_cleanup_test"
+path = "src/cow_cleanup_test.rs"
+
+[[bin]]
+name = "cow_sole_owner_test"
+path = "src/cow_sole_owner_test.rs"
+
+[[bin]]
+name = "cow_stress_test"
+path = "src/cow_stress_test.rs"
+
+[[bin]]
+name = "cow_readonly_test"
+path = "src/cow_readonly_test.rs"
+
+[[bin]]
+name = "cow_signal_test"
+path = "src/cow_signal_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"

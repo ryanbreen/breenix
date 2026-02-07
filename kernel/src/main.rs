@@ -1113,15 +1113,7 @@ fn kernel_main_continue() -> ! {
     {
         log::info!("=== Running kernel tests to create userspace processes ===");
 
-        // TEMPORARILY DISABLED: All tests except test_hello_std_real disabled
-        // to debug clone syscall without competing processes or kernel panics
-        // from pre-existing fork/CoW page table bugs.
-        //
-        // TODO: Re-enable after clone is working and fork page table lifecycle
-        // bug is fixed.
-
-        /*
-        // Also run original tests
+        // Run all tests - fork/CoW page table lifecycle bug fixed
         log::info!("=== BASELINE TEST: Direct userspace execution ===");
         test_exec::test_direct_execution();
         log::info!("Direct execution test: process scheduled for execution.");
@@ -1155,8 +1147,6 @@ fn kernel_main_continue() -> ! {
         test_exec::test_pipe();
 
         // Test Unix domain socket (AF_UNIX) - socketpair AND bind/listen/accept/connect
-        // The combined test (unix_socket_test) runs both socketpair tests (phases 1-12) and
-        // named socket tests (phases 13-18) in a single process to avoid scheduler contention.
         log::info!("=== IPC TEST: Unix domain socket (socketpair + named sockets) ===");
         test_exec::test_unix_socket();
 
@@ -1164,32 +1154,27 @@ fn kernel_main_continue() -> ! {
         log::info!("=== IPC TEST: FIFO (named pipe) functionality ===");
         test_exec::test_fifo();
 
-        // NOTE: Pipe + fork and concurrent pipe tests removed to reduce test load.
-        // The core pipe functionality is validated by test_pipe() above.
-        // These complex multi-process tests cause timing-related timeouts.
-
         // Test SIGTERM delivery with default handler (kill test)
         log::info!("=== SIGNAL TEST: SIGTERM delivery with default handler ===");
         test_exec::test_signal_kill();
 
-        // Test SIGCHLD delivery when child exits - run early to give time for child to execute
+        // Test SIGCHLD delivery when child exits
         log::info!("=== SIGNAL TEST: SIGCHLD delivery on child exit ===");
         test_exec::test_sigchld();
 
-        // Test pause() syscall - run early before fork-heavy tests
-        // pause() needs child to send signal, so keep it before tests that create many children
+        // Test pause() syscall
         log::info!("=== SIGNAL TEST: pause() syscall functionality ===");
         test_exec::test_pause();
 
-        // Test process group kill semantics (kill(0, sig), kill(-pgid, sig), kill(-1, sig))
+        // Test process group kill semantics
         log::info!("=== SIGNAL TEST: process group kill semantics ===");
         test_exec::test_kill_process_group();
 
-        // Test sigsuspend() syscall - atomic mask replacement and suspend
+        // Test sigsuspend() syscall
         log::info!("=== SIGNAL TEST: sigsuspend() syscall functionality ===");
         test_exec::test_sigsuspend();
 
-        // Test sigaltstack() syscall - alternate signal stack
+        // Test sigaltstack() syscall
         log::info!("=== SIGNAL TEST: sigaltstack() syscall functionality ===");
         test_exec::test_sigaltstack();
 
@@ -1202,10 +1187,8 @@ fn kernel_main_continue() -> ! {
         test_exec::test_fcntl();
 
         // Test close-on-exec (O_CLOEXEC) behavior
-        // DISABLED: cloexec_test triggers fork/exec which causes kernel panic
-        // due to pre-existing use-after-free in CoW page table handling.
-        // Re-enable after fixing the fork page table lifecycle bug.
-        // test_exec::test_cloexec();
+        log::info!("=== IPC TEST: close-on-exec (O_CLOEXEC) behavior ===");
+        test_exec::test_cloexec();
 
         // Test pipe2() syscall
         log::info!("=== IPC TEST: pipe2() syscall functionality ===");
@@ -1272,15 +1255,12 @@ fn kernel_main_continue() -> ! {
         test_exec::test_cow_readonly();
 
         // Test argv support in exec syscall
-        // DISABLED: exec tests trigger fork/exec which causes kernel panic
-        // due to pre-existing use-after-free in CoW page table handling.
-        // Re-enable after fixing the fork page table lifecycle bug.
-        // log::info!("=== EXEC TEST: argv support ===");
-        // test_exec::test_argv();
-        // log::info!("=== EXEC TEST: exec with argv ===");
-        // test_exec::test_exec_argv();
-        // log::info!("=== EXEC TEST: exec with stack-allocated argv ===");
-        // test_exec::test_exec_stack_argv();
+        log::info!("=== EXEC TEST: argv support ===");
+        test_exec::test_argv();
+        log::info!("=== EXEC TEST: exec with argv ===");
+        test_exec::test_exec_argv();
+        log::info!("=== EXEC TEST: exec with stack-allocated argv ===");
+        test_exec::test_exec_stack_argv();
 
         // Test getdents64 syscall for directory listing
         log::info!("=== FS TEST: getdents64 directory listing ===");
@@ -1330,7 +1310,7 @@ fn kernel_main_continue() -> ! {
         log::info!("=== FS TEST: block allocation regression test ===");
         test_exec::test_fs_block_alloc();
 
-        // Coreutil tests - verify true, false, head, tail, wc work correctly
+        // Coreutil tests
         log::info!("=== COREUTIL TEST: true (exit code 0) ===");
         test_exec::test_true_coreutil();
         log::info!("=== COREUTIL TEST: false (exit code 1) ===");
@@ -1348,13 +1328,10 @@ fn kernel_main_continue() -> ! {
         log::info!("=== COREUTIL TEST: ls (directory listing) ===");
         test_exec::test_ls_coreutil();
 
-        */ // END of temporarily disabled tests
-
         // Test Rust std library support
         log::info!("=== STD TEST: Rust std library support ===");
         test_exec::test_hello_std_real();
 
-        /* BEGIN disabled tests - re-enable after clone + fork fixes
         // Test signal handler reset on exec
         log::info!("=== SIGNAL TEST: Signal handler reset on exec ===");
         test_exec::test_signal_exec();
@@ -1378,13 +1355,6 @@ fn kernel_main_continue() -> ! {
         // Test FbInfo syscall (framebuffer information)
         log::info!("=== GRAPHICS TEST: FbInfo syscall ===");
         test_exec::test_fbinfo();
-        */ // END of temporarily disabled tests
-
-        // Run fault tests to validate privilege isolation
-        // DISABLED: fault tests may interfere with clone debugging
-        // log::info!("=== FAULT TEST: Running privilege violation tests ===");
-        // userspace_fault_tests::run_fault_tests();
-        // log::info!("Fault tests scheduled");
     }
 
     // NOTE: Premature success markers removed - tests must verify actual execution
