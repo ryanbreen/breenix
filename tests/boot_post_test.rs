@@ -25,6 +25,7 @@ fn test_kernel_post_with_file_output() {
         ("Frame Allocator", "Frame allocator initialized", "Physical memory management"),
         ("Paging", "Page table initialized", "Virtual memory management"),
         ("Heap", "Heap initialized", "Dynamic memory allocation"),
+        ("Slab Allocator", "Slab cache 'fd_table' initialized", "Fixed-size object allocator"),
         ("Memory System", "Memory management initialized", "Complete memory subsystem"),
         ("Timer/RTC", "Timer initialized", "System timer and RTC"),
         ("Keyboard", "Keyboard queue initialized", "Keyboard controller"),

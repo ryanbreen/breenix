@@ -45,6 +45,53 @@ fn test_heap_allocation() {
     println!("✅ Heap allocation test passed");
 }
 
+/// Test slab allocator initialization
+#[test]
+fn test_slab_allocator_initialization() {
+    println!("Testing slab allocator initialization...");
+
+    let output = get_kernel_output();
+
+    // Check that both slab caches initialized
+    assert!(
+        output.contains("Slab cache 'fd_table' initialized"),
+        "fd_table slab cache initialization not found"
+    );
+    assert!(
+        output.contains("Slab cache 'signal_handlers' initialized"),
+        "signal_handlers slab cache initialization not found"
+    );
+
+    // Verify fd_table slab has 64 slots
+    assert!(
+        output.contains("fd_table' initialized: 64 slots"),
+        "fd_table slab should have 64 slots"
+    );
+
+    // Verify signal_handlers slab has 64 slots
+    assert!(
+        output.contains("signal_handlers' initialized: 64 slots"),
+        "signal_handlers slab should have 64 slots"
+    );
+
+    println!("✅ Slab allocator initialization test passed");
+}
+
+/// Test that procfs is initialized (supports /proc/slabinfo)
+#[test]
+fn test_procfs_initialization() {
+    println!("Testing procfs initialization...");
+
+    let output = get_kernel_output();
+
+    assert!(
+        output.contains("procfs initialized at /proc") || output.contains("procfs: initialized"),
+        "procfs initialization not found"
+    );
+
+    println!("✅ Procfs initialization test passed");
+}
+
 /// Test memory regions enumeration
 #[test]
 fn test_memory_regions() {

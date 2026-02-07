@@ -200,6 +200,11 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
         return handle_fifo_open(&path, flags);
     }
 
+    // Check for /proc paths - route to procfs
+    if path == "/proc" || path.starts_with("/proc/") {
+        return handle_procfs_open(&path, flags);
+    }
+
     // Parse flags
     let want_creat = (flags & O_CREAT) != 0;
     let want_excl = (flags & O_EXCL) != 0;
@@ -693,6 +698,14 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFIFO | 0o644; // FIFO with rw-r--r--
             stat.st_nlink = 1;
             stat.st_size = 0; // FIFOs don't have a seekable size
+        }
+        FdKind::ProcfsFile { ref content, .. } => {
+            // Procfs virtual files
+            stat.st_dev = 0;
+            stat.st_ino = 0;
+            stat.st_mode = S_IFREG | 0o444; // Regular file, read-only
+            stat.st_nlink = 1;
+            stat.st_size = content.len() as i64;
         }
     }
 
@@ -1667,6 +1680,43 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 ///
 /// # Arguments
 /// * `device_name` - Name of the device (without /dev/ prefix)
+/// Handle opening a /proc file
+///
+/// Generates the file content at open time, stores it in a ProcfsFile fd.
+fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
+    use crate::ipc::fd::{FdKind, FileDescriptor};
+
+    let content = match crate::fs::procfs::read_file(path) {
+        Ok(c) => c,
+        Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
+    };
+
+    let fd_kind = FdKind::ProcfsFile { content, position: 0 };
+    let fd_entry = FileDescriptor::new(fd_kind);
+
+    // Get current process
+    let thread_id = match crate::task::scheduler::current_thread_id() {
+        Some(id) => id,
+        None => return SyscallResult::Err(3), // ESRCH
+    };
+    let mut manager_guard = crate::process::manager();
+    let process = match &mut *manager_guard {
+        Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+            Some((_pid, p)) => p,
+            None => return SyscallResult::Err(3),
+        },
+        None => return SyscallResult::Err(3),
+    };
+
+    match process.fd_table.alloc_with_entry(fd_entry) {
+        Ok(fd) => {
+            log::debug!("handle_procfs_open: opened {} as fd={}", path, fd);
+            SyscallResult::Ok(fd as u64)
+        }
+        Err(e) => SyscallResult::Err(e as u64),
+    }
+}
+
 /// * `_flags` - Open flags (currently unused for devices)
 ///
 /// # Returns

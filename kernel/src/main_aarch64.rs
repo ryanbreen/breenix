@@ -327,6 +327,10 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::fs::devptsfs::init();
     serial_println!("[boot] devptsfs initialized at /dev/pts");
 
+    // Initialize procfs (/proc virtual filesystem)
+    kernel::fs::procfs::init();
+    serial_println!("[boot] procfs initialized at /proc");
+
     // Initialize TTY subsystem (console + PTY infrastructure)
     kernel::tty::init();
     serial_println!("[boot] TTY subsystem initialized");
