@@ -201,6 +201,16 @@ fn save_userspace_context_arm64(thread_id: u64, frame: &Aarch64ExceptionFrame) {
             core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack));
         }
         thread.context.sp_el0 = sp_el0;
+
+        // CRITICAL: Save kernel stack pointer for blocked-in-syscall restoration.
+        // When a userspace thread later blocks in a syscall (e.g., read() waiting
+        // for input), it transitions to kernel mode and sits in a WFI loop. If a
+        // context switch occurs and the thread is later restored via
+        // setup_kernel_thread_return_arm64, that function uses context.sp for
+        // user_rsp_scratch (the kernel SP after ERET). Without saving context.sp
+        // here, it retains its initial value (0 for user threads), causing SP
+        // corruption and crashes when the thread is restored on another CPU.
+        thread.context.sp = frame as *const _ as u64 + 272;
     });
 }
 
@@ -421,9 +431,17 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
         .unwrap_or(false);
 
     if !has_started {
-        // First run - mark as started and set up entry point
+        // First run - mark as started and set up entry point.
+        // CRITICAL: Also initialize elr_el1 and spsr_el1 to safe values.
+        // Without this, if the thread parks and is re-dispatched before
+        // save_kernel_context_arm64 runs (SMP race: another CPU unblocks
+        // the thread before this CPU's timer fires), elr_el1 remains 0
+        // from CpuContext::new_kernel_thread, causing ERET to address 0x0
+        // and an INSTRUCTION_ABORT.
         crate::task::scheduler::with_thread_mut(thread_id, |thread| {
             thread.has_started = true;
+            thread.context.elr_el1 = thread.context.x30;  // Entry point
+            thread.context.spsr_el1 = 0x5;  // EL1h, interrupts enabled
         });
     }
 
@@ -472,18 +490,30 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
         // Set return address:
         // - For first run: use x30 (which is kthread_entry)
         // - For resumed thread: use elr_el1 (saved PC from when interrupted)
+        //
+        // Defensive check: if elr_el1 is 0 for a started thread, fall back
+        // to x30 (entry point) to avoid ERET to address 0x0. This can happen
+        // if a kernel thread parks and is re-dispatched before
+        // save_kernel_context_arm64 saves its context.
         if !has_started {
             frame.elr = context.x30;  // First run: jump to entry point
-        } else {
+        } else if context.elr_el1 != 0 {
             frame.elr = context.elr_el1;  // Resume: return to where we left off
+        } else {
+            // BUG: Thread was dispatched with unsaved context. Fall back to
+            // entry point rather than crashing at address 0x0.
+            raw_uart_str("WARN: elr=0 for started kthread, using x30\n");
+            frame.elr = context.x30;
         }
 
         // SPSR for EL1h with interrupts ENABLED so kthreads can be preempted
         // For first run, enable interrupts; for resumed, use saved SPSR
         if !has_started {
             frame.spsr = 0x5;  // EL1h, DAIF clear (interrupts enabled)
-        } else {
+        } else if context.elr_el1 != 0 {
             frame.spsr = context.spsr_el1;  // Restore saved processor state
+        } else {
+            frame.spsr = 0x5;  // EL1h, DAIF clear (fallback for unsaved context)
         }
 
         // Store kernel SP for restoration after ERET

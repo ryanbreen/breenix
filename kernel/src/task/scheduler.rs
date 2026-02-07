@@ -381,7 +381,24 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
-                if thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&thread_id) {
+
+                // SMP safety: Don't add to ready_queue if thread is currently
+                // running on any CPU. If a thread is blocked in a syscall's WFI
+                // loop (e.g., sys_read waiting for keyboard input), it's still
+                // the "current thread" on that CPU. Adding it to the ready_queue
+                // would allow another CPU to schedule it simultaneously, causing
+                // double-scheduling: two CPUs executing the same thread with the
+                // same stack, leading to context corruption and crashes (ELR=0x0).
+                // The CPU running the thread will detect the state change (Blocked
+                // → Ready) when its WFI loop checks the thread state after waking.
+                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
+                    self.cpu_state[cpu].current_thread == Some(thread_id)
+                });
+
+                if !is_current_on_any_cpu
+                    && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
+                    && !self.ready_queue.contains(&thread_id)
+                {
                     self.ready_queue.push_back(thread_id);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
@@ -518,7 +535,17 @@ impl Scheduler {
                 // NOTE: Do NOT clear blocked_in_syscall here!
                 // The thread needs to resume inside the syscall and complete it.
                 // blocked_in_syscall will be cleared when the syscall actually returns.
-                if thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&thread_id) {
+
+                // SMP safety: Don't add to ready_queue if thread is current on any CPU
+                // (same rationale as unblock() - prevents double-scheduling)
+                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
+                    self.cpu_state[cpu].current_thread == Some(thread_id)
+                });
+
+                if !is_current_on_any_cpu
+                    && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
+                    && !self.ready_queue.contains(&thread_id)
+                {
                     self.ready_queue.push_back(thread_id);
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
@@ -526,10 +553,14 @@ impl Scheduler {
                         thread_id,
                         self.ready_queue
                     );
+
+                    // Send IPI to wake an idle CPU
+                    #[cfg(target_arch = "aarch64")]
+                    self.send_resched_ipi();
                 } else {
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
-                        "unblock_for_signal: Thread {} already in queue or is idle",
+                        "unblock_for_signal: Thread {} already in queue, is idle, or is current on a CPU",
                         thread_id
                     );
                 }
@@ -538,10 +569,6 @@ impl Scheduler {
                 // doesn't know to switch to it, causing pause() to timeout waiting for
                 // the next timer tick instead of waking up immediately.
                 set_need_resched();
-
-                // Send IPI to wake an idle CPU
-                #[cfg(target_arch = "aarch64")]
-                self.send_resched_ipi();
             } else {
                 #[cfg(target_arch = "x86_64")]
                 log_serial_println!(
@@ -593,20 +620,30 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::BlockedOnChildExit {
                 thread.set_ready();
-                if thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&thread_id) {
+
+                // SMP safety: Don't add to ready_queue if thread is current on any CPU
+                // (same rationale as unblock() - prevents double-scheduling)
+                let is_current_on_any_cpu = (0..MAX_CPUS).any(|cpu| {
+                    self.cpu_state[cpu].current_thread == Some(thread_id)
+                });
+
+                if !is_current_on_any_cpu
+                    && thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread
+                    && !self.ready_queue.contains(&thread_id)
+                {
                     self.ready_queue.push_back(thread_id);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!("Thread {} unblocked by child exit", thread_id);
+
+                    // Send IPI to wake an idle CPU
+                    #[cfg(target_arch = "aarch64")]
+                    self.send_resched_ipi();
                 }
                 // CRITICAL: Request reschedule so the unblocked thread can run promptly.
                 // Without this, the thread is added to ready queue but the scheduler
                 // doesn't know to switch to it, causing waitpid() to hang.
                 set_need_resched();
-
-                // Send IPI to wake an idle CPU
-                #[cfg(target_arch = "aarch64")]
-                self.send_resched_ipi();
             }
         }
     }

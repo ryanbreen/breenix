@@ -193,11 +193,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
         }
 
         _ => {
+            // Mask all interrupts to prevent cascading exceptions on SMP
+            // (timer IRQs cause context switches that schedule more threads
+            // onto this CPU, each hitting the same unhandled exception)
+            unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack)); }
             let frame = unsafe { &*frame };
             crate::serial_println!("[exception] Unhandled sync exception");
             crate::serial_println!("  EC: {:#x}, ISS: {:#x}", ec, iss);
             crate::serial_println!("  ELR: {:#x}, FAR: {:#x}", frame.elr, far);
-            // Hang
+            crate::serial_println!("  SPSR: {:#x}", frame.spsr);
+            // Hang with interrupts masked
             loop { unsafe { core::arch::asm!("wfi"); } }
         }
     }
