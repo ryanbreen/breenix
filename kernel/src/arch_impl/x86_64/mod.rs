@@ -16,6 +16,7 @@
 #[allow(unused_imports)]
 pub mod constants;
 pub mod cpu;
+pub mod cpuinfo;
 pub mod interrupt_frame;
 pub mod paging;
 pub mod percpu;
