@@ -558,120 +558,116 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     // Lock-free trace: CoW fault entry (pid unknown yet, page index from far)
     crate::tracing::providers::process::trace_cow_fault(0, (far >> 12) as u16);
 
-    // Try to acquire process manager lock
-    match crate::process::try_manager() {
-        Some(mut guard) => {
-            cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            let pm = match guard.as_mut() {
-                Some(pm) => pm,
-                None => return false,
-            };
+    // Acquire process manager lock (blocking, with interrupts disabled on ARM64).
+    // This is safe because CoW faults from EL0 guarantee the current CPU doesn't
+    // hold PROCESS_MANAGER — we were in userspace when the fault occurred.
+    // Using try_manager() (non-blocking) would fail under SMP contention when
+    // another CPU holds the lock during fork/exec, killing the faulting process.
+    let mut guard = crate::process::manager();
+    cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let pm = match guard.as_mut() {
+        Some(pm) => pm,
+        None => return false,
+    };
 
-            // Find process by page table
-            let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
-                Some(p) => p,
-                None => {
-                    return false;
-                }
-            };
-
-            let page_table = match &mut process.page_table {
-                Some(pt) => pt,
-                None => return false,
-            };
-
-            let page: Page<Size4KiB> = Page::containing_address(faulting_addr);
-
-            // Get current page info
-            let (old_frame, old_flags) = match page_table.get_page_info(page) {
-                Some(info) => info,
-                None => {
-                    return false;
-                }
-            };
-
-            // Check if this is a CoW page
-            if !is_cow_page(old_flags) {
-                return false;
-            }
-
-            // Lock-free trace: CoW handling with known PID
-            crate::tracing::providers::process::trace_cow_fault(_pid.as_u64() as u16, (far >> 12) as u16);
-
-            // If we're the sole owner, just make it writable
-            if !frame_is_shared(old_frame) {
-                let new_flags = make_private_flags(old_flags);
-                if page_table.update_page_flags(page, new_flags).is_err() {
-                    return false;
-                }
-                // Flush TLB
-                unsafe {
-                    let va_for_tlbi = faulting_addr.as_u64() >> 12;
-                    core::arch::asm!(
-                        "dsb ishst",
-                        "tlbi vale1is, {0}",
-                        "dsb ish",
-                        "isb",
-                        in(reg) va_for_tlbi,
-                        options(nostack)
-                    );
-                }
-                cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
-                return true;
-            }
-
-            // Need to copy the page
-            let new_frame = match allocate_frame() {
-                Some(f) => f,
-                None => {
-                    return false;
-                }
-            };
-
-            // Copy page contents via HHDM
-            let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-            let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
-            let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
-
-            unsafe {
-                core::ptr::copy_nonoverlapping(src, dst, 4096);
-            }
-
-            // Unmap old page and map new one with write permissions
-            let new_flags = make_private_flags(old_flags);
-            if page_table.unmap_page(page).is_err() {
-                return false;
-            }
-            if page_table.map_page(page, new_frame, new_flags).is_err() {
-                return false;
-            }
-
-            // Decrement reference count on old frame
-            frame_decref(old_frame);
-
-            // Flush TLB
-            unsafe {
-                let va_for_tlbi = faulting_addr.as_u64() >> 12;
-                core::arch::asm!(
-                    "dsb ishst",
-                    "tlbi vale1is, {0}",
-                    "dsb ish",
-                    "isb",
-                    in(reg) va_for_tlbi,
-                    options(nostack)
-                );
-            }
-
-            cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
-
-            true
-        }
+    // Find process by page table
+    let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
+        Some(p) => p,
         None => {
-            cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            crate::tracing::providers::process::trace_cow_lock_fail(0);
-            false
+            return false;
         }
+    };
+
+    let page_table = match &mut process.page_table {
+        Some(pt) => pt,
+        None => return false,
+    };
+
+    let page: Page<Size4KiB> = Page::containing_address(faulting_addr);
+
+    // Get current page info
+    let (old_frame, old_flags) = match page_table.get_page_info(page) {
+        Some(info) => info,
+        None => {
+            return false;
+        }
+    };
+
+    // Check if this is a CoW page
+    if !is_cow_page(old_flags) {
+        return false;
     }
+
+    // Lock-free trace: CoW handling with known PID
+    crate::tracing::providers::process::trace_cow_fault(_pid.as_u64() as u16, (far >> 12) as u16);
+
+    // If we're the sole owner, just make it writable
+    if !frame_is_shared(old_frame) {
+        let new_flags = make_private_flags(old_flags);
+        if page_table.update_page_flags(page, new_flags).is_err() {
+            return false;
+        }
+        // Flush TLB
+        unsafe {
+            let va_for_tlbi = faulting_addr.as_u64() >> 12;
+            core::arch::asm!(
+                "dsb ishst",
+                "tlbi vale1is, {0}",
+                "dsb ish",
+                "isb",
+                in(reg) va_for_tlbi,
+                options(nostack)
+            );
+        }
+        cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
+        return true;
+    }
+
+    // Need to copy the page
+    let new_frame = match allocate_frame() {
+        Some(f) => f,
+        None => {
+            return false;
+        }
+    };
+
+    // Copy page contents via HHDM
+    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
+    let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(src, dst, 4096);
+    }
+
+    // Unmap old page and map new one with write permissions
+    let new_flags = make_private_flags(old_flags);
+    if page_table.unmap_page(page).is_err() {
+        return false;
+    }
+    if page_table.map_page(page, new_frame, new_flags).is_err() {
+        return false;
+    }
+
+    // Decrement reference count on old frame
+    frame_decref(old_frame);
+
+    // Flush TLB
+    unsafe {
+        let va_for_tlbi = faulting_addr.as_u64() >> 12;
+        core::arch::asm!(
+            "dsb ishst",
+            "tlbi vale1is, {0}",
+            "dsb ish",
+            "isb",
+            in(reg) va_for_tlbi,
+            options(nostack)
+        );
+    }
+
+    cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
+
+    true
 }
