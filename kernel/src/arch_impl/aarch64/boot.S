@@ -57,6 +57,14 @@ _start:
     // Disable interrupts (should already be disabled)
     msr daifset, #0xf
 
+    // Read CPU ID from MPIDR_EL1 (Aff0 field, bits 7:0)
+    // Use callee-saved register to preserve across calls
+    mrs x19, mpidr_el1
+    and x19, x19, #0xFF
+    cbnz x19, secondary_cpu_entry   // CPUs 1+ go to parking loop
+
+    // CPU 0 continues to existing boot path...
+
     // Check current exception level
     mrs x0, currentel
     lsr x0, x0, #2
@@ -522,6 +530,138 @@ unhandled_exception:
  */
 
 // -----------------------------------------------------------------------------
+// Secondary CPU entry (boot-time, low)
+// -----------------------------------------------------------------------------
+.section .text.boot
+
+.global secondary_cpu_entry
+secondary_cpu_entry:
+    // PSCI CPU_ON entry point for secondary CPUs.
+    // PSCI starts us at EL1 with:
+    //   x0 = context_id (cpu_id, passed by release_cpu)
+    //   MMU off, caches off, interrupts masked (DAIF set)
+    //
+    // For the spin-table fallback (non-PSCI), we also branch here from _start
+    // with x19 = cpu_id. In that case we may be at EL2.
+
+    // Mask all interrupts (should already be masked by PSCI, but be safe)
+    msr daifset, #0xf
+
+    // Save cpu_id in callee-saved register
+    // PSCI passes it in x0; spin-table path has it in x19
+    // Check if x19 is already set (non-zero means spin-table path)
+    cbnz x19, 1f
+    mov x19, x0              // PSCI path: cpu_id from x0
+1:
+
+    // Check current exception level
+    mrs x0, currentel
+    lsr x0, x0, #2
+    and x0, x0, #3
+    cmp x0, #2
+    b.eq secondary_drop_to_el1
+    // EL1 (normal PSCI path) - fall through
+
+secondary_el1_init:
+    // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11)
+    mov x0, #(3 << 20)
+    msr cpacr_el1, x0
+    isb
+
+    // Set up per-CPU boot stack (physical addresses, before MMU)
+    // Stack top = 0x4100_0000 + (cpu_id + 1) * 0x20_0000
+    // This gives each CPU a 2MB stack region:
+    //   CPU 1: 0x4120_0000 (top) .. 0x4100_0000
+    //   CPU 2: 0x4140_0000 (top) .. 0x4120_0000
+    //   CPU 3: 0x4160_0000 (top) .. 0x4140_0000
+    mov x0, x19              // cpu_id
+    add x0, x0, #1           // cpu_id + 1
+    lsl x0, x0, #21          // * 0x20_0000 (2MB)
+    ldr x1, =0x41000000      // base of per-CPU stack region
+    add x0, x0, x1
+    mov sp, x0
+
+    // DO NOT zero BSS - CPU 0 handles that
+    // DO NOT call setup_mmu - reuse CPU 0's page tables
+
+    // Set VBAR_EL1 to boot exception vectors (low) for now
+    ldr x0, =exception_vectors_boot
+    msr vbar_el1, x0
+    isb
+
+    // Load the same MMU config as CPU 0 (MAIR, TCR, TTBRs)
+    ldr x0, =MAIR_EL1_VALUE
+    msr mair_el1, x0
+    ldr x0, =TCR_VALUE
+    msr tcr_el1, x0
+    isb
+
+    ldr x0, =ttbr0_l0
+    msr ttbr0_el1, x0
+    ldr x0, =ttbr1_l0
+    msr ttbr1_el1, x0
+    dsb ishst
+    isb
+
+    // Enable MMU
+    mrs x0, sctlr_el1
+    mov x1, #(1 << 19)      // Clear WXN bit
+    bic x0, x0, x1
+    orr x0, x0, #1          // Set M bit (MMU enable)
+    msr sctlr_el1, x0
+    isb
+
+    // Switch to high-half stack (SP += KERNEL_VIRT_BASE)
+    mov x0, sp
+    ldr x1, =KERNEL_VIRT_BASE
+    add x0, x0, x1
+    mov sp, x0
+
+    // Switch to runtime exception vectors (high)
+    ldr x0, =exception_vectors
+    msr vbar_el1, x0
+    isb
+
+    // Call secondary_cpu_entry_rust(cpu_id)
+    // x19 still holds cpu_id
+    mov x0, x19
+    ldr x1, =secondary_cpu_entry_rust
+    br x1
+
+secondary_drop_to_el1:
+    // Configure EL2 for EL1 execution (same as CPU 0)
+    mov x0, #(1 << 31)      // HCR_EL2: RW = 1 (AArch64 at EL1)
+    msr hcr_el2, x0
+
+    mov x0, #0
+    orr x0, x0, #(1 << 29)  // LSMAOE
+    orr x0, x0, #(1 << 28)  // nTLSMD
+    orr x0, x0, #(1 << 11)  // EOS
+    msr sctlr_el1, x0
+
+    mov x0, #0x3c5          // SPSR_EL2: EL1h, DAIF masked
+    msr spsr_el2, x0
+
+    adr x0, secondary_el1_init
+    msr elr_el2, x0
+    eret
+
+secondary_hang:
+    wfi
+    b secondary_hang
+
+// -----------------------------------------------------------------------------
+// Physical address of secondary_cpu_entry, stored in .rodata (high-half).
+// Rust code cannot reference secondary_cpu_entry directly because the
+// .text.boot -> .text gap exceeds AArch64 ADRP range (+/- 4 GiB).
+// -----------------------------------------------------------------------------
+.section .rodata
+.balign 8
+.global SECONDARY_CPU_ENTRY_PHYS
+SECONDARY_CPU_ENTRY_PHYS:
+    .quad secondary_cpu_entry
+
+// -----------------------------------------------------------------------------
 // Boot-time BSS (low): page tables + boot stack
 // -----------------------------------------------------------------------------
 .section .bss.boot
@@ -538,6 +678,11 @@ ttbr1_l0:
 .global ttbr1_l1
 ttbr1_l1:
     .skip 4096
+
+.balign 64
+.global CPU_RELEASE_ADDR
+CPU_RELEASE_ADDR:
+    .skip 64   // 8 CPUs * 8 bytes
 
 .balign 16
 .global __boot_stack_bottom

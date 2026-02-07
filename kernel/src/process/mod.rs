@@ -13,14 +13,39 @@ pub mod process;
 pub use manager::ProcessManager;
 pub use process::{Process, ProcessId, ProcessState};
 
-/// Wrapper to log when process manager lock is dropped
+/// Wrapper that holds the process manager lock and restores interrupt state on drop.
+///
+/// On ARM64, acquiring PROCESS_MANAGER must disable interrupts to prevent
+/// a single-CPU deadlock: if a timer interrupt fires while this lock is held,
+/// the exception return path calls `set_next_ttbr0_for_thread()` → `manager()`
+/// which would spin forever waiting for the lock we already hold.
+///
+/// Drop order is critical: release the lock FIRST, then restore interrupts.
+/// We use ManuallyDrop to control this ordering explicitly.
 pub struct ProcessManagerGuard {
-    pub(crate) _guard: spin::MutexGuard<'static, Option<ProcessManager>>,
+    pub(crate) _guard: core::mem::ManuallyDrop<spin::MutexGuard<'static, Option<ProcessManager>>>,
+    /// Saved DAIF register value (ARM64 only) - restored on drop to re-enable interrupts
+    #[cfg(target_arch = "aarch64")]
+    saved_daif: u64,
 }
 
 impl Drop for ProcessManagerGuard {
     fn drop(&mut self) {
-        // Lock release logging removed - too verbose for production
+        // CRITICAL: Release the lock BEFORE restoring interrupts.
+        // If we restored DAIF first, there'd be a window where interrupts are enabled
+        // but the lock is still held, allowing the exact deadlock we're preventing.
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut self._guard);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!(
+                "msr daif, {}",
+                in(reg) self.saved_daif,
+                options(nomem, nostack)
+            );
+        }
     }
 }
 
@@ -48,13 +73,33 @@ pub fn init() {
     log::info!("Process management initialized");
 }
 
-/// Get a reference to the global process manager
-/// NOTE: This acquires a lock without disabling interrupts.
-/// For operations that could be called while holding scheduler locks,
-/// use with_process_manager() instead.
+/// Get a reference to the global process manager.
+///
+/// On ARM64, this disables interrupts before acquiring the lock to prevent
+/// single-CPU deadlocks where a timer interrupt tries to re-acquire the lock
+/// from the context switch path.
 pub fn manager() -> ProcessManagerGuard {
-    let guard = PROCESS_MANAGER.lock();
-    ProcessManagerGuard { _guard: guard }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Save current interrupt state and disable interrupts
+        let saved_daif: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, daif", out(reg) saved_daif, options(nomem, nostack));
+            core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+        }
+        let guard = PROCESS_MANAGER.lock();
+        ProcessManagerGuard {
+            _guard: core::mem::ManuallyDrop::new(guard),
+            saved_daif,
+        }
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let guard = PROCESS_MANAGER.lock();
+        ProcessManagerGuard {
+            _guard: core::mem::ManuallyDrop::new(guard),
+        }
+    }
 }
 
 /// Execute a function with the process manager while interrupts are disabled
@@ -77,11 +122,10 @@ pub fn with_process_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ProcessManager) -> R,
 {
-    // On ARM64, we use DAIF masking to disable interrupts
-    // For now, just acquire the lock - proper interrupt masking will be added
-    // when ARM64 interrupt handling is fully implemented
-    let mut manager_lock = PROCESS_MANAGER.lock();
-    manager_lock.as_mut().map(f)
+    crate::arch_impl::aarch64::cpu::without_interrupts(|| {
+        let mut manager_lock = PROCESS_MANAGER.lock();
+        manager_lock.as_mut().map(f)
+    })
 }
 
 /// Try to get the process manager without blocking (for interrupt contexts)
@@ -99,8 +143,8 @@ pub fn create_user_process(name: alloc::string::String, elf_data: &[u8]) -> Resu
 /// Get the current process ID
 #[allow(dead_code)]
 pub fn current_pid() -> Option<ProcessId> {
-    let manager_lock = PROCESS_MANAGER.lock();
-    let manager = manager_lock.as_ref()?;
+    let manager_guard = manager();
+    let manager = manager_guard.as_ref()?;
     manager.current_pid()
 }
 
@@ -111,7 +155,7 @@ pub fn exit_current(exit_code: i32) {
 
     if let Some(pid) = current_pid() {
         log::debug!("Current PID is {}", pid.as_u64());
-        if let Some(ref mut manager) = *PROCESS_MANAGER.lock() {
+        if let Some(ref mut manager) = *manager() {
             manager.exit_process(pid, exit_code);
         } else {
             log::error!("Process manager not available!");

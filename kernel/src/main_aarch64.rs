@@ -386,6 +386,26 @@ pub extern "C" fn kernel_main() -> ! {
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
 
+    // Bring up secondary CPUs via PSCI CPU_ON
+    serial_println!("[smp] Starting secondary CPUs...");
+    let expected_cpus: u64 = 4;
+    for cpu in 1..expected_cpus {
+        kernel::arch_impl::aarch64::smp::release_cpu(cpu as usize);
+    }
+    // Wait for all CPUs to come online (with timeout)
+    let start = timer::rdtsc();
+    let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+    while kernel::arch_impl::aarch64::smp::cpus_online() < expected_cpus {
+        if timer::rdtsc() - start > timeout_ticks {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    serial_println!(
+        "[smp] {} CPUs online",
+        kernel::arch_impl::aarch64::smp::cpus_online()
+    );
+
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
     {

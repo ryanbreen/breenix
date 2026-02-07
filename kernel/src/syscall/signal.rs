@@ -675,7 +675,7 @@ pub fn sys_sigpending(set: u64, sigsetsize: u64) -> SyscallResult {
             }
         };
 
-        let manager_guard = crate::process::PROCESS_MANAGER.lock();
+        let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some((_, process)) = manager.find_process_by_thread(thread_id) {
                 // Return all pending signals

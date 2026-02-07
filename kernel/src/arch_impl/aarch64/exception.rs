@@ -9,6 +9,7 @@
 
 #![allow(dead_code)]
 
+use crate::arch_impl::aarch64::constants;
 use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
 use crate::arch_impl::aarch64::syscall_entry::rust_syscall_handler_aarch64;
@@ -402,7 +403,12 @@ pub extern "C" fn handle_irq() {
             }
 
             // SGIs (0-15) - Inter-processor interrupts
-            0..=15 => {}
+            0..=15 => {
+                if irq_id == constants::SGI_RESCHEDULE {
+                    // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
+                    crate::per_cpu_aarch64::set_need_resched(true);
+                }
+            }
 
             // PPIs (16-31) - Private peripheral interrupts (excluding timer)
             16..=31 => {}

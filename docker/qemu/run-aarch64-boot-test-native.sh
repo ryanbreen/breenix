@@ -42,7 +42,7 @@ run_single_test() {
     # Always include GPU, keyboard, and network so kernel VirtIO enumeration finds them
     # Use writable disk copy (no readonly=on) to allow filesystem writes
     timeout 30 qemu-system-aarch64 \
-        -M virt -cpu cortex-a72 -m 512 \
+        -M virt -cpu cortex-a72 -m 512 -smp 4 \
         -kernel "$KERNEL" \
         -display none -no-reboot \
         -device virtio-gpu-device \

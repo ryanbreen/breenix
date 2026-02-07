@@ -34,8 +34,18 @@ const TARGET_TIMER_HZ: u64 = 200;
 /// Set during init() and used by the interrupt handler for consistent timing
 static TICKS_PER_INTERRUPT: AtomicU64 = AtomicU64::new(DEFAULT_TICKS_PER_INTERRUPT);
 
-/// Current thread's remaining time quantum
-static CURRENT_QUANTUM: AtomicU32 = AtomicU32::new(TIME_QUANTUM);
+/// Per-CPU time quantum counters.
+/// Each CPU decrements its own quantum independently.
+static CURRENT_QUANTUM: [AtomicU32; crate::arch_impl::aarch64::constants::MAX_CPUS] = [
+    AtomicU32::new(TIME_QUANTUM),
+    AtomicU32::new(TIME_QUANTUM),
+    AtomicU32::new(TIME_QUANTUM),
+    AtomicU32::new(TIME_QUANTUM),
+    AtomicU32::new(TIME_QUANTUM),
+    AtomicU32::new(TIME_QUANTUM),
+    AtomicU32::new(TIME_QUANTUM),
+    AtomicU32::new(TIME_QUANTUM),
+];
 
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
@@ -112,41 +122,46 @@ fn arm_timer(ticks: u64) {
 /// Timer interrupt handler - minimal work in interrupt context
 ///
 /// This is called from handle_irq() when IRQ 27 (virtual timer) fires.
-/// It performs the absolute minimum work:
-/// 1. Re-arm the timer for the next interrupt
-/// 2. Update global time
-/// 3. Poll keyboard input (VirtIO doesn't use interrupts on ARM64)
-/// 4. Decrement time quantum
-/// 5. Set need_resched if quantum expired
+/// Each CPU fires its own timer (PPI 27 is per-CPU). The handler:
+/// 1. Re-arms the timer for the next interrupt
+/// 2. CPU 0 only: updates global wall clock time
+/// 3. CPU 0 only: polls keyboard input
+/// 4. All CPUs: decrements per-CPU time quantum
+/// 5. CPU 0 only: sets need_resched if quantum expired (Phase 2: only CPU 0 schedules)
 #[no_mangle]
 pub extern "C" fn timer_interrupt_handler() {
     // Enter IRQ context (increment HARDIRQ count)
     crate::per_cpu_aarch64::irq_enter();
 
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+
     // Re-arm the timer for the next interrupt using the dynamically calculated value
-    // This ensures consistent timing regardless of the actual timer frequency
-    // (62.5 MHz on cortex-a72, 1 GHz on 'max' CPU, 24 MHz on some platforms)
     arm_timer(TICKS_PER_INTERRUPT.load(Ordering::Relaxed));
 
-    // Update global time (single atomic operation)
-    crate::time::timer_interrupt();
+    // CPU 0 only: update global wall clock time (single atomic operation)
+    if cpu_id == 0 {
+        crate::time::timer_interrupt();
+    }
 
     // Increment timer interrupt counter (used for debugging when needed)
     let _count = TIMER_INTERRUPT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    // Note: [TIMER_COUNT:N] output disabled - interrupt handlers must be minimal
-    // To enable: uncomment and rebuild with TIMER_COUNT_PRINT_INTERVAL check
 
-    // Poll VirtIO keyboard and push to stdin
-    // VirtIO MMIO devices don't generate interrupts on ARM64 virt machine,
-    // so we poll during timer tick to get keyboard input to userspace
-    poll_keyboard_to_stdin();
+    // CPU 0 only: poll VirtIO keyboard (single-device, not safe from multiple CPUs)
+    if cpu_id == 0 {
+        poll_keyboard_to_stdin();
+    }
 
-    // Decrement quantum and check for reschedule
-    let old_quantum = CURRENT_QUANTUM.fetch_sub(1, Ordering::Relaxed);
+    // Decrement per-CPU quantum and check for reschedule
+    let quantum_idx = if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
+        cpu_id
+    } else {
+        0
+    };
+    let old_quantum = CURRENT_QUANTUM[quantum_idx].fetch_sub(1, Ordering::Relaxed);
     if old_quantum <= 1 {
-        // Quantum expired - request reschedule
+        // Quantum expired - request reschedule (all CPUs participate)
         scheduler::set_need_resched();
-        CURRENT_QUANTUM.store(TIME_QUANTUM, Ordering::Relaxed);
+        CURRENT_QUANTUM[quantum_idx].store(TIME_QUANTUM, Ordering::Relaxed);
     }
 
     // Exit IRQ context (decrement HARDIRQ count)
@@ -239,11 +254,17 @@ fn poll_keyboard_to_stdin() {
     }
 }
 
-/// Reset the quantum counter (called when switching threads)
+/// Reset the quantum counter for the current CPU (called when switching threads)
 pub fn reset_quantum() {
     #[cfg(feature = "boot_tests")]
     RESET_QUANTUM_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
-    CURRENT_QUANTUM.store(TIME_QUANTUM, Ordering::Relaxed);
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let idx = if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
+        cpu_id
+    } else {
+        0
+    };
+    CURRENT_QUANTUM[idx].store(TIME_QUANTUM, Ordering::Relaxed);
 }
 
 /// Get reset_quantum() call count for tests.
@@ -258,13 +279,36 @@ pub fn reset_quantum_call_count_reset() {
     RESET_QUANTUM_CALL_COUNT.store(0, Ordering::SeqCst);
 }
 
+/// Initialize the timer on a secondary CPU.
+///
+/// Each CPU has its own virtual timer (PPI 27 is per-CPU). The distributor
+/// does not need re-configuration for PPIs. We just arm the timer and enable
+/// the interrupt in this CPU's GIC interface.
+pub fn init_secondary() {
+    // Arm the timer with the same interval as CPU 0
+    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+    arm_timer(ticks);
+
+    // Enable the virtual timer PPI in the GIC for this CPU.
+    // PPIs are per-CPU, but ISENABLER0 (IRQs 0-31) is banked per-CPU,
+    // so writing to it from this CPU enables it for this CPU.
+    use crate::arch_impl::traits::InterruptController;
+    crate::arch_impl::aarch64::gic::Gicv2::enable_irq(TIMER_IRQ as u8);
+}
+
 /// Check if the timer is initialized
 pub fn is_initialized() -> bool {
     TIMER_INITIALIZED.load(Ordering::Acquire)
 }
 
-/// Get the current quantum value (for debugging)
+/// Get the current CPU's quantum value (for debugging)
 #[allow(dead_code)]
 pub fn current_quantum() -> u32 {
-    CURRENT_QUANTUM.load(Ordering::Relaxed)
+    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let idx = if cpu_id < crate::arch_impl::aarch64::constants::MAX_CPUS {
+        cpu_id
+    } else {
+        0
+    };
+    CURRENT_QUANTUM[idx].load(Ordering::Relaxed)
 }

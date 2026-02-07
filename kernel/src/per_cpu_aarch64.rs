@@ -85,8 +85,18 @@ impl PerCpuData {
     }
 }
 
-/// Static per-CPU data for CPU 0 (BSP)
-static mut CPU0_DATA: PerCpuData = PerCpuData::new(0);
+/// Per-CPU data for all CPUs (up to MAX_CPUS).
+/// Each CPU's TPIDR_EL1 points to its own entry in this array.
+static mut ALL_CPU_DATA: [PerCpuData; crate::arch_impl::aarch64::constants::MAX_CPUS] = [
+    PerCpuData::new(0),
+    PerCpuData::new(1),
+    PerCpuData::new(2),
+    PerCpuData::new(3),
+    PerCpuData::new(4),
+    PerCpuData::new(5),
+    PerCpuData::new(6),
+    PerCpuData::new(7),
+];
 
 /// Flag to indicate whether per-CPU data is initialized
 static PER_CPU_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -96,20 +106,13 @@ pub fn is_initialized() -> bool {
     PER_CPU_INITIALIZED.load(Ordering::Acquire)
 }
 
-/// Initialize per-CPU data for the current CPU
+/// Initialize per-CPU data for CPU 0 (boot CPU).
 pub fn init() {
     log::info!("Initializing per-CPU data via TPIDR_EL1");
 
-    // Get pointer to CPU0's per-CPU data
-    let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
-    let cpu_data_addr = cpu_data_ptr as u64;
+    init_cpu(0);
 
-    // Initialize via HAL
-    unsafe {
-        hal_percpu::init_percpu(cpu_data_addr, 0);
-    }
-
-    log::info!("Per-CPU data initialized at {:#x}", cpu_data_addr);
+    log::info!("Per-CPU data initialized at {:#x}", hal_percpu::percpu_base());
     log::debug!("  TPIDR_EL1 = {:#x}", hal_percpu::percpu_base());
 
     // Verification
@@ -122,6 +125,27 @@ pub fn init() {
     // Mark per-CPU data as initialized
     PER_CPU_INITIALIZED.store(true, Ordering::Release);
     log::info!("Per-CPU data marked as initialized");
+}
+
+/// Initialize per-CPU data for a specific CPU.
+///
+/// Sets TPIDR_EL1 to point to the CPU's entry in ALL_CPU_DATA.
+/// Must be called on the target CPU itself (each CPU sets its own TPIDR_EL1).
+///
+/// For CPU 0 this is called from `init()`. For secondary CPUs it is called
+/// from `secondary_cpu_entry_rust()`.
+pub fn init_cpu(cpu_id: usize) {
+    let max_cpus = crate::arch_impl::aarch64::constants::MAX_CPUS;
+    if cpu_id >= max_cpus {
+        return;
+    }
+
+    let cpu_data_ptr = unsafe { &raw mut ALL_CPU_DATA[cpu_id] as *mut PerCpuData };
+    let cpu_data_addr = cpu_data_ptr as u64;
+
+    unsafe {
+        hal_percpu::init_percpu(cpu_data_addr, cpu_id as u64);
+    }
 }
 
 /// Get the current thread pointer (raw)
@@ -404,7 +428,7 @@ pub fn in_exception_cleanup_context() -> bool {
 
 /// Get per-CPU base address and size for logging
 pub fn get_percpu_info() -> (u64, usize) {
-    let cpu_data_ptr = &raw mut CPU0_DATA as *mut PerCpuData;
+    let cpu_data_ptr = unsafe { &raw mut ALL_CPU_DATA[0] as *mut PerCpuData };
     let base = cpu_data_ptr as u64;
     let size = core::mem::size_of::<PerCpuData>();
     (base, size)

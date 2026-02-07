@@ -38,6 +38,20 @@ pub fn unblock_call_count() -> u64 {
     UNBLOCK_CALL_COUNT.load(Ordering::SeqCst)
 }
 
+/// Maximum CPUs for scheduler state arrays.
+#[cfg(target_arch = "aarch64")]
+const MAX_CPUS: usize = 8;
+#[cfg(not(target_arch = "aarch64"))]
+const MAX_CPUS: usize = 1;
+
+/// Per-CPU scheduler state.
+struct CpuSchedulerState {
+    /// Currently running thread ID on this CPU
+    current_thread: Option<u64>,
+    /// Idle thread ID for this CPU
+    idle_thread: u64,
+}
+
 /// The kernel scheduler
 pub struct Scheduler {
     /// All threads in the system
@@ -46,28 +60,63 @@ pub struct Scheduler {
     /// Ready queue (thread IDs)
     ready_queue: VecDeque<u64>,
 
-    /// Currently running thread ID
-    current_thread: Option<u64>,
-
-    /// Idle thread ID (runs when no other threads are ready)
-    idle_thread: u64,
+    /// Per-CPU scheduler state (current_thread + idle_thread per CPU)
+    cpu_state: [CpuSchedulerState; MAX_CPUS],
 }
 
 impl Scheduler {
-    /// Create a new scheduler with an idle thread
+    /// Create a new scheduler with an idle thread for CPU 0.
     pub fn new(idle_thread: Box<Thread>) -> Self {
         let idle_id = idle_thread.id();
-        let scheduler = Self {
-            threads: alloc::vec![idle_thread],
-            ready_queue: VecDeque::new(),
+
+        // Initialize all CPU states: CPU 0 gets the idle thread, rest are empty
+        const EMPTY_STATE: CpuSchedulerState = CpuSchedulerState {
+            current_thread: None,
+            idle_thread: 0,
+        };
+        let mut cpu_state = [EMPTY_STATE; MAX_CPUS];
+        cpu_state[0] = CpuSchedulerState {
             current_thread: Some(idle_id),
             idle_thread: idle_id,
         };
 
-        // Don't put idle thread in ready queue
-        // It runs only when nothing else is ready
+        let scheduler = Self {
+            threads: alloc::vec![idle_thread],
+            ready_queue: VecDeque::new(),
+            cpu_state,
+        };
 
         scheduler
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-CPU state accessors (backward-compatible with single-CPU code)
+    // -------------------------------------------------------------------------
+
+    /// Get the current CPU ID for scheduler operations.
+    #[inline]
+    fn current_cpu_id() -> usize {
+        #[cfg(target_arch = "aarch64")]
+        {
+            crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            0
+        }
+    }
+
+    /// Register an idle thread for a specific CPU.
+    /// Called during secondary CPU bringup to set up per-CPU idle tasks.
+    #[cfg(target_arch = "aarch64")]
+    pub fn register_idle_thread(&mut self, cpu_id: usize, idle_thread: Box<Thread>) {
+        if cpu_id >= MAX_CPUS {
+            return;
+        }
+        let idle_id = idle_thread.id();
+        self.threads.push(idle_thread);
+        self.cpu_state[cpu_id].idle_thread = idle_id;
+        self.cpu_state[cpu_id].current_thread = Some(idle_id);
     }
 
     /// Add a new thread to the scheduler
@@ -106,7 +155,7 @@ impl Scheduler {
         thread.state = ThreadState::Running;
         thread.has_started = true;
         self.threads.push(thread);
-        self.current_thread = Some(thread_id);
+        self.cpu_state[Self::current_cpu_id()].current_thread = Some(thread_id);
         // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
         #[cfg(target_arch = "x86_64")]
         log_serial_println!(
@@ -129,25 +178,25 @@ impl Scheduler {
     /// Get the current running thread
     #[allow(dead_code)]
     pub fn current_thread(&self) -> Option<&Thread> {
-        self.current_thread.and_then(|id| self.get_thread(id))
+        self.cpu_state[Self::current_cpu_id()].current_thread.and_then(|id| self.get_thread(id))
     }
 
     /// Get the current running thread mutably
     pub fn current_thread_mut(&mut self) -> Option<&mut Thread> {
-        self.current_thread
+        self.cpu_state[Self::current_cpu_id()].current_thread
             .and_then(move |id| self.get_thread_mut(id))
     }
 
     /// Get the current thread ID
     #[allow(dead_code)]
     pub fn current_thread_id_inner(&self) -> Option<u64> {
-        self.current_thread
+        self.cpu_state[Self::current_cpu_id()].current_thread
     }
 
     /// Get the idle thread ID
     #[allow(dead_code)]
     pub fn idle_thread_id(&self) -> u64 {
-        self.idle_thread
+        self.cpu_state[Self::current_cpu_id()].idle_thread
     }
 
     /// Schedule the next thread to run
@@ -170,8 +219,8 @@ impl Scheduler {
         let debug_log = false;
 
         // If current thread is still runnable, put it back in ready queue
-        if let Some(current_id) = self.current_thread {
-            if current_id != self.idle_thread {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            if current_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 // Check the state and determine what to do
                 let (is_terminated, is_blocked) =
                     if let Some(current) = self.get_thread_mut(current_id) {
@@ -206,7 +255,7 @@ impl Scheduler {
         let mut next_thread_id = if let Some(n) = self.ready_queue.pop_front() {
             n
         } else {
-            self.idle_thread
+            self.cpu_state[Self::current_cpu_id()].idle_thread
         };
 
         if debug_log {
@@ -219,16 +268,16 @@ impl Scheduler {
 
         // Important: Don't skip if it's the same thread when there are other threads waiting
         // This was causing the issue where yielding wouldn't switch to other ready threads
-        if Some(next_thread_id) == self.current_thread && !self.ready_queue.is_empty() {
+        if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread && !self.ready_queue.is_empty() {
             // Put current thread back and get the next one
             self.ready_queue.push_back(next_thread_id);
             next_thread_id = self.ready_queue.pop_front()?;
-        } else if Some(next_thread_id) == self.current_thread {
+        } else if Some(next_thread_id) == self.cpu_state[Self::current_cpu_id()].current_thread {
             // Current thread is the only runnable thread.
             // If it's NOT the idle thread, switch to idle to give it a chance.
             // This is important for kthreads that yield while waiting for the idle
             // thread (which runs tests/main logic) to set a flag.
-            if next_thread_id != self.idle_thread {
+            if next_thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread {
                 // On ARM64, don't switch userspace threads to idle. Idle runs in kernel
                 // mode (EL1), and ARM64 only preempts when returning to userspace (from_el0=true).
                 // If we switched a userspace thread to idle, idle would never be preempted
@@ -251,7 +300,7 @@ impl Scheduler {
                     }
                 }
                 self.ready_queue.push_back(next_thread_id);
-                next_thread_id = self.idle_thread;
+                next_thread_id = self.cpu_state[Self::current_cpu_id()].idle_thread;
                 // CRITICAL: Set NEED_RESCHED so the next timer interrupt will
                 // switch back to the deferred thread. Without this, idle would
                 // spin in HLT for an entire quantum (50ms) before rescheduling.
@@ -262,8 +311,8 @@ impl Scheduler {
                 if debug_log {
                     log_serial_println!(
                         "Thread {} is alone (non-idle), switching to idle {}",
-                        self.current_thread.unwrap_or(0),
-                        self.idle_thread
+                        self.cpu_state[Self::current_cpu_id()].current_thread.unwrap_or(0),
+                        self.cpu_state[Self::current_cpu_id()].idle_thread
                     );
                 }
             } else {
@@ -286,8 +335,8 @@ impl Scheduler {
         }
 
         // If current is idle and we have a real next thread, allow switch even if idle
-        let old_thread_id = self.current_thread.unwrap_or(self.idle_thread);
-        self.current_thread = Some(next_thread_id);
+        let old_thread_id = self.cpu_state[Self::current_cpu_id()].current_thread.unwrap_or(self.cpu_state[Self::current_cpu_id()].idle_thread);
+        self.cpu_state[Self::current_cpu_id()].current_thread = Some(next_thread_id);
 
         if debug_log {
             log_serial_println!(
@@ -332,11 +381,47 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal {
                 thread.set_ready();
-                if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
+                if thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&thread_id) {
                     self.ready_queue.push_back(thread_id);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!("unblock({}): Added to ready_queue", thread_id);
+
+                    // Send IPI to wake an idle CPU so it can pick up the unblocked thread
+                    #[cfg(target_arch = "aarch64")]
+                    self.send_resched_ipi();
+                }
+            }
+        }
+    }
+
+    /// Send a reschedule IPI (SGI 0) to an idle CPU.
+    ///
+    /// Called after adding a thread to the ready queue to wake a CPU that's
+    /// sitting in WFI so it can pick up the newly-runnable thread.
+    /// Only sends to one idle CPU (the first one found) to avoid thundering herd.
+    #[cfg(target_arch = "aarch64")]
+    fn send_resched_ipi(&self) {
+        use crate::arch_impl::aarch64::smp;
+
+        let current_cpu = Self::current_cpu_id();
+        let online = smp::cpus_online() as usize;
+
+        for cpu in 0..online {
+            if cpu == current_cpu {
+                continue;
+            }
+            // Check if this CPU is running its idle thread
+            if cpu < MAX_CPUS {
+                if let Some(current) = self.cpu_state[cpu].current_thread {
+                    if current == self.cpu_state[cpu].idle_thread {
+                        // This CPU is idle - send it a reschedule IPI
+                        crate::arch_impl::aarch64::gic::send_sgi(
+                            crate::arch_impl::aarch64::constants::SGI_RESCHEDULE as u8,
+                            cpu as u8,
+                        );
+                        return; // Only wake one CPU
+                    }
                 }
             }
         }
@@ -371,7 +456,7 @@ impl Scheduler {
         &mut self,
         userspace_context: Option<super::thread::CpuContext>,
     ) {
-        if let Some(current_id) = self.current_thread {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 // CRITICAL: Save userspace context FIRST, THEN set state.
                 // This ensures that when unblock_for_signal() is called,
@@ -417,7 +502,7 @@ impl Scheduler {
         log_serial_println!(
             "unblock_for_signal: Checking thread {} (current={:?}, ready_queue={:?})",
             thread_id,
-            self.current_thread,
+            self.cpu_state[Self::current_cpu_id()].current_thread,
             self.ready_queue
         );
         if let Some(thread) = self.get_thread_mut(thread_id) {
@@ -433,7 +518,7 @@ impl Scheduler {
                 // NOTE: Do NOT clear blocked_in_syscall here!
                 // The thread needs to resume inside the syscall and complete it.
                 // blocked_in_syscall will be cleared when the syscall actually returns.
-                if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
+                if thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&thread_id) {
                     self.ready_queue.push_back(thread_id);
                     #[cfg(target_arch = "x86_64")]
                     log_serial_println!(
@@ -453,6 +538,10 @@ impl Scheduler {
                 // doesn't know to switch to it, causing pause() to timeout waiting for
                 // the next timer tick instead of waking up immediately.
                 set_need_resched();
+
+                // Send IPI to wake an idle CPU
+                #[cfg(target_arch = "aarch64")]
+                self.send_resched_ipi();
             } else {
                 #[cfg(target_arch = "x86_64")]
                 log_serial_println!(
@@ -474,7 +563,7 @@ impl Scheduler {
     /// is still physically running the syscall. The schedule() function
     /// will check the thread state and not put it back in ready queue.
     pub fn block_current_for_child_exit(&mut self) {
-        if let Some(current_id) = self.current_thread {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
             if let Some(thread) = self.get_thread_mut(current_id) {
                 thread.state = ThreadState::BlockedOnChildExit;
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
@@ -504,7 +593,7 @@ impl Scheduler {
         if let Some(thread) = self.get_thread_mut(thread_id) {
             if thread.state == ThreadState::BlockedOnChildExit {
                 thread.set_ready();
-                if thread_id != self.idle_thread && !self.ready_queue.contains(&thread_id) {
+                if thread_id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&thread_id) {
                     self.ready_queue.push_back(thread_id);
                     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
                     #[cfg(target_arch = "x86_64")]
@@ -514,6 +603,10 @@ impl Scheduler {
                 // Without this, the thread is added to ready queue but the scheduler
                 // doesn't know to switch to it, causing waitpid() to hang.
                 set_need_resched();
+
+                // Send IPI to wake an idle CPU
+                #[cfg(target_arch = "aarch64")]
+                self.send_resched_ipi();
             }
         }
     }
@@ -525,13 +618,13 @@ impl Scheduler {
             current.set_terminated();
             // Don't put back in ready queue
         }
-        self.current_thread = None;
+        self.cpu_state[Self::current_cpu_id()].current_thread = None;
     }
 
     /// Check if scheduler has any runnable threads
     pub fn has_runnable_threads(&self) -> bool {
         !self.ready_queue.is_empty()
-            || self.current_thread.map_or(false, |id| {
+            || self.cpu_state[Self::current_cpu_id()].current_thread.map_or(false, |id| {
                 self.get_thread(id).map_or(false, |t| t.is_runnable())
             })
     }
@@ -539,7 +632,8 @@ impl Scheduler {
     /// Check if scheduler has any userspace threads (ready, running, or blocked)
     pub fn has_userspace_threads(&self) -> bool {
         self.threads.iter().any(|t| {
-            t.id() != self.idle_thread
+            // Exclude all idle threads (one per CPU)
+            !self.cpu_state.iter().any(|cs| cs.idle_thread == t.id())
                 && t.privilege == super::thread::ThreadPrivilege::User
                 && t.state != super::thread::ThreadState::Terminated
         })
@@ -560,13 +654,13 @@ impl Scheduler {
 
     /// Get the idle thread ID
     pub fn idle_thread(&self) -> u64 {
-        self.idle_thread
+        self.cpu_state[Self::current_cpu_id()].idle_thread
     }
 
     /// Set the current thread (used by spawn mechanism)
     #[allow(dead_code)]
     pub fn set_current_thread(&mut self, thread_id: u64) {
-        self.current_thread = Some(thread_id);
+        self.cpu_state[Self::current_cpu_id()].current_thread = Some(thread_id);
     }
 }
 
@@ -588,7 +682,7 @@ pub fn init_with_current(current_thread: Box<Thread>) {
 
     // Create scheduler with current thread as both idle and current
     let mut scheduler = Scheduler::new(current_thread);
-    scheduler.current_thread = Some(thread_id);
+    scheduler.cpu_state[0].current_thread = Some(thread_id);
 
     *scheduler_lock = Some(scheduler);
     // CRITICAL: Only log on x86_64 to avoid deadlock on ARM64
@@ -596,6 +690,18 @@ pub fn init_with_current(current_thread: Box<Thread>) {
     log_serial_println!("Scheduler initialized with current thread {} as idle task", thread_id);
     #[cfg(not(target_arch = "x86_64"))]
     let _ = thread_id;
+}
+
+/// Register an idle thread for a secondary CPU.
+/// Called during SMP bringup from secondary_cpu_entry_rust.
+#[cfg(target_arch = "aarch64")]
+pub fn register_cpu_idle_thread(cpu_id: usize, idle_thread: Box<Thread>) {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.register_idle_thread(cpu_id, idle_thread);
+        }
+    });
 }
 
 /// Add a thread to the scheduler
@@ -757,7 +863,7 @@ where
 pub fn current_thread_id() -> Option<u64> {
     without_interrupts(|| {
         let scheduler_lock = SCHEDULER.lock();
-        scheduler_lock.as_ref().and_then(|s| s.current_thread)
+        scheduler_lock.as_ref().and_then(|s| s.cpu_state[Scheduler::current_cpu_id()].current_thread)
     })
 }
 
@@ -777,7 +883,7 @@ pub fn set_current_thread(thread_id: u64) {
 /// Yield the current thread
 pub fn yield_current() {
     // CRITICAL FIX: Do NOT call schedule() here!
-    // schedule() updates self.current_thread, but no actual context switch happens.
+    // schedule() updates self.cpu_state[Self::current_cpu_id()].current_thread, but no actual context switch happens.
     // This caused the scheduler to get out of sync with reality:
     //   1. Thread A is running
     //   2. yield_current() calls schedule(), returns (A, B), sets current_thread = B
@@ -791,7 +897,7 @@ pub fn yield_current() {
 }
 
 // NOTE: get_pending_switch() was removed because it called schedule() which mutates
-// self.current_thread. Calling it "just to peek" would corrupt scheduler state.
+// self.cpu_state[Self::current_cpu_id()].current_thread. Calling it "just to peek" would corrupt scheduler state.
 // If needed in future, implement a true peek function that doesn't mutate state.
 //
 // ARCHITECTURAL CONSTRAINT: Never add a function that calls schedule() "just to look"
@@ -855,8 +961,9 @@ pub fn is_need_resched() -> bool {
 /// Call this before modifying exception frame to return to idle_loop.
 pub fn switch_to_idle() {
     with_scheduler(|sched| {
-        let idle_id = sched.idle_thread;
-        sched.current_thread = Some(idle_id);
+        let cpu_id = Scheduler::current_cpu_id();
+        let idle_id = sched.cpu_state[cpu_id].idle_thread;
+        sched.cpu_state[cpu_id].current_thread = Some(idle_id);
 
         // Also update per-CPU current thread pointer
         #[cfg(target_arch = "x86_64")]
@@ -943,7 +1050,7 @@ pub mod tests {
         let other_thread = make_thread(other_thread_id, ThreadState::Ready);
         scheduler.add_thread(other_thread);
 
-        scheduler.current_thread = Some(current_thread_id);
+        scheduler.cpu_state[0].current_thread = Some(current_thread_id);
         if let Some(thread) = scheduler.get_thread_mut(current_thread_id) {
             thread.state = ThreadState::Running;
         }
@@ -964,7 +1071,7 @@ pub mod tests {
     /// Test that yield_current() does NOT modify scheduler.current_thread.
     ///
     /// This test validates the fix for the bug where yield_current() called schedule(),
-    /// which updated self.current_thread without an actual context switch occurring.
+    /// which updated self.cpu_state[Self::current_cpu_id()].current_thread without an actual context switch occurring.
     /// This caused scheduler state to desync from reality, corrupting child process
     /// register state during fork.
     ///
