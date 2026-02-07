@@ -342,6 +342,12 @@ impl Process {
                         buffer.lock().close_write();
                         log::debug!("Process::close_all_fds() - closed FIFO write fd {} ({})", fd, path);
                     }
+                    FdKind::ProcfsFile { .. } => {
+                        // Procfs files are purely in-memory, nothing to clean up
+                    }
+                    FdKind::ProcfsDirectory { .. } => {
+                        // Procfs directory doesn't need cleanup
+                    }
                 }
             }
         }
@@ -439,6 +445,12 @@ impl Process {
                         // Close TCP connection
                         let _ = crate::net::tcp::tcp_close(&conn_id);
                         log::debug!("Process::close_all_fds() - closed TCP connection fd {}", fd);
+                    }
+                    FdKind::ProcfsFile { .. } => {
+                        // Procfs files are purely in-memory, nothing to clean up
+                    }
+                    FdKind::ProcfsDirectory { .. } => {
+                        // Procfs directory doesn't need cleanup
                     }
                 }
             }

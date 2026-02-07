@@ -308,6 +308,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // PTY write not implemented yet
                 WriteOperation::Eopnotsupp
             }
+            FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
+            FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
         }
         // manager_guard dropped here, releasing the lock before I/O
     };
@@ -1240,6 +1242,39 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // Cannot read from unconnected Unix socket
             log::error!("sys_read: Cannot read from unconnected Unix socket");
             SyscallResult::Err(super::errno::ENOTCONN as u64)
+        }
+        FdKind::ProcfsFile { ref content, position } => {
+            // Read from procfs virtual file
+            let bytes = content.as_bytes();
+            let pos = *position;
+            if pos >= bytes.len() {
+                return SyscallResult::Ok(0);
+            }
+            let remaining = &bytes[pos..];
+            let to_copy = remaining.len().min(count as usize);
+            if to_copy > 0 {
+                if copy_to_user(buf_ptr, remaining.as_ptr() as u64, to_copy).is_err() {
+                    return SyscallResult::Err(14); // EFAULT
+                }
+            }
+            // Update position - re-acquire the manager lock
+            drop(manager_guard);
+            let mut mg = crate::process::manager();
+            if let Some(manager) = &mut *mg {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    if let Some(fd_entry) = process.fd_table.get_mut(fd as i32) {
+                        if let FdKind::ProcfsFile { position, .. } = &mut fd_entry.kind {
+                            *position += to_copy;
+                        }
+                    }
+                }
+            }
+            SyscallResult::Ok(to_copy as u64)
+        }
+        FdKind::ProcfsDirectory { .. } => {
+            // Cannot read from directory with read() - must use getdents
+            log::debug!("sys_read: Cannot read from /proc directory, use getdents instead");
+            SyscallResult::Err(super::errno::EISDIR as u64)
         }
     }
 }

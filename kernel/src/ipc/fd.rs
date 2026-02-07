@@ -5,6 +5,7 @@
 //! to underlying file objects (pipes, stdio, sockets, etc.).
 
 use alloc::sync::Arc;
+use crate::memory::slab::{SlabBox, FD_TABLE_SLAB};
 use spin::Mutex;
 
 /// Maximum number of file descriptors per process
@@ -128,6 +129,10 @@ pub enum FdKind {
     FifoRead(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
     /// FIFO (named pipe) write end - path is stored for cleanup on close
     FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
+    /// Procfs virtual file (content generated at open time)
+    ProcfsFile { content: alloc::string::String, position: usize },
+    /// Procfs directory listing (for /proc and /proc/[pid])
+    ProcfsDirectory { path: alloc::string::String, position: u64 },
 }
 
 impl core::fmt::Debug for FdKind {
@@ -161,6 +166,8 @@ impl core::fmt::Debug for FdKind {
             }
             FdKind::FifoRead(path, _) => write!(f, "FifoRead({})", path),
             FdKind::FifoWrite(path, _) => write!(f, "FifoWrite({})", path),
+            FdKind::ProcfsFile { content, position } => write!(f, "ProcfsFile(len={}, pos={})", content.len(), position),
+            FdKind::ProcfsDirectory { path, position } => write!(f, "ProcfsDirectory(path={}, pos={})", path, position),
         }
     }
 }
@@ -208,11 +215,11 @@ impl FileDescriptor {
 
 /// Per-process file descriptor table
 ///
-/// Note: Uses Box to heap-allocate the fd array to avoid stack overflow
-/// during process creation (the array is ~6KB which is too large for stack).
+/// Note: Uses SlabBox to allocate the fd array from a slab cache (O(1) alloc/free)
+/// with fallback to the global heap. The array is ~6KB which is too large for stack.
 pub struct FdTable {
     /// The file descriptors (None = unused slot)
-    fds: alloc::boxed::Box<[Option<FileDescriptor>; MAX_FDS]>,
+    fds: SlabBox<[Option<FileDescriptor>; MAX_FDS]>,
 }
 
 impl Default for FdTable {
@@ -225,7 +232,7 @@ impl Clone for FdTable {
     fn clone(&self) -> Self {
         // CRITICAL: No logging here - this runs during fork() with potential timer interrupts
         // Logging can cause deadlock if timer fires while holding logger lock
-        let cloned_fds = alloc::boxed::Box::new((*self.fds).clone());
+        let cloned_fds = self.fds.clone();
 
         // Increment reference counts for all cloned fds that need it
         for fd_opt in cloned_fds.iter() {
@@ -274,8 +281,17 @@ impl Clone for FdTable {
 impl FdTable {
     /// Create a new file descriptor table with standard I/O pre-allocated
     pub fn new() -> Self {
-        // Use Box::new to allocate directly on heap, avoiding stack overflow
-        let mut fds = alloc::boxed::Box::new(core::array::from_fn(|_| None));
+        // Try slab allocation first (O(1)), fall back to global heap
+        let mut fds = if let Some(raw) = FD_TABLE_SLAB.alloc() {
+            // Slab returns zeroed memory; write None into each slot
+            let arr = raw as *mut [Option<FileDescriptor>; MAX_FDS];
+            for i in 0..MAX_FDS {
+                unsafe { core::ptr::write(&mut (*arr)[i], None); }
+            }
+            unsafe { SlabBox::from_slab(arr, &FD_TABLE_SLAB) }
+        } else {
+            SlabBox::from_box(alloc::boxed::Box::new(core::array::from_fn(|_| None)))
+        };
 
         // Pre-allocate stdin, stdout, stderr
         fds[STDIN as usize] = Some(FileDescriptor::new(FdKind::StdIo(STDIN)));
@@ -486,6 +502,11 @@ impl FdTable {
         self.get(fd).map(|e| e.status_flags).ok_or(9) // EBADF
     }
 
+    /// Count the number of open file descriptors
+    pub fn open_fd_count(&self) -> usize {
+        self.fds.iter().filter(|slot| slot.is_some()).count()
+    }
+
     /// Set file status flags (for F_SETFL)
     /// Only modifies O_NONBLOCK and O_APPEND; other flags are ignored
     pub fn set_status_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
@@ -608,6 +629,12 @@ impl Drop for FdTable {
                         super::fifo::close_fifo_write(&path);
                         buffer.lock().close_write();
                         log::debug!("FdTable::drop() - closed FIFO write fd {} ({})", i, path);
+                    }
+                    FdKind::ProcfsFile { .. } => {
+                        // Procfs files are purely in-memory, nothing to clean up
+                    }
+                    FdKind::ProcfsDirectory { .. } => {
+                        // Procfs directory doesn't need cleanup
                     }
                 }
             }

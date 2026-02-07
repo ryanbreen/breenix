@@ -1,6 +1,7 @@
 //! Signal-related data structures
 
 use super::constants::*;
+use crate::memory::slab::{SlabBox, SIGNAL_HANDLERS_SLAB};
 
 /// Alternate signal stack configuration (matches Linux stack_t)
 ///
@@ -146,8 +147,8 @@ pub struct SignalState {
     /// Blocked signals bitmap (sigprocmask)
     pub blocked: u64,
     /// Signal handlers (one per signal, indices 0-63 for signals 1-64)
-    /// Boxed to avoid stack overflow - 64 * 32 bytes = 2KB
-    handlers: alloc::boxed::Box<[SignalAction; 64]>,
+    /// Slab-allocated for O(1) alloc/free, falls back to heap - 64 * 32 bytes = 2KB
+    handlers: SlabBox<[SignalAction; 64]>,
     /// Alternate signal stack configuration
     pub alt_stack: AltStack,
     /// Saved signal mask from sigsuspend - restored after signal handler returns via sigreturn
@@ -158,10 +159,19 @@ pub struct SignalState {
 
 impl Default for SignalState {
     fn default() -> Self {
+        let handlers = if let Some(raw) = SIGNAL_HANDLERS_SLAB.alloc() {
+            let arr = raw as *mut [SignalAction; 64];
+            unsafe {
+                core::ptr::write(arr, [SignalAction::default(); 64]);
+                SlabBox::from_slab(arr, &SIGNAL_HANDLERS_SLAB)
+            }
+        } else {
+            SlabBox::from_box(alloc::boxed::Box::new([SignalAction::default(); 64]))
+        };
         SignalState {
             pending: 0,
             blocked: 0,
-            handlers: alloc::boxed::Box::new([SignalAction::default(); 64]),
+            handlers,
             alt_stack: AltStack::default(),
             sigsuspend_saved_mask: None,
         }

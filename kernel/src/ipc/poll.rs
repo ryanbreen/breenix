@@ -284,6 +284,18 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 }
             }
         }
+        FdKind::ProcfsFile { content, position } => {
+            // Procfs file is readable if there's remaining content
+            if (events & events::POLLIN) != 0 && *position < content.len() {
+                revents |= events::POLLIN;
+            }
+        }
+        FdKind::ProcfsDirectory { .. } => {
+            // Procfs directory is always "readable" for getdents purposes
+            if (events & events::POLLIN) != 0 {
+                revents |= events::POLLIN;
+            }
+        }
     }
 
     revents
