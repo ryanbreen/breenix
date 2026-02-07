@@ -330,6 +330,9 @@ impl Process {
                     FdKind::ProcfsFile { .. } => {
                         // Procfs files are purely in-memory, nothing to clean up
                     }
+                    FdKind::ProcfsDirectory { .. } => {
+                        // Procfs directory doesn't need cleanup
+                    }
                 }
             }
         }
@@ -430,6 +433,9 @@ impl Process {
                     }
                     FdKind::ProcfsFile { .. } => {
                         // Procfs files are purely in-memory, nothing to clean up
+                    }
+                    FdKind::ProcfsDirectory { .. } => {
+                        // Procfs directory doesn't need cleanup
                     }
                 }
             }

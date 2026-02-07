@@ -286,6 +286,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 WriteOperation::Eopnotsupp
             }
             FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
+            FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
         }
         // manager_guard dropped here, releasing the lock before I/O
     };
@@ -1246,6 +1247,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
             SyscallResult::Ok(to_copy as u64)
+        }
+        FdKind::ProcfsDirectory { .. } => {
+            // Cannot read from directory with read() - must use getdents
+            log::debug!("sys_read: Cannot read from /proc directory, use getdents instead");
+            SyscallResult::Err(super::errno::EISDIR as u64)
         }
     }
 }

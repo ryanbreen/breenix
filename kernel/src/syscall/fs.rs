@@ -707,6 +707,14 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_nlink = 1;
             stat.st_size = content.len() as i64;
         }
+        FdKind::ProcfsDirectory { .. } => {
+            // Procfs directory
+            stat.st_dev = 0;
+            stat.st_ino = 0;
+            stat.st_mode = S_IFDIR | 0o555; // Directory with r-xr-xr-x
+            stat.st_nlink = 2; // . and ..
+            stat.st_size = 0;
+        }
     }
 
     // Copy stat structure to userspace
@@ -880,6 +888,14 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         let start_position = *position;
         drop(manager_guard);
         return handle_devpts_getdents64(fd, dirp, count as usize, start_position, thread_id);
+    }
+
+    // Handle ProcfsDirectory specially
+    if let FdKind::ProcfsDirectory { path, position } = &fd_entry.kind {
+        let dir_path = path.clone();
+        let start_position = *position;
+        drop(manager_guard);
+        return handle_procfs_getdents64(fd, dirp, count as usize, &dir_path, start_position, thread_id);
     }
 
     // Must be a directory fd
@@ -1680,12 +1696,53 @@ pub fn sys_access(pathname: u64, mode: u32) -> SyscallResult {
 ///
 /// # Arguments
 /// * `device_name` - Name of the device (without /dev/ prefix)
-/// Handle opening a /proc file
+/// Handle opening a /proc file or directory
 ///
-/// Generates the file content at open time, stores it in a ProcfsFile fd.
+/// For directories (/proc, /proc/trace, /proc/[pid]), returns a ProcfsDirectory fd.
+/// For files, generates the content at open time and stores it in a ProcfsFile fd.
 fn handle_procfs_open(path: &str, _flags: u32) -> SyscallResult {
     use crate::ipc::fd::{FdKind, FileDescriptor};
 
+    let normalized = path.trim_end_matches('/');
+
+    // Check if this is a directory path
+    // /proc itself is the root directory; for sub-paths, check if the entry is a directory type
+    let is_directory = if normalized == "/proc" {
+        true
+    } else if let Some(entry) = crate::fs::procfs::lookup_by_path(normalized) {
+        entry.entry_type.is_directory()
+    } else {
+        false
+    };
+
+    if is_directory {
+        let dir_path = alloc::string::String::from(normalized);
+        let fd_kind = FdKind::ProcfsDirectory { path: dir_path, position: 0 };
+        let fd_entry = FileDescriptor::new(fd_kind);
+
+        let thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => return SyscallResult::Err(3), // ESRCH
+        };
+        let mut manager_guard = crate::process::manager();
+        let process = match &mut *manager_guard {
+            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
+                Some((_pid, p)) => p,
+                None => return SyscallResult::Err(3),
+            },
+            None => return SyscallResult::Err(3),
+        };
+
+        return match process.fd_table.alloc_with_entry(fd_entry) {
+            Ok(fd) => {
+                log::debug!("handle_procfs_open: opened {} as directory fd={}", normalized, fd);
+                SyscallResult::Ok(fd as u64)
+            }
+            Err(e) => SyscallResult::Err(e as u64),
+        };
+    }
+
+    // Regular file open
     let content = match crate::fs::procfs::read_file(path) {
         Ok(c) => c,
         Err(_) => return SyscallResult::Err(super::errno::ENOENT as u64),
@@ -2227,6 +2284,183 @@ fn handle_devpts_getdents64(
     }
 
     log::debug!("handle_devpts_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
+    SyscallResult::Ok(bytes_written as u64)
+}
+
+/// Handle getdents64 for /proc directories
+///
+/// Returns virtual directory entries for procfs. Handles:
+/// - "/proc" - top-level directory (static entries + PID directories)
+/// - "/proc/trace" - trace subdirectory
+/// - "/proc/[pid]" - per-process directory
+fn handle_procfs_getdents64(
+    fd: i32,
+    dirp: u64,
+    buffer_size: usize,
+    dir_path: &str,
+    start_position: u64,
+    thread_id: u64,
+) -> SyscallResult {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    // Get the list of entries for this directory
+    let entries: Vec<String> = if dir_path == "/proc" {
+        crate::fs::procfs::list_entries()
+    } else if dir_path == "/proc/trace" {
+        crate::fs::procfs::list_trace_entries()
+    } else if dir_path.starts_with("/proc/") {
+        // Per-PID directory - only contains "status"
+        let relative = dir_path.strip_prefix("/proc/").unwrap_or("");
+        if !relative.is_empty() && relative.chars().all(|c| c.is_ascii_digit()) {
+            alloc::vec![String::from("status")]
+        } else {
+            alloc::vec![]
+        }
+    } else {
+        alloc::vec![]
+    };
+
+    // Build entries: ".", "..", then each entry
+    let buffer = dirp as *mut u8;
+    let mut bytes_written = 0usize;
+    let mut entry_index = 0u64;
+    let mut new_position = start_position;
+
+    // Helper entries: . and ..
+    let special_entries: [(&str, u64); 2] = [
+        (".", 0),   // inode 0 for this directory
+        ("..", 2),  // inode 2 = root directory
+    ];
+
+    // Iterate through special entries first
+    for (name, inode) in special_entries.iter() {
+        if entry_index < start_position {
+            entry_index += 1;
+            continue;
+        }
+
+        let name_len = name.len();
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
+
+        if bytes_written + reclen > buffer_size {
+            break;
+        }
+
+        unsafe {
+            let entry_ptr = buffer.add(bytes_written);
+
+            // d_ino (u64) at offset 0
+            let d_ino_ptr = entry_ptr as *mut u64;
+            core::ptr::write_unaligned(d_ino_ptr, *inode);
+
+            // d_off (i64) at offset 8 - offset to NEXT entry
+            let d_off_ptr = entry_ptr.add(8) as *mut i64;
+            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+
+            // d_reclen (u16) at offset 16
+            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
+            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
+
+            // d_type (u8) at offset 18 - DT_DIR for . and ..
+            let d_type_ptr = entry_ptr.add(18);
+            *d_type_ptr = DT_DIR;
+
+            // d_name at offset 19
+            let d_name_ptr = entry_ptr.add(19);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), d_name_ptr, name_len);
+            *d_name_ptr.add(name_len) = 0;
+
+            // Zero padding
+            for i in (19 + name_len + 1)..reclen {
+                *entry_ptr.add(i) = 0;
+            }
+        }
+
+        bytes_written += reclen;
+        entry_index += 1;
+        new_position = entry_index;
+    }
+
+    // Now iterate through the directory entries
+    for entry_name in entries.iter() {
+        if entry_index < start_position {
+            entry_index += 1;
+            continue;
+        }
+
+        let name_len = entry_name.len();
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
+
+        if bytes_written + reclen > buffer_size {
+            break;
+        }
+
+        // Determine the entry type and inode
+        // Look up the entry in procfs to get its type
+        let full_path = alloc::format!("{}/{}", dir_path, entry_name);
+        let (inode, dtype) = if let Some(entry) = crate::fs::procfs::lookup_by_path(&full_path) {
+            let ino = entry.entry_type.inode();
+            let dt = if entry.entry_type.is_directory() { DT_DIR } else { DT_REG };
+            (ino, dt)
+        } else {
+            // Check if the entry name is a PID (numeric) - it's a directory
+            if entry_name.chars().all(|c| c.is_ascii_digit()) {
+                let pid: u64 = entry_name.parse().unwrap_or(0);
+                (10000 + pid, DT_DIR)
+            } else {
+                (0, DT_REG)
+            }
+        };
+
+        unsafe {
+            let entry_ptr = buffer.add(bytes_written);
+
+            // d_ino (u64) at offset 0
+            let d_ino_ptr = entry_ptr as *mut u64;
+            core::ptr::write_unaligned(d_ino_ptr, inode);
+
+            // d_off (i64) at offset 8 - offset to NEXT entry
+            let d_off_ptr = entry_ptr.add(8) as *mut i64;
+            core::ptr::write_unaligned(d_off_ptr, (entry_index + 1) as i64);
+
+            // d_reclen (u16) at offset 16
+            let d_reclen_ptr = entry_ptr.add(16) as *mut u16;
+            core::ptr::write_unaligned(d_reclen_ptr, reclen as u16);
+
+            // d_type (u8) at offset 18
+            let d_type_ptr = entry_ptr.add(18);
+            *d_type_ptr = dtype;
+
+            // d_name at offset 19
+            let d_name_ptr = entry_ptr.add(19);
+            core::ptr::copy_nonoverlapping(entry_name.as_ptr(), d_name_ptr, name_len);
+            *d_name_ptr.add(name_len) = 0;
+
+            // Zero padding
+            for i in (19 + name_len + 1)..reclen {
+                *entry_ptr.add(i) = 0;
+            }
+        }
+
+        bytes_written += reclen;
+        entry_index += 1;
+        new_position = entry_index;
+    }
+
+    // Update directory position in the fd
+    let mut manager_guard = crate::process::manager();
+    if let Some(manager) = &mut *manager_guard {
+        if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
+            if let Some(fd_entry) = process.fd_table.get_mut(fd) {
+                if let FdKind::ProcfsDirectory { ref mut position, .. } = fd_entry.kind {
+                    *position = new_position;
+                }
+            }
+        }
+    }
+
+    log::debug!("handle_procfs_getdents64: wrote {} bytes, new_position={}", bytes_written, new_position);
     SyscallResult::Ok(bytes_written as u64)
 }
 

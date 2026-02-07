@@ -128,6 +128,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             FdKind::TcpSocket(_) | FdKind::TcpListener(_) => WriteOperation::Enotconn,
             FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
             FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
+            FdKind::ProcfsDirectory { .. } => WriteOperation::Eisdir,
         }
     };
 
@@ -449,7 +450,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 }
             }
         }
-        FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } => {
+        FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } | FdKind::ProcfsDirectory { .. } => {
             SyscallResult::Err(super::errno::EISDIR as u64)
         }
         FdKind::UnixStream(socket) => {
