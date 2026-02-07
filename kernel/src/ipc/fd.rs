@@ -131,6 +131,8 @@ pub enum FdKind {
     FifoWrite(alloc::string::String, Arc<Mutex<super::pipe::PipeBuffer>>),
     /// Procfs virtual file (content generated at open time)
     ProcfsFile { content: alloc::string::String, position: usize },
+    /// Procfs directory listing (for /proc and /proc/[pid])
+    ProcfsDirectory { path: alloc::string::String, position: u64 },
 }
 
 impl core::fmt::Debug for FdKind {
@@ -165,6 +167,7 @@ impl core::fmt::Debug for FdKind {
             FdKind::FifoRead(path, _) => write!(f, "FifoRead({})", path),
             FdKind::FifoWrite(path, _) => write!(f, "FifoWrite({})", path),
             FdKind::ProcfsFile { content, position } => write!(f, "ProcfsFile(len={}, pos={})", content.len(), position),
+            FdKind::ProcfsDirectory { path, position } => write!(f, "ProcfsDirectory(path={}, pos={})", path, position),
         }
     }
 }
@@ -629,6 +632,9 @@ impl Drop for FdTable {
                     }
                     FdKind::ProcfsFile { .. } => {
                         // Procfs files are purely in-memory, nothing to clean up
+                    }
+                    FdKind::ProcfsDirectory { .. } => {
+                        // Procfs directory doesn't need cleanup
                     }
                 }
             }

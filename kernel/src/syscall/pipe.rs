@@ -238,6 +238,9 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                 FdKind::ProcfsFile { .. } => {
                     log::debug!("sys_close: Closed procfs file fd={}", fd);
                 }
+                FdKind::ProcfsDirectory { .. } => {
+                    log::debug!("sys_close: Closed procfs directory fd={}", fd);
+                }
             }
             log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)

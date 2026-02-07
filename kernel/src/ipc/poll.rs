@@ -290,6 +290,12 @@ pub fn poll_fd(fd_entry: &FileDescriptor, events: i16) -> i16 {
                 revents |= events::POLLIN;
             }
         }
+        FdKind::ProcfsDirectory { .. } => {
+            // Procfs directory is always "readable" for getdents purposes
+            if (events & events::POLLIN) != 0 {
+                revents |= events::POLLIN;
+            }
+        }
     }
 
     revents
