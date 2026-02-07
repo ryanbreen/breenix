@@ -12,6 +12,9 @@
 //! - `/proc/meminfo` - Memory statistics
 //! - `/proc/cpuinfo` - CPU information
 //!
+//! ## Per-process entries (/proc/[pid]/)
+//! - `/proc/[pid]/status` - Process name, state, parent, children, memory usage
+//!
 //! ## Tracing entries (/proc/trace/)
 //! - `/proc/trace/enable` - Tracing enable state (0/1)
 //! - `/proc/trace/events` - List of available trace points
@@ -65,10 +68,23 @@ pub enum ProcEntryType {
     TraceProviders,
     /// /proc/slabinfo - slab allocator statistics
     SlabInfo,
+    /// /proc/stat - kernel activity counters
+    Stat,
+    /// /proc/cowinfo - copy-on-write statistics
+    CowInfo,
+    /// /proc/mounts - mounted filesystems
+    Mounts,
+    /// /proc/[pid] - per-process directory (dynamic, not registered)
+    PidDir(u64),
+    /// /proc/[pid]/status - per-process status (dynamic, not registered)
+    PidStatus(u64),
 }
 
 impl ProcEntryType {
     /// Get the entry name (without path prefix)
+    ///
+    /// Note: For dynamic entries (PidDir, PidStatus) this returns a static
+    /// placeholder. Use `name_string()` for a dynamic name.
     pub fn name(&self) -> &'static str {
         match self {
             ProcEntryType::Uptime => "uptime",
@@ -82,10 +98,18 @@ impl ProcEntryType {
             ProcEntryType::TraceCounters => "counters",
             ProcEntryType::TraceProviders => "providers",
             ProcEntryType::SlabInfo => "slabinfo",
+            ProcEntryType::Stat => "stat",
+            ProcEntryType::CowInfo => "cowinfo",
+            ProcEntryType::Mounts => "mounts",
+            ProcEntryType::PidDir(_) => "pid",
+            ProcEntryType::PidStatus(_) => "status",
         }
     }
 
     /// Get the full path
+    ///
+    /// Note: For dynamic entries (PidDir, PidStatus) this returns a
+    /// placeholder since the real path depends on the PID.
     pub fn path(&self) -> &'static str {
         match self {
             ProcEntryType::Uptime => "/proc/uptime",
@@ -99,10 +123,20 @@ impl ProcEntryType {
             ProcEntryType::TraceCounters => "/proc/trace/counters",
             ProcEntryType::TraceProviders => "/proc/trace/providers",
             ProcEntryType::SlabInfo => "/proc/slabinfo",
+            ProcEntryType::Stat => "/proc/stat",
+            ProcEntryType::CowInfo => "/proc/cowinfo",
+            ProcEntryType::Mounts => "/proc/mounts",
+            // Dynamic entries don't have static paths
+            ProcEntryType::PidDir(_) => "/proc/<pid>",
+            ProcEntryType::PidStatus(_) => "/proc/<pid>/status",
         }
     }
 
     /// Get the inode number for this entry
+    ///
+    /// Dynamic PID entries use computed inodes:
+    /// - PidDir(pid) -> 10000 + pid
+    /// - PidStatus(pid) -> 20000 + pid
     pub fn inode(&self) -> u64 {
         match self {
             ProcEntryType::Uptime => 1,
@@ -116,12 +150,17 @@ impl ProcEntryType {
             ProcEntryType::TraceCounters => 104,
             ProcEntryType::TraceProviders => 105,
             ProcEntryType::SlabInfo => 5,
+            ProcEntryType::Stat => 6,
+            ProcEntryType::CowInfo => 7,
+            ProcEntryType::Mounts => 8,
+            ProcEntryType::PidDir(pid) => 10000 + pid,
+            ProcEntryType::PidStatus(pid) => 20000 + pid,
         }
     }
 
     /// Check if this is a directory
     pub fn is_directory(&self) -> bool {
-        matches!(self, ProcEntryType::TraceDir)
+        matches!(self, ProcEntryType::TraceDir | ProcEntryType::PidDir(_))
     }
 }
 
@@ -172,6 +211,9 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::MemInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::CpuInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::SlabInfo));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Stat));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::CowInfo));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Mounts));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -190,32 +232,45 @@ pub fn init() {
 
 /// Look up an entry by path (without /proc prefix)
 pub fn lookup(name: &str) -> Option<ProcEntry> {
-    let procfs = PROCFS.lock();
+    // Try static entries first (under PROCFS lock)
+    {
+        let procfs = PROCFS.lock();
 
-    // Handle paths like "trace/enable" or just "uptime"
-    let normalized = name.trim_start_matches('/');
+        // Handle paths like "trace/enable" or just "uptime"
+        let normalized = name.trim_start_matches('/');
 
-    for entry in &procfs.entries {
-        let entry_path = entry.entry_type.path();
-        // Check if the full path matches or the relative path matches
-        let relative = entry_path.trim_start_matches("/proc/");
-        if relative == normalized || entry.entry_type.name() == normalized {
-            return Some(entry.clone());
+        for entry in &procfs.entries {
+            let entry_path = entry.entry_type.path();
+            // Check if the full path matches or the relative path matches
+            let relative = entry_path.trim_start_matches("/proc/");
+            if relative == normalized || entry.entry_type.name() == normalized {
+                return Some(entry.clone());
+            }
         }
     }
-    None
+    // PROCFS lock is released here before we try dynamic PID lookup
+
+    // Try dynamic per-PID paths (e.g., "123/status", "123")
+    let normalized = name.trim_start_matches('/');
+    let full_path = alloc::format!("/proc/{}", normalized);
+    lookup_pid_path(&full_path)
 }
 
 /// Look up an entry by full path
 pub fn lookup_by_path(path: &str) -> Option<ProcEntry> {
-    let procfs = PROCFS.lock();
-
-    for entry in &procfs.entries {
-        if entry.entry_type.path() == path {
-            return Some(entry.clone());
+    // Try static entries first (under PROCFS lock)
+    {
+        let procfs = PROCFS.lock();
+        for entry in &procfs.entries {
+            if entry.entry_type.path() == path {
+                return Some(entry.clone());
+            }
         }
     }
-    None
+    // PROCFS lock is released here before we try dynamic PID lookup
+
+    // Try dynamic per-PID paths (e.g., /proc/123/status, /proc/123)
+    lookup_pid_path(path)
 }
 
 /// Look up an entry by inode number
@@ -231,21 +286,41 @@ pub fn lookup_by_inode(inode: u64) -> Option<ProcEntry> {
 }
 
 /// List all entries (for /proc directory listing)
+///
+/// Returns static entries plus dynamic PID directories from the process manager.
 pub fn list_entries() -> Vec<String> {
-    let procfs = PROCFS.lock();
-    procfs
-        .entries
-        .iter()
-        .filter(|e| !matches!(
-            e.entry_type,
-            ProcEntryType::TraceEnable
-                | ProcEntryType::TraceEvents
-                | ProcEntryType::TraceBuffer
-                | ProcEntryType::TraceCounters
-                | ProcEntryType::TraceProviders
-        ))
-        .map(|e| String::from(e.entry_type.name()))
-        .collect()
+    use alloc::format;
+
+    // Collect static entries under PROCFS lock
+    let mut entries: Vec<String> = {
+        let procfs = PROCFS.lock();
+        procfs
+            .entries
+            .iter()
+            .filter(|e| !matches!(
+                e.entry_type,
+                ProcEntryType::TraceEnable
+                    | ProcEntryType::TraceEvents
+                    | ProcEntryType::TraceBuffer
+                    | ProcEntryType::TraceCounters
+                    | ProcEntryType::TraceProviders
+            ))
+            .map(|e| String::from(e.entry_type.name()))
+            .collect()
+    };
+    // PROCFS lock is released here before acquiring process manager lock
+
+    // Add dynamic PID directories from the process manager
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        let mut pids = manager.all_pids();
+        pids.sort();
+        for pid in pids {
+            entries.push(format!("{}", pid.as_u64()));
+        }
+    }
+
+    entries
 }
 
 /// List entries in the /proc/trace directory
@@ -295,6 +370,11 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::TraceCounters => Ok(trace::generate_counters()),
         ProcEntryType::TraceProviders => Ok(trace::generate_providers()),
         ProcEntryType::SlabInfo => Ok(generate_slabinfo()),
+        ProcEntryType::Stat => Ok(generate_stat()),
+        ProcEntryType::CowInfo => Ok(generate_cowinfo()),
+        ProcEntryType::Mounts => Ok(generate_mounts()),
+        ProcEntryType::PidDir(pid) => Ok(generate_pid_dir(pid)),
+        ProcEntryType::PidStatus(pid) => Ok(generate_pid_status(pid)),
     }
 }
 
@@ -357,17 +437,20 @@ fn generate_version() -> String {
 fn generate_meminfo() -> String {
     use alloc::format;
 
-    // Get memory info from allocator if available
-    #[cfg(target_arch = "x86_64")]
-    let (total_kb, free_kb) = {
-        // Placeholder values - would query actual allocator
-        (1048576u64, 524288u64) // 1GB total, 512MB free
-    };
+    let stats = crate::memory::frame_allocator::memory_stats();
 
-    #[cfg(target_arch = "aarch64")]
-    let (total_kb, free_kb) = {
-        // Placeholder values
-        (1048576u64, 524288u64)
+    let total_kb = stats.total_bytes / 1024;
+    // Used frames = allocated minus those returned to the free list
+    let used_frames = if stats.allocated_frames > stats.free_list_frames {
+        stats.allocated_frames - stats.free_list_frames
+    } else {
+        0
+    };
+    let used_kb = (used_frames as u64) * 4096 / 1024;
+    let free_kb = if total_kb > used_kb {
+        total_kb - used_kb
+    } else {
+        0
     };
 
     format!(
@@ -431,4 +514,224 @@ fn generate_slabinfo() -> String {
         ));
     }
     out
+}
+
+/// Generate /proc/stat content (kernel activity counters)
+fn generate_stat() -> String {
+    use alloc::format;
+    use crate::tracing::providers::counters::{
+        SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL,
+        FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL,
+    };
+
+    format!(
+        "syscalls {}\n\
+         interrupts {}\n\
+         context_switches {}\n\
+         timer_ticks {}\n\
+         forks {}\n\
+         execs {}\n\
+         cow_faults {}\n",
+        SYSCALL_TOTAL.aggregate(),
+        IRQ_TOTAL.aggregate(),
+        CTX_SWITCH_TOTAL.aggregate(),
+        TIMER_TICK_TOTAL.aggregate(),
+        FORK_TOTAL.aggregate(),
+        EXEC_TOTAL.aggregate(),
+        COW_FAULT_TOTAL.aggregate(),
+    )
+}
+
+/// Generate /proc/cowinfo content (copy-on-write statistics)
+fn generate_cowinfo() -> String {
+    use alloc::format;
+
+    let stats = crate::memory::cow_stats::get_stats();
+
+    format!(
+        "total_faults {}\n\
+         pages_copied {}\n\
+         sole_owner_optimizations {}\n\
+         manager_path {}\n\
+         direct_path {}\n",
+        stats.total_faults,
+        stats.pages_copied,
+        stats.sole_owner_opt,
+        stats.manager_path,
+        stats.direct_path,
+    )
+}
+
+/// Generate /proc/mounts content (mounted filesystems)
+fn generate_mounts() -> String {
+    use alloc::format;
+
+    let mounts = crate::fs::vfs::mount::list_mounts();
+    let mut out = String::new();
+
+    for (_mount_id, mount_path, fs_type) in &mounts {
+        out.push_str(&format!("none {} {} rw 0 0\n", mount_path, fs_type));
+    }
+
+    // If no mounts are registered yet, return an empty string
+    out
+}
+
+// =============================================================================
+// Dynamic Per-PID Entries
+// =============================================================================
+
+/// Check if a PID exists in the process manager.
+///
+/// This acquires the process manager lock, so callers must NOT hold the PROCFS lock.
+fn pid_exists(pid: u64) -> bool {
+    use crate::process::ProcessId;
+
+    let manager_guard = crate::process::manager();
+    if let Some(ref manager) = *manager_guard {
+        manager.get_process(ProcessId::new(pid)).is_some()
+    } else {
+        false
+    }
+}
+
+/// Try to resolve a full /proc path as a dynamic per-PID entry.
+///
+/// Handles:
+/// - `/proc/123` -> PidDir(123)
+/// - `/proc/123/status` -> PidStatus(123)
+///
+/// Returns None if the path doesn't match a PID pattern or the PID doesn't exist.
+/// This function acquires the process manager lock, so callers must NOT hold the
+/// PROCFS lock (to avoid lock ordering issues).
+fn lookup_pid_path(path: &str) -> Option<ProcEntry> {
+    // Strip "/proc/" prefix
+    let relative = path.strip_prefix("/proc/")?;
+    let relative = relative.trim_end_matches('/');
+
+    if relative.is_empty() {
+        return None;
+    }
+
+    // Split into PID component and optional sub-path
+    let (pid_str, sub_path) = if let Some(slash_pos) = relative.find('/') {
+        (&relative[..slash_pos], Some(&relative[slash_pos + 1..]))
+    } else {
+        (relative, None)
+    };
+
+    // Parse PID: must be purely numeric, no leading zeros (except "0" itself)
+    if pid_str.is_empty() || (pid_str.len() > 1 && pid_str.starts_with('0')) {
+        return None;
+    }
+    let pid: u64 = pid_str.parse().ok()?;
+
+    // Verify the PID exists (acquires process manager lock)
+    if !pid_exists(pid) {
+        return None;
+    }
+
+    match sub_path {
+        None => Some(ProcEntry::new(ProcEntryType::PidDir(pid))),
+        Some("status") => Some(ProcEntry::new(ProcEntryType::PidStatus(pid))),
+        Some(_) => None, // Unknown sub-path
+    }
+}
+
+/// Generate directory listing for /proc/[pid]
+///
+/// Lists the available per-process files.
+fn generate_pid_dir(pid: u64) -> String {
+    use alloc::format;
+
+    if !pid_exists(pid) {
+        return format!("Process {} not found\n", pid);
+    }
+
+    String::from("status\n")
+}
+
+/// Generate /proc/[pid]/status content
+///
+/// Formatted similarly to Linux's /proc/[pid]/status:
+/// ```text
+/// Name:   init_shell
+/// Pid:    3
+/// PPid:   1
+/// State:  Running
+/// Children:   4 5
+/// FdCount:    6
+/// VmCode: 8 kB
+/// VmHeap: 64 kB
+/// VmStack:    16 kB
+/// ```
+fn generate_pid_status(pid: u64) -> String {
+    use alloc::format;
+    use crate::process::ProcessId;
+    use crate::process::ProcessState;
+
+    let manager_guard = crate::process::manager();
+    let manager = match manager_guard.as_ref() {
+        Some(m) => m,
+        None => return String::from("Process manager not available\n"),
+    };
+
+    let process = match manager.get_process(ProcessId::new(pid)) {
+        Some(p) => p,
+        None => return format!("Process {} not found\n", pid),
+    };
+
+    let state_str = match process.state {
+        ProcessState::Creating => "Creating",
+        ProcessState::Ready => "Ready",
+        ProcessState::Running => "Running",
+        ProcessState::Blocked => "Blocked",
+        ProcessState::Terminated(_) => "Terminated",
+    };
+
+    let ppid = match process.parent {
+        Some(parent) => parent.as_u64(),
+        None => 0,
+    };
+
+    // Format children list
+    let children_str = if process.children.is_empty() {
+        String::new()
+    } else {
+        let child_strs: Vec<String> = process
+            .children
+            .iter()
+            .map(|c| format!("{}", c.as_u64()))
+            .collect();
+        child_strs.join(" ")
+    };
+
+    // Count open file descriptors
+    let fd_count = process.fd_table.open_fd_count();
+
+    // Memory sizes in kB
+    let vm_code_kb = process.memory_usage.code_size / 1024;
+    let vm_heap_kb = process.memory_usage.heap_size / 1024;
+    let vm_stack_kb = process.memory_usage.stack_size / 1024;
+
+    format!(
+        "Name:\t{}\n\
+         Pid:\t{}\n\
+         PPid:\t{}\n\
+         State:\t{}\n\
+         Children:\t{}\n\
+         FdCount:\t{}\n\
+         VmCode:\t{} kB\n\
+         VmHeap:\t{} kB\n\
+         VmStack:\t{} kB\n",
+        process.name,
+        pid,
+        ppid,
+        state_str,
+        children_str,
+        fd_count,
+        vm_code_kb,
+        vm_heap_kb,
+        vm_stack_kb,
+    )
 }

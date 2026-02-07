@@ -372,6 +372,53 @@ pub fn deallocate_frame(frame: PhysFrame) {
     }
 }
 
+/// Memory statistics for procfs reporting
+pub struct MemoryStats {
+    /// Total usable memory in bytes
+    pub total_bytes: u64,
+    /// Number of frames allocated (sequential allocator index)
+    pub allocated_frames: usize,
+    /// Number of frames in the free list (available for reuse)
+    pub free_list_frames: usize,
+}
+
+/// Get current memory statistics for procfs /proc/meminfo
+///
+/// Returns total usable memory, allocated frame count, and free list size.
+/// These can be used to compute total, used, and free memory.
+pub fn memory_stats() -> MemoryStats {
+    // Calculate total memory from MEMORY_INFO regions
+    let total_bytes = if let Some(info_guard) = MEMORY_INFO.try_lock() {
+        if let Some(ref info) = *info_guard {
+            let mut total = 0u64;
+            for i in 0..info.region_count {
+                if let Some(region) = info.regions[i] {
+                    total += region.end - region.start;
+                }
+            }
+            total
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let allocated_frames = NEXT_FREE_FRAME.load(Ordering::Relaxed);
+
+    let free_list_frames = if let Some(free_list) = FREE_FRAMES.try_lock() {
+        free_list.len()
+    } else {
+        0
+    };
+
+    MemoryStats {
+        total_bytes,
+        allocated_frames,
+        free_list_frames,
+    }
+}
+
 /// A wrapper that allows using the global frame allocator with the mapper
 pub struct GlobalFrameAllocator;
 
