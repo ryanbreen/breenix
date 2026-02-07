@@ -185,6 +185,9 @@ STD_BINARIES=(
     "cp"
     "mv"
     "resolution"
+
+    # Phase 4: init_shell
+    "init_shell"
 )
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"

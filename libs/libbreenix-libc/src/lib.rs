@@ -735,6 +735,12 @@ pub extern "C" fn getegid() -> u32 {
     0 // root group
 }
 
+/// setpgid - set process group ID
+#[no_mangle]
+pub extern "C" fn setpgid(pid: i32, pgid: i32) -> i32 {
+    libbreenix::process::setpgid(pid, pgid)
+}
+
 /// fork - create a child process
 #[no_mangle]
 pub extern "C" fn fork() -> i32 {

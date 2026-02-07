@@ -294,6 +294,11 @@ path = "src/mv.rs"
 name = "resolution"
 path = "src/resolution.rs"
 
+# Phase 4: init_shell (std port)
+[[bin]]
+name = "init_shell"
+path = "src/init_shell.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"
