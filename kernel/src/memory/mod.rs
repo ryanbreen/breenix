@@ -10,6 +10,7 @@ pub mod per_cpu_stack;
 pub mod process_memory;
 pub mod stack;
 pub mod tlb;
+pub mod slab;
 pub mod vma;
 #[cfg(not(target_arch = "x86_64"))]
 pub mod arch_stub;
@@ -44,6 +45,7 @@ pub fn init_aarch64_heap() {
     let phys_offset = physical_memory_offset();
     let mapper = unsafe { paging::init(phys_offset) };
     heap::init(&mapper).expect("ARM64 heap initialization failed");
+    slab::init();
 }
 
 /// Next available MMIO virtual address
@@ -124,6 +126,9 @@ pub fn init(physical_memory_offset: VirtAddr, memory_regions: &'static MemoryReg
         log::info!("Initializing heap allocator...");
         heap::init(&mapper).expect("heap initialization failed");
     }
+
+    // Initialize slab caches (must be after heap)
+    slab::init();
 
     // Initialize stack allocation system
     log::info!("Initializing stack allocation system...");

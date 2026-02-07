@@ -359,6 +359,10 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     crate::fs::devptsfs::init();
     log::info!("devptsfs initialized at /dev/pts");
 
+    // Initialize procfs (/proc virtual filesystem)
+    crate::fs::procfs::init();
+    log::info!("procfs initialized at /proc");
+
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
     log::info!("Updated IST stacks with per-CPU emergency and page fault stacks");

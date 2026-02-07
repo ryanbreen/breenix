@@ -235,6 +235,9 @@ pub fn sys_close(fd: i32) -> SyscallResult {
                     buffer.lock().close_write();
                     log::debug!("sys_close: Closed FIFO write end fd={} ({})", fd, path);
                 }
+                FdKind::ProcfsFile { .. } => {
+                    log::debug!("sys_close: Closed procfs file fd={}", fd);
+                }
             }
             log::debug!("sys_close: returning to userspace fd={}", fd);
             SyscallResult::Ok(0)

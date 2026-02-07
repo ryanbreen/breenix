@@ -127,6 +127,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             // TCP sockets
             FdKind::TcpSocket(_) | FdKind::TcpListener(_) => WriteOperation::Enotconn,
             FdKind::TcpConnection(conn_id) => WriteOperation::TcpConnection { conn_id: *conn_id },
+            FdKind::ProcfsFile { .. } => WriteOperation::Ebadf,
         }
     };
 
@@ -629,6 +630,34 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 // Drain loopback again before retrying
                 crate::net::drain_loopback_queue();
             }
+        }
+        FdKind::ProcfsFile { ref content, position } => {
+            // Read from procfs virtual file
+            let bytes = content.as_bytes();
+            let pos = *position;
+            if pos >= bytes.len() {
+                return SyscallResult::Ok(0);
+            }
+            let remaining = &bytes[pos..];
+            let to_copy = remaining.len().min(count as usize);
+            if to_copy > 0 {
+                if copy_to_user_bytes(buf_ptr, &remaining[..to_copy]).is_err() {
+                    return SyscallResult::Err(14); // EFAULT
+                }
+            }
+            // Update position - need to re-acquire the manager lock
+            drop(manager_guard);
+            let mut mg = crate::process::manager();
+            if let Some(manager) = &mut *mg {
+                if let Some((_pid, process)) = manager.find_process_by_thread_mut(thread_id) {
+                    if let Some(fd_entry) = process.fd_table.get_mut(fd as i32) {
+                        if let FdKind::ProcfsFile { position, .. } = &mut fd_entry.kind {
+                            *position += to_copy;
+                        }
+                    }
+                }
+            }
+            SyscallResult::Ok(to_copy as u64)
         }
     }
 }

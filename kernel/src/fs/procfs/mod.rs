@@ -63,6 +63,8 @@ pub enum ProcEntryType {
     TraceCounters,
     /// /proc/trace/providers - registered providers
     TraceProviders,
+    /// /proc/slabinfo - slab allocator statistics
+    SlabInfo,
 }
 
 impl ProcEntryType {
@@ -79,6 +81,7 @@ impl ProcEntryType {
             ProcEntryType::TraceBuffer => "buffer",
             ProcEntryType::TraceCounters => "counters",
             ProcEntryType::TraceProviders => "providers",
+            ProcEntryType::SlabInfo => "slabinfo",
         }
     }
 
@@ -95,6 +98,7 @@ impl ProcEntryType {
             ProcEntryType::TraceBuffer => "/proc/trace/buffer",
             ProcEntryType::TraceCounters => "/proc/trace/counters",
             ProcEntryType::TraceProviders => "/proc/trace/providers",
+            ProcEntryType::SlabInfo => "/proc/slabinfo",
         }
     }
 
@@ -111,6 +115,7 @@ impl ProcEntryType {
             ProcEntryType::TraceBuffer => 103,
             ProcEntryType::TraceCounters => 104,
             ProcEntryType::TraceProviders => 105,
+            ProcEntryType::SlabInfo => 5,
         }
     }
 
@@ -166,6 +171,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Version));
     procfs.entries.push(ProcEntry::new(ProcEntryType::MemInfo));
     procfs.entries.push(ProcEntry::new(ProcEntryType::CpuInfo));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::SlabInfo));
 
     // Register /proc/trace directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::TraceDir));
@@ -288,6 +294,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<String, i32> {
         ProcEntryType::TraceBuffer => Ok(trace::generate_buffer()),
         ProcEntryType::TraceCounters => Ok(trace::generate_counters()),
         ProcEntryType::TraceProviders => Ok(trace::generate_providers()),
+        ProcEntryType::SlabInfo => Ok(generate_slabinfo()),
     }
 }
 
@@ -407,4 +414,21 @@ fn generate_cpuinfo() -> String {
              CPU revision\t: 0\n\n"
         )
     }
+}
+
+/// Generate /proc/slabinfo content
+fn generate_slabinfo() -> String {
+    use alloc::format;
+    use crate::memory::slab::{FD_TABLE_SLAB, SIGNAL_HANDLERS_SLAB};
+
+    let mut out = String::from("# name            active   free  total  objsize  pct\n");
+    for slab in &[&FD_TABLE_SLAB, &SIGNAL_HANDLERS_SLAB] {
+        let s = slab.stats();
+        let pct = if s.capacity > 0 { (s.allocated * 100) / s.capacity } else { 0 };
+        out.push_str(&format!(
+            "{:<16}  {:>5}  {:>5}  {:>5}  {:>7}  {:>2}%\n",
+            s.name, s.allocated, s.free, s.capacity, s.obj_size, pct,
+        ));
+    }
+    out
 }
