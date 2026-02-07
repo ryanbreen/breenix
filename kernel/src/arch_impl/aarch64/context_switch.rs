@@ -22,7 +22,7 @@ use crate::task::thread::{CpuContext, ThreadPrivilege, ThreadState};
 /// could perturb timing or cause deadlocks.
 #[inline(always)]
 #[allow(dead_code)]
-fn raw_uart_char(c: u8) {
+pub fn raw_uart_char(c: u8) {
     // QEMU virt machine UART via HHDM (TTBR1-mapped, safe during context switch)
     // Physical 0x0900_0000 is mapped at HHDM_BASE + 0x0900_0000
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
@@ -36,9 +36,47 @@ fn raw_uart_char(c: u8) {
 /// Raw UART string output - no locks, no allocations.
 #[inline(always)]
 #[allow(dead_code)]
-fn raw_uart_str(s: &str) {
+pub fn raw_uart_str(s: &str) {
     for byte in s.bytes() {
         raw_uart_char(byte);
+    }
+}
+
+/// Raw UART hex output for a u64 value - no locks, no allocations.
+#[inline(always)]
+#[allow(dead_code)]
+pub fn raw_uart_hex(val: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    raw_uart_str("0x");
+    // Skip leading zeros for readability but always print at least one digit
+    let mut started = false;
+    for i in (0..16).rev() {
+        let nibble = ((val >> (i * 4)) & 0xF) as usize;
+        if nibble != 0 || started || i == 0 {
+            raw_uart_char(HEX[nibble]);
+            started = true;
+        }
+    }
+}
+
+/// Raw UART decimal output for a u64 value - no locks, no allocations.
+#[inline(always)]
+#[allow(dead_code)]
+pub fn raw_uart_dec(val: u64) {
+    if val == 0 {
+        raw_uart_char(b'0');
+        return;
+    }
+    let mut buf = [0u8; 20]; // max u64 is 20 digits
+    let mut pos = 0;
+    let mut v = val;
+    while v > 0 {
+        buf[pos] = b'0' + (v % 10) as u8;
+        v /= 10;
+        pos += 1;
+    }
+    for i in (0..pos).rev() {
+        raw_uart_char(buf[i]);
     }
 }
 
@@ -315,6 +353,21 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
         })
         .unwrap_or(false);
 
+    // CRITICAL: Detect User threads that were interrupted while executing in
+    // kernel mode (e.g., in the SVC return path after a blocking syscall cleared
+    // blocked_in_syscall but before ERET). If context.elr is in kernel space
+    // (>= 0xFFFF000000000000), the thread must be dispatched via
+    // setup_kernel_thread_return_arm64 which uses context.sp (the actual kernel
+    // stack position) for user_rsp_scratch. Without this, restore_userspace_context
+    // sets user_rsp_scratch = kernel_stack_top, causing SP to be 272 bytes above
+    // the SVC frame, and the SVC return path reads zeroed memory for ELR/SPSR.
+    const KERNEL_VIRT_BASE: u64 = 0xFFFF_0000_0000_0000;
+    let is_in_kernel_mode =
+        crate::task::scheduler::with_thread_mut(thread_id, |thread| {
+            thread.context.elr_el1 >= KERNEL_VIRT_BASE
+        })
+        .unwrap_or(false);
+
     if is_idle {
         // Check if idle thread has a saved context to restore
         // If it was preempted while running actual code (not idle_loop_arm64), restore that context
@@ -336,17 +389,18 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
             // No saved context or was in idle_loop - go to idle loop
             setup_idle_return_arm64(frame);
         }
-    } else if is_kernel_thread || is_blocked_in_syscall {
-        // Kernel threads and userspace threads blocked in syscall both need
-        // kernel context restoration (they're running in kernel mode)
+    } else if is_kernel_thread || is_blocked_in_syscall || is_in_kernel_mode {
+        // Kernel threads, userspace threads blocked in syscall, and userspace
+        // threads interrupted while in kernel mode all need kernel context
+        // restoration (they're running in kernel mode with a kernel SP)
         setup_kernel_thread_return_arm64(thread_id, frame);
 
-        // CRITICAL: For userspace threads blocked in syscall, set up TTBR0 so
+        // CRITICAL: For userspace threads in kernel mode, set up TTBR0 so
         // the correct process page table is active when the syscall completes
         // and returns to userspace. Without this, TTBR0 retains the previously-
         // running process's page table, causing instruction aborts when the
         // thread returns to EL0 with the wrong address space.
-        if is_blocked_in_syscall && !is_kernel_thread {
+        if (is_blocked_in_syscall || is_in_kernel_mode) && !is_kernel_thread {
             set_next_ttbr0_for_thread(thread_id);
             switch_ttbr0_if_needed(thread_id);
         }
@@ -357,7 +411,10 @@ fn switch_to_thread_arm64(thread_id: u64, frame: &mut Aarch64ExceptionFrame) {
 
 /// Set up exception frame to return to idle loop.
 fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
-    // Get idle thread's kernel stack
+    // Get idle thread's kernel stack (its per-CPU boot stack).
+    // CRITICAL: Must NOT fall back to Aarch64PerCpu::kernel_stack_top() —
+    // that value belongs to the last dispatched thread and would cause the idle
+    // loop to run on that thread's kernel stack, corrupting its SVC frame.
     let idle_stack = crate::task::scheduler::with_scheduler(|sched| {
         let idle_id = sched.idle_thread();
         sched
@@ -366,9 +423,12 @@ fn setup_idle_return_arm64(frame: &mut Aarch64ExceptionFrame) {
     })
     .flatten()
     .unwrap_or_else(|| {
-        // NOTE: No logging - context switch path must be lock-free
-        // Use raw_uart_char(b'!') if debugging needed
-        Aarch64PerCpu::kernel_stack_top()
+        // Fallback: compute this CPU's boot stack from CPU ID.
+        // Boot stacks: HHDM_BASE + 0x4100_0000 + (cpu_id + 1) * 0x20_0000
+        let cpu_id = Aarch64PerCpu::cpu_id() as u64;
+        let boot_stack_top = 0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id + 1) * 0x20_0000;
+        raw_uart_char(b'!'); // Should not normally reach here
+        boot_stack_top
     });
 
     // Set up exception return to idle_loop
@@ -537,6 +597,42 @@ fn setup_kernel_thread_return_arm64(thread_id: u64, frame: &mut Aarch64Exception
 
         // Memory barrier to ensure all writes are visible
         core::sync::atomic::fence(Ordering::SeqCst);
+
+        // DIAGNOSTIC: Catch ELR=0 before ERET — dump full state for debugging
+        if frame.elr == 0 {
+            raw_uart_str("\n\n!!! FATAL: frame.elr=0 in setup_kernel_thread_return !!!\n");
+            raw_uart_str("  thread_id=");
+            raw_uart_dec(thread_id);
+            raw_uart_str("  name=");
+            raw_uart_str(&_name);
+            raw_uart_str("\n  has_started=");
+            raw_uart_char(if has_started { b'1' } else { b'0' });
+            raw_uart_str("  ctx.elr_el1=");
+            raw_uart_hex(context.elr_el1);
+            raw_uart_str("\n  ctx.x30=");
+            raw_uart_hex(context.x30);
+            raw_uart_str("  ctx.sp=");
+            raw_uart_hex(context.sp);
+            raw_uart_str("\n  ctx.x0=");
+            raw_uart_hex(context.x0);
+            raw_uart_str("  ctx.x19=");
+            raw_uart_hex(context.x19);
+            raw_uart_str("\n  ctx.spsr_el1=");
+            raw_uart_hex(context.spsr_el1);
+            raw_uart_str("  ctx.sp_el0=");
+            raw_uart_hex(context.sp_el0);
+            raw_uart_str("\n  frame.spsr=");
+            raw_uart_hex(frame.spsr);
+            // Also dump the CPU ID
+            let cpu_id = Aarch64PerCpu::cpu_id() as usize;
+            raw_uart_str("  cpu=");
+            raw_uart_dec(cpu_id as u64);
+            raw_uart_str("\n");
+
+            // Safety: redirect to idle loop to prevent ERET to address 0x0
+            frame.elr = idle_loop_arm64 as *const () as u64;
+            frame.spsr = 0x5;  // EL1h, interrupts enabled
+        }
     } else {
         // NOTE: No logging - context switch path must be lock-free
         // This indicates a serious bug but we can't safely log here

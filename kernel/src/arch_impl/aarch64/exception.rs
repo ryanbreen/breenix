@@ -131,8 +131,12 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
-            // From kernel or couldn't terminate - hang
-            loop { unsafe { core::arch::asm!("wfi"); } }
+            // From kernel or couldn't terminate — redirect to idle loop.
+            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
+            crate::task::scheduler::switch_to_idle_best_effort();
+            frame_ref.elr =
+                crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.spsr = 0x5; // EL1h, interrupts enabled
         }
 
         exception_class::INSTRUCTION_ABORT_LOWER | exception_class::INSTRUCTION_ABORT_SAME => {
@@ -145,10 +149,42 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
             }
 
-            crate::serial_println!(
-                "[INSTRUCTION_ABORT] FAR={:#x} ELR={:#x} ESR={:#x} IFSC={:#x} TTBR0={:#x} from_el0={}",
-                far, frame_ref.elr, esr, ifsc, ttbr0, from_el0
-            );
+            // Use raw UART for ALL output — serial_println! acquires a spin lock
+            // that may already be held by this or another CPU, causing deadlock.
+            {
+                use crate::arch_impl::aarch64::context_switch::{raw_uart_char, raw_uart_str, raw_uart_hex, raw_uart_dec};
+                raw_uart_str("\n[INSTRUCTION_ABORT] FAR=");
+                raw_uart_hex(far);
+                raw_uart_str(" ELR=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str(" ESR=");
+                raw_uart_hex(esr);
+                raw_uart_str(" IFSC=");
+                raw_uart_hex(ifsc as u64);
+                raw_uart_str(" TTBR0=");
+                raw_uart_hex(ttbr0);
+                raw_uart_str(" from_el0=");
+                raw_uart_char(if from_el0 { b'1' } else { b'0' });
+
+                if !from_el0 && frame_ref.elr == 0 {
+                    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                    raw_uart_str("\n[DIAG] ELR=0 from EL1 cpu=");
+                    raw_uart_dec(cpu_id as u64);
+                    raw_uart_str(" x0=");
+                    raw_uart_hex(frame_ref.x0);
+                    raw_uart_str(" x19=");
+                    raw_uart_hex(frame_ref.x19);
+                    raw_uart_str(" x29=");
+                    raw_uart_hex(frame_ref.x29);
+                    raw_uart_str(" x30=");
+                    raw_uart_hex(frame_ref.x30);
+                    raw_uart_str(" spsr=");
+                    raw_uart_hex(frame_ref.spsr);
+                    raw_uart_str(" sp_at_frame=");
+                    raw_uart_hex(frame_ref as *const _ as u64);
+                    raw_uart_str("\n");
+                }
+            }
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
@@ -180,8 +216,16 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
             }
 
-            // From kernel or couldn't terminate - hang
-            loop { unsafe { core::arch::asm!("wfi"); } }
+            // From kernel or couldn't terminate — redirect to idle loop.
+            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
+            {
+                use crate::arch_impl::aarch64::context_switch::raw_uart_str;
+                raw_uart_str("[INSTRUCTION_ABORT] redirecting to idle\n");
+            }
+            crate::task::scheduler::switch_to_idle_best_effort();
+            frame_ref.elr =
+                crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.spsr = 0x5; // EL1h, interrupts enabled
         }
 
         exception_class::BRK_AARCH64 => {

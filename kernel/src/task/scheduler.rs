@@ -694,6 +694,17 @@ impl Scheduler {
         self.cpu_state[Self::current_cpu_id()].idle_thread
     }
 
+    /// Get the current thread ID for a specific CPU (for diagnostics).
+    /// Used by ARM64 exception handler to dump per-CPU state on crash.
+    #[cfg(target_arch = "aarch64")]
+    pub fn current_thread_for_cpu(&self, cpu: usize) -> Option<u64> {
+        if cpu < MAX_CPUS {
+            self.cpu_state[cpu].current_thread
+        } else {
+            None
+        }
+    }
+
     /// Set the current thread (used by spawn mechanism)
     #[allow(dead_code)]
     pub fn set_current_thread(&mut self, thread_id: u64) {
@@ -1018,6 +1029,28 @@ pub fn switch_to_idle() {
         #[cfg(target_arch = "x86_64")]
         log::info!("Exception handler: Switched scheduler to idle thread {}", idle_id);
     });
+}
+
+/// Best-effort switch to idle — uses try_lock to avoid deadlock in crash handlers.
+///
+/// When an INSTRUCTION_ABORT or DATA_ABORT occurs from EL1, the SCHEDULER lock
+/// may already be held (e.g., the crash happened during a context switch). Using
+/// `switch_to_idle()` would deadlock on the same CPU. This version uses try_lock:
+/// if the lock is available, update scheduler state; if not, just return — the
+/// next timer interrupt on this CPU will see the idle loop and correct the state.
+#[cfg(target_arch = "aarch64")]
+pub fn switch_to_idle_best_effort() {
+    if let Some(mut scheduler_lock) = SCHEDULER.try_lock() {
+        if let Some(sched) = scheduler_lock.as_mut() {
+            let cpu_id = Scheduler::current_cpu_id();
+            let idle_id = sched.cpu_state[cpu_id].idle_thread;
+            sched.cpu_state[cpu_id].current_thread = Some(idle_id);
+        }
+    }
+    // If try_lock fails, the scheduler state will be stale, but the CPU
+    // will be executing idle_loop_arm64 which only does WFI. The next
+    // timer-driven schedule() call will see the idle thread running and
+    // correct the state.
 }
 
 /// Test module for scheduler state invariants
