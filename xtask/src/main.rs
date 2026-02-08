@@ -491,12 +491,9 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "Failed to schedule ENOSYS test process",
             check_hint: "Check test_exec::test_syscall_enosys() and process creation logs. This is a checkpoint - actual execution verified by stage 32",
         },
-        BootStage {
-            name: "Fault tests scheduled",
-            marker: "Fault tests scheduled",
-            failure_meaning: "Failed to schedule fault test processes",
-            check_hint: "Check userspace_fault_tests::run_fault_tests() and process creation logs",
-        },
+        // NOTE: "Fault tests scheduled" stage removed - fault_test_thread spawning
+        // is disabled in kernel/src/main.rs (yield_current() breaks first-run context switching).
+        // Re-add this stage when fault tests are re-enabled.
         BootStage {
             name: "Precondition 1: IDT timer entry",
             marker: "PRECONDITION 1: IDT timer entry ✓ PASS",

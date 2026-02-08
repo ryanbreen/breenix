@@ -53,6 +53,10 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-stress-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Pre-build kernel to avoid timeout during QEMU wait
+        run: |
+          cargo build --release -p breenix --features kthread_stress_test --bin qemu-uefi
+
       - name: Run kthread stress test
         run: cargo run -p xtask -- kthread-stress
 
