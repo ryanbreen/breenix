@@ -41,6 +41,7 @@ pub mod nr {
     pub const DUP: u64 = 32;          // Linux x86_64 dup
     pub const DUP2: u64 = 33;         // Linux x86_64 dup2
     pub const PAUSE: u64 = 34;        // Linux x86_64 pause
+    pub const NANOSLEEP: u64 = 35;    // Linux x86_64 nanosleep
     pub const GETITIMER: u64 = 36;    // Linux x86_64 getitimer
     pub const ALARM: u64 = 37;        // Linux x86_64 alarm
     pub const SETITIMER: u64 = 38;    // Linux x86_64 setitimer
@@ -54,11 +55,16 @@ pub mod nr {
     pub const SHUTDOWN: u64 = 48;
     pub const BIND: u64 = 49;
     pub const LISTEN: u64 = 50;
+    pub const GETSOCKNAME: u64 = 51; // Linux x86_64 getsockname
+    pub const GETPEERNAME: u64 = 52; // Linux x86_64 getpeername
     pub const SOCKETPAIR: u64 = 53;  // Linux x86_64 socketpair
+    pub const SETSOCKOPT: u64 = 54;  // Linux x86_64 setsockopt
+    pub const GETSOCKOPT: u64 = 55;  // Linux x86_64 getsockopt
     pub const EXEC: u64 = 59;        // Linux x86_64 execve
     pub const WAIT4: u64 = 61;       // Linux x86_64 wait4/waitpid
     pub const KILL: u64 = 62;        // Linux x86_64 kill
     pub const SETPGID: u64 = 109;    // Linux x86_64 setpgid
+    pub const GETPPID: u64 = 110;    // Linux x86_64 getppid
     pub const SETSID: u64 = 112;     // Linux x86_64 setsid
     pub const GETPGID: u64 = 121;    // Linux x86_64 getpgid
     pub const GETSID: u64 = 124;     // Linux x86_64 getsid
@@ -74,7 +80,9 @@ pub mod nr {
     pub const READLINK: u64 = 89;     // Linux x86_64 readlink
     pub const MKNOD: u64 = 133;       // Linux x86_64 mknod (used for mkfifo)
     pub const GETTID: u64 = 186;
+    pub const SET_TID_ADDRESS: u64 = 218; // Linux x86_64 set_tid_address
     pub const CLOCK_GETTIME: u64 = 228;
+    pub const EXIT_GROUP: u64 = 231; // Linux x86_64 exit_group
     pub const OPEN: u64 = 257;        // Breenix: filesystem open syscall
     pub const LSEEK: u64 = 258;       // Breenix: filesystem lseek syscall
     pub const FSTAT: u64 = 259;       // Breenix: filesystem fstat syscall
@@ -82,6 +90,9 @@ pub mod nr {
     // Graphics syscalls (Breenix-specific)
     pub const FBINFO: u64 = 410;       // Breenix: get framebuffer info
     pub const FBDRAW: u64 = 411;       // Breenix: draw to framebuffer
+    pub const CLONE: u64 = 56;           // Linux x86_64 clone
+    pub const FUTEX: u64 = 202;          // Linux x86_64 futex
+    pub const GETRANDOM: u64 = 318;    // Linux x86_64 getrandom
     // Testing syscalls (Breenix-specific)
     pub const COW_STATS: u64 = 500;   // Breenix: get CoW statistics (for testing)
     pub const SIMULATE_OOM: u64 = 501; // Breenix: enable/disable OOM simulation (for testing)

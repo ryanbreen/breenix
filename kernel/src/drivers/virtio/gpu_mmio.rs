@@ -6,6 +6,12 @@
 use super::mmio::{VirtioMmioDevice, device_id, VIRTIO_MMIO_BASE, VIRTIO_MMIO_SIZE, VIRTIO_MMIO_COUNT};
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, Ordering};
+use spin::Mutex;
+
+/// Lock protecting the GPU command path (CMD_BUF, RESP_BUF, CTRL_QUEUE, GPU_DEVICE).
+/// Without this, concurrent callers (e.g. render thread + particle thread) corrupt
+/// the shared command/response buffers and virtqueue state.
+static GPU_LOCK: Mutex<()> = Mutex::new(());
 
 /// VirtIO GPU command types
 #[allow(dead_code)]
@@ -437,8 +443,12 @@ fn send_command(
     // Notify device
     device.notify_queue(0);
 
-    // Wait for response
-    let mut timeout = 1_000_000u32;
+    // Wait for response.
+    // The timeout must be generous: TRANSFER_TO_HOST_2D transfers 4MB (full
+    // 1280×800 framebuffer) and QEMU processes this in its event loop.
+    // On SMP with 4 vCPUs, QEMU's host-side processing may be delayed by
+    // vCPU scheduling. 10M iterations ≈ 50-100ms which is safe.
+    let mut timeout = 10_000_000u32;
     loop {
         fence(Ordering::SeqCst);
         let used_idx = unsafe {
@@ -463,6 +473,7 @@ fn with_device_state<F, R>(f: F) -> Result<R, &'static str>
 where
     F: FnOnce(&VirtioMmioDevice, &mut GpuDeviceState) -> Result<R, &'static str>,
 {
+    let _guard = GPU_LOCK.lock();
     let state = unsafe {
         let ptr = &raw mut GPU_DEVICE;
         (*ptr).as_mut().ok_or("GPU device not initialized")?

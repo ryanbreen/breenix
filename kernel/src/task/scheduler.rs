@@ -97,6 +97,7 @@ const MAX_CPUS: usize = 1;
 ///   4 = register_idle_thread
 ///   5 = init_with_current / Scheduler::new
 ///   6 = set_current_thread / add_thread_as_current
+#[cfg(target_arch = "aarch64")]
 const HISTORY_SIZE: usize = 8;
 #[cfg(target_arch = "aarch64")]
 static CPU_STATE_HISTORY: [[core::sync::atomic::AtomicU64; HISTORY_SIZE * 3]; MAX_CPUS] = {
@@ -341,7 +342,8 @@ impl Scheduler {
                         // Check for any blocked state
                         let was_blocked = current.state == ThreadState::Blocked
                             || current.state == ThreadState::BlockedOnSignal
-                            || current.state == ThreadState::BlockedOnChildExit;
+                            || current.state == ThreadState::BlockedOnChildExit
+                            || current.state == ThreadState::BlockedOnTimer;
                         // Only set to Ready if not terminated AND not blocked
                         if !was_terminated && !was_blocked {
                             current.set_ready();
@@ -363,6 +365,9 @@ impl Scheduler {
                 }
             }
         }
+
+        // Check for expired timer-blocked threads and wake them
+        self.wake_expired_timers();
 
         // Get next thread from ready queue, skipping terminated threads.
         // Terminated threads can end up in the queue if a process was killed
@@ -655,7 +660,7 @@ impl Scheduler {
         UNBLOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
 
         if let Some(thread) = self.get_thread_mut(thread_id) {
-            if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal {
+            if thread.state == ThreadState::Blocked || thread.state == ThreadState::BlockedOnSignal || thread.state == ThreadState::BlockedOnTimer {
                 thread.set_ready();
 
                 // SMP safety: Don't add to ready_queue if thread is currently
@@ -920,6 +925,47 @@ impl Scheduler {
                 // Without this, the thread is added to ready queue but the scheduler
                 // doesn't know to switch to it, causing waitpid() to hang.
                 set_need_resched();
+            }
+        }
+    }
+
+    #[allow(dead_code)] // Will be used when voluntary preemption from syscall handlers is implemented
+    /// Block current thread until a timer expires (nanosleep syscall)
+    pub fn block_current_for_timer(&mut self, wake_time_ns: u64) {
+        if let Some(current_id) = self.cpu_state[Self::current_cpu_id()].current_thread {
+            if let Some(thread) = self.get_thread_mut(current_id) {
+                thread.state = ThreadState::BlockedOnTimer;
+                thread.wake_time_ns = Some(wake_time_ns);
+                thread.blocked_in_syscall = true;
+            }
+            self.ready_queue.retain(|&id| id != current_id);
+        }
+    }
+
+    /// Check all threads for expired timer-based sleep and wake them.
+    /// Called from schedule() on every reschedule.
+    fn wake_expired_timers(&mut self) {
+        let (secs, nanos) = crate::time::get_monotonic_time_ns();
+        let now_ns = secs as u64 * 1_000_000_000 + nanos as u64;
+
+        let mut to_wake = alloc::vec::Vec::new();
+        for thread in self.threads.iter() {
+            if thread.state == ThreadState::BlockedOnTimer {
+                if let Some(wake_time) = thread.wake_time_ns {
+                    if now_ns >= wake_time {
+                        to_wake.push(thread.id());
+                    }
+                }
+            }
+        }
+
+        for id in to_wake {
+            if let Some(thread) = self.get_thread_mut(id) {
+                thread.state = ThreadState::Ready;
+                thread.wake_time_ns = None;
+                if id != self.cpu_state[Self::current_cpu_id()].idle_thread && !self.ready_queue.contains(&id) {
+                    self.ready_queue.push_back(id);
+                }
             }
         }
     }

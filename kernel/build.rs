@@ -63,6 +63,13 @@ fn main() {
     // Temporarily disabled to test with bootloader's default
     // println!("cargo:rustc-link-arg=-Tkernel/linker.ld");
 
+    // AArch64 kernel linker script (moved from aarch64-breenix.json so the
+    // target JSON can be shared between kernel and userspace std builds)
+    if target.contains("aarch64") {
+        println!("cargo:rustc-link-arg=-Tkernel/src/arch_impl/aarch64/linker.ld");
+        println!("cargo:rustc-link-arg=--fix-cortex-a53-843419");
+    }
+
 
     // Rerun if the assembly files change
     println!("cargo:rerun-if-changed=src/syscall/entry.asm");
@@ -121,6 +128,13 @@ fn main() {
             println!("cargo:rerun-if-changed={}/cwd_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/demo.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
+
+            // Also watch std build files
+            let std_tests_dir = repo_root.join("userspace/tests");
+            println!("cargo:rerun-if-changed={}", std_tests_dir.join("build.sh").display());
+            println!("cargo:rerun-if-changed={}", std_tests_dir.join("Cargo.toml").display());
+            let libbreenix_libc_dir = repo_root.join("libs/libbreenix-libc/src");
+            println!("cargo:rerun-if-changed={}", libbreenix_libc_dir.join("lib.rs").display());
         }
     } else {
         println!("cargo:warning=Userspace test directory not found at {:?}", userspace_test_dir);

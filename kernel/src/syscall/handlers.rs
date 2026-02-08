@@ -131,6 +131,29 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
     if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
         log::debug!("sys_exit: Current thread ID from scheduler: {}", thread_id);
 
+        // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID)
+        // Write 0 to the tid address and futex-wake any joiners
+        {
+            let manager_guard = crate::process::manager();
+            if let Some(ref manager) = *manager_guard {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    if let Some(tid_addr) = process.clear_child_tid {
+                        let tg_id = process.thread_group_id.unwrap_or(_pid.as_u64());
+                        // Write 0 to the tid address
+                        unsafe {
+                            let ptr = tid_addr as *mut u32;
+                            if !ptr.is_null() && tid_addr < 0x7FFF_FFFF_FFFF {
+                                core::ptr::write_volatile(ptr, 0);
+                            }
+                        }
+                        // Futex-wake any threads waiting on this address
+                        drop(manager_guard);
+                        super::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
+                    }
+                }
+            }
+        }
+
         // Handle thread exit through ProcessScheduler
         crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
@@ -2155,6 +2178,43 @@ pub fn sys_gettid() -> SyscallResult {
 
     log::error!("sys_gettid: No current thread");
     SyscallResult::Ok(0) // Return 0 as fallback
+}
+
+/// sys_getppid - Get the parent process ID
+pub fn sys_getppid() -> SyscallResult {
+    Cpu::without_interrupts(|| {
+        // Get current thread ID from scheduler
+        if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+            // Find the process that owns this thread
+            if let Some(ref manager) = *crate::process::manager() {
+                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                    // Return parent PID if set, otherwise 1 (init)
+                    if let Some(parent) = process.parent {
+                        return SyscallResult::Ok(parent.as_u64());
+                    }
+                    return SyscallResult::Ok(1); // init
+                }
+            }
+        }
+        SyscallResult::Ok(1) // Fallback: init is parent
+    })
+}
+
+/// sys_exit_group - Terminate all threads in the process group
+///
+/// For now this is an alias for sys_exit since we are single-threaded per process.
+pub fn sys_exit_group(exit_code: i32) -> SyscallResult {
+    sys_exit(exit_code)
+}
+
+/// sys_set_tid_address - Store TID address for thread exit notification
+///
+/// Minimal implementation: just return the current thread ID.
+pub fn sys_set_tid_address(_tidptr: u64) -> SyscallResult {
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        return SyscallResult::Ok(thread_id);
+    }
+    SyscallResult::Ok(0)
 }
 
 /// waitpid options constants

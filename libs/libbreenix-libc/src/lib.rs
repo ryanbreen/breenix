@@ -20,13 +20,6 @@
 //!         v
 //! Breenix kernel (int 0x80 syscalls)
 //! ```
-//!
-//! # Phase 1 Functions (Minimal std support)
-//!
-//! - I/O: write, read, close
-//! - Process: exit, _exit, getpid
-//! - Memory: mmap, munmap
-//! - Error: __errno_location
 
 #![no_std]
 
@@ -37,13 +30,8 @@ use core::slice;
 // =============================================================================
 
 /// Panic handler for no_std environment
-///
-/// Since this is a libc implementation, we just loop forever on panic.
-/// In the future, this could call abort() to terminate the process.
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // In a real libc, we'd call abort() here
-    // For now, just loop forever
     loop {
         core::hint::spin_loop();
     }
@@ -57,17 +45,12 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 ///
 /// Note: This is a simple static for now. Thread-local storage (TLS) will be
 /// implemented in Phase 4 when we add threading support.
-static mut ERRNO: i32 = 0;
+#[no_mangle]
+pub static mut ERRNO: i32 = 0;
 
 /// Returns a pointer to the thread-local errno variable.
-///
-/// This is the standard libc interface for accessing errno. Rust std and
-/// other code that uses errno will call this function.
 #[no_mangle]
 pub extern "C" fn __errno_location() -> *mut i32 {
-    // Return a mutable pointer to the static errno.
-    // This is the standard libc interface - errno is designed to be accessed this way.
-    // Note: Single-threaded for now (Phase 4 will add proper TLS)
     core::ptr::addr_of_mut!(ERRNO)
 }
 
@@ -88,122 +71,10 @@ fn set_errno_from_result(result: i64) -> i32 {
     }
 }
 
-// =============================================================================
-// I/O Functions
-// =============================================================================
-
-/// Write bytes to a file descriptor.
-///
-/// # Arguments
-/// * `fd` - File descriptor to write to
-/// * `buf` - Buffer containing data to write
-/// * `count` - Number of bytes to write
-///
-/// # Returns
-/// Number of bytes written on success, -1 on error (sets errno).
-///
-/// # Safety
-/// Caller must ensure `buf` points to at least `count` valid bytes.
-#[no_mangle]
-pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
-    if buf.is_null() && count > 0 {
-        ERRNO = libbreenix::Errno::EFAULT as i32;
-        return -1;
-    }
-
-    // Convert fd from C's i32 to libbreenix's Fd (u64)
-    let fd_u64 = fd as u64;
-
-    // Create a slice from the raw pointer
-    let slice = if count == 0 {
-        &[]
-    } else {
-        slice::from_raw_parts(buf, count)
-    };
-
-    let result = libbreenix::io::write(fd_u64, slice);
-
-    if result < 0 {
-        set_errno_from_result(result);
-        -1
-    } else {
-        result as isize
-    }
-}
-
-/// Read bytes from a file descriptor.
-///
-/// # Arguments
-/// * `fd` - File descriptor to read from
-/// * `buf` - Buffer to read data into
-/// * `count` - Maximum number of bytes to read
-///
-/// # Returns
-/// Number of bytes read on success, -1 on error (sets errno).
-///
-/// # Safety
-/// Caller must ensure `buf` points to at least `count` bytes of writable memory.
-#[no_mangle]
-pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
-    if buf.is_null() && count > 0 {
-        ERRNO = libbreenix::Errno::EFAULT as i32;
-        return -1;
-    }
-
-    // Convert fd from C's i32 to libbreenix's Fd (u64)
-    let fd_u64 = fd as u64;
-
-    // Create a mutable slice from the raw pointer
-    let slice = if count == 0 {
-        &mut []
-    } else {
-        slice::from_raw_parts_mut(buf, count)
-    };
-
-    let result = libbreenix::io::read(fd_u64, slice);
-
-    if result < 0 {
-        set_errno_from_result(result);
-        -1
-    } else {
-        result as isize
-    }
-}
-
-/// Close a file descriptor.
-///
-/// # Arguments
-/// * `fd` - File descriptor to close
-///
-/// # Returns
-/// 0 on success, -1 on error (sets errno).
-#[no_mangle]
-pub extern "C" fn close(fd: i32) -> i32 {
-    // Convert fd from C's i32 to libbreenix's Fd (u64)
-    let fd_u64 = fd as u64;
-
-    let result = libbreenix::io::close(fd_u64);
-
-    if result < 0 {
-        set_errno_from_result(result);
-        -1
-    } else {
-        0
-    }
-}
-
-/// Duplicate a file descriptor.
-///
-/// # Arguments
-/// * `oldfd` - File descriptor to duplicate
-///
-/// # Returns
-/// New file descriptor on success, -1 on error (sets errno).
-#[no_mangle]
-pub extern "C" fn dup(oldfd: i32) -> i32 {
-    let fd_u64 = oldfd as u64;
-    let result = libbreenix::io::dup(fd_u64);
-
+/// Helper: convert a negative-errno result to C convention (-1 on error, sets errno)
+/// Returns the result as-is if non-negative, or -1 with errno set if negative.
+#[inline]
+fn syscall_result_to_c_int(result: i64) -> i32 {
     if result < 0 {
         set_errno_from_result(result);
         -1
@@ -212,17 +83,83 @@ pub extern "C" fn dup(oldfd: i32) -> i32 {
     }
 }
 
+/// Helper: convert a negative-errno result to C convention for ssize_t returns
+#[inline]
+fn syscall_result_to_c_ssize(result: i64) -> isize {
+    if result < 0 {
+        set_errno_from_result(result);
+        -1
+    } else {
+        result as isize
+    }
+}
+
+// =============================================================================
+// I/O Functions
+// =============================================================================
+
+/// Write bytes to a file descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
+    if buf.is_null() && count > 0 {
+        ERRNO = libbreenix::Errno::EFAULT as i32;
+        return -1;
+    }
+
+    let fd_u64 = fd as u64;
+    let slice = if count == 0 {
+        &[]
+    } else {
+        slice::from_raw_parts(buf, count)
+    };
+
+    let result = libbreenix::io::write(fd_u64, slice);
+    syscall_result_to_c_ssize(result)
+}
+
+/// Read bytes from a file descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
+    if buf.is_null() && count > 0 {
+        ERRNO = libbreenix::Errno::EFAULT as i32;
+        return -1;
+    }
+
+    let fd_u64 = fd as u64;
+    let slice = if count == 0 {
+        &mut []
+    } else {
+        slice::from_raw_parts_mut(buf, count)
+    };
+
+    let result = libbreenix::io::read(fd_u64, slice);
+    syscall_result_to_c_ssize(result)
+}
+
+/// Close a file descriptor.
+#[no_mangle]
+pub extern "C" fn close(fd: i32) -> i32 {
+    let fd_u64 = fd as u64;
+    let result = libbreenix::io::close(fd_u64);
+    syscall_result_to_c_int(result)
+}
+
+/// Duplicate a file descriptor.
+#[no_mangle]
+pub extern "C" fn dup(oldfd: i32) -> i32 {
+    let fd_u64 = oldfd as u64;
+    let result = libbreenix::io::dup(fd_u64);
+    syscall_result_to_c_int(result)
+}
+
+/// Duplicate a file descriptor to a specific number.
+#[no_mangle]
+pub extern "C" fn dup2(oldfd: i32, newfd: i32) -> i32 {
+    let result = libbreenix::io::dup2(oldfd as u64, newfd as u64);
+    syscall_result_to_c_int(result)
+}
+
 /// Create a pipe.
-///
-/// # Arguments
-/// * `pipefd` - Array of two ints to receive the file descriptors
-///              pipefd[0] = read end, pipefd[1] = write end
-///
-/// # Returns
-/// 0 on success, -1 on error (sets errno).
-///
-/// # Safety
-/// Caller must ensure pipefd points to an array of at least 2 ints.
 #[no_mangle]
 pub unsafe extern "C" fn pipe(pipefd: *mut i32) -> i32 {
     if pipefd.is_null() {
@@ -243,53 +180,620 @@ pub unsafe extern "C" fn pipe(pipefd: *mut i32) -> i32 {
     }
 }
 
+/// Create a pipe with flags.
+#[no_mangle]
+pub unsafe extern "C" fn pipe2(pipefd: *mut i32, flags: i32) -> i32 {
+    if pipefd.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let mut fds: [i32; 2] = [0, 0];
+    let result = libbreenix::io::pipe2(&mut fds, flags);
+
+    if result < 0 {
+        set_errno_from_result(result);
+        -1
+    } else {
+        *pipefd = fds[0];
+        *pipefd.add(1) = fds[1];
+        0
+    }
+}
+
+/// writev - write multiple buffers
+#[no_mangle]
+pub unsafe extern "C" fn writev(fd: i32, iov: *const Iovec, iovcnt: i32) -> isize {
+    let mut total: isize = 0;
+    for i in 0..iovcnt as usize {
+        let vec = &*iov.add(i);
+        let result = write(fd, vec.iov_base as *const u8, vec.iov_len);
+        if result < 0 {
+            return result;
+        }
+        total += result;
+    }
+    total
+}
+
+/// Iovec structure for scatter/gather I/O
+#[repr(C)]
+pub struct Iovec {
+    pub iov_base: *mut u8,
+    pub iov_len: usize,
+}
+
+// =============================================================================
+// File I/O Functions
+// =============================================================================
+
+/// open - open a file
+#[no_mangle]
+pub unsafe extern "C" fn open(path: *const u8, flags: i32, mode: u32) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::OPEN,
+        path as u64,
+        flags as u64,
+        mode as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// openat - open a file relative to a directory fd
+///
+/// If dirfd is AT_FDCWD (-100), delegates to open() with the given path.
+/// Otherwise, returns -ENOSYS (not yet supported).
+#[no_mangle]
+pub unsafe extern "C" fn openat(dirfd: i32, path: *const u8, flags: i32, mode: u32) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    // AT_FDCWD = -100: use current working directory (same as open)
+    if dirfd == -100 {
+        return open(path, flags, mode);
+    }
+
+    // Non-AT_FDCWD dirfd not supported yet
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// fstat - get file status by fd
+#[no_mangle]
+pub unsafe extern "C" fn fstat(fd: i32, buf: *mut u8) -> i32 {
+    if buf.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::FSTAT,
+        fd as u64,
+        buf as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// stat - get file status by path
+///
+/// Implemented as open() + fstat() + close().
+#[no_mangle]
+pub unsafe extern "C" fn stat(path: *const u8, buf: *mut u8) -> i32 {
+    if path.is_null() || buf.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let fd = open(path, 0 /* O_RDONLY */, 0);
+    if fd < 0 {
+        return -1; // errno already set by open
+    }
+
+    let result = fstat(fd, buf);
+    close(fd);
+    result
+}
+
+/// lstat - get file status by path (no symlink follow)
+///
+/// Same as stat since we don't have symlink resolution yet.
+#[no_mangle]
+pub unsafe extern "C" fn lstat(path: *const u8, buf: *mut u8) -> i32 {
+    stat(path, buf)
+}
+
+/// fstat64 - same as fstat (64-bit is native on x86_64)
+#[no_mangle]
+pub unsafe extern "C" fn fstat64(fd: i32, buf: *mut u8) -> i32 {
+    fstat(fd, buf)
+}
+
+/// stat64 - same as stat (64-bit is native on x86_64)
+#[no_mangle]
+pub unsafe extern "C" fn stat64(path: *const u8, buf: *mut u8) -> i32 {
+    stat(path, buf)
+}
+
+/// lstat64 - same as lstat (64-bit is native on x86_64)
+#[no_mangle]
+pub unsafe extern "C" fn lstat64(path: *const u8, buf: *mut u8) -> i32 {
+    lstat(path, buf)
+}
+
+/// lseek - reposition read/write file offset
+#[no_mangle]
+pub unsafe extern "C" fn lseek(fd: i32, offset: i64, whence: i32) -> i64 {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::LSEEK,
+        fd as u64,
+        offset as u64,
+        whence as u64,
+    ) as i64;
+
+    if result < 0 {
+        set_errno_from_result(result);
+        -1
+    } else {
+        result
+    }
+}
+
+/// lseek64 - same as lseek (64-bit is native on x86_64)
+#[no_mangle]
+pub unsafe extern "C" fn lseek64(fd: i32, offset: i64, whence: i32) -> i64 {
+    lseek(fd, offset, whence)
+}
+
+/// readlink - read the target of a symbolic link
+#[no_mangle]
+pub unsafe extern "C" fn readlink(path: *const u8, buf: *mut u8, bufsiz: usize) -> isize {
+    if path.is_null() || buf.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::READLINK,
+        path as u64,
+        buf as u64,
+        bufsiz as u64,
+    ) as i64;
+    syscall_result_to_c_ssize(result)
+}
+
+/// unlink - remove a file
+#[no_mangle]
+pub unsafe extern "C" fn unlink(path: *const u8) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall1(
+        libbreenix::syscall::nr::UNLINK,
+        path as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// rename - rename a file
+#[no_mangle]
+pub unsafe extern "C" fn rename(oldpath: *const u8, newpath: *const u8) -> i32 {
+    if oldpath.is_null() || newpath.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::RENAME,
+        oldpath as u64,
+        newpath as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// mkdir - create a directory
+#[no_mangle]
+pub unsafe extern "C" fn mkdir(path: *const u8, mode: u32) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::MKDIR,
+        path as u64,
+        mode as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// rmdir - remove a directory
+#[no_mangle]
+pub unsafe extern "C" fn rmdir(path: *const u8) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall1(
+        libbreenix::syscall::nr::RMDIR,
+        path as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// link - create a hard link
+#[no_mangle]
+pub unsafe extern "C" fn link(oldpath: *const u8, newpath: *const u8) -> i32 {
+    if oldpath.is_null() || newpath.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::LINK,
+        oldpath as u64,
+        newpath as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// linkat - create a hard link relative to directory file descriptors
+///
+/// We ignore dirfd and flags, treating paths as absolute (Breenix doesn't
+/// support AT_FDCWD/AT_ operations yet). This is sufficient for std::fs::hard_link.
+#[no_mangle]
+pub unsafe extern "C" fn linkat(
+    _olddirfd: i32,
+    oldpath: *const u8,
+    _newdirfd: i32,
+    newpath: *const u8,
+    _flags: i32,
+) -> i32 {
+    link(oldpath, newpath)
+}
+
+/// symlink - create a symbolic link
+#[no_mangle]
+pub unsafe extern "C" fn symlink(target: *const u8, linkpath: *const u8) -> i32 {
+    if target.is_null() || linkpath.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::SYMLINK,
+        target as u64,
+        linkpath as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// access - check user's permissions for a file
+#[no_mangle]
+pub unsafe extern "C" fn access(path: *const u8, mode: i32) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::ACCESS,
+        path as u64,
+        mode as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// getcwd - get current working directory
+///
+/// Returns buf on success, NULL on error (sets errno).
+#[no_mangle]
+pub unsafe extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
+    if buf.is_null() || size == 0 {
+        ERRNO = EINVAL;
+        return core::ptr::null_mut();
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::GETCWD,
+        buf as u64,
+        size as u64,
+    ) as i64;
+
+    if result < 0 {
+        set_errno_from_result(result);
+        core::ptr::null_mut()
+    } else {
+        buf
+    }
+}
+
+/// chdir - change working directory
+#[no_mangle]
+pub unsafe extern "C" fn chdir(path: *const u8) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall1(
+        libbreenix::syscall::nr::CHDIR,
+        path as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// isatty - test whether a file descriptor refers to a terminal
+///
+/// Implemented by attempting an ioctl(TIOCGWINSZ). If it succeeds, the fd
+/// is a terminal. If it fails with ENOTTY, it is not.
+#[no_mangle]
+pub unsafe extern "C" fn isatty(fd: i32) -> i32 {
+    // TIOCGWINSZ = 0x5413
+    // winsize struct is 8 bytes (2x u16 rows, cols, 2x u16 xpixel, ypixel)
+    let mut winsize: [u8; 8] = [0; 8];
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::IOCTL,
+        fd as u64,
+        0x5413, // TIOCGWINSZ
+        winsize.as_mut_ptr() as u64,
+    ) as i64;
+
+    if result < 0 {
+        set_errno_from_result(result);
+        0 // Not a terminal
+    } else {
+        1 // Is a terminal
+    }
+}
+
+/// ioctl - device control
+#[no_mangle]
+pub unsafe extern "C" fn ioctl(fd: i32, request: u64, arg: u64) -> i32 {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::IOCTL,
+        fd as u64,
+        request,
+        arg,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// getdents64 - get directory entries
+#[no_mangle]
+pub unsafe extern "C" fn getdents64(fd: i32, buf: *mut u8, count: usize) -> isize {
+    if buf.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::GETDENTS64,
+        fd as u64,
+        buf as u64,
+        count as u64,
+    ) as i64;
+    syscall_result_to_c_ssize(result)
+}
+
+/// ftruncate - truncate a file to a specified length
+#[no_mangle]
+pub unsafe extern "C" fn ftruncate(_fd: i32, _length: i64) -> i32 {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// ftruncate64 - same as ftruncate on 64-bit
+#[no_mangle]
+pub unsafe extern "C" fn ftruncate64(fd: i32, length: i64) -> i32 {
+    ftruncate(fd, length)
+}
+
+/// fsync - synchronize file state with storage
+#[no_mangle]
+pub extern "C" fn fsync(_fd: i32) -> i32 {
+    0 // No-op for now
+}
+
+/// fdatasync - synchronize file data with storage
+#[no_mangle]
+pub extern "C" fn fdatasync(_fd: i32) -> i32 {
+    0 // No-op for now
+}
+
+/// fchmod - change file mode bits (by fd)
+#[no_mangle]
+pub unsafe extern "C" fn fchmod(_fd: i32, _mode: u32) -> i32 {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// fchown - change file owner/group (by fd)
+#[no_mangle]
+pub unsafe extern "C" fn fchown(_fd: i32, _owner: u32, _group: u32) -> i32 {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// chmod - change file mode bits (by path)
+#[no_mangle]
+pub unsafe extern "C" fn chmod(_path: *const u8, _mode: u32) -> i32 {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// chown - change file owner/group (by path)
+#[no_mangle]
+pub unsafe extern "C" fn chown(_path: *const u8, _owner: u32, _group: u32) -> i32 {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// utimes - change file access and modification times
+#[no_mangle]
+pub unsafe extern "C" fn utimes(_path: *const u8, _times: *const u8) -> i32 {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// fcntl - file control
+#[no_mangle]
+pub unsafe extern "C" fn fcntl(fd: i32, cmd: i32, arg: u64) -> i32 {
+    let result = libbreenix::io::fcntl(fd as u64, cmd, arg as i64);
+    syscall_result_to_c_int(result)
+}
+
 // =============================================================================
 // Process Control
 // =============================================================================
 
 /// Terminate the calling process.
-///
-/// # Arguments
-/// * `status` - Exit status code
-///
-/// # Returns
-/// This function never returns.
 #[no_mangle]
 pub extern "C" fn exit(status: i32) -> ! {
     libbreenix::process::exit(status)
 }
 
 /// Terminate the calling process immediately.
-///
-/// This is the same as exit() but is the "raw" syscall version that
-/// doesn't run atexit handlers (we don't have those yet anyway).
-///
-/// # Arguments
-/// * `status` - Exit status code
-///
-/// # Returns
-/// This function never returns.
 #[no_mangle]
 pub extern "C" fn _exit(status: i32) -> ! {
     libbreenix::process::exit(status)
 }
 
-/// Get the process ID of the calling process.
+/// Terminate all threads in the current process group.
 ///
-/// # Returns
-/// The process ID (always succeeds).
+/// For now this is equivalent to exit() since we are single-threaded per process.
+#[no_mangle]
+pub extern "C" fn exit_group(status: i32) -> ! {
+    libbreenix::process::exit(status)
+}
+
+/// set_tid_address - Store TID address for thread exit notification.
+///
+/// Returns the caller's thread ID.
+#[no_mangle]
+pub extern "C" fn set_tid_address(tidptr: *mut i32) -> i32 {
+    let result = unsafe {
+        libbreenix::syscall::raw::syscall1(
+            libbreenix::syscall::nr::SET_TID_ADDRESS,
+            tidptr as u64,
+        )
+    } as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// Get the process ID of the calling process.
 #[no_mangle]
 pub extern "C" fn getpid() -> i32 {
     libbreenix::process::getpid() as i32
 }
 
 /// Get the thread ID of the calling thread.
-///
-/// # Returns
-/// The thread ID (always succeeds).
 #[no_mangle]
 pub extern "C" fn gettid() -> i32 {
     libbreenix::process::gettid() as i32
+}
+
+/// Get the parent process ID.
+#[no_mangle]
+pub extern "C" fn getppid() -> i32 {
+    let result = unsafe {
+        libbreenix::syscall::raw::syscall0(libbreenix::syscall::nr::GETPPID)
+    } as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// Get real user ID.
+#[no_mangle]
+pub extern "C" fn getuid() -> u32 {
+    0 // root - single-user system
+}
+
+/// Get effective user ID.
+#[no_mangle]
+pub extern "C" fn geteuid() -> u32 {
+    0 // root
+}
+
+/// Get real group ID.
+#[no_mangle]
+pub extern "C" fn getgid() -> u32 {
+    0 // root group
+}
+
+/// Get effective group ID.
+#[no_mangle]
+pub extern "C" fn getegid() -> u32 {
+    0 // root group
+}
+
+/// setpgid - set process group ID
+#[no_mangle]
+pub extern "C" fn setpgid(pid: i32, pgid: i32) -> i32 {
+    libbreenix::process::setpgid(pid, pgid)
+}
+
+/// fork - create a child process
+#[no_mangle]
+pub extern "C" fn fork() -> i32 {
+    let result = libbreenix::process::fork();
+    syscall_result_to_c_int(result)
+}
+
+/// execve - execute a program
+///
+/// Wires to libbreenix::process::execv (envp is ignored for now).
+#[no_mangle]
+pub unsafe extern "C" fn execve(
+    path: *const u8,
+    argv: *const *const u8,
+    _envp: *const *const u8,
+) -> i32 {
+    if path.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::EXEC,
+        path as u64,
+        argv as u64,
+    ) as i64;
+    // execve should not return on success
+    syscall_result_to_c_int(result)
+}
+
+/// waitpid - wait for a child process
+#[no_mangle]
+pub unsafe extern "C" fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32 {
+    let result = libbreenix::process::waitpid(pid, status, options);
+    syscall_result_to_c_int(result)
+}
+
+/// kill - send signal to a process
+#[no_mangle]
+pub extern "C" fn kill(pid: i32, sig: i32) -> i32 {
+    match libbreenix::signal::kill(pid, sig) {
+        Ok(()) => 0,
+        Err(errno) => {
+            unsafe { ERRNO = errno; }
+            -1
+        }
+    }
+}
+
+/// raise - send a signal to the calling process
+#[no_mangle]
+pub extern "C" fn raise(sig: i32) -> i32 {
+    kill(getpid(), sig)
 }
 
 // =============================================================================
@@ -297,20 +801,6 @@ pub extern "C" fn gettid() -> i32 {
 // =============================================================================
 
 /// Map memory into the process address space.
-///
-/// # Arguments
-/// * `addr` - Hint address (NULL for kernel to choose)
-/// * `len` - Size of mapping
-/// * `prot` - Protection flags (PROT_READ, PROT_WRITE, PROT_EXEC)
-/// * `flags` - Mapping flags (MAP_PRIVATE, MAP_ANONYMOUS, etc.)
-/// * `fd` - File descriptor (-1 for anonymous)
-/// * `offset` - File offset
-///
-/// # Returns
-/// Pointer to mapped region on success, MAP_FAILED (-1 as pointer) on error.
-///
-/// # Safety
-/// This function is inherently unsafe as it manipulates virtual memory.
 #[no_mangle]
 pub unsafe extern "C" fn mmap(
     addr: *mut u8,
@@ -320,7 +810,6 @@ pub unsafe extern "C" fn mmap(
     fd: i32,
     offset: i64,
 ) -> *mut u8 {
-    // Call raw syscall directly to get the actual error code
     let result = libbreenix::raw::syscall6(
         9, // MMAP syscall number
         addr as u64,
@@ -331,10 +820,8 @@ pub unsafe extern "C" fn mmap(
         offset as u64,
     );
 
-    // Check for error (negative values indicate -errno)
     let result_signed = result as i64;
     if result_signed < 0 && result_signed >= -4096 {
-        // Error: result is -errno, convert to positive errno
         ERRNO = (-result_signed) as i32;
         libbreenix::memory::MAP_FAILED
     } else {
@@ -343,16 +830,6 @@ pub unsafe extern "C" fn mmap(
 }
 
 /// Unmap memory from the process address space.
-///
-/// # Arguments
-/// * `addr` - Address of mapping to unmap
-/// * `len` - Size of mapping
-///
-/// # Returns
-/// 0 on success, -1 on error (sets errno).
-///
-/// # Safety
-/// Caller must ensure the memory region is valid to unmap.
 #[no_mangle]
 pub unsafe extern "C" fn munmap(addr: *mut u8, len: usize) -> i32 {
     let result = libbreenix::memory::munmap(addr, len);
@@ -366,17 +843,6 @@ pub unsafe extern "C" fn munmap(addr: *mut u8, len: usize) -> i32 {
 }
 
 /// Change protection on a region of memory.
-///
-/// # Arguments
-/// * `addr` - Start address (must be page-aligned)
-/// * `len` - Size of region
-/// * `prot` - New protection flags (PROT_READ, PROT_WRITE, PROT_EXEC)
-///
-/// # Returns
-/// 0 on success, -1 on error (sets errno).
-///
-/// # Safety
-/// Caller must ensure the memory region is valid.
 #[no_mangle]
 pub unsafe extern "C" fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32 {
     let result = libbreenix::memory::mprotect(addr, len, prot);
@@ -390,25 +856,11 @@ pub unsafe extern "C" fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32 {
 }
 
 /// Change the program break (heap end).
-///
-/// # Arguments
-/// * `addr` - New program break address, or NULL/0 to query current break
-///
-/// # Returns
-/// New program break on success, -1 cast to pointer on error.
-///
-/// # Safety
-/// This function manipulates the heap boundary.
 #[no_mangle]
 pub unsafe extern "C" fn brk(addr: *mut u8) -> i32 {
     let result = libbreenix::memory::brk(addr as u64);
 
-    // brk returns the new break on success, or the old break on failure
-    // In C, brk returns 0 on success, -1 on error
-    // But this is actually sbrk-like behavior, so we return success always
-    // since libbreenix::memory::brk always returns the current break
     if result == 0 && !addr.is_null() {
-        // Request failed (break didn't change to requested value)
         ERRNO = libbreenix::Errno::ENOMEM as i32;
         -1
     } else {
@@ -417,43 +869,22 @@ pub unsafe extern "C" fn brk(addr: *mut u8) -> i32 {
 }
 
 /// Allocate memory by moving the program break.
-///
-/// # Arguments
-/// * `increment` - Number of bytes to add to the program break.
-///
-/// # Returns
-/// Previous program break on success, -1 cast to pointer on error.
-///
-/// # Notes
-/// - If `increment` is 0, returns the current program break.
-/// - Negative increments are NOT currently supported (returns error with EINVAL).
-///   This limitation exists because the underlying libbreenix::memory::sbrk
-///   only supports heap expansion, not shrinking. Most allocators use mmap/munmap
-///   for memory management anyway, so this is typically not an issue.
-///
-/// # Safety
-/// This function manipulates the heap boundary.
 #[no_mangle]
 pub unsafe extern "C" fn sbrk(increment: isize) -> *mut u8 {
     if increment == 0 {
-        // Query current break
         return libbreenix::memory::get_brk() as *mut u8;
     }
 
     if increment < 0 {
-        // Negative increments (heap shrinking) are not supported.
-        // The underlying libbreenix::memory::sbrk only handles positive increments.
-        // Return error with EINVAL to indicate invalid argument.
         ERRNO = libbreenix::Errno::EINVAL as i32;
-        return usize::MAX as *mut u8; // Return -1 as pointer (MAP_FAILED equivalent)
+        return usize::MAX as *mut u8;
     }
 
-    // Safe cast: we've verified increment >= 0 above
     let result = libbreenix::memory::sbrk(increment as usize);
 
     if result.is_null() {
         ERRNO = libbreenix::Errno::ENOMEM as i32;
-        usize::MAX as *mut u8 // Return -1 as pointer
+        usize::MAX as *mut u8
     } else {
         result
     }
@@ -463,32 +894,22 @@ pub unsafe extern "C" fn sbrk(increment: isize) -> *mut u8 {
 // Memory Constants (re-exported for convenience)
 // =============================================================================
 
-/// Protection: page cannot be accessed
 pub const PROT_NONE: i32 = libbreenix::memory::PROT_NONE;
-/// Protection: page can be read
 pub const PROT_READ: i32 = libbreenix::memory::PROT_READ;
-/// Protection: page can be written
 pub const PROT_WRITE: i32 = libbreenix::memory::PROT_WRITE;
-/// Protection: page can be executed
 pub const PROT_EXEC: i32 = libbreenix::memory::PROT_EXEC;
 
-/// Mapping: share changes
 pub const MAP_SHARED: i32 = libbreenix::memory::MAP_SHARED;
-/// Mapping: changes are private
 pub const MAP_PRIVATE: i32 = libbreenix::memory::MAP_PRIVATE;
-/// Mapping: place at exact address
 pub const MAP_FIXED: i32 = libbreenix::memory::MAP_FIXED;
-/// Mapping: not backed by file
 pub const MAP_ANONYMOUS: i32 = libbreenix::memory::MAP_ANONYMOUS;
 
-/// Error return value for mmap
 pub const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
 
 // =============================================================================
 // Errno Constants (re-exported for C compatibility)
 // =============================================================================
 
-// These match Linux errno values
 pub const EPERM: i32 = 1;
 pub const ENOENT: i32 = 2;
 pub const ESRCH: i32 = 3;
@@ -529,60 +950,212 @@ pub const ENOSYS: i32 = 38;
 
 /// The _start entry point for Rust programs using std.
 ///
-/// This is the first code that runs when a program starts. On Linux/Unix,
-/// the kernel sets up the stack with argc, argv, and envp, then jumps to _start.
+/// Uses a naked function to properly extract argc/argv from the stack
+/// as set up by the kernel.
 ///
 /// Stack layout at entry:
 /// ```text
-/// [top of stack]
-/// NULL
-/// envp[n]
+/// [rsp]     = argc
+/// [rsp+8]   = argv[0]
+/// [rsp+16]  = argv[1]
 /// ...
-/// envp[0]
-/// NULL
-/// argv[argc-1]
-/// ...
-/// argv[0]
-/// argc
-/// [rsp points here]
 /// ```
-///
-/// We need to:
-/// 1. Extract argc, argv, envp from the stack
-/// 2. Set up any required runtime state
-/// 3. Call main (via Rust's lang_start)
-///
-/// For Rust std programs, we call `main` directly since Rust's lang_start
-/// handles the rest. The #[lang = "start"] attribute on main takes care of this.
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
-    extern "C" {
-        fn main(argc: isize, argv: *const *const u8) -> isize;
-    }
+pub unsafe extern "C" fn _start() -> ! {
+    core::arch::naked_asm!(
+        "mov rdi, rsp",  // Pass stack pointer as first argument
+        "and rsp, -16",  // Align stack to 16 bytes
+        "call {entry}",
+        entry = sym _start_rust,
+    )
+}
 
+/// ARM64 _start entry point
+#[cfg(target_arch = "aarch64")]
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn _start() -> ! {
+    core::arch::naked_asm!(
+        "mov x0, sp",    // Pass stack pointer as first argument
+        "and sp, x0, #-16",  // Align stack to 16 bytes
+        "bl {entry}",
+        entry = sym _start_rust,
+    )
+}
+
+/// Rust entry point called from _start with the stack pointer.
+///
+/// Extracts argc and argv from the stack and calls main().
+extern "C" fn _start_rust(sp: *const u64) -> ! {
     unsafe {
-        // Get argc from stack (first value at rsp when _start is called)
-        // The kernel places: [rsp] = argc, [rsp+8] = argv[0], etc.
-        //
-        // Note: In the actual entry, the stack layout depends on the kernel.
-        // For now, we use a simple approach: argc=0, argv=null pointer.
-        // A proper implementation would read from the stack set up by the kernel.
-        //
-        // TODO: Properly extract argc/argv from the stack.
-        // For minimal hello world testing, we can proceed with argc=0.
-        let argc: isize = 0;
-        let argv: *const *const u8 = core::ptr::null();
-
+        let argc = *sp as isize;
+        let argv = sp.add(1) as *const *const u8;
+        extern "C" {
+            fn main(argc: isize, argv: *const *const u8) -> isize;
+        }
         let ret = main(argc, argv);
         exit(ret as i32);
     }
 }
 
-/// Abort function - required by various runtime components
+// =============================================================================
+// Memory Allocation Functions
+// =============================================================================
+
+/// Header size for allocation tracking.
+const ALLOC_HEADER_SIZE: usize = 16;
+
+/// Get the size of an allocation from its header.
+#[inline]
+unsafe fn get_alloc_size(ptr: *mut u8) -> usize {
+    let header = ptr.sub(ALLOC_HEADER_SIZE);
+    *(header as *const usize)
+}
+
+/// malloc - allocate memory with size tracking
+#[no_mangle]
+pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+
+    let total_size = size + ALLOC_HEADER_SIZE;
+    let ptr = mmap(
+        core::ptr::null_mut(),
+        total_size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    );
+
+    if ptr == MAP_FAILED {
+        core::ptr::null_mut()
+    } else {
+        *(ptr as *mut usize) = size;
+        *((ptr as *mut usize).add(1)) = 0;
+        ptr.add(ALLOC_HEADER_SIZE)
+    }
+}
+
+/// free - deallocate memory
+#[no_mangle]
+pub unsafe extern "C" fn free(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let header = ptr.sub(ALLOC_HEADER_SIZE);
+    let size = *(header as *const usize);
+    let base_ptr_field = *((header as *const usize).add(1));
+
+    let header_addr = header as usize;
+    if base_ptr_field != 0 && base_ptr_field <= header_addr {
+        let base_ptr = base_ptr_field as *mut u8;
+        let total_size = (ptr as usize - base_ptr_field) + size;
+        munmap(base_ptr, total_size);
+    } else {
+        let munmap_size = size + ALLOC_HEADER_SIZE;
+        munmap(header, munmap_size);
+    }
+}
+
+/// calloc - allocate zero-initialized memory
+#[no_mangle]
+pub unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut u8 {
+    let total = match nmemb.checked_mul(size) {
+        Some(t) => t,
+        None => return core::ptr::null_mut(),
+    };
+    let ptr = malloc(total);
+    if !ptr.is_null() {
+        // malloc via mmap already returns zero-initialized memory,
+        // but be explicit for correctness
+        core::ptr::write_bytes(ptr, 0, total);
+    }
+    ptr
+}
+
+/// realloc - resize memory allocation
+#[no_mangle]
+pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
+    if ptr.is_null() {
+        return malloc(size);
+    }
+    if size == 0 {
+        free(ptr);
+        return core::ptr::null_mut();
+    }
+
+    let old_size = get_alloc_size(ptr);
+    let new_ptr = malloc(size);
+
+    if !new_ptr.is_null() {
+        let copy_size = core::cmp::min(old_size, size);
+        core::ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
+        free(ptr);
+    }
+    new_ptr
+}
+
+/// posix_memalign - allocate aligned memory
+#[no_mangle]
+pub unsafe extern "C" fn posix_memalign(
+    memptr: *mut *mut u8,
+    alignment: usize,
+    size: usize,
+) -> i32 {
+    if alignment == 0 || (alignment & (alignment - 1)) != 0 {
+        return EINVAL;
+    }
+    if alignment < core::mem::size_of::<*mut u8>() {
+        return EINVAL;
+    }
+
+    if alignment <= ALLOC_HEADER_SIZE {
+        let ptr = malloc(size);
+        if ptr.is_null() {
+            return ENOMEM;
+        }
+        *memptr = ptr;
+        return 0;
+    }
+
+    let total_size = ALLOC_HEADER_SIZE + alignment + size;
+    let base_ptr = mmap(
+        core::ptr::null_mut(),
+        total_size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    );
+
+    if base_ptr == MAP_FAILED {
+        return ENOMEM;
+    }
+
+    let after_header = base_ptr.add(ALLOC_HEADER_SIZE) as usize;
+    let aligned_addr = (after_header + alignment - 1) & !(alignment - 1);
+    let user_ptr = aligned_addr as *mut u8;
+
+    let header = user_ptr.sub(ALLOC_HEADER_SIZE);
+    *(header as *mut usize) = size;
+    *((header as *mut usize).add(1)) = base_ptr as usize;
+
+    *memptr = user_ptr;
+    0
+}
+
+// =============================================================================
+// String/Utility Functions
+// =============================================================================
+
+/// abort function - required by various runtime components
 #[no_mangle]
 pub extern "C" fn abort() -> ! {
-    // Exit with a failure code
-    exit(134) // 128 + SIGABRT (6) = 134
+    exit(134) // 128 + SIGABRT (6)
 }
 
 /// strlen - required by Rust's CString and other string operations
@@ -614,383 +1187,34 @@ pub extern "C" fn getenv(_name: *const u8) -> *mut u8 {
     core::ptr::null_mut()
 }
 
-/// Get random bytes from the kernel.
-///
-/// Currently returns ENOSYS as the kernel doesn't have an entropy source.
-/// Programs requiring randomness will fail explicitly rather than getting
-/// predictable "random" values.
+/// setenv - set environment variable (no-op, single-process)
 #[no_mangle]
-pub unsafe extern "C" fn getrandom(_buf: *mut u8, _buflen: usize, _flags: u32) -> isize {
-    ERRNO = ENOSYS;
-    -1
-}
-
-// =============================================================================
-// Memory Allocation Functions
-// =============================================================================
-
-/// Header size for allocation tracking.
-/// Stores: [size: usize (8 bytes)][padding: 8 bytes for alignment]
-/// Total: 16 bytes to maintain 16-byte alignment for returned pointers.
-const ALLOC_HEADER_SIZE: usize = 16;
-
-/// Get the size of an allocation from its header.
-///
-/// # Safety
-/// Caller must ensure `ptr` was returned by malloc/realloc and is not null.
-#[inline]
-unsafe fn get_alloc_size(ptr: *mut u8) -> usize {
-    let header = ptr.sub(ALLOC_HEADER_SIZE);
-    *(header as *const usize)
-}
-
-/// malloc - allocate memory with size tracking
-///
-/// Allocates `size` bytes and stores the allocation size in a header
-/// before the returned pointer. This enables realloc to know how many
-/// bytes to copy when growing/shrinking allocations.
-#[no_mangle]
-pub unsafe extern "C" fn malloc(size: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-
-    // Allocate extra space for the header
-    let total_size = size + ALLOC_HEADER_SIZE;
-    let ptr = mmap(
-        core::ptr::null_mut(),
-        total_size,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1,
-        0,
-    );
-
-    if ptr == MAP_FAILED {
-        core::ptr::null_mut()
-    } else {
-        // Store size in header (offset 0)
-        *(ptr as *mut usize) = size;
-        // Zero the second field (offset 8) to distinguish from posix_memalign allocations
-        // posix_memalign stores base_ptr here, which is non-zero and <= header
-        *((ptr as *mut usize).add(1)) = 0;
-        // Return pointer after header
-        ptr.add(ALLOC_HEADER_SIZE)
-    }
-}
-
-/// free - deallocate memory
-///
-/// Frees memory allocated by malloc/realloc/posix_memalign by reading metadata
-/// from the header and calling munmap on the full allocation.
-///
-/// Header layout (16 bytes before user pointer):
-/// - For malloc/realloc: [size: usize][unused: usize]
-///   - munmap starts at header, size = size + ALLOC_HEADER_SIZE
-/// - For posix_memalign with alignment > 16: [size: usize][base_ptr: usize]
-///   - munmap starts at base_ptr, size = (ptr - base_ptr) + size
-///
-/// We detect posix_memalign allocations by checking if base_ptr_field != 0 and
-/// points to an address before or at the header. For regular malloc, the second
-/// field is unused (typically 0 or garbage, but < header address).
-#[no_mangle]
-pub unsafe extern "C" fn free(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    let header = ptr.sub(ALLOC_HEADER_SIZE);
-    let size = *(header as *const usize);
-    let base_ptr_field = *((header as *const usize).add(1));
-
-    // Detect if this is a posix_memalign allocation:
-    // - base_ptr_field will be a valid address pointing to the start of the mmap
-    // - For regular malloc, base_ptr_field is typically 0 or garbage
-    // - For posix_memalign, base_ptr_field points to an address <= header
-    //
-    // We check if base_ptr_field looks like a valid pointer (non-zero and <= header)
-    let header_addr = header as usize;
-    if base_ptr_field != 0 && base_ptr_field <= header_addr {
-        // posix_memalign allocation: munmap from base_ptr
-        // The total size is from base_ptr to ptr + size
-        let base_ptr = base_ptr_field as *mut u8;
-        let total_size = (ptr as usize - base_ptr_field) + size;
-        munmap(base_ptr, total_size);
-    } else {
-        // Regular malloc/realloc allocation: munmap from header
-        let munmap_size = size + ALLOC_HEADER_SIZE;
-        munmap(header, munmap_size);
-    }
-}
-
-/// realloc - resize memory allocation with proper data preservation
-///
-/// Copies min(old_size, new_size) bytes to avoid reading beyond the
-/// original allocation's bounds (which would be undefined behavior).
-#[no_mangle]
-pub unsafe extern "C" fn realloc(ptr: *mut u8, size: usize) -> *mut u8 {
-    if ptr.is_null() {
-        return malloc(size);
-    }
-    if size == 0 {
-        free(ptr);
-        return core::ptr::null_mut();
-    }
-
-    let old_size = get_alloc_size(ptr);
-    let new_ptr = malloc(size);
-
-    if !new_ptr.is_null() {
-        // Copy min(old_size, new_size) bytes - safe bounds
-        let copy_size = core::cmp::min(old_size, size);
-        core::ptr::copy_nonoverlapping(ptr, new_ptr, copy_size);
-        free(ptr);
-    }
-    new_ptr
-}
-
-/// posix_memalign - allocate aligned memory
-///
-/// Uses the same header scheme as malloc for consistency with free().
-/// For alignments larger than ALLOC_HEADER_SIZE, we allocate extra space
-/// and align the returned pointer while ensuring the header is accessible.
-#[no_mangle]
-pub unsafe extern "C" fn posix_memalign(
-    memptr: *mut *mut u8,
-    alignment: usize,
-    size: usize,
-) -> i32 {
-    if alignment == 0 || (alignment & (alignment - 1)) != 0 {
-        return EINVAL;
-    }
-    if alignment < core::mem::size_of::<*mut u8>() {
-        return EINVAL;
-    }
-
-    // For alignments <= ALLOC_HEADER_SIZE (16 bytes), malloc already works
-    // since mmap returns page-aligned memory and our header is 16 bytes.
-    if alignment <= ALLOC_HEADER_SIZE {
-        let ptr = malloc(size);
-        if ptr.is_null() {
-            return ENOMEM;
-        }
-        *memptr = ptr;
-        return 0;
-    }
-
-    // For larger alignments, we need to allocate extra space to ensure
-    // we can align the user pointer while keeping the header accessible.
-    // We need: header (16 bytes) + padding for alignment + size
-    let total_size = ALLOC_HEADER_SIZE + alignment + size;
-    let base_ptr = mmap(
-        core::ptr::null_mut(),
-        total_size,
-        PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS,
-        -1,
-        0,
-    );
-
-    if base_ptr == MAP_FAILED {
-        return ENOMEM;
-    }
-
-    // Find an aligned address that leaves room for the header before it
-    // Start after the header and find the next aligned address
-    let after_header = base_ptr.add(ALLOC_HEADER_SIZE) as usize;
-    let aligned_addr = (after_header + alignment - 1) & !(alignment - 1);
-    let user_ptr = aligned_addr as *mut u8;
-
-    // Store metadata in the 16 bytes before the user pointer:
-    // - At offset 0: size (user-requested size) - for realloc to know how much data to copy
-    // - At offset 8: base_ptr as usize - for free to know where the mmap started
-    //
-    // We need to store base_ptr (not just total_size) because the header may be
-    // at a different address than base_ptr due to alignment padding.
-    let header = user_ptr.sub(ALLOC_HEADER_SIZE);
-    *(header as *mut usize) = size;
-    // Store base_ptr for munmap - free will calculate total_size from user_ptr position
-    *((header as *mut usize).add(1)) = base_ptr as usize;
-
-    *memptr = user_ptr;
+pub unsafe extern "C" fn setenv(_name: *const u8, _value: *const u8, _overwrite: i32) -> i32 {
     0
 }
 
-// =============================================================================
-// Syscall and Synchronization Functions
-// =============================================================================
-
-/// pause - suspend until signal (stub implementation)
+/// unsetenv - remove environment variable (no-op, single-process)
 #[no_mangle]
-pub extern "C" fn pause() -> i32 {
-    // Simple busy wait - a real implementation would use a syscall
-    loop {
-        core::hint::spin_loop();
+pub unsafe extern "C" fn unsetenv(_name: *const u8) -> i32 {
+    0
+}
+
+/// Get random bytes from the kernel.
+#[no_mangle]
+pub unsafe extern "C" fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize {
+    let ret = libbreenix::syscall::raw::syscall3(
+        libbreenix::syscall::nr::GETRANDOM,
+        buf as u64,
+        buflen as u64,
+        flags as u64,
+    );
+    let ret = ret as i64;
+    if ret < 0 {
+        ERRNO = (-ret) as i32;
+        -1
+    } else {
+        ret as isize
     }
-}
-
-/// syscall - generic syscall interface
-///
-/// This provides a way for std to make syscalls. We implement the common
-/// syscalls that std uses directly.
-#[no_mangle]
-pub unsafe extern "C" fn syscall(num: i64, _a1: i64, _a2: i64, _a3: i64, _a4: i64, _a5: i64, _a6: i64) -> i64 {
-    // Linux x86_64 syscall numbers
-    const SYS_FUTEX: i64 = 202;
-    const SYS_GETRANDOM: i64 = 318;
-
-    match num {
-        SYS_FUTEX => {
-            // futex(uaddr, op, val, timeout, uaddr2, val3)
-            // For basic usage, we just return 0 (success)
-            0
-        }
-        SYS_GETRANDOM => {
-            // Return ENOSYS - no entropy source available
-            -(ENOSYS as i64)
-        }
-        _ => {
-            // Unknown syscall - return ENOSYS
-            -(ENOSYS as i64)
-        }
-    }
-}
-
-/// writev - write multiple buffers
-#[no_mangle]
-pub unsafe extern "C" fn writev(fd: i32, iov: *const Iovec, iovcnt: i32) -> isize {
-    let mut total: isize = 0;
-    for i in 0..iovcnt as usize {
-        let vec = &*iov.add(i);
-        let result = write(fd, vec.iov_base as *const u8, vec.iov_len);
-        if result < 0 {
-            return result;
-        }
-        total += result;
-    }
-    total
-}
-
-/// Iovec structure for scatter/gather I/O
-#[repr(C)]
-pub struct Iovec {
-    pub iov_base: *mut u8,
-    pub iov_len: usize,
-}
-
-// =============================================================================
-// Thread-Local Storage Functions (Stubs)
-// =============================================================================
-
-/// pthread_key_create - create a thread-local key
-#[no_mangle]
-pub unsafe extern "C" fn pthread_key_create(
-    key: *mut u32,
-    _destructor: Option<unsafe extern "C" fn(*mut u8)>,
-) -> i32 {
-    static mut NEXT_KEY: u32 = 0;
-    *key = NEXT_KEY;
-    NEXT_KEY += 1;
-    0 // Success
-}
-
-/// pthread_key_delete - delete a thread-local key
-#[no_mangle]
-pub extern "C" fn pthread_key_delete(_key: u32) -> i32 {
-    0 // Success (no-op for now)
-}
-
-/// pthread_getspecific - get thread-local value
-#[no_mangle]
-pub extern "C" fn pthread_getspecific(_key: u32) -> *mut u8 {
-    // For single-threaded, just return null
-    core::ptr::null_mut()
-}
-
-/// pthread_setspecific - set thread-local value
-#[no_mangle]
-pub extern "C" fn pthread_setspecific(_key: u32, _value: *const u8) -> i32 {
-    0 // Success (no-op for now)
-}
-
-/// pthread_self - get current thread ID
-#[no_mangle]
-pub extern "C" fn pthread_self() -> usize {
-    1 // Main thread ID
-}
-
-/// pthread_getattr_np - get thread attributes
-#[no_mangle]
-pub extern "C" fn pthread_getattr_np(_thread: usize, _attr: *mut u8) -> i32 {
-    0 // Success
-}
-
-/// pthread_attr_init - initialize thread attributes
-#[no_mangle]
-pub extern "C" fn pthread_attr_init(_attr: *mut u8) -> i32 {
-    0 // Success
-}
-
-/// pthread_attr_destroy - destroy thread attributes
-#[no_mangle]
-pub extern "C" fn pthread_attr_destroy(_attr: *mut u8) -> i32 {
-    0 // Success
-}
-
-/// pthread_attr_getstack - get stack attributes
-#[no_mangle]
-pub unsafe extern "C" fn pthread_attr_getstack(
-    _attr: *const u8,
-    stackaddr: *mut *mut u8,
-    stacksize: *mut usize,
-) -> i32 {
-    // Return a default stack info
-    *stackaddr = 0x7fff0000_00000000_u64 as *mut u8; // High memory address
-    *stacksize = 8 * 1024 * 1024; // 8 MB stack
-    0 // Success
-}
-
-// =============================================================================
-// File and I/O Operations
-// =============================================================================
-
-/// poll - wait for events on file descriptors (stub)
-#[no_mangle]
-pub extern "C" fn poll(_fds: *mut u8, _nfds: usize, _timeout: i32) -> i32 {
-    0 // No events
-}
-
-/// fcntl - file control (stub)
-#[no_mangle]
-pub extern "C" fn fcntl(_fd: i32, _cmd: i32, _arg: u64) -> i32 {
-    0 // Success
-}
-
-/// open - open a file (stub)
-#[no_mangle]
-pub extern "C" fn open(_path: *const u8, _flags: i32, _mode: u32) -> i32 {
-    -(ENOSYS as i32) // Not implemented
-}
-
-// =============================================================================
-// Signal Handling (Stubs)
-// =============================================================================
-
-/// signal - set signal handler (stub)
-#[no_mangle]
-pub extern "C" fn signal(_signum: i32, _handler: usize) -> usize {
-    0 // SIG_DFL
-}
-
-/// sigaction - examine and change signal action (stub)
-#[no_mangle]
-pub unsafe extern "C" fn sigaction(_signum: i32, _act: *const u8, _oldact: *mut u8) -> i32 {
-    0 // Success
-}
-
-/// sigaltstack - set/get signal stack context (stub)
-#[no_mangle]
-pub unsafe extern "C" fn sigaltstack(_ss: *const u8, _old_ss: *mut u8) -> i32 {
-    0 // Success
 }
 
 // =============================================================================
@@ -1010,7 +1234,7 @@ pub extern "C" fn sysconf(name: i32) -> i64 {
         _SC_PAGESIZE => 4096,
         _SC_NPROCESSORS_ONLN | _SC_NPROCESSORS_CONF => 1,
         _SC_GETPW_R_SIZE_MAX | _SC_GETGR_R_SIZE_MAX => 1024,
-        _ => -1, // Unknown
+        _ => -1,
     }
 }
 
@@ -1021,12 +1245,35 @@ pub unsafe extern "C" fn __xpg_strerror_r(errnum: i32, buf: *mut u8, buflen: usi
         0 => b"Success\0",
         1 => b"Operation not permitted\0",
         2 => b"No such file or directory\0",
+        3 => b"No such process\0",
+        4 => b"Interrupted system call\0",
+        5 => b"Input/output error\0",
+        9 => b"Bad file descriptor\0",
+        10 => b"No child processes\0",
+        11 => b"Resource temporarily unavailable\0",
+        12 => b"Cannot allocate memory\0",
+        13 => b"Permission denied\0",
+        14 => b"Bad address\0",
+        17 => b"File exists\0",
+        20 => b"Not a directory\0",
+        21 => b"Is a directory\0",
+        22 => b"Invalid argument\0",
+        25 => b"Inappropriate ioctl for device\0",
+        28 => b"No space left on device\0",
+        32 => b"Broken pipe\0",
+        38 => b"Function not implemented\0",
         _ => b"Unknown error\0",
     };
     let copy_len = core::cmp::min(msg.len() - 1, buflen - 1);
     core::ptr::copy_nonoverlapping(msg.as_ptr(), buf, copy_len);
     *buf.add(copy_len) = 0;
-    0 // Success
+    0
+}
+
+/// strerror_r - POSIX strerror_r (same as __xpg_strerror_r)
+#[no_mangle]
+pub unsafe extern "C" fn strerror_r(errnum: i32, buf: *mut u8, buflen: usize) -> i32 {
+    __xpg_strerror_r(errnum, buf, buflen)
 }
 
 /// getauxval - get auxiliary vector value (stub)
@@ -1038,7 +1285,1483 @@ pub extern "C" fn getauxval(type_: u64) -> u64 {
 
     match type_ {
         AT_PAGESZ => 4096,
-        AT_HWCAP | AT_HWCAP2 => 0, // No special hardware capabilities
+        AT_HWCAP | AT_HWCAP2 => 0,
         _ => 0,
     }
+}
+
+// =============================================================================
+// Signal Handling
+// =============================================================================
+
+/// signal - set signal handler (simple interface)
+#[no_mangle]
+pub extern "C" fn signal(_signum: i32, _handler: usize) -> usize {
+    0 // SIG_DFL
+}
+
+/// sigaction - examine and change signal action
+///
+/// Wires through to libbreenix::signal::sigaction, converting from
+/// the C sigaction struct layout to the kernel's layout.
+#[no_mangle]
+pub unsafe extern "C" fn sigaction(signum: i32, act: *const u8, oldact: *mut u8) -> i32 {
+    // The C sigaction struct layout:
+    //   offset 0: sa_sigaction (handler) - 8 bytes
+    //   offset 8: sa_mask (sigset_t) - 8 bytes
+    //   offset 16: sa_flags (c_int) - 4 bytes
+    //   offset 20: padding - 4 bytes
+    //   offset 24: sa_restorer (Option<extern "C" fn()>) - 8 bytes
+    //
+    // The kernel Sigaction struct layout (libbreenix::signal::Sigaction):
+    //   offset 0: handler - 8 bytes (u64)
+    //   offset 8: mask - 8 bytes (u64)
+    //   offset 16: flags - 8 bytes (u64)
+    //   offset 24: restorer - 8 bytes (u64)
+
+    let act_ptr = if act.is_null() {
+        core::ptr::null()
+    } else {
+        // Convert C sigaction to kernel Sigaction
+        let c_handler = *(act as *const u64);
+        let c_mask = *(act.add(8) as *const u64);
+        let c_flags = *(act.add(16) as *const i32);
+        let c_restorer = *(act.add(24) as *const u64);
+
+        static mut KERNEL_ACT: libbreenix::signal::Sigaction = libbreenix::signal::Sigaction {
+            handler: 0,
+            mask: 0,
+            flags: 0,
+            restorer: 0,
+        };
+        KERNEL_ACT.handler = c_handler;
+        KERNEL_ACT.mask = c_mask;
+        KERNEL_ACT.flags = c_flags as u64;
+        KERNEL_ACT.restorer = c_restorer;
+        &raw const KERNEL_ACT
+    };
+
+    let mut kernel_oldact = libbreenix::signal::Sigaction {
+        handler: 0,
+        mask: 0,
+        flags: 0,
+        restorer: 0,
+    };
+
+    let oldact_opt = if oldact.is_null() {
+        None
+    } else {
+        Some(&mut kernel_oldact)
+    };
+
+    let act_opt = if act_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*act_ptr })
+    };
+
+    match libbreenix::signal::sigaction(signum, act_opt, oldact_opt) {
+        Ok(()) => {
+            if !oldact.is_null() {
+                *(oldact as *mut u64) = kernel_oldact.handler;
+                *(oldact.add(8) as *mut u64) = kernel_oldact.mask;
+                *(oldact.add(16) as *mut i32) = kernel_oldact.flags as i32;
+                // padding at offset 20
+                *(oldact.add(24) as *mut u64) = kernel_oldact.restorer;
+            }
+            0
+        }
+        Err(errno) => {
+            ERRNO = errno;
+            -1
+        }
+    }
+}
+
+/// sigaltstack - set/get signal stack context
+#[no_mangle]
+pub unsafe extern "C" fn sigaltstack(ss: *const u8, old_ss: *mut u8) -> i32 {
+    // C stack_t layout:
+    //   offset 0: ss_sp (*mut void) - 8 bytes
+    //   offset 8: ss_flags (c_int) - 4 bytes
+    //   offset 12: padding - 4 bytes
+    //   offset 16: ss_size (size_t) - 8 bytes
+    //
+    // Kernel StackT layout:
+    //   offset 0: ss_sp (u64) - 8 bytes
+    //   offset 8: ss_flags (i32) - 4 bytes
+    //   offset 12: _pad (i32) - 4 bytes
+    //   offset 16: ss_size (usize) - 8 bytes
+
+    let ss_opt = if ss.is_null() {
+        None
+    } else {
+        static mut KERNEL_SS: libbreenix::signal::StackT = libbreenix::signal::StackT {
+            ss_sp: 0,
+            ss_flags: 2, // SS_DISABLE
+            _pad: 0,
+            ss_size: 0,
+        };
+        KERNEL_SS.ss_sp = *(ss as *const u64);
+        KERNEL_SS.ss_flags = *(ss.add(8) as *const i32);
+        KERNEL_SS.ss_size = *(ss.add(16) as *const usize);
+        Some(&*(&raw const KERNEL_SS))
+    };
+
+    let mut kernel_old = libbreenix::signal::StackT {
+        ss_sp: 0,
+        ss_flags: 2,
+        _pad: 0,
+        ss_size: 0,
+    };
+
+    let old_opt = if old_ss.is_null() {
+        None
+    } else {
+        Some(&mut kernel_old)
+    };
+
+    match libbreenix::signal::sigaltstack(ss_opt, old_opt) {
+        Ok(()) => {
+            if !old_ss.is_null() {
+                *(old_ss as *mut u64) = kernel_old.ss_sp;
+                *(old_ss.add(8) as *mut i32) = kernel_old.ss_flags;
+                *(old_ss.add(16) as *mut usize) = kernel_old.ss_size;
+            }
+            0
+        }
+        Err(errno) => {
+            ERRNO = errno;
+            -1
+        }
+    }
+}
+
+/// sigprocmask - examine and change blocked signals
+#[no_mangle]
+pub unsafe extern "C" fn sigprocmask(
+    how: i32,
+    set: *const u64,
+    oldset: *mut u64,
+) -> i32 {
+    let set_opt = if set.is_null() { None } else { Some(&*set) };
+    let oldset_opt = if oldset.is_null() { None } else { Some(&mut *oldset) };
+
+    match libbreenix::signal::sigprocmask(how, set_opt, oldset_opt) {
+        Ok(()) => 0,
+        Err(errno) => {
+            ERRNO = errno;
+            -1
+        }
+    }
+}
+
+// =============================================================================
+// Time Functions
+// =============================================================================
+
+/// clock_gettime - get time from a clock
+#[no_mangle]
+pub unsafe extern "C" fn clock_gettime(clk_id: i32, tp: *mut u8) -> i32 {
+    if tp.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    // The timespec struct matches between C and kernel (tv_sec: i64, tv_nsec: i64)
+    let result = libbreenix::raw::syscall2(
+        libbreenix::syscall::nr::CLOCK_GETTIME,
+        clk_id as u64,
+        tp as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// nanosleep - high-resolution sleep
+#[no_mangle]
+pub unsafe extern "C" fn nanosleep(req: *const u8, rem: *mut u8) -> i32 {
+    let ret = libbreenix::syscall::raw::syscall2(
+        libbreenix::syscall::nr::NANOSLEEP,
+        req as u64,
+        rem as u64,
+    );
+    let ret = ret as i64;
+    if ret < 0 {
+        ERRNO = (-ret) as i32;
+        -1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Socket Functions
+// =============================================================================
+
+/// socket - create a socket
+#[no_mangle]
+pub extern "C" fn socket(domain: i32, sock_type: i32, protocol: i32) -> i32 {
+    match libbreenix::socket::socket(domain, sock_type, protocol) {
+        Ok(fd) => fd,
+        Err(errno) => {
+            unsafe { ERRNO = errno; }
+            -1
+        }
+    }
+}
+
+/// bind - bind a socket to an address
+#[no_mangle]
+pub unsafe extern "C" fn bind(sockfd: i32, addr: *const u8, addrlen: u32) -> i32 {
+    if addr.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::BIND,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// listen - listen for connections on a socket
+#[no_mangle]
+pub extern "C" fn listen(sockfd: i32, backlog: i32) -> i32 {
+    match libbreenix::socket::listen(sockfd, backlog) {
+        Ok(()) => 0,
+        Err(errno) => {
+            unsafe { ERRNO = errno; }
+            -1
+        }
+    }
+}
+
+/// accept - accept a connection on a socket
+#[no_mangle]
+pub unsafe extern "C" fn accept(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -> i32 {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::ACCEPT,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// accept4 - accept a connection with flags
+#[no_mangle]
+pub unsafe extern "C" fn accept4(
+    sockfd: i32,
+    addr: *mut u8,
+    addrlen: *mut u32,
+    _flags: i32,
+) -> i32 {
+    // Ignore flags for now, delegate to accept
+    accept(sockfd, addr, addrlen)
+}
+
+/// connect - connect a socket to an address
+#[no_mangle]
+pub unsafe extern "C" fn connect(sockfd: i32, addr: *const u8, addrlen: u32) -> i32 {
+    if addr.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::CONNECT,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// send - send data on a connected socket
+#[no_mangle]
+pub unsafe extern "C" fn send(sockfd: i32, buf: *const u8, len: usize, flags: i32) -> isize {
+    // send is sendto with null address
+    sendto(sockfd, buf, len, flags, core::ptr::null(), 0)
+}
+
+/// recv - receive data from a connected socket
+#[no_mangle]
+pub unsafe extern "C" fn recv(sockfd: i32, buf: *mut u8, len: usize, flags: i32) -> isize {
+    // recv is recvfrom with null address
+    recvfrom(sockfd, buf, len, flags, core::ptr::null_mut(), core::ptr::null_mut())
+}
+
+/// sendto - send data to a specific address
+#[no_mangle]
+pub unsafe extern "C" fn sendto(
+    sockfd: i32,
+    buf: *const u8,
+    len: usize,
+    flags: i32,
+    dest_addr: *const u8,
+    addrlen: u32,
+) -> isize {
+    let result = libbreenix::raw::syscall6(
+        libbreenix::syscall::nr::SENDTO,
+        sockfd as u64,
+        buf as u64,
+        len as u64,
+        flags as u64,
+        dest_addr as u64,
+        addrlen as u64,
+    ) as i64;
+    syscall_result_to_c_ssize(result)
+}
+
+/// recvfrom - receive data and source address
+#[no_mangle]
+pub unsafe extern "C" fn recvfrom(
+    sockfd: i32,
+    buf: *mut u8,
+    len: usize,
+    flags: i32,
+    src_addr: *mut u8,
+    addrlen: *mut u32,
+) -> isize {
+    let result = libbreenix::raw::syscall6(
+        libbreenix::syscall::nr::RECVFROM,
+        sockfd as u64,
+        buf as u64,
+        len as u64,
+        flags as u64,
+        src_addr as u64,
+        addrlen as u64,
+    ) as i64;
+    syscall_result_to_c_ssize(result)
+}
+
+/// sendmsg - send a message on a socket
+#[no_mangle]
+pub unsafe extern "C" fn sendmsg(_sockfd: i32, _msg: *const u8, _flags: i32) -> isize {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// recvmsg - receive a message from a socket
+#[no_mangle]
+pub unsafe extern "C" fn recvmsg(_sockfd: i32, _msg: *mut u8, _flags: i32) -> isize {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// setsockopt - set socket options
+#[no_mangle]
+pub unsafe extern "C" fn setsockopt(
+    sockfd: i32,
+    level: i32,
+    optname: i32,
+    optval: *const u8,
+    optlen: u32,
+) -> i32 {
+    let result = libbreenix::raw::syscall5(
+        libbreenix::syscall::nr::SETSOCKOPT,
+        sockfd as u64,
+        level as u64,
+        optname as u64,
+        optval as u64,
+        optlen as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// getsockopt - get socket options
+#[no_mangle]
+pub unsafe extern "C" fn getsockopt(
+    sockfd: i32,
+    level: i32,
+    optname: i32,
+    optval: *mut u8,
+    optlen: *mut u32,
+) -> i32 {
+    let result = libbreenix::raw::syscall5(
+        libbreenix::syscall::nr::GETSOCKOPT,
+        sockfd as u64,
+        level as u64,
+        optname as u64,
+        optval as u64,
+        optlen as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// getpeername - get name of connected peer socket
+#[no_mangle]
+pub unsafe extern "C" fn getpeername(
+    sockfd: i32,
+    addr: *mut u8,
+    addrlen: *mut u32,
+) -> i32 {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::GETPEERNAME,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// getsockname - get socket name
+#[no_mangle]
+pub unsafe extern "C" fn getsockname(
+    sockfd: i32,
+    addr: *mut u8,
+    addrlen: *mut u32,
+) -> i32 {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::GETSOCKNAME,
+        sockfd as u64,
+        addr as u64,
+        addrlen as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+/// shutdown - shut down part of a full-duplex connection
+#[no_mangle]
+pub extern "C" fn shutdown(sockfd: i32, how: i32) -> i32 {
+    match libbreenix::socket::shutdown(sockfd, how) {
+        Ok(()) => 0,
+        Err(errno) => {
+            unsafe { ERRNO = errno; }
+            -1
+        }
+    }
+}
+
+/// socketpair - create a pair of connected sockets
+#[no_mangle]
+pub unsafe extern "C" fn socketpair(
+    domain: i32,
+    sock_type: i32,
+    protocol: i32,
+    sv: *mut i32,
+) -> i32 {
+    if sv.is_null() {
+        ERRNO = EFAULT;
+        return -1;
+    }
+
+    match libbreenix::socket::socketpair(domain, sock_type, protocol) {
+        Ok((fd0, fd1)) => {
+            *sv = fd0;
+            *sv.add(1) = fd1;
+            0
+        }
+        Err(errno) => {
+            ERRNO = errno;
+            -1
+        }
+    }
+}
+
+/// select - synchronous I/O multiplexing
+#[no_mangle]
+pub unsafe extern "C" fn select(
+    nfds: i32,
+    readfds: *mut u8,
+    writefds: *mut u8,
+    exceptfds: *mut u8,
+    timeout: *mut u8,
+) -> i32 {
+    let result = libbreenix::raw::syscall5(
+        libbreenix::syscall::nr::SELECT,
+        nfds as u64,
+        readfds as u64,
+        writefds as u64,
+        exceptfds as u64,
+        timeout as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+// =============================================================================
+// Poll
+// =============================================================================
+
+/// poll - wait for events on file descriptors
+#[no_mangle]
+pub unsafe extern "C" fn poll(fds: *mut u8, nfds: u64, timeout: i32) -> i32 {
+    let result = libbreenix::raw::syscall3(
+        libbreenix::syscall::nr::POLL,
+        fds as u64,
+        nfds,
+        timeout as u64,
+    ) as i64;
+    syscall_result_to_c_int(result)
+}
+
+// =============================================================================
+// Syscall and Synchronization Functions
+// =============================================================================
+
+/// pause - suspend until signal
+#[no_mangle]
+pub extern "C" fn pause() -> i32 {
+    let result = libbreenix::signal::pause();
+    syscall_result_to_c_int(result)
+}
+
+/// syscall - generic syscall interface
+#[no_mangle]
+pub unsafe extern "C" fn syscall(num: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64 {
+    const SYS_FUTEX: i64 = 202;
+    const SYS_GETRANDOM: i64 = 318;
+
+    match num {
+        SYS_FUTEX => {
+            0
+        }
+        SYS_GETRANDOM => {
+            -(ENOSYS as i64)
+        }
+        _ => {
+            // Forward unknown syscalls to the kernel
+            libbreenix::raw::syscall6(
+                num as u64,
+                a1 as u64,
+                a2 as u64,
+                a3 as u64,
+                a4 as u64,
+                a5 as u64,
+                a6 as u64,
+            ) as i64
+        }
+    }
+}
+
+// =============================================================================
+// Scheduling
+// =============================================================================
+
+/// sched_yield - yield the processor
+#[no_mangle]
+pub extern "C" fn sched_yield() -> i32 {
+    libbreenix::process::yield_now();
+    0
+}
+
+// =============================================================================
+// Thread-Local Storage and Pthread Functions
+// =============================================================================
+
+/// pthread_self - get current thread ID
+#[no_mangle]
+pub extern "C" fn pthread_self() -> usize {
+    unsafe {
+        libbreenix::syscall::raw::syscall0(libbreenix::syscall::nr::GETTID) as usize
+    }
+}
+
+/// Clone flags for thread creation
+const CLONE_VM: u64 = 0x00000100;
+const CLONE_FS: u64 = 0x00000200;
+const CLONE_FILES: u64 = 0x00000400;
+const CLONE_SIGHAND: u64 = 0x00000800;
+const CLONE_THREAD: u64 = 0x00010000;
+const CLONE_CHILD_CLEARTID: u64 = 0x00200000;
+const CLONE_CHILD_SETTID: u64 = 0x01000000;
+
+/// Futex operation codes
+const FUTEX_WAIT: u32 = 0;
+
+/// Thread start info passed through the heap to the child thread
+#[repr(C)]
+struct ThreadStartInfo {
+    func: extern "C" fn(*mut u8) -> *mut u8,
+    arg: *mut u8,
+    /// Address of the tid word that gets cleared on thread exit (for join)
+    tid_addr: *mut u32,
+}
+
+/// Entry point for child threads created by pthread_create.
+/// This function is set as the RIP for the new thread by the kernel's clone syscall.
+/// RDI contains the pointer to a heap-allocated ThreadStartInfo.
+extern "C" fn thread_entry(info_ptr: u64) -> ! {
+    unsafe {
+        let info = info_ptr as *mut ThreadStartInfo;
+        let func = (*info).func;
+        let arg = (*info).arg;
+        // Don't free info - it's in shared memory and the parent may be reading tid_addr
+        // The start info is small and will be cleaned up when the process exits.
+
+        // Call the user's thread function
+        func(arg);
+
+        // Thread function returned - exit this thread
+        libbreenix::process::exit(0);
+    }
+}
+
+/// pthread_create - create a new thread
+#[no_mangle]
+pub unsafe extern "C" fn pthread_create(
+    thread: *mut usize,
+    _attr: *const u8,
+    start_routine: extern "C" fn(*mut u8) -> *mut u8,
+    arg: *mut u8,
+) -> i32 {
+    // Allocate stack for the child thread (2MB)
+    let stack_size: usize = 2 * 1024 * 1024;
+    let stack_base = mmap(
+        core::ptr::null_mut(),
+        stack_size,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    );
+    if stack_base == MAP_FAILED {
+        return ENOMEM;
+    }
+
+    // Stack grows downward - child_stack is the top of the stack
+    // Ensure 16-byte alignment
+    let stack_top = (stack_base as usize + stack_size) & !0xF;
+
+    // Allocate ThreadStartInfo on the heap (shared memory via CLONE_VM)
+    // We use mmap to allocate since we don't have a proper allocator here
+    let info_mem = mmap(
+        core::ptr::null_mut(),
+        4096,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+        -1,
+        0,
+    );
+    if info_mem == MAP_FAILED {
+        munmap(stack_base, stack_size);
+        return ENOMEM;
+    }
+
+    let info = info_mem as *mut ThreadStartInfo;
+    (*info).func = start_routine;
+    (*info).arg = arg;
+
+    // The tid word follows the ThreadStartInfo struct
+    // This is the address that gets written to 0 on thread exit and futex-woken
+    let tid_addr = (info_mem as usize + core::mem::size_of::<ThreadStartInfo>()) as *mut u32;
+    (*info).tid_addr = tid_addr;
+    // Initialize tid to a non-zero value (will be set by kernel via CLONE_CHILD_SETTID)
+    *tid_addr = 0xFFFF;
+
+    // Clone flags for thread creation
+    let flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND
+        | CLONE_THREAD | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
+
+    // Call clone syscall: clone(flags, child_stack, fn_ptr, fn_arg, child_tidptr)
+    let ret = libbreenix::syscall::raw::syscall5(
+        libbreenix::syscall::nr::CLONE,
+        flags,
+        stack_top as u64,
+        thread_entry as u64,
+        info as u64,
+        tid_addr as u64,
+    ) as i64;
+
+    if ret < 0 {
+        munmap(stack_base, stack_size);
+        munmap(info_mem, 4096);
+        return -(ret as i32);
+    }
+
+    // Store the thread handle (we use the tid_addr as the handle since
+    // pthread_join needs to know where to futex-wait)
+    if !thread.is_null() {
+        *thread = tid_addr as usize;
+    }
+
+    0
+}
+
+/// pthread_join - wait for thread termination
+#[no_mangle]
+pub extern "C" fn pthread_join(thread: usize, _retval: *mut *mut u8) -> i32 {
+    if thread == 0 {
+        return EINVAL;
+    }
+
+    // thread is the tid_addr pointer set up by pthread_create
+    let tid_addr = thread as *const u32;
+
+    // Wait for the tid word to become 0 (kernel writes 0 on thread exit)
+    loop {
+        let tid_val = unsafe { core::ptr::read_volatile(tid_addr) };
+        if tid_val == 0 {
+            // Thread has exited
+            return 0;
+        }
+
+        // FUTEX_WAIT: block until *tid_addr != tid_val
+        unsafe {
+            libbreenix::syscall::raw::syscall6(
+                libbreenix::syscall::nr::FUTEX,
+                tid_addr as u64,
+                FUTEX_WAIT as u64,
+                tid_val as u64,
+                0, // no timeout
+                0, // uaddr2 unused
+                0, // val3 unused
+            );
+        }
+        // Loop back to check - may have been spuriously woken
+    }
+}
+
+/// pthread_detach - detach a thread (stub - returns 0)
+#[no_mangle]
+pub extern "C" fn pthread_detach(_thread: usize) -> i32 {
+    0
+}
+
+/// pthread_key_create - create a thread-local key
+#[no_mangle]
+pub unsafe extern "C" fn pthread_key_create(
+    key: *mut u32,
+    _destructor: Option<unsafe extern "C" fn(*mut u8)>,
+) -> i32 {
+    static mut NEXT_KEY: u32 = 0;
+    *key = NEXT_KEY;
+    NEXT_KEY += 1;
+    0
+}
+
+/// pthread_key_delete - delete a thread-local key
+#[no_mangle]
+pub extern "C" fn pthread_key_delete(_key: u32) -> i32 {
+    0
+}
+
+/// pthread_getspecific - get thread-local value
+#[no_mangle]
+pub extern "C" fn pthread_getspecific(_key: u32) -> *mut u8 {
+    core::ptr::null_mut()
+}
+
+/// pthread_setspecific - set thread-local value
+#[no_mangle]
+pub extern "C" fn pthread_setspecific(_key: u32, _value: *const u8) -> i32 {
+    0
+}
+
+/// pthread_getattr_np - get thread attributes
+#[no_mangle]
+pub extern "C" fn pthread_getattr_np(_thread: usize, _attr: *mut u8) -> i32 {
+    0
+}
+
+/// pthread_attr_init - initialize thread attributes
+#[no_mangle]
+pub extern "C" fn pthread_attr_init(_attr: *mut u8) -> i32 {
+    0
+}
+
+/// pthread_attr_destroy - destroy thread attributes
+#[no_mangle]
+pub extern "C" fn pthread_attr_destroy(_attr: *mut u8) -> i32 {
+    0
+}
+
+/// pthread_attr_setstacksize - set stack size attribute
+#[no_mangle]
+pub extern "C" fn pthread_attr_setstacksize(_attr: *mut u8, _stacksize: usize) -> i32 {
+    0
+}
+
+/// pthread_attr_getstack - get stack attributes
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_getstack(
+    _attr: *const u8,
+    stackaddr: *mut *mut u8,
+    stacksize: *mut usize,
+) -> i32 {
+    *stackaddr = 0x7fff0000_00000000_u64 as *mut u8;
+    *stacksize = 8 * 1024 * 1024; // 8 MB stack
+    0
+}
+
+/// pthread_attr_getguardsize - get guard size attribute
+#[no_mangle]
+pub unsafe extern "C" fn pthread_attr_getguardsize(
+    _attr: *const u8,
+    guardsize: *mut usize,
+) -> i32 {
+    if !guardsize.is_null() {
+        *guardsize = 4096; // One page guard
+    }
+    0
+}
+
+/// pthread_attr_setguardsize - set guard size attribute
+#[no_mangle]
+pub extern "C" fn pthread_attr_setguardsize(_attr: *mut u8, _guardsize: usize) -> i32 {
+    0
+}
+
+/// pthread_setname_np - set thread name
+#[no_mangle]
+pub extern "C" fn pthread_setname_np(_thread: usize, _name: *const u8) -> i32 {
+    0
+}
+
+// =============================================================================
+// Pthread Mutex Functions (no-op stubs for single-threaded)
+// =============================================================================
+
+#[no_mangle]
+pub extern "C" fn pthread_mutex_init(_mutex: *mut u8, _attr: *const u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_mutex_destroy(_mutex: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_mutex_lock(_mutex: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_mutex_trylock(_mutex: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_mutex_unlock(_mutex: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_mutexattr_init(_attr: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_mutexattr_destroy(_attr: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_mutexattr_settype(_attr: *mut u8, _kind: i32) -> i32 {
+    0
+}
+
+// =============================================================================
+// Pthread Condition Variable Functions (no-op stubs)
+// =============================================================================
+
+#[no_mangle]
+pub extern "C" fn pthread_cond_init(_cond: *mut u8, _attr: *const u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_cond_destroy(_cond: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_cond_signal(_cond: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_cond_broadcast(_cond: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_cond_wait(_cond: *mut u8, _mutex: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pthread_cond_timedwait(
+    _cond: *mut u8,
+    _mutex: *mut u8,
+    _abstime: *const u8,
+) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_condattr_init(_attr: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_condattr_destroy(_attr: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_condattr_setclock(_attr: *mut u8, _clock: i32) -> i32 {
+    0
+}
+
+// =============================================================================
+// Pthread Read-Write Lock Functions (no-op stubs)
+// =============================================================================
+
+#[no_mangle]
+pub extern "C" fn pthread_rwlock_init(_rwlock: *mut u8, _attr: *const u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_rwlock_destroy(_rwlock: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_rwlock_rdlock(_rwlock: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_rwlock_tryrdlock(_rwlock: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_rwlock_wrlock(_rwlock: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_rwlock_trywrlock(_rwlock: *mut u8) -> i32 {
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn pthread_rwlock_unlock(_rwlock: *mut u8) -> i32 {
+    0
+}
+
+// =============================================================================
+// Additional libc functions needed by Rust std
+// =============================================================================
+
+/// readv - scatter read
+#[no_mangle]
+pub unsafe extern "C" fn readv(fd: i32, iov: *const Iovec, iovcnt: i32) -> isize {
+    let mut total: isize = 0;
+    for i in 0..iovcnt as usize {
+        let vec = &*iov.add(i);
+        let result = read(fd, vec.iov_base, vec.iov_len);
+        if result < 0 {
+            return result;
+        }
+        total += result;
+    }
+    total
+}
+
+// =============================================================================
+// POSIX Directory Functions (opendir/readdir_r/closedir)
+// =============================================================================
+
+/// Internal DIR structure for directory iteration.
+///
+/// Contains a file descriptor, a buffer for getdents64 results,
+/// and position tracking within the buffer.
+#[repr(C)]
+pub struct Dir {
+    fd: i32,
+    buf: [u8; 2048],
+    buf_len: usize,   // How many valid bytes are in buf
+    buf_pos: usize,   // Current read position within buf
+    eof: bool,        // Whether getdents64 returned 0 (no more entries)
+}
+
+/// POSIX dirent structure
+///
+/// Note: d_name is a fixed-size array matching the Linux convention.
+#[repr(C)]
+pub struct Dirent {
+    pub d_ino: u64,
+    pub d_off: i64,
+    pub d_reclen: u16,
+    pub d_type: u8,
+    pub d_name: [u8; 256],
+}
+
+const O_RDONLY_DIR: i32 = 0;
+const O_DIRECTORY: i32 = 0o200000;
+
+/// opendir - open a directory stream
+#[no_mangle]
+pub unsafe extern "C" fn opendir(name: *const u8) -> *mut Dir {
+    if name.is_null() {
+        ERRNO = EFAULT;
+        return core::ptr::null_mut();
+    }
+
+    // Open the directory with O_RDONLY | O_DIRECTORY
+    let fd = open(name, O_RDONLY_DIR | O_DIRECTORY, 0);
+    if fd < 0 {
+        // errno already set by open()
+        return core::ptr::null_mut();
+    }
+
+    // Allocate a Dir struct using sbrk (we don't have malloc)
+    let dir_size = core::mem::size_of::<Dir>();
+    let ptr = sbrk(dir_size as isize) as *mut Dir;
+    if ptr.is_null() || (ptr as usize) == usize::MAX {
+        close(fd);
+        ERRNO = libbreenix::Errno::ENOMEM as i32;
+        return core::ptr::null_mut();
+    }
+
+    // Initialize the Dir struct
+    core::ptr::write_bytes(ptr as *mut u8, 0, dir_size);
+    (*ptr).fd = fd;
+    (*ptr).buf_len = 0;
+    (*ptr).buf_pos = 0;
+    (*ptr).eof = false;
+
+    ptr
+}
+
+/// readdir_r - reentrant read directory entry
+///
+/// Reads the next directory entry from the DIR stream into `entry`.
+/// On success, stores a pointer to `entry` in `*result`.
+/// At end of directory, `*result` is set to null.
+#[no_mangle]
+pub unsafe extern "C" fn readdir_r(
+    dirp: *mut Dir,
+    entry: *mut Dirent,
+    result: *mut *mut Dirent,
+) -> i32 {
+    if dirp.is_null() || entry.is_null() || result.is_null() {
+        return EINVAL;
+    }
+
+    let dir = &mut *dirp;
+
+    // If we've consumed all buffered data, fetch more
+    if dir.buf_pos >= dir.buf_len {
+        if dir.eof {
+            *result = core::ptr::null_mut();
+            return 0;
+        }
+
+        // Call getdents64 to fill the buffer
+        let ret = libbreenix::raw::syscall3(
+            libbreenix::syscall::nr::GETDENTS64,
+            dir.fd as u64,
+            dir.buf.as_mut_ptr() as u64,
+            dir.buf.len() as u64,
+        ) as i64;
+
+        if ret < 0 {
+            *result = core::ptr::null_mut();
+            return (-ret) as i32;
+        }
+
+        if ret == 0 {
+            dir.eof = true;
+            *result = core::ptr::null_mut();
+            return 0;
+        }
+
+        dir.buf_len = ret as usize;
+        dir.buf_pos = 0;
+    }
+
+    // Parse the next dirent64 from the buffer
+    let pos = dir.buf_pos;
+    if pos + 19 > dir.buf_len {
+        // Not enough data for a header
+        *result = core::ptr::null_mut();
+        return 0;
+    }
+
+    let buf_ptr = dir.buf.as_ptr().add(pos);
+
+    // Read fields from the kernel's linux_dirent64 format:
+    // d_ino: u64 at offset 0
+    // d_off: i64 at offset 8
+    // d_reclen: u16 at offset 16
+    // d_type: u8 at offset 18
+    // d_name: [u8] at offset 19
+    let d_ino = core::ptr::read_unaligned(buf_ptr as *const u64);
+    let d_off = core::ptr::read_unaligned(buf_ptr.add(8) as *const i64);
+    let d_reclen = core::ptr::read_unaligned(buf_ptr.add(16) as *const u16);
+    let d_type = core::ptr::read(buf_ptr.add(18));
+
+    // Copy d_name
+    let name_ptr = buf_ptr.add(19);
+    let name_max_len = (d_reclen as usize).saturating_sub(19).min(255);
+
+    (*entry).d_ino = d_ino;
+    (*entry).d_off = d_off;
+    (*entry).d_reclen = d_reclen;
+    (*entry).d_type = d_type;
+
+    // Zero the name first, then copy
+    core::ptr::write_bytes((*entry).d_name.as_mut_ptr(), 0, 256);
+    core::ptr::copy_nonoverlapping(name_ptr, (*entry).d_name.as_mut_ptr(), name_max_len);
+
+    // Advance buffer position by d_reclen
+    dir.buf_pos += d_reclen as usize;
+
+    *result = entry;
+    0
+}
+
+/// closedir - close a directory stream
+#[no_mangle]
+pub unsafe extern "C" fn closedir(dirp: *mut Dir) -> i32 {
+    if dirp.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+
+    let fd = (*dirp).fd;
+    // We can't free sbrk memory, but we can close the fd
+    close(fd);
+    0
+}
+
+/// dirfd - get directory file descriptor from DIR stream
+#[no_mangle]
+pub unsafe extern "C" fn dirfd(dirp: *mut Dir) -> i32 {
+    if dirp.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+    (*dirp).fd
+}
+
+/// futimens - change file timestamps with nanosecond precision
+#[no_mangle]
+pub unsafe extern "C" fn futimens(_fd: i32, _times: *const u8) -> i32 {
+    ERRNO = ENOSYS;
+    -1
+}
+
+/// setgroups - set list of supplementary group IDs
+#[no_mangle]
+pub unsafe extern "C" fn setgroups(_size: usize, _list: *const u32) -> i32 {
+    0 // No-op: single-user system
+}
+
+/// getgroups - get list of supplementary group IDs
+#[no_mangle]
+pub unsafe extern "C" fn getgroups(size: i32, list: *mut u32) -> i32 {
+    if size == 0 {
+        return 0; // Return number of supplementary group IDs (none)
+    }
+    if !list.is_null() && size > 0 {
+        *list = 0; // root group
+        return 1;
+    }
+    0
+}
+
+/// getpwuid - get password entry by UID (stub)
+#[no_mangle]
+pub unsafe extern "C" fn getpwuid(_uid: u32) -> *mut u8 {
+    core::ptr::null_mut()
+}
+
+/// getpwuid_r - reentrant version of getpwuid (stub)
+#[no_mangle]
+pub unsafe extern "C" fn getpwuid_r(
+    _uid: u32,
+    _pwd: *mut u8,
+    _buf: *mut u8,
+    _buflen: usize,
+    result: *mut *mut u8,
+) -> i32 {
+    if !result.is_null() {
+        *result = core::ptr::null_mut();
+    }
+    0 // Not found, but not an error
+}
+
+// =============================================================================
+// Signal/Timer Functions (alarm, setitimer, getitimer, sigsuspend)
+// =============================================================================
+
+/// alarm - schedule a SIGALRM signal
+///
+/// Sets a timer to deliver SIGALRM after `seconds` seconds.
+/// Setting seconds to 0 cancels any pending alarm.
+///
+/// Returns the number of seconds remaining from a previous alarm (0 if none).
+#[no_mangle]
+pub unsafe extern "C" fn alarm(seconds: u32) -> u32 {
+    libbreenix::signal::alarm(seconds)
+}
+
+/// Interval timer value for setitimer/getitimer
+#[repr(C)]
+pub struct CTimeval {
+    pub tv_sec: i64,
+    pub tv_usec: i64,
+}
+
+#[repr(C)]
+pub struct CItimerval {
+    pub it_interval: CTimeval,
+    pub it_value: CTimeval,
+}
+
+/// setitimer - set an interval timer
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn setitimer(which: i32, new_value: *const CItimerval, old_value: *mut CItimerval) -> i32 {
+    // Convert C structs to libbreenix types
+    if new_value.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+
+    let new_val = libbreenix::signal::Itimerval {
+        it_interval: libbreenix::signal::Timeval {
+            tv_sec: (*new_value).it_interval.tv_sec,
+            tv_usec: (*new_value).it_interval.tv_usec,
+        },
+        it_value: libbreenix::signal::Timeval {
+            tv_sec: (*new_value).it_value.tv_sec,
+            tv_usec: (*new_value).it_value.tv_usec,
+        },
+    };
+
+    let mut old_val = libbreenix::signal::Itimerval::default();
+    let old_opt = if old_value.is_null() {
+        None
+    } else {
+        Some(&mut old_val)
+    };
+
+    match libbreenix::signal::setitimer(which, &new_val, old_opt) {
+        Ok(()) => {
+            if !old_value.is_null() {
+                (*old_value).it_interval.tv_sec = old_val.it_interval.tv_sec;
+                (*old_value).it_interval.tv_usec = old_val.it_interval.tv_usec;
+                (*old_value).it_value.tv_sec = old_val.it_value.tv_sec;
+                (*old_value).it_value.tv_usec = old_val.it_value.tv_usec;
+            }
+            0
+        }
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// getitimer - get the value of an interval timer
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn getitimer(which: i32, curr_value: *mut CItimerval) -> i32 {
+    if curr_value.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+
+    let mut val = libbreenix::signal::Itimerval::default();
+    match libbreenix::signal::getitimer(which, &mut val) {
+        Ok(()) => {
+            (*curr_value).it_interval.tv_sec = val.it_interval.tv_sec;
+            (*curr_value).it_interval.tv_usec = val.it_interval.tv_usec;
+            (*curr_value).it_value.tv_sec = val.it_value.tv_sec;
+            (*curr_value).it_value.tv_usec = val.it_value.tv_usec;
+            0
+        }
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// sigsuspend - wait for a signal, temporarily replacing the signal mask
+///
+/// Always returns -1 with errno set to EINTR.
+#[no_mangle]
+pub unsafe extern "C" fn sigsuspend(mask: *const u64) -> i32 {
+    if mask.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+    let _ret = libbreenix::signal::sigsuspend(&*mask);
+    // sigsuspend always returns -1 with EINTR
+    ERRNO = 4; // EINTR
+    -1
+}
+
+// =============================================================================
+// PTY Functions (posix_openpt, grantpt, unlockpt, ptsname_r)
+// =============================================================================
+
+/// posix_openpt - open a PTY master device
+///
+/// Returns a file descriptor on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn posix_openpt(flags: i32) -> i32 {
+    match libbreenix::pty::posix_openpt(flags) {
+        Ok(fd) => fd,
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// grantpt - grant access to slave PTY
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn grantpt(fd: i32) -> i32 {
+    match libbreenix::pty::grantpt(fd) {
+        Ok(()) => 0,
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// unlockpt - unlock the slave PTY for opening
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn unlockpt(fd: i32) -> i32 {
+    match libbreenix::pty::unlockpt(fd) {
+        Ok(()) => 0,
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// ptsname_r - get the path to the slave PTY device (reentrant)
+///
+/// Returns 0 on success, errno on error.
+#[no_mangle]
+pub unsafe extern "C" fn ptsname_r(fd: i32, buf: *mut u8, buflen: usize) -> i32 {
+    if buf.is_null() || buflen == 0 {
+        return EINVAL;
+    }
+
+    let slice = slice::from_raw_parts_mut(buf, buflen);
+    match libbreenix::pty::ptsname(fd, slice) {
+        Ok(_len) => 0,
+        Err(e) => e,
+    }
+}
+
+// =============================================================================
+// Testing Functions (simulate_oom)
+// =============================================================================
+
+/// simulate_oom - enable/disable OOM simulation for testing
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn simulate_oom(enable: i32) -> i32 {
+    let result = libbreenix::memory::simulate_oom(enable != 0);
+    if result < 0 {
+        ERRNO = -result;
+        -1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Time Functions (sleep_ms)
+// =============================================================================
+
+/// sleep_ms - sleep for the specified number of milliseconds
+///
+/// This is a busy-wait implementation using clock_gettime(CLOCK_MONOTONIC).
+#[no_mangle]
+pub unsafe extern "C" fn sleep_ms(ms: u64) {
+    libbreenix::time::sleep_ms(ms);
+}
+
+// =============================================================================
+// DNS Functions (dns_resolve)
+// =============================================================================
+
+/// dns_resolve - resolve a hostname to an IPv4 address
+///
+/// # Arguments
+/// * `host` - Hostname string (NOT null-terminated, length given by host_len)
+/// * `host_len` - Length of hostname string
+/// * `server` - Pointer to 4-byte IPv4 address of DNS server
+/// * `result_ip` - Pointer to 4-byte buffer for the resolved IPv4 address
+///
+/// Returns 0 on success, negative errno on error.
+#[no_mangle]
+pub unsafe extern "C" fn dns_resolve(
+    host: *const u8,
+    host_len: usize,
+    server: *const u8,
+    result_ip: *mut u8,
+) -> i32 {
+    if host.is_null() || server.is_null() || result_ip.is_null() || host_len == 0 {
+        return -(EINVAL);
+    }
+
+    let host_bytes = slice::from_raw_parts(host, host_len);
+    let hostname = match core::str::from_utf8(host_bytes) {
+        Ok(s) => s,
+        Err(_) => return -(EINVAL),
+    };
+
+    let dns_server = [
+        *server,
+        *server.add(1),
+        *server.add(2),
+        *server.add(3),
+    ];
+
+    match libbreenix::dns::resolve(hostname, dns_server) {
+        Ok(result) => {
+            *result_ip = result.addr[0];
+            *result_ip.add(1) = result.addr[1];
+            *result_ip.add(2) = result.addr[2];
+            *result_ip.add(3) = result.addr[3];
+            0
+        }
+        Err(_) => -(5), // EIO
+    }
+}
+
+// =============================================================================
+// Unwind Functions (stubs for backtrace support)
+// =============================================================================
+
+/// _Unwind_Backtrace - walk the call stack (stub)
+#[no_mangle]
+pub unsafe extern "C" fn _Unwind_Backtrace(
+    _trace: extern "C" fn(*mut u8, *mut u8) -> i32,
+    _trace_argument: *mut u8,
+) -> i32 {
+    5 // _URC_END_OF_STACK
+}
+
+/// _Unwind_GetIP - get instruction pointer from context (stub)
+#[no_mangle]
+pub unsafe extern "C" fn _Unwind_GetIP(_context: *mut u8) -> usize {
+    0
 }

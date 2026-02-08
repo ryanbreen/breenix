@@ -119,6 +119,18 @@ pub struct Process {
 
     /// Interval timers for setitimer/getitimer (ITIMER_REAL, ITIMER_VIRTUAL, ITIMER_PROF)
     pub itimers: crate::signal::IntervalTimers,
+
+    /// Thread group ID for futex keying. Threads created with CLONE_VM share
+    /// the same thread_group_id so futexes at the same virtual address map to
+    /// the same wait queue. None means use self.id.as_u64().
+    pub thread_group_id: Option<u64>,
+
+    /// Inherited CR3 value for CLONE_VM threads that share a parent's address space.
+    /// When set, context_switch uses this CR3 instead of looking up page_table.
+    pub inherited_cr3: Option<u64>,
+
+    /// Address to write 0 to and futex-wake when this thread exits (CLONE_CHILD_CLEARTID).
+    pub clear_child_tid: Option<u64>,
 }
 
 /// Memory usage tracking
@@ -163,6 +175,9 @@ impl Process {
             fd_table: FdTable::new(),
             alarm_deadline: None,
             itimers: crate::signal::IntervalTimers::default(),
+            thread_group_id: None,
+            inherited_cr3: None,
+            clear_child_tid: None,
         }
     }
 
@@ -585,6 +600,28 @@ impl Process {
     #[allow(dead_code)]
     pub fn page_table(&self) -> Option<&ProcessPageTable> {
         self.page_table.as_ref().map(|b| b.as_ref())
+    }
+
+    /// Get the CR3 value for this process.
+    /// Returns the page table's physical frame address, falling back to
+    /// inherited_cr3 for CLONE_VM threads that share a parent's address space.
+    #[cfg(target_arch = "x86_64")]
+    pub fn cr3_value(&self) -> Option<u64> {
+        if let Some(ref pt) = self.page_table {
+            Some(pt.level_4_frame().start_address().as_u64())
+        } else {
+            self.inherited_cr3
+        }
+    }
+
+    /// Get the CR3 value for this process (ARM64).
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn cr3_value(&self) -> Option<u64> {
+        if let Some(ref pt) = self.page_table {
+            Some(pt.level_4_frame().start_address().as_u64())
+        } else {
+            self.inherited_cr3
+        }
     }
 
     /// Get mutable access to VMA list

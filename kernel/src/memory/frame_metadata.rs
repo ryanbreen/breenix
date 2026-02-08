@@ -6,6 +6,8 @@
 //! Design decisions:
 //! - Uses BTreeMap for sparse storage (only track shared frames)
 //! - Untracked frames are assumed to have refcount=1 (private)
+//! - Untracked frames CAN be freed: frame_decref on an untracked frame
+//!   returns true (refcount 1->0), allowing proper cleanup on process exit
 //! - Single global lock (acceptable for initial implementation)
 
 use alloc::collections::BTreeMap;
@@ -31,11 +33,27 @@ struct FrameMetadata {
 }
 
 impl FrameMetadata {
-    #[allow(dead_code)]
     fn new(initial_count: u32) -> Self {
         Self {
             refcount: AtomicU32::new(initial_count),
         }
+    }
+}
+
+/// Register a frame in the metadata system with refcount=1 (private)
+///
+/// Call this when allocating a new frame that will be tracked for cleanup.
+/// This is used by CoW fault handlers to register replacement frames so they
+/// can be properly freed when the process exits.
+///
+/// If the frame is already tracked, this is a no-op.
+#[allow(dead_code)] // Public API for explicit frame tracking
+pub fn frame_register(frame: PhysFrame) {
+    let addr = frame.start_address().as_u64();
+    let mut metadata = FRAME_METADATA.lock();
+
+    if !metadata.contains_key(&addr) {
+        metadata.insert(addr, FrameMetadata::new(1));
     }
 }
 
@@ -54,26 +72,6 @@ pub fn frame_incref(frame: PhysFrame) {
         let meta = FrameMetadata::new(2);
         metadata.insert(addr, meta);
     }
-}
-
-/// Register a newly allocated frame with refcount=1.
-///
-/// Called when a new frame is allocated as a CoW replacement copy.
-/// This ensures the frame is tracked so that:
-/// - If the process forks again, `frame_incref` correctly goes from 1→2
-/// - On process exit, `frame_decref` finds the entry and frees properly
-#[allow(dead_code)]
-pub fn frame_register(frame: PhysFrame) {
-    let addr = frame.start_address().as_u64();
-    let mut metadata = FRAME_METADATA.lock();
-
-    if metadata.contains_key(&addr) {
-        // Frame is already tracked — shouldn't happen for newly allocated frames,
-        // but harmless. Leave existing entry untouched.
-        return;
-    }
-
-    metadata.insert(addr, FrameMetadata::new(1));
 }
 
 /// Decrement reference count for a frame

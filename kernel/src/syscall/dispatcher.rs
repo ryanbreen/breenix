@@ -35,7 +35,10 @@ pub fn dispatch_syscall(
         SyscallNumber::Fork => handlers::sys_fork(),
         SyscallNumber::Exec => handlers::sys_exec(arg1, arg2),
         SyscallNumber::GetPid => handlers::sys_getpid(),
+        SyscallNumber::Getppid => handlers::sys_getppid(),
         SyscallNumber::GetTid => handlers::sys_gettid(),
+        SyscallNumber::SetTidAddress => handlers::sys_set_tid_address(arg1),
+        SyscallNumber::ExitGroup => handlers::sys_exit(arg1 as i32),
         SyscallNumber::ClockGetTime => {
             let clock_id = arg1 as u32;
             let user_timespec_ptr = arg2 as *mut super::time::Timespec;
@@ -65,7 +68,11 @@ pub fn dispatch_syscall(
         SyscallNumber::Accept => super::socket::sys_accept(arg1, arg2, arg3),
         SyscallNumber::Listen => super::socket::sys_listen(arg1, arg2),
         SyscallNumber::Shutdown => super::socket::sys_shutdown(arg1, arg2),
+        SyscallNumber::Getsockname => super::socket::sys_getsockname(arg1, arg2, arg3),
+        SyscallNumber::Getpeername => super::socket::sys_getpeername(arg1, arg2, arg3),
         SyscallNumber::Socketpair => super::socket::sys_socketpair(arg1, arg2, arg3, arg4),
+        SyscallNumber::Setsockopt => super::socket::sys_setsockopt(arg1, arg2, arg3, arg4, arg5),
+        SyscallNumber::Getsockopt => super::socket::sys_getsockopt(arg1, arg2, arg3, arg4, arg5),
         SyscallNumber::Poll => handlers::sys_poll(arg1, arg2, arg3 as i32),
         SyscallNumber::Select => handlers::sys_select(arg1 as i32, arg2, arg3, arg4, arg5),
         SyscallNumber::Pipe => super::pipe::sys_pipe(arg1),
@@ -75,6 +82,7 @@ pub fn dispatch_syscall(
         SyscallNumber::Dup2 => handlers::sys_dup2(arg1, arg2),
         SyscallNumber::Fcntl => handlers::sys_fcntl(arg1, arg2, arg3),
         SyscallNumber::Pause => super::signal::sys_pause(),
+        SyscallNumber::Nanosleep => super::time::sys_nanosleep(arg1, arg2),
         SyscallNumber::Getitimer => super::signal::sys_getitimer(arg1 as i32, arg2),
         SyscallNumber::Alarm => super::signal::sys_alarm(arg1),
         SyscallNumber::Setitimer => super::signal::sys_setitimer(arg1 as i32, arg2, arg3),
@@ -104,6 +112,9 @@ pub fn dispatch_syscall(
         SyscallNumber::Grantpt => super::pty::sys_grantpt(arg1),
         SyscallNumber::Unlockpt => super::pty::sys_unlockpt(arg1),
         SyscallNumber::Ptsname => super::pty::sys_ptsname(arg1, arg2, arg3),
+        SyscallNumber::GetRandom => super::random::sys_getrandom(arg1, arg2, arg3 as u32),
+        SyscallNumber::Clone => super::clone::sys_clone(arg1, arg2, arg3, arg4, arg5),
+        SyscallNumber::Futex => super::futex::sys_futex(arg1, arg2 as u32, arg3 as u32, arg4, arg5, arg6 as u32),
         // Graphics syscalls (Breenix-specific)
         SyscallNumber::FbInfo => super::graphics::sys_fbinfo(arg1),
         SyscallNumber::FbDraw => super::graphics::sys_fbdraw(arg1),

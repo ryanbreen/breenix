@@ -110,7 +110,7 @@ pub fn create_test_disk() -> Result<()> {
     println!("Creating test disk image...");
 
     let userspace_dir = Path::new("userspace/tests");
-    let userspace_std_dir = Path::new("userspace/tests-std/target/x86_64-breenix/release");
+    let userspace_std_dir = Path::new("userspace/tests/target/x86_64-breenix/release");
     let output_path = Path::new("target/test_binaries.img");
 
     // Find all .elf files from userspace/tests/
@@ -135,7 +135,7 @@ pub fn create_test_disk() -> Result<()> {
         }
     }
 
-    // Also include binaries from userspace/tests-std (Rust std tests)
+    // Also include binaries from userspace/tests (Rust std tests)
     // These are ELF binaries without the .elf extension, built with cargo
     if userspace_std_dir.exists() {
         // List of known std test binaries to include
@@ -156,13 +156,13 @@ pub fn create_test_disk() -> Result<()> {
                     println!("  Warning: {} is not an ELF file, skipping", bin_name);
                 }
             } else {
-                println!("  Note: std test binary {} not found (build with: cd userspace/tests-std && cargo build --release)", bin_name);
+                println!("  Note: std test binary {} not found (build with: cd userspace/tests && cargo build --release)", bin_name);
             }
         }
     }
 
     if binaries.is_empty() {
-        bail!("No .elf files found in {}", userspace_dir.display());
+        bail!("No test binaries found (checked {}/**.elf and userspace/tests/)", userspace_dir.display());
     }
 
     if binaries.len() > MAX_BINARIES {

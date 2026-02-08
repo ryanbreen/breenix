@@ -334,13 +334,11 @@ impl TtyDevice {
         let termios = self.ldisc.lock().termios().clone();
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
             crate::serial::write_byte(b'\r');
-            // Queue CR for deferred framebuffer rendering
-            #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
         crate::serial::write_byte(c);
-        // Queue for deferred framebuffer rendering
-        #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
     }
 
@@ -360,30 +358,20 @@ impl TtyDevice {
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
 
-        // Build processed buffer for graphical output (with CR-NL translation)
-        #[cfg(target_arch = "aarch64")]
-        let mut processed_buf = alloc::vec::Vec::with_capacity(buf.len() + buf.len() / 10);
-
-        // Write to serial and queue for deferred framebuffer rendering
+        // Write to serial and queue for deferred framebuffer rendering.
+        // Both architectures use the render queue — it's lock-free on the
+        // producer side and never drops data unless the buffer overflows.
+        // The previous ARM64 path wrote directly to terminal_manager with
+        // try_lock(), silently dropping entire buffers on lock contention.
         for &c in buf {
             if do_onlcr && c == b'\n' {
                 crate::serial::write_byte(b'\r');
-                #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+                #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
                 let _ = crate::graphics::render_queue::queue_byte(b'\r');
-                #[cfg(target_arch = "aarch64")]
-                processed_buf.push(b'\r');
             }
             crate::serial::write_byte(c);
-            #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(c);
-            #[cfg(target_arch = "aarch64")]
-            processed_buf.push(c);
-        }
-
-        // ARM64: Write to graphical terminal if available
-        #[cfg(target_arch = "aarch64")]
-        {
-            let _ = crate::graphics::terminal_manager::write_bytes_to_shell(&processed_buf);
         }
     }
 
@@ -399,11 +387,11 @@ impl TtyDevice {
         // Handle NL -> CR-NL translation if OPOST and ONLCR are set
         if termios.is_opost() && termios.is_onlcr() && c == b'\n' {
             crate::serial::write_byte(b'\r');
-            #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+            #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
         crate::serial::write_byte(c);
-        #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+        #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
         let _ = crate::graphics::render_queue::queue_byte(c);
     }
 
