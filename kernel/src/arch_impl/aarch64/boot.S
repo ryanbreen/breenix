@@ -460,6 +460,10 @@ sync_exception_handler:
     // Redirect to idle_loop_arm64 instead of crashing
     adrp x1, idle_loop_arm64
     add x1, x1, :lo12:idle_loop_arm64
+    // Force SPSR to EL1h — frame.spsr may be 0x0 (EL0t) from contamination,
+    // which would cause ERET to drop to EL0 and fault on kernel code.
+    mov x2, #0x5              // EL1h, interrupts enabled
+    str x2, [sp, #256]        // Overwrite frame.spsr with safe value
 10:
     msr elr_el1, x1
     ldr x1, [sp, #256]
@@ -530,7 +534,14 @@ irq_handler:
 
     // Check if we need to reschedule before returning from IRQ
     // from_el0 = 1 if SPSR_EL1.M[3:2] indicates EL0 (bit 2 == 0)
-    mrs x1, spsr_el1
+    //
+    // CRITICAL: Read from the SAVED frame, not the hardware SPSR_EL1 register.
+    // handle_irq may trigger nested synchronous exceptions (data aborts, CoW
+    // faults, etc.) whose handlers overwrite SPSR_EL1 with an EL1h value.
+    // After the nested handler's ERET, SPSR_EL1 no longer reflects the original
+    // exception context. Reading from the frame (saved before handle_irq) gives
+    // the correct value.
+    ldr x1, [sp, #256]      // Load original SPSR from saved exception frame
     and x1, x1, #0x4
     cmp x1, #0
     cset x1, eq
@@ -598,6 +609,11 @@ irq_handler:
     // Redirect to idle_loop_arm64 instead of crashing
     adrp x16, idle_loop_arm64
     add x16, x16, :lo12:idle_loop_arm64
+    // Force SPSR to EL1h — frame.spsr may be 0x0 (EL0t) from contamination,
+    // which would cause ERET to drop to EL0 and fault on kernel code.
+    mov x1, #0x5              // EL1h, interrupts enabled
+    str x1, [sp, #256]        // Overwrite frame.spsr with safe value
+    ldr x1, [sp, #8]          // Re-restore x1 from frame
 1:
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr

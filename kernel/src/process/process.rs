@@ -477,10 +477,11 @@ impl Process {
 
             let frame = PhysFrame::containing_address(phys_addr);
 
-            // Decrement reference count
-            // If this was the last reference (frame was tracked and refcount reached 0),
-            // deallocate the frame. frame_decref returns false for untracked frames
-            // to prevent corruption from freeing potentially in-use frames.
+            // Decrement reference count.
+            // Returns true if the frame should be freed:
+            // - Tracked frame whose refcount reached 0 (was shared, now sole owner exiting)
+            // - Untracked frame (private to this process, never shared via CoW)
+            // Returns false if still shared (refcount > 0 after decrement).
             if frame_decref(frame) {
                 deallocate_frame(frame);
                 freed_count += 1;
@@ -534,10 +535,11 @@ impl Process {
 
             let frame = PhysFrame::containing_address(phys_addr);
 
-            // Decrement reference count
-            // If this was the last reference (frame was tracked and refcount reached 0),
-            // deallocate the frame. frame_decref returns false for untracked frames
-            // to prevent corruption from freeing potentially in-use frames.
+            // Decrement reference count.
+            // Returns true if the frame should be freed:
+            // - Tracked frame whose refcount reached 0 (was shared, now sole owner exiting)
+            // - Untracked frame (private to this process, never shared via CoW)
+            // Returns false if still shared (refcount > 0 after decrement).
             if frame_decref(frame) {
                 deallocate_frame(frame);
                 freed_count += 1;

@@ -364,11 +364,20 @@ impl Scheduler {
             }
         }
 
-        // Get next thread from ready queue
-        let mut next_thread_id = if let Some(n) = self.ready_queue.pop_front() {
-            n
-        } else {
-            self.cpu_state[Self::current_cpu_id()].idle_thread
+        // Get next thread from ready queue, skipping terminated threads.
+        // Terminated threads can end up in the queue if a process was killed
+        // by an exception handler on another CPU between requeue and pop.
+        let mut next_thread_id = loop {
+            if let Some(n) = self.ready_queue.pop_front() {
+                if let Some(thread) = self.get_thread(n) {
+                    if thread.state == ThreadState::Terminated {
+                        continue;
+                    }
+                }
+                break n;
+            } else {
+                break self.cpu_state[Self::current_cpu_id()].idle_thread;
+            }
         };
 
         if debug_log {
@@ -516,11 +525,20 @@ impl Scheduler {
             }
         }
 
-        // Get next thread from ready queue
-        let mut next_thread_id = if let Some(n) = self.ready_queue.pop_front() {
-            n
-        } else {
-            self.cpu_state[Self::current_cpu_id()].idle_thread
+        // Get next thread from ready queue, skipping terminated threads.
+        // Terminated threads can end up in the queue if a process was killed
+        // by an exception handler on another CPU between requeue and pop.
+        let mut next_thread_id = loop {
+            if let Some(n) = self.ready_queue.pop_front() {
+                if let Some(thread) = self.get_thread(n) {
+                    if thread.state == ThreadState::Terminated {
+                        continue;
+                    }
+                }
+                break n;
+            } else {
+                break self.cpu_state[Self::current_cpu_id()].idle_thread;
+            }
         };
 
         // Handle same-thread cases

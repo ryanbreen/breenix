@@ -18,26 +18,19 @@ use crate::arch_impl::traits::SyscallFrame;
 /// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
 /// path restores SP to a safe stack when redirecting to idle_loop_arm64.
 ///
-/// Without this, ERET would restore SP from the faulting thread's kernel stack,
-/// which may be freed after process termination — causing stack corruption when
-/// the next interrupt arrives.
+/// CRITICAL: Always use the CPU's boot stack (computed from CPU ID), NOT
+/// `Aarch64PerCpu::kernel_stack_top()`. The per-CPU kernel_stack_top holds
+/// the LAST DISPATCHED thread's kernel stack — when called from an exception
+/// handler after a user process crash, this would be the crashed process's
+/// kernel stack, causing the idle thread to run on a stack that may be freed
+/// during process cleanup.
 #[inline(always)]
 fn set_idle_stack_for_eret() {
     use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
-    use crate::arch_impl::traits::PerCpuOps;
 
-    // Use the thread's kernel_stack_top if available (set during idle thread creation),
-    // otherwise fall back to the per-CPU boot stack computed from CPU ID.
-    let idle_stack = {
-        let kst = Aarch64PerCpu::kernel_stack_top();
-        if kst != 0 {
-            kst
-        } else {
-            // Boot stack: HHDM_BASE + 0x4100_0000 + (cpu_id + 1) * 0x20_0000
-            let cpu_id = Aarch64PerCpu::cpu_id() as u64;
-            0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id + 1) * 0x20_0000
-        }
-    };
+    // Boot stack: HHDM_BASE + 0x4100_0000 + (cpu_id + 1) * 0x20_0000
+    let cpu_id = Aarch64PerCpu::cpu_id() as u64;
+    let idle_stack = 0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id + 1) * 0x20_0000;
     unsafe {
         Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
     }
@@ -65,6 +58,26 @@ fn switch_ttbr0_to_kernel() {
             in(reg) kernel_ttbr0,
             options(nomem, nostack)
         );
+    }
+}
+
+/// Mark the current thread as Terminated in the scheduler and remove from ready queue.
+///
+/// Called from exception handlers after `pm.exit_process()` to prevent the
+/// scheduler from re-dispatching a thread whose process has been terminated
+/// (page tables freed, FDs closed, etc.). Without this, other CPUs can pick
+/// up the "still Ready" thread and ERET into a freed address space.
+///
+/// Must be called BEFORE `switch_to_idle()`, because after that call
+/// `current_thread_id()` returns the idle thread ID.
+fn terminate_current_scheduler_thread() {
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.set_terminated();
+            }
+            sched.remove_from_ready_queue(thread_id);
+        });
     }
 }
 
@@ -212,32 +225,35 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 });
 
                 if terminated || already_terminated {
+                    // CRITICAL: Mark the scheduler's thread as Terminated BEFORE
+                    // switch_to_idle(). Without this, the scheduler still thinks
+                    // the thread is Ready/Running and will re-dispatch it on
+                    // another CPU, causing ERET to a freed address space.
+                    terminate_current_scheduler_thread();
                     switch_ttbr0_to_kernel();
-
-                    // Mark scheduler needs reschedule
                     crate::task::scheduler::set_need_resched();
 
-                    // Switch scheduler to idle thread
-                    crate::task::scheduler::switch_to_idle();
-
-                    // Modify exception frame to return to idle loop
-                    // The idle loop runs in EL1 and will handle rescheduling
+                    // CRITICAL: Set frame values BEFORE switch_to_idle() —
+                    // if switch_to_idle hits a nested exception, the frame
+                    // must already have safe ELR/SPSR for the assembly ERET path.
                     frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-                    frame_ref.spsr = 0x3c5; // EL1h, interrupts enabled
+                    frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
                     set_idle_stack_for_eret();
-
-                    // Return to idle loop via ERET
+                    crate::task::scheduler::switch_to_idle();
                     return;
                 }
             }
 
             // From kernel or couldn't terminate — redirect to idle loop.
-            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
-            crate::task::scheduler::switch_to_idle_best_effort();
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
+            // if switch_to_idle panics or hits a nested exception, the frame
+            // must already have safe ELR/SPSR for the assembly ERET path.
             frame_ref.elr =
                 crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5; // EL1h, interrupts enabled
             set_idle_stack_for_eret();
+            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
 
         exception_class::INSTRUCTION_ABORT_LOWER | exception_class::INSTRUCTION_ABORT_SAME => {
@@ -332,28 +348,33 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 }
 
                 if terminated || already_terminated {
+                    terminate_current_scheduler_thread();
                     switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
-                    crate::task::scheduler::switch_to_idle();
+                    // CRITICAL: Set frame values BEFORE switch_to_idle()
                     frame_ref.elr =
                         crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-                    frame_ref.spsr = 0x3c5; // EL1h, interrupts enabled
+                    frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
                     set_idle_stack_for_eret();
+                    crate::task::scheduler::switch_to_idle();
                     return;
                 }
             }
 
             // From kernel or couldn't terminate — redirect to idle loop.
-            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
+            // if switch_to_idle panics or hits a nested exception, the frame
+            // must already have safe ELR/SPSR for the assembly ERET path.
             {
                 use crate::arch_impl::aarch64::context_switch::raw_uart_str;
                 raw_uart_str("[INSTRUCTION_ABORT] redirecting to idle\n");
             }
-            crate::task::scheduler::switch_to_idle_best_effort();
             frame_ref.elr =
                 crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-            frame_ref.spsr = 0x5; // EL1h, interrupts enabled
+            frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
             set_idle_stack_for_eret();
+            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
 
         exception_class::BRK_AARCH64 => {
@@ -389,12 +410,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         }
                     }
                 });
+                terminate_current_scheduler_thread();
                 switch_ttbr0_to_kernel();
             }
-            crate::task::scheduler::switch_to_idle_best_effort();
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5;
             set_idle_stack_for_eret();
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
 
         // PC alignment fault (EC=0x22) — CPU tried to execute at a misaligned address.
@@ -424,12 +447,14 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         }
                     }
                 });
+                terminate_current_scheduler_thread();
                 switch_ttbr0_to_kernel();
             }
-            crate::task::scheduler::switch_to_idle_best_effort();
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5;
             set_idle_stack_for_eret();
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
 
         _ => {
@@ -443,11 +468,11 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             crate::serial_println!("  ELR: {:#x}, FAR: {:#x}", frame_ref.elr, far);
             crate::serial_println!("  SPSR: {:#x}", frame_ref.spsr);
             // Redirect to idle instead of hanging — allows system to recover.
-            // Only halt for truly unexpected exceptions during early boot.
-            crate::task::scheduler::switch_to_idle_best_effort();
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
             frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
             frame_ref.spsr = 0x5;
             set_idle_stack_for_eret();
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
     }
 }
@@ -776,7 +801,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     use crate::memory::arch_stub::{VirtAddr, Page, Size4KiB};
     use crate::memory::cow_stats;
     use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
 
     // Check if this is a CoW fault:
@@ -880,6 +905,9 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
             return false;
         }
     };
+
+    // Register the new frame so it's tracked for cleanup on process exit
+    frame_register(new_frame);
 
     // Copy page contents via HHDM
     let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
