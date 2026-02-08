@@ -39,6 +39,13 @@ pub const USERSPACE_BASE: u64 = 0x0000_0000_4000_0000;
 /// Maximum userspace address (below canonical boundary).
 pub const USERSPACE_MAX: u64 = 0x0000_FFFF_FFFF_FFFF;
 
+/// Start of mmap allocation region for ARM64 userspace.
+/// Placed between code/data end (2GB) and stack region start (~1TB).
+/// Region: 0x0000_0001_0000_0000 to 0x0000_00FF_FE00_0000 (~1020 GB)
+pub const MMAP_REGION_START: u64 = 0x0000_0001_0000_0000; // 4GB
+/// End of mmap allocation region (gap before stack).
+pub const MMAP_REGION_END: u64 = 0x0000_00FF_FE00_0000; // ~1TB, well below stack
+
 // ============================================================================
 // Page Table Constants
 // ============================================================================
