@@ -1081,7 +1081,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1102,6 +1102,8 @@ impl ProcessManager {
                 _parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
+                parent.mmap_hint,
+                parent.vmas.clone(),
             )
         };
 
@@ -1153,9 +1155,11 @@ impl ProcessManager {
                 pages_shared
             );
 
-            // Child inherits parent's heap bounds
+            // Child inherits parent's heap bounds and mmap state
             child_process.heap_start = parent_heap_start;
             child_process.heap_end = parent_heap_end;
+            child_process.mmap_hint = parent_mmap_hint;
+            child_process.vmas = parent_vmas;
         }
         #[cfg(not(feature = "testing"))]
         {
@@ -1195,7 +1199,7 @@ impl ProcessManager {
     ) -> Result<ProcessId, &'static str> {
         // Get the parent process info we need (including page table for memory copying)
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1216,6 +1220,8 @@ impl ProcessManager {
                 _parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
+                parent.mmap_hint,
+                parent.vmas.clone(),
             )
         };
 
@@ -1269,9 +1275,11 @@ impl ProcessManager {
                 pages_shared
             );
 
-            // Child inherits parent's heap bounds
+            // Child inherits parent's heap bounds and mmap state
             child_process.heap_start = parent_heap_start;
             child_process.heap_end = parent_heap_end;
+            child_process.mmap_hint = parent_mmap_hint;
+            child_process.vmas = parent_vmas;
         }
         #[cfg(not(feature = "testing"))]
         {
@@ -1311,7 +1319,7 @@ impl ProcessManager {
         crate::tracing::providers::process::trace_fork_entry(parent_pid.as_u64() as u32);
 
         // Get the parent process info
-        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end) = {
+        let (parent_name, parent_entry_point, parent_pgid, parent_sid, parent_cwd, parent_thread_info, parent_heap_start, parent_heap_end, parent_mmap_hint, parent_vmas) = {
             let parent = self
                 .processes
                 .get(&parent_pid)
@@ -1331,6 +1339,8 @@ impl ProcessManager {
                 parent_thread.clone(),
                 parent.heap_start,
                 parent.heap_end,
+                parent.mmap_hint,
+                parent.vmas.clone(),
             )
         };
 
@@ -1384,6 +1394,11 @@ impl ProcessManager {
             // Child inherits parent's heap bounds
             child_process.heap_start = parent_heap_start;
             child_process.heap_end = parent_heap_end;
+
+            // Child inherits parent's mmap state so it doesn't collide with
+            // CoW-shared pages that are already mapped in the child's page table
+            child_process.mmap_hint = parent_mmap_hint;
+            child_process.vmas = parent_vmas;
         }
 
         child_process.page_table = Some(child_page_table);
@@ -2021,11 +2036,15 @@ impl ProcessManager {
         child_process.sid = parent_sid;
         child_process.cwd = parent_cwd;
 
-        // Extract parent heap bounds before we drop the parent borrow
+        // Extract parent heap/mmap bounds before we drop the parent borrow
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_start = parent.heap_start;
         #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let parent_heap_end = parent.heap_end;
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
+        let parent_mmap_hint = parent.mmap_hint;
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
+        let parent_vmas = parent.vmas.clone();
 
         // Verify parent has a page table
         if parent.page_table.is_none() {
@@ -2078,9 +2097,11 @@ impl ProcessManager {
                 pages_shared
             );
 
-            // Child inherits parent's heap bounds
+            // Child inherits parent's heap bounds and mmap state
             child_process.heap_start = parent_heap_start;
             child_process.heap_end = parent_heap_end;
+            child_process.mmap_hint = parent_mmap_hint;
+            child_process.vmas = parent_vmas;
         }
         #[cfg(not(feature = "testing"))]
         {
@@ -2442,6 +2463,9 @@ impl ProcessManager {
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
         // SIG_IGN handlers are preserved
         process.signals.exec_reset();
+        // Reset mmap state for the new address space
+        process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
+        process.vmas.clear();
         log::debug!("exec_process: Reset signal handlers for process {}", pid.as_u64());
 
         // Replace the page table with the new one containing the loaded program
@@ -2718,8 +2742,10 @@ impl ProcessManager {
         }
         process.entry_point = loaded_elf.entry_point;
 
-        // Reset signal handlers per POSIX
+        // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
+        process.vmas.clear();
 
         // Replace the page table with the new one
         process.page_table = Some(new_page_table);
@@ -2925,6 +2951,8 @@ impl ProcessManager {
         }
         process.entry_point = VirtAddr::new(new_entry_point);
         process.signals.exec_reset();
+        process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
+        process.vmas.clear();
 
         process.page_table = Some(new_page_table);
         process.stack = Some(Box::new(new_stack));
@@ -3168,9 +3196,10 @@ impl ProcessManager {
         }
         process.entry_point = VirtAddr::new(new_entry_point);
 
-        // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
-        // SIG_IGN handlers are preserved
+        // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
+        process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
+        process.vmas.clear();
         log::debug!(
             "exec_process [ARM64]: Reset signal handlers for process {}",
             pid.as_u64()
