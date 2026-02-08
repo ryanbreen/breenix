@@ -1622,6 +1622,12 @@ impl ProcessPageTable {
                     continue;
                 }
 
+                // Skip kernel entries in lower half (e.g. PML4[136] = kernel heap at 0x4444_4444_0000)
+                // These are copied from the master page table without USER_ACCESSIBLE and are shared.
+                if !l4_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                    continue;
+                }
+
                 // Get L3 table and mark for cleanup
                 let l3_phys = l4_entry.addr();
                 let l3_frame = PhysFrame::containing_address(l3_phys);
@@ -1638,6 +1644,10 @@ impl ProcessPageTable {
 
                     // 1GB huge page - handle CoW for the frame
                     if l3_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                        // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
+                        if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                            continue;
+                        }
                         let frame = PhysFrame::containing_address(l3_entry.addr());
                         if frame_decref(frame) {
                             deallocate_frame(frame);
@@ -1645,6 +1655,13 @@ impl ProcessPageTable {
                         } else {
                             user_frames_still_shared += 1;
                         }
+                        continue;
+                    }
+
+                    // Skip kernel-only subtrees (not USER_ACCESSIBLE)
+                    // On x86-64, intermediate entries must have USER_ACCESSIBLE for
+                    // any leaf pages under them to be accessible from userspace.
+                    if !l3_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
                         continue;
                     }
 
@@ -1664,6 +1681,10 @@ impl ProcessPageTable {
 
                         // 2MB huge page - handle CoW for the frame
                         if l2_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                            // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
+                            if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                                continue;
+                            }
                             let frame = PhysFrame::containing_address(l2_entry.addr());
                             if frame_decref(frame) {
                                 deallocate_frame(frame);
@@ -1671,6 +1692,11 @@ impl ProcessPageTable {
                             } else {
                                 user_frames_still_shared += 1;
                             }
+                            continue;
+                        }
+
+                        // Skip kernel-only subtrees (not USER_ACCESSIBLE)
+                        if !l2_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
                             continue;
                         }
 
@@ -1685,6 +1711,11 @@ impl ProcessPageTable {
                         for l1_idx in 0..512usize {
                             let l1_entry = &l1_table[l1_idx];
                             if l1_entry.is_unused() || !l1_entry.flags().contains(PageTableFlags::PRESENT) {
+                                continue;
+                            }
+
+                            // Skip kernel identity-mapped frames (not USER_ACCESSIBLE)
+                            if !l1_entry.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
                                 continue;
                             }
 

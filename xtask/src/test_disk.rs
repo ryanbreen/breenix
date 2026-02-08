@@ -35,7 +35,7 @@ use anyhow::{bail, Result};
 const SECTOR_SIZE: usize = 512;
 const MAGIC: &[u8; 8] = b"BXTEST\0\0";
 const VERSION: u32 = 1;
-const MAX_BINARIES: usize = 128;
+const MAX_BINARIES: usize = 256;
 const DATA_START_SECTOR: u64 = 128;
 
 /// Disk header stored in sector 0
