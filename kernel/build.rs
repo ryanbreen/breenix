@@ -130,7 +130,7 @@ fn main() {
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
 
             // Also watch std build files
-            let std_tests_dir = repo_root.join("userspace/tests-std");
+            let std_tests_dir = repo_root.join("userspace/tests");
             println!("cargo:rerun-if-changed={}", std_tests_dir.join("build.sh").display());
             println!("cargo:rerun-if-changed={}", std_tests_dir.join("Cargo.toml").display());
             let libbreenix_libc_dir = repo_root.join("libs/libbreenix-libc/src");

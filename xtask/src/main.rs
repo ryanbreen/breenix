@@ -130,16 +130,16 @@ fn build_std_test_binaries() -> Result<()> {
     }
     println!("    libbreenix-libc built successfully");
 
-    // Step 2: Build tests-std (produces hello_std_real)
-    println!("  [2/2] Building tests-std...");
-    let tests_std_dir = Path::new("userspace/tests-std");
+    // Step 2: Build userspace tests (produces hello_std_real)
+    println!("  [2/2] Building userspace tests...");
+    let tests_std_dir = Path::new("userspace/tests");
 
     if !tests_std_dir.exists() {
-        println!("    Note: userspace/tests-std not found, skipping");
+        println!("    Note: userspace/tests not found, skipping");
         return Ok(());
     }
 
-    // The rust-toolchain.toml in tests-std specifies the nightly version
+    // The rust-toolchain.toml in tests specifies the nightly version
     // __CARGO_TESTS_ONLY_SRC_ROOT must point to the forked Rust library so that
     // -Z build-std compiles std from our patched sources (with target_os = "breenix")
     let rust_fork_library = std::env::current_dir()
@@ -157,12 +157,12 @@ fn build_std_test_binaries() -> Result<()> {
         .env_remove("CARGO_PKG_NAME")
         .env_remove("OUT_DIR")
         .status()
-        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for tests-std: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to run cargo build for userspace tests: {}", e))?;
 
     if !status.success() {
-        bail!("Failed to build tests-std");
+        bail!("Failed to build userspace tests");
     }
-    println!("    tests-std built successfully");
+    println!("    userspace tests built successfully");
 
     // Verify the binary exists
     let binary_path = tests_std_dir.join("target/x86_64-breenix/release/hello_std_real");
@@ -1503,7 +1503,7 @@ fn get_boot_stages() -> Vec<BootStage> {
             name: "Rust std println! works",
             marker: "RUST_STD_PRINTLN_WORKS",
             failure_meaning: "Rust std println! macro failed - std write syscall path broken",
-            check_hint: "Check userspace/tests-std/src/hello_std_real.rs, verify libbreenix-libc is linked correctly",
+            check_hint: "Check userspace/tests/src/hello_std_real.rs, verify libbreenix-libc is linked correctly",
         },
         BootStage {
             name: "Rust std Vec works",
@@ -1515,7 +1515,7 @@ fn get_boot_stages() -> Vec<BootStage> {
             name: "Rust std String works",
             marker: "RUST_STD_STRING_WORKS",
             failure_meaning: "Rust std String operations failed - String concatenation or comparison broken",
-            check_hint: "Check userspace/tests-std/src/hello_std_real.rs, verify String::from() and + operator work correctly",
+            check_hint: "Check userspace/tests/src/hello_std_real.rs, verify String::from() and + operator work correctly",
         },
         BootStage {
             name: "Rust std getrandom works",

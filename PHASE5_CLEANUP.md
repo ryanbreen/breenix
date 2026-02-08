@@ -8,13 +8,13 @@ Update the build system so `kernel/build.rs` invokes the std build path.
 
 ## Current State
 
-- **71 std programs** in `userspace/tests-std/` (built with `-Z build-std=std,panic_abort`)
+- **71 std programs** in `userspace/tests/` (built with `-Z build-std=std,panic_abort`)
 - **117 no_std programs** in `userspace/tests/` (built with libbreenix, `#![no_std]`)
 - **15 no_std coreutils** in `userspace/bin/coreutils/`
 - **6 no_std examples** in `userspace/examples/`
 - **2 no_std services** in `userspace/bin/services/` (init, telnetd)
 
-The std build (`tests-std/build.sh`) copies its output as `.elf` files into
+The std build (`tests/build.sh`) copies its output as `.elf` files into
 `userspace/tests/` (or `userspace/tests/aarch64/`), overwriting the no_std
 versions with the same name. So 71 programs already run as std on the test disk.
 
@@ -23,9 +23,9 @@ versions with the same name. So 71 programs already run as std on the test disk.
 ```
 kernel/build.rs
   └─ calls: userspace/tests/build.sh     (no_std — compiles 117 binaries)
-  └─ does NOT call: userspace/tests-std/build.sh  (std — must be run separately)
+  └─ does NOT call: userspace/tests/build.sh  (std — must be run separately)
 
-userspace/tests-std/build.sh
+userspace/tests/build.sh
   └─ builds 71 std binaries
   └─ copies them to userspace/tests/*.elf (overwrites no_std versions)
 
@@ -41,8 +41,8 @@ EXT2 disk (VirtIO device 0):
 ## Task 1: Port Remaining no_std-Only Programs to std
 
 These 46 programs exist only as no_std. Each needs a std port in
-`userspace/tests-std/src/` with a `[[bin]]` entry in
-`userspace/tests-std/Cargo.toml` and an entry in `build.sh`'s `STD_BINARIES`.
+`userspace/tests/src/` with a `[[bin]]` entry in
+`userspace/tests/Cargo.toml` and an entry in `build.sh`'s `STD_BINARIES`.
 
 ### Tests to port (31)
 
@@ -175,8 +175,8 @@ entries for:
 
 ## Task 4: Update `kernel/build.rs`
 
-Change `kernel/build.rs` to ALSO call `userspace/tests-std/build.sh` after
-the no_std build. Or better: make `tests/build.sh` invoke `tests-std/build.sh`
+Change `kernel/build.rs` to ALSO call `userspace/tests/build.sh` after
+the no_std build. Or better: make `tests/build.sh` invoke `tests/build.sh`
 at the end so the std binaries overwrite the no_std ones automatically.
 
 ## Task 5: Update EXT2 Disk Creation
