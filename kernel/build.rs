@@ -128,6 +128,13 @@ fn main() {
             println!("cargo:rerun-if-changed={}/cwd_test.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/demo.rs", userspace_tests);
             println!("cargo:rerun-if-changed={}/lib.rs", libbreenix_dir.to_str().unwrap());
+
+            // Also watch std build files
+            let std_tests_dir = repo_root.join("userspace/tests-std");
+            println!("cargo:rerun-if-changed={}", std_tests_dir.join("build.sh").display());
+            println!("cargo:rerun-if-changed={}", std_tests_dir.join("Cargo.toml").display());
+            let libbreenix_libc_dir = repo_root.join("libs/libbreenix-libc/src");
+            println!("cargo:rerun-if-changed={}", libbreenix_libc_dir.join("lib.rs").display());
         }
     } else {
         println!("cargo:warning=Userspace test directory not found at {:?}", userspace_test_dir);

@@ -299,6 +299,211 @@ path = "src/resolution.rs"
 name = "init_shell"
 path = "src/init_shell.rs"
 
+# Additional test programs
+[[bin]]
+name = "alarm_test"
+path = "src/alarm_test.rs"
+
+[[bin]]
+name = "argv_test"
+path = "src/argv_test.rs"
+
+[[bin]]
+name = "blocking_recv_test"
+path = "src/blocking_recv_test.rs"
+
+[[bin]]
+name = "bounce"
+path = "src/bounce.rs"
+
+[[bin]]
+name = "cat_test"
+path = "src/cat_test.rs"
+
+[[bin]]
+name = "concurrent_recv_stress"
+path = "src/concurrent_recv_stress.rs"
+
+[[bin]]
+name = "counter"
+path = "src/counter.rs"
+
+[[bin]]
+name = "cow_oom_test"
+path = "src/cow_oom_test.rs"
+
+[[bin]]
+name = "cp_mv_argv_test"
+path = "src/cp_mv_argv_test.rs"
+
+[[bin]]
+name = "demo"
+path = "src/demo.rs"
+
+[[bin]]
+name = "dns_test"
+path = "src/dns_test.rs"
+
+[[bin]]
+name = "echo_argv_test"
+path = "src/echo_argv_test.rs"
+
+[[bin]]
+name = "exec_from_ext2_test"
+path = "src/exec_from_ext2_test.rs"
+
+[[bin]]
+name = "exec_stack_argv_test"
+path = "src/exec_stack_argv_test.rs"
+
+[[bin]]
+name = "false_test"
+path = "src/false_test.rs"
+
+[[bin]]
+name = "fbinfo_test"
+path = "src/fbinfo_test.rs"
+
+[[bin]]
+name = "fs_block_alloc_test"
+path = "src/fs_block_alloc_test.rs"
+
+[[bin]]
+name = "head_test"
+path = "src/head_test.rs"
+
+[[bin]]
+name = "hello_time"
+path = "src/hello_time.rs"
+
+[[bin]]
+name = "http_test"
+path = "src/http_test.rs"
+
+[[bin]]
+name = "init"
+path = "src/init.rs"
+
+[[bin]]
+name = "itimer_test"
+path = "src/itimer_test.rs"
+
+[[bin]]
+name = "job_table_test"
+path = "src/job_table_test.rs"
+
+[[bin]]
+name = "ls_test"
+path = "src/ls_test.rs"
+
+[[bin]]
+name = "mkdir_argv_test"
+path = "src/mkdir_argv_test.rs"
+
+[[bin]]
+name = "nonblock_eagain_test"
+path = "src/nonblock_eagain_test.rs"
+
+[[bin]]
+name = "particles"
+path = "src/particles.rs"
+
+[[bin]]
+name = "pipe_concurrent_test"
+path = "src/pipe_concurrent_test.rs"
+
+[[bin]]
+name = "pipe_fork_test"
+path = "src/pipe_fork_test.rs"
+
+[[bin]]
+name = "pipe_refcount_test"
+path = "src/pipe_refcount_test.rs"
+
+[[bin]]
+name = "pty_test"
+path = "src/pty_test.rs"
+
+[[bin]]
+name = "register_init_test"
+path = "src/register_init_test.rs"
+
+[[bin]]
+name = "rm_argv_test"
+path = "src/rm_argv_test.rs"
+
+[[bin]]
+name = "signal_exec_check"
+path = "src/signal_exec_check.rs"
+
+[[bin]]
+name = "signal_test"
+path = "src/signal_test.rs"
+
+[[bin]]
+name = "simple_exit"
+path = "src/simple_exit.rs"
+
+[[bin]]
+name = "sleep_debug_test"
+path = "src/sleep_debug_test.rs"
+
+[[bin]]
+name = "spinner"
+path = "src/spinner.rs"
+
+[[bin]]
+name = "stdin_test"
+path = "src/stdin_test.rs"
+
+[[bin]]
+name = "syscall_diagnostic_test"
+path = "src/syscall_diagnostic_test.rs"
+
+[[bin]]
+name = "tail_test"
+path = "src/tail_test.rs"
+
+[[bin]]
+name = "tcp_blocking_test"
+path = "src/tcp_blocking_test.rs"
+
+[[bin]]
+name = "tcp_client_test"
+path = "src/tcp_client_test.rs"
+
+[[bin]]
+name = "tcp_socket_test"
+path = "src/tcp_socket_test.rs"
+
+[[bin]]
+name = "telnetd"
+path = "src/telnetd.rs"
+
+[[bin]]
+name = "test_mmap"
+path = "src/test_mmap.rs"
+
+[[bin]]
+name = "timer_test"
+path = "src/timer_test.rs"
+
+[[bin]]
+name = "true_test"
+path = "src/true_test.rs"
+
+[[bin]]
+name = "udp_socket_test"
+path = "src/udp_socket_test.rs"
+
+[[bin]]
+name = "wc_test"
+path = "src/wc_test.rs"
+
+[[bin]]
+name = "which_test"
+path = "src/which_test.rs"
+
 [profile.release]
 panic = "abort"
 lto = "thin"

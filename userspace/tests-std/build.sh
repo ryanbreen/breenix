@@ -188,6 +188,71 @@ STD_BINARIES=(
 
     # Phase 4: init_shell
     "init_shell"
+
+    # Phase 5: Newly ported programs
+
+    # Simple tests + examples
+    "argv_test"
+    "job_table_test"
+    "test_mmap"
+    "stdin_test"
+    "true_test"
+    "false_test"
+    "echo_argv_test"
+    "mkdir_argv_test"
+    "rm_argv_test"
+    "cp_mv_argv_test"
+    "nonblock_eagain_test"
+    "blocking_recv_test"
+    "tcp_client_test"
+    "simple_exit"
+    "counter"
+    "spinner"
+    "hello_time"
+    "fbinfo_test"
+    "demo"
+    "bounce"
+    "particles"
+    "http_test"
+    "register_init_test"
+
+    # Coreutil tests
+    "head_test"
+    "tail_test"
+    "wc_test"
+    "which_test"
+    "cat_test"
+    "ls_test"
+    "exec_stack_argv_test"
+    "exec_from_ext2_test"
+    "pipe_fork_test"
+    "pipe_concurrent_test"
+    "fs_block_alloc_test"
+    "cow_oom_test"
+
+    # Signal/timer tests
+    "signal_test"
+    "alarm_test"
+    "itimer_test"
+    "timer_test"
+    "sleep_debug_test"
+    "pipe_refcount_test"
+
+    # Network tests
+    "udp_socket_test"
+    "tcp_socket_test"
+    "tcp_blocking_test"
+    "concurrent_recv_stress"
+    "dns_test"
+
+    # Complex/arch-specific tests
+    "syscall_diagnostic_test"
+    "pty_test"
+    "signal_exec_check"
+
+    # Services
+    "init"
+    "telnetd"
 )
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"

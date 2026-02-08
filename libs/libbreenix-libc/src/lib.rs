@@ -2492,6 +2492,262 @@ pub unsafe extern "C" fn getpwuid_r(
 }
 
 // =============================================================================
+// Signal/Timer Functions (alarm, setitimer, getitimer, sigsuspend)
+// =============================================================================
+
+/// alarm - schedule a SIGALRM signal
+///
+/// Sets a timer to deliver SIGALRM after `seconds` seconds.
+/// Setting seconds to 0 cancels any pending alarm.
+///
+/// Returns the number of seconds remaining from a previous alarm (0 if none).
+#[no_mangle]
+pub unsafe extern "C" fn alarm(seconds: u32) -> u32 {
+    libbreenix::signal::alarm(seconds)
+}
+
+/// Interval timer value for setitimer/getitimer
+#[repr(C)]
+pub struct CTimeval {
+    pub tv_sec: i64,
+    pub tv_usec: i64,
+}
+
+#[repr(C)]
+pub struct CItimerval {
+    pub it_interval: CTimeval,
+    pub it_value: CTimeval,
+}
+
+/// setitimer - set an interval timer
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn setitimer(which: i32, new_value: *const CItimerval, old_value: *mut CItimerval) -> i32 {
+    // Convert C structs to libbreenix types
+    if new_value.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+
+    let new_val = libbreenix::signal::Itimerval {
+        it_interval: libbreenix::signal::Timeval {
+            tv_sec: (*new_value).it_interval.tv_sec,
+            tv_usec: (*new_value).it_interval.tv_usec,
+        },
+        it_value: libbreenix::signal::Timeval {
+            tv_sec: (*new_value).it_value.tv_sec,
+            tv_usec: (*new_value).it_value.tv_usec,
+        },
+    };
+
+    let mut old_val = libbreenix::signal::Itimerval::default();
+    let old_opt = if old_value.is_null() {
+        None
+    } else {
+        Some(&mut old_val)
+    };
+
+    match libbreenix::signal::setitimer(which, &new_val, old_opt) {
+        Ok(()) => {
+            if !old_value.is_null() {
+                (*old_value).it_interval.tv_sec = old_val.it_interval.tv_sec;
+                (*old_value).it_interval.tv_usec = old_val.it_interval.tv_usec;
+                (*old_value).it_value.tv_sec = old_val.it_value.tv_sec;
+                (*old_value).it_value.tv_usec = old_val.it_value.tv_usec;
+            }
+            0
+        }
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// getitimer - get the value of an interval timer
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn getitimer(which: i32, curr_value: *mut CItimerval) -> i32 {
+    if curr_value.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+
+    let mut val = libbreenix::signal::Itimerval::default();
+    match libbreenix::signal::getitimer(which, &mut val) {
+        Ok(()) => {
+            (*curr_value).it_interval.tv_sec = val.it_interval.tv_sec;
+            (*curr_value).it_interval.tv_usec = val.it_interval.tv_usec;
+            (*curr_value).it_value.tv_sec = val.it_value.tv_sec;
+            (*curr_value).it_value.tv_usec = val.it_value.tv_usec;
+            0
+        }
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// sigsuspend - wait for a signal, temporarily replacing the signal mask
+///
+/// Always returns -1 with errno set to EINTR.
+#[no_mangle]
+pub unsafe extern "C" fn sigsuspend(mask: *const u64) -> i32 {
+    if mask.is_null() {
+        ERRNO = EINVAL;
+        return -1;
+    }
+    let _ret = libbreenix::signal::sigsuspend(&*mask);
+    // sigsuspend always returns -1 with EINTR
+    ERRNO = 4; // EINTR
+    -1
+}
+
+// =============================================================================
+// PTY Functions (posix_openpt, grantpt, unlockpt, ptsname_r)
+// =============================================================================
+
+/// posix_openpt - open a PTY master device
+///
+/// Returns a file descriptor on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn posix_openpt(flags: i32) -> i32 {
+    match libbreenix::pty::posix_openpt(flags) {
+        Ok(fd) => fd,
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// grantpt - grant access to slave PTY
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn grantpt(fd: i32) -> i32 {
+    match libbreenix::pty::grantpt(fd) {
+        Ok(()) => 0,
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// unlockpt - unlock the slave PTY for opening
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn unlockpt(fd: i32) -> i32 {
+    match libbreenix::pty::unlockpt(fd) {
+        Ok(()) => 0,
+        Err(e) => {
+            ERRNO = e;
+            -1
+        }
+    }
+}
+
+/// ptsname_r - get the path to the slave PTY device (reentrant)
+///
+/// Returns 0 on success, errno on error.
+#[no_mangle]
+pub unsafe extern "C" fn ptsname_r(fd: i32, buf: *mut u8, buflen: usize) -> i32 {
+    if buf.is_null() || buflen == 0 {
+        return EINVAL;
+    }
+
+    let slice = slice::from_raw_parts_mut(buf, buflen);
+    match libbreenix::pty::ptsname(fd, slice) {
+        Ok(_len) => 0,
+        Err(e) => e,
+    }
+}
+
+// =============================================================================
+// Testing Functions (simulate_oom)
+// =============================================================================
+
+/// simulate_oom - enable/disable OOM simulation for testing
+///
+/// Returns 0 on success, -1 on error (errno set).
+#[no_mangle]
+pub unsafe extern "C" fn simulate_oom(enable: i32) -> i32 {
+    let result = libbreenix::memory::simulate_oom(enable != 0);
+    if result < 0 {
+        ERRNO = -result;
+        -1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Time Functions (sleep_ms)
+// =============================================================================
+
+/// sleep_ms - sleep for the specified number of milliseconds
+///
+/// This is a busy-wait implementation using clock_gettime(CLOCK_MONOTONIC).
+#[no_mangle]
+pub unsafe extern "C" fn sleep_ms(ms: u64) {
+    libbreenix::time::sleep_ms(ms);
+}
+
+// =============================================================================
+// DNS Functions (dns_resolve)
+// =============================================================================
+
+/// dns_resolve - resolve a hostname to an IPv4 address
+///
+/// # Arguments
+/// * `host` - Hostname string (NOT null-terminated, length given by host_len)
+/// * `host_len` - Length of hostname string
+/// * `server` - Pointer to 4-byte IPv4 address of DNS server
+/// * `result_ip` - Pointer to 4-byte buffer for the resolved IPv4 address
+///
+/// Returns 0 on success, negative errno on error.
+#[no_mangle]
+pub unsafe extern "C" fn dns_resolve(
+    host: *const u8,
+    host_len: usize,
+    server: *const u8,
+    result_ip: *mut u8,
+) -> i32 {
+    if host.is_null() || server.is_null() || result_ip.is_null() || host_len == 0 {
+        return -(EINVAL);
+    }
+
+    let host_bytes = slice::from_raw_parts(host, host_len);
+    let hostname = match core::str::from_utf8(host_bytes) {
+        Ok(s) => s,
+        Err(_) => return -(EINVAL),
+    };
+
+    let dns_server = [
+        *server,
+        *server.add(1),
+        *server.add(2),
+        *server.add(3),
+    ];
+
+    match libbreenix::dns::resolve(hostname, dns_server) {
+        Ok(result) => {
+            *result_ip = result.addr[0];
+            *result_ip.add(1) = result.addr[1];
+            *result_ip.add(2) = result.addr[2];
+            *result_ip.add(3) = result.addr[3];
+            0
+        }
+        Err(_) => -(5), // EIO
+    }
+}
+
+// =============================================================================
 // Unwind Functions (stubs for backtrace support)
 // =============================================================================
 
