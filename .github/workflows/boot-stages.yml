@@ -20,7 +20,7 @@ jobs:
       - name: Init rust-fork submodule (shallow)
         run: |
           git submodule update --init --depth 1 rust-fork
-          cd rust-fork && git submodule update --init --depth 1 library/stdarch
+          cd rust-fork && git submodule update --init --depth 1 library/stdarch library/backtrace
 
       - name: Install Rust nightly
         uses: actions-rs/toolchain@v1
