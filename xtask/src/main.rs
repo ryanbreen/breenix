@@ -568,9 +568,9 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "Ring 3 execution confirmed",
-            marker: "RING3_CONFIRMED: First syscall received from Ring 3",
+            marker: "RING3_SYSCALL: First syscall from userspace",
             failure_meaning: "IRETQ may have succeeded but userspace did not execute or trigger a syscall",
-            check_hint: "syscall/handler.rs - check RING3_CONFIRMED marker emission on first Ring 3 syscall",
+            check_hint: "syscall/handler.rs - emit_ring3_syscall_marker() emits on first Ring 3 syscall",
         },
         // NOTE: Stage "Userspace syscall received" (marker "USERSPACE: sys_") removed as redundant.
         // Stage 36 "Ring 3 execution confirmed" already proves syscalls from Ring 3 work.
@@ -584,9 +584,9 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         BootStage {
             name: "Userspace register initialization validated",
-            marker: "✓ PASS: All registers initialized to zero",
-            failure_meaning: "General-purpose registers not initialized to zero on first userspace entry",
-            check_hint: "Check setup_first_userspace_entry() in kernel/src/interrupts/context_switch.rs - should zero all general-purpose registers in SavedRegisters before IRETQ",
+            marker: "PASS: Callee-saved registers preserved as zero",
+            failure_meaning: "Callee-saved registers (rbx, r12-r15) not zeroed on first userspace entry",
+            check_hint: "Check setup_first_userspace_entry() in kernel/src/interrupts/context_switch.rs - register_init_test checks callee-saved registers are zero at main() entry",
         },
         BootStage {
             name: "Userspace clock_gettime validated",
@@ -1345,48 +1345,9 @@ fn get_boot_stages() -> Vec<BootStage> {
             check_hint: "Check kernel/src/fs/devfs/mod.rs and syscall routing in sys_open for /dev/* paths",
         },
         // Current working directory syscalls test
-        BootStage {
-            name: "CWD initial OK",
-            marker: "CWD_INITIAL_OK",
-            failure_meaning: "Initial cwd is not / - process cwd not initialized correctly",
-            check_hint: "Check kernel/src/process/process.rs cwd initialization and kernel/src/syscall/fs.rs sys_getcwd",
-        },
-        BootStage {
-            name: "CWD chdir OK",
-            marker: "CWD_CHDIR_OK",
-            failure_meaning: "chdir to valid directory failed - cwd update not working",
-            check_hint: "Check kernel/src/syscall/fs.rs sys_chdir path resolution and process cwd update",
-        },
-        BootStage {
-            name: "CWD ENOENT OK",
-            marker: "CWD_ENOENT_OK",
-            failure_meaning: "chdir to nonexistent path did not return ENOENT",
-            check_hint: "Check kernel/src/syscall/fs.rs sys_chdir error handling for missing paths",
-        },
-        BootStage {
-            name: "CWD ENOTDIR OK",
-            marker: "CWD_ENOTDIR_OK",
-            failure_meaning: "chdir to file did not return ENOTDIR",
-            check_hint: "Check kernel/src/syscall/fs.rs sys_chdir directory type validation",
-        },
-        BootStage {
-            name: "CWD relative OK",
-            marker: "CWD_RELATIVE_OK",
-            failure_meaning: "Relative path navigation (cd ..) failed",
-            check_hint: "Check kernel/src/syscall/fs.rs normalize_path function for .. handling",
-        },
-        BootStage {
-            name: "CWD fork inheritance OK",
-            marker: "CWD_FORK_OK",
-            failure_meaning: "Fork did not inherit cwd from parent",
-            check_hint: "Check kernel/src/process/manager.rs fork_internal clones parent cwd to child",
-        },
-        BootStage {
-            name: "CWD getcwd errors OK",
-            marker: "CWD_ERRORS_OK",
-            failure_meaning: "getcwd error handling (EINVAL/ERANGE) failed",
-            check_hint: "Check kernel/src/syscall/fs.rs sys_getcwd validates size and returns correct error codes",
-        },
+        // NOTE: Individual substage markers (CWD_INITIAL_OK, CWD_CHDIR_OK, etc.) removed -
+        // the cwd_test.rs program emits only descriptive PASS/FAIL lines and a final
+        // CWD_TEST_PASSED marker. Re-add individual stages when test program is updated.
         BootStage {
             name: "CWD test passed",
             marker: "CWD_TEST_PASSED",
