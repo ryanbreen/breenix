@@ -17,6 +17,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Init rust-fork submodule (shallow)
+        run: git submodule update --init --depth 1 rust-fork
+
       - name: Install Rust nightly
         uses: actions-rs/toolchain@v1
         with:

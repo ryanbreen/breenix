@@ -2460,13 +2460,18 @@ impl ProcessManager {
         }
         process.entry_point = loaded_elf.entry_point;
 
+        // Reset heap bounds for the new program - heap starts after ELF segments
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
         // SIG_IGN handlers are preserved
         process.signals.exec_reset();
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
-        log::debug!("exec_process: Reset signal handlers for process {}", pid.as_u64());
+        log::debug!("exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}", pid.as_u64(), heap_base);
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table);
@@ -2742,6 +2747,11 @@ impl ProcessManager {
         }
         process.entry_point = loaded_elf.entry_point;
 
+        // Reset heap bounds for the new program
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
@@ -2950,6 +2960,12 @@ impl ProcessManager {
             );
         }
         process.entry_point = VirtAddr::new(new_entry_point);
+
+        // Reset heap bounds for the new program
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -3196,13 +3212,19 @@ impl ProcessManager {
         }
         process.entry_point = VirtAddr::new(new_entry_point);
 
+        // Reset heap bounds for the new program
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         log::debug!(
-            "exec_process [ARM64]: Reset signal handlers for process {}",
-            pid.as_u64()
+            "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",
+            pid.as_u64(),
+            heap_base
         );
 
         // Replace the page table with the new one containing the loaded program
