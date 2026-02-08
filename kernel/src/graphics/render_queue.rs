@@ -27,8 +27,9 @@
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Size of the render queue in bytes.
-/// 16KB is enough for several screens of text.
-const QUEUE_SIZE: usize = 16 * 1024;
+/// 64KB handles large output bursts (help text, directory listings)
+/// without dropping bytes while the render thread processes them.
+const QUEUE_SIZE: usize = 64 * 1024;
 
 /// The render queue ring buffer - static array, no mutex.
 /// Safety: Only modified by queue_byte (producer) and drain_and_render (consumer).

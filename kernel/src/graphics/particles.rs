@@ -62,7 +62,10 @@ pub fn animation_thread_entry() {
             }
         }
 
-        // Render to framebuffer (if we can get the lock)
+        // Render to framebuffer (if we can get the lock).
+        // Do NOT flush here — the render thread owns all GPU flushing.
+        // Flushing from this tight loop floods the VirtIO GPU with 4MB
+        // transfers and starves the render thread of GPU bandwidth.
         if let Some(fb) = arm64_fb::SHELL_FRAMEBUFFER.get() {
             if let Some(mut fb_guard) = fb.try_lock() {
                 if let Some(system) = PARTICLE_SYSTEM.get() {
@@ -70,9 +73,11 @@ pub fn animation_thread_entry() {
                         sys.render(&mut *fb_guard);
                     }
                 }
-                fb_guard.flush();
             }
         }
+
+        // Wake the render thread so it can flush our pixel changes
+        super::render_task::wake_render_thread();
 
         // Progress marker every 500 frames
         if frame_counter % 500 == 0 {

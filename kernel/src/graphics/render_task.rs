@@ -79,53 +79,58 @@ fn render_thread_main_kthread() {
         // Drain captured serial output to the Logs terminal
         drain_log_capture();
 
-        // Flush the framebuffer if we rendered anything or drained log output
-        if total_rendered > 0 {
-            flush_framebuffer();
-            // Yield after doing work to give other threads a chance
-            crate::task::scheduler::yield_current();
-        } else {
-            // No work - park until woken by wake_render_thread()
-            // This prevents busy-polling which would starve other kthreads like ksoftirqd
-            RENDER_WAKE.store(false, Ordering::SeqCst);
+        // Always flush — the render thread is the sole owner of GPU flushing.
+        // Besides render queue text, the particle thread and log capture also
+        // write pixels that need to be transferred to the VirtIO GPU.
+        flush_framebuffer();
 
-            // CRITICAL: Check for pending data again AFTER setting RENDER_WAKE = false.
-            // This closes a race condition where:
-            //   1. We check has_pending_data() = false
-            //   2. Timer interrupt queues a byte and calls wake_render_thread()
-            //   3. wake_render_thread() sees RENDER_WAKE = true (from last wake), does nothing
-            //   4. We then park and miss the byte
-            // By checking again after setting RENDER_WAKE = false, we catch any data
-            // that was queued while we were preparing to park.
-            if render_queue::has_pending_data() || log_capture::has_pending_data() {
-                continue; // Go back to processing instead of parking
+        // Yield to give other threads a chance to run
+        crate::task::scheduler::yield_current();
+
+        if total_rendered == 0 {
+            // No work was done this iteration. Clear the wake flag and check
+            // one more time for data before halting.
+            //
+            // NOTE: We intentionally do NOT use kthread_park/unpark here.
+            // There is a fundamental race between checking for data and parking:
+            // if data arrives after the check but before park sets parked=true,
+            // wake_render_thread's kthread_unpark is lost (it sets parked=false
+            // which park immediately overwrites with true). RENDER_WAKE then
+            // stays stuck at true, so all future wakes are no-ops, permanently
+            // freezing the render thread. Instead, we use WFI/HLT to sleep
+            // until the next interrupt (timer at 200Hz = 5ms max latency).
+            if !RENDER_WAKE.swap(false, Ordering::Acquire)
+                && !render_queue::has_pending_data()
+                && !log_capture::has_pending_data()
+            {
+                arch_halt();
             }
-
-            crate::task::kthread::kthread_park();
         }
     }
 
     RENDER_THREAD_RUNNING.store(false, Ordering::SeqCst);
 }
 
-/// Signal the render thread to wake up and check for work.
-/// Uses compare-exchange to avoid redundant wake calls - only wakes
-/// if the thread was previously marked as not-awake.
-pub fn wake_render_thread() {
-    // Only proceed if we're transitioning from false->true
-    // This avoids expensive lock acquisition and unpark calls when
-    // the render thread is already awake and processing
-    if RENDER_WAKE
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_ok()
-    {
-        // Thread was parked (RENDER_WAKE was false), need to unpark it
-        if let Some(ref handle) = *RENDER_KTHREAD.lock() {
-            crate::task::kthread::kthread_unpark(handle);
-        }
+/// Architecture-specific halt (wait for interrupt).
+#[inline(always)]
+fn arch_halt() {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("wfi");
     }
-    // If compare_exchange failed, RENDER_WAKE was already true,
-    // meaning the thread is awake and will see our queued data
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::hlt();
+}
+
+/// Signal the render thread to wake up and check for work.
+///
+/// Sets RENDER_WAKE so the render thread skips the WFI halt on its next
+/// idle check. The render thread wakes on timer interrupts (200 Hz) and
+/// checks this flag, so worst-case latency is ~5ms. This avoids the
+/// lost-wakeup race that existed with the previous kthread_park/unpark
+/// approach.
+pub fn wake_render_thread() {
+    RENDER_WAKE.store(true, Ordering::Release);
 }
 
 // =============================================================================
@@ -193,8 +198,14 @@ fn flush_framebuffer() {
     #[cfg(target_arch = "aarch64")]
     {
         if let Some(fb) = crate::graphics::arm64_fb::SHELL_FRAMEBUFFER.get() {
-            if let Some(guard) = fb.try_lock() {
-                let _ = guard.flush();
+            // Use blocking lock — the render thread is not in interrupt context,
+            // so it's safe to wait. try_lock() caused silent flush drops when the
+            // particle animation thread held the lock, leaving text undrawn on screen.
+            let guard = fb.lock();
+            if let Err(e) = guard.flush_result() {
+                // Log GPU flush failures to serial — these would otherwise be
+                // silently swallowed, leaving the display stale.
+                crate::serial_println!("[render] GPU flush failed: {}", e);
             }
         }
     }
