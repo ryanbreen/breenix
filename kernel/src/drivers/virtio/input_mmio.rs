@@ -475,6 +475,15 @@ pub fn is_modifier(code: u16) -> bool {
     )
 }
 
+/// Check if keycode is an alphabetic letter (affected by caps lock)
+pub fn is_letter(code: u16) -> bool {
+    matches!(code,
+        16..=25 |  // Q W E R T Y U I O P
+        30..=38 |  // A S D F G H J K L
+        44..=50    // Z X C V B N M
+    )
+}
+
 /// Check if keycode is left or right shift
 pub fn is_shift(code: u16) -> bool {
     code == 42 || code == 54
@@ -551,27 +560,38 @@ pub fn handle_interrupt() {
         core::sync::atomic::AtomicBool::new(false);
     static CTRL_PRESSED: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
+    static CAPS_LOCK_ACTIVE: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
 
     // Process all pending events
     for event in poll_events() {
         if event.event_type == event_type::EV_KEY {
             let keycode = event.code;
-            let pressed = event.value != 0;
+            let value = event.value; // 0=release, 1=press, 2=repeat
 
             // Track shift key state
             if is_shift(keycode) {
-                SHIFT_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
+                SHIFT_PRESSED.store(value != 0, core::sync::atomic::Ordering::Relaxed);
                 continue;
             }
 
             // Track ctrl key state
             if is_ctrl(keycode) {
-                CTRL_PRESSED.store(pressed, core::sync::atomic::Ordering::Relaxed);
+                CTRL_PRESSED.store(value != 0, core::sync::atomic::Ordering::Relaxed);
                 continue;
             }
 
-            // Only process key presses (not releases)
-            if pressed {
+            // Toggle caps lock on key press only (not repeat or release)
+            if keycode == 58 {
+                if value == 1 {
+                    let prev = CAPS_LOCK_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
+                    CAPS_LOCK_ACTIVE.store(!prev, core::sync::atomic::Ordering::Relaxed);
+                }
+                continue;
+            }
+
+            // Only process key presses and repeats (not releases)
+            if value != 0 {
                 // Handle function keys for terminal switching (F1=59, F2=60, etc.)
                 // Linux evdev keycodes 59-68 match PS/2 scancodes 0x3B-0x44
                 if keycode >= 59 && keycode <= 68 {
@@ -588,13 +608,16 @@ pub fn handle_interrupt() {
                 }
 
                 let shift = SHIFT_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
+                let caps = CAPS_LOCK_ACTIVE.load(core::sync::atomic::Ordering::Relaxed);
                 let ctrl = CTRL_PRESSED.load(core::sync::atomic::Ordering::Relaxed);
 
                 // Ctrl+letter -> control character (e.g., Ctrl+C = 0x03)
                 let c = if ctrl {
                     ctrl_char_from_keycode(keycode)
                 } else {
-                    keycode_to_char(keycode, shift)
+                    // For letter keys, caps lock XOR shift determines case
+                    let effective_shift = if is_letter(keycode) { shift ^ caps } else { shift };
+                    keycode_to_char(keycode, effective_shift)
                 };
 
                 if let Some(c) = c {
