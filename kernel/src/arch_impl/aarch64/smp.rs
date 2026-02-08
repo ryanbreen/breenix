@@ -180,19 +180,29 @@ fn create_and_register_idle_thread(cpu_id: usize) {
     use crate::task::thread::{Thread, ThreadState, ThreadPrivilege};
     use crate::memory::arch_stub::VirtAddr;
 
-    // Dummy stack addresses (the CPU is already running on its boot stack)
-    let dummy_stack_top = VirtAddr::new(0x4000_0000 + (cpu_id as u64) * 0x20_0000);
-    let dummy_stack_bottom = VirtAddr::new(0x4000_0000 + (cpu_id as u64 - 1) * 0x20_0000);
+    // Boot stack addresses — must match boot.S layout.
+    // HHDM_BASE + STACK_REGION_BASE + (cpu_id + 1) * STACK_SIZE
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const STACK_REGION_BASE: u64 = 0x4100_0000;
+    const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
+    let boot_stack_top = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + ((cpu_id as u64) + 1) * STACK_SIZE);
+    let boot_stack_bottom = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + (cpu_id as u64) * STACK_SIZE);
     let dummy_tls = VirtAddr::zero();
 
     let mut idle_task = Box::new(Thread::new(
         format!("swapper/{}", cpu_id),
         idle_thread_fn,
-        dummy_stack_top,
-        dummy_stack_bottom,
+        boot_stack_top,
+        boot_stack_bottom,
         dummy_tls,
         ThreadPrivilege::Kernel,
     ));
+
+    // CRITICAL: Set kernel_stack_top to this CPU's boot stack. Without this,
+    // setup_idle_return_arm64 falls back to the per-CPU kernel_stack_top from
+    // the last dispatched thread, causing the idle loop to run on that thread's
+    // kernel stack and corrupt its SVC frame.
+    idle_task.kernel_stack_top = Some(boot_stack_top);
 
     // Mark as running and already started (this CPU is already executing)
     idle_task.state = ThreadState::Running;

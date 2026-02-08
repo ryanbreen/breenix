@@ -149,24 +149,13 @@ if [ "$CLEAN" = true ]; then
     echo ""
 fi
 
-# Check if kernel exists, offer to build
-if [ ! -f "$KERNEL" ]; then
-    echo ""
-    echo "Kernel not found at: $KERNEL"
-    echo ""
-    read -p "Build the kernel now? [Y/n] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
-        echo "Aborted. Build manually with:"
-        echo "  $BUILD_CMD"
-        exit 1
-    fi
-    echo "Building kernel..."
-    eval $BUILD_CMD
-fi
+# Always rebuild to ensure correct features (boot_tests, etc.)
+# Cargo is incremental — this is fast if nothing changed
+echo "Building kernel..."
+eval $BUILD_CMD
 
 if [ ! -f "$KERNEL" ]; then
-    echo "Error: Kernel still not found after build attempt"
+    echo "Error: Kernel not found after build"
     exit 1
 fi
 

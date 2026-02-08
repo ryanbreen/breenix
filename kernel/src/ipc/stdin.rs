@@ -277,3 +277,11 @@ fn wake_blocked_readers() {
 pub fn available() -> usize {
     STDIN_BUFFER.lock().len
 }
+
+/// Debug helper: inject a character into stdin as if typed on the keyboard.
+/// This can be called from GDB: `call debug_inject_stdin_char(0x68)` for 'h'
+/// or from automation scripts to trigger keyboard input paths non-interactively.
+#[no_mangle]
+pub extern "C" fn debug_inject_stdin_char(byte: u64) {
+    push_byte_from_irq(byte as u8);
+}

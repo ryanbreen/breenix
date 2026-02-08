@@ -99,14 +99,18 @@ pub fn frame_decref(frame: PhysFrame) -> bool {
         // old_count > 1, still shared
         false
     } else {
-        // Frame wasn't tracked in CoW metadata - it's a private frame with
-        // implicit refcount=1. This happens for:
-        // 1. Frames from initial ELF loading (before any fork)
-        // 2. Frames allocated by CoW fault handler (replacement pages)
-        // 3. Frames allocated by child processes after fork
+        // Frame wasn't tracked in CoW metadata.
+        // This means it's a private frame that was never shared via CoW
+        // (e.g., allocated during ELF loading, brk, or stack growth).
+        // It belongs solely to the exiting process, so it's safe to free.
         //
-        // All of these are safe to free: they belong to exactly one process
-        // (the one calling frame_decref during cleanup), so refcount 1->0.
+        // We only reach here from cleanup_cow_frames / cleanup_for_exec
+        // which iterate USER_ACCESSIBLE pages — all of which belong to
+        // the process being cleaned up.
+        log::trace!(
+            "frame_decref: frame {:#x} not tracked (private), allowing free",
+            addr
+        );
         true
     }
 }
@@ -198,31 +202,33 @@ mod tests {
     }
 
     #[test_case]
-    fn test_untracked_decref_allows_free() {
-        // Untracked frames have implicit refcount=1, so decref should allow free
+    fn test_decref_untracked_allows_free() {
+        // Untracked frames are private — decref should allow freeing
         let frame = test_frame(0x5000_0000);
-        assert!(frame_decref(frame)); // Untracked -> freeable
+        assert!(frame_decref(frame)); // Untracked, returns true
     }
 
     #[test_case]
     fn test_register_then_decref() {
         let frame = test_frame(0x6000_0000);
-        frame_register(frame); // Explicitly tracked at refcount=1
+        frame_register(frame); // Tracked at refcount=1
         assert_eq!(frame_refcount(frame), 1);
+        assert!(!frame_is_shared(frame));
+
         assert!(frame_decref(frame)); // 1->0, freeable
         assert_eq!(frame_refcount(frame), 1); // Back to untracked
     }
 
     #[test_case]
-    fn test_register_idempotent() {
+    fn test_register_then_incref_then_decref() {
+        // Simulates: allocate CoW copy, then fork again, then both exit
         let frame = test_frame(0x7000_0000);
-        frame_register(frame);
-        frame_incref(frame); // Now 2
-        frame_register(frame); // Should be no-op (already tracked)
-        assert_eq!(frame_refcount(frame), 2); // Still 2, not reset to 1
+        frame_register(frame); // rc=1
+        frame_incref(frame); // rc=2 (forked)
+        assert_eq!(frame_refcount(frame), 2);
+        assert!(frame_is_shared(frame));
 
-        // Cleanup
-        frame_decref(frame);
-        frame_decref(frame);
+        assert!(!frame_decref(frame)); // rc=1, still referenced
+        assert!(frame_decref(frame)); // rc=0, freeable
     }
 }

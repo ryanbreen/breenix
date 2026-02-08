@@ -692,7 +692,7 @@ fn handle_cow_with_manager(
     cr3: u64,
 ) -> bool {
     use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{Page, Size4KiB};
 
@@ -741,6 +741,9 @@ fn handle_cow_with_manager(
         None => return false,
     };
 
+    // Register the new frame so it's tracked for cleanup on process exit
+    frame_register(new_frame);
+
     // Copy page contents
     let phys_offset = crate::memory::physical_memory_offset();
     unsafe {
@@ -773,7 +776,7 @@ fn handle_cow_with_manager(
 /// avoiding the need to acquire the process manager lock.
 fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
     use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
     use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame, Size4KiB};
 
@@ -851,6 +854,9 @@ fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
             Some(frame) => frame,
             None => return false,
         };
+
+        // Register the new frame so it's tracked for cleanup on process exit
+        frame_register(new_frame);
 
         // Copy page contents
         let src = (phys_offset + old_frame.start_address().as_u64()).as_ptr::<u8>();

@@ -209,9 +209,22 @@ pub fn get_received_byte() -> Option<u8> {
     }
 }
 
-/// Write a single byte to serial output
+/// Write a single byte to serial output.
+///
+/// Disables interrupts before acquiring the lock to prevent deadlock:
+/// without this, a timer IRQ could fire while holding SERIAL1, and
+/// any code on another CPU holding SCHEDULER that tries to log would
+/// create a SERIAL1 → SCHEDULER / SCHEDULER → SERIAL1 deadlock.
 pub fn write_byte(byte: u8) {
+    let daif_before: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, DAIF", out(reg) daif_before, options(nomem, nostack));
+        core::arch::asm!("msr DAIFSet, #0x3", options(nomem, nostack));
+    }
     SERIAL1.lock().send(byte);
+    unsafe {
+        core::arch::asm!("msr DAIF, {}", in(reg) daif_before, options(nomem, nostack));
+    }
 }
 
 /// Writer that tees output to both UART and the log capture ring buffer.
