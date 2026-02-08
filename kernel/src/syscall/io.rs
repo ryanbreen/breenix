@@ -467,41 +467,191 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             }
         }
         FdKind::PtyMaster(pty_num) => {
-            // Read from PTY master - read data written by slave
-            if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                let mut buf = alloc::vec![0u8; count as usize];
-                match pair.master_read(&mut buf) {
+            // Read from PTY master with blocking support
+            let pty_num = *pty_num;
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let pair = match crate::tty::pty::get(pty_num) {
+                Some(p) => p,
+                None => return SyscallResult::Err(5), // EIO
+            };
+            drop(manager_guard);
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+
+            loop {
+                pair.register_master_waiter(thread_id);
+
+                match pair.master_read(&mut user_buf) {
                     Ok(n) => {
+                        pair.unregister_master_waiter(thread_id);
                         if n > 0 {
-                            if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
+                            if copy_to_user_bytes(buf_ptr, &user_buf[..n]).is_err() {
                                 return SyscallResult::Err(14);
                             }
                         }
-                        SyscallResult::Ok(n as u64)
+                        return SyscallResult::Ok(n as u64);
                     }
-                    Err(e) => SyscallResult::Err(e as u64),
+                    Err(_) => {
+                        if is_nonblocking {
+                            pair.unregister_master_waiter(thread_id);
+                            return SyscallResult::Err(super::errno::EAGAIN as u64);
+                        }
+                    }
                 }
-            } else {
-                SyscallResult::Err(5) // EIO
+
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.block_current();
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = true;
+                    }
+                });
+
+                if pair.has_master_data() {
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    pair.unregister_master_waiter(thread_id);
+                    continue;
+                }
+
+                crate::per_cpu::preempt_enable();
+
+                loop {
+                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                        pair.unregister_master_waiter(thread_id);
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
+                            }
+                        });
+                        crate::per_cpu::preempt_disable();
+                        return SyscallResult::Err(e as u64);
+                    }
+
+                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.state == crate::task::thread::ThreadState::Blocked
+                        } else {
+                            false
+                        }
+                    }).unwrap_or(false);
+
+                    if !still_blocked {
+                        crate::per_cpu::preempt_disable();
+                        break;
+                    }
+
+                    crate::task::scheduler::yield_current();
+                    unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+                }
+
+                crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                    }
+                });
+
+                pair.unregister_master_waiter(thread_id);
             }
         }
         FdKind::PtySlave(pty_num) => {
-            // Read from PTY slave - read processed data from line discipline
-            if let Some(pair) = crate::tty::pty::get(*pty_num) {
-                let mut buf = alloc::vec![0u8; count as usize];
-                match pair.slave_read(&mut buf) {
+            // Read from PTY slave with blocking support
+            let pty_num = *pty_num;
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let pair = match crate::tty::pty::get(pty_num) {
+                Some(p) => p,
+                None => return SyscallResult::Err(5), // EIO
+            };
+            drop(manager_guard);
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+
+            loop {
+                pair.register_slave_waiter(thread_id);
+
+                match pair.slave_read(&mut user_buf) {
                     Ok(n) => {
+                        pair.unregister_slave_waiter(thread_id);
                         if n > 0 {
-                            if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
+                            if copy_to_user_bytes(buf_ptr, &user_buf[..n]).is_err() {
                                 return SyscallResult::Err(14);
                             }
                         }
-                        SyscallResult::Ok(n as u64)
+                        return SyscallResult::Ok(n as u64);
                     }
-                    Err(e) => SyscallResult::Err(e as u64),
+                    Err(_) => {
+                        if is_nonblocking {
+                            pair.unregister_slave_waiter(thread_id);
+                            return SyscallResult::Err(super::errno::EAGAIN as u64);
+                        }
+                    }
                 }
-            } else {
-                SyscallResult::Err(5) // EIO
+
+                crate::task::scheduler::with_scheduler(|sched| {
+                    sched.block_current();
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = true;
+                    }
+                });
+
+                if pair.has_slave_data() {
+                    crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.blocked_in_syscall = false;
+                            thread.set_ready();
+                        }
+                    });
+                    pair.unregister_slave_waiter(thread_id);
+                    continue;
+                }
+
+                crate::per_cpu::preempt_enable();
+
+                loop {
+                    if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                        pair.unregister_slave_waiter(thread_id);
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                                thread.set_ready();
+                            }
+                        });
+                        crate::per_cpu::preempt_disable();
+                        return SyscallResult::Err(e as u64);
+                    }
+
+                    let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                        if let Some(thread) = sched.current_thread_mut() {
+                            thread.state == crate::task::thread::ThreadState::Blocked
+                        } else {
+                            false
+                        }
+                    }).unwrap_or(false);
+
+                    if !still_blocked {
+                        crate::per_cpu::preempt_disable();
+                        break;
+                    }
+
+                    crate::task::scheduler::yield_current();
+                    unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+                }
+
+                crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+
+                crate::task::scheduler::with_scheduler(|sched| {
+                    if let Some(thread) = sched.current_thread_mut() {
+                        thread.blocked_in_syscall = false;
+                    }
+                });
+
+                pair.unregister_slave_waiter(thread_id);
             }
         }
         // TCP sockets

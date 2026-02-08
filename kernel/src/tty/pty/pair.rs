@@ -1,11 +1,6 @@
 //! PTY pair (master/slave) implementation
 
-// Allow unused - these are public API fields/methods for Phase 2+ PTY syscalls:
-// - PtyPair fields are used for PTY lifecycle management (unlockpt, ptsname)
-// - PtyBuffer::new() is used by PtyPair constructor
-// - PtyPair methods will be called from PTY syscalls
-#![allow(dead_code)]
-
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::tty::termios::Termios;
 use crate::tty::ioctl::Winsize;
@@ -98,17 +93,17 @@ pub struct PtyPair {
     /// Master side reference count
     pub master_refcount: AtomicU32,
 
-    /// Slave side reference count
-    pub slave_refcount: AtomicU32,
-
-    /// Session ID (if any)
-    pub session: spin::Mutex<Option<u32>>,
-
     /// Foreground process group ID
     pub foreground_pgid: spin::Mutex<Option<u32>>,
 
     /// Controlling process ID (for TIOCSCTTY/TIOCNOTTY)
     pub controlling_pid: spin::Mutex<Option<u32>>,
+
+    /// Threads blocked reading from master (waiting for slave to write)
+    pub master_waiters: spin::Mutex<Vec<u64>>,
+
+    /// Threads blocked reading from slave (waiting for master to write)
+    pub slave_waiters: spin::Mutex<Vec<u64>>,
 }
 
 impl PtyPair {
@@ -122,11 +117,88 @@ impl PtyPair {
             winsize: spin::Mutex::new(Winsize::default_pty()),
             locked: AtomicBool::new(true), // Locked until unlockpt()
             master_refcount: AtomicU32::new(1),
-            slave_refcount: AtomicU32::new(0),
-            session: spin::Mutex::new(None),
             foreground_pgid: spin::Mutex::new(None),
             controlling_pid: spin::Mutex::new(None),
+            master_waiters: spin::Mutex::new(Vec::new()),
+            slave_waiters: spin::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register a thread as waiting for data on the master side
+    pub fn register_master_waiter(&self, thread_id: u64) {
+        let mut waiters = self.master_waiters.lock();
+        if !waiters.contains(&thread_id) {
+            waiters.push(thread_id);
+        }
+    }
+
+    /// Unregister a thread from the master wait queue
+    pub fn unregister_master_waiter(&self, thread_id: u64) {
+        let mut waiters = self.master_waiters.lock();
+        waiters.retain(|&id| id != thread_id);
+    }
+
+    /// Wake all threads waiting for data on the master side
+    pub fn wake_master_waiters(&self) {
+        let readers: Vec<u64> = {
+            let mut waiters = self.master_waiters.lock();
+            waiters.drain(..).collect()
+        };
+
+        if !readers.is_empty() {
+            crate::task::scheduler::with_scheduler(|sched| {
+                for thread_id in &readers {
+                    sched.unblock(*thread_id);
+                }
+            });
+            crate::task::scheduler::set_need_resched();
+        }
+    }
+
+    /// Register a thread as waiting for data on the slave side
+    pub fn register_slave_waiter(&self, thread_id: u64) {
+        let mut waiters = self.slave_waiters.lock();
+        if !waiters.contains(&thread_id) {
+            waiters.push(thread_id);
+        }
+    }
+
+    /// Unregister a thread from the slave wait queue
+    pub fn unregister_slave_waiter(&self, thread_id: u64) {
+        let mut waiters = self.slave_waiters.lock();
+        waiters.retain(|&id| id != thread_id);
+    }
+
+    /// Wake all threads waiting for data on the slave side
+    pub fn wake_slave_waiters(&self) {
+        let readers: Vec<u64> = {
+            let mut waiters = self.slave_waiters.lock();
+            waiters.drain(..).collect()
+        };
+
+        if !readers.is_empty() {
+            crate::task::scheduler::with_scheduler(|sched| {
+                for thread_id in &readers {
+                    sched.unblock(*thread_id);
+                }
+            });
+            crate::task::scheduler::set_need_resched();
+        }
+    }
+
+    /// Check if there is data available for the master to read
+    pub fn has_master_data(&self) -> bool {
+        !self.slave_to_master.lock().is_empty()
+    }
+
+    /// Check if there is data available for the slave to read
+    pub fn has_slave_data(&self) -> bool {
+        let ldisc = self.ldisc.lock();
+        if ldisc.has_data() {
+            return true;
+        }
+        drop(ldisc);
+        !self.master_to_slave.lock().is_empty()
     }
 
     /// Write data to master (goes to slave's input via line discipline)
@@ -149,6 +221,14 @@ impl PtyPair {
             written += 1;
         }
 
+        drop(_termios);
+        drop(ldisc);
+
+        if written > 0 {
+            // Wake threads blocked on slave_read
+            self.wake_slave_waiters();
+        }
+
         Ok(written)
     }
 
@@ -166,9 +246,12 @@ impl PtyPair {
     pub fn slave_write(&self, data: &[u8]) -> Result<usize, i32> {
         let mut buffer = self.slave_to_master.lock();
         let n = buffer.write(data);
+        drop(buffer);
         if n == 0 {
             return Err(EAGAIN);
         }
+        // Wake threads blocked on master_read
+        self.wake_master_waiters();
         Ok(n)
     }
 

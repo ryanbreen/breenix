@@ -2,12 +2,6 @@
 //!
 //! Provides pseudo-terminal support for remote shell access.
 
-// Allow unused - this is public API for Phase 2+ PTY syscalls:
-// - allocate() will be called by posix_openpt syscall
-// - MAX_PTYS defines the system limit
-// - PtyAllocator.next_pty_num tracks allocation
-#![allow(dead_code)]
-
 pub mod pair;
 
 // Re-export PtyPair for external use
