@@ -158,6 +158,40 @@ impl CpuInfo {
         }
     }
 
+    /// Query the last-level cache size in KB using CPUID leaf 0x04.
+    ///
+    /// Iterates deterministic cache parameters (leaf 4, sub-leaves 0,1,2...)
+    /// and returns the size of the highest-level cache found.
+    pub fn cache_size_kb(&self) -> u32 {
+        if self.max_leaf < 4 {
+            return 0;
+        }
+
+        let mut last_level_size_kb = 0u32;
+
+        for sub_leaf in 0..16u32 {
+            let result = unsafe { core::arch::x86_64::__cpuid_count(4, sub_leaf) };
+            let cache_type = result.eax & 0x1F;
+            if cache_type == 0 {
+                break; // No more caches
+            }
+
+            let ways = ((result.ebx >> 22) & 0x3FF) + 1;
+            let partitions = ((result.ebx >> 12) & 0x3FF) + 1;
+            let line_size = (result.ebx & 0xFFF) + 1;
+            let sets = result.ecx + 1;
+
+            let size_bytes = ways * partitions * line_size * sets;
+            let size_kb = size_bytes / 1024;
+
+            if size_kb > last_level_size_kb {
+                last_level_size_kb = size_kb;
+            }
+        }
+
+        last_level_size_kb
+    }
+
     /// Generate the flags string from CPUID feature bits.
     pub fn flags_string(&self) -> String {
         let mut flags: Vec<&str> = Vec::new();

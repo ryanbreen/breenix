@@ -274,6 +274,59 @@ impl CpuInfo {
         result
     }
 
+    /// Query the last-level cache size in KB using CLIDR_EL1/CCSIDR_EL1.
+    ///
+    /// Reads the Cache Level ID Register to find the highest-level cache,
+    /// then reads its geometry from CCSIDR_EL1.
+    pub fn cache_size_kb(&self) -> u32 {
+        let clidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, clidr_el1", out(reg) clidr, options(nomem, nostack));
+        }
+
+        // Find the highest cache level (CLIDR has 3-bit fields for levels 1-7)
+        // Field values: 0=none, 1=icache only, 2=dcache only, 3=separate, 4=unified
+        let mut highest_level = 0u32;
+        for level in 0..7u32 {
+            let ctype = ((clidr >> (level * 3)) & 0x7) as u32;
+            if ctype == 0 {
+                break;
+            }
+            // We want data or unified caches (types 2, 3, 4)
+            if ctype >= 2 {
+                highest_level = level;
+            }
+        }
+
+        if highest_level == 0 && ((clidr & 0x7) < 2) {
+            return 0; // No data/unified cache found
+        }
+
+        // Select the cache level (CSSELR_EL1: Level in bits [3:1], InD=0 for data/unified)
+        let csselr_val = (highest_level as u64) << 1;
+        unsafe {
+            core::arch::asm!("msr csselr_el1, {}", in(reg) csselr_val, options(nomem, nostack));
+            core::arch::asm!("isb", options(nomem, nostack));
+        }
+
+        let ccsidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, ccsidr_el1", out(reg) ccsidr, options(nomem, nostack));
+        }
+
+        // CCSIDR_EL1 format (FEAT_CCIDX not assumed):
+        // [2:0]   LineSize: (Log2(line_size_words) - 2), word = 4 bytes
+        // [12:3]  Associativity - 1
+        // [27:13] NumSets - 1
+        let line_size_log2 = (ccsidr & 0x7) as u32 + 4; // +2 for field encoding, +2 for word->byte
+        let line_size = 1u32 << line_size_log2;
+        let assoc = (((ccsidr >> 3) & 0x3FF) as u32) + 1;
+        let num_sets = (((ccsidr >> 13) & 0x7FFF) as u32) + 1;
+
+        let size_bytes = line_size * assoc * num_sets;
+        size_bytes / 1024
+    }
+
     /// Physical address bits supported.
     pub fn pa_bits(&self) -> u8 {
         let parange = self.mmfr0 & 0xF;

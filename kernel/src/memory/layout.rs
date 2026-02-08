@@ -74,10 +74,16 @@ pub const USERSPACE_CODE_DATA_END: u64 = 0x0000_0000_8000_0000;
 /// Start of mmap allocation region (below stack)
 /// This is where anonymous mmap allocations (used by Rust's Vec/Box) are placed.
 /// The region grows downward from MMAP_REGION_END toward MMAP_REGION_START.
+#[cfg(target_arch = "x86_64")]
 pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
+#[cfg(target_arch = "aarch64")]
+pub const MMAP_REGION_START: u64 = aarch64_const::MMAP_REGION_START;
 
 /// End of mmap allocation region (gap before stack)
+#[cfg(target_arch = "x86_64")]
 pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
+#[cfg(target_arch = "aarch64")]
+pub const MMAP_REGION_END: u64 = aarch64_const::MMAP_REGION_END;
 
 /// User stack allocation region start (high canonical space)
 /// User stacks are allocated in this high canonical range for better compatibility

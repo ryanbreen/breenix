@@ -436,6 +436,7 @@ fn generate_version() -> String {
 /// Generate /proc/meminfo content
 fn generate_meminfo() -> String {
     use alloc::format;
+    use crate::memory::slab::{FD_TABLE_SLAB, SIGNAL_HANDLERS_SLAB};
 
     let stats = crate::memory::frame_allocator::memory_stats();
 
@@ -453,17 +454,53 @@ fn generate_meminfo() -> String {
         0
     };
 
+    // Slab memory usage: sum of allocated objects * object size for each slab
+    let slab_kb = {
+        let fd_stats = FD_TABLE_SLAB.stats();
+        let sig_stats = SIGNAL_HANDLERS_SLAB.stats();
+        let fd_bytes = (fd_stats.allocated * fd_stats.obj_size) as u64;
+        let sig_bytes = (sig_stats.allocated * sig_stats.obj_size) as u64;
+        (fd_bytes + sig_bytes) / 1024
+    };
+
+    // Kernel heap is 32 MiB fixed
+    let kernel_stack_kb: u64 = 32 * 1024; // 32 MiB heap as rough kernel memory estimate
+
     format!(
-        "MemTotal:     {:>10} kB\n\
-         MemFree:      {:>10} kB\n\
-         MemAvailable: {:>10} kB\n\
-         Buffers:      {:>10} kB\n\
-         Cached:       {:>10} kB\n",
+        "MemTotal:       {:>8} kB\n\
+         MemFree:        {:>8} kB\n\
+         MemAvailable:   {:>8} kB\n\
+         Buffers:        {:>8} kB\n\
+         Cached:         {:>8} kB\n\
+         SwapCached:     {:>8} kB\n\
+         Active:         {:>8} kB\n\
+         Inactive:       {:>8} kB\n\
+         SwapTotal:      {:>8} kB\n\
+         SwapFree:       {:>8} kB\n\
+         Slab:           {:>8} kB\n\
+         KernelStack:    {:>8} kB\n\
+         PageTables:     {:>8} kB\n\
+         CommitLimit:    {:>8} kB\n\
+         Committed_AS:   {:>8} kB\n\
+         VmallocTotal:   {:>8} kB\n\
+         VmallocUsed:    {:>8} kB\n",
         total_kb,
         free_kb,
-        free_kb, // Available ~= free for now
-        0,       // No buffer cache yet
-        0        // No page cache yet
+        free_kb,         // Available ~= free (no page cache pressure)
+        0u64,            // No buffer cache
+        0u64,            // No page cache
+        0u64,            // No swap cache
+        0u64,            // No active/inactive tracking
+        0u64,            // No active/inactive tracking
+        0u64,            // No swap
+        0u64,            // No swap
+        slab_kb,
+        kernel_stack_kb,
+        0u64,            // Page tables not tracked yet
+        total_kb,        // CommitLimit = total (no overcommit)
+        used_kb,         // Committed_AS = used memory
+        0u64,            // No vmalloc tracking
+        0u64,            // No vmalloc tracking
     )
 }
 
@@ -474,6 +511,16 @@ fn generate_cpuinfo() -> String {
     #[cfg(target_arch = "x86_64")]
     {
         if let Some(info) = crate::arch_impl::x86_64::cpuinfo::get() {
+            // Get real TSC frequency for cpu MHz and bogomips
+            let freq_hz = crate::arch_impl::x86_64::timer::frequency_hz();
+            let mhz = freq_hz / 1_000_000;
+            let mhz_frac = (freq_hz % 1_000_000) / 1_000; // 3 decimal places
+            // Linux computes bogomips as 2 * (tsc_freq / 1_000_000)
+            let bogomips_int = (freq_hz * 2) / 1_000_000;
+            let bogomips_frac = ((freq_hz * 2) % 1_000_000) / 10_000; // 2 decimal places
+
+            let cache_kb = info.cache_size_kb();
+
             format!(
                 "processor\t: 0\n\
                  vendor_id\t: {}\n\
@@ -481,8 +528,8 @@ fn generate_cpuinfo() -> String {
                  model\t\t: {}\n\
                  model name\t: {}\n\
                  stepping\t: {}\n\
-                 cpu MHz\t\t: 0.000\n\
-                 cache size\t: 0 KB\n\
+                 cpu MHz\t\t: {}.{:03}\n\
+                 cache size\t: {} KB\n\
                  physical id\t: 0\n\
                  siblings\t: {}\n\
                  core id\t\t: 0\n\
@@ -492,18 +539,21 @@ fn generate_cpuinfo() -> String {
                  cpuid level\t: {}\n\
                  clflush size\t: {}\n\
                  flags\t\t: {}\n\
-                 bogomips\t: 0.00\n\n",
+                 bogomips\t: {}.{:02}\n\n",
                 info.vendor_str(),
                 info.family,
                 info.model,
                 info.brand_str(),
                 info.stepping,
+                mhz, mhz_frac,
+                cache_kb,
                 info.logical_processors,
                 if info.features_edx & 1 != 0 { "yes" } else { "no" },
                 if info.features_edx & 1 != 0 { "yes" } else { "no" },
                 info.max_leaf,
                 info.clflush_size,
                 info.flags_string(),
+                bogomips_int, bogomips_frac,
             )
         } else {
             format!("processor\t: 0\nmodel name\t: Unknown (CPUID not initialized)\n\n")
@@ -521,6 +571,11 @@ fn generate_cpuinfo() -> String {
                 format!("{} (part 0x{:03x})", impl_name, info.part_number())
             };
 
+            // Get counter frequency for BogoMIPS (Linux ARM64: counter_freq * 2 / 1_000_000)
+            let counter_freq = crate::arch_impl::aarch64::timer::frequency_hz();
+            let bogomips_int = (counter_freq * 2) / 1_000_000;
+            let bogomips_frac = ((counter_freq * 2) % 1_000_000) / 10_000;
+
             let num_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
             let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
 
@@ -529,7 +584,7 @@ fn generate_cpuinfo() -> String {
                 use core::fmt::Write;
                 let _ = write!(output,
                     "processor\t: {}\n\
-                     BogoMIPS\t: 0.00\n\
+                     BogoMIPS\t: {}.{:02}\n\
                      Features\t: {}\n\
                      CPU implementer\t: 0x{:02x}\n\
                      CPU architecture\t: 8\n\
@@ -539,6 +594,7 @@ fn generate_cpuinfo() -> String {
                      Model name\t: {}\n\
                      Address sizes\t: {} bits physical\n\n",
                     cpu_id,
+                    bogomips_int, bogomips_frac,
                     info.features_string(),
                     info.implementer(),
                     info.variant(),
