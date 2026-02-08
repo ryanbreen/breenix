@@ -34,7 +34,7 @@
 
 /* External Rust functions */
 .extern rust_syscall_handler_aarch64
-.extern check_need_resched_and_switch_aarch64
+.extern check_need_resched_and_switch_arm64
 .extern trace_eret_to_el0
 
 /*
@@ -216,9 +216,13 @@ syscall_entry_from_el0:
     /*
      * Check if rescheduling is needed before returning to userspace.
      * Pass frame pointer for potential context switch.
+     * CRITICAL: Set from_el0=true (x1=1) explicitly. Without this, x1 contains
+     * whatever value rust_syscall_handler_aarch64 left (undefined by ABI), causing
+     * the context switch code to incorrectly treat this as a kernel-mode return.
      */
     mov x0, sp
-    bl check_need_resched_and_switch_aarch64
+    mov x1, #1
+    bl check_need_resched_and_switch_arm64
 
     /*
      * Restore registers from exception frame.

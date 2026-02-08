@@ -411,6 +411,18 @@ impl TtyDevice {
     ///
     /// This version avoids blocking and is safe for interrupt context.
     /// Used by input_char_nonblock for echo in interrupt context.
+    ///
+    /// # Lock ordering
+    ///
+    /// On ARM64, this uses raw UART writes (no lock) instead of
+    /// `crate::serial::write_byte()` to avoid acquiring SERIAL1 from IRQ
+    /// context. On SMP, another CPU may hold SERIAL1 and be waiting for the
+    /// SCHEDULER lock that this IRQ path also needs -- using the lock here
+    /// would create a deadlock. The raw UART write is safe because PL011
+    /// TX FIFO writes are atomic at the register level.
+    ///
+    /// On x86_64, `write_byte()` disables interrupts and acquires the lock,
+    /// which is safe because x86_64 uses separate COM1/COM2 ports.
     pub fn output_char_nonblock(&self, c: u8) {
         // Try to get termios settings without blocking
         let do_crlf = if let Some(ldisc) = self.ldisc.try_lock() {
@@ -423,13 +435,19 @@ impl TtyDevice {
 
         // Handle CR-LF translation
         if do_crlf {
+            #[cfg(target_arch = "aarch64")]
+            crate::serial_aarch64::raw_serial_char(b'\r');
+            #[cfg(target_arch = "x86_64")]
             crate::serial::write_byte(b'\r');
             // Queue for deferred framebuffer rendering
             #[cfg(any(target_arch = "aarch64", feature = "interactive"))]
             let _ = crate::graphics::render_queue::queue_byte(b'\r');
         }
 
-        // Write the character
+        // Write the character -- lock-free on ARM64, locked on x86_64
+        #[cfg(target_arch = "aarch64")]
+        crate::serial_aarch64::raw_serial_char(c);
+        #[cfg(target_arch = "x86_64")]
         crate::serial::write_byte(c);
 
         // Queue for deferred framebuffer rendering
@@ -471,11 +489,20 @@ impl TtyDevice {
     /// Send a signal to the foreground process group (non-blocking)
     ///
     /// Used by input_char_nonblock in interrupt context.
+    ///
+    /// # Lock ordering
+    ///
+    /// This runs from IRQ context so must NOT use serial_println! (acquires
+    /// SERIAL1). Uses raw UART for any diagnostic output on ARM64.
     #[allow(dead_code)]
     fn send_signal_to_foreground_nonblock(&self, sig: u32) {
         let pgrp = match self.foreground_pgrp.try_lock() {
             Some(guard) => *guard,
             None => {
+                // Lock-free diagnostic: cannot acquire foreground_pgrp lock
+                #[cfg(target_arch = "aarch64")]
+                crate::serial_aarch64::raw_serial_str(b"[TTY] sig: fg_pgrp lock busy\n");
+                #[cfg(target_arch = "x86_64")]
                 crate::serial_println!(
                     "TTY{}: Cannot send signal {} - foreground_pgrp lock busy",
                     self.num,
@@ -486,21 +513,11 @@ impl TtyDevice {
         };
 
         if let Some(pgrp) = pgrp {
-            crate::serial_println!(
-                "TTY{}: Sending signal {} to foreground pgrp {}",
-                self.num,
-                sig,
-                pgrp
-            );
             let pid = ProcessId::new(pgrp);
             Self::send_signal_to_process_nonblock(pid, sig);
-        } else {
-            crate::serial_println!(
-                "TTY{}: Cannot send signal {} - no foreground pgrp set",
-                self.num,
-                sig
-            );
         }
+        // No diagnostic for "no pgrp set" -- this is a normal condition
+        // during early boot before any shell sets its foreground pgrp.
     }
 
     /// Send a signal to a specific process
@@ -554,28 +571,43 @@ impl TtyDevice {
     /// Send a signal to a specific process (non-blocking)
     ///
     /// Used by send_signal_to_foreground_nonblock in interrupt context.
+    ///
+    /// # Lock ordering
+    ///
+    /// This runs from IRQ context and acquires PROCESS_MANAGER (level 2) and
+    /// SCHEDULER (level 1) via `with_scheduler`. It must NOT use serial_println!
+    /// (acquires SERIAL1, level 4) because SCHEDULER is a higher-priority lock.
+    /// Uses raw UART for diagnostic output on ARM64.
     #[allow(dead_code)]
     fn send_signal_to_process_nonblock(pid: ProcessId, sig: u32) {
         use crate::process;
-
-        let sig_name = match sig {
-            SIGINT => "SIGINT",
-            SIGQUIT => "SIGQUIT",
-            SIGTSTP => "SIGTSTP",
-            _ => "UNKNOWN",
-        };
 
         // Try to get the process manager without blocking
         if let Some(mut manager) = process::try_manager() {
             if let Some(ref mut pm) = *manager {
                 if let Some(proc) = pm.get_process_mut(pid) {
                     proc.signals.set_pending(sig);
-                    crate::serial_println!(
-                        "TTY: Sent {} to process {} (PID {}) [nonblock]",
-                        sig_name,
-                        proc.name,
-                        pid.as_u64()
-                    );
+
+                    // Lock-free diagnostic output
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        crate::serial_aarch64::raw_serial_str(b"[TTY] sig sent to PID\n");
+                    }
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let sig_name = match sig {
+                            SIGINT => "SIGINT",
+                            SIGQUIT => "SIGQUIT",
+                            SIGTSTP => "SIGTSTP",
+                            _ => "UNKNOWN",
+                        };
+                        crate::serial_println!(
+                            "TTY: Sent {} to process {} (PID {}) [nonblock]",
+                            sig_name,
+                            proc.name,
+                            pid.as_u64()
+                        );
+                    }
 
                     // CRITICAL: Wake the thread if it's blocked so it can receive the signal.
                     // Use unblock() instead of unblock_for_signal() because:
@@ -589,21 +621,13 @@ impl TtyDevice {
                             sched.unblock(thread_id);
                         });
                     }
-                } else {
-                    crate::serial_println!(
-                        "TTY: Failed to send {} - no process with PID {}",
-                        sig_name,
-                        pid.as_u64()
-                    );
                 }
+                // No diagnostic for "process not found" in IRQ context --
+                // this can happen normally during process teardown.
             }
-        } else {
-            crate::serial_println!(
-                "TTY: Failed to send {} to PID {} - manager lock busy",
-                sig_name,
-                pid.as_u64()
-            );
         }
+        // No diagnostic for "manager lock busy" in IRQ context --
+        // the signal will be retried on next input.
     }
 
     /// Register a thread as blocked waiting for TTY input

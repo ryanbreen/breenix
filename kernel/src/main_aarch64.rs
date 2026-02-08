@@ -386,6 +386,26 @@ pub extern "C" fn kernel_main() -> ! {
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
 
+    // Bring up secondary CPUs via PSCI CPU_ON
+    serial_println!("[smp] Starting secondary CPUs...");
+    let expected_cpus: u64 = 4;
+    for cpu in 1..expected_cpus {
+        kernel::arch_impl::aarch64::smp::release_cpu(cpu as usize);
+    }
+    // Wait for all CPUs to come online (with timeout)
+    let start = timer::rdtsc();
+    let timeout_ticks = timer::frequency_hz() / 10; // 100ms timeout
+    while kernel::arch_impl::aarch64::smp::cpus_online() < expected_cpus {
+        if timer::rdtsc() - start > timeout_ticks {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    serial_println!(
+        "[smp] {} CPUs online",
+        kernel::arch_impl::aarch64::smp::cpus_online()
+    );
+
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
     {
@@ -557,29 +577,41 @@ fn init_scheduler() {
     use kernel::per_cpu_aarch64;
     use kernel::memory::arch_stub::VirtAddr;
 
-    // Use a dummy stack address for the idle task (we're already running on a stack)
-    let dummy_stack_top = VirtAddr::new(0x4000_0000);
-    let dummy_stack_bottom = VirtAddr::new(0x3FFF_0000);
+    // CPU 0 boot stack top address — must match boot.S layout:
+    // HHDM_BASE + STACK_REGION_BASE + (cpu_id + 1) * STACK_SIZE
+    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
+    const STACK_REGION_BASE: u64 = 0x4100_0000;
+    const STACK_SIZE: u64 = 0x20_0000; // 2MB per CPU
+    let boot_stack_top = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE + STACK_SIZE);
+    let boot_stack_bottom = VirtAddr::new(HHDM_BASE + STACK_REGION_BASE);
     let dummy_tls = VirtAddr::zero();
 
     // Create the idle task (thread ID 0)
     let mut idle_task = Box::new(Thread::new(
         String::from("swapper/0"),  // Linux convention: swapper/0 is the idle task
         idle_thread_fn,
-        dummy_stack_top,
-        dummy_stack_bottom,
+        boot_stack_top,
+        boot_stack_bottom,
         dummy_tls,
         ThreadPrivilege::Kernel,
     ));
+
+    // CRITICAL: Set kernel_stack_top to CPU 0's boot stack. Without this,
+    // setup_idle_return_arm64 falls back to Aarch64PerCpu::kernel_stack_top()
+    // which retains the LAST dispatched thread's kernel stack. The idle thread
+    // then runs on that thread's stack, and timer IRQs push exception frames
+    // that overwrite the other thread's SVC frame → ELR=0 crash.
+    idle_task.kernel_stack_top = Some(boot_stack_top);
 
     // Mark as running with ID 0, and has_started=true since boot code is already executing
     idle_task.state = ThreadState::Running;
     idle_task.id = 0;
     idle_task.has_started = true;  // CRITICAL: Boot thread is already running, not waiting for first entry
 
-    // Set up per-CPU current thread pointer
+    // Set up per-CPU current thread pointer and kernel stack
     let idle_task_ptr = &*idle_task as *const _ as *mut Thread;
     per_cpu_aarch64::set_current_thread(idle_task_ptr);
+    per_cpu_aarch64::set_kernel_stack_top(boot_stack_top.as_u64());
 
     // Initialize scheduler with the idle task
     scheduler::init_with_current(idle_task);

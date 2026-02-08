@@ -25,6 +25,7 @@ pub mod timer_interrupt;
 pub mod mmu;
 pub mod context;
 pub mod context_switch;
+pub mod smp;
 pub mod syscall_entry;
 pub mod trace;
 

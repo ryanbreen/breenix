@@ -155,17 +155,6 @@ pub extern "C" fn rust_syscall_handler_aarch64(frame: &mut Aarch64ExceptionFrame
     Aarch64PerCpu::preempt_enable();
 }
 
-/// Check if rescheduling is needed and perform context switch if necessary.
-///
-/// Called from assembly after syscall handler returns.
-/// This is the ARM64 equivalent of `check_need_resched_and_switch`.
-#[no_mangle]
-pub extern "C" fn check_need_resched_and_switch_aarch64(frame: &mut Aarch64ExceptionFrame) {
-    // Trace: context switch check called (from assembly)
-    super::trace::trace_exec(b'C');
-    crate::arch_impl::aarch64::context_switch::check_need_resched_and_switch_arm64(frame, true);
-}
-
 /// Trace function called before ERET to EL0 (for debugging).
 ///
 /// This is intentionally minimal to avoid slowing down the return path.

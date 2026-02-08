@@ -2239,10 +2239,8 @@ fn test_keyboard_irq_setup() -> TestResult {
 /// set up during boot. The test checks that PROCESS_MANAGER can be locked
 /// and contains a valid ProcessManager instance.
 fn test_process_manager_init() -> TestResult {
-    use crate::process::PROCESS_MANAGER;
-
-    // Try to acquire the process manager lock
-    let manager_guard = PROCESS_MANAGER.lock();
+    // Try to acquire the process manager lock (interrupt-safe on ARM64)
+    let manager_guard = crate::process::manager();
 
     // Verify the process manager exists (was initialized during boot)
     if manager_guard.is_some() {

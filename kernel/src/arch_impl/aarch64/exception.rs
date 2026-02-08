@@ -9,10 +9,77 @@
 
 #![allow(dead_code)]
 
+use crate::arch_impl::aarch64::constants;
 use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::aarch64::exception_frame::Aarch64ExceptionFrame;
 use crate::arch_impl::aarch64::syscall_entry::rust_syscall_handler_aarch64;
 use crate::arch_impl::traits::SyscallFrame;
+
+/// Set the per-CPU idle/boot stack in `user_rsp_scratch` so the assembly ERET
+/// path restores SP to a safe stack when redirecting to idle_loop_arm64.
+///
+/// CRITICAL: Always use the CPU's boot stack (computed from CPU ID), NOT
+/// `Aarch64PerCpu::kernel_stack_top()`. The per-CPU kernel_stack_top holds
+/// the LAST DISPATCHED thread's kernel stack — when called from an exception
+/// handler after a user process crash, this would be the crashed process's
+/// kernel stack, causing the idle thread to run on a stack that may be freed
+/// during process cleanup.
+#[inline(always)]
+fn set_idle_stack_for_eret() {
+    use crate::arch_impl::aarch64::percpu::Aarch64PerCpu;
+
+    // Boot stack: HHDM_BASE + 0x4100_0000 + (cpu_id + 1) * 0x20_0000
+    let cpu_id = Aarch64PerCpu::cpu_id() as u64;
+    let idle_stack = 0xFFFF_0000_0000_0000u64 + 0x4100_0000 + (cpu_id + 1) * 0x20_0000;
+    unsafe {
+        Aarch64PerCpu::set_user_rsp_scratch(idle_stack);
+    }
+}
+
+/// Switch TTBR0 to the kernel page table and flush the TLB.
+///
+/// This ensures we don't return to userspace with a stale/terminated address space.
+#[inline(always)]
+fn switch_ttbr0_to_kernel() {
+    let mut kernel_ttbr0 = crate::per_cpu_aarch64::get_kernel_cr3();
+    if kernel_ttbr0 == 0 {
+        // Fallback to boot TTBR0 table if per-CPU kernel TTBR0 is unavailable.
+        kernel_ttbr0 = 0x4200_0000;
+    }
+
+    unsafe {
+        core::arch::asm!(
+            "dsb ishst",
+            "msr ttbr0_el1, {}",
+            "isb",
+            "tlbi vmalle1is",
+            "dsb ish",
+            "isb",
+            in(reg) kernel_ttbr0,
+            options(nomem, nostack)
+        );
+    }
+}
+
+/// Mark the current thread as Terminated in the scheduler and remove from ready queue.
+///
+/// Called from exception handlers after `pm.exit_process()` to prevent the
+/// scheduler from re-dispatching a thread whose process has been terminated
+/// (page tables freed, FDs closed, etc.). Without this, other CPUs can pick
+/// up the "still Ready" thread and ERET into a freed address space.
+///
+/// Must be called BEFORE `switch_to_idle()`, because after that call
+/// `current_thread_id()` returns the idle thread ID.
+fn terminate_current_scheduler_thread() {
+    if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+        crate::task::scheduler::with_scheduler(|sched| {
+            if let Some(thread) = sched.get_thread_mut(thread_id) {
+                thread.set_terminated();
+            }
+            sched.remove_from_ready_queue(thread_id);
+        });
+    }
+}
 
 /// ARM64 syscall result type (mirrors x86_64 version)
 #[derive(Debug)]
@@ -93,8 +160,47 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             // Lock-free trace: data abort event
             crate::tracing::providers::process::trace_data_abort(0, dfsc);
 
-            // One condensed serial_println for fatal crash visibility
-            crate::serial_println!("[DATA_ABORT] FAR={:#x} ESR={:#x} DFSC={:#x}", far, esr, dfsc);
+            // Lock-free diagnostic — serial_println! acquires SERIAL lock which
+            // can deadlock on SMP if another CPU holds SCHEDULER.
+            {
+                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_char, raw_uart_dec};
+                raw_uart_str("\n[DATA_ABORT] FAR=");
+                raw_uart_hex(far);
+                raw_uart_str(" ELR=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str(" ESR=");
+                raw_uart_hex(esr);
+                raw_uart_str(" DFSC=");
+                raw_uart_hex(dfsc as u64);
+                raw_uart_str(" TTBR0=");
+                raw_uart_hex(ttbr0);
+                raw_uart_str(" from_el0=");
+                raw_uart_char(if from_el0 { b'1' } else { b'0' });
+
+                // For kernel-mode faults, dump extra diagnostic info to identify
+                // the faulting code path (null deref, wild pointer, use-after-free)
+                if !from_el0 {
+                    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                    raw_uart_str(" cpu=");
+                    raw_uart_dec(cpu_id as u64);
+                    raw_uart_str("\n  x29=");
+                    raw_uart_hex(frame_ref.x29);
+                    raw_uart_str(" x30=");
+                    raw_uart_hex(frame_ref.x30);
+                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                        raw_uart_str(" tid=");
+                        raw_uart_dec(tid);
+                        let _name = crate::task::scheduler::with_thread_mut(tid, |thread| {
+                            thread.name.clone()
+                        });
+                        if let Some(ref name) = _name {
+                            raw_uart_str(" name=");
+                            raw_uart_str(name);
+                        }
+                    }
+                }
+                raw_uart_str("\n");
+            }
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
@@ -103,8 +209,13 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
 
                 // Find and terminate the process
                 let mut terminated = false;
+                let mut already_terminated = false;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
+                        if _process.is_terminated() {
+                            already_terminated = true;
+                            return;
+                        }
                         crate::tracing::providers::process::trace_process_exit(pid.as_u64() as u16, (-11i16) as u16);
                         pm.exit_process(pid, -11); // SIGSEGV exit code
                         terminated = true;
@@ -113,25 +224,36 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     }
                 });
 
-                if terminated {
-                    // Mark scheduler needs reschedule
+                if terminated || already_terminated {
+                    // CRITICAL: Mark the scheduler's thread as Terminated BEFORE
+                    // switch_to_idle(). Without this, the scheduler still thinks
+                    // the thread is Ready/Running and will re-dispatch it on
+                    // another CPU, causing ERET to a freed address space.
+                    terminate_current_scheduler_thread();
+                    switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
 
-                    // Switch scheduler to idle thread
-                    crate::task::scheduler::switch_to_idle();
-
-                    // Modify exception frame to return to idle loop
-                    // The idle loop runs in EL1 and will handle rescheduling
+                    // CRITICAL: Set frame values BEFORE switch_to_idle() —
+                    // if switch_to_idle hits a nested exception, the frame
+                    // must already have safe ELR/SPSR for the assembly ERET path.
                     frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-                    frame_ref.spsr = 0x3c5; // EL1h, interrupts enabled
-
-                    // Return to idle loop via ERET
+                    frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
+                    set_idle_stack_for_eret();
+                    crate::task::scheduler::switch_to_idle();
                     return;
                 }
             }
 
-            // From kernel or couldn't terminate - hang
-            loop { unsafe { core::arch::asm!("wfi"); } }
+            // From kernel or couldn't terminate — redirect to idle loop.
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
+            // if switch_to_idle panics or hits a nested exception, the frame
+            // must already have safe ELR/SPSR for the assembly ERET path.
+            frame_ref.elr =
+                crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.spsr = 0x5; // EL1h, interrupts enabled
+            set_idle_stack_for_eret();
+            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
 
         exception_class::INSTRUCTION_ABORT_LOWER | exception_class::INSTRUCTION_ABORT_SAME => {
@@ -144,22 +266,71 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                 core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack));
             }
 
-            crate::serial_println!(
-                "[INSTRUCTION_ABORT] FAR={:#x} ELR={:#x} ESR={:#x} IFSC={:#x} TTBR0={:#x} from_el0={}",
-                far, frame_ref.elr, esr, ifsc, ttbr0, from_el0
-            );
+            // Use raw UART for ALL output — serial_println! acquires a spin lock
+            // that may already be held by this or another CPU, causing deadlock.
+            {
+                use crate::arch_impl::aarch64::context_switch::{raw_uart_char, raw_uart_str, raw_uart_hex, raw_uart_dec};
+                raw_uart_str("\n[INSTRUCTION_ABORT] FAR=");
+                raw_uart_hex(far);
+                raw_uart_str(" ELR=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str(" ESR=");
+                raw_uart_hex(esr);
+                raw_uart_str(" IFSC=");
+                raw_uart_hex(ifsc as u64);
+                raw_uart_str(" TTBR0=");
+                raw_uart_hex(ttbr0);
+                raw_uart_str(" from_el0=");
+                raw_uart_char(if from_el0 { b'1' } else { b'0' });
+
+                if !from_el0 && frame_ref.elr < 0x1000 {
+                    let cpu_id = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
+                    raw_uart_str("\n[DIAG] ELR=");
+                    raw_uart_hex(frame_ref.elr);
+                    raw_uart_str(" from EL1 cpu=");
+                    raw_uart_dec(cpu_id as u64);
+                    // Identify current thread
+                    if let Some(tid) = crate::task::scheduler::current_thread_id() {
+                        raw_uart_str(" tid=");
+                        raw_uart_dec(tid);
+                        let _name = crate::task::scheduler::with_thread_mut(tid, |thread| {
+                            thread.name.clone()
+                        });
+                        if let Some(ref name) = _name {
+                            raw_uart_str(" name=");
+                            raw_uart_str(name);
+                        }
+                    }
+                    raw_uart_str("\n  x0=");
+                    raw_uart_hex(frame_ref.x0);
+                    raw_uart_str(" x19=");
+                    raw_uart_hex(frame_ref.x19);
+                    raw_uart_str(" x29=");
+                    raw_uart_hex(frame_ref.x29);
+                    raw_uart_str(" x30=");
+                    raw_uart_hex(frame_ref.x30);
+                    raw_uart_str("\n  spsr=");
+                    raw_uart_hex(frame_ref.spsr);
+                    raw_uart_str(" sp_at_frame=");
+                    raw_uart_hex(frame_ref as *const _ as u64);
+                    raw_uart_str("\n");
+                }
+            }
 
             if from_el0 {
                 // From userspace - terminate the process with SIGSEGV
                 let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
 
                 let mut terminated = false;
+                let mut already_terminated = false;
+                let mut killed_pid: u64 = 0;
                 crate::process::with_process_manager(|pm| {
                     if let Some((pid, _process)) = pm.find_process_by_cr3_mut(page_table_phys) {
-                        crate::serial_println!(
-                            "[INSTRUCTION_ABORT] Terminating PID {} (SIGSEGV)",
-                            pid.as_u64()
-                        );
+                        if _process.is_terminated() {
+                            already_terminated = true;
+                            return;
+                        }
+                        killed_pid = pid.as_u64();
                         crate::tracing::providers::process::trace_process_exit(
                             pid.as_u64() as u16,
                             (-11i16) as u16,
@@ -168,19 +339,42 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                         terminated = true;
                     }
                 });
-
+                // Lock-free diagnostic AFTER releasing process manager lock
                 if terminated {
+                    use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_dec};
+                    raw_uart_str("[INSTRUCTION_ABORT] Terminating PID ");
+                    raw_uart_dec(killed_pid);
+                    raw_uart_str(" (SIGSEGV)\n");
+                }
+
+                if terminated || already_terminated {
+                    terminate_current_scheduler_thread();
+                    switch_ttbr0_to_kernel();
                     crate::task::scheduler::set_need_resched();
-                    crate::task::scheduler::switch_to_idle();
+                    // CRITICAL: Set frame values BEFORE switch_to_idle()
                     frame_ref.elr =
                         crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
-                    frame_ref.spsr = 0x3c5; // EL1h, interrupts enabled
+                    frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
+                    set_idle_stack_for_eret();
+                    crate::task::scheduler::switch_to_idle();
                     return;
                 }
             }
 
-            // From kernel or couldn't terminate - hang
-            loop { unsafe { core::arch::asm!("wfi"); } }
+            // From kernel or couldn't terminate — redirect to idle loop.
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort() —
+            // if switch_to_idle panics or hits a nested exception, the frame
+            // must already have safe ELR/SPSR for the assembly ERET path.
+            {
+                use crate::arch_impl::aarch64::context_switch::raw_uart_str;
+                raw_uart_str("[INSTRUCTION_ABORT] redirecting to idle\n");
+            }
+            frame_ref.elr =
+                crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.spsr = 0x5; // EL1h, DAIF clear (interrupts enabled)
+            set_idle_stack_for_eret();
+            // Use best_effort (try_lock) to avoid deadlock if SCHEDULER is held.
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
 
         exception_class::BRK_AARCH64 => {
@@ -191,13 +385,94 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
             frame.elr += 4;
         }
 
+        exception_class::SP_ALIGNMENT => {
+            // SP alignment fault — redirect to idle to avoid hang.
+            let frame_ref = unsafe { &mut *frame };
+            let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            {
+                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_char};
+                raw_uart_str("\n[SP_ALIGN] ELR=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str(" FAR=");
+                raw_uart_hex(far);
+                raw_uart_str(" from_el0=");
+                raw_uart_char(if from_el0 { b'1' } else { b'0' });
+                raw_uart_str("\n");
+            }
+            if from_el0 {
+                let ttbr0: u64;
+                unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+                let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+                crate::process::with_process_manager(|pm| {
+                    if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
+                        if !process.is_terminated() {
+                            pm.exit_process(pid, -11);
+                        }
+                    }
+                });
+                terminate_current_scheduler_thread();
+                switch_ttbr0_to_kernel();
+            }
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
+            frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.spsr = 0x5;
+            set_idle_stack_for_eret();
+            crate::task::scheduler::switch_to_idle_best_effort();
+        }
+
+        // PC alignment fault (EC=0x22) — CPU tried to execute at a misaligned address.
+        // This happens when a thread's ELR is corrupted to a non-4-byte-aligned value
+        // (e.g., 0x3). Redirect to idle instead of hanging.
+        0x22 => {
+            let frame_ref = unsafe { &mut *frame };
+            let from_el0 = (frame_ref.spsr & 0xF) == 0;
+            {
+                use crate::arch_impl::aarch64::context_switch::{raw_uart_str, raw_uart_hex, raw_uart_char};
+                raw_uart_str("\n[PC_ALIGN] ELR=");
+                raw_uart_hex(frame_ref.elr);
+                raw_uart_str(" FAR=");
+                raw_uart_hex(far);
+                raw_uart_str(" from_el0=");
+                raw_uart_char(if from_el0 { b'1' } else { b'0' });
+                raw_uart_str("\n");
+            }
+            if from_el0 {
+                let ttbr0: u64;
+                unsafe { core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack)); }
+                let page_table_phys = ttbr0 & !0xFFFF_0000_0000_0FFF;
+                crate::process::with_process_manager(|pm| {
+                    if let Some((pid, process)) = pm.find_process_by_cr3_mut(page_table_phys) {
+                        if !process.is_terminated() {
+                            pm.exit_process(pid, -11);
+                        }
+                    }
+                });
+                terminate_current_scheduler_thread();
+                switch_ttbr0_to_kernel();
+            }
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
+            frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.spsr = 0x5;
+            set_idle_stack_for_eret();
+            crate::task::scheduler::switch_to_idle_best_effort();
+        }
+
         _ => {
-            let frame = unsafe { &*frame };
+            // Mask all interrupts to prevent cascading exceptions on SMP
+            // (timer IRQs cause context switches that schedule more threads
+            // onto this CPU, each hitting the same unhandled exception)
+            unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack)); }
+            let frame_ref = unsafe { &mut *frame };
             crate::serial_println!("[exception] Unhandled sync exception");
             crate::serial_println!("  EC: {:#x}, ISS: {:#x}", ec, iss);
-            crate::serial_println!("  ELR: {:#x}, FAR: {:#x}", frame.elr, far);
-            // Hang
-            loop { unsafe { core::arch::asm!("wfi"); } }
+            crate::serial_println!("  ELR: {:#x}, FAR: {:#x}", frame_ref.elr, far);
+            crate::serial_println!("  SPSR: {:#x}", frame_ref.spsr);
+            // Redirect to idle instead of hanging — allows system to recover.
+            // CRITICAL: Set frame values BEFORE switch_to_idle_best_effort()
+            frame_ref.elr = crate::arch_impl::aarch64::idle_loop_arm64 as *const () as u64;
+            frame_ref.spsr = 0x5;
+            set_idle_stack_for_eret();
+            crate::task::scheduler::switch_to_idle_best_effort();
         }
     }
 }
@@ -402,7 +677,12 @@ pub extern "C" fn handle_irq() {
             }
 
             // SGIs (0-15) - Inter-processor interrupts
-            0..=15 => {}
+            0..=15 => {
+                if irq_id == constants::SGI_RESCHEDULE {
+                    // IPI reschedule: another CPU unblocked a thread and wants us to pick it up
+                    crate::per_cpu_aarch64::set_need_resched(true);
+                }
+            }
 
             // PPIs (16-31) - Private peripheral interrupts (excluding timer)
             16..=31 => {}
@@ -521,7 +801,7 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     use crate::memory::arch_stub::{VirtAddr, Page, Size4KiB};
     use crate::memory::cow_stats;
     use crate::memory::frame_allocator::allocate_frame;
-    use crate::memory::frame_metadata::{frame_decref, frame_is_shared};
+    use crate::memory::frame_metadata::{frame_decref, frame_is_shared, frame_register};
     use crate::memory::process_memory::{is_cow_page, make_private_flags};
 
     // Check if this is a CoW fault:
@@ -552,120 +832,119 @@ fn handle_cow_fault_arm64(far: u64, iss: u32) -> bool {
     // Lock-free trace: CoW fault entry (pid unknown yet, page index from far)
     crate::tracing::providers::process::trace_cow_fault(0, (far >> 12) as u16);
 
-    // Try to acquire process manager lock
-    match crate::process::try_manager() {
-        Some(mut guard) => {
-            cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            let pm = match guard.as_mut() {
-                Some(pm) => pm,
-                None => return false,
-            };
+    // Acquire process manager lock (blocking, with interrupts disabled on ARM64).
+    // This is safe because CoW faults from EL0 guarantee the current CPU doesn't
+    // hold PROCESS_MANAGER — we were in userspace when the fault occurred.
+    // Using try_manager() (non-blocking) would fail under SMP contention when
+    // another CPU holds the lock during fork/exec, killing the faulting process.
+    let mut guard = crate::process::manager();
+    cow_stats::MANAGER_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let pm = match guard.as_mut() {
+        Some(pm) => pm,
+        None => return false,
+    };
 
-            // Find process by page table
-            let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
-                Some(p) => p,
-                None => {
-                    return false;
-                }
-            };
-
-            let page_table = match &mut process.page_table {
-                Some(pt) => pt,
-                None => return false,
-            };
-
-            let page: Page<Size4KiB> = Page::containing_address(faulting_addr);
-
-            // Get current page info
-            let (old_frame, old_flags) = match page_table.get_page_info(page) {
-                Some(info) => info,
-                None => {
-                    return false;
-                }
-            };
-
-            // Check if this is a CoW page
-            if !is_cow_page(old_flags) {
-                return false;
-            }
-
-            // Lock-free trace: CoW handling with known PID
-            crate::tracing::providers::process::trace_cow_fault(_pid.as_u64() as u16, (far >> 12) as u16);
-
-            // If we're the sole owner, just make it writable
-            if !frame_is_shared(old_frame) {
-                let new_flags = make_private_flags(old_flags);
-                if page_table.update_page_flags(page, new_flags).is_err() {
-                    return false;
-                }
-                // Flush TLB
-                unsafe {
-                    let va_for_tlbi = faulting_addr.as_u64() >> 12;
-                    core::arch::asm!(
-                        "dsb ishst",
-                        "tlbi vale1is, {0}",
-                        "dsb ish",
-                        "isb",
-                        in(reg) va_for_tlbi,
-                        options(nostack)
-                    );
-                }
-                cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
-                return true;
-            }
-
-            // Need to copy the page
-            let new_frame = match allocate_frame() {
-                Some(f) => f,
-                None => {
-                    return false;
-                }
-            };
-
-            // Copy page contents via HHDM
-            let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-            let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
-            let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
-
-            unsafe {
-                core::ptr::copy_nonoverlapping(src, dst, 4096);
-            }
-
-            // Unmap old page and map new one with write permissions
-            let new_flags = make_private_flags(old_flags);
-            if page_table.unmap_page(page).is_err() {
-                return false;
-            }
-            if page_table.map_page(page, new_frame, new_flags).is_err() {
-                return false;
-            }
-
-            // Decrement reference count on old frame
-            frame_decref(old_frame);
-
-            // Flush TLB
-            unsafe {
-                let va_for_tlbi = faulting_addr.as_u64() >> 12;
-                core::arch::asm!(
-                    "dsb ishst",
-                    "tlbi vale1is, {0}",
-                    "dsb ish",
-                    "isb",
-                    in(reg) va_for_tlbi,
-                    options(nostack)
-                );
-            }
-
-            cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
-
-            true
-        }
+    // Find process by page table
+    let (_pid, process) = match pm.find_process_by_cr3_mut(page_table_phys) {
+        Some(p) => p,
         None => {
-            cow_stats::DIRECT_PATH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            crate::tracing::providers::process::trace_cow_lock_fail(0);
-            false
+            return false;
         }
+    };
+
+    let page_table = match &mut process.page_table {
+        Some(pt) => pt,
+        None => return false,
+    };
+
+    let page: Page<Size4KiB> = Page::containing_address(faulting_addr);
+
+    // Get current page info
+    let (old_frame, old_flags) = match page_table.get_page_info(page) {
+        Some(info) => info,
+        None => {
+            return false;
+        }
+    };
+
+    // Check if this is a CoW page
+    if !is_cow_page(old_flags) {
+        return false;
     }
+
+    // Lock-free trace: CoW handling with known PID
+    crate::tracing::providers::process::trace_cow_fault(_pid.as_u64() as u16, (far >> 12) as u16);
+
+    // If we're the sole owner, just make it writable
+    if !frame_is_shared(old_frame) {
+        let new_flags = make_private_flags(old_flags);
+        if page_table.update_page_flags(page, new_flags).is_err() {
+            return false;
+        }
+        // Flush TLB
+        unsafe {
+            let va_for_tlbi = faulting_addr.as_u64() >> 12;
+            core::arch::asm!(
+                "dsb ishst",
+                "tlbi vale1is, {0}",
+                "dsb ish",
+                "isb",
+                in(reg) va_for_tlbi,
+                options(nostack)
+            );
+        }
+        cow_stats::SOLE_OWNER_OPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
+        return true;
+    }
+
+    // Need to copy the page
+    let new_frame = match allocate_frame() {
+        Some(f) => f,
+        None => {
+            return false;
+        }
+    };
+
+    // Register the new frame so it's tracked for cleanup on process exit
+    frame_register(new_frame);
+
+    // Copy page contents via HHDM
+    let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let src = (hhdm_base + old_frame.start_address().as_u64()) as *const u8;
+    let dst = (hhdm_base + new_frame.start_address().as_u64()) as *mut u8;
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(src, dst, 4096);
+    }
+
+    // Unmap old page and map new one with write permissions
+    let new_flags = make_private_flags(old_flags);
+    if page_table.unmap_page(page).is_err() {
+        return false;
+    }
+    if page_table.map_page(page, new_frame, new_flags).is_err() {
+        return false;
+    }
+
+    // Decrement reference count on old frame
+    frame_decref(old_frame);
+
+    // Flush TLB
+    unsafe {
+        let va_for_tlbi = faulting_addr.as_u64() >> 12;
+        core::arch::asm!(
+            "dsb ishst",
+            "tlbi vale1is, {0}",
+            "dsb ish",
+            "isb",
+            in(reg) va_for_tlbi,
+            options(nostack)
+        );
+    }
+
+    cow_stats::PAGES_COPIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    crate::tracing::providers::process::trace_cow_copy(_pid.as_u64() as u16, (far >> 12) as u16);
+
+    true
 }

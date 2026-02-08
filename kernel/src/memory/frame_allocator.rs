@@ -317,23 +317,17 @@ pub fn allocate_frame() -> Option<PhysFrame> {
         return None;
     }
 
-    // ARM64: Skip free list reuse for now - investigating potential corruption
-    // The free list Vec allocation during concurrent access may be causing issues
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        // First, try to reuse a frame from the free list
-        if let Some(mut free_list) = FREE_FRAMES.try_lock() {
-            if let Some(frame) = free_list.pop() {
-                log::trace!(
-                    "Frame allocator: Reused frame {:#x} from free list ({} remaining)",
-                    frame.start_address().as_u64(),
-                    free_list.len()
-                );
-                return Some(frame);
-            }
+    // Try to reuse a frame from the free list (all architectures).
+    // Uses try_lock() to avoid deadlock if called from interrupt context.
+    if let Some(mut free_list) = FREE_FRAMES.try_lock() {
+        if let Some(frame) = free_list.pop() {
+            log::trace!(
+                "Frame allocator: Reused frame {:#x} from free list ({} remaining)",
+                frame.start_address().as_u64(),
+                free_list.len()
+            );
+            return Some(frame);
         }
-        // If we couldn't get the lock, fall through to sequential allocation
-        // This avoids deadlock if called from interrupt context
     }
 
     // Fall back to sequential allocation from memory map

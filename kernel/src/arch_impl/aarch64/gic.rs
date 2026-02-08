@@ -225,6 +225,19 @@ impl Gicv2 {
     }
 }
 
+/// Initialize the GIC CPU interface for a secondary CPU.
+///
+/// GICC registers are banked per-CPU, so each CPU must configure its own
+/// interface. The distributor (GICD) is global and already initialized by CPU 0.
+/// SGIs (0-15) and PPIs (16-31) are per-CPU by definition and do not need
+/// distributor re-configuration.
+pub fn init_cpu_interface_secondary() {
+    // Same configuration as primary CPU
+    gicc_write(GICC_PMR, PRIORITY_MASK as u32);
+    gicc_write(GICC_BPR, 7);
+    gicc_write(GICC_CTLR, 0x7); // EnableGrp0 | EnableGrp1 | AckCtl
+}
+
 impl InterruptController for Gicv2 {
     /// Initialize the GIC
     fn init() {
@@ -335,9 +348,10 @@ pub fn clear_pending(irq: u32) {
     gicd_write(GICD_ICPENDR + (reg_index as usize * 4), 1 << bit);
 }
 
-/// Send a Software Generated Interrupt (SGI) to a target CPU
+/// Send a Software Generated Interrupt (SGI) to a target CPU.
 ///
 /// SGIs are interrupts 0-15 and are used for IPIs.
+/// `target_cpu` is the CPU ID (0-7), NOT a bitmask.
 pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
     if sgi_id > 15 {
         return;
@@ -347,7 +361,8 @@ pub fn send_sgi(sgi_id: u8, target_cpu: u8) {
     // Bits 25:24 = TargetListFilter (0 = use target list)
     // Bits 23:16 = CPUTargetList (bitmask of target CPUs)
     // Bits 3:0 = SGIINTID (SGI number)
-    let sgir = ((target_cpu as u32) << 16) | (sgi_id as u32);
+    let target_mask = 1u32 << (target_cpu as u32);
+    let sgir = (target_mask << 16) | (sgi_id as u32);
     gicd_write(0xF00, sgir); // GICD_SGIR offset
 }
 

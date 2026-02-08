@@ -56,6 +56,26 @@ pub fn frame_incref(frame: PhysFrame) {
     }
 }
 
+/// Register a newly allocated frame with refcount=1.
+///
+/// Called when a new frame is allocated as a CoW replacement copy.
+/// This ensures the frame is tracked so that:
+/// - If the process forks again, `frame_incref` correctly goes from 1→2
+/// - On process exit, `frame_decref` finds the entry and frees properly
+#[allow(dead_code)]
+pub fn frame_register(frame: PhysFrame) {
+    let addr = frame.start_address().as_u64();
+    let mut metadata = FRAME_METADATA.lock();
+
+    if metadata.contains_key(&addr) {
+        // Frame is already tracked — shouldn't happen for newly allocated frames,
+        // but harmless. Leave existing entry untouched.
+        return;
+    }
+
+    metadata.insert(addr, FrameMetadata::new(1));
+}
+
 /// Decrement reference count for a frame
 /// Returns true if frame can be freed (refcount reached 0)
 pub fn frame_decref(frame: PhysFrame) -> bool {
@@ -82,19 +102,18 @@ pub fn frame_decref(frame: PhysFrame) -> bool {
         false
     } else {
         // Frame wasn't tracked in CoW metadata.
-        // This could be:
-        // 1. A frame allocated by a child process after fork (could be freed)
-        // 2. A frame that was never part of CoW sharing (might be unsafe to free)
+        // This means it's a private frame that was never shared via CoW
+        // (e.g., allocated during ELF loading, brk, or stack growth).
+        // It belongs solely to the exiting process, so it's safe to free.
         //
-        // SAFETY: Don't free untracked frames. This causes a memory leak for
-        // child-allocated pages, but prevents potential corruption if the frame
-        // is still in use by something else. The root cause needs further
-        // investigation.
+        // We only reach here from cleanup_cow_frames / cleanup_for_exec
+        // which iterate USER_ACCESSIBLE pages — all of which belong to
+        // the process being cleaned up.
         log::trace!(
-            "frame_decref: frame {:#x} not tracked, refusing to free (leak to prevent corruption)",
+            "frame_decref: frame {:#x} not tracked (private), allowing free",
             addr
         );
-        false
+        true
     }
 }
 
@@ -182,5 +201,36 @@ mod tests {
         assert!(!frame_decref(frame)); // Now 1, not freeable
         assert!(frame_decref(frame)); // Now 0, freeable
         assert_eq!(frame_refcount(frame), 1); // Back to untracked
+    }
+
+    #[test_case]
+    fn test_decref_untracked_allows_free() {
+        // Untracked frames are private — decref should allow freeing
+        let frame = test_frame(0x5000_0000);
+        assert!(frame_decref(frame)); // Untracked, returns true
+    }
+
+    #[test_case]
+    fn test_register_then_decref() {
+        let frame = test_frame(0x6000_0000);
+        frame_register(frame); // Tracked at refcount=1
+        assert_eq!(frame_refcount(frame), 1);
+        assert!(!frame_is_shared(frame));
+
+        assert!(frame_decref(frame)); // 1->0, freeable
+        assert_eq!(frame_refcount(frame), 1); // Back to untracked
+    }
+
+    #[test_case]
+    fn test_register_then_incref_then_decref() {
+        // Simulates: allocate CoW copy, then fork again, then both exit
+        let frame = test_frame(0x7000_0000);
+        frame_register(frame); // rc=1
+        frame_incref(frame); // rc=2 (forked)
+        assert_eq!(frame_refcount(frame), 2);
+        assert!(frame_is_shared(frame));
+
+        assert!(!frame_decref(frame)); // rc=1, still referenced
+        assert!(frame_decref(frame)); // rc=0, freeable
     }
 }

@@ -57,6 +57,14 @@ _start:
     // Disable interrupts (should already be disabled)
     msr daifset, #0xf
 
+    // Read CPU ID from MPIDR_EL1 (Aff0 field, bits 7:0)
+    // Use callee-saved register to preserve across calls
+    mrs x19, mpidr_el1
+    and x19, x19, #0xFF
+    cbnz x19, secondary_cpu_entry   // CPUs 1+ go to parking loop
+
+    // CPU 0 continues to existing boot path...
+
     // Check current exception level
     mrs x0, currentel
     lsr x0, x0, #2
@@ -389,6 +397,14 @@ sync_exception_handler:
     stp x30, x0, [sp, #240]
     str x1, [sp, #256]
 
+    // Pre-set user_rsp_scratch = sp + 272 (the return SP if no redirect).
+    // If handle_sync_exception redirects to idle, Rust will overwrite this
+    // with the idle thread's boot stack, just like the IRQ handler does.
+    // PERCPU_USER_RSP_SCRATCH_OFFSET = 40
+    mrs x2, tpidr_el1
+    add x3, sp, #272
+    str x3, [x2, #40]          // user_rsp_scratch = sp + 272
+
     // Call Rust handler
     mov x0, sp              // Pass frame pointer
     mrs x1, esr_el1         // Pass ESR
@@ -396,7 +412,59 @@ sync_exception_handler:
     bl handle_sync_exception
 
     // Restore registers
-    ldp x0, x1, [sp, #240]
+    ldp x0, x1, [sp, #240]   // x0 = frame.x30, x1 = frame.elr
+
+    // DIAGNOSTIC: Check for corrupted ELR before ERET (sync handler path)
+    cmp x1, #0x1000
+    b.hs 10f
+    // ELR < 0x1000 — write diagnostic breadcrumbs to PL011 UART
+    stp x2, x3, [sp, #16]    // Temporarily save x2, x3
+    mov x2, #0x09000000
+    movk x2, #0xFFFF, lsl #48
+    mov x3, #'!'
+    strb w3, [x2]
+    mov x3, #'S'              // 'S' = Sync handler bad ELR
+    strb w3, [x2]
+    // Print the corrupted ELR (x1) as hex
+    mov x3, #60
+11: lsr x4, x1, x3
+    and x4, x4, #0xF
+    cmp x4, #10
+    b.lt 12f
+    add x4, x4, #('a' - 10)
+    b 13f
+12: add x4, x4, #'0'
+13: strb w4, [x2]
+    subs x3, x3, #4
+    b.ge 11b
+    // Print SP
+    mov x3, #'S'
+    strb w3, [x2]
+    mov x3, #'P'
+    strb w3, [x2]
+    mov x4, sp
+    mov x3, #60
+14: lsr x5, x4, x3
+    and x5, x5, #0xF
+    cmp x5, #10
+    b.lt 15f
+    add x5, x5, #('a' - 10)
+    b 16f
+15: add x5, x5, #'0'
+16: strb w5, [x2]
+    subs x3, x3, #4
+    b.ge 14b
+    mov x3, #'\n'
+    strb w3, [x2]
+    ldp x2, x3, [sp, #16]    // Restore x2, x3
+    // Redirect to idle_loop_arm64 instead of crashing
+    adrp x1, idle_loop_arm64
+    add x1, x1, :lo12:idle_loop_arm64
+    // Force SPSR to EL1h — frame.spsr may be 0x0 (EL0t) from contamination,
+    // which would cause ERET to drop to EL0 and fault on kernel code.
+    mov x2, #0x5              // EL1h, interrupts enabled
+    str x2, [sp, #256]        // Overwrite frame.spsr with safe value
+10:
     msr elr_el1, x1
     ldr x1, [sp, #256]
     msr spsr_el1, x1
@@ -408,7 +476,8 @@ sync_exception_handler:
     ldp x10, x11, [sp, #80]
     ldp x12, x13, [sp, #96]
     ldp x14, x15, [sp, #112]
-    ldp x16, x17, [sp, #128]
+    // Skip x16 here - will be restored via per-CPU scratch after SP switch
+    ldr x17, [sp, #136]      // Restore x17 only
     ldp x18, x19, [sp, #144]
     ldp x20, x21, [sp, #160]
     ldp x22, x23, [sp, #176]
@@ -416,7 +485,25 @@ sync_exception_handler:
     ldp x26, x27, [sp, #208]
     ldp x28, x29, [sp, #224]
     ldr x30, [sp, #240]
-    add sp, sp, #272
+
+    // Save frame.x16 to per-CPU ERET scratch (offset 96), using x16/x17 as scratch
+    mrs x16, tpidr_el1       // x16 = percpu base
+    ldr x17, [sp, #128]      // x17 = frame.x16 (temp)
+    str x17, [x16, #96]      // percpu.eret_scratch = frame.x16
+
+    // Re-restore x17 from frame (was used as temp above)
+    ldr x17, [sp, #136]      // x17 = frame.x17 (final value)
+
+    // Set SP from user_rsp_scratch (offset 40).
+    // Normal path: user_rsp_scratch was pre-set to sp+272 (original SP).
+    // Redirect-to-idle path: Rust set user_rsp_scratch to idle boot stack.
+    ldr x16, [x16, #40]      // x16 = user_rsp_scratch
+    mov sp, x16               // SP = correct stack
+
+    // Restore x16 from per-CPU ERET scratch
+    mrs x16, tpidr_el1
+    ldr x16, [x16, #96]      // x16 = saved frame.x16
+
     eret
 
 irq_handler:
@@ -447,7 +534,14 @@ irq_handler:
 
     // Check if we need to reschedule before returning from IRQ
     // from_el0 = 1 if SPSR_EL1.M[3:2] indicates EL0 (bit 2 == 0)
-    mrs x1, spsr_el1
+    //
+    // CRITICAL: Read from the SAVED frame, not the hardware SPSR_EL1 register.
+    // handle_irq may trigger nested synchronous exceptions (data aborts, CoW
+    // faults, etc.) whose handlers overwrite SPSR_EL1 with an EL1h value.
+    // After the nested handler's ERET, SPSR_EL1 no longer reflects the original
+    // exception context. Reading from the frame (saved before handle_irq) gives
+    // the correct value.
+    ldr x1, [sp, #256]      // Load original SPSR from saved exception frame
     and x1, x1, #0x4
     cmp x1, #0
     cset x1, eq
@@ -465,6 +559,62 @@ irq_handler:
     // Restore registers from exception frame (may have been modified by Rust for new thread)
     // First restore ELR and SPSR using x16 as scratch
     ldr x16, [sp, #248]      // x16 = frame.elr (offset 248 = 240 + 8)
+
+    // DIAGNOSTIC: Check for corrupted ELR before ERET.
+    // Valid kernel addresses are >= 0xFFFF000000000000 (high half).
+    // Valid user addresses are >= 0x41000000 (Breenix userspace base).
+    // Anything < 0x1000 is corrupted — dump SP and frame address to UART.
+    cmp x16, #0x1000
+    b.hs 1f
+    // ELR < 0x1000 — write diagnostic breadcrumbs to PL011 UART
+    stp x0, x1, [sp, #0]     // Temporarily save x0, x1 (will restore below)
+    mov x0, #0x09000000      // UART physical base (QEMU virt)
+    movk x0, #0xFFFF, lsl #48 // HHDM: 0xFFFF000009000000
+    mov x1, #'!'
+    strb w1, [x0]             // '!' = IRQ ERET with bad ELR
+    mov x1, #'E'
+    strb w1, [x0]
+    // Print the corrupted ELR value (x16) as hex
+    // Use a simple loop to print 16 hex digits
+    mov x1, x16              // x1 = ELR value to print
+    mov x3, #60              // shift = 60 (start with highest nibble)
+2:  lsr x4, x1, x3           // x4 = (ELR >> shift) & 0xF
+    and x4, x4, #0xF
+    cmp x4, #10
+    b.lt 3f
+    add x4, x4, #('a' - 10)
+    b 4f
+3:  add x4, x4, #'0'
+4:  strb w4, [x0]
+    subs x3, x3, #4
+    b.ge 2b
+    // Print SP
+    mov x1, #'S'
+    strb w1, [x0]
+    mov x1, sp
+    mov x3, #60
+5:  lsr x4, x1, x3
+    and x4, x4, #0xF
+    cmp x4, #10
+    b.lt 6f
+    add x4, x4, #('a' - 10)
+    b 7f
+6:  add x4, x4, #'0'
+7:  strb w4, [x0]
+    subs x3, x3, #4
+    b.ge 5b
+    mov x1, #'\n'
+    strb w1, [x0]
+    ldp x0, x1, [sp, #0]     // Restore x0, x1
+    // Redirect to idle_loop_arm64 instead of crashing
+    adrp x16, idle_loop_arm64
+    add x16, x16, :lo12:idle_loop_arm64
+    // Force SPSR to EL1h — frame.spsr may be 0x0 (EL0t) from contamination,
+    // which would cause ERET to drop to EL0 and fault on kernel code.
+    mov x1, #0x5              // EL1h, interrupts enabled
+    str x1, [sp, #256]        // Overwrite frame.spsr with safe value
+    ldr x1, [sp, #8]          // Re-restore x1 from frame
+1:
     msr elr_el1, x16
     ldr x16, [sp, #256]      // x16 = frame.spsr
     msr spsr_el1, x16
@@ -522,6 +672,138 @@ unhandled_exception:
  */
 
 // -----------------------------------------------------------------------------
+// Secondary CPU entry (boot-time, low)
+// -----------------------------------------------------------------------------
+.section .text.boot
+
+.global secondary_cpu_entry
+secondary_cpu_entry:
+    // PSCI CPU_ON entry point for secondary CPUs.
+    // PSCI starts us at EL1 with:
+    //   x0 = context_id (cpu_id, passed by release_cpu)
+    //   MMU off, caches off, interrupts masked (DAIF set)
+    //
+    // For the spin-table fallback (non-PSCI), we also branch here from _start
+    // with x19 = cpu_id. In that case we may be at EL2.
+
+    // Mask all interrupts (should already be masked by PSCI, but be safe)
+    msr daifset, #0xf
+
+    // Save cpu_id in callee-saved register
+    // PSCI passes it in x0; spin-table path has it in x19
+    // Check if x19 is already set (non-zero means spin-table path)
+    cbnz x19, 1f
+    mov x19, x0              // PSCI path: cpu_id from x0
+1:
+
+    // Check current exception level
+    mrs x0, currentel
+    lsr x0, x0, #2
+    and x0, x0, #3
+    cmp x0, #2
+    b.eq secondary_drop_to_el1
+    // EL1 (normal PSCI path) - fall through
+
+secondary_el1_init:
+    // Enable FP/SIMD (CPACR_EL1.FPEN = 0b11)
+    mov x0, #(3 << 20)
+    msr cpacr_el1, x0
+    isb
+
+    // Set up per-CPU boot stack (physical addresses, before MMU)
+    // Stack top = 0x4100_0000 + (cpu_id + 1) * 0x20_0000
+    // This gives each CPU a 2MB stack region:
+    //   CPU 1: 0x4120_0000 (top) .. 0x4100_0000
+    //   CPU 2: 0x4140_0000 (top) .. 0x4120_0000
+    //   CPU 3: 0x4160_0000 (top) .. 0x4140_0000
+    mov x0, x19              // cpu_id
+    add x0, x0, #1           // cpu_id + 1
+    lsl x0, x0, #21          // * 0x20_0000 (2MB)
+    ldr x1, =0x41000000      // base of per-CPU stack region
+    add x0, x0, x1
+    mov sp, x0
+
+    // DO NOT zero BSS - CPU 0 handles that
+    // DO NOT call setup_mmu - reuse CPU 0's page tables
+
+    // Set VBAR_EL1 to boot exception vectors (low) for now
+    ldr x0, =exception_vectors_boot
+    msr vbar_el1, x0
+    isb
+
+    // Load the same MMU config as CPU 0 (MAIR, TCR, TTBRs)
+    ldr x0, =MAIR_EL1_VALUE
+    msr mair_el1, x0
+    ldr x0, =TCR_VALUE
+    msr tcr_el1, x0
+    isb
+
+    ldr x0, =ttbr0_l0
+    msr ttbr0_el1, x0
+    ldr x0, =ttbr1_l0
+    msr ttbr1_el1, x0
+    dsb ishst
+    isb
+
+    // Enable MMU
+    mrs x0, sctlr_el1
+    mov x1, #(1 << 19)      // Clear WXN bit
+    bic x0, x0, x1
+    orr x0, x0, #1          // Set M bit (MMU enable)
+    msr sctlr_el1, x0
+    isb
+
+    // Switch to high-half stack (SP += KERNEL_VIRT_BASE)
+    mov x0, sp
+    ldr x1, =KERNEL_VIRT_BASE
+    add x0, x0, x1
+    mov sp, x0
+
+    // Switch to runtime exception vectors (high)
+    ldr x0, =exception_vectors
+    msr vbar_el1, x0
+    isb
+
+    // Call secondary_cpu_entry_rust(cpu_id)
+    // x19 still holds cpu_id
+    mov x0, x19
+    ldr x1, =secondary_cpu_entry_rust
+    br x1
+
+secondary_drop_to_el1:
+    // Configure EL2 for EL1 execution (same as CPU 0)
+    mov x0, #(1 << 31)      // HCR_EL2: RW = 1 (AArch64 at EL1)
+    msr hcr_el2, x0
+
+    mov x0, #0
+    orr x0, x0, #(1 << 29)  // LSMAOE
+    orr x0, x0, #(1 << 28)  // nTLSMD
+    orr x0, x0, #(1 << 11)  // EOS
+    msr sctlr_el1, x0
+
+    mov x0, #0x3c5          // SPSR_EL2: EL1h, DAIF masked
+    msr spsr_el2, x0
+
+    adr x0, secondary_el1_init
+    msr elr_el2, x0
+    eret
+
+secondary_hang:
+    wfi
+    b secondary_hang
+
+// -----------------------------------------------------------------------------
+// Physical address of secondary_cpu_entry, stored in .rodata (high-half).
+// Rust code cannot reference secondary_cpu_entry directly because the
+// .text.boot -> .text gap exceeds AArch64 ADRP range (+/- 4 GiB).
+// -----------------------------------------------------------------------------
+.section .rodata
+.balign 8
+.global SECONDARY_CPU_ENTRY_PHYS
+SECONDARY_CPU_ENTRY_PHYS:
+    .quad secondary_cpu_entry
+
+// -----------------------------------------------------------------------------
 // Boot-time BSS (low): page tables + boot stack
 // -----------------------------------------------------------------------------
 .section .bss.boot
@@ -538,6 +820,11 @@ ttbr1_l0:
 .global ttbr1_l1
 ttbr1_l1:
     .skip 4096
+
+.balign 64
+.global CPU_RELEASE_ADDR
+CPU_RELEASE_ADDR:
+    .skip 64   // 8 CPUs * 8 bytes
 
 .balign 16
 .global __boot_stack_bottom

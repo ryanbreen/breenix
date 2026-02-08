@@ -234,6 +234,12 @@ impl Aarch64PerCpu {
         <Self as PerCpuOps>::preempt_count()
     }
 
+    /// Get CPU ID (forwarding to trait impl)
+    #[inline(always)]
+    pub fn cpu_id() -> u64 {
+        <Self as PerCpuOps>::cpu_id()
+    }
+
     /// Get the need_resched flag.
     #[inline(always)]
     pub fn need_resched() -> bool {
