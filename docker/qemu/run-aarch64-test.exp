@@ -17,6 +17,10 @@ set breenix_root [file dirname [file dirname $script_dir]]
 set kernel "$breenix_root/target/aarch64-breenix/release/kernel-aarch64"
 set ext2_disk "$breenix_root/target/ext2-aarch64.img"
 
+# Create writable copy to allow filesystem writes
+set ext2_writable "/tmp/breenix_aarch64_test_[pid]_ext2.img"
+file copy -force $ext2_disk $ext2_writable
+
 # Start QEMU
 spawn qemu-system-aarch64 \
     -M virt -cpu cortex-a72 -m 512 \
@@ -25,7 +29,7 @@ spawn qemu-system-aarch64 \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-blk-device,drive=ext2 \
-    -drive if=none,id=ext2,format=raw,readonly=on,file=$ext2_disk \
+    -drive if=none,id=ext2,format=raw,file=$ext2_writable \
     -device virtio-net-device,netdev=net0 \
     -netdev user,id=net0 \
     -serial mon:stdio
@@ -79,6 +83,9 @@ sleep 2
 puts "\n========================================="
 puts "TEST RESULT: $test_result"
 puts "========================================="
+
+# Clean up writable copy
+file delete -force $ext2_writable
 
 # Exit with appropriate code
 if {$test_result eq "PASS"} {

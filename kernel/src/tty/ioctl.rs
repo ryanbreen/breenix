@@ -35,33 +35,25 @@ pub const TIOCSPGRP: u64 = 0x5410;
 pub const TIOCGWINSZ: u64 = 0x5413;
 
 /// Set window size
-#[allow(dead_code)] // Used by Phase 5: PTY ioctl support
 pub const TIOCSWINSZ: u64 = 0x5414;
 
 /// Set controlling terminal
-#[allow(dead_code)] // Used by Phase 5: PTY ioctl support
 pub const TIOCSCTTY: u64 = 0x540E;
 
 /// Release controlling terminal
-#[allow(dead_code)] // Used by Phase 5: PTY ioctl support
 pub const TIOCNOTTY: u64 = 0x5422;
 
 // =============================================================================
 // PTY-Specific ioctl Request Codes
-// Phase 5 of PTY implementation plan will integrate these with sys_ioctl.
-// See docs/planning/PTY_IMPLEMENTATION_PLAN.md for details.
 // =============================================================================
 
 /// Get PTY number (for master fd)
-#[allow(dead_code)] // Used by Phase 5: PTY ioctl support
 pub const TIOCGPTN: u64 = 0x80045430;
 
 /// Lock/unlock PTY slave
-#[allow(dead_code)] // Used by Phase 5: PTY ioctl support
 pub const TIOCSPTLCK: u64 = 0x40045431;
 
 /// Get PTY lock status
-#[allow(dead_code)] // Used by Phase 5: PTY ioctl support
 pub const TIOCGPTLCK: u64 = 0x80045439;
 
 // =============================================================================
@@ -78,7 +70,6 @@ const ENOTTY: i32 = 25;
 const EFAULT: i32 = 14;
 
 /// Operation not permitted
-#[allow(dead_code)] // Used by PTY ioctl handlers (Phase 5)
 const EPERM: i32 = 1;
 
 // =============================================================================
@@ -263,9 +254,6 @@ pub fn handle_tiocgwinsz(tty: &Arc<TtyDevice>, arg: u64) -> Result<(), i32> {
 
 // =============================================================================
 // PTY-Specific ioctl Handler Functions
-// These handlers are for Phase 5 of PTY implementation.
-// They will be called from sys_ioctl when FdKind::PtyMaster/PtySlave are handled.
-// See docs/planning/PTY_IMPLEMENTATION_PLAN.md for details.
 // =============================================================================
 
 use crate::tty::pty::PtyPair;
@@ -273,7 +261,6 @@ use crate::tty::pty::PtyPair;
 /// Handle TIOCGWINSZ for PTY devices - get window size
 ///
 /// Returns the PTY's window size (stored in PtyPair).
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_pty_tiocgwinsz(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -294,7 +281,6 @@ pub fn handle_pty_tiocgwinsz(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 ///
 /// Sets the PTY's window size. In a full implementation, this would also
 /// generate SIGWINCH to the foreground process group.
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_pty_tiocswinsz(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -317,7 +303,6 @@ pub fn handle_pty_tiocswinsz(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 /// Handle TIOCGPTN - get PTY number
 ///
 /// Returns the PTY number (0, 1, 2, ...) for the master fd.
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_tiocgptn(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -337,7 +322,6 @@ pub fn handle_tiocgptn(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 /// Handle TIOCSPTLCK - lock/unlock PTY slave
 ///
 /// When locked, the slave device cannot be opened.
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_tiocsptlck(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -363,7 +347,6 @@ pub fn handle_tiocsptlck(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 /// Handle TIOCGPTLCK - get PTY lock status
 ///
 /// Returns whether the slave device is locked.
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_tiocgptlck(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -385,7 +368,6 @@ pub fn handle_tiocgptlck(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 /// Makes this PTY the controlling terminal for the calling process's session.
 /// The arg parameter is a flag: if non-zero and the caller is root, steal
 /// the terminal from any existing session.
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_tiocsctty(pair: &Arc<PtyPair>, arg: u64, pid: u32) -> Result<(), i32> {
     let mut controlling = pair.controlling_pid.lock();
 
@@ -410,7 +392,6 @@ pub fn handle_tiocsctty(pair: &Arc<PtyPair>, arg: u64, pid: u32) -> Result<(), i
 ///
 /// Gives up the controlling terminal. Only works if the caller is the
 /// controlling process.
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_tiocnotty(pair: &Arc<PtyPair>, pid: u32) -> Result<(), i32> {
     let mut controlling = pair.controlling_pid.lock();
 
@@ -428,7 +409,6 @@ pub fn handle_tiocnotty(pair: &Arc<PtyPair>, pid: u32) -> Result<(), i32> {
 }
 
 /// Handle TIOCGPGRP for PTY devices - get foreground process group
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_pty_tiocgpgrp(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -446,7 +426,6 @@ pub fn handle_pty_tiocgpgrp(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 }
 
 /// Handle TIOCSPGRP for PTY devices - set foreground process group
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_pty_tiocspgrp(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -469,7 +448,6 @@ pub fn handle_pty_tiocspgrp(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 }
 
 /// Handle TCGETS for PTY devices - get termios
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_pty_tcgets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -487,7 +465,6 @@ pub fn handle_pty_tcgets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 }
 
 /// Handle TCSETS for PTY devices - set termios
-#[allow(dead_code)] // Phase 5: PTY ioctl support
 pub fn handle_pty_tcsets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
     if arg == 0 {
         return Err(EFAULT);
@@ -516,7 +493,6 @@ pub fn handle_pty_tcsets(pair: &Arc<PtyPair>, arg: u64) -> Result<(), i32> {
 /// # Returns
 /// * `Ok(0)` on success
 /// * `Err(errno)` on failure
-#[allow(dead_code)] // Phase 5: PTY ioctl support - will be called from sys_ioctl
 pub fn pty_ioctl(pair: &Arc<PtyPair>, request: u64, arg: u64, pid: u32) -> Result<i32, i32> {
     match request {
         // Standard terminal ioctls

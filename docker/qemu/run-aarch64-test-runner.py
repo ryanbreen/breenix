@@ -14,6 +14,8 @@ import select
 import signal
 import threading
 import queue
+import shutil
+import tempfile
 
 def run_test(test_name, timeout=45):
     """Run a single test and return (success, output)"""
@@ -28,7 +30,12 @@ def run_test(test_name, timeout=45):
         return False, f"Kernel not found: {kernel}"
     if not os.path.exists(ext2_disk):
         return False, f"ext2 disk not found: {ext2_disk}"
-    
+
+    # Create writable copy to allow filesystem writes
+    tmp_dir = tempfile.mkdtemp(prefix="breenix_aarch64_test_")
+    ext2_writable = os.path.join(tmp_dir, "ext2-writable.img")
+    shutil.copy2(ext2_disk, ext2_writable)
+
     cmd = [
         "qemu-system-aarch64",
         "-M", "virt",
@@ -40,7 +47,7 @@ def run_test(test_name, timeout=45):
         "-device", "virtio-gpu-device",
         "-device", "virtio-keyboard-device",
         "-device", "virtio-blk-device,drive=ext2",
-        "-drive", f"if=none,id=ext2,format=raw,readonly=on,file={ext2_disk}",
+        "-drive", f"if=none,id=ext2,format=raw,file={ext2_writable}",
         "-device", "virtio-net-device,netdev=net0",
         "-netdev", "user,id=net0",
         "-serial", "stdio"
@@ -124,7 +131,10 @@ def run_test(test_name, timeout=45):
         
     except Exception as e:
         return False, f"Error: {e}"
-    
+    finally:
+        # Clean up writable copy
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
     full_output = "".join(output_lines)
     
     # Determine result

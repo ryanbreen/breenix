@@ -149,15 +149,17 @@ echo "Kernel: $KERNEL"
 OUTPUT_DIR=$(mktemp -d)
 echo "Serial output: $OUTPUT_DIR/serial.txt"
 
-# Add ext2 disk if it exists
+# Add ext2 disk if it exists (writable copy to allow filesystem writes)
 DISK_OPTS=""
 if [ -f "$EXT2_DISK" ]; then
     echo "Disk image: $EXT2_DISK"
+    EXT2_WRITABLE="$OUTPUT_DIR/ext2-writable.img"
+    cp "$EXT2_DISK" "$EXT2_WRITABLE"
     if [ "$ARCH" = "arm64" ]; then
-        DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,readonly=on,file=$EXT2_DISK"
+        DISK_OPTS="-device virtio-blk-device,drive=ext2disk -drive if=none,id=ext2disk,format=raw,file=$EXT2_WRITABLE"
     else
         # x86_64 uses virtio-blk-pci for UEFI compatibility
-        DISK_OPTS="-drive if=none,id=ext2disk,format=raw,readonly=on,file=$EXT2_DISK -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off"
+        DISK_OPTS="-drive if=none,id=ext2disk,format=raw,file=$EXT2_WRITABLE -device virtio-blk-pci,drive=ext2disk,disable-modern=on,disable-legacy=off"
     fi
 else
     echo "Disk image: (none - shell commands will be limited)"
