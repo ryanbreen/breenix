@@ -261,6 +261,14 @@ impl ShellFrameBuffer {
         let _ = self.fb.flush();
     }
 
+    /// Flush the framebuffer, returning any GPU errors.
+    ///
+    /// Unlike `flush()` which silently discards errors, this propagates
+    /// the Result so callers can detect and report GPU command failures.
+    pub fn flush_result(&self) -> Result<(), &'static str> {
+        self.fb.flush()
+    }
+
     /// Get double buffer (returns None on ARM64)
     ///
     /// On ARM64, the VirtIO GPU handles buffering, so we don't need

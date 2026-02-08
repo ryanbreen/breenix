@@ -97,6 +97,7 @@ const MAX_CPUS: usize = 1;
 ///   4 = register_idle_thread
 ///   5 = init_with_current / Scheduler::new
 ///   6 = set_current_thread / add_thread_as_current
+#[cfg(target_arch = "aarch64")]
 const HISTORY_SIZE: usize = 8;
 #[cfg(target_arch = "aarch64")]
 static CPU_STATE_HISTORY: [[core::sync::atomic::AtomicU64; HISTORY_SIZE * 3]; MAX_CPUS] = {

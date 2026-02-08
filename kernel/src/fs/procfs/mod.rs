@@ -520,25 +520,35 @@ fn generate_cpuinfo() -> String {
             } else {
                 format!("{} (part 0x{:03x})", impl_name, info.part_number())
             };
-            format!(
-                "processor\t: 0\n\
-                 BogoMIPS\t: 0.00\n\
-                 Features\t: {}\n\
-                 CPU implementer\t: 0x{:02x}\n\
-                 CPU architecture\t: 8\n\
-                 CPU variant\t: 0x{:x}\n\
-                 CPU part\t: 0x{:03x}\n\
-                 CPU revision\t: {}\n\
-                 Model name\t: {}\n\
-                 Address sizes\t: {} bits physical\n\n",
-                info.features_string(),
-                info.implementer(),
-                info.variant(),
-                info.part_number(),
-                info.revision(),
-                model_name,
-                info.pa_bits(),
-            )
+
+            let num_cpus = crate::arch_impl::aarch64::smp::cpus_online() as usize;
+            let num_cpus = if num_cpus == 0 { 1 } else { num_cpus };
+
+            let mut output = String::new();
+            for cpu_id in 0..num_cpus {
+                use core::fmt::Write;
+                let _ = write!(output,
+                    "processor\t: {}\n\
+                     BogoMIPS\t: 0.00\n\
+                     Features\t: {}\n\
+                     CPU implementer\t: 0x{:02x}\n\
+                     CPU architecture\t: 8\n\
+                     CPU variant\t: 0x{:x}\n\
+                     CPU part\t: 0x{:03x}\n\
+                     CPU revision\t: {}\n\
+                     Model name\t: {}\n\
+                     Address sizes\t: {} bits physical\n\n",
+                    cpu_id,
+                    info.features_string(),
+                    info.implementer(),
+                    info.variant(),
+                    info.part_number(),
+                    info.revision(),
+                    model_name,
+                    info.pa_bits(),
+                );
+            }
+            output
         } else {
             format!("processor\t: 0\nmodel name\t: Unknown (CPU detection not initialized)\n\n")
         }
