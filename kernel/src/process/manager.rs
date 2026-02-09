@@ -209,7 +209,7 @@ impl ProcessManager {
         use crate::memory::stack;
         use crate::task::thread::ThreadPrivilege;
 
-        const USER_STACK_SIZE: usize = 256 * 1024; // 256KB stack
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         crate::serial_println!("manager.create_process: Allocating user stack");
         let user_stack =
             stack::allocate_stack_with_privilege(USER_STACK_SIZE, ThreadPrivilege::User)
@@ -349,7 +349,7 @@ impl ProcessManager {
         use crate::memory::stack;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
 
-        const USER_STACK_SIZE: usize = 256 * 1024; // 256KB stack
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         crate::serial_println!("manager.create_process [ARM64]: Allocating user stack");
 
         // allocate_stack_with_privilege returns HHDM addresses (kernel-accessible)
@@ -534,7 +534,7 @@ impl ProcessManager {
         use crate::memory::stack;
         use crate::arch_impl::aarch64::constants::USER_STACK_REGION_START;
 
-        const USER_STACK_SIZE: usize = 256 * 1024; // 256KB stack
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         crate::serial_println!("manager.create_process_with_argv [ARM64]: Allocating user stack");
 
         let kernel_stack =
@@ -642,7 +642,7 @@ impl ProcessManager {
         }
 
         // Calculate stack bottom (stack grows down)
-        const USER_STACK_SIZE: usize = 256 * 1024;
+        const USER_STACK_SIZE: usize = 64 * 1024;
         let stack_bottom = stack_top - USER_STACK_SIZE as u64;
 
         // Allocate a kernel stack using the new global kernel stack allocator
@@ -712,7 +712,7 @@ impl ProcessManager {
         let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
 
         // Calculate stack bottom (stack grows down)
-        const USER_STACK_SIZE: usize = 256 * 1024;
+        const USER_STACK_SIZE: usize = 64 * 1024;
         let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
 
         // Allocate a kernel stack for exception handling
@@ -786,7 +786,7 @@ impl ProcessManager {
         let actual_tls_block = VirtAddr::new(0x10000 + thread_id * 0x1000);
 
         // Calculate stack bottom (stack grows down)
-        const USER_STACK_SIZE: usize = 256 * 1024;
+        const USER_STACK_SIZE: usize = 64 * 1024;
         let stack_bottom = VirtAddr::new(stack_top.as_u64() - USER_STACK_SIZE as u64);
 
         // Allocate a kernel stack for exception handling
@@ -1718,9 +1718,9 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // Create a new stack for the child process (64KB userspace stack)
+        // Create a new stack for the child process (128KB to handle parent's stack usage)
         // CRITICAL: We allocate in kernel page table first, then map to child's page table
-        const CHILD_STACK_SIZE: usize = 256 * 1024;
+        const CHILD_STACK_SIZE: usize = 128 * 1024;
 
         // Allocate the stack in the kernel page table first
         let child_stack = crate::memory::stack::allocate_stack_with_privilege(
@@ -2125,7 +2125,7 @@ impl ProcessManager {
         #[cfg(feature = "testing")]
         {
             // Create a new stack for the child process (64KB userspace stack)
-            const CHILD_STACK_SIZE: usize = 256 * 1024;
+            const CHILD_STACK_SIZE: usize = 128 * 1024;
             let child_stack = crate::memory::stack::allocate_stack_with_privilege(
             CHILD_STACK_SIZE,
             crate::task::thread::ThreadPrivilege::User,
@@ -2407,7 +2407,7 @@ impl ProcessManager {
         // CRITICAL FIX: Allocate and map stack directly into the new process page table
         // We need to manually allocate stack pages and map them into the new page table,
         // not the current kernel page table
-        const USER_STACK_SIZE: usize = 256 * 1024; // 256KB stack
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
         // Use address in valid USER_STACK_REGION (0x7FFF_FF00_0000 - 0x8000_0000_0000)
         const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
 
@@ -2711,7 +2711,7 @@ impl ProcessManager {
         );
 
         // Map stack pages into the NEW process page table
-        const USER_STACK_SIZE: usize = 256 * 1024;
+        const USER_STACK_SIZE: usize = 64 * 1024;
         const USER_STACK_TOP: u64 = 0x7FFF_FF01_0000;
 
         let stack_bottom = VirtAddr::new(USER_STACK_TOP - USER_STACK_SIZE as u64);
@@ -2931,7 +2931,7 @@ impl ProcessManager {
             new_entry_point
         );
 
-        const USER_STACK_SIZE: usize = 256 * 1024;
+        const USER_STACK_SIZE: usize = 64 * 1024;
 
         let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
         let stack_top = VirtAddr::new(user_stack_top);
@@ -3187,7 +3187,7 @@ impl ProcessManager {
         );
 
         // Allocate and map stack directly into the new process page table
-        const USER_STACK_SIZE: usize = 256 * 1024; // 256KB stack
+        const USER_STACK_SIZE: usize = 64 * 1024; // 64KB stack
 
         // Calculate stack range
         let stack_bottom = VirtAddr::new(user_stack_top - USER_STACK_SIZE as u64);
