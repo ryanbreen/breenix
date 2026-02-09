@@ -70,6 +70,12 @@ extern "C" {
     fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn fcntl(fd: i32, cmd: i32, arg: i64) -> i32;
+    static mut ERRNO: i32;
+}
+
+/// Get the current errno value from libbreenix-libc
+fn get_errno() -> i32 {
+    unsafe { ERRNO }
 }
 
 const F_GETFL: i32 = 3;
@@ -97,7 +103,7 @@ fn accept_with_retry_no_addr(server_fd: i32) -> (i32, usize) {
         if result >= 0 {
             return (result, retry);
         }
-        if -result == EAGAIN {
+        if result == -1 && get_errno() == EAGAIN {
             if retry < MAX_LOOPBACK_RETRIES - 1 {
                 for _ in 0..10000 { std::hint::spin_loop(); }
             }
@@ -105,7 +111,7 @@ fn accept_with_retry_no_addr(server_fd: i32) -> (i32, usize) {
             return (result, retry);
         }
     }
-    (-EAGAIN, MAX_LOOPBACK_RETRIES)
+    (-1, MAX_LOOPBACK_RETRIES)
 }
 
 fn accept_with_retry_addr(server_fd: i32, addr: &mut SockAddrIn) -> (i32, usize) {
@@ -115,7 +121,7 @@ fn accept_with_retry_addr(server_fd: i32, addr: &mut SockAddrIn) -> (i32, usize)
         if result >= 0 {
             return (result, retry);
         }
-        if -result == EAGAIN {
+        if result == -1 && get_errno() == EAGAIN {
             if retry < MAX_LOOPBACK_RETRIES - 1 {
                 for _ in 0..10000 { std::hint::spin_loop(); }
             }
@@ -123,7 +129,7 @@ fn accept_with_retry_addr(server_fd: i32, addr: &mut SockAddrIn) -> (i32, usize)
             return (result, retry);
         }
     }
-    (-EAGAIN, MAX_LOOPBACK_RETRIES)
+    (-1, MAX_LOOPBACK_RETRIES)
 }
 
 fn read_with_retry(fd: i32, buf: &mut [u8]) -> (isize, usize) {
@@ -132,7 +138,7 @@ fn read_with_retry(fd: i32, buf: &mut [u8]) -> (isize, usize) {
         if result > 0 {
             return (result, retry);
         }
-        if result == -(EAGAIN as isize) || result == 0 {
+        if (result == -1 && get_errno() == EAGAIN) || result == 0 {
             if retry < MAX_LOOPBACK_RETRIES - 1 {
                 for _ in 0..10000 { std::hint::spin_loop(); }
             }
@@ -140,7 +146,7 @@ fn read_with_retry(fd: i32, buf: &mut [u8]) -> (isize, usize) {
             return (result, retry);
         }
     }
-    (-(EAGAIN as isize), MAX_LOOPBACK_RETRIES)
+    (-1, MAX_LOOPBACK_RETRIES)
 }
 
 fn main() {
@@ -233,7 +239,7 @@ fn main() {
     let unconnected_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
     if unconnected_fd >= 0 {
         let ret = unsafe { shutdown(unconnected_fd, SHUT_RDWR) };
-        if -ret == ENOTCONN {
+        if ret == -1 && get_errno() == ENOTCONN {
             println!("TCP_TEST: shutdown_unconnected OK");
             _passed += 1;
         } else {
@@ -256,7 +262,7 @@ fn main() {
                 let second_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
                 if second_fd >= 0 {
                     let ret = unsafe { bind(second_fd, &conflict_addr, sock_size()) };
-                    if -ret == EADDRINUSE {
+                    if ret == -1 && get_errno() == EADDRINUSE {
                         println!("TCP_TEST: eaddrinuse OK");
                         _passed += 1;
                     } else {
@@ -284,7 +290,7 @@ fn main() {
     let unbound_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
     if unbound_fd >= 0 {
         let ret = unsafe { listen(unbound_fd, 128) };
-        if -ret == EINVAL {
+        if ret == -1 && get_errno() == EINVAL {
             println!("TCP_TEST: listen_unbound OK");
             _passed += 1;
         } else {
@@ -303,7 +309,7 @@ fn main() {
         let ret = unsafe { bind(nonlisten_fd, &nonlisten_addr, sock_size()) };
         if ret == 0 {
             let ret = do_accept(nonlisten_fd, None);
-            if -ret == EOPNOTSUPP {
+            if ret == -1 && get_errno() == EOPNOTSUPP {
                 println!("TCP_TEST: accept_nonlisten OK");
                 _passed += 1;
             } else {
@@ -402,7 +408,7 @@ fn main() {
     } else {
         let test_data = b"TEST";
         let write_result = unsafe { write(shutdown_client_fd, test_data.as_ptr(), test_data.len()) };
-        if write_result == -(EPIPE as isize) {
+        if write_result == -1 && get_errno() == EPIPE {
             println!("TCP_SHUTDOWN_WRITE_TEST: EPIPE OK");
             _passed += 1;
         } else if write_result >= 0 {
@@ -493,7 +499,7 @@ fn main() {
             let mut shutwr_buf = [0u8; 16];
             for _ in 0..10000 { std::hint::spin_loop(); }
             let read_result = unsafe { read(shutwr_accepted_fd, shutwr_buf.as_mut_ptr(), shutwr_buf.len()) };
-            if read_result == 0 || read_result == -(EAGAIN as isize) {
+            if read_result == 0 || (read_result == -1 && get_errno() == EAGAIN) {
                 println!("TCP_SHUT_WR_TEST: server saw FIN OK");
             }
         } else {
@@ -590,7 +596,7 @@ fn main() {
             if bytes > 0 {
                 total_read += bytes as usize;
                 if total_read >= 256 { break; }
-            } else if bytes == -(EAGAIN as isize) || bytes == 0 {
+            } else if (bytes == -1 && get_errno() == EAGAIN) || bytes == 0 {
                 for _ in 0..10000 { std::hint::spin_loop(); }
             } else {
                 break;
@@ -647,7 +653,7 @@ fn main() {
     for _ in 0..3 {
         let ret = unsafe { accept(backlog_server_fd, std::ptr::null_mut(), std::ptr::null_mut()) };
         if ret >= 0 { accepted_count += 1; }
-        else if -ret == EAGAIN { break; }
+        else if ret == -1 && get_errno() == EAGAIN { break; }
         else { break; }
     }
 
@@ -675,10 +681,10 @@ fn main() {
 
     let refused_addr = SockAddrIn::new([127, 0, 0, 1], 9999);
     let ret = unsafe { connect(refused_client_fd, &refused_addr, sock_size()) };
-    if -ret == ECONNREFUSED {
+    if ret == -1 && get_errno() == ECONNREFUSED {
         println!("TCP_CONNREFUSED_TEST: ECONNREFUSED OK");
         _passed += 1;
-    } else if -ret == ETIMEDOUT {
+    } else if ret == -1 && get_errno() == ETIMEDOUT {
         println!("TCP_CONNREFUSED_TEST: ETIMEDOUT OK");
         _passed += 1;
     } else if ret == 0 {
@@ -719,7 +725,7 @@ fn main() {
     for _attempt in 0..10 {
         let bytes = unsafe { write(mss_client_fd, mss_send_data.as_ptr().add(total_written), mss_send_data.len() - total_written) };
         if bytes > 0 { total_written += bytes as usize; if total_written >= 2000 { break; } }
-        else if bytes == -(EAGAIN as isize) { for _ in 0..10000 { std::hint::spin_loop(); } }
+        else if bytes == -1 && get_errno() == EAGAIN { for _ in 0..10000 { std::hint::spin_loop(); } }
         else if bytes < 0 { break; }
     }
 
@@ -733,7 +739,7 @@ fn main() {
         for _attempt in 0..20 {
             let bytes = unsafe { read(mss_accepted_fd, mss_recv_buf.as_mut_ptr().add(total_read), mss_recv_buf.len() - total_read) };
             if bytes > 0 { total_read += bytes as usize; if total_read >= 2000 { break; } }
-            else if bytes == -(EAGAIN as isize) || bytes == 0 { for _ in 0..10000 { std::hint::spin_loop(); } }
+            else if (bytes == -1 && get_errno() == EAGAIN) || bytes == 0 { for _ in 0..10000 { std::hint::spin_loop(); } }
             else { break; }
         }
 
@@ -952,7 +958,7 @@ fn main() {
                         println!("TCP_FIRST_ACCEPT_TEST: accept OK");
                         _passed += 1;
                         unsafe { close(accepted_fd); }
-                    } else if -accepted_fd == EAGAIN {
+                    } else if accepted_fd == -1 && get_errno() == EAGAIN {
                         println!("TCP_FIRST_ACCEPT_TEST: accept returned EAGAIN FAILED");
                         failed += 1;
                     } else {

@@ -131,6 +131,13 @@ pub struct Process {
 
     /// Address to write 0 to and futex-wake when this thread exits (CLONE_CHILD_CLEARTID).
     pub clear_child_tid: Option<u64>,
+
+    /// Old page tables from previous exec() calls, pending deferred cleanup.
+    /// These cannot be freed immediately during exec because CR3 may still point
+    /// to the old table when a timer interrupt fires. They are drained at the
+    /// start of the next exec (by which point CR3 has definitely switched) or
+    /// when the process exits.
+    pub pending_old_page_tables: Vec<Box<ProcessPageTable>>,
 }
 
 /// Memory usage tracking
@@ -178,6 +185,7 @@ impl Process {
             thread_group_id: None,
             inherited_cr3: None,
             clear_child_tid: None,
+            pending_old_page_tables: Vec::new(),
         }
     }
 
@@ -569,6 +577,25 @@ impl Process {
                 self.id.as_u64(),
                 freed_count,
                 shared_count
+            );
+        }
+    }
+
+    /// Drain and clean up any pending old page tables from previous exec() calls.
+    ///
+    /// This is safe to call once CR3 has definitely switched away from the old
+    /// page table (e.g., at the start of the next exec, or during process exit).
+    /// Each old page table has its user-space frames freed via `cleanup_for_exec()`.
+    pub fn drain_old_page_tables(&mut self) {
+        if !self.pending_old_page_tables.is_empty() {
+            let count = self.pending_old_page_tables.len();
+            for old_pt in self.pending_old_page_tables.drain(..) {
+                old_pt.cleanup_for_exec();
+            }
+            log::debug!(
+                "Process {}: drained {} pending old page table(s)",
+                self.id.as_u64(),
+                count
             );
         }
     }

@@ -243,14 +243,30 @@ pub fn save_userspace_context(
 }
 
 /// Restore userspace context to interrupt frame (x86_64)
-/// This modifies the interrupt frame so that IRETQ will restore the process
+/// This modifies the interrupt frame so that IRETQ will restore the process.
+///
+/// Returns `Err(())` if the thread's RIP or RSP contains a non-canonical address,
+/// which indicates corrupted process state. The caller should terminate the thread.
 #[cfg(target_arch = "x86_64")]
 pub fn restore_userspace_context(
     thread: &Thread,
     interrupt_frame: &mut InterruptStackFrame,
     saved_regs: &mut SavedRegisters,
-) {
+) -> Result<(), ()> {
     // NOTE: No logging here per CLAUDE.md - this is called from interrupt context
+
+    // Validate RIP and RSP are canonical before using VirtAddr::new (which panics
+    // on non-canonical addresses). A non-canonical address indicates corrupted
+    // process state, e.g. from a race condition during exec.
+    let rip = match VirtAddr::try_new(thread.context.rip) {
+        Ok(addr) => addr,
+        Err(_) => return Err(()),
+    };
+    let rsp = match VirtAddr::try_new(thread.context.rsp) {
+        Ok(addr) => addr,
+        Err(_) => return Err(()),
+    };
+
     // Restore general purpose registers
     saved_regs.rax = thread.context.rax;
     saved_regs.rbx = thread.context.rbx;
@@ -271,8 +287,8 @@ pub fn restore_userspace_context(
     // Restore interrupt frame for IRETQ
     unsafe {
         interrupt_frame.as_mut().update(|frame| {
-            frame.instruction_pointer = VirtAddr::new(thread.context.rip);
-            frame.stack_pointer = VirtAddr::new(thread.context.rsp);
+            frame.instruction_pointer = rip;
+            frame.stack_pointer = rsp;
             frame.cpu_flags =
                 x86_64::registers::rflags::RFlags::from_bits_truncate(thread.context.rflags);
 
@@ -288,6 +304,7 @@ pub fn restore_userspace_context(
         });
     }
     // NOTE: No logging here per CLAUDE.md - this is called from interrupt context
+    Ok(())
 }
 
 // =============================================================================

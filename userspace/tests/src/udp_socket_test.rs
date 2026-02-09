@@ -46,6 +46,12 @@ extern "C" {
     fn recvfrom(fd: i32, buf: *mut u8, len: usize, flags: i32,
                 src_addr: *mut SockAddrIn, addrlen: *mut u32) -> isize;
     fn close(fd: i32) -> i32;
+    static mut ERRNO: i32;
+}
+
+/// Get the current errno value from libbreenix-libc
+fn get_errno() -> i32 {
+    unsafe { ERRNO }
 }
 
 fn main() {
@@ -55,7 +61,7 @@ fn main() {
     println!("UDP Socket Test: Creating socket...");
     let fd = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
     if fd < 0 {
-        println!("UDP Socket Test: FAILED to create socket, errno={}", -fd);
+        println!("UDP Socket Test: FAILED to create socket, errno={}", get_errno());
         process::exit(1);
     }
     println!("UDP: Socket created fd={}", fd);
@@ -65,7 +71,7 @@ fn main() {
     let local_addr = SockAddrIn::new([0, 0, 0, 0], 12345);
     let ret = unsafe { bind(fd, &local_addr, std::mem::size_of::<SockAddrIn>() as u32) };
     if ret < 0 {
-        println!("UDP Socket Test: FAILED to bind, errno={}", -ret);
+        println!("UDP Socket Test: FAILED to bind, errno={}", get_errno());
         process::exit(2);
     }
     println!("UDP: Socket bound to port 12345");
@@ -80,7 +86,7 @@ fn main() {
                &gateway_addr, std::mem::size_of::<SockAddrIn>() as u32)
     };
     if bytes < 0 {
-        println!("UDP Socket Test: FAILED to send, errno={}", -bytes);
+        println!("UDP Socket Test: FAILED to send, errno={}", get_errno());
         process::exit(3);
     }
     println!("UDP: Packet sent successfully, bytes={}", bytes);
@@ -89,7 +95,7 @@ fn main() {
     println!("UDP Socket Test: Creating RX test socket...");
     let rx_fd = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
     if rx_fd < 0 {
-        println!("UDP Socket Test: FAILED to create RX socket, errno={}", -rx_fd);
+        println!("UDP Socket Test: FAILED to create RX socket, errno={}", get_errno());
         process::exit(4);
     }
     println!("UDP: RX socket created fd={}", rx_fd);
@@ -99,7 +105,7 @@ fn main() {
     let rx_addr = SockAddrIn::new([0, 0, 0, 0], 54321);
     let ret = unsafe { bind(rx_fd, &rx_addr, std::mem::size_of::<SockAddrIn>() as u32) };
     if ret < 0 {
-        println!("UDP Socket Test: FAILED to bind RX socket, errno={}", -ret);
+        println!("UDP Socket Test: FAILED to bind RX socket, errno={}", get_errno());
         process::exit(5);
     }
     println!("UDP: RX socket bound to port 54321");
@@ -114,7 +120,7 @@ fn main() {
                &loopback_addr, std::mem::size_of::<SockAddrIn>() as u32)
     };
     if bytes < 0 {
-        println!("UDP Socket Test: FAILED to send loopback packet, errno={}", -bytes);
+        println!("UDP Socket Test: FAILED to send loopback packet, errno={}", get_errno());
         process::exit(6);
     }
     println!("UDP: Loopback packet sent, bytes={}", bytes);
@@ -130,7 +136,7 @@ fn main() {
                  &mut src_addr, &mut addrlen)
     };
     if bytes < 0 {
-        println!("UDP Socket Test: FAILED - recvfrom returned errno={}", -bytes);
+        println!("UDP Socket Test: FAILED - recvfrom returned errno={}", get_errno());
         println!("UDP Socket Test: Loopback packet was not received.");
         println!("UDP Socket Test: This indicates a bug in the loopback delivery path.");
         process::exit(9);
@@ -165,7 +171,7 @@ fn main() {
 
     let ephemeral_fd = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
     if ephemeral_fd < 0 {
-        println!("UDP Ephemeral Port Test: FAILED to create socket, errno={}", -ephemeral_fd);
+        println!("UDP Ephemeral Port Test: FAILED to create socket, errno={}", get_errno());
         process::exit(10);
     }
     println!("UDP: Ephemeral socket created fd={}", ephemeral_fd);
@@ -174,7 +180,7 @@ fn main() {
     let ephemeral_addr = SockAddrIn::new([0, 0, 0, 0], 0);
     let ret = unsafe { bind(ephemeral_fd, &ephemeral_addr, std::mem::size_of::<SockAddrIn>() as u32) };
     if ret < 0 {
-        println!("UDP Ephemeral Port Test: FAILED to bind to port 0, errno={}", -ret);
+        println!("UDP Ephemeral Port Test: FAILED to bind to port 0, errno={}", get_errno());
         process::exit(11);
     }
     println!("UDP_EPHEMERAL_TEST: port 0 bind OK");
@@ -191,7 +197,7 @@ fn main() {
 
     let conflict_fd1 = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
     if conflict_fd1 < 0 {
-        println!("UDP EADDRINUSE Test: FAILED to create socket1, errno={}", -conflict_fd1);
+        println!("UDP EADDRINUSE Test: FAILED to create socket1, errno={}", get_errno());
         process::exit(12);
     }
 
@@ -199,7 +205,7 @@ fn main() {
     let conflict_addr = SockAddrIn::new([0, 0, 0, 0], 54324);
     let ret = unsafe { bind(conflict_fd1, &conflict_addr, std::mem::size_of::<SockAddrIn>() as u32) };
     if ret < 0 {
-        println!("UDP EADDRINUSE Test: FAILED to bind first socket, errno={}", -ret);
+        println!("UDP EADDRINUSE Test: FAILED to bind first socket, errno={}", get_errno());
         process::exit(13);
     }
     println!("UDP: First socket bound to port 54324");
@@ -207,7 +213,7 @@ fn main() {
     // Create second socket and try to bind to same port
     let conflict_fd2 = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
     if conflict_fd2 < 0 {
-        println!("UDP EADDRINUSE Test: FAILED to create socket2, errno={}", -conflict_fd2);
+        println!("UDP EADDRINUSE Test: FAILED to create socket2, errno={}", get_errno());
         process::exit(14);
     }
 
@@ -215,10 +221,10 @@ fn main() {
     if ret == 0 {
         println!("UDP EADDRINUSE Test: FAILED - second bind should have failed!");
         process::exit(15);
-    } else if -ret == EADDRINUSE {
+    } else if ret == -1 && get_errno() == EADDRINUSE {
         println!("UDP_EADDRINUSE_TEST: conflict detected OK");
     } else {
-        println!("UDP EADDRINUSE Test: FAILED - expected EADDRINUSE(98), got errno={}", -ret);
+        println!("UDP EADDRINUSE Test: FAILED - expected EADDRINUSE(98), got ret={}, errno={}", ret, get_errno());
         process::exit(16);
     }
 
@@ -237,7 +243,7 @@ fn main() {
 
     let eagain_fd = unsafe { socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0) };
     if eagain_fd < 0 {
-        println!("UDP EAGAIN Test: FAILED to create socket, errno={}", -eagain_fd);
+        println!("UDP EAGAIN Test: FAILED to create socket, errno={}", get_errno());
         process::exit(17);
     }
 
@@ -245,7 +251,7 @@ fn main() {
     let eagain_addr = SockAddrIn::new([0, 0, 0, 0], 54325);
     let ret = unsafe { bind(eagain_fd, &eagain_addr, std::mem::size_of::<SockAddrIn>() as u32) };
     if ret < 0 {
-        println!("UDP EAGAIN Test: FAILED to bind, errno={}", -ret);
+        println!("UDP EAGAIN Test: FAILED to bind, errno={}", get_errno());
         process::exit(18);
     }
     println!("UDP: EAGAIN test socket bound to port 54325");
@@ -261,10 +267,10 @@ fn main() {
     if recv_ret >= 0 {
         println!("UDP EAGAIN Test: FAILED - recvfrom should have returned EAGAIN!");
         process::exit(19);
-    } else if -(recv_ret as i32) == EAGAIN {
+    } else if recv_ret == -1 && get_errno() == EAGAIN {
         println!("UDP_EAGAIN_TEST: empty queue OK");
     } else {
-        println!("UDP EAGAIN Test: FAILED - expected EAGAIN(11), got errno={}", -(recv_ret as i32));
+        println!("UDP EAGAIN Test: FAILED - expected EAGAIN(11), got recv_ret={}, errno={}", recv_ret, get_errno());
         process::exit(20);
     }
 
@@ -279,7 +285,7 @@ fn main() {
     // Create receiver socket
     let multi_rx_fd = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
     if multi_rx_fd < 0 {
-        println!("UDP Multiple Packets Test: FAILED to create RX socket, errno={}", -multi_rx_fd);
+        println!("UDP Multiple Packets Test: FAILED to create RX socket, errno={}", get_errno());
         process::exit(21);
     }
 
@@ -287,7 +293,7 @@ fn main() {
     let multi_rx_addr = SockAddrIn::new([0, 0, 0, 0], 54326);
     let ret = unsafe { bind(multi_rx_fd, &multi_rx_addr, std::mem::size_of::<SockAddrIn>() as u32) };
     if ret < 0 {
-        println!("UDP Multiple Packets Test: FAILED to bind RX socket, errno={}", -ret);
+        println!("UDP Multiple Packets Test: FAILED to bind RX socket, errno={}", get_errno());
         process::exit(22);
     }
     println!("UDP: Multi-packet RX socket bound to port 54326");
@@ -295,7 +301,7 @@ fn main() {
     // Create sender socket
     let multi_tx_fd = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
     if multi_tx_fd < 0 {
-        println!("UDP Multiple Packets Test: FAILED to create TX socket, errno={}", -multi_tx_fd);
+        println!("UDP Multiple Packets Test: FAILED to create TX socket, errno={}", get_errno());
         process::exit(23);
     }
 
@@ -303,7 +309,7 @@ fn main() {
     let multi_tx_addr = SockAddrIn::new([0, 0, 0, 0], 54327);
     let ret = unsafe { bind(multi_tx_fd, &multi_tx_addr, std::mem::size_of::<SockAddrIn>() as u32) };
     if ret < 0 {
-        println!("UDP Multiple Packets Test: FAILED to bind TX socket, errno={}", -ret);
+        println!("UDP Multiple Packets Test: FAILED to bind TX socket, errno={}", get_errno());
         process::exit(24);
     }
     println!("UDP: Multi-packet TX socket bound to port 54327");
@@ -319,7 +325,7 @@ fn main() {
                    &multi_dest, std::mem::size_of::<SockAddrIn>() as u32)
         };
         if bytes < 0 {
-            println!("UDP Multiple Packets Test: FAILED to send packet {}, errno={}", i + 1, -bytes);
+            println!("UDP Multiple Packets Test: FAILED to send packet {}, errno={}", i + 1, get_errno());
             process::exit(25);
         }
         println!("UDP: Sent packet {}, bytes={}", i + 1, bytes);
@@ -337,7 +343,7 @@ fn main() {
                      &mut multi_recv_src, &mut multi_addrlen)
         };
         if bytes < 0 {
-            println!("UDP Multiple Packets Test: FAILED to receive packet {}, errno={}", i + 1, -bytes);
+            println!("UDP Multiple Packets Test: FAILED to receive packet {}, errno={}", i + 1, get_errno());
             continue;
         }
         println!("UDP: Received packet {}, bytes={}", i + 1, bytes);

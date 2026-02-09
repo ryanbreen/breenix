@@ -893,6 +893,9 @@ impl ProcessManager {
                 exit_code
             );
 
+            // Drain any pending old page tables from previous exec() calls
+            process.drain_old_page_tables();
+
             process.terminate(exit_code);
 
             // Remove from ready queue
@@ -2316,6 +2319,10 @@ impl ProcessManager {
         // Get the existing process
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
 
+        // Drain any pending old page tables from previous exec() calls.
+        // By this point, CR3 has definitely switched away from any old tables.
+        process.drain_old_page_tables();
+
         // For now, assume non-current processes are not actively running
         // This is a simplification - in a real OS we'd check the scheduler state
         let is_scheduled = false;
@@ -2460,13 +2467,18 @@ impl ProcessManager {
         }
         process.entry_point = loaded_elf.entry_point;
 
+        // Reset heap bounds for the new program - heap starts after ELF segments
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         // Reset signal handlers per POSIX: user-defined handlers become SIG_DFL,
         // SIG_IGN handlers are preserved
         process.signals.exec_reset();
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
-        log::debug!("exec_process: Reset signal handlers for process {}", pid.as_u64());
+        log::debug!("exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}", pid.as_u64(), heap_base);
 
         // Replace the page table with the new one containing the loaded program
         process.page_table = Some(new_page_table);
@@ -2560,10 +2572,16 @@ impl ProcessManager {
             );
         }
 
-        // Clean up old page table resources
+        // Defer old page table cleanup: push onto the process's pending list.
+        // We cannot free the old page table immediately because CR3 may still
+        // reference it if a timer interrupt fires before the next context switch.
+        // The old table will be cleaned up at the start of the next exec or
+        // when the process exits.
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         // Add the process back to the ready queue if it's not already there
@@ -2633,6 +2651,8 @@ impl ProcessManager {
         // We need to do this early so we can call setup_argv_on_stack later
         let (thread_id, old_page_table) = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            process.drain_old_page_tables();
             let main_thread = process
                 .main_thread
                 .as_ref()
@@ -2742,6 +2762,11 @@ impl ProcessManager {
         }
         process.entry_point = loaded_elf.entry_point;
 
+        // Reset heap bounds for the new program
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
@@ -2802,10 +2827,12 @@ impl ProcessManager {
             );
         }
 
-        // Clean up old page table resources
+        // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process_with_argv: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         // Add the process back to the ready queue if it's not already there
@@ -2847,6 +2874,8 @@ impl ProcessManager {
 
         let (thread_id, old_page_table) = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            process.drain_old_page_tables();
             let main_thread = process
                 .main_thread
                 .as_ref()
@@ -2950,6 +2979,12 @@ impl ProcessManager {
             );
         }
         process.entry_point = VirtAddr::new(new_entry_point);
+
+        // Reset heap bounds for the new program
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -3022,9 +3057,12 @@ impl ProcessManager {
             );
         }
 
+        // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv [ARM64]: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         if !self.ready_queue.contains(&pid) {
@@ -3075,6 +3113,9 @@ impl ProcessManager {
 
         // Get the existing process
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+
+        // Drain any pending old page tables from previous exec() calls.
+        process.drain_old_page_tables();
 
         // For now, assume non-current processes are not actively running
         let is_scheduled = false;
@@ -3196,13 +3237,19 @@ impl ProcessManager {
         }
         process.entry_point = VirtAddr::new(new_entry_point);
 
+        // Reset heap bounds for the new program
+        let heap_base = loaded_elf.segments_end;
+        process.heap_start = heap_base;
+        process.heap_end = heap_base;
+
         // Reset signal handlers and mmap state per POSIX
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         log::debug!(
-            "exec_process [ARM64]: Reset signal handlers for process {}",
-            pid.as_u64()
+            "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",
+            pid.as_u64(),
+            heap_base
         );
 
         // Replace the page table with the new one containing the loaded program
@@ -3293,10 +3340,12 @@ impl ProcessManager {
             );
         }
 
-        // Clean up old page table resources
+        // Defer old page table cleanup (see exec_process x86_64 for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process [ARM64]: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process [ARM64]: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         // Add the process back to the ready queue if it's not already there

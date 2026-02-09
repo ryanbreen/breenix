@@ -1878,7 +1878,7 @@ fn test_kthread_join() {
 /// Test kthread_exit() - setting a custom exit code
 /// This test verifies that kthread_exit(code) properly sets the exit code
 /// and that join() returns it correctly, with join() actually blocking.
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
 fn test_kthread_exit_code() {
     use crate::task::kthread::{kthread_exit, kthread_join, kthread_run};
 
@@ -1911,7 +1911,7 @@ fn test_kthread_exit_code() {
 /// 1. kthread_park() blocks the kthread
 /// 2. kthread_unpark() wakes it up
 /// 3. The kthread continues execution after unpark
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
 fn test_kthread_park_unpark() {
     use crate::task::kthread::{
         kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
@@ -2020,7 +2020,7 @@ fn test_kthread_park_unpark() {
 }
 
 /// Test kthread_stop() called twice returns AlreadyStopped
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
 fn test_kthread_double_stop() {
     use crate::task::kthread::{kthread_run, kthread_should_stop, kthread_stop, KthreadError};
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -2088,7 +2088,7 @@ fn test_kthread_double_stop() {
 }
 
 /// Test kthread_should_stop() from non-kthread context
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
 fn test_kthread_should_stop_non_kthread() {
     use crate::task::kthread::kthread_should_stop;
 
@@ -2099,7 +2099,7 @@ fn test_kthread_should_stop_non_kthread() {
 
 /// Test kthread_stop() on a thread that has already exited naturally
 /// This is distinct from double-stop (stop -> stop) - this tests (natural exit -> stop)
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
 fn test_kthread_stop_after_exit() {
     use crate::task::kthread::{kthread_join, kthread_run, kthread_stop, KthreadError};
 
@@ -2140,7 +2140,7 @@ fn test_kthread_stop_after_exit() {
 /// 1. Basic work execution via system workqueue
 /// 2. Multiple work items execute in order
 /// 3. Flush waits for all pending work
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_stress_test")))]
 fn test_workqueue() {
     use alloc::sync::Arc;
     use crate::task::workqueue::{flush_system_workqueue, schedule_work, schedule_work_fn, Work};
@@ -2370,7 +2370,7 @@ fn test_workqueue() {
 /// 2. raise_softirq() marks softirq as pending
 /// 3. do_softirq() invokes registered handlers
 /// 4. ksoftirqd thread is running
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_stress_test")))]
 fn test_softirq() {
     use crate::task::softirqd::{
         do_softirq, raise_softirq, register_softirq_handler, SoftirqType,

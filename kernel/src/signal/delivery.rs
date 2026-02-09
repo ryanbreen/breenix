@@ -442,10 +442,32 @@ fn deliver_to_user_handler_x86_64(
     process.signals.block_signals(action.mask);
 
     // Modify interrupt frame to jump to signal handler
+    // Use try_new to avoid kernel panics on non-canonical user-provided addresses
+    let handler_vaddr = match x86_64::VirtAddr::try_new(handler_addr) {
+        Ok(addr) => addr,
+        Err(_) => {
+            log::warn!(
+                "Signal {}: non-canonical handler address {:#x} for process {}",
+                sig, handler_addr, process.id.as_u64()
+            );
+            return false;
+        }
+    };
+    let frame_vaddr = match x86_64::VirtAddr::try_new(frame_rsp) {
+        Ok(addr) => addr,
+        Err(_) => {
+            log::warn!(
+                "Signal {}: non-canonical stack address {:#x} for process {}",
+                sig, frame_rsp, process.id.as_u64()
+            );
+            return false;
+        }
+    };
+
     unsafe {
         interrupt_frame.as_mut().update(|frame| {
-            frame.instruction_pointer = x86_64::VirtAddr::new(handler_addr);
-            frame.stack_pointer = x86_64::VirtAddr::new(frame_rsp);
+            frame.instruction_pointer = handler_vaddr;
+            frame.stack_pointer = frame_vaddr;
             // Keep same code segment, stack segment, and flags
         });
     }

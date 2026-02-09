@@ -11,6 +11,12 @@ extern "C" {
     fn fork() -> i32;
     fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
     fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
+    static mut ERRNO: i32;
+}
+
+/// Get the current errno value from libbreenix-libc
+fn get_errno() -> i32 {
+    unsafe { ERRNO }
 }
 
 /// POSIX WIFEXITED: true if child terminated normally
@@ -79,10 +85,10 @@ fn main() {
             execve(program.as_ptr(), argv.as_ptr(), std::ptr::null())
         };
         // exec should fail, check if errno is ENOENT (2)
-        if result == -2 {
+        if result == -1 && get_errno() == 2 {
             std::process::exit(0); // ENOENT as expected
         } else {
-            std::process::exit(result); // Unexpected error
+            std::process::exit(1); // Unexpected error
         }
     } else if pid > 0 {
         let mut status: i32 = 0;
@@ -110,10 +116,10 @@ fn main() {
         let result = unsafe {
             execve(program.as_ptr(), argv.as_ptr(), std::ptr::null())
         };
-        if result == -13 {
+        if result == -1 && get_errno() == 13 {
             std::process::exit(0); // EACCES as expected
         } else {
-            std::process::exit(result); // Unexpected error
+            std::process::exit(1); // Unexpected error
         }
     } else if pid > 0 {
         let mut status: i32 = 0;
@@ -141,10 +147,10 @@ fn main() {
         let result = unsafe {
             execve(program.as_ptr(), argv.as_ptr(), std::ptr::null())
         };
-        if result == -20 || result == -13 {
+        if result == -1 && (get_errno() == 20 || get_errno() == 13) {
             std::process::exit(0); // Expected error
         } else {
-            std::process::exit(result); // Unexpected error
+            std::process::exit(1); // Unexpected error
         }
     } else if pid > 0 {
         let mut status: i32 = 0;
@@ -174,7 +180,7 @@ fn main() {
             execve(program.as_ptr(), argv.as_ptr(), std::ptr::null())
         };
         // If we get here, exec failed
-        println!("exec /bin/ls failed: {}", -result);
+        println!("exec /bin/ls failed: errno={}", get_errno());
         std::process::exit(result);
     } else if pid > 0 {
         let mut status: i32 = 0;

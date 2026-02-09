@@ -966,102 +966,114 @@ fn restore_userspace_thread_context(
                     if thread.privilege == ThreadPrivilege::User {
                         // Debug marker: restoring userspace context (raw serial, no locks)
                         raw_serial_str("<R>");
-                        restore_userspace_context(thread, interrupt_frame, saved_regs);
-
-                        // CRITICAL: Defer CR3 switch to timer_entry.asm before IRETQ
-                        // We do NOT switch CR3 here because:
-                        // 1. Kernel can run on process page tables (they have kernel mappings)
-                        // 2. timer_entry.asm will perform the actual switch before IRETQ (line 324)
-                        // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
-                        //
-                        // Instead, we set next_cr3 and saved_process_cr3 to communicate
-                        // the target CR3 to the assembly code.
-                        if let Some(cr3_value) = process_cr3 {
-                            unsafe {
-                                // Tell timer_entry.asm to switch CR3 before IRETQ
-                                crate::per_cpu::set_next_cr3(cr3_value);
-
-                                // Update saved_process_cr3 so future timer interrupts
-                                // without context switch restore the correct CR3
-                                core::arch::asm!(
-                                    "mov gs:[80], {}",
-                                    in(reg) cr3_value,
-                                    options(nostack, preserves_flags)
-                                );
-                            }
+                        if restore_userspace_context(thread, interrupt_frame, saved_regs).is_err() {
+                            // Non-canonical RIP or RSP - corrupted process state.
+                            // Terminate the process and switch to idle.
+                            raw_serial_str("<BADADDR>");
+                            thread.set_terminated();
+                            process.terminate(-11); // SIGSEGV equivalent
+                            crate::task::scheduler::with_thread_mut(thread_id, |sched_thread| {
+                                sched_thread.set_terminated();
+                            });
+                            crate::task::scheduler::set_need_resched();
+                            setup_idle_return(interrupt_frame);
+                            crate::task::scheduler::switch_to_idle();
                         } else {
-                            log::warn!("Process {} has no page table!", pid.as_u64());
-                        }
-
-                        // Update TSS RSP0 for the new thread's kernel stack
-                        if let Some(kernel_stack_top) = thread.kernel_stack_top {
-                            crate::gdt::set_kernel_stack(kernel_stack_top);
-                            log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
-                        } else {
-                            log::error!("ERROR: Userspace thread {} has no kernel stack!", thread_id);
-                        }
-
-                        // SIGNAL DELIVERY: Check for pending signals before returning to userspace
-                        // This is the correct point to deliver signals - after context is restored
-                        // but before we actually return to userspace
-                        crate::signal::delivery::check_and_fire_alarm(process);
-                        crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
-
-                        if crate::signal::delivery::has_deliverable_signals(process) {
-                            log::debug!(
-                                "Signal delivery check: process {} (thread {}) has deliverable signals",
-                                pid.as_u64(),
-                                thread_id
-                            );
-
-                            // CRITICAL: Switch to process CR3 BEFORE delivering signal
-                            // Signal delivery writes to user stack memory, which requires
-                            // the process's page table to be active (not the kernel CR3).
-                            // Without this, we get a page fault when trying to write the
-                            // signal frame to user memory.
-                            if let Some(cr3_val) = process.cr3_value() {
+                            // CRITICAL: Defer CR3 switch to timer_entry.asm before IRETQ
+                            // We do NOT switch CR3 here because:
+                            // 1. Kernel can run on process page tables (they have kernel mappings)
+                            // 2. timer_entry.asm will perform the actual switch before IRETQ (line 324)
+                            // 3. Switching here would cause DOUBLE CR3 write (flush TLB twice)
+                            //
+                            // Instead, we set next_cr3 and saved_process_cr3 to communicate
+                            // the target CR3 to the assembly code.
+                            if let Some(cr3_value) = process_cr3 {
                                 unsafe {
-                                    use x86_64::registers::control::{Cr3, Cr3Flags};
-                                    use x86_64::structures::paging::PhysFrame;
-                                    use x86_64::PhysAddr;
-                                    Cr3::write(
-                                        PhysFrame::containing_address(PhysAddr::new(cr3_val)),
-                                        Cr3Flags::empty(),
+                                    // Tell timer_entry.asm to switch CR3 before IRETQ
+                                    crate::per_cpu::set_next_cr3(cr3_value);
+
+                                    // Update saved_process_cr3 so future timer interrupts
+                                    // without context switch restore the correct CR3
+                                    core::arch::asm!(
+                                        "mov gs:[80], {}",
+                                        in(reg) cr3_value,
+                                        options(nostack, preserves_flags)
                                     );
                                 }
-                                log::debug!(
-                                    "Switched to process CR3 {:#x} for signal delivery",
-                                    cr3_val
-                                );
+                            } else {
+                                log::warn!("Process {} has no page table!", pid.as_u64());
                             }
 
-                            // Deliver pending signals
-                            let signal_result = crate::signal::delivery::deliver_pending_signals(
-                                process,
-                                interrupt_frame,
-                                saved_regs,
-                            );
+                            // Update TSS RSP0 for the new thread's kernel stack
+                            if let Some(kernel_stack_top) = thread.kernel_stack_top {
+                                crate::gdt::set_kernel_stack(kernel_stack_top);
+                                log::trace!("Set kernel stack: {:#x}", kernel_stack_top.as_u64());
+                            } else {
+                                log::error!("ERROR: Userspace thread {} has no kernel stack!", thread_id);
+                            }
 
-                            match signal_result {
-                                crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
-                                    // Signal terminated the process
-                                    crate::task::scheduler::set_need_resched();
-                                    // Save notification for later (after manager lock is released)
-                                    signal_termination_info = Some(notification);
-                                    setup_idle_return(interrupt_frame);
-                                    crate::task::scheduler::switch_to_idle();
-                                    // Don't return here - fall through to handle notification
+                            // SIGNAL DELIVERY: Check for pending signals before returning to userspace
+                            // This is the correct point to deliver signals - after context is restored
+                            // but before we actually return to userspace
+                            crate::signal::delivery::check_and_fire_alarm(process);
+                            crate::signal::delivery::check_and_fire_itimer_real(process, 5000);
+
+                            if crate::signal::delivery::has_deliverable_signals(process) {
+                                log::debug!(
+                                    "Signal delivery check: process {} (thread {}) has deliverable signals",
+                                    pid.as_u64(),
+                                    thread_id
+                                );
+
+                                // CRITICAL: Switch to process CR3 BEFORE delivering signal
+                                // Signal delivery writes to user stack memory, which requires
+                                // the process's page table to be active (not the kernel CR3).
+                                // Without this, we get a page fault when trying to write the
+                                // signal frame to user memory.
+                                if let Some(cr3_val) = process.cr3_value() {
+                                    unsafe {
+                                        use x86_64::registers::control::{Cr3, Cr3Flags};
+                                        use x86_64::structures::paging::PhysFrame;
+                                        use x86_64::PhysAddr;
+                                        Cr3::write(
+                                            PhysFrame::containing_address(PhysAddr::new(cr3_val)),
+                                            Cr3Flags::empty(),
+                                        );
+                                    }
+                                    log::debug!(
+                                        "Switched to process CR3 {:#x} for signal delivery",
+                                        cr3_val
+                                    );
                                 }
-                                crate::signal::delivery::SignalDeliveryResult::Delivered => {
-                                    // Signal was delivered and frame was modified
-                                    if process.is_terminated() {
-                                        // Process was terminated (somehow?)
+
+                                // Deliver pending signals
+                                let signal_result = crate::signal::delivery::deliver_pending_signals(
+                                    process,
+                                    interrupt_frame,
+                                    saved_regs,
+                                );
+
+                                match signal_result {
+                                    crate::signal::delivery::SignalDeliveryResult::Terminated(notification) => {
+                                        // Signal terminated the process
                                         crate::task::scheduler::set_need_resched();
+                                        // Save notification for later (after manager lock is released)
+                                        signal_termination_info = Some(notification);
                                         setup_idle_return(interrupt_frame);
                                         crate::task::scheduler::switch_to_idle();
+                                        // Don't return here - fall through to handle notification
                                     }
+                                    crate::signal::delivery::SignalDeliveryResult::Delivered => {
+                                        // Signal was delivered and frame was modified
+                                        if process.is_terminated() {
+                                            // Process was terminated (somehow?)
+                                            crate::task::scheduler::set_need_resched();
+                                            setup_idle_return(interrupt_frame);
+                                            crate::task::scheduler::switch_to_idle();
+                                        }
+                                    }
+                                    crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                                 }
-                                crate::signal::delivery::SignalDeliveryResult::NoAction => {}
                             }
                         }
                     }

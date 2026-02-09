@@ -115,6 +115,7 @@ static SOFTIRQ_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Get the ksoftirqd thread ID (if initialized)
 /// Returns None if softirq system is not initialized
+#[allow(dead_code)] // Part of public softirq API surface
 pub fn ksoftirqd_tid() -> Option<u64> {
     KSOFTIRQD.lock().as_ref().map(|h| h.tid())
 }
