@@ -241,9 +241,9 @@ extern "C" fn sigusr2_handler(_sig: i32) {
     SIGUSR2_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Wait for signals to be delivered
+/// Wait for signals to be delivered (yield enough times for slow CI)
 unsafe fn wait_for_signals() {
-    for _ in 0..100 {
+    for _ in 0..500 {
         sched_yield();
     }
 }
@@ -471,15 +471,28 @@ fn main() {
                 std::process::exit(0);
             }
         } else {
-            // Parent: Get child2's PGID and send signal to it
-            wait_for_signals(); // Let child2 create its process group
-
-            let child2_pgid = getpgid(child2);
-            if child2_pgid < 0 {
-                println!("  [Parent] FAIL: getpgid(child2) failed");
-                println!("KILL_PGROUP_TEST_FAILED");
-                std::process::exit(1);
+            // Parent: Wait for child2 to create its own process group by
+            // polling getpgid() until it differs from the parent's pgid.
+            // Simple yield count is insufficient on slow CI (TCG, no KVM).
+            let parent_pgid = getpgrp();
+            let mut child2_pgid;
+            let mut attempts = 0;
+            loop {
+                child2_pgid = getpgid(child2);
+                if child2_pgid > 0 && child2_pgid != parent_pgid {
+                    break;
+                }
+                attempts += 1;
+                if attempts > 5000 {
+                    println!("  [Parent] FAIL: child2 did not create its own process group after {} attempts", attempts);
+                    println!("KILL_PGROUP_TEST_FAILED");
+                    std::process::exit(1);
+                }
+                sched_yield();
             }
+
+            // Give grandchild time to reach sigsuspend
+            wait_for_signals();
 
             println!("  [Parent] Sending SIGUSR2 to process group {} via kill(-pgid, sig)", child2_pgid);
 

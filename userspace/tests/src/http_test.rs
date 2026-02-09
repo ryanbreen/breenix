@@ -20,6 +20,16 @@ use std::process;
 const AF_INET: i32 = 2;
 const SOCK_STREAM: i32 = 1;
 const SOCK_DGRAM: i32 = 2;
+const SOCK_NONBLOCK: i32 = 0x800;
+
+// Clock constants
+const CLOCK_MONOTONIC: i32 = 1;
+
+#[repr(C)]
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
 
 // HTTP constants
 const MAX_URL_LEN: usize = 2048;
@@ -66,6 +76,8 @@ extern "C" {
         src_addr: *mut u8,
         addrlen: *mut u32,
     ) -> isize;
+    fn sched_yield() -> i32;
+    fn clock_gettime(clk_id: i32, tp: *mut Timespec) -> i32;
     static mut ERRNO: i32;
 }
 
@@ -190,8 +202,8 @@ fn dns_resolve(hostname: &str) -> Result<[u8; 4], i32> {
     query[pos] = 0x00; query[pos + 1] = 0x01;
     pos += 2;
 
-    // Create UDP socket
-    let fd = unsafe { socket(AF_INET, SOCK_DGRAM, 0) };
+    // Create UDP socket (non-blocking to avoid hanging if DNS doesn't respond)
+    let fd = unsafe { socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0) };
     if fd < 0 {
         return Err(-2);
     }
@@ -213,19 +225,38 @@ fn dns_resolve(hostname: &str) -> Result<[u8; 4], i32> {
         return Err(-3);
     }
 
-    // Receive response
+    // Receive response with 5-second timeout
     let mut response = [0u8; 512];
     let mut src_addr = SockAddrIn::new([0, 0, 0, 0], 0);
-    let mut addrlen = core::mem::size_of::<SockAddrIn>() as u32;
-    let received = unsafe {
-        recvfrom(
-            fd,
-            response.as_mut_ptr(),
-            response.len(),
-            0,
-            &mut src_addr as *mut SockAddrIn as *mut u8,
-            &mut addrlen,
-        )
+    let addrlen = core::mem::size_of::<SockAddrIn>() as u32;
+
+    let mut start = Timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { clock_gettime(CLOCK_MONOTONIC, &mut start); }
+    let deadline_secs = start.tv_sec + 5;
+
+    let received = loop {
+        let mut tmp_addrlen = addrlen;
+        let n = unsafe {
+            recvfrom(
+                fd,
+                response.as_mut_ptr(),
+                response.len(),
+                0,
+                &mut src_addr as *mut SockAddrIn as *mut u8,
+                &mut tmp_addrlen,
+            )
+        };
+        if n > 0 {
+            break n;
+        }
+        // Check timeout
+        let mut now = Timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { clock_gettime(CLOCK_MONOTONIC, &mut now); }
+        if now.tv_sec >= deadline_secs {
+            unsafe { close(fd); }
+            return Err(-4); // Timeout
+        }
+        unsafe { sched_yield(); }
     };
     unsafe { close(fd); }
 
