@@ -11,7 +11,7 @@ use std::process;
 const O_NONBLOCK: i32 = 0o4000;
 const F_GETFL: i32 = 3;
 const F_SETFL: i32 = 4;
-const EAGAIN: isize = -11;
+const EAGAIN: i32 = 11;
 const PIPE_BUF_SIZE: usize = 65536;
 
 extern "C" {
@@ -21,6 +21,12 @@ extern "C" {
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn close(fd: i32) -> i32;
     fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    static mut ERRNO: i32;
+}
+
+/// Get the current errno value from libbreenix-libc
+fn get_errno() -> i32 {
+    unsafe { ERRNO }
 }
 
 fn main() {
@@ -49,8 +55,8 @@ fn main() {
     // Try to read from empty pipe - should return EAGAIN
     let mut read_buf = [0u8; 32];
     let read_ret = unsafe { read(read_fd, read_buf.as_mut_ptr(), read_buf.len()) };
-    if read_ret != EAGAIN {
-        println!("FAIL: Read from empty O_NONBLOCK pipe should return -11 (EAGAIN), got {}", read_ret);
+    if !(read_ret == -1 && get_errno() == EAGAIN) {
+        println!("FAIL: Read from empty O_NONBLOCK pipe should return -1 with EAGAIN, got ret={}, errno={}", read_ret, get_errno());
         process::exit(1);
     }
     println!("PASS: Read from empty O_NONBLOCK pipe returned EAGAIN");
@@ -76,7 +82,7 @@ fn main() {
 
     loop {
         let ret = unsafe { write(write_fd, fill_data.as_ptr(), fill_data.len()) };
-        if ret == EAGAIN {
+        if ret == -1 && get_errno() == EAGAIN {
             println!("Got EAGAIN after writing {} bytes", total_written);
             break;
         } else if ret < 0 {
@@ -138,8 +144,8 @@ fn main() {
     // Now read should return EAGAIN
     let mut read_buf = [0u8; 32];
     let read_ret = unsafe { read(read_fd, read_buf.as_mut_ptr(), read_buf.len()) };
-    if read_ret != EAGAIN {
-        println!("FAIL: Read from empty pipe (after fcntl) should return -11 (EAGAIN), got {}", read_ret);
+    if !(read_ret == -1 && get_errno() == EAGAIN) {
+        println!("FAIL: Read from empty pipe (after fcntl) should return -1 with EAGAIN, got ret={}, errno={}", read_ret, get_errno());
         process::exit(1);
     }
     println!("PASS: Read returns EAGAIN after setting O_NONBLOCK via fcntl");
@@ -180,8 +186,8 @@ fn main() {
 
     // Now pipe is empty, read should return EAGAIN again
     let read_ret2 = unsafe { read(read_fd, read_buf.as_mut_ptr(), read_buf.len()) };
-    if read_ret2 != EAGAIN {
-        println!("FAIL: Second read should return EAGAIN, got {}", read_ret2);
+    if !(read_ret2 == -1 && get_errno() == EAGAIN) {
+        println!("FAIL: Second read should return -1 with EAGAIN, got ret={}, errno={}", read_ret2, get_errno());
         process::exit(1);
     }
     println!("PASS: Second read (empty again) returns EAGAIN");
