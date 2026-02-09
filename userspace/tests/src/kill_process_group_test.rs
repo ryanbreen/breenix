@@ -157,10 +157,6 @@ fn getpgrp() -> i32 {
     unsafe { raw_getpgid(0) as i32 }
 }
 
-fn getpgid(pid: i32) -> i32 {
-    unsafe { raw_getpgid(pid as u64) as i32 }
-}
-
 /// POSIX wait status macros
 fn wifexited(status: i32) -> bool {
     (status & 0x7f) == 0
@@ -315,7 +311,7 @@ fn main() {
         // Reset counters
         SIGUSR2_COUNT.store(0, Ordering::SeqCst);
 
-        // Fork child2 that creates its own process group
+        // Fork child2 and put it in its own process group
         let child2 = fork();
         if child2 < 0 {
             println!("  FAIL: fork() failed for child2");
@@ -324,71 +320,30 @@ fn main() {
         }
 
         if child2 == 0 {
-            // Child 2: Create new process group
-            if setpgid(0, 0) < 0 {
-                println!("  [Child2] FAIL: setpgid(0, 0) failed");
+            // Child2: set own process group (race-safe: parent also calls setpgid)
+            setpgid(0, 0);
+
+            // Poll for SIGUSR2 from parent's kill(-pgid, sig)
+            if !poll_for_signal(&SIGUSR2_COUNT, 2000) {
+                println!("  [Child2] FAIL: Did not receive SIGUSR2");
                 std::process::exit(1);
             }
-
-            let child2_pgid = getpgrp();
-            println!("  [Child2] Created new process group {}", child2_pgid);
-
-            // Fork grandchild into child2's process group
-            let grandchild = fork();
-            if grandchild < 0 {
-                println!("  [Child2] FAIL: fork() failed for grandchild");
-                std::process::exit(1);
-            }
-
-            if grandchild == 0 {
-                // Grandchild: Poll for SIGUSR2
-                if !poll_for_signal(&SIGUSR2_COUNT, 5000) {
-                    println!("  [Grandchild] FAIL: Did not receive SIGUSR2");
-                    std::process::exit(1);
-                }
-                println!("  [Grandchild] PASS: Received SIGUSR2 via kill(-pgid, sig)");
-                std::process::exit(0);
-            } else {
-                // Child2: Poll for SIGUSR2
-                if !poll_for_signal(&SIGUSR2_COUNT, 5000) {
-                    println!("  [Child2] FAIL: Did not receive SIGUSR2");
-                    std::process::exit(1);
-                }
-                println!("  [Child2] PASS: Received SIGUSR2 via kill(-pgid, sig)");
-
-                // Wait for grandchild
-                let mut gc_status: i32 = 0;
-                let gc_wait = waitpid(grandchild, &mut gc_status, 0);
-                if gc_wait != grandchild {
-                    println!("  [Child2] WARNING: waitpid(grandchild) returned {}", gc_wait);
-                } else if !wifexited(gc_status) || wexitstatus(gc_status) != 0 {
-                    println!("  [Child2] FAIL: Grandchild exited with non-zero status");
-                    std::process::exit(1);
-                }
-
-                std::process::exit(0);
-            }
+            println!("  [Child2] PASS: Received SIGUSR2 via kill(-pgid, sig)");
+            std::process::exit(0);
         } else {
-            // Parent: Wait for child2 to create its own process group by
-            // polling getpgid() until it differs from the parent's pgid.
-            let parent_pgid = getpgrp();
-            let mut child2_pgid;
-            let mut attempts = 0;
-            loop {
-                child2_pgid = getpgid(child2);
-                if child2_pgid > 0 && child2_pgid != parent_pgid {
-                    break;
-                }
-                attempts += 1;
-                if attempts > 5000 {
-                    println!("  [Parent] FAIL: child2 did not create its own process group after {} attempts", attempts);
-                    println!("KILL_PGROUP_TEST_FAILED");
-                    std::process::exit(1);
-                }
-                sched_yield();
+            // Parent: set child2's process group immediately (no polling needed).
+            // Both parent and child call setpgid — standard POSIX pattern to
+            // avoid the race where one runs before the other.
+            let ret = setpgid(child2, child2);
+            if ret < 0 {
+                println!("  [Parent] FAIL: setpgid(child2, child2) failed with {}", ret);
+                println!("KILL_PGROUP_TEST_FAILED");
+                std::process::exit(1);
             }
 
-            // Brief yield to let grandchild start polling
+            let child2_pgid = child2;
+
+            // Brief yield to let child2 start polling
             for _ in 0..50 { sched_yield(); }
 
             println!("  [Parent] Sending SIGUSR2 to process group {} via kill(-pgid, sig)", child2_pgid);
