@@ -64,7 +64,11 @@ jobs:
 
       - name: Create ext2 disk image
         run: |
+          # Pre-create target/ as runner user so sudo doesn't own it
+          mkdir -p target testdata
           sudo ./scripts/create_ext2_disk.sh --arch aarch64
+          # Fix ownership of files created by sudo
+          sudo chown -R $(id -u):$(id -g) target/ testdata/
 
       - name: Verify ext2 disk was populated
         run: |
