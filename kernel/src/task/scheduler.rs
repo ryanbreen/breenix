@@ -235,11 +235,26 @@ impl Scheduler {
 
     /// Add a new thread to the scheduler
     pub fn add_thread(&mut self, thread: Box<Thread>) {
+        self.add_thread_inner(thread, false);
+    }
+
+    /// Add a new thread to the front of the ready queue.
+    /// Used for fork children so they run before other waiting threads,
+    /// following the Linux convention where children exec quickly and exit.
+    pub fn add_thread_front(&mut self, thread: Box<Thread>) {
+        self.add_thread_inner(thread, true);
+    }
+
+    fn add_thread_inner(&mut self, thread: Box<Thread>, front: bool) {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
         self.threads.push(thread);
-        self.ready_queue.push_back(thread_id);
+        if front {
+            self.ready_queue.push_front(thread_id);
+        } else {
+            self.ready_queue.push_back(thread_id);
+        }
         // CRITICAL: Only log on x86_64. On ARM64, log_serial_println! uses the same
         // SERIAL1 lock as serial_println!, causing deadlock if timer fires while
         // boot code is printing.
@@ -1084,6 +1099,24 @@ pub fn spawn(thread: Box<Thread>) {
             // Ensure a switch happens ASAP (especially in CI smoke runs)
             NEED_RESCHED.store(true, Ordering::Relaxed);
             // Mirror to per-CPU flag so IRQ-exit path sees it
+            #[cfg(target_arch = "x86_64")]
+            crate::per_cpu::set_need_resched(true);
+            #[cfg(target_arch = "aarch64")]
+            crate::per_cpu_aarch64::set_need_resched(true);
+        } else {
+            panic!("Scheduler not initialized");
+        }
+    });
+}
+
+/// Add a thread to the front of the ready queue.
+/// Used for fork children so they run before other queued threads.
+pub fn spawn_front(thread: Box<Thread>) {
+    without_interrupts(|| {
+        let mut scheduler_lock = SCHEDULER.lock();
+        if let Some(scheduler) = scheduler_lock.as_mut() {
+            scheduler.add_thread_front(thread);
+            NEED_RESCHED.store(true, Ordering::Relaxed);
             #[cfg(target_arch = "x86_64")]
             crate::per_cpu::set_need_resched(true);
             #[cfg(target_arch = "aarch64")]

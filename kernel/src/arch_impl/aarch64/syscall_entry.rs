@@ -977,7 +977,7 @@ fn sys_fork_aarch64(frame: &Aarch64ExceptionFrame) -> u64 {
                                 "sys_fork_aarch64: Spawning child thread {} to scheduler",
                                 child_thread_id
                             );
-                            crate::task::scheduler::spawn(Box::new(child_thread_clone));
+                            crate::task::scheduler::spawn_front(Box::new(child_thread_clone));
                             log::info!("sys_fork_aarch64: Child thread spawned successfully");
 
                             log::info!(

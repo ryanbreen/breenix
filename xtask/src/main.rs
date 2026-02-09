@@ -2197,11 +2197,11 @@ fn boot_stages() -> Result<()> {
 
     let test_start = Instant::now();
     // CI environments need more time due to virtualization overhead and resource contention
-    // With 227 stages, the test can take 4-5 minutes in CI
+    // With 252 stages, the test can take 5-7 minutes in CI
     let timeout = if std::env::var("CI").is_ok() {
-        Duration::from_secs(300) // 5 minutes for CI
+        Duration::from_secs(480) // 8 minutes for CI
     } else {
-        Duration::from_secs(180) // 3 minutes locally - allows time for QEMU serial buffer flush
+        Duration::from_secs(300) // 5 minutes locally - allows time for QEMU serial buffer flush
     };
     // Note: QEMU's file-based serial output uses stdio buffering (~4KB). When tests complete
     // quickly, their markers may still be in QEMU's buffer when the validator reads the file.

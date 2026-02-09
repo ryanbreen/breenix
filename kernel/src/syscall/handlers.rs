@@ -1577,7 +1577,7 @@ fn sys_fork_with_parent_context(parent_context: crate::task::thread::CpuContext)
                                 "sys_fork: Spawning child thread {} to scheduler",
                                 child_thread_id
                             );
-                            crate::task::scheduler::spawn(Box::new(child_thread_clone));
+                            crate::task::scheduler::spawn_front(Box::new(child_thread_clone));
                             log::info!("sys_fork: Child thread spawned successfully");
 
                             log::info!("sys_fork: Fork successful - parent {} gets child PID {}, thread {}", 
