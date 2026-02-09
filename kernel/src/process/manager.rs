@@ -893,6 +893,9 @@ impl ProcessManager {
                 exit_code
             );
 
+            // Drain any pending old page tables from previous exec() calls
+            process.drain_old_page_tables();
+
             process.terminate(exit_code);
 
             // Remove from ready queue
@@ -2316,6 +2319,10 @@ impl ProcessManager {
         // Get the existing process
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
 
+        // Drain any pending old page tables from previous exec() calls.
+        // By this point, CR3 has definitely switched away from any old tables.
+        process.drain_old_page_tables();
+
         // For now, assume non-current processes are not actively running
         // This is a simplification - in a real OS we'd check the scheduler state
         let is_scheduled = false;
@@ -2565,10 +2572,16 @@ impl ProcessManager {
             );
         }
 
-        // Clean up old page table resources
+        // Defer old page table cleanup: push onto the process's pending list.
+        // We cannot free the old page table immediately because CR3 may still
+        // reference it if a timer interrupt fires before the next context switch.
+        // The old table will be cleaned up at the start of the next exec or
+        // when the process exits.
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         // Add the process back to the ready queue if it's not already there
@@ -2638,6 +2651,8 @@ impl ProcessManager {
         // We need to do this early so we can call setup_argv_on_stack later
         let (thread_id, old_page_table) = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            process.drain_old_page_tables();
             let main_thread = process
                 .main_thread
                 .as_ref()
@@ -2812,10 +2827,12 @@ impl ProcessManager {
             );
         }
 
-        // Clean up old page table resources
+        // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process_with_argv: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         // Add the process back to the ready queue if it's not already there
@@ -2857,6 +2874,8 @@ impl ProcessManager {
 
         let (thread_id, old_page_table) = {
             let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+            // Drain any pending old page tables from previous exec() calls.
+            process.drain_old_page_tables();
             let main_thread = process
                 .main_thread
                 .as_ref()
@@ -3038,9 +3057,12 @@ impl ProcessManager {
             );
         }
 
+        // Defer old page table cleanup (see exec_process for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process_with_argv [ARM64]: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process_with_argv [ARM64]: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         if !self.ready_queue.contains(&pid) {
@@ -3091,6 +3113,9 @@ impl ProcessManager {
 
         // Get the existing process
         let process = self.processes.get_mut(&pid).ok_or("Process not found")?;
+
+        // Drain any pending old page tables from previous exec() calls.
+        process.drain_old_page_tables();
 
         // For now, assume non-current processes are not actively running
         let is_scheduled = false;
@@ -3315,10 +3340,12 @@ impl ProcessManager {
             );
         }
 
-        // Clean up old page table resources
+        // Defer old page table cleanup (see exec_process x86_64 for rationale)
         if let Some(old_pt) = old_page_table {
-            log::info!("exec_process [ARM64]: Cleaning up old page table");
-            old_pt.cleanup_for_exec();
+            log::info!("exec_process [ARM64]: Deferring old page table cleanup");
+            if let Some(process) = self.processes.get_mut(&pid) {
+                process.pending_old_page_tables.push(old_pt);
+            }
         }
 
         // Add the process back to the ready queue if it's not already there
