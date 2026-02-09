@@ -46,6 +46,7 @@ fn arch_halt() {
 }
 
 /// Architecture-specific enable interrupts
+#[allow(dead_code)] // Used by worker_thread_fn which is part of the workqueue API
 #[inline(always)]
 unsafe fn arch_enable_interrupts() {
     #[cfg(target_arch = "x86_64")]
@@ -58,6 +59,7 @@ unsafe fn arch_enable_interrupts() {
 /// Work states
 const WORK_IDLE: u8 = 0;
 const WORK_PENDING: u8 = 1;
+#[allow(dead_code)] // Used by Work::execute() which is part of the workqueue API
 const WORK_RUNNING: u8 = 2;
 
 /// A unit of deferred work.
@@ -66,6 +68,7 @@ const WORK_RUNNING: u8 = 2;
 /// The work can be queued to a workqueue and waited on for completion.
 pub struct Work {
     /// The function to execute (wrapped in Option for take() semantics)
+    #[allow(dead_code)] // Read by Work::execute() which is part of the workqueue API
     func: UnsafeCell<Option<Box<dyn FnOnce() + Send + 'static>>>,
     /// Current state: Idle -> Pending -> Running -> Idle
     state: AtomicU8,
@@ -154,6 +157,7 @@ impl Work {
     }
 
     /// Execute this work item (called by worker thread).
+    #[allow(dead_code)] // Called by worker_thread_fn which is part of the workqueue API
     fn execute(&self) {
         // Transition to Running
         self.state.store(WORK_RUNNING, Ordering::Release);
@@ -188,6 +192,7 @@ pub struct Workqueue {
     /// Shutdown flag - signals worker to exit
     shutdown: AtomicBool,
     /// Debug name for this workqueue
+    #[allow(dead_code)] // Used by Workqueue::queue() and ensure_worker() which are part of the workqueue API
     name: &'static str,
 }
 
@@ -205,6 +210,7 @@ impl Workqueue {
     /// Queue work for execution. Returns false if work is already pending.
     ///
     /// The work item must be in the Idle state to be queued.
+    #[allow(dead_code)] // Part of public workqueue API surface
     pub fn queue(self: &Arc<Self>, work: Arc<Work>) -> bool {
         // Reject if already pending
         if !work.try_set_pending() {
@@ -271,6 +277,7 @@ impl Workqueue {
     }
 
     /// Ensure worker thread exists, creating it if needed.
+    #[allow(dead_code)] // Called by Workqueue::queue() which is part of the workqueue API
     fn ensure_worker(self: &Arc<Self>) {
         let mut worker_guard = self.worker.lock();
         if worker_guard.is_none() {
@@ -313,6 +320,7 @@ impl Drop for Workqueue {
 }
 
 /// Worker thread main function.
+#[allow(dead_code)] // Called by Workqueue::ensure_worker() which is part of the workqueue API
 fn worker_thread_fn(wq: Arc<Workqueue>) {
     // Enable interrupts for preemption
     unsafe { arch_enable_interrupts(); }
@@ -360,6 +368,7 @@ pub fn init_workqueue() {
 /// Schedule work on the system workqueue.
 ///
 /// Returns true if work was queued, false if already pending.
+#[allow(dead_code)] // Part of public workqueue API surface
 pub fn schedule_work(work: Arc<Work>) -> bool {
     if let Some(ref wq) = *SYSTEM_WQ.lock() {
         wq.queue(work)
@@ -373,6 +382,7 @@ pub fn schedule_work(work: Arc<Work>) -> bool {
 ///
 /// Convenience function that creates a Work item and queues it in one step.
 /// Returns the Work handle for waiting on completion.
+#[allow(dead_code)] // Part of public workqueue API surface
 pub fn schedule_work_fn<F>(func: F, name: &'static str) -> Arc<Work>
 where
     F: FnOnce() + Send + 'static,
@@ -385,6 +395,7 @@ where
 }
 
 /// Flush the system workqueue, waiting for all pending work to complete.
+#[allow(dead_code)] // Part of public workqueue API surface
 pub fn flush_system_workqueue() {
     if let Some(ref wq) = *SYSTEM_WQ.lock() {
         wq.flush();

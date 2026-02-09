@@ -59,6 +59,7 @@ pub struct KthreadHandle {
 
 impl KthreadHandle {
     /// Get the thread ID of this kthread
+    #[allow(dead_code)] // Part of public kthread API surface
     pub fn tid(&self) -> u64 {
         self.inner.tid
     }
