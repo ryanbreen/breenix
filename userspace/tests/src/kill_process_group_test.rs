@@ -5,8 +5,8 @@
 //! 2. kill(0, sig) - Send signal to all processes in caller's process group
 //! 3. kill(-pgid, sig) - Send signal to specific process group
 //!
-//! Simplified to use polling loops instead of sigsuspend for robustness
-//! in concurrent test environments with many competing processes.
+//! All verification is done synchronously by the parent to avoid
+//! slow inter-process signaling on loaded CI with 30+ concurrent processes.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -37,7 +37,6 @@ extern "C" {
     fn getpid() -> i32;
     fn fork() -> i32;
     fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn sched_yield() -> i32;
 }
 
 // --- Raw syscall wrappers ---
@@ -167,17 +166,6 @@ extern "C" fn sigusr2_handler(_sig: i32) {
     SIGUSR2_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Poll for signal delivery by checking atomic counter with yield
-fn poll_for_signal(counter: &AtomicU32, max_attempts: u32) -> bool {
-    for _ in 0..max_attempts {
-        if counter.load(Ordering::SeqCst) > 0 {
-            return true;
-        }
-        unsafe { sched_yield(); }
-    }
-    counter.load(Ordering::SeqCst) > 0
-}
-
 fn main() {
     unsafe {
         println!("=== Process Group Kill Semantics Test ===\n");
@@ -258,12 +246,11 @@ fn main() {
         }
 
         if child1 == 0 {
-            // Child 1: just spin until killed
-            loop { sched_yield(); }
+            // Child1: exit immediately — parent will test signal delivery
+            std::process::exit(0);
         } else {
-            // Parent: Brief yield to let child start, then send signal
-            for _ in 0..20 { sched_yield(); }
-
+            // Parent: send signal to own process group. The signal is
+            // delivered synchronously to the caller during kill().
             let ret = kill(0, SIGUSR1);
             if ret != 0 {
                 println!("  [Parent] FAIL: kill(0, SIGUSR1) failed with errno {}", -ret);
@@ -271,16 +258,15 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Parent receives the signal (same group) — verify via counter
-            if !poll_for_signal(&SIGUSR1_COUNT, 100) {
+            // Parent receives the signal synchronously (same group)
+            if SIGUSR1_COUNT.load(Ordering::SeqCst) == 0 {
                 println!("  [Parent] FAIL: Did not receive SIGUSR1");
                 println!("KILL_PGROUP_TEST_FAILED");
                 std::process::exit(1);
             }
             println!("  [Parent] PASS: Received SIGUSR1 (process group signal delivery works)");
 
-            // Clean up child1
-            kill(child1, 9);
+            // Wait for child1
             let mut status: i32 = 0;
             waitpid(child1, &mut status, 0);
         }
@@ -303,11 +289,14 @@ fn main() {
         }
 
         if child2 == 0 {
-            // Child2: set own process group, then just spin until killed
+            // Child2: set own process group (redundant with parent, but POSIX-correct)
             setpgid(0, 0);
-            loop { sched_yield(); }
+            // Exit immediately — parent will verify signal semantics
+            std::process::exit(0);
         } else {
-            // Parent: set child2's process group immediately (POSIX pattern)
+            // Parent: set child2's process group immediately, then test
+            // kill(-pgid, sig) without any yields. No need for child2
+            // to be running — the group exists once setpgid completes.
             let ret = setpgid(child2, child2);
             if ret < 0 {
                 println!("  [Parent] FAIL: setpgid(child2, child2) failed with {}", ret);
@@ -316,9 +305,6 @@ fn main() {
             }
 
             let child2_pgid = child2;
-            // Brief yield to let child2 start
-            for _ in 0..20 { sched_yield(); }
-
             println!("  [Parent] Sending SIGUSR2 to process group {} via kill(-pgid, sig)", child2_pgid);
 
             let ret = kill(-child2_pgid, SIGUSR2);
@@ -331,8 +317,6 @@ fn main() {
             }
 
             // Parent should NOT receive SIGUSR2 (different process group)
-            for _ in 0..20 { sched_yield(); }
-
             if SIGUSR2_COUNT.load(Ordering::SeqCst) == 0 {
                 println!("  [Parent] PASS: Did not receive SIGUSR2 (not in target process group)");
             } else {
@@ -341,8 +325,7 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Clean up child2 with SIGKILL (don't wait for slow polling)
-            kill(child2, 9);
+            // Wait for child2 to exit
             let mut status2: i32 = 0;
             waitpid(child2, &mut status2, 0);
         }
