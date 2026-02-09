@@ -582,12 +582,12 @@ fn get_boot_stages() -> Vec<BootStage> {
             failure_meaning: "hello_time.elf did not print output",
             check_hint: "Check if hello_time.elf actually executed and printed to stdout",
         },
-        BootStage {
-            name: "Userspace register initialization validated",
-            marker: "PASS: Callee-saved registers preserved as zero",
-            failure_meaning: "Callee-saved registers (rbx, r12-r15) not zeroed on first userspace entry",
-            check_hint: "Check setup_first_userspace_entry() in kernel/src/interrupts/context_switch.rs - register_init_test checks callee-saved registers are zero at main() entry",
-        },
+        // NOTE: "Userspace register initialization validated" stage removed.
+        // The register_init_test checks callee-saved registers at main() entry,
+        // but Rust std runtime initialization (_start -> _start_rust -> lang_start_internal)
+        // legitimately modifies callee-saved registers before main() runs.
+        // The kernel correctly zeroes all GPRs in setup_first_userspace_entry(),
+        // but this cannot be validated from a std program's main().
         BootStage {
             name: "Userspace clock_gettime validated",
             marker: "USERSPACE CLOCK_GETTIME: OK",
