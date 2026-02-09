@@ -1,10 +1,8 @@
-name: Boot Stages Test
+name: Boot Stages Test (Deprecated)
 
+# Deprecated: Superseded by boot-tests.yml which runs x86_64 and ARM64 in parallel.
+# Kept as workflow_dispatch for rollback purposes. Remove after boot-tests.yml is stable.
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
