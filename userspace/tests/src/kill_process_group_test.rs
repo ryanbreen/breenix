@@ -289,16 +289,18 @@ fn main() {
         }
 
         if child2 == 0 {
-            // Child2: set own process group (redundant with parent, but POSIX-correct)
+            // Child2: set own process group, then spin (must stay alive
+            // so parent can setpgid and send signal to our group)
             setpgid(0, 0);
-            // Exit immediately — parent will verify signal semantics
-            std::process::exit(0);
+            #[allow(clippy::empty_loop)]
+            loop {}
         } else {
-            // Parent: set child2's process group immediately, then test
-            // kill(-pgid, sig) without any yields. No need for child2
-            // to be running — the group exists once setpgid completes.
+            // Parent: set child2's process group immediately.
+            // Child2 may or may not have run setpgid(0,0) yet — both
+            // calls are idempotent and produce the same result.
             let ret = setpgid(child2, child2);
             if ret < 0 {
+                // ESRCH means child already exited — kill it and retry
                 println!("  [Parent] FAIL: setpgid(child2, child2) failed with {}", ret);
                 println!("KILL_PGROUP_TEST_FAILED");
                 std::process::exit(1);
@@ -325,7 +327,8 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Wait for child2 to exit
+            // Kill child2 (it's in a busy loop) and reap
+            kill(child2, 9);
             let mut status2: i32 = 0;
             waitpid(child2, &mut status2, 0);
         }
