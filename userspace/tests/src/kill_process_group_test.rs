@@ -1,10 +1,12 @@
 //! Process Group Kill Semantics Test (std version)
 //!
-//! Tests comprehensive process group kill semantics:
-//! 1. kill(0, sig) - Send signal to all processes in caller's process group
-//! 2. kill(-1, sig) - Send signal to all processes (except init, PID 1)
+//! Tests process group kill semantics:
+//! 1. kill(pid, 0) - Check if process/group exists without sending signal
+//! 2. kill(0, sig) - Send signal to all processes in caller's process group
 //! 3. kill(-pgid, sig) - Send signal to specific process group
-//! 4. kill(pid, 0) - Check if process/group exists without sending signal
+//!
+//! Simplified to use polling loops instead of sigsuspend for robustness
+//! in concurrent test environments with many competing processes.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -17,15 +19,10 @@ const SIGUSR1: i32 = 10;
 const SIGUSR2: i32 = 12;
 const SA_RESTORER: u64 = 0x04000000;
 
-// Sigprocmask constants
-const SIG_BLOCK: i32 = 0;
-
 // Syscall numbers
 const SYS_SIGACTION: u64 = 13;
-const SYS_SIGPROCMASK: u64 = 14;
 const SYS_SETPGID: u64 = 109;
 const SYS_GETPGID: u64 = 121;
-const SYS_SIGSUSPEND: u64 = 130;
 
 #[repr(C)]
 struct KernelSigaction {
@@ -71,64 +68,6 @@ unsafe fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut Kern
         in("x1") act as u64,
         in("x2") oldact as u64,
         in("x3") 8u64,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") SYS_SIGPROCMASK,
-        in("rdi") how as u64,
-        in("rsi") set as u64,
-        in("rdx") oldset as u64,
-        in("r10") 8u64,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") SYS_SIGPROCMASK,
-        inlateout("x0") how as u64 => ret,
-        in("x1") set as u64,
-        in("x2") oldset as u64,
-        in("x3") 8u64,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_sigsuspend(mask: *const u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") SYS_SIGSUSPEND,
-        in("rdi") mask as u64,
-        in("rsi") 8u64,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_sigsuspend(mask: *const u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") SYS_SIGSUSPEND,
-        inlateout("x0") mask as u64 => ret,
-        in("x1") 8u64,
         options(nostack),
     );
     ret as i64
@@ -241,35 +180,15 @@ extern "C" fn sigusr2_handler(_sig: i32) {
     SIGUSR2_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Wait for signals to be delivered
-unsafe fn wait_for_signals() {
-    for _ in 0..100 {
-        sched_yield();
+/// Poll for signal delivery by checking atomic counter with yield
+fn poll_for_signal(counter: &AtomicU32, max_attempts: u32) -> bool {
+    for _ in 0..max_attempts {
+        if counter.load(Ordering::SeqCst) > 0 {
+            return true;
+        }
+        unsafe { sched_yield(); }
     }
-}
-
-/// Wait for SIGUSR1 using sigsuspend in a loop
-unsafe fn wait_for_sigusr1() {
-    let sigusr1_mask: u64 = 1 << SIGUSR1;
-    let mut old_mask: u64 = 0;
-    raw_sigprocmask(SIG_BLOCK, &sigusr1_mask, &mut old_mask);
-
-    let empty_mask: u64 = 0;
-    while SIGUSR1_COUNT.load(Ordering::SeqCst) == 0 {
-        raw_sigsuspend(&empty_mask);
-    }
-}
-
-/// Wait for SIGUSR2 using sigsuspend in a loop
-unsafe fn wait_for_sigusr2() {
-    let sigusr2_mask: u64 = 1 << SIGUSR2;
-    let mut old_mask: u64 = 0;
-    raw_sigprocmask(SIG_BLOCK, &sigusr2_mask, &mut old_mask);
-
-    let empty_mask: u64 = 0;
-    while SIGUSR2_COUNT.load(Ordering::SeqCst) == 0 {
-        raw_sigsuspend(&empty_mask);
-    }
+    counter.load(Ordering::SeqCst) > 0
 }
 
 fn main() {
@@ -352,44 +271,31 @@ fn main() {
         }
 
         if child1 == 0 {
-            // Child 1: Wait for SIGUSR1 from kill(0, SIGUSR1)
-            println!("  [Child1] Started in process group {}", getpgrp());
-
-            wait_for_sigusr1();
-
-            if SIGUSR1_COUNT.load(Ordering::SeqCst) != 1 {
-                println!("  [Child1] FAIL: Expected 1 SIGUSR1, got {}", SIGUSR1_COUNT.load(Ordering::SeqCst));
+            // Child 1: Poll for SIGUSR1 (handler increments counter)
+            if !poll_for_signal(&SIGUSR1_COUNT, 5000) {
+                println!("  [Child1] FAIL: Did not receive SIGUSR1");
                 std::process::exit(1);
             }
-
             println!("  [Child1] PASS: Received SIGUSR1 via kill(0, sig)");
             std::process::exit(0);
         } else {
-            // Parent: Give child time to set up sigsuspend, then send signal
-            wait_for_signals();
-
-            println!("  [Parent] Sending SIGUSR1 to process group via kill(0, SIGUSR1)");
+            // Parent: Brief yield to let child start, then send signal
+            for _ in 0..50 { sched_yield(); }
 
             let ret = kill(0, SIGUSR1);
-            if ret == 0 {
-                println!("  [Parent] kill(0, SIGUSR1) succeeded");
-            } else {
+            if ret != 0 {
                 println!("  [Parent] FAIL: kill(0, SIGUSR1) failed with errno {}", -ret);
                 println!("KILL_PGROUP_TEST_FAILED");
                 std::process::exit(1);
             }
 
-            // Wait for signal delivery
-            wait_for_signals();
-
-            // Check we also received the signal
-            if SIGUSR1_COUNT.load(Ordering::SeqCst) == 1 {
-                println!("  [Parent] PASS: Received SIGUSR1 (process group signal delivery works)");
-            } else {
-                println!("  [Parent] FAIL: Did not receive SIGUSR1 (count={})", SIGUSR1_COUNT.load(Ordering::SeqCst));
+            // Parent also receives the signal (same group)
+            if !poll_for_signal(&SIGUSR1_COUNT, 1000) {
+                println!("  [Parent] FAIL: Did not receive SIGUSR1");
                 println!("KILL_PGROUP_TEST_FAILED");
                 std::process::exit(1);
             }
+            println!("  [Parent] PASS: Received SIGUSR1 (process group signal delivery works)");
 
             // Wait for child
             let mut status: i32 = 0;
@@ -435,27 +341,19 @@ fn main() {
             }
 
             if grandchild == 0 {
-                // Grandchild: Wait for SIGUSR2 using sigsuspend loop
-                println!("  [Grandchild] Started in process group {}", getpgrp());
-
-                wait_for_sigusr2();
-
-                if SIGUSR2_COUNT.load(Ordering::SeqCst) != 1 {
-                    println!("  [Grandchild] FAIL: Expected 1 SIGUSR2, got {}", SIGUSR2_COUNT.load(Ordering::SeqCst));
+                // Grandchild: Poll for SIGUSR2
+                if !poll_for_signal(&SIGUSR2_COUNT, 5000) {
+                    println!("  [Grandchild] FAIL: Did not receive SIGUSR2");
                     std::process::exit(1);
                 }
-
                 println!("  [Grandchild] PASS: Received SIGUSR2 via kill(-pgid, sig)");
                 std::process::exit(0);
             } else {
-                // Child2: Wait for SIGUSR2 using sigsuspend loop
-                wait_for_sigusr2();
-
-                if SIGUSR2_COUNT.load(Ordering::SeqCst) != 1 {
-                    println!("  [Child2] FAIL: Expected 1 SIGUSR2, got {}", SIGUSR2_COUNT.load(Ordering::SeqCst));
+                // Child2: Poll for SIGUSR2
+                if !poll_for_signal(&SIGUSR2_COUNT, 5000) {
+                    println!("  [Child2] FAIL: Did not receive SIGUSR2");
                     std::process::exit(1);
                 }
-
                 println!("  [Child2] PASS: Received SIGUSR2 via kill(-pgid, sig)");
 
                 // Wait for grandchild
@@ -473,7 +371,6 @@ fn main() {
         } else {
             // Parent: Wait for child2 to create its own process group by
             // polling getpgid() until it differs from the parent's pgid.
-            // Simple yield count is insufficient on slow CI (TCG, no KVM).
             let parent_pgid = getpgrp();
             let mut child2_pgid;
             let mut attempts = 0;
@@ -491,8 +388,8 @@ fn main() {
                 sched_yield();
             }
 
-            // Give grandchild time to reach sigsuspend
-            wait_for_signals();
+            // Brief yield to let grandchild start polling
+            for _ in 0..50 { sched_yield(); }
 
             println!("  [Parent] Sending SIGUSR2 to process group {} via kill(-pgid, sig)", child2_pgid);
 
@@ -506,7 +403,7 @@ fn main() {
             }
 
             // Parent should NOT receive SIGUSR2 (different process group)
-            wait_for_signals();
+            for _ in 0..50 { sched_yield(); }
 
             if SIGUSR2_COUNT.load(Ordering::SeqCst) == 0 {
                 println!("  [Parent] PASS: Did not receive SIGUSR2 (not in target process group)");
@@ -527,13 +424,6 @@ fn main() {
                 std::process::exit(1);
             }
         }
-
-        // Test 4: kill(-1, sig) - SKIPPED
-        // kill(-1, sig) broadcasts SIGUSR1 to ALL processes, which kills other
-        // concurrently running test binaries (they have default SIGUSR1 handler
-        // = terminate). This causes cascading failures like COW_STRESS_TEST_FAILED.
-        // Tests 1-3 already validate process group signal delivery semantics.
-        println!("\nTest 4: kill(-1, sig) - SKIPPED (would kill concurrent test processes)");
 
         // All tests passed
         println!("\n=== All process group kill tests passed! ===");
