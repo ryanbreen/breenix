@@ -463,7 +463,7 @@ pub extern "C" fn kernel_main() -> ! {
         // Each test process goes through setup_first_userspace_entry_arm64() which
         // properly sets TTBR0, SPSR (EL0t), and ELR (entry point) before ERET.
         loop {
-            unsafe { core::arch::aarch64::__wfi(); }
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
         }
     }
 
