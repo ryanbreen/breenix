@@ -99,15 +99,17 @@ extern "C" fn handler(_sig: i32) {
 
     #[cfg(target_arch = "aarch64")]
     unsafe {
+        // Use x9-x12 (caller-saved) to clobber in signal handler.
+        // x19 is reserved by LLVM and cannot be used in inline asm.
         std::arch::asm!(
-            "mov x19, 0xDEAD",
-            "mov x20, 0xCAFE",
-            "mov x21, 0x1111",
-            "mov x22, 0x2222",
-            out("x19") _,
-            out("x20") _,
-            out("x21") _,
-            out("x22") _,
+            "mov x9, 0xDEAD",
+            "mov x10, 0xCAFE",
+            "mov x11, 0x1111",
+            "mov x12, 0x2222",
+            out("x9") _,
+            out("x10") _,
+            out("x11") _,
+            out("x12") _,
         );
     }
 
@@ -251,31 +253,32 @@ fn main() {
 
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64 version uses x19-x22 as callee-saved registers
-        let x19_expected: u64 = 0xAAAA_BBBB_CCCC_DDDD;
-        let x20_expected: u64 = 0x1111_2222_3333_4444;
-        let x21_expected: u64 = 0x5555_6666_7777_8888;
-        let x22_expected: u64 = 0x9999_AAAA_BBBB_CCCC;
+        // ARM64 version uses x20-x23 as callee-saved registers.
+        // x19 is reserved by LLVM and cannot be used in inline asm.
+        let x20_expected: u64 = 0xAAAA_BBBB_CCCC_DDDD;
+        let x21_expected: u64 = 0x1111_2222_3333_4444;
+        let x22_expected: u64 = 0x5555_6666_7777_8888;
+        let x23_expected: u64 = 0x9999_AAAA_BBBB_CCCC;
 
-        println!("Step 1: Setting callee-saved registers (x19-x22) to known values");
+        println!("Step 1: Setting callee-saved registers (x20-x23) to known values");
 
         unsafe {
             std::arch::asm!(
-                "mov x19, {0}",
-                "mov x20, {1}",
-                "mov x21, {2}",
-                "mov x22, {3}",
-                in(reg) x19_expected,
+                "mov x20, {0}",
+                "mov x21, {1}",
+                "mov x22, {2}",
+                "mov x23, {3}",
                 in(reg) x20_expected,
                 in(reg) x21_expected,
                 in(reg) x22_expected,
+                in(reg) x23_expected,
             );
         }
 
-        println!("  X19 = {:#018x}", x19_expected);
         println!("  X20 = {:#018x}", x20_expected);
         println!("  X21 = {:#018x}", x21_expected);
         println!("  X22 = {:#018x}", x22_expected);
+        println!("  X23 = {:#018x}", x23_expected);
 
         println!("\nStep 2: Registering signal handler for SIGUSR1");
         let action = KernelSigaction {
@@ -319,36 +322,36 @@ fn main() {
 
         println!("\nStep 5: Checking register values after signal return");
 
-        let x19_actual: u64;
         let x20_actual: u64;
         let x21_actual: u64;
         let x22_actual: u64;
+        let x23_actual: u64;
 
         unsafe {
             std::arch::asm!(
-                "mov {0}, x19",
-                "mov {1}, x20",
-                "mov {2}, x21",
-                "mov {3}, x22",
-                out(reg) x19_actual,
+                "mov {0}, x20",
+                "mov {1}, x21",
+                "mov {2}, x22",
+                "mov {3}, x23",
                 out(reg) x20_actual,
                 out(reg) x21_actual,
                 out(reg) x22_actual,
+                out(reg) x23_actual,
             );
         }
 
-        println!("  X19 = {:#018x}", x19_actual);
         println!("  X20 = {:#018x}", x20_actual);
         println!("  X21 = {:#018x}", x21_actual);
         println!("  X22 = {:#018x}", x22_actual);
+        println!("  X23 = {:#018x}", x23_actual);
 
         let mut all_match = true;
         let mut errors = 0u64;
 
-        if x19_actual != x19_expected { println!("  FAIL: X19 mismatch"); all_match = false; errors += 1; }
         if x20_actual != x20_expected { println!("  FAIL: X20 mismatch"); all_match = false; errors += 1; }
         if x21_actual != x21_expected { println!("  FAIL: X21 mismatch"); all_match = false; errors += 1; }
         if x22_actual != x22_expected { println!("  FAIL: X22 mismatch"); all_match = false; errors += 1; }
+        if x23_actual != x23_expected { println!("  FAIL: X23 mismatch"); all_match = false; errors += 1; }
 
         println!("\n=== TEST RESULT ===");
         if all_match {
