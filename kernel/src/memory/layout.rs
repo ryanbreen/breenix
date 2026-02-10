@@ -106,6 +106,10 @@ pub const USER_STACK_REGION_END: u64 = aarch64_const::USER_STACK_REGION_END;
 #[allow(dead_code)]
 pub const USER_STACK_SIZE: usize = 64 * 1024;
 
+/// Maximum user stack size (2 MiB)
+/// Demand-paged stack growth will not exceed this limit
+pub const MAX_USER_STACK_SIZE: u64 = 2 * 1024 * 1024;
+
 // PML4 indices for different regions
 #[allow(dead_code)]
 pub const BOOTSTRAP_PML4_INDEX: u64 = 3;             // Bootstrap stack at 0x180000000000

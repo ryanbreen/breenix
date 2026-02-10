@@ -877,6 +877,121 @@ fn handle_cow_direct(faulting_addr: VirtAddr, cr3: u64) -> bool {
     }
 }
 
+/// Handle demand-paged stack growth
+///
+/// When a userspace process accesses memory just below its current stack bottom,
+/// this function extends the stack by allocating and mapping new pages. This allows
+/// stacks to grow on demand up to MAX_USER_STACK_SIZE without pre-allocating memory.
+///
+/// Returns true if the fault was handled (stack was grown), false otherwise.
+fn handle_stack_growth(faulting_addr: VirtAddr, cr3: u64) -> bool {
+    use crate::memory::layout::{MAX_USER_STACK_SIZE, USER_STACK_REGION_START, USER_STACK_REGION_END};
+    use x86_64::structures::paging::{Page, PageTableFlags, Size4KiB};
+
+    let fault_addr = faulting_addr.as_u64();
+
+    // Quick check: is this in or near the user stack region?
+    // Stack grows downward, so faults happen BELOW the current stack bottom
+    // but should still be within the overall stack region
+    if fault_addr >= USER_STACK_REGION_END || fault_addr < USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE) {
+        return false;
+    }
+
+    // Try to acquire the process manager lock
+    let mut guard = match crate::process::try_manager() {
+        Some(g) => g,
+        None => return false,
+    };
+
+    let pm = match guard.as_mut() {
+        Some(pm) => pm,
+        None => return false,
+    };
+
+    let (_pid, process) = match pm.find_process_by_cr3_mut(cr3) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Check if the process has stack bounds set
+    if process.user_stack_top == 0 {
+        return false;
+    }
+
+    let stack_bottom = process.user_stack_bottom;
+    let stack_top = process.user_stack_top;
+
+    // The fault must be below the current stack bottom (stack grows down)
+    if fault_addr >= stack_bottom {
+        return false;
+    }
+
+    // Only grow if the fault is within a reasonable guard window (16 pages = 64KB below bottom)
+    // This prevents random accesses far below the stack from triggering growth
+    const GUARD_WINDOW: u64 = 16 * 4096;
+    if fault_addr < stack_bottom.saturating_sub(GUARD_WINDOW) {
+        return false;
+    }
+
+    // Check we wouldn't exceed MAX_USER_STACK_SIZE
+    let page_aligned_fault = fault_addr & !0xFFF;
+    let new_stack_size = stack_top - page_aligned_fault;
+    if new_stack_size > MAX_USER_STACK_SIZE {
+        return false;
+    }
+
+    // Get the process page table
+    let page_table = match &mut process.page_table {
+        Some(pt) => pt,
+        None => return false,
+    };
+
+    // Map all pages from the fault address (page-aligned) up to the current bottom
+    let mut addr = page_aligned_fault;
+    while addr < stack_bottom {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(addr));
+
+        let frame = match crate::memory::frame_allocator::allocate_frame() {
+            Some(f) => f,
+            None => return false,
+        };
+
+        // Zero the frame
+        let phys_offset = crate::memory::physical_memory_offset();
+        unsafe {
+            let dst = (phys_offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
+            core::ptr::write_bytes(dst, 0, 4096);
+        }
+
+        // Map with user-accessible, writable, no-execute flags
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::USER_ACCESSIBLE
+            | PageTableFlags::NO_EXECUTE;
+
+        if page_table.map_page(page, frame, flags).is_err() {
+            return false;
+        }
+
+        // Register the frame for cleanup tracking
+        crate::memory::frame_metadata::frame_register(frame);
+
+        addr += 4096;
+    }
+
+    // Update the process's stack bottom
+    process.user_stack_bottom = page_aligned_fault;
+
+    // Flush TLB for the new pages
+    let mut flush_addr = page_aligned_fault;
+    while flush_addr < stack_bottom {
+        X86PageTableOps::flush_tlb_page(flush_addr);
+        flush_addr += 4096;
+    }
+
+    true
+}
+
 extern "x86-interrupt" fn page_fault_handler(
     mut stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
@@ -1046,6 +1161,18 @@ extern "x86-interrupt" fn page_fault_handler(
     let is_user_address = accessed_addr.as_u64() < crate::memory::layout::USER_STACK_REGION_END;
     if is_user_address && handle_cow_fault(accessed_addr, error_code, cr3) {
         // CoW fault handled successfully - resume execution
+        crate::per_cpu::preempt_enable();
+        return;
+    }
+
+    // Try to handle as demand-paged stack growth
+    // Stack growth faults are: not-present page (no PROTECTION_VIOLATION) + not instruction fetch
+    // This is mutually exclusive with CoW faults (which require PROTECTION_VIOLATION)
+    if from_userspace
+        && !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+        && !error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH)
+        && handle_stack_growth(accessed_addr, cr3)
+    {
         crate::per_cpu::preempt_enable();
         return;
     }

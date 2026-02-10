@@ -28,7 +28,7 @@ fn main() {
 
         // Exec hello_time.elf in the child process
         println!("CHILD: Executing hello_time.elf...");
-        let path = b"/userspace/tests/hello_time.elf\0";
+        let path = b"/bin/hello_time\0";
         let argv: [*const u8; 1] = [std::ptr::null()];
         let envp: [*const u8; 1] = [std::ptr::null()];
         let exec_result = unsafe {
