@@ -626,7 +626,8 @@ fn load_test_binaries_from_ext2() {
     let mut failed = 0;
 
     for name in &test_binaries {
-        let path = format!("/bin/{}.elf", name);
+        // create_ext2_disk.sh strips the .elf extension when installing binaries
+        let path = format!("/bin/{}", name);
 
         // Load ELF from ext2 - acquire and release lock for each binary
         let elf_data = {
