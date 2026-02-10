@@ -459,9 +459,11 @@ pub extern "C" fn kernel_main() -> ! {
         serial_println!("[test] Loading test binaries from ext2...");
         load_test_binaries_from_ext2();
         serial_println!("[test] Entering scheduler idle loop - test processes will run via timer interrupts");
-        // The scheduler dispatches test processes naturally via timer interrupts.
-        // Each test process goes through setup_first_userspace_entry_arm64() which
-        // properly sets TTBR0, SPSR (EL0t), and ELR (entry point) before ERET.
+        // Now re-enable interrupts. The scheduler dispatches test processes
+        // naturally via timer interrupts. Each test process goes through
+        // setup_first_userspace_entry_arm64() which properly sets TTBR0,
+        // SPSR (EL0t), and ELR (entry point) before ERET.
+        unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
         loop {
             unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
         }
@@ -697,9 +699,11 @@ fn load_test_binaries_from_ext2() {
         }
     }
 
-    // Re-enable interrupts now that all binaries are loaded and scheduled.
-    // The scheduler will start running them on the next timer tick.
-    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
+    // NOTE: Interrupts remain DISABLED here. The caller is responsible for
+    // printing status messages and re-enabling interrupts before entering
+    // the idle loop. If we re-enable here, the scheduler immediately preempts
+    // the boot thread to run test processes, and subsequent serial_println!
+    // calls in the caller never execute.
 
     serial_println!("[test] Loaded {}/{} test binaries ({} failed, {} not found)",
         loaded, test_binaries.len(), failed,
