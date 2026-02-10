@@ -606,13 +606,13 @@ fn load_test_binaries_from_ext2() {
     unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
 
     let test_binaries = [
-        "hello_time", "clock_gettime_test", "brk_test", "mmap_test",
+        "hello_time", "clock_gettime_test", "brk_test", "test_mmap",
         "syscall_diagnostic_test", "signal_test", "signal_regs_test",
         "sigaltstack_test", "pipe_test", "unix_socket_test",
-        "signal_kill_test", "sigchld_test", "pause_test", "sigsuspend_test",
-        "kill_pgroup_test", "dup_test", "fcntl_test", "cloexec_test",
+        "sigchld_test", "pause_test", "sigsuspend_test",
+        "kill_process_group_test", "dup_test", "fcntl_test", "cloexec_test",
         "pipe2_test", "shell_pipe_test", "signal_exec_test",
-        "waitpid_test", "signal_fork_test", "wnohang_test",
+        "waitpid_test", "signal_fork_test", "wnohang_timing_test",
         "poll_test", "select_test", "nonblock_test", "tty_test",
         "session_test", "file_read_test", "getdents_test", "lseek_test",
         "fs_write_test", "fs_rename_test", "fs_large_file_test",
