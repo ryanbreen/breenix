@@ -450,12 +450,21 @@ pub extern "C" fn kernel_main() -> ! {
         }
     }
 
-    // In testing mode, load test binaries from ext2 and schedule them.
-    // They will run via the scheduler alongside init_shell.
+    // In testing mode, load test binaries from ext2 and let the scheduler
+    // dispatch them. Do NOT call run_userspace_from_ext2() - its manual
+    // spawn_as_current() + return_to_userspace() bypasses the scheduler and
+    // conflicts with the 60+ test processes already in the ready queue.
     #[cfg(feature = "testing")]
     if device_count > 0 {
         serial_println!("[test] Loading test binaries from ext2...");
         load_test_binaries_from_ext2();
+        serial_println!("[test] Entering scheduler idle loop - test processes will run via timer interrupts");
+        // The scheduler dispatches test processes naturally via timer interrupts.
+        // Each test process goes through setup_first_userspace_entry_arm64() which
+        // properly sets TTBR0, SPSR (EL0t), and ELR (entry point) before ERET.
+        loop {
+            unsafe { core::arch::aarch64::__wfi(); }
+        }
     }
 
     boot_raw_char(b'1'); // Before if statement
