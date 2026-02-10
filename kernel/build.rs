@@ -80,10 +80,13 @@ fn main() {
     
     // Build userspace test programs with libbreenix
     // Use absolute path derived from CARGO_MANIFEST_DIR (kernel/)
+    // NOTE: Skipped for aarch64 targets - ARM64 userspace binaries are built
+    // separately via `userspace/tests/build.sh --arch aarch64` and the xtask
+    // arm64-boot-stages command handles this.
     let repo_root = kernel_dir.parent().expect("kernel dir should have parent");
     let userspace_test_dir = repo_root.join("userspace/tests");
 
-    if userspace_test_dir.exists() {
+    if userspace_test_dir.exists() && !target.contains("aarch64") {
         let build_script = userspace_test_dir.join("build.sh");
         if build_script.exists() {
             println!("cargo:warning=");
