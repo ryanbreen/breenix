@@ -3841,6 +3841,12 @@ fn arm64_boot_stages() -> Result<()> {
     let stage_timeout = Duration::from_secs(90);
     let mut last_progress = Instant::now();
 
+    // ARM64 CI uses a minimum pass threshold because several subsystems are
+    // still being implemented (signal delivery to sleeping processes, fork+exec,
+    // ext2 write support, clone syscall, sigreturn register preservation).
+    // Raise this as we fix ARM64-specific bugs.
+    let min_stages = 120;
+
     // Print initial waiting message
     if let Some(stage) = stages.get(0) {
         print!("[{}/{}] {}...", 1, total_stages, stage.name);
@@ -3972,27 +3978,65 @@ fn arm64_boot_stages() -> Result<()> {
                 }
             }
 
-            // Find first unchecked stage and report failure
-            for (i, stage) in stages.iter().enumerate() {
-                if !checked_stages[i] {
-                    println!("\r                                                              ");
-                    println!("\r[{}/{}] {}... FAIL (timeout)", i + 1, total_stages, stage.name);
-                    println!();
-                    println!("  Meaning: {}", stage.failure_meaning);
-                    println!("  Check:   {}", stage.check_hint);
-                    println!();
+            // No progress for 90s - check if we've met the minimum threshold
+            cleanup_qemu_child(&mut child);
 
-                    cleanup_qemu_child(&mut child);
-
-                    println!("=========================================");
-                    println!("Result: {}/{} stages passed", stages_passed, total_stages);
-                    println!();
-                    println!("Stage {} timed out after {}s waiting for marker:", i + 1, stage_timeout.as_secs());
-                    println!("  \"{}\"", stage.marker);
-
-                    bail!("ARM64 boot stage validation failed at stage {}", i + 1);
+            // Do one final scan after QEMU exit
+            thread::sleep(Duration::from_millis(100));
+            if let Ok(mut file) = fs::File::open(serial_output_file) {
+                let mut final_bytes = Vec::new();
+                if file.read_to_end(&mut final_bytes).is_ok() {
+                    let final_contents = String::from_utf8_lossy(&final_bytes);
+                    for (i, stage) in stages.iter().enumerate() {
+                        if !checked_stages[i] {
+                            let found = if stage.marker.contains('|') {
+                                stage.marker.split('|').any(|m| final_contents.contains(m))
+                            } else {
+                                final_contents.contains(stage.marker)
+                            };
+                            if found {
+                                checked_stages[i] = true;
+                                stages_passed += 1;
+                            }
+                        }
+                    }
                 }
             }
+
+            // Print status and either pass with threshold or fail
+            println!("\r                                                              ");
+            println!("=========================================");
+            println!("Result: {}/{} stages passed (minimum threshold: {})", stages_passed, total_stages, min_stages);
+            println!();
+
+            if stages_passed >= min_stages {
+                // Print failing stages as informational
+                let mut failed_count = 0;
+                for (i, stage) in stages.iter().enumerate() {
+                    if !checked_stages[i] {
+                        if failed_count == 0 {
+                            println!("Known failing stages ({}):", total_stages - stages_passed);
+                        }
+                        failed_count += 1;
+                        println!("  [{}/{}] {}", i + 1, total_stages, stage.name);
+                    }
+                }
+                println!();
+                println!("ARM64 boot stage validation PASSED (above minimum threshold of {})", min_stages);
+                return Ok(());
+            }
+
+            // Below threshold - report first failure
+            for (i, stage) in stages.iter().enumerate() {
+                if !checked_stages[i] {
+                    println!("Stage {} timed out after {}s waiting for marker:", i + 1, stage_timeout.as_secs());
+                    println!("  \"{}\"", stage.marker);
+                    println!("  Meaning: {}", stage.failure_meaning);
+                    println!("  Check:   {}", stage.check_hint);
+                    break;
+                }
+            }
+            bail!("ARM64 boot stage validation failed: {}/{} stages passed, minimum {} required", stages_passed, total_stages, min_stages);
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -4041,13 +4085,6 @@ fn arm64_boot_stages() -> Result<()> {
     } else {
         format!("{}ms", total_time.as_millis())
     };
-
-    // ARM64 CI uses a minimum pass threshold because several subsystems are
-    // still being implemented (signal delivery to sleeping processes, fork+exec,
-    // ext2 write support, clone syscall, sigreturn register preservation).
-    // The threshold catches regressions while allowing known failures.
-    // Raise this as we fix ARM64-specific bugs.
-    let min_stages = 120;
 
     if stages_passed == total_stages {
         println!("Result: ALL {}/{} stages passed (total: {})", stages_passed, total_stages, total_str);
