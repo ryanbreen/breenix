@@ -732,8 +732,13 @@ impl ProcessManager {
         Box::leak(Box::new(kernel_stack));
 
         // Set up initial context for userspace
-        // On ARM64, SP should be 16-byte aligned
-        let initial_sp = VirtAddr::new(stack_top.as_u64() & !0xF);
+        // On ARM64, SP should be 16-byte aligned.
+        // CRITICAL: stack_top is the exclusive end of the stack mapping. The page
+        // at stack_top is NOT mapped (only pages up to stack_top-1 are).
+        // Setting SP = stack_top causes a DATA_ABORT on first stack access.
+        // We set up a minimal argc=0, argv=NULL frame so the SP is within the
+        // mapped region, matching what the Linux ABI expects at process start.
+        let initial_sp = VirtAddr::new((stack_top.as_u64() - 16) & !0xF);
         let context = crate::task::thread::CpuContext::new(
             process.entry_point,
             initial_sp,
