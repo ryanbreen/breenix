@@ -585,6 +585,15 @@ fn load_test_binaries_from_ext2() {
     use alloc::format;
     use alloc::string::String;
 
+    // CRITICAL: Disable interrupts during the entire loading loop.
+    // With interrupts enabled, each create_user_process() adds a thread to the
+    // scheduler's ready queue. Timer interrupts (200Hz) then preempt this loading
+    // thread to run the newly created test processes. By binary #30, the loading
+    // thread competes with 30+ threads for CPU time and loading takes >90 seconds.
+    // With interrupts disabled, VirtIO block I/O still works (polling mode) and
+    // all binaries load in under a second.
+    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
+
     let test_binaries = [
         "hello_time", "clock_gettime_test", "brk_test", "mmap_test",
         "syscall_diagnostic_test", "signal_test", "signal_regs_test",
@@ -677,6 +686,10 @@ fn load_test_binaries_from_ext2() {
             }
         }
     }
+
+    // Re-enable interrupts now that all binaries are loaded and scheduled.
+    // The scheduler will start running them on the next timer tick.
+    unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
 
     serial_println!("[test] Loaded {}/{} test binaries ({} failed, {} not found)",
         loaded, test_binaries.len(), failed,

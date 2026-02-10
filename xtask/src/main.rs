@@ -2012,6 +2012,18 @@ fn get_arm64_boot_stages() -> Vec<BootStage> {
             check_hint: "Check main_aarch64.rs kernel_main() - all steps between SMP and boot complete message",
         },
         BootStage {
+            name: "Test binary loading started",
+            marker: "[test] Loading test binaries from ext2",
+            failure_meaning: "Kernel did not enter test binary loading phase - testing feature may not be enabled",
+            check_hint: "Check kernel built with --features testing and device_count > 0",
+        },
+        BootStage {
+            name: "Test binaries loaded",
+            marker: "[test] Loaded",
+            failure_meaning: "Test binary loading from ext2 did not complete - possible hang in ext2 reads or process creation",
+            check_hint: "Check load_test_binaries_from_ext2() - interrupts should be disabled during loading to prevent scheduler preemption",
+        },
+        BootStage {
             name: "Userspace init loading",
             marker: "[boot] Loading userspace init from ext2",
             failure_meaning: "Kernel did not attempt to load userspace init - device count may be 0",
