@@ -96,7 +96,7 @@ pub fn load_elf(data: &[u8]) -> Result<LoadedElf, &'static str> {
 
 /// Load an ELF64 binary into memory with a base address offset
 pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf, &'static str> {
-    log::debug!(
+    log::trace!(
         "load_elf_at_base: data size = {} bytes, base = {:#x}",
         data.len(),
         base_offset.as_u64()
@@ -117,7 +117,7 @@ pub fn load_elf_at_base(data: &[u8], base_offset: VirtAddr) -> Result<LoadedElf,
     header_bytes.copy_from_slice(&data[..mem::size_of::<Elf64Header>()]);
     let header: &Elf64Header = unsafe { &*(header_bytes.as_ptr() as *const Elf64Header) };
 
-    log::debug!("ELF header loaded");
+    log::trace!("ELF header loaded");
 
     // Verify magic number
     if header.magic != ELF_MAGIC {
@@ -227,7 +227,7 @@ fn load_segment(
         return Err("Segment data out of bounds");
     }
 
-    log::debug!(
+    log::trace!(
         "Loading segment: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}",
         vaddr.as_u64(),
         file_size,
@@ -251,7 +251,7 @@ fn load_segment(
     let segment_writable = ph.p_flags & 2 != 0;
     let segment_executable = ph.p_flags & 1 != 0;
 
-    log::debug!(
+    log::trace!(
         "Segment permissions: readable={}, writable={}, executable={}",
         ph.p_flags & 4 != 0,
         segment_writable,
@@ -260,12 +260,12 @@ fn load_segment(
 
     // Map all pages for the segment
     for page in Page::range_inclusive(start_page, end_page) {
-        log::debug!(
+        log::trace!(
             "Allocating frame for page {:#x}",
             page.start_address().as_u64()
         );
         let frame = crate::memory::frame_allocator::allocate_frame().ok_or("Out of memory")?;
-        log::debug!(
+        log::trace!(
             "Allocated frame {:#x} for page {:#x}",
             frame.start_address().as_u64(),
             page.start_address().as_u64()
@@ -306,7 +306,7 @@ fn load_segment(
 
     // Now fix the page permissions if the segment is not writable
     if !segment_writable {
-        log::debug!("Removing write permission from non-writable segment");
+        log::trace!("Removing write permission from non-writable segment");
         let correct_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
         for page in Page::range_inclusive(start_page, end_page) {
@@ -420,7 +420,7 @@ fn load_segment_into_page_table(
         return Err("Segment data out of bounds");
     }
 
-    log::debug!(
+    log::trace!(
         "Loading segment into page table: vaddr={:#x}, filesz={:#x}, memsz={:#x}, flags={:#x}",
         vaddr.as_u64(),
         file_size,
@@ -437,71 +437,38 @@ fn load_segment_into_page_table(
     let segment_writable = ph.p_flags & 2 != 0;
     let segment_executable = ph.p_flags & 1 != 0;
     
-    log::debug!("Segment flags analysis: p_flags={:#x}, writable={}, executable={}", 
+    log::trace!("Segment flags analysis: p_flags={:#x}, writable={}, executable={}",
         ph.p_flags, segment_writable, segment_executable);
 
     // Set up final page flags
     let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     if segment_writable {
         flags |= PageTableFlags::WRITABLE;
-        log::debug!("Added WRITABLE flag");
     }
     if !segment_executable {
         flags |= PageTableFlags::NO_EXECUTE;
-        log::debug!("Added NO_EXECUTE flag (segment not executable)");
-    } else {
-        log::debug!("NOT adding NO_EXECUTE flag (segment is executable)");
     }
-    
-    log::debug!("Final flags before mapping: {:?}", flags);
-
-    log::debug!("Linux-style ELF loading: staying in kernel space, using physical memory access");
 
     // Map and load each page - NEVER switch to process page table
     for page in Page::range_inclusive(start_page, end_page) {
-        log::debug!("Processing page {:#x}", page.start_address().as_u64());
-
         // Check if page is already mapped (from a previous overlapping segment)
         // This handles cases like RELRO segments that overlap with data segments
         let (frame, already_mapped) = if let Some(existing_phys_addr) = page_table.translate_page(page.start_address()) {
             use x86_64::structures::paging::PhysFrame;
             let existing_frame = PhysFrame::containing_address(existing_phys_addr);
-            log::debug!(
-                "Page {:#x} already mapped to frame {:#x}, reusing",
-                page.start_address().as_u64(),
-                existing_frame.start_address().as_u64()
-            );
             (existing_frame, true)
         } else {
             // Page not mapped yet, allocate a new frame
             let new_frame = crate::memory::frame_allocator::allocate_frame().ok_or("Out of memory")?;
-            log::debug!(
-                "Allocated frame {:#x} for page {:#x}",
-                new_frame.start_address().as_u64(),
-                page.start_address().as_u64()
-            );
 
             // Map page in the process page table (from kernel space)
-            log::debug!(
-                "Mapping page {:#x} to frame {:#x} with flags {:?}",
-                page.start_address().as_u64(),
-                new_frame.start_address().as_u64(),
-                flags
-            );
-            log::debug!("About to call page_table.map_page...");
             match page_table.map_page(page, new_frame, flags) {
-                Ok(()) => {
-                    log::debug!(
-                        "Successfully mapped page {:#x}",
-                        page.start_address().as_u64()
-                    );
-                }
+                Ok(()) => {}
                 Err(e) => {
                     log::error!("Failed to map page at {:?}: {}", page.start_address(), e);
                     return Err("Failed to map page in process page table");
                 }
             }
-            log::debug!("After page_table.map_page");
 
             (new_frame, false)
         };
@@ -550,7 +517,7 @@ fn load_segment_into_page_table(
                 core::ptr::copy_nonoverlapping(src, dst, copy_size);
             }
 
-            log::debug!(
+            log::trace!(
                 "Copied {} bytes to frame {:#x} (page {:#x}) at offset {} using physical access",
                 copy_size,
                 frame_phys_addr.as_u64(),
@@ -560,7 +527,7 @@ fn load_segment_into_page_table(
         }
     }
 
-    log::debug!(
+    log::trace!(
         "Successfully loaded segment with {} pages using Linux-style physical memory access",
         Page::range_inclusive(start_page, end_page).count()
     );

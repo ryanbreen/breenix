@@ -115,7 +115,7 @@ fn main() {
     // Test 1: /bin/true should exit with 0 and produce no output
     println!("Test 1: /bin/true exits with 0 and no output");
     {
-        let program = b"/bin/true\0";
+        let program = b"/sbin/true\0";
         let arg0 = b"true\0".as_ptr();
         let argv: [*const u8; 2] = [arg0, std::ptr::null()];
 
@@ -133,10 +133,10 @@ fn main() {
         }
     }
 
-    // Test 2: /bin/true with arguments should still exit 0 (ignores args)
-    println!("Test 2: /bin/true --ignored arguments exits with 0");
+    // Test 2: /sbin/true with arguments should still exit 0 (ignores args)
+    println!("Test 2: /sbin/true --ignored arguments exits with 0");
     {
-        let program = b"/bin/true\0";
+        let program = b"/sbin/true\0";
         let arg0 = b"true\0".as_ptr();
         let arg1 = b"--ignored\0".as_ptr();
         let arg2 = b"arguments\0".as_ptr();

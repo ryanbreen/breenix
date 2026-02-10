@@ -132,6 +132,12 @@ pub struct Process {
     /// Address to write 0 to and futex-wake when this thread exits (CLONE_CHILD_CLEARTID).
     pub clear_child_tid: Option<u64>,
 
+    /// Bottom of the user stack (lowest mapped address, grows downward via demand paging)
+    pub user_stack_bottom: u64,
+
+    /// Top of the user stack (highest address, fixed at allocation time)
+    pub user_stack_top: u64,
+
     /// Old page tables from previous exec() calls, pending deferred cleanup.
     /// These cannot be freed immediately during exec because CR3 may still point
     /// to the old table when a timer interrupt fires. They are drained at the
@@ -185,6 +191,8 @@ impl Process {
             thread_group_id: None,
             inherited_cr3: None,
             clear_child_tid: None,
+            user_stack_bottom: 0,
+            user_stack_top: 0,
             pending_old_page_tables: Vec::new(),
         }
     }

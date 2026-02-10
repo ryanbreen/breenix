@@ -60,8 +60,8 @@ fn main() {
         println!("Test 1: waitpid status={}, wifexited={}, exitcode={}",
             status, wifexited(status), wexitstatus(status));
 
-        // hello_world exits with code 42 as its signature
-        if wifexited(status) && wexitstatus(status) == 42 {
+        // hello_world (hello_std_real) exits with code 0 on success
+        if wifexited(status) && wexitstatus(status) == 0 {
             println!("EXEC_EXT2_BIN_OK");
         } else {
             println!("EXEC_EXT2_BIN_FAILED");

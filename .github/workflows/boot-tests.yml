@@ -8,9 +8,140 @@ on:
   workflow_dispatch:
 
 jobs:
-  # NOTE: x86_64 boot job temporarily removed while x86_64 build issues are
-  # being resolved in a separate branch. Will be re-added once stable.
-  # See docs/planning/CI_PARALLEL_BOOT_TESTS_PLAN.md for the full plan.
+  x86_64-boot-stages:
+    name: x86_64 Boot Stages (252 tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Init rust-fork submodule (shallow)
+        run: |
+          git submodule update --init --depth 1 rust-fork
+          cd rust-fork && git submodule update --init --depth 1 library/stdarch library/backtrace
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-06-24
+          components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            ovmf \
+            nasm
+          qemu-system-x86_64 --version
+          nasm --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-x86-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-x86-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86-cargo-build-
+
+      - name: Build userspace tests
+        run: |
+          export PATH="$PATH:$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin"
+          cd userspace/tests
+          ./build.sh
+
+      - name: Pre-build kernel to avoid timeout during QEMU wait
+        run: |
+          cargo build --release -p breenix --features testing,external_test_bins --bin qemu-uefi
+
+      - name: Run boot-stages test
+        run: cargo run -p xtask -- boot-stages
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86-boot-stages-output-${{ github.run_number }}
+          path: |
+            target/xtask_boot_stages_output.txt
+            target/xtask_user_output.txt
+            logs/*.log
+          if-no-files-found: warn
+
+  x86_64-kthread-stress:
+    name: x86_64 Kthread Stress Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Init rust-fork submodule (shallow)
+        run: |
+          git submodule update --init --depth 1 rust-fork
+          cd rust-fork && git submodule update --init --depth 1 library/stdarch library/backtrace
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-06-24
+          components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            ovmf \
+            nasm
+          qemu-system-x86_64 --version
+          nasm --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-x86-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-x86-cargo-build-stress-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-x86-cargo-build-stress-
+
+      - name: Pre-build kernel to avoid timeout during QEMU wait
+        run: |
+          cargo build --release -p breenix --features kthread_stress_test --bin qemu-uefi
+
+      - name: Run kthread stress test
+        run: cargo run -p xtask -- kthread-stress
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86-kthread-stress-output-${{ github.run_number }}
+          path: |
+            target/kthread_stress_output.txt
+            logs/*.log
+          if-no-files-found: warn
 
   arm64-boot:
     name: ARM64 Boot Test

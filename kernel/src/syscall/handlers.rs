@@ -659,38 +659,136 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         FdKind::PipeRead(pipe_buffer) => {
             // Check O_NONBLOCK status flag
             let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let pipe_buffer_clone = pipe_buffer.clone();
 
-            // Read from pipe
+            // CRITICAL: Release process manager lock before potentially blocking!
+            // If we hold the lock while blocked in the HLT loop, timer interrupts
+            // cannot perform context switches to other threads (like the child
+            // process that needs to write to the pipe).
+            drop(manager_guard);
+
             let mut user_buf = alloc::vec![0u8; count as usize];
-            let mut pipe = pipe_buffer.lock();
-            match pipe.read(&mut user_buf) {
-                Ok(n) => {
-                    if n > 0 {
-                        // Copy to userspace
-                        if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                            return SyscallResult::Err(14); // EFAULT
+
+            // Try to read - if empty and blocking, we'll enter blocking path
+            loop {
+                let read_result = {
+                    let mut pipe = pipe_buffer_clone.lock();
+                    pipe.read(&mut user_buf)
+                };
+
+                match read_result {
+                    Ok(n) => {
+                        if n > 0 {
+                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                                return SyscallResult::Err(14); // EFAULT
+                            }
                         }
+                        log::debug!("sys_read: Read {} bytes from pipe", n);
+                        return SyscallResult::Ok(n as u64);
                     }
-                    log::debug!("sys_read: Read {} bytes from pipe", n);
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(11) => {
-                    // EAGAIN - pipe is empty but writers exist
-                    if is_nonblocking {
-                        // O_NONBLOCK set: return EAGAIN immediately
-                        log::debug!("sys_read: Pipe empty, O_NONBLOCK set - returning EAGAIN");
-                        SyscallResult::Err(11) // EAGAIN
-                    } else {
-                        // O_NONBLOCK not set: should block, but blocking for pipes not implemented
-                        // For now, return EAGAIN (same as nonblocking behavior)
-                        // TODO: Implement blocking pipe reads
-                        log::debug!("sys_read: Pipe empty, blocking not implemented - returning EAGAIN");
-                        SyscallResult::Err(11) // EAGAIN
+                    Err(11) => {
+                        // EAGAIN - buffer empty but writers exist
+                        if is_nonblocking {
+                            log::debug!("sys_read: Pipe empty, O_NONBLOCK set - returning EAGAIN");
+                            return SyscallResult::Err(11); // EAGAIN
+                        }
+
+                        // === BLOCKING PATH ===
+                        let thread_id = match crate::task::scheduler::current_thread_id() {
+                            Some(tid) => tid,
+                            None => return SyscallResult::Err(3), // ESRCH
+                        };
+
+                        log::debug!("sys_read: Pipe empty, thread {} entering blocking path", thread_id);
+
+                        // Register as waiter BEFORE setting blocked state (race condition fix)
+                        {
+                            let mut pipe = pipe_buffer_clone.lock();
+                            pipe.add_read_waiter(thread_id);
+                        }
+
+                        // Block the thread
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.block_current();
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = true;
+                            }
+                        });
+
+                        // Check if data arrived during setup (race condition fix)
+                        let data_ready = {
+                            let pipe = pipe_buffer_clone.lock();
+                            pipe.has_data_or_eof()
+                        };
+
+                        if data_ready {
+                            // Data arrived during setup - unblock and retry immediately
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.blocked_in_syscall = false;
+                                    thread.set_ready();
+                                }
+                            });
+                            continue; // Retry read
+                        }
+
+                        // Enable preemption for HLT loop
+                        crate::per_cpu::preempt_enable();
+
+                        // HLT loop - wait for data or EOF
+                        loop {
+                            // Check for pending signals that should interrupt this syscall
+                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                                // Signal pending - clean up and return EINTR
+                                {
+                                    let mut pipe = pipe_buffer_clone.lock();
+                                    pipe.remove_read_waiter(thread_id);
+                                }
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                crate::per_cpu::preempt_disable();
+                                log::debug!("sys_read: Pipe thread {} interrupted by signal (EINTR)", thread_id);
+                                return SyscallResult::Err(e as u64);
+                            }
+
+                            crate::task::scheduler::yield_current();
+                            Cpu::halt_with_interrupts();
+
+                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.state == crate::task::thread::ThreadState::Blocked
+                                } else {
+                                    false
+                                }
+                            }).unwrap_or(false);
+
+                            if !still_blocked {
+                                crate::per_cpu::preempt_disable();
+                                log::debug!("sys_read: Pipe thread {} woken from blocking", thread_id);
+                                break;
+                            }
+                        }
+
+                        // Clear blocked state
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                            }
+                        });
+                        crate::interrupts::timer::reset_quantum();
+                        crate::task::scheduler::check_and_clear_need_resched();
+
+                        // Continue loop to retry read
+                        continue;
                     }
-                }
-                Err(e) => {
-                    log::debug!("sys_read: Pipe read error: {}", e);
-                    SyscallResult::Err(e as u64)
+                    Err(e) => {
+                        log::debug!("sys_read: Pipe read error: {}", e);
+                        return SyscallResult::Err(e as u64);
+                    }
                 }
             }
         }

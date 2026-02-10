@@ -221,6 +221,8 @@ impl ProcessManager {
 
         let stack_top = user_stack.top();
         process.memory_usage.stack_size = USER_STACK_SIZE;
+        process.user_stack_top = stack_top.as_u64();
+        process.user_stack_bottom = stack_top.as_u64() - USER_STACK_SIZE as u64;
 
         // Store the stack in the process
         process.stack = Some(Box::new(user_stack));
@@ -385,6 +387,8 @@ impl ProcessManager {
         );
 
         process.memory_usage.stack_size = USER_STACK_SIZE;
+        process.user_stack_top = user_stack_top;
+        process.user_stack_bottom = user_stack_bottom;
 
         // Store the kernel-accessible stack (for potential kernel access later)
         process.stack = Some(Box::new(kernel_stack));
@@ -558,6 +562,8 @@ impl ProcessManager {
         );
 
         process.memory_usage.stack_size = USER_STACK_SIZE;
+        process.user_stack_top = user_stack_top;
+        process.user_stack_bottom = user_stack_bottom;
         process.stack = Some(Box::new(kernel_stack));
 
         // Map the physical stack frames into the process page table
@@ -1439,34 +1445,14 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // For fork, the child inherits the parent's address space layout.
-        // Use the parent's user stack virtual addresses - map_user_stack_to_process
-        // will allocate new physical frames and map them to these addresses.
+        // CoW fork: The child's stack pages are already shared via setup_cow_pages().
+        // We use the parent's stack virtual addresses directly.
         let child_stack_top = parent_thread.stack_top;
-        let child_stack_bottom = parent_thread.stack_bottom;
 
         log::debug!(
-            "ARM64 fork: Using parent's user stack range {:#x}-{:#x}",
-            child_stack_bottom.as_u64(),
+            "ARM64 fork: CoW stack - using parent's stack top {:#x}",
             child_stack_top.as_u64()
         );
-
-        // Map the stack pages into the child's page table
-        // This allocates new physical frames and maps them to the user addresses
-        let child_page_table_ref = child_process
-            .page_table
-            .as_mut()
-            .ok_or("Child process has no page table")?;
-
-        crate::memory::process_memory::map_user_stack_to_process(
-            child_page_table_ref,
-            child_stack_bottom,
-            child_stack_top,
-        )
-        .map_err(|e| {
-            log::error!("ARM64 fork: Failed to map user stack: {}", e);
-            "Failed to map user stack in child's page table"
-        })?;
         crate::tracing::providers::process::trace_stack_map(child_pid.as_u64() as u32);
 
         // Allocate a globally unique thread ID for the child's main thread
@@ -1529,116 +1515,15 @@ impl ProcessManager {
         // CRITICAL: Set has_started=true for forked children
         child_thread.has_started = true;
 
-        // Calculate the child's stack pointer based on parent's stack usage
-        let parent_sp = parent_context.sp_el0;
-        let parent_stack_used = parent_thread.stack_top.as_u64().saturating_sub(parent_sp);
-        let child_sp = child_stack_top.as_u64().saturating_sub(parent_stack_used);
-        // ARM64 requires 16-byte alignment
-        let child_sp_aligned = child_sp & !0xF;
-        child_thread.context.sp_el0 = child_sp_aligned;
+        // CoW fork: Child uses the same stack virtual addresses as the parent.
+        // The stack pages are CoW-shared, so the child's SP = parent's SP.
+        // No stack copy needed - CoW will handle it on first write.
+        child_thread.context.sp_el0 = parent_context.sp_el0;
 
         log::info!(
-            "ARM64 fork: parent_stack_top={:#x}, parent_sp={:#x}, used={:#x}",
-            parent_thread.stack_top.as_u64(),
-            parent_sp,
-            parent_stack_used
+            "ARM64 fork: CoW stack - child_sp={:#x} (same VA as parent)",
+            parent_context.sp_el0
         );
-        log::info!(
-            "ARM64 fork: child_stack_top={:#x}, child_sp={:#x}",
-            child_stack_top.as_u64(),
-            child_sp_aligned
-        );
-
-        // Copy the parent's stack contents to the child's stack using HHDM-based physical access.
-        // CRITICAL: We cannot use virtual addresses directly because TTBR0 still points to the
-        // parent's page table. Writing to child virtual addresses would actually write to parent
-        // physical frames. Instead, we must:
-        // 1. Translate parent VA -> parent PA using parent's page table
-        // 2. Translate child VA -> child PA using child's page table
-        // 3. Copy using HHDM addresses: (HHDM_BASE + phys_addr)
-        if parent_stack_used > 0 && parent_stack_used <= (64 * 1024) {
-            log::debug!(
-                "ARM64 fork: Copying {} bytes of stack from {:#x} to {:#x} via HHDM",
-                parent_stack_used,
-                parent_sp,
-                child_sp_aligned
-            );
-
-            let hhdm_base = crate::arch_impl::aarch64::constants::HHDM_BASE;
-
-            // Get parent's page table for address translation
-            let parent_page_table = self
-                .processes
-                .get(&parent_pid)
-                .and_then(|p| p.page_table.as_ref())
-                .ok_or("Parent process page table not found for stack copy")?;
-
-            // Get child's page table for address translation
-            let child_page_table = child_process
-                .page_table
-                .as_ref()
-                .ok_or("Child process page table not found for stack copy")?;
-
-            // Copy stack page by page
-            // Start from the page containing SP (page-align down)
-            let start_page_addr = parent_sp & !0xFFF;
-            let mut parent_page_addr = start_page_addr;
-            let parent_stack_top_u64 = parent_thread.stack_top.as_u64();
-            let child_stack_top_u64 = child_stack_top.as_u64();
-
-            while parent_page_addr < parent_stack_top_u64 {
-                // Calculate corresponding child page address (same offset from stack top)
-                let offset_from_top = parent_stack_top_u64 - parent_page_addr;
-                let child_page_addr = child_stack_top_u64 - offset_from_top;
-
-                // Translate parent virtual address to physical
-                let parent_phys = match parent_page_table.translate_page(VirtAddr::new(parent_page_addr)) {
-                    Some(phys) => phys,
-                    None => {
-                        log::warn!(
-                            "ARM64 fork: parent stack page {:#x} not mapped, skipping",
-                            parent_page_addr
-                        );
-                        parent_page_addr += 4096;
-                        continue;
-                    }
-                };
-
-                // Translate child virtual address to physical
-                let child_phys = match child_page_table.translate_page(VirtAddr::new(child_page_addr)) {
-                    Some(phys) => phys,
-                    None => {
-                        log::error!(
-                            "ARM64 fork: child stack page {:#x} not mapped!",
-                            child_page_addr
-                        );
-                        return Err("Child stack page not mapped");
-                    }
-                };
-
-                // Copy via HHDM (kernel's direct physical memory mapping)
-                let parent_hhdm_addr = (hhdm_base + parent_phys.as_u64()) as *const u8;
-                let child_hhdm_addr = (hhdm_base + child_phys.as_u64()) as *mut u8;
-
-                unsafe {
-                    core::ptr::copy_nonoverlapping(parent_hhdm_addr, child_hhdm_addr, 4096);
-                }
-
-                log::trace!(
-                    "ARM64 fork: copied stack page {:#x} (phys {:#x}) -> {:#x} (phys {:#x})",
-                    parent_page_addr,
-                    parent_phys.as_u64(),
-                    child_page_addr,
-                    child_phys.as_u64()
-                );
-
-                parent_page_addr += 4096;
-            }
-
-            log::info!(
-                "ARM64 fork: Copied stack pages from parent to child via HHDM"
-            );
-        }
 
         // Set the kernel stack pointer for exception handling
         child_thread.context.sp = child_kernel_stack_top.as_u64();
@@ -1659,6 +1544,12 @@ impl ProcessManager {
         // Set the child process's main thread
         child_process.main_thread = Some(child_thread);
 
+
+        // Inherit parent's user stack bounds for demand-paged growth
+        if let Some(parent) = self.processes.get(&parent_pid) {
+            child_process.user_stack_top = parent.user_stack_top;
+            child_process.user_stack_bottom = parent.user_stack_bottom;
+        }
 
         // Copy all other process state (fd_table, signals, verify pgid/sid)
         if let Some(parent) = self.processes.get(&parent_pid) {
@@ -1718,34 +1609,10 @@ impl ProcessManager {
             child_pid.as_u64()
         );
 
-        // Create a new stack for the child process (128KB to handle parent's stack usage)
-        // CRITICAL: We allocate in kernel page table first, then map to child's page table
-        const CHILD_STACK_SIZE: usize = 128 * 1024;
-
-        // Allocate the stack in the kernel page table first
-        let child_stack = crate::memory::stack::allocate_stack_with_privilege(
-            CHILD_STACK_SIZE,
-            crate::task::thread::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to allocate stack for child process")?;
-        let child_stack_top = child_stack.top();
-        let child_stack_bottom = child_stack.bottom();
-
-        // Now map the stack pages into the child's page table
-        let child_page_table_ref = child_process
-            .page_table
-            .as_mut()
-            .ok_or("Child process has no page table")?;
-
-        crate::memory::process_memory::map_user_stack_to_process(
-            child_page_table_ref,
-            child_stack_bottom,
-            child_stack_top,
-        )
-        .map_err(|e| {
-            log::error!("Failed to map user stack to child process: {}", e);
-            "Failed to map user stack in child's page table"
-        })?;
+        // CoW fork: The child's stack pages are already shared via setup_cow_pages().
+        // We use the parent's stack virtual addresses directly. When the child writes
+        // to the stack, the CoW page fault handler will allocate private copies.
+        let child_stack_top = parent_thread.stack_top;
 
         // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
         // In the future, we should properly copy parent's TLS data
@@ -1851,74 +1718,15 @@ impl ProcessManager {
         // In x86_64, system call return values go in RAX
         child_thread.context.rax = 0;
 
-        // Calculate the child's stack pointer based on parent's stack usage
-        // CRITICAL: We MUST calculate RSP relative to the child's stack, not use parent's RSP directly!
-        // The parent's RSP points into parent's stack address space, but the child has its own stack.
-        let parent_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
-        let parent_stack_used = parent_thread.stack_top.as_u64().saturating_sub(parent_rsp);
-        let child_rsp = child_stack_top.as_u64().saturating_sub(parent_stack_used);
+        // CoW fork: Child uses the same stack virtual addresses as the parent.
+        // The stack pages are CoW-shared, so the child's RSP = parent's RSP.
+        // No stack copy needed - CoW will handle it on first write.
+        let child_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
         child_thread.context.rsp = child_rsp;
         log::info!(
-            "fork: parent_stack_top={:#x}, parent_rsp={:#x}, used={:#x}",
-            parent_thread.stack_top.as_u64(),
-            parent_rsp,
-            parent_stack_used
-        );
-        log::info!(
-            "fork: child_stack_top={:#x}, child_rsp={:#x}",
-            child_stack_top.as_u64(),
+            "fork: CoW stack - child_rsp={:#x} (same VA as parent)",
             child_rsp
         );
-
-        // CRITICAL: Copy the parent's stack contents to the child's stack
-        // This ensures local variables (like `write_fd`, `pipefd`, etc.) are preserved
-        if parent_stack_used > 0 && parent_stack_used <= (64 * 1024) {
-            // Access parent's stack through the kernel page table
-            // Both parent and child stacks are identity-mapped in kernel space
-            let parent_stack_src = parent_rsp as *const u8;
-            let child_stack_dst = child_rsp as *mut u8;
-
-            // Debug: Show first few words of parent's stack before copy
-            log::debug!(
-                "fork: Stack copy debug - parent_src={:#x}, child_dst={:#x}, bytes={}",
-                parent_rsp,
-                child_rsp,
-                parent_stack_used
-            );
-            unsafe {
-                let parent_words = parent_stack_src as *const u64;
-                for i in 0..core::cmp::min(16, (parent_stack_used / 8) as isize) {
-                    let val = *parent_words.offset(i);
-                    if val != 0 {
-                        log::debug!("  parent stack[{}]: {:#x}", i, val);
-                    }
-                }
-            }
-
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    parent_stack_src,
-                    child_stack_dst,
-                    parent_stack_used as usize,
-                );
-            }
-
-            // Debug: Verify copy by checking first few words of child's stack
-            unsafe {
-                let child_words = child_stack_dst as *const u64;
-                for i in 0..core::cmp::min(16, (parent_stack_used / 8) as isize) {
-                    let val = *child_words.offset(i);
-                    if val != 0 {
-                        log::debug!("  child stack[{}]: {:#x}", i, val);
-                    }
-                }
-            }
-
-            log::info!(
-                "fork: Copied {} bytes of stack from parent to child",
-                parent_stack_used
-            );
-        }
 
         // Update child's instruction pointer to return to the instruction after fork syscall
         // The return RIP comes from RCX which was saved by the syscall instruction
@@ -1942,8 +1750,20 @@ impl ProcessManager {
         // Set the child process's main thread
         child_process.main_thread = Some(child_thread);
 
-        // Store the stack in the child process
-        child_process.stack = Some(Box::new(child_stack));
+        // CoW fork: no separate stack allocation, so no stack to store
+        child_process.stack = None;
+
+        // Inherit parent's user stack bounds for demand-paged growth
+        child_process.user_stack_top = {
+            let parent = self.processes.get(&parent_pid)
+                .ok_or("Parent process not found for stack bounds")?;
+            parent.user_stack_top
+        };
+        child_process.user_stack_bottom = {
+            let parent = self.processes.get(&parent_pid)
+                .ok_or("Parent process not found for stack bounds")?;
+            parent.user_stack_bottom
+        };
 
         // Copy all other process state (fd_table, signals, verify pgid/sid)
         // This uses the centralized copy_process_state which handles:
@@ -2124,22 +1944,11 @@ impl ProcessManager {
 
         #[cfg(feature = "testing")]
         {
-            // Create a new stack for the child process (64KB userspace stack)
-            const CHILD_STACK_SIZE: usize = 128 * 1024;
-            let child_stack = crate::memory::stack::allocate_stack_with_privilege(
-            CHILD_STACK_SIZE,
-            crate::task::thread::ThreadPrivilege::User,
-        )
-        .map_err(|_| "Failed to allocate stack for child process")?;
-        let child_stack_top = child_stack.top();
-
-        // For now, use a dummy TLS address - the Thread constructor will allocate proper TLS
-        // In the future, we should properly copy parent's TLS data
-        let _dummy_tls = VirtAddr::new(0);
+            // CoW fork: The child's stack pages are already shared via setup_cow_pages().
+            // We use the parent's stack virtual addresses directly.
+            let child_stack_top = parent_thread.stack_top;
 
         // Allocate a globally unique thread ID for the child's main thread
-        // NOTE: While Unix convention is TID = PID for main thread, we need global
-        // uniqueness across all threads (kernel + user).
         let child_thread_id = crate::task::thread::allocate_thread_id();
 
         // Allocate a TLS block for this thread ID
@@ -2157,16 +1966,12 @@ impl ProcessManager {
         // Allocate a kernel stack for the child thread (userspace threads need kernel stacks)
         let child_kernel_stack_top =
             if parent_thread.privilege == crate::task::thread::ThreadPrivilege::User {
-                const KERNEL_STACK_SIZE: usize = 16 * 1024; // 16KB kernel stack
-                let kernel_stack = crate::memory::stack::allocate_stack_with_privilege(
-                    KERNEL_STACK_SIZE,
-                    crate::task::thread::ThreadPrivilege::Kernel,
-                )
-                .map_err(|_| "Failed to allocate kernel stack for child thread")?;
+                let kernel_stack =
+                    crate::memory::kernel_stack::allocate_kernel_stack().map_err(|e| {
+                        log::error!("Failed to allocate kernel stack for child: {}", e);
+                        "Failed to allocate kernel stack for child thread"
+                    })?;
                 let kernel_stack_top = kernel_stack.top();
-
-                // Store kernel_stack data for later use
-                let _kernel_stack_bottom = kernel_stack.bottom();
 
                 // Store the kernel stack (we'll need to manage this properly later)
                 // For now, we'll leak it - TODO: proper cleanup
@@ -2184,80 +1989,46 @@ impl ProcessManager {
             state: crate::task::thread::ThreadState::Ready,
             context: parent_thread.context.clone(), // Will be modified below
             stack_top: child_stack_top,
-            stack_bottom: child_stack_top - (64 * 1024),
+            stack_bottom: parent_thread.stack_bottom,
             kernel_stack_top: child_kernel_stack_top,
-            kernel_stack_allocation: None, // Kernel stack for userspace thread not managed here
+            kernel_stack_allocation: None,
             tls_block: child_tls_block,
             priority: parent_thread.priority,
             time_slice: parent_thread.time_slice,
-            entry_point: None, // Userspace threads don't have kernel entry points
+            entry_point: None,
             privilege: parent_thread.privilege,
-            // CRITICAL: Set has_started=true for forked children so they use the
-            // restore_userspace_context path which preserves the cloned register values
-            // instead of the first-run path which zeros all registers.
-            // The child should resume from the same context as the parent.
             has_started: true,
-            blocked_in_syscall: false, // Forked child is not blocked in syscall
-            saved_userspace_context: None, // Child starts fresh
+            blocked_in_syscall: false,
+            saved_userspace_context: None,
             wake_time_ns: None,
         };
 
-        // CRITICAL: Use the userspace RSP if provided (from syscall frame)
-        // Otherwise, calculate the child's RSP based on parent's stack usage
-        if let Some(user_rsp) = userspace_rsp {
-            child_thread.context.rsp = user_rsp;
-            log::info!("fork: Using userspace RSP {:#x} for child", user_rsp);
-        } else {
-            // Calculate how much of parent's stack is in use
-            let parent_stack_used = parent_thread.stack_top.as_u64() - parent_thread.context.rsp;
-            // Set child's RSP at the same relative position
-            child_thread.context.rsp = child_stack_top.as_u64() - parent_stack_used;
-            log::info!(
-                "fork: Calculated child RSP {:#x} based on parent stack usage",
-                child_thread.context.rsp
-            );
-        }
+        // CoW fork: Child uses the same stack virtual addresses as the parent.
+        // The stack pages are CoW-shared, so the child's RSP = parent's RSP.
+        let child_rsp = userspace_rsp.unwrap_or(parent_thread.context.rsp);
+        child_thread.context.rsp = child_rsp;
+        log::info!("fork: CoW stack - child_rsp={:#x} (same VA as parent)", child_rsp);
 
         // IMPORTANT: Set RAX to 0 for the child (fork return value)
         child_thread.context.rax = 0;
 
-        // Set up child thread properties
-        child_thread.privilege = parent_thread.privilege;
-        // Mark child as ready to run
-        child_thread.state = crate::task::thread::ThreadState::Ready;
+        // CoW fork: no separate stack allocation
+        child_process.stack = None;
 
-        // Store the stack in the child process
-        child_process.stack = Some(Box::new(child_stack));
+        // Inherit parent's user stack bounds
+        {
+            let parent = self.processes.get(&parent_pid)
+                .ok_or("Parent process not found for stack bounds")?;
+            child_process.user_stack_top = parent.user_stack_top;
+            child_process.user_stack_bottom = parent.user_stack_bottom;
+        }
 
-        // Copy stack contents from parent to child
-        // Note: User pages were set up for CoW sharing earlier with setup_cow_pages().
-        // However, the child has a new stack at a different virtual address,
-        // so we need to copy the stack contents separately.
-        // Re-acquire parent references (we dropped them earlier for CoW setup)
-        let parent = self
-            .processes
-            .get(&parent_pid)
-            .ok_or("Parent process not found for stack copy")?;
-        let parent_page_table = parent
-            .page_table
-            .as_ref()
-            .ok_or("Parent process has no page table for stack copy")?;
-        let child_page_table_ref = child_process
-            .page_table
-            .as_ref()
-            .ok_or("Child process has no page table")?;
-        super::fork::copy_stack_contents(
-            &parent_thread,
-            &mut child_thread,
-            parent_page_table,
-            child_page_table_ref,
-        )?;
         // Copy all other process state (fd_table, signals, verify pgid/sid)
-        // This is done via copy_process_state which handles:
-        // - File descriptor table cloning (with proper pipe refcount handling)
-        // - Signal state forking (handlers and mask, NOT pending signals)
-        // - Verification of pgid and sid inheritance
-        super::fork::copy_process_state(parent, &mut child_process)?;
+        {
+            let parent = self.processes.get(&parent_pid)
+                .ok_or("Parent process not found during state copy")?;
+            super::fork::copy_process_state(parent, &mut child_process)?;
+        }
 
         // Set the child thread as the main thread of the child process
         child_process.set_main_thread(child_thread);
@@ -2269,15 +2040,6 @@ impl ProcessManager {
 
         // Add the child process to the process table
         self.processes.insert(child_pid, child_process);
-
-        // With global kernel page tables, all kernel stacks are automatically visible
-        // to all processes through the shared kernel PDPT - no copying needed!
-        if let Some(kernel_stack_top) = child_kernel_stack_top {
-            log::debug!(
-                "Child kernel stack at {:#x} is globally visible via shared kernel PDPT",
-                kernel_stack_top.as_u64()
-            );
-        }
 
         // Add the child to the ready queue so it can be scheduled
         self.ready_queue.push(child_pid);
@@ -2485,6 +2247,8 @@ impl ProcessManager {
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
+        process.user_stack_top = USER_STACK_TOP;
+        process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
 
         // Update the main thread context for the new program
         if let Some(ref mut thread) = process.main_thread {
@@ -2775,6 +2539,8 @@ impl ProcessManager {
         // Replace the page table with the new one
         process.page_table = Some(new_page_table);
         process.stack = Some(Box::new(new_stack));
+        process.user_stack_top = USER_STACK_TOP;
+        process.user_stack_bottom = USER_STACK_TOP - USER_STACK_SIZE as u64;
 
         // Update the main thread context for the new program
         if let Some(ref mut thread) = process.main_thread {
@@ -2991,6 +2757,8 @@ impl ProcessManager {
 
         process.page_table = Some(new_page_table);
         process.stack = Some(Box::new(new_stack));
+        process.user_stack_top = user_stack_top;
+        process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
         if let Some(ref mut thread) = process.main_thread {
             let preserved_kernel_stack_top = thread.kernel_stack_top;
@@ -3257,6 +3025,8 @@ impl ProcessManager {
 
         // Replace the stack
         process.stack = Some(Box::new(new_stack));
+        process.user_stack_top = user_stack_top;
+        process.user_stack_bottom = user_stack_top - USER_STACK_SIZE as u64;
 
         // Update the main thread context for the new program (ARM64-specific)
         if let Some(ref mut thread) = process.main_thread {
