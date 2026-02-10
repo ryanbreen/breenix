@@ -22,6 +22,8 @@ pub mod scheduler;
 // Kernel threads and workqueues - work on both x86_64 and aarch64
 // Uses architecture-independent types and conditional interrupt control
 pub mod kthread;
+#[cfg(feature = "testing")]
+pub mod kthread_tests;
 pub mod workqueue;
 pub mod softirqd;
 

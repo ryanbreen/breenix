@@ -124,6 +124,50 @@ pub static COW_FAULT_TOTAL: TraceCounter = TraceCounter::new(
 );
 
 // =============================================================================
+// Boot Test Counters (BTRT feature)
+// =============================================================================
+
+/// Total boot tests recorded.
+///
+/// GDB: `print BOOT_TEST_TOTAL`
+#[cfg(feature = "btrt")]
+#[no_mangle]
+pub static BOOT_TEST_TOTAL: TraceCounter = TraceCounter::new(
+    "BOOT_TEST_TOTAL",
+    "Total boot tests recorded",
+);
+
+/// Total boot tests passed.
+///
+/// GDB: `print BOOT_TEST_PASS_TOTAL`
+#[cfg(feature = "btrt")]
+#[no_mangle]
+pub static BOOT_TEST_PASS_TOTAL: TraceCounter = TraceCounter::new(
+    "BOOT_TEST_PASS_TOTAL",
+    "Total boot tests passed",
+);
+
+/// Total boot tests failed.
+///
+/// GDB: `print BOOT_TEST_FAIL_TOTAL`
+#[cfg(feature = "btrt")]
+#[no_mangle]
+pub static BOOT_TEST_FAIL_TOTAL: TraceCounter = TraceCounter::new(
+    "BOOT_TEST_FAIL_TOTAL",
+    "Total boot tests failed",
+);
+
+/// Total boot tests skipped.
+///
+/// GDB: `print BOOT_TEST_SKIP_TOTAL`
+#[cfg(feature = "btrt")]
+#[no_mangle]
+pub static BOOT_TEST_SKIP_TOTAL: TraceCounter = TraceCounter::new(
+    "BOOT_TEST_SKIP_TOTAL",
+    "Total boot tests skipped",
+);
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
@@ -138,6 +182,14 @@ pub fn init() {
     register_counter(&FORK_TOTAL);
     register_counter(&EXEC_TOTAL);
     register_counter(&COW_FAULT_TOTAL);
+
+    #[cfg(feature = "btrt")]
+    {
+        register_counter(&BOOT_TEST_TOTAL);
+        register_counter(&BOOT_TEST_PASS_TOTAL);
+        register_counter(&BOOT_TEST_FAIL_TOTAL);
+        register_counter(&BOOT_TEST_SKIP_TOTAL);
+    }
 
     log::info!(
         "Tracing counters initialized: SYSCALL_TOTAL, IRQ_TOTAL, CTX_SWITCH_TOTAL, TIMER_TICK_TOTAL, FORK_TOTAL, EXEC_TOTAL, COW_FAULT_TOTAL"

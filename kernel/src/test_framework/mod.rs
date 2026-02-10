@@ -35,3 +35,11 @@ pub use registry::TestStage;
 pub use progress::get_overall_progress;
 #[cfg(feature = "boot_tests")]
 pub use display::{init as init_display, render_progress, is_ready as display_ready};
+
+// BTRT (Boot Test Result Table) modules
+#[cfg(feature = "btrt")]
+pub mod btrt;
+#[cfg(feature = "btrt")]
+pub mod catalog;
+#[cfg(feature = "btrt")]
+pub mod ktap;

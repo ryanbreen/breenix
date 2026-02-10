@@ -105,9 +105,9 @@ pub async fn serial_command_task() {
 
 #[allow(dead_code)] // Used by serial_command_task (conditionally compiled)
 fn print_prompt() {
-    // Simple prompt
-    write_byte(b'>');
-    write_byte(b' ');
+    for &b in b"breenix> " {
+        write_byte(b);
+    }
 }
 
 #[allow(dead_code)] // Used by serial_command_task (conditionally compiled)

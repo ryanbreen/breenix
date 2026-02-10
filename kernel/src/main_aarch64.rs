@@ -236,6 +236,7 @@ use kernel::shell::ShellState;
 /// - BSS is zeroed
 /// - MMU is already enabled by boot.S (high-half kernel)
 #[no_mangle]
+#[cfg_attr(feature = "kthread_test_only", allow(unreachable_code))]
 pub extern "C" fn kernel_main() -> ! {
     // Initialize physical memory offset (needed for MMIO access)
     kernel::memory::init_physical_memory_offset_aarch64();
@@ -265,6 +266,19 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
 
+    // Initialize BTRT (requires memory and serial)
+    #[cfg(feature = "btrt")]
+    {
+        use kernel::test_framework::{btrt, catalog};
+        btrt::init();
+        btrt::pass(catalog::KERNEL_ENTRY);
+        btrt::pass(catalog::AARCH64_UART_INIT);
+        btrt::pass(catalog::AARCH64_MMU_INIT);
+        btrt::pass(catalog::MEMORY_INIT);
+        btrt::pass(catalog::HEAP_INIT);
+        btrt::pass(catalog::FRAME_ALLOC_INIT);
+    }
+
     // Initialize timer
     serial_println!("[boot] Initializing Generic Timer...");
     timer::calibrate();
@@ -279,6 +293,8 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing GICv2...");
     Gicv2::init();
     serial_println!("[boot] GIC initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_GIC_INIT);
 
     // Enable UART receive interrupt (IRQ 33 = SPI 1)
     serial_println!("[boot] Enabling UART interrupts...");
@@ -305,18 +321,34 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
     // Initialize network stack (after VirtIO network driver is ready)
     serial_println!("[boot] Initializing network stack...");
     kernel::net::init();
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::NETWORK_STACK_INIT);
 
     // Initialize filesystem layer (requires VirtIO block device)
     serial_println!("[boot] Initializing filesystem...");
 
     // Initialize ext2 root filesystem (if block device present)
     match kernel::fs::ext2::init_root_fs() {
-        Ok(()) => serial_println!("[boot] ext2 root filesystem mounted"),
-        Err(e) => serial_println!("[boot] ext2 init: {} (continuing without root fs)", e),
+        Ok(()) => {
+            serial_println!("[boot] ext2 root filesystem mounted");
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
+        }
+        Err(e) => {
+            serial_println!("[boot] ext2 init: {} (continuing without root fs)", e);
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::fail(
+                kernel::test_framework::catalog::EXT2_MOUNT,
+                kernel::test_framework::btrt::BtrtErrorCode::IoError,
+                0,
+            );
+        }
     }
 
     // Initialize devfs (/dev virtual filesystem)
@@ -340,6 +372,8 @@ pub extern "C" fn kernel_main() -> ! {
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
     serial_println!("[boot] procfs initialized at /proc");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
     // Initialize TTY subsystem (console + PTY infrastructure)
     kernel::tty::init();
@@ -372,6 +406,8 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing scheduler...");
     init_scheduler();
     serial_println!("[boot] Scheduler initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
     // Spawn render thread for deferred framebuffer rendering
     // This MUST come after scheduler is initialized (needs kthread infrastructure)
@@ -385,6 +421,8 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing timer interrupt...");
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
     // Bring up secondary CPUs via PSCI CPU_ON
     serial_println!("[smp] Starting secondary CPUs...");
@@ -406,17 +444,45 @@ pub extern "C" fn kernel_main() -> ! {
         kernel::arch_impl::aarch64::smp::cpus_online()
     );
 
+    // Test kthread lifecycle BEFORE creating userspace processes
+    // (must be done early so scheduler doesn't preempt to userspace)
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_lifecycle();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_join();
+
+    // In kthread_test_only mode, exit immediately after kthread tests pass
+    #[cfg(feature = "kthread_test_only")]
+    {
+        serial_println!("=== KTHREAD_TEST_ONLY: All kthread tests passed ===");
+        serial_println!("KTHREAD_TEST_ONLY_COMPLETE");
+        kernel::exit_qemu(kernel::QemuExitCode::Success);
+        loop {
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        }
+    }
+
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
     {
         serial_println!("[boot] Running parallel boot tests...");
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
         let failures = kernel::test_framework::run_all_tests();
         if failures > 0 {
             serial_println!("[boot] {} test(s) failed!", failures);
         } else {
             serial_println!("[boot] All boot tests passed!");
         }
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
+
+    // Finalize BTRT: in non-testing mode, finalize now (kernel milestones only).
+    // In testing mode, auto-finalize happens via on_process_exit() when all
+    // registered test processes have completed.
+    #[cfg(all(feature = "btrt", not(feature = "testing")))]
+    kernel::test_framework::btrt::finalize();
 
     serial_println!();
     serial_println!("========================================");
@@ -458,11 +524,13 @@ pub extern "C" fn kernel_main() -> ! {
     if device_count > 0 {
         serial_println!("[test] Loading test binaries from ext2...");
         load_test_binaries_from_ext2();
-        serial_println!("[test] Entering scheduler idle loop - test processes will run via timer interrupts");
-        // Now re-enable interrupts. The scheduler dispatches test processes
-        // naturally via timer interrupts. Each test process goes through
-        // setup_first_userspace_entry_arm64() which properly sets TTBR0,
-        // SPSR (EL0t), and ELR (entry point) before ERET.
+        serial_println!("[test] Test processes loaded - will run via timer interrupts");
+        // Print shell prompt to serial before enabling interrupts.
+        // Once interrupts are enabled, the scheduler takes over and the BSP
+        // (idle thread 0) enters idle_loop_arm64 - it won't return here.
+        // The prompt signals to the test harness that boot is complete.
+        serial_print!("breenix> ");
+        // Enable interrupts - scheduler dispatches test processes via timer.
         unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts(); }
         loop {
             unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
@@ -502,6 +570,8 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[interactive] Entering interactive mode");
     serial_println!("[interactive] Input via VirtIO keyboard");
     serial_println!();
+    // Always print prompt to serial so test harness can detect it
+    serial_print!("breenix> ");
 
     // Create shell state for command processing
     let mut shell = ShellState::new();
@@ -512,7 +582,6 @@ pub extern "C" fn kernel_main() -> ! {
         serial_println!("[interactive] Running in serial-only mode (no VirtIO GPU)");
         serial_println!("[interactive] Type commands at the serial console");
         serial_println!();
-        serial_print!("breenix> ");
     }
 
     // Input sources:
@@ -690,10 +759,18 @@ fn load_test_binaries_from_ext2() {
         match kernel::process::creation::create_user_process(String::from(*name), &elf_data) {
             Ok(pid) => {
                 serial_println!("[test] Loaded {} (PID {})", name, pid.as_u64());
+                #[cfg(feature = "btrt")]
+                if let Some(test_id) = kernel::test_framework::catalog::utest_name_to_id(name) {
+                    kernel::test_framework::btrt::register_pid(pid.as_u64(), test_id);
+                }
                 loaded += 1;
             }
             Err(e) => {
                 serial_println!("[test] Failed to create process {}: {}", name, e);
+                #[cfg(feature = "btrt")]
+                if let Some(test_id) = kernel::test_framework::catalog::utest_name_to_id(name) {
+                    kernel::test_framework::btrt::fail(test_id, kernel::test_framework::btrt::BtrtErrorCode::NoExec, 0);
+                }
                 failed += 1;
             }
         }

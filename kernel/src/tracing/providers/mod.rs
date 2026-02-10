@@ -31,12 +31,16 @@ pub mod irq;
 pub mod process;
 pub mod sched;
 pub mod syscall;
+// #[cfg(feature = "btrt")]
+// pub mod boot_test;
 
 // Re-export providers for convenient access
 pub use irq::IRQ_PROVIDER;
 pub use process::PROCESS_PROVIDER;
 pub use sched::SCHED_PROVIDER;
 pub use syscall::SYSCALL_PROVIDER;
+// #[cfg(feature = "btrt")]
+// pub use boot_test::BOOT_TEST_PROVIDER;
 
 // Re-export built-in counters
 pub use counters::{CTX_SWITCH_TOTAL, IRQ_TOTAL, SYSCALL_TOTAL, TIMER_TICK_TOTAL};
@@ -50,6 +54,8 @@ pub fn init() {
     sched::init();
     irq::init();
     process::init();
+    // #[cfg(feature = "btrt")]
+    // boot_test::init();
     counters::init();
 
     log::info!(
@@ -68,6 +74,8 @@ pub fn enable_all() {
     SCHED_PROVIDER.enable_all();
     IRQ_PROVIDER.enable_all();
     PROCESS_PROVIDER.enable_all();
+    // #[cfg(feature = "btrt")]
+    // BOOT_TEST_PROVIDER.enable_all();
 }
 
 /// Disable all built-in providers.
@@ -77,4 +85,6 @@ pub fn disable_all() {
     SCHED_PROVIDER.disable_all();
     IRQ_PROVIDER.disable_all();
     PROCESS_PROVIDER.disable_all();
+    // #[cfg(feature = "btrt")]
+    // BOOT_TEST_PROVIDER.disable_all();
 }

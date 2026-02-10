@@ -73,8 +73,8 @@ pub mod boot;
 pub mod trace;
 // DTrace-style tracing framework with per-CPU ring buffers
 pub mod tracing;
-// Parallel boot test framework
-#[cfg(feature = "boot_tests")]
+// Parallel boot test framework and BTRT
+#[cfg(any(feature = "boot_tests", feature = "btrt"))]
 pub mod test_framework;
 
 #[cfg(test)]
@@ -131,9 +131,15 @@ pub fn exit_qemu(exit_code: QemuExitCode) {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        // ARM64: Use semihosting or PSCI for VM exit
-        // For now, just halt
         let _ = exit_code;
+        // PSCI SYSTEM_OFF causes QEMU to exit cleanly with -no-reboot
+        unsafe {
+            core::arch::asm!(
+                "hvc #0",
+                in("x0") 0x8400_0008u64,
+                options(nomem, nostack, noreturn),
+            );
+        }
     }
 }
 
