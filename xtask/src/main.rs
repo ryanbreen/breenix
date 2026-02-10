@@ -3933,8 +3933,10 @@ fn arm64_boot_stages() -> Result<()> {
         bail!("ext2 disk image not found at target/ext2-aarch64.img");
     }
 
-    // Step 3: Build ARM64 kernel
-    println!("\nBuilding ARM64 kernel...");
+    // Step 3: Build ARM64 kernel with testing feature
+    // The testing feature enables load_test_binaries_from_ext2() which loads
+    // test binaries from the ext2 filesystem into the scheduler.
+    println!("\nBuilding ARM64 kernel (with testing feature)...");
     let status = Command::new("cargo")
         .args(&[
             "build", "--release",
@@ -3943,6 +3945,7 @@ fn arm64_boot_stages() -> Result<()> {
             "-Z", "build-std-features=compiler-builtins-mem",
             "-p", "kernel",
             "--bin", "kernel-aarch64",
+            "--features", "testing",
         ])
         .status()
         .map_err(|e| anyhow::anyhow!("Failed to build ARM64 kernel: {}", e))?;
