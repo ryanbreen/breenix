@@ -450,6 +450,14 @@ pub extern "C" fn kernel_main() -> ! {
         }
     }
 
+    // In testing mode, load test binaries from ext2 and schedule them.
+    // They will run via the scheduler alongside init_shell.
+    #[cfg(feature = "testing")]
+    if device_count > 0 {
+        serial_println!("[test] Loading test binaries from ext2...");
+        load_test_binaries_from_ext2();
+    }
+
     boot_raw_char(b'1'); // Before if statement
 
     // Try to load and run userspace init_shell from ext2 or test disk
@@ -565,6 +573,114 @@ pub extern "C" fn kernel_main() -> ! {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
     }
+}
+
+/// Load test binaries from ext2 filesystem and create userspace processes.
+///
+/// Each test binary is loaded from /bin/<name>.elf, parsed as ELF, and scheduled
+/// via create_user_process(). The scheduler will run them alongside init_shell.
+#[cfg(target_arch = "aarch64")]
+#[cfg(feature = "testing")]
+fn load_test_binaries_from_ext2() {
+    use alloc::format;
+    use alloc::string::String;
+
+    let test_binaries = [
+        "hello_time", "clock_gettime_test", "brk_test", "mmap_test",
+        "syscall_diagnostic_test", "signal_test", "signal_regs_test",
+        "sigaltstack_test", "pipe_test", "unix_socket_test",
+        "signal_kill_test", "sigchld_test", "pause_test", "sigsuspend_test",
+        "kill_pgroup_test", "dup_test", "fcntl_test", "cloexec_test",
+        "pipe2_test", "shell_pipe_test", "signal_exec_test",
+        "waitpid_test", "signal_fork_test", "wnohang_test",
+        "poll_test", "select_test", "nonblock_test", "tty_test",
+        "session_test", "file_read_test", "getdents_test", "lseek_test",
+        "fs_write_test", "fs_rename_test", "fs_large_file_test",
+        "fs_directory_test", "fs_link_test", "access_test",
+        "devfs_test", "cwd_test", "exec_from_ext2_test",
+        "fs_block_alloc_test", "true_test", "false_test",
+        "head_test", "tail_test", "wc_test", "which_test",
+        "cat_test", "ls_test",
+        // hello_std_real is installed as hello_world.elf on the ext2 disk
+        "hello_world",
+        "fork_memory_test", "fork_state_test",
+        "fork_pending_signal_test", "cow_signal_test",
+        "cow_cleanup_test", "cow_sole_owner_test",
+        "cow_stress_test", "cow_readonly_test",
+        "argv_test", "exec_argv_test", "exec_stack_argv_test",
+        "ctrl_c_test", "fbinfo_test",
+        // Network tests (depend on virtio-net)
+        "udp_socket_test", "tcp_socket_test", "dns_test", "http_test",
+    ];
+
+    let mut loaded = 0;
+    let mut failed = 0;
+
+    for name in &test_binaries {
+        let path = format!("/bin/{}.elf", name);
+
+        // Load ELF from ext2 - acquire and release lock for each binary
+        let elf_data = {
+            let fs_guard = kernel::fs::ext2::root_fs();
+            let fs = match fs_guard.as_ref() {
+                Some(fs) => fs,
+                None => {
+                    serial_println!("[test] ext2 not mounted, cannot load {}", name);
+                    return;
+                }
+            };
+
+            let inode_num = match fs.resolve_path(&path) {
+                Ok(num) => num,
+                Err(_) => {
+                    // Binary not present in ext2 - skip silently
+                    continue;
+                }
+            };
+
+            let inode = match fs.read_inode(inode_num) {
+                Ok(inode) => inode,
+                Err(e) => {
+                    serial_println!("[test] Failed to read inode for {}: {}", name, e);
+                    failed += 1;
+                    continue;
+                }
+            };
+
+            match fs.read_file_content(&inode) {
+                Ok(data) => data,
+                Err(e) => {
+                    serial_println!("[test] Failed to read {}: {}", path, e);
+                    failed += 1;
+                    continue;
+                }
+            }
+            // fs_guard dropped here, releasing ext2 lock
+        };
+
+        // Validate ELF magic
+        if elf_data.len() < 4 || &elf_data[0..4] != b"\x7fELF" {
+            serial_println!("[test] {} is not a valid ELF file", name);
+            failed += 1;
+            continue;
+        }
+
+        // Create userspace process (adds to scheduler ready queue)
+        match kernel::process::creation::create_user_process(String::from(*name), &elf_data) {
+            Ok(pid) => {
+                serial_println!("[test] Loaded {} (PID {})", name, pid.as_u64());
+                loaded += 1;
+            }
+            Err(e) => {
+                serial_println!("[test] Failed to create process {}: {}", name, e);
+                failed += 1;
+            }
+        }
+    }
+
+    serial_println!("[test] Loaded {}/{} test binaries ({} failed, {} not found)",
+        loaded, test_binaries.len(), failed,
+        test_binaries.len() - loaded - failed);
 }
 
 /// Initialize the scheduler with an idle thread (ARM64)

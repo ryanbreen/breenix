@@ -13,9 +13,9 @@ jobs:
   # See docs/planning/CI_PARALLEL_BOOT_TESTS_PLAN.md for the full plan.
 
   arm64-boot:
-    name: ARM64 Boot Test
+    name: ARM64 Boot Stages Test
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -98,87 +98,15 @@ jobs:
           done
           echo "Critical binaries verified: init, init_shell, ls, cat"
 
-      - name: Build ARM64 kernel
+      - name: Run ARM64 boot stages validation
         run: |
-          cargo build --release \
-            --target aarch64-breenix.json \
-            -Z build-std=core,alloc \
-            -Z build-std-features=compiler-builtins-mem \
-            -p kernel \
-            --bin kernel-aarch64
-
-      - name: Verify kernel binary
-        run: |
-          ls -la target/aarch64-breenix/release/kernel-aarch64
-          file target/aarch64-breenix/release/kernel-aarch64
-
-      - name: Boot ARM64 kernel in QEMU
-        run: |
-          OUTPUT_DIR="/tmp/breenix_aarch64_ci"
-          mkdir -p "$OUTPUT_DIR"
-
-          # Writable copy of ext2 disk for filesystem write tests
-          cp target/ext2-aarch64.img "$OUTPUT_DIR/ext2-writable.img"
-
-          # Start QEMU with 60s hard timeout
-          timeout 60 qemu-system-aarch64 \
-            -M virt -cpu cortex-a72 -m 512 -smp 4 \
-            -kernel target/aarch64-breenix/release/kernel-aarch64 \
-            -display none -no-reboot \
-            -device virtio-gpu-device \
-            -device virtio-keyboard-device \
-            -device virtio-blk-device,drive=ext2 \
-            -drive if=none,id=ext2,format=raw,file="$OUTPUT_DIR/ext2-writable.img" \
-            -device virtio-net-device,netdev=net0 \
-            -netdev user,id=net0 \
-            -serial file:"$OUTPUT_DIR/serial.txt" &
-          QEMU_PID=$!
-
-          # Wait for userspace shell prompt (45s polling timeout)
-          BOOT_OK=false
-          for i in $(seq 1 45); do
-            if [ -f "$OUTPUT_DIR/serial.txt" ]; then
-              if grep -q "breenix>" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                BOOT_OK=true
-                break
-              fi
-              if grep -qiE "(KERNEL PANIC|panic!)" "$OUTPUT_DIR/serial.txt" 2>/dev/null; then
-                echo "FAIL: Kernel panic detected"
-                break
-              fi
-            fi
-            sleep 1
-          done
-
-          # Clean up QEMU
-          kill $QEMU_PID 2>/dev/null || true
-          wait $QEMU_PID 2>/dev/null || true
-
-          # Validate results
-          if $BOOT_OK; then
-            SHELL_COUNT=$(grep -o "init_shell" "$OUTPUT_DIR/serial.txt" 2>/dev/null | wc -l | tr -d ' ')
-            SHELL_COUNT=${SHELL_COUNT:-0}
-            if [ "$SHELL_COUNT" -le 5 ]; then
-              echo "SUCCESS: ARM64 boot test passed ($SHELL_COUNT init_shell mentions)"
-              exit 0
-            else
-              echo "FAIL: Too many init_shell mentions: $SHELL_COUNT (max 5)"
-              echo "=== Serial output ==="
-              cat "$OUTPUT_DIR/serial.txt"
-              exit 1
-            fi
-          else
-            echo "FAIL: ARM64 boot test failed - shell prompt not detected"
-            echo "=== Serial output ==="
-            cat "$OUTPUT_DIR/serial.txt" 2>/dev/null || echo "(no output)"
-            exit 1
-          fi
+          cargo run -p xtask -- arm64-boot-stages
 
       - name: Upload serial log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: arm64-boot-log-${{ github.run_number }}
-          path: /tmp/breenix_aarch64_ci/serial.txt
+          name: arm64-boot-stages-log-${{ github.run_number }}
+          path: target/arm64_boot_stages_output.txt
           if-no-files-found: warn
           retention-days: 7
