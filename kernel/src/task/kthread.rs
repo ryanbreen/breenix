@@ -18,7 +18,7 @@ use crate::arch_impl::aarch64::cpu::without_interrupts;
 
 /// Architecture-specific halt instruction
 #[inline(always)]
-fn arch_halt() {
+pub(crate) fn arch_halt() {
     #[cfg(target_arch = "x86_64")]
     x86_64::instructions::hlt();
 
@@ -30,12 +30,22 @@ fn arch_halt() {
 
 /// Architecture-specific enable interrupts
 #[inline(always)]
-unsafe fn arch_enable_interrupts() {
+pub(crate) unsafe fn arch_enable_interrupts() {
     #[cfg(target_arch = "x86_64")]
     x86_64::instructions::interrupts::enable();
 
     #[cfg(target_arch = "aarch64")]
     core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
+}
+
+/// Architecture-specific disable interrupts
+#[inline(always)]
+pub(crate) unsafe fn arch_disable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    x86_64::instructions::interrupts::disable();
+
+    #[cfg(target_arch = "aarch64")]
+    core::arch::asm!("msr daifset, #2", options(nomem, nostack));
 }
 
 /// Kernel thread control block

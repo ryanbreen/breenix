@@ -88,7 +88,7 @@ pub struct BtrtEntry {
     pub test_id: u16,
     pub status: BtrtStatus,
     pub error_code: u8,
-    _duration_us: u32,
+    pub duration_us: u32,
     pub error_detail: u32,
 }
 
@@ -157,7 +157,7 @@ pub fn parse_blob(data: &[u8]) -> Result<BtrtResults> {
                 test_id,
                 status,
                 error_code,
-                _duration_us: duration_us,
+                duration_us,
                 error_detail,
             });
         }
@@ -258,4 +258,126 @@ pub fn print_ktap(results: &BtrtResults) {
 /// Returns true if all completed tests passed.
 pub fn all_passed(results: &BtrtResults) -> bool {
     results.header.tests_failed == 0 && results.header.tests_completed > 0
+}
+
+/// Categorize an entry by its test_id range.
+fn category_label(test_id: u16) -> &'static str {
+    match test_id {
+        0..=29 => "Kernel Init",
+        30..=49 => "ARM64 Init",
+        100..=199 => "Subsystems",
+        200..=299 => "Userspace Exec",
+        300..=499 => "Userspace Tests",
+        _ => "Other",
+    }
+}
+
+/// Print a detailed table with duration, error details, and category grouping.
+pub fn print_detailed(results: &BtrtResults) {
+    println!();
+    println!("Boot Test Result Table (BTRT) -- Detailed View");
+    println!("================================================");
+    println!(
+        "Total: {}  Completed: {}  Passed: {}  Failed: {}",
+        results.header.total_tests,
+        results.header.tests_completed,
+        results.header.tests_passed,
+        results.header.tests_failed
+    );
+
+    let boot_ticks = results
+        .header
+        .boot_end_ns
+        .saturating_sub(results.header.boot_start_ns);
+    println!("Boot duration: {} ticks\n", boot_ticks);
+
+    // Group entries by category
+    let mut current_category = "";
+
+    // Sort entries by test_id for display
+    let mut sorted: Vec<&BtrtEntry> = results.entries.iter().collect();
+    sorted.sort_by_key(|e| e.test_id);
+
+    println!(
+        "{:>5}  {:<32}  {:<8}  {:>10}  {}",
+        "ID", "Name", "Status", "Duration", "Details"
+    );
+    println!("{}", "-".repeat(80));
+
+    for entry in &sorted {
+        let cat = category_label(entry.test_id);
+        if cat != current_category {
+            println!("\n  [{}]", cat);
+            current_category = cat;
+        }
+
+        let name = btrt_catalog::test_name(entry.test_id);
+        let status_label = entry.status.label();
+
+        let duration = if entry.duration_us > 0 {
+            format!("{} us", entry.duration_us)
+        } else {
+            String::new()
+        };
+
+        let details = match entry.status {
+            BtrtStatus::Fail => format!(
+                "err={} detail={:#x}",
+                error_code_name(entry.error_code),
+                entry.error_detail
+            ),
+            BtrtStatus::Timeout => "TIMEOUT".to_string(),
+            BtrtStatus::Running => "STILL RUNNING".to_string(),
+            _ => String::new(),
+        };
+
+        println!(
+            "{:>5}  {:<32}  {:<8}  {:>10}  {}",
+            entry.test_id, name, status_label, duration, details
+        );
+    }
+
+    println!();
+    if results.header.tests_failed > 0 {
+        println!("RESULT: FAIL ({} tests failed)", results.header.tests_failed);
+    } else if results.header.tests_completed == 0 {
+        println!("RESULT: NO TESTS COMPLETED");
+    } else {
+        println!(
+            "RESULT: PASS ({}/{} tests passed)",
+            results.header.tests_passed, results.header.tests_completed
+        );
+    }
+}
+
+/// Print results as JSON.
+pub fn print_json(results: &BtrtResults) {
+    // Manual JSON output to avoid adding serde dependency to xtask
+    println!("{{");
+    println!("  \"header\": {{");
+    println!("    \"total_tests\": {},", results.header.total_tests);
+    println!("    \"tests_completed\": {},", results.header.tests_completed);
+    println!("    \"tests_passed\": {},", results.header.tests_passed);
+    println!("    \"tests_failed\": {},", results.header.tests_failed);
+    println!("    \"boot_start_ns\": {},", results.header.boot_start_ns);
+    println!("    \"boot_end_ns\": {}", results.header.boot_end_ns);
+    println!("  }},");
+    println!("  \"entries\": [");
+
+    for (i, entry) in results.entries.iter().enumerate() {
+        let name = btrt_catalog::test_name(entry.test_id);
+        let trailing = if i + 1 < results.entries.len() { "," } else { "" };
+        println!("    {{");
+        println!("      \"test_id\": {},", entry.test_id);
+        println!("      \"name\": \"{}\",", name);
+        println!("      \"category\": \"{}\",", category_label(entry.test_id));
+        println!("      \"status\": \"{}\",", entry.status.label());
+        println!("      \"error_code\": \"{}\",", error_code_name(entry.error_code));
+        println!("      \"error_detail\": {},", entry.error_detail);
+        println!("      \"duration_us\": {}", entry.duration_us);
+        println!("    }}{}", trailing);
+    }
+
+    println!("  ]");
+    println!("}}")
 }

@@ -26,7 +26,7 @@
 use super::catalog;
 use super::ktap;
 use core::ptr::addr_of_mut;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 /// Maximum number of test slots in the BTRT.
 pub const MAX_TESTS: usize = 512;
@@ -295,11 +295,19 @@ pub fn timeout(test_id: u16) {
 // Finalization
 // =============================================================================
 
+/// Guard to ensure finalize() is only executed once.
+static BTRT_FINALIZED: AtomicBool = AtomicBool::new(false);
+
 /// Finalize the BTRT after all tests complete.
 ///
 /// Sets the boot_end_ns timestamp, emits the KTAP summary, and prints
 /// the `===BTRT_READY===` sentinel that the host watches for.
+///
+/// Safe to call multiple times -- only the first call takes effect.
 pub fn finalize() {
+    if BTRT_FINALIZED.swap(true, Ordering::AcqRel) {
+        return;
+    }
     let hdr = header_ptr();
 
     unsafe {
@@ -320,6 +328,99 @@ pub fn finalize() {
     ktap::emit_summary(passed, failed, skipped);
     crate::serial_println!("===BTRT_READY===");
 }
+
+// =============================================================================
+// PID Registry -- maps userspace PIDs to BTRT test IDs
+// =============================================================================
+
+/// Maximum number of tracked userspace test processes.
+const MAX_PID_REGISTRY: usize = 128;
+
+/// A single PID→test_id mapping slot. Lock-free via atomics.
+struct PidRegistryEntry {
+    /// Process ID (0 = empty slot).
+    pid: AtomicU64,
+    /// Corresponding BTRT test ID.
+    test_id: AtomicU16,
+}
+
+impl PidRegistryEntry {
+    const fn empty() -> Self {
+        Self {
+            pid: AtomicU64::new(0),
+            test_id: AtomicU16::new(0),
+        }
+    }
+}
+
+/// Global PID registry (BSS-zeroed).
+static BTRT_PID_REGISTRY: [PidRegistryEntry; MAX_PID_REGISTRY] = {
+    // Work around const-init limitations: build array element by element.
+    const EMPTY: PidRegistryEntry = PidRegistryEntry::empty();
+    [EMPTY; MAX_PID_REGISTRY]
+};
+
+/// Number of PIDs registered so far.
+static BTRT_REGISTERED_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Number of registered PIDs that have exited.
+static BTRT_COMPLETED_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Register a userspace test process PID → test_id mapping.
+///
+/// Call this immediately after `create_user_process()` succeeds.
+/// Also records the test as `Running` in the BTRT table.
+pub fn register_pid(pid: u64, test_id: u16) {
+    // Record the test as Running in BTRT
+    record(test_id, BtrtStatus::Running, BtrtErrorCode::Ok, 0);
+
+    // Claim the next empty slot
+    let idx = BTRT_REGISTERED_COUNT.fetch_add(1, Ordering::AcqRel) as usize;
+    if idx >= MAX_PID_REGISTRY {
+        return; // Registry full -- test still tracked via BTRT entry
+    }
+
+    BTRT_PID_REGISTRY[idx].pid.store(pid, Ordering::Release);
+    BTRT_PID_REGISTRY[idx].test_id.store(test_id, Ordering::Release);
+}
+
+/// Called when a userspace process exits. Looks up PID in the registry
+/// and records pass (exit 0) or fail (exit non-zero) in the BTRT table.
+///
+/// If all registered test processes have completed, auto-finalizes.
+pub fn on_process_exit(pid: u64, exit_code: i32) {
+    let count = BTRT_REGISTERED_COUNT.load(Ordering::Acquire) as usize;
+    let count = core::cmp::min(count, MAX_PID_REGISTRY);
+
+    // Linear scan for matching PID
+    for i in 0..count {
+        let stored_pid = BTRT_PID_REGISTRY[i].pid.load(Ordering::Acquire);
+        if stored_pid == pid {
+            let test_id = BTRT_PID_REGISTRY[i].test_id.load(Ordering::Acquire);
+
+            // Clear the slot so we don't match again (e.g. PID reuse)
+            BTRT_PID_REGISTRY[i].pid.store(0, Ordering::Release);
+
+            // Record pass or fail
+            if exit_code == 0 {
+                pass(test_id);
+            } else {
+                fail(test_id, BtrtErrorCode::Assert, exit_code as u32);
+            }
+
+            // Increment completed count and check for auto-finalize
+            let completed = BTRT_COMPLETED_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
+            let registered = BTRT_REGISTERED_COUNT.load(Ordering::Acquire);
+            if completed == registered && registered > 0 {
+                finalize();
+            }
+            return;
+        }
+    }
+
+    // PID not in registry -- forked child or non-test process, ignore.
+}
+
 
 // =============================================================================
 // Helpers

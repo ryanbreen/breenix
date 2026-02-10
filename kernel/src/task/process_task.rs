@@ -31,6 +31,9 @@ impl ProcessScheduler {
 
                 process.terminate(exit_code);
 
+                #[cfg(feature = "btrt")]
+                crate::test_framework::btrt::on_process_exit(pid.as_u64(), exit_code);
+
                 // Send SIGCHLD to the parent process and wake it if blocked on waitpid
                 if let Some(parent_pid) = parent_pid {
                     if let Some(parent_process) = manager.get_process_mut(parent_pid) {

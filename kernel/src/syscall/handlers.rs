@@ -189,6 +189,12 @@ pub fn sys_exit(exit_code: i32) -> SyscallResult {
 
             // Set flag for automated systems that want to detect completion
             USERSPACE_TEST_COMPLETE.store(true, Ordering::SeqCst);
+
+            // Fallback BTRT finalization: if all userspace threads are gone,
+            // finalize regardless of whether every registered PID called on_process_exit.
+            // This handles forked children, hanging tests, etc.
+            #[cfg(feature = "btrt")]
+            crate::test_framework::btrt::finalize();
         }
     } else {
         log::error!("sys_exit: No current thread in scheduler");
