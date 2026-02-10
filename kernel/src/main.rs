@@ -142,7 +142,8 @@ mod test_userspace;
 mod contracts;
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 mod contract_runner;
-#[cfg(all(target_arch = "x86_64", feature = "boot_tests"))]
+#[cfg(all(target_arch = "x86_64", any(feature = "boot_tests", feature = "btrt")))]
+#[allow(dead_code)] // Wire protocol types + API surface used by host-side parser
 mod test_framework;
 
 // Fault test thread function
@@ -254,6 +255,20 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let memory_regions = &boot_info.memory_regions;
     memory::init(physical_memory_offset, memory_regions);
 
+    // Initialize BTRT (requires memory for virt_to_phys and serial for output)
+    #[cfg(feature = "btrt")]
+    {
+        use crate::test_framework::{btrt, catalog};
+        btrt::init();
+        btrt::pass(catalog::KERNEL_ENTRY);
+        btrt::pass(catalog::SERIAL_INIT);
+        btrt::pass(catalog::GDT_IDT_INIT);
+        btrt::pass(catalog::PER_CPU_INIT);
+        btrt::pass(catalog::MEMORY_INIT);
+        btrt::pass(catalog::HEAP_INIT);
+        btrt::pass(catalog::FRAME_ALLOC_INIT);
+    }
+
     // Upgrade framebuffer to double buffering now that heap is available
     #[cfg(feature = "interactive")]
     logger::upgrade_to_double_buffer();
@@ -341,14 +356,30 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize PCI and enumerate devices (needed for disk I/O)
     let pci_device_count = drivers::init();
     log::info!("PCI subsystem initialized: {} devices found", pci_device_count);
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::PCI_ENUMERATION);
 
     // Initialize network stack (after E1000 driver is ready)
     net::init();
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::NETWORK_STACK_INIT);
 
     // Initialize ext2 root filesystem (after VirtIO block device is ready)
     match crate::fs::ext2::init_root_fs() {
-        Ok(()) => log::info!("ext2 root filesystem mounted"),
-        Err(e) => log::warn!("Failed to mount ext2 root: {:?}", e),
+        Ok(()) => {
+            log::info!("ext2 root filesystem mounted");
+            #[cfg(feature = "btrt")]
+            crate::test_framework::btrt::pass(crate::test_framework::catalog::EXT2_MOUNT);
+        }
+        Err(e) => {
+            log::warn!("Failed to mount ext2 root: {:?}", e);
+            #[cfg(feature = "btrt")]
+            crate::test_framework::btrt::fail(
+                crate::test_framework::catalog::EXT2_MOUNT,
+                crate::test_framework::btrt::BtrtErrorCode::IoError,
+                0,
+            );
+        }
     }
 
     // Initialize devfs (/dev virtual filesystem)
@@ -368,6 +399,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize procfs (/proc virtual filesystem)
     crate::fs::procfs::init();
     log::info!("procfs initialized at /proc");
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::PROCFS_INIT);
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
@@ -439,6 +472,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // no timer interrupts can fire and the scheduler will not run.
     time::init();
     log::info!("Timer initialized");
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::TIMER_INIT);
 
     // Initialize DTrace-style tracing framework
     // This must be after per_cpu::init() and time::init() for timestamps
@@ -447,6 +482,8 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     tracing::enable();
     tracing::providers::enable_all();
     log::info!("Tracing subsystem initialized and enabled");
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::TRACING_INIT);
 
     // CHECKPOINT A: Verify PIT Configuration
     log::info!("CHECKPOINT A: PIT initialized at {} Hz", 100);
@@ -614,6 +651,8 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // This follows Linux where the boot thread becomes the idle task
     task::scheduler::init_with_current(init_task);
     log::info!("Threading subsystem initialized with init_task (swapper/0)");
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::SCHEDULER_INIT);
     
     log::info!("percpu: cpu0 base={:#x}, current=swapper/0, rsp0={:#x}", 
         x86_64::registers::model_specific::GsBase::read().as_u64(),
@@ -627,9 +666,13 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     task::workqueue::init_workqueue();
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::WORKQUEUE_INIT);
 
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::pass(crate::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
     // Spawn render thread for deferred framebuffer rendering (interactive mode only)
     // This must be done after kthread infrastructure is ready
@@ -1500,18 +1543,26 @@ fn kernel_main_continue() -> ! {
     #[cfg(feature = "boot_tests")]
     {
         log::info!("[boot] Running parallel boot tests...");
+        #[cfg(feature = "btrt")]
+        crate::test_framework::btrt::pass(crate::test_framework::catalog::BOOT_TESTS_START);
         let failures = test_framework::run_all_tests();
         if failures > 0 {
             log::error!("[boot] {} test(s) failed!", failures);
         } else {
             log::info!("[boot] All boot tests passed!");
         }
+        #[cfg(feature = "btrt")]
+        crate::test_framework::btrt::pass(crate::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
 
     // Mark kernel initialization complete BEFORE enabling interrupts
     // Once interrupts are enabled, the scheduler will preempt to userspace
     // and kernel_main may never execute again
     log::info!("✅ Kernel initialization complete!");
+
+    // Finalize BTRT and emit BTRT_READY sentinel for host extraction
+    #[cfg(feature = "btrt")]
+    crate::test_framework::btrt::finalize();
 
     // Enable interrupts for preemptive multitasking - userspace processes will now run
     // WARNING: After this call, kernel_main will likely be preempted immediately

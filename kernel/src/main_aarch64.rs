@@ -265,6 +265,19 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::memory::kernel_stack::init();
     serial_println!("[boot] Memory management ready");
 
+    // Initialize BTRT (requires memory and serial)
+    #[cfg(feature = "btrt")]
+    {
+        use kernel::test_framework::{btrt, catalog};
+        btrt::init();
+        btrt::pass(catalog::KERNEL_ENTRY);
+        btrt::pass(catalog::AARCH64_UART_INIT);
+        btrt::pass(catalog::AARCH64_MMU_INIT);
+        btrt::pass(catalog::MEMORY_INIT);
+        btrt::pass(catalog::HEAP_INIT);
+        btrt::pass(catalog::FRAME_ALLOC_INIT);
+    }
+
     // Initialize timer
     serial_println!("[boot] Initializing Generic Timer...");
     timer::calibrate();
@@ -279,6 +292,8 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing GICv2...");
     Gicv2::init();
     serial_println!("[boot] GIC initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_GIC_INIT);
 
     // Enable UART receive interrupt (IRQ 33 = SPI 1)
     serial_println!("[boot] Enabling UART interrupts...");
@@ -305,18 +320,34 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing device drivers...");
     let device_count = kernel::drivers::init();
     serial_println!("[boot] Found {} devices", device_count);
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
     // Initialize network stack (after VirtIO network driver is ready)
     serial_println!("[boot] Initializing network stack...");
     kernel::net::init();
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::NETWORK_STACK_INIT);
 
     // Initialize filesystem layer (requires VirtIO block device)
     serial_println!("[boot] Initializing filesystem...");
 
     // Initialize ext2 root filesystem (if block device present)
     match kernel::fs::ext2::init_root_fs() {
-        Ok(()) => serial_println!("[boot] ext2 root filesystem mounted"),
-        Err(e) => serial_println!("[boot] ext2 init: {} (continuing without root fs)", e),
+        Ok(()) => {
+            serial_println!("[boot] ext2 root filesystem mounted");
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
+        }
+        Err(e) => {
+            serial_println!("[boot] ext2 init: {} (continuing without root fs)", e);
+            #[cfg(feature = "btrt")]
+            kernel::test_framework::btrt::fail(
+                kernel::test_framework::catalog::EXT2_MOUNT,
+                kernel::test_framework::btrt::BtrtErrorCode::IoError,
+                0,
+            );
+        }
     }
 
     // Initialize devfs (/dev virtual filesystem)
@@ -340,6 +371,8 @@ pub extern "C" fn kernel_main() -> ! {
     // Initialize procfs (/proc virtual filesystem)
     kernel::fs::procfs::init();
     serial_println!("[boot] procfs initialized at /proc");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
     // Initialize TTY subsystem (console + PTY infrastructure)
     kernel::tty::init();
@@ -372,6 +405,8 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing scheduler...");
     init_scheduler();
     serial_println!("[boot] Scheduler initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
     // Spawn render thread for deferred framebuffer rendering
     // This MUST come after scheduler is initialized (needs kthread infrastructure)
@@ -385,6 +420,8 @@ pub extern "C" fn kernel_main() -> ! {
     serial_println!("[boot] Initializing timer interrupt...");
     timer_interrupt::init();
     serial_println!("[boot] Timer interrupt initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::AARCH64_TIMER_INIT);
 
     // Bring up secondary CPUs via PSCI CPU_ON
     serial_println!("[smp] Starting secondary CPUs...");
@@ -410,13 +447,21 @@ pub extern "C" fn kernel_main() -> ! {
     #[cfg(feature = "boot_tests")]
     {
         serial_println!("[boot] Running parallel boot tests...");
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
         let failures = kernel::test_framework::run_all_tests();
         if failures > 0 {
             serial_println!("[boot] {} test(s) failed!", failures);
         } else {
             serial_println!("[boot] All boot tests passed!");
         }
+        #[cfg(feature = "btrt")]
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
+
+    // Finalize BTRT and emit BTRT_READY sentinel for host extraction
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::finalize();
 
     serial_println!();
     serial_println!("========================================");

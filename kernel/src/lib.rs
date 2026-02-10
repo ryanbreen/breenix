@@ -73,8 +73,8 @@ pub mod boot;
 pub mod trace;
 // DTrace-style tracing framework with per-CPU ring buffers
 pub mod tracing;
-// Parallel boot test framework
-#[cfg(feature = "boot_tests")]
+// Parallel boot test framework and BTRT
+#[cfg(any(feature = "boot_tests", feature = "btrt"))]
 pub mod test_framework;
 
 #[cfg(test)]

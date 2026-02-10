@@ -9,6 +9,8 @@
 #   ./run.sh --x86        # x86_64 with VNC display
 #   ./run.sh --headless   # ARM64 with serial output only
 #   ./run.sh --x86 --headless  # x86_64 with serial output only
+#   ./run.sh --btrt            # ARM64 BTRT structured boot test
+#   ./run.sh --btrt --x86      # x86_64 BTRT structured boot test
 #
 # Display:
 #   ARM64:  Native window (cocoa) - no VNC needed
@@ -25,6 +27,7 @@ BREENIX_ROOT="$SCRIPT_DIR"
 ARCH="arm64"
 HEADLESS=false
 CLEAN=false
+BTRT=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -39,6 +42,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean)
             CLEAN=true
+            shift
+            ;;
+        --btrt)
+            BTRT=true
             shift
             ;;
         --headless|--serial)
@@ -58,6 +65,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --arm64, --aarch64         Run ARM64 kernel (default)"
             echo "  --headless, --serial       Run without display (serial only)"
             echo "  --graphics, --vnc          Run with VNC display (default)"
+            echo "  --btrt                     Run BTRT structured boot test"
             echo "  -h, --help                 Show this help"
             echo ""
             echo "Display:"
@@ -72,6 +80,21 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# BTRT mode: delegate to xtask and exit
+if [ "$BTRT" = true ]; then
+    if [ "$ARCH" = "arm64" ]; then
+        BTRT_ARCH="arm64"
+    else
+        BTRT_ARCH="x86_64"
+    fi
+    echo ""
+    echo "========================================="
+    echo "Breenix BTRT Boot Test ($BTRT_ARCH)"
+    echo "========================================="
+    echo ""
+    exec cargo run -p xtask -- boot-test-btrt --arch "$BTRT_ARCH"
+fi
 
 # Route to architecture-specific runner
 if [ "$ARCH" = "arm64" ]; then

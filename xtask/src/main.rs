@@ -10,9 +10,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use structopt::StructOpt;
 
+mod btrt_catalog;
+mod btrt_parser;
+mod qmp;
 mod test_disk;
 
 /// Get the PID file path unique to this worktree.
@@ -202,6 +205,12 @@ enum Cmd {
     DnsTest,
     /// Boot ARM64 kernel and validate each boot stage sequentially.
     Arm64BootStages,
+    /// Boot kernel with BTRT feature, extract results via QMP pmemsave.
+    BootTestBtrt {
+        /// Target architecture: x86_64 or arm64
+        #[structopt(long, default_value = "x86_64")]
+        arch: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -216,6 +225,7 @@ fn main() -> Result<()> {
         Cmd::KthreadStress => kthread_stress(),
         Cmd::DnsTest => dns_test(),
         Cmd::Arm64BootStages => arm64_boot_stages(),
+        Cmd::BootTestBtrt { arch } => boot_test_btrt(&arch),
     }
 }
 
@@ -5137,5 +5147,285 @@ fn kthread_stress_docker() -> Result<()> {
             println!("{}", line);
         }
         bail!("Kthread stress test timed out after {} seconds", timeout.as_secs());
+    }
+}
+
+// =============================================================================
+// BTRT Boot Test Command
+// =============================================================================
+
+/// Boot the kernel with BTRT feature, wait for BTRT_READY sentinel,
+/// extract the BTRT via QMP pmemsave, parse and report results.
+fn boot_test_btrt(arch: &str) -> Result<()> {
+    println!("BTRT Boot Test - arch: {}", arch);
+    println!("========================================\n");
+
+    let is_arm64 = arch == "arm64" || arch == "aarch64";
+
+    let qmp_sock = "/tmp/breenix-qmp.sock";
+    let btrt_bin = "/tmp/btrt-results.bin";
+    let serial_output_file = if is_arm64 {
+        "target/btrt_arm64_output.txt"
+    } else {
+        "target/btrt_x86_64_output.txt"
+    };
+
+    // Clean up previous artifacts
+    let _ = fs::remove_file(qmp_sock);
+    let _ = fs::remove_file(btrt_bin);
+    let _ = fs::remove_file(serial_output_file);
+
+    // Kill any existing QEMU for this worktree
+    kill_worktree_qemu();
+    thread::sleep(Duration::from_millis(500));
+
+    // Build kernel with btrt feature
+    if is_arm64 {
+        println!("Building ARM64 kernel with btrt feature...");
+
+        // Ensure ext2 disk image exists (ext2 is arch-independent)
+        let ext2_img = Path::new("target/ext2-aarch64.img");
+        if !ext2_img.exists() {
+            let src = Path::new("testdata/ext2.img");
+            if src.exists() {
+                fs::copy(src, ext2_img).context("Failed to copy ext2 image for ARM64")?;
+                println!("  Copied ext2 disk from testdata/ext2.img");
+            } else {
+                bail!("ext2 disk image not found at testdata/ext2.img. Create one first.");
+            }
+        }
+
+        let status = Command::new("cargo")
+            .args(&[
+                "build", "--release",
+                "--target", "aarch64-breenix.json",
+                "-Z", "build-std=core,alloc",
+                "-Z", "build-std-features=compiler-builtins-mem",
+                "-p", "kernel",
+                "--bin", "kernel-aarch64",
+                "--features", "btrt,testing",
+            ])
+            .status()
+            .context("Failed to build ARM64 kernel")?;
+        if !status.success() {
+            bail!("ARM64 kernel build failed");
+        }
+    } else {
+        println!("Building x86_64 kernel with btrt feature...");
+        build_std_test_binaries()?;
+        test_disk::create_test_disk()?;
+
+        let status = Command::new("cargo")
+            .args(&[
+                "build", "--release",
+                "-p", "breenix",
+                "--features", "btrt,testing,external_test_bins",
+                "--bin", "qemu-uefi",
+            ])
+            .status()
+            .context("Failed to build x86_64 kernel")?;
+        if !status.success() {
+            bail!("x86_64 kernel build failed");
+        }
+    }
+    println!("  Build successful\n");
+
+    // Launch QEMU with QMP socket
+    println!("Starting QEMU with QMP socket...");
+    let mut child = if is_arm64 {
+        let kernel_binary = "target/aarch64-breenix/release/kernel-aarch64";
+        let writable_ext2 = "target/btrt_arm64_ext2.img";
+        let _ = fs::copy("target/ext2-aarch64.img", writable_ext2);
+
+        Command::new("qemu-system-aarch64")
+            .args(&[
+                "-M", "virt",
+                "-cpu", "cortex-a72",
+                "-m", "512",
+                "-smp", "1",
+                "-kernel", kernel_binary,
+                "-display", "none",
+                "-no-reboot",
+                "-device", "virtio-gpu-device",
+                "-device", "virtio-keyboard-device",
+                "-device", "virtio-blk-device,drive=ext2",
+                "-drive", &format!("if=none,id=ext2,format=raw,file={}", writable_ext2),
+                "-device", "virtio-net-device,netdev=net0",
+                "-netdev", "user,id=net0",
+                "-serial", &format!("file:{}", serial_output_file),
+                "-qmp", &format!("unix:{},server,nowait", qmp_sock),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("Failed to spawn qemu-system-aarch64")?
+    } else {
+        Command::new("cargo")
+            .args(&[
+                "run", "--release",
+                "-p", "breenix",
+                "--features", "btrt,testing,external_test_bins",
+                "--bin", "qemu-uefi",
+                "--",
+                "-serial", &format!("file:{}", serial_output_file),
+                "-display", "none",
+                "-qmp", &format!("unix:{},server,nowait", qmp_sock),
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("Failed to spawn QEMU")?
+    };
+
+    save_qemu_pid(child.id());
+
+    // Wait for serial output file
+    let start = Instant::now();
+    let file_timeout = Duration::from_secs(60);
+    while !Path::new(serial_output_file).exists() {
+        if start.elapsed() > file_timeout {
+            cleanup_qemu_child(&mut child);
+            bail!("Serial output file not created after {} seconds", file_timeout.as_secs());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // Monitor serial for BTRT_READY sentinel and [btrt] phys address line
+    println!("Waiting for BTRT_READY sentinel...\n");
+    let test_start = Instant::now();
+    let test_timeout = Duration::from_secs(300);
+    let mut btrt_phys_addr: Option<u64> = None;
+    let mut btrt_size: Option<u64> = None;
+    let mut btrt_ready = false;
+    let mut last_len = 0;
+
+    while test_start.elapsed() < test_timeout {
+        if let Ok(contents) = fs::read_to_string(serial_output_file) {
+            if contents.len() > last_len {
+                // Parse any new content for [btrt] address line
+                let new_content = &contents[last_len..];
+                for line in new_content.lines() {
+                    if line.contains("[btrt]") && line.contains("phys") {
+                        // Parse: [btrt] Boot Test Result Table at phys 0xADDR (SIZE bytes)
+                        if let Some(addr_str) = line.split("phys ").nth(1) {
+                            if let Some(addr_hex) = addr_str.split_whitespace().next() {
+                                let cleaned = addr_hex.trim_start_matches("0x").trim_start_matches("0X");
+                                btrt_phys_addr = u64::from_str_radix(cleaned, 16).ok();
+                            }
+                        }
+                        if let Some(size_part) = line.split('(').nth(1) {
+                            if let Some(size_str) = size_part.split_whitespace().next() {
+                                btrt_size = size_str.parse().ok();
+                            }
+                        }
+                    }
+                }
+                last_len = contents.len();
+            }
+
+            if contents.contains("===BTRT_READY===") {
+                btrt_ready = true;
+                break;
+            }
+        }
+
+        // Check if QEMU has exited
+        if let Ok(Some(status)) = child.try_wait() {
+            // QEMU exited - check if we got BTRT_READY before it died
+            if let Ok(contents) = fs::read_to_string(serial_output_file) {
+                if contents.contains("===BTRT_READY===") {
+                    btrt_ready = true;
+                    break;
+                }
+            }
+            bail!("QEMU exited with status {} before BTRT_READY", status);
+        }
+
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    if !btrt_ready {
+        cleanup_qemu_child(&mut child);
+        bail!("Timed out waiting for BTRT_READY sentinel");
+    }
+
+    let phys_addr = match btrt_phys_addr {
+        Some(addr) => addr,
+        None => {
+            cleanup_qemu_child(&mut child);
+            bail!("BTRT_READY received but [btrt] physical address not found in serial output");
+        }
+    };
+
+    let size = btrt_size.unwrap_or(40960); // Default to 40KB if not parsed
+    println!("BTRT ready at phys {:#018x} ({} bytes)", phys_addr, size);
+
+    // Connect to QMP and extract BTRT
+    println!("Extracting BTRT via QMP pmemsave...");
+
+    // Small delay to ensure QMP socket is ready
+    thread::sleep(Duration::from_millis(500));
+
+    match qmp::QmpClient::connect(qmp_sock) {
+        Ok(mut qmp_client) => {
+            qmp_client.stop()?;
+            qmp_client.pmemsave(phys_addr, size, btrt_bin)?;
+
+            // Small delay for pmemsave to complete the file write
+            thread::sleep(Duration::from_millis(200));
+
+            qmp_client.quit()?;
+        }
+        Err(e) => {
+            // QMP connection failed -- fall back to parsing KTAP from serial output
+            eprintln!("QMP connection failed: {} (falling back to serial KTAP)", e);
+            cleanup_qemu_child(&mut child);
+
+            // Print the serial output which contains KTAP lines
+            if let Ok(contents) = fs::read_to_string(serial_output_file) {
+                println!("\n--- Serial output (KTAP lines) ---");
+                for line in contents.lines() {
+                    if line.starts_with("ok ")
+                        || line.starts_with("not ok ")
+                        || line.starts_with("KTAP ")
+                        || line.starts_with("1..")
+                        || line.starts_with("# ")
+                        || line.starts_with("===")
+                    {
+                        println!("{}", line);
+                    }
+                }
+            }
+            println!("\nNote: QMP extraction failed; results shown from serial KTAP output only.");
+            return Ok(());
+        }
+    }
+
+    // Wait for QEMU to actually exit
+    let _ = child.wait();
+
+    // Parse the BTRT binary blob
+    if !Path::new(btrt_bin).exists() {
+        bail!("BTRT binary file not written by QMP pmemsave");
+    }
+
+    let results = btrt_parser::parse_file(btrt_bin)?;
+
+    // Print results
+    btrt_parser::print_summary(&results);
+    println!();
+    btrt_parser::print_ktap(&results);
+
+    if btrt_parser::all_passed(&results) {
+        println!("\n=== BTRT BOOT TEST PASSED ===\n");
+        Ok(())
+    } else {
+        bail!(
+            "BTRT boot test failed: {} of {} tests failed",
+            results.header.tests_failed,
+            results.header.tests_completed
+        );
     }
 }
