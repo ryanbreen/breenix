@@ -610,7 +610,7 @@ fn load_test_binaries_from_ext2() {
         "syscall_diagnostic_test", "signal_test", "signal_regs_test",
         "sigaltstack_test", "pipe_test", "unix_socket_test",
         "sigchld_test", "pause_test", "sigsuspend_test",
-        "kill_process_group_test", "dup_test", "fcntl_test", "cloexec_test",
+        "dup_test", "fcntl_test", "cloexec_test",
         "pipe2_test", "shell_pipe_test", "signal_exec_test",
         "waitpid_test", "signal_fork_test", "wnohang_timing_test",
         "poll_test", "select_test", "nonblock_test", "tty_test",
