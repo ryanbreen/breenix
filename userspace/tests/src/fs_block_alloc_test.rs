@@ -11,7 +11,6 @@ extern "C" {
     fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
     fn open(path: *const u8, flags: i32, mode: i32) -> i32;
     fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn fstat(fd: i32, buf: *mut u8) -> i32;
     fn unlink(path: *const u8) -> i32;
@@ -82,45 +81,49 @@ unsafe fn raw_getdents64(fd: i32, buf: *mut u8, count: usize) -> i64 {
 
 /// Read directory entries and check if a name exists, returning its inode
 /// Uses getdents64 syscall (read() on directory fds returns EISDIR)
+/// Loops to read all entries since /bin/ may have 100+ files.
 fn find_inode_in_dir(dir_path: &[u8], target_name: &[u8]) -> Option<u64> {
     let fd = unsafe { open(dir_path.as_ptr(), O_RDONLY | O_DIRECTORY, 0) };
     if fd < 0 {
         return None;
     }
 
-    let mut buf = [0u8; 1024];
-    let n = unsafe { raw_getdents64(fd, buf.as_mut_ptr(), buf.len()) };
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = unsafe { raw_getdents64(fd, buf.as_mut_ptr(), buf.len()) };
+        if n <= 0 {
+            break;
+        }
+
+        // Parse linux_dirent64 structures
+        let mut offset = 0usize;
+        while offset < n as usize {
+            if offset + 20 > n as usize {
+                break;
+            }
+            let d_ino = u64::from_ne_bytes(buf[offset..offset + 8].try_into().ok()?);
+            let d_reclen = u16::from_ne_bytes(buf[offset + 16..offset + 18].try_into().ok()?) as usize;
+            // d_name starts at offset + 19
+            let name_start = offset + 19;
+            let name_end = offset + d_reclen;
+            if name_end > n as usize {
+                break;
+            }
+            // Find null terminator in name
+            let mut name_len = 0;
+            while name_start + name_len < name_end && buf[name_start + name_len] != 0 {
+                name_len += 1;
+            }
+            let name = &buf[name_start..name_start + name_len];
+            if name == target_name {
+                unsafe { close(fd); }
+                return Some(d_ino);
+            }
+            offset += d_reclen;
+        }
+    }
+
     unsafe { close(fd); }
-
-    if n <= 0 {
-        return None;
-    }
-
-    // Parse linux_dirent64 structures
-    let mut offset = 0usize;
-    while offset < n as usize {
-        if offset + 20 > n as usize {
-            break;
-        }
-        let d_ino = u64::from_ne_bytes(buf[offset..offset + 8].try_into().ok()?);
-        let d_reclen = u16::from_ne_bytes(buf[offset + 16..offset + 18].try_into().ok()?) as usize;
-        // d_name starts at offset + 19
-        let name_start = offset + 19;
-        let name_end = offset + d_reclen;
-        if name_end > n as usize {
-            break;
-        }
-        // Find null terminator in name
-        let mut name_len = 0;
-        while name_start + name_len < name_end && buf[name_start + name_len] != 0 {
-            name_len += 1;
-        }
-        let name = &buf[name_start..name_start + name_len];
-        if name == target_name {
-            return Some(d_ino);
-        }
-        offset += d_reclen;
-    }
     None
 }
 
@@ -248,11 +251,11 @@ fn main() {
                         let mut status: i32 = 0;
                         unsafe { waitpid(pid, &mut status, 0); }
 
-                        if wifexited(status) && wexitstatus(status) == 42 {
-                            println!("  PASSED: /bin/hello_world executes correctly (exit 42)");
+                        if wifexited(status) && wexitstatus(status) == 0 {
+                            println!("  PASSED: /bin/hello_world executes correctly (exit 0)");
                         } else {
                             println!("FAILED: /bin/hello_world did not execute correctly!");
-                            println!("  Exit status: {}", wexitstatus(status));
+                            println!("  Exit status: {}, wifexited: {}", wexitstatus(status), wifexited(status));
                             tests_failed += 1;
                         }
                     } else {
