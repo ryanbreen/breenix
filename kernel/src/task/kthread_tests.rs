@@ -5,9 +5,10 @@
 //! the tests won't work correctly.
 
 use crate::task::kthread::{
-    arch_disable_interrupts, arch_enable_interrupts, arch_halt, kthread_exit, kthread_join,
+    kthread_exit, kthread_join,
     kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadError,
 };
+use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
 use crate::task::scheduler;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};

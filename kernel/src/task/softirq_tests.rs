@@ -9,7 +9,7 @@
 //! 6. Iteration limit and ksoftirqd deferral
 //! 7. ksoftirqd initialization verification
 
-use crate::task::kthread::{arch_enable_interrupts, arch_halt};
+use crate::{arch_enable_interrupts, arch_halt};
 use crate::task::softirqd::{
     do_softirq, raise_softirq, register_softirq_handler, SoftirqType,
 };

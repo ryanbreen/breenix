@@ -239,6 +239,95 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     test_panic_handler(info)
 }
 
+// ============================================================
+// Architecture-generic HAL wrappers
+// These dispatch to the correct CpuOps/TimerOps implementation
+// so shared kernel code doesn't need #[cfg(target_arch)] blocks.
+// ============================================================
+
+use arch_impl::traits::{CpuOps, TimerOps};
+
+/// Disable interrupts, execute `f`, then restore previous interrupt state.
+#[inline(always)]
+pub fn arch_without_interrupts<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::without_interrupts(f) }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::without_interrupts(f) }
+}
+
+/// Enable interrupts.
+///
+/// # Safety
+/// Enabling interrupts can cause immediate preemption.
+#[inline(always)]
+pub unsafe fn arch_enable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::enable_interrupts() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts() }
+}
+
+/// Disable interrupts.
+///
+/// # Safety
+/// Disabling interrupts can cause deadlocks if not re-enabled.
+#[inline(always)]
+pub unsafe fn arch_disable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::disable_interrupts() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts() }
+}
+
+/// Check if interrupts are currently enabled.
+#[inline(always)]
+pub fn arch_interrupts_enabled() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::interrupts_enabled() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::interrupts_enabled() }
+}
+
+/// Halt the CPU until the next interrupt.
+#[inline(always)]
+pub fn arch_halt() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::halt() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::halt() }
+}
+
+/// Enable interrupts and halt (atomic on x86_64).
+#[inline(always)]
+pub fn arch_halt_with_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::halt_with_interrupts() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts() }
+}
+
+/// Read the CPU timestamp counter (raw ticks).
+#[inline(always)]
+pub fn arch_read_timestamp() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::timer::X86Timer::read_timestamp() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::timer::Aarch64Timer::read_timestamp() }
+}
+
+/// Convert raw timer ticks to nanoseconds.
+#[inline(always)]
+pub fn arch_ticks_to_nanos(ticks: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::timer::X86Timer::ticks_to_nanos(ticks) }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::timer::Aarch64Timer::ticks_to_nanos(ticks) }
+}
+
 #[test_case]
 fn trivial_assertion() {
     assert_eq!(1, 1);

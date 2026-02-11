@@ -9,44 +9,12 @@ use spin::Mutex;
 use super::scheduler;
 use super::thread::Thread;
 
-// Architecture-specific interrupt control and halt
-#[cfg(target_arch = "x86_64")]
-use x86_64::instructions::interrupts::without_interrupts;
-
-#[cfg(target_arch = "aarch64")]
-use crate::arch_impl::aarch64::cpu::without_interrupts;
-
-/// Architecture-specific halt instruction
-#[inline(always)]
-pub(crate) fn arch_halt() {
-    #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::hlt();
-
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack));
-    }
-}
-
-/// Architecture-specific enable interrupts
-#[inline(always)]
-pub(crate) unsafe fn arch_enable_interrupts() {
-    #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::interrupts::enable();
-
-    #[cfg(target_arch = "aarch64")]
-    core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
-}
-
-/// Architecture-specific disable interrupts
-#[inline(always)]
-pub(crate) unsafe fn arch_disable_interrupts() {
-    #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::interrupts::disable();
-
-    #[cfg(target_arch = "aarch64")]
-    core::arch::asm!("msr daifset, #2", options(nomem, nostack));
-}
+// Architecture-generic HAL wrappers for interrupt control and halt.
+// These delegate to the correct CpuOps implementation for each architecture.
+use crate::{
+    arch_without_interrupts as without_interrupts,
+    arch_halt, arch_enable_interrupts, arch_disable_interrupts,
+};
 
 /// Kernel thread control block
 pub struct Kthread {

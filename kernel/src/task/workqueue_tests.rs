@@ -10,7 +10,7 @@
 //! 7. Error path re-queue
 
 use alloc::sync::Arc;
-use crate::task::kthread::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
+use crate::{arch_disable_interrupts, arch_enable_interrupts, arch_halt};
 use crate::task::workqueue::{
     flush_system_workqueue, schedule_work, schedule_work_fn, Work, Workqueue, WorkqueueFlags,
 };

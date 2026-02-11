@@ -426,20 +426,9 @@ pub fn on_process_exit(pid: u64, exit_code: i32) {
 // Helpers
 // =============================================================================
 
-/// Get a monotonic timestamp in nanoseconds.
+/// Get a monotonic timestamp in raw ticks (TSC on x86_64, CNTVCT on ARM64).
 fn boot_timestamp_ns() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Use TSC if available, otherwise 0
-        unsafe { core::arch::x86_64::_rdtsc() }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        // Use the ARM generic timer counter
-        let cnt: u64;
-        unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt) };
-        cnt
-    }
+    crate::arch_read_timestamp()
 }
 
 /// Convert a virtual address to a physical address.
