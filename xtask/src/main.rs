@@ -18,6 +18,7 @@ mod btrt_parser;
 mod qemu_config;
 mod qmp;
 mod test_disk;
+mod test_monitor;
 
 /// Get the PID file path unique to this worktree.
 /// Uses a hash of the current working directory to avoid conflicts between worktrees.
@@ -261,9 +262,23 @@ struct StageTiming {
     duration: Duration,
 }
 
-/// Define all boot stages in order
-fn get_boot_stages() -> Vec<BootStage> {
-    vec![
+/// Define all boot stages in order for the given architecture.
+///
+/// For x86_64, returns x86_64-specific stages.
+/// For ARM64, returns ARM64-specific stages.
+///
+/// The ARM64 kernel has a different boot path from x86_64:
+/// - No GDT/IDT (uses exception vectors)
+/// - GICv2 instead of PIC/APIC
+/// - Generic Timer instead of PIT/TSC
+/// - VirtIO MMIO instead of PCI for devices
+/// - PSCI for SMP instead of APIC
+///
+/// ARM64 kernel boot stages are derived from main_aarch64.rs serial_println! markers.
+/// Userspace test stages are shared with x86_64 since test binaries emit identical markers.
+fn get_boot_stages(arch: &qemu_config::Arch) -> Vec<BootStage> {
+    match arch {
+        qemu_config::Arch::X86_64 => vec![
         BootStage {
             name: "Kernel entry point",
             marker: "Kernel entry point reached",
@@ -1914,22 +1929,8 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
-    ]
-}
-
-/// Define ARM64-specific boot stages.
-///
-/// The ARM64 kernel has a different boot path from x86_64:
-/// - No GDT/IDT (uses exception vectors)
-/// - GICv2 instead of PIC/APIC
-/// - Generic Timer instead of PIT/TSC
-/// - VirtIO MMIO instead of PCI for devices
-/// - PSCI for SMP instead of APIC
-///
-/// Kernel boot stages are derived from main_aarch64.rs serial_println! markers.
-/// Userspace test stages are shared with x86_64 since test binaries emit identical markers.
-fn get_arm64_boot_stages() -> Vec<BootStage> {
-    vec![
+    ],
+        qemu_config::Arch::Arm64 => vec![
         // === ARM64 Kernel Boot Stages ===
         BootStage {
             name: "ARM64 kernel starting",
@@ -3088,7 +3089,8 @@ fn get_arm64_boot_stages() -> Vec<BootStage> {
         // These kernel subsystem tests require the `kthread_test_only` feature flag which
         // is not enabled in the standard `testing` build. They can be added back when
         // ARM64 supports kthread-specific test configurations.
-    ]
+    ],
+    }
 }
 
 /// Get DNS-specific boot stages for focused testing with dns_test_only feature
@@ -3322,7 +3324,7 @@ fn dns_test() -> Result<()> {
 /// We primarily monitor COM2 since all markers use log::info!() and userspace
 /// output is also logged there with "USERSPACE OUTPUT:" prefix.
 fn boot_stages() -> Result<()> {
-    let stages = get_boot_stages();
+    let stages = get_boot_stages(&qemu_config::Arch::X86_64);
     let total_stages = stages.len();
 
     println!("Boot Stage Validator - {} stages to check", total_stages);
@@ -3699,7 +3701,7 @@ fn boot_stages() -> Result<()> {
 /// 4. Launches qemu-system-aarch64 with serial output to file
 /// 5. Validates boot stage markers sequentially
 fn arm64_boot_stages() -> Result<()> {
-    let stages = get_arm64_boot_stages();
+    let stages = get_boot_stages(&qemu_config::Arch::Arm64);
     let total_stages = stages.len();
 
     println!("ARM64 Boot Stage Validator - {} stages to check", total_stages);
@@ -4897,86 +4899,54 @@ fn kthread_test(arch: &str) -> Result<()> {
 
     save_qemu_pid(child.id());
 
-    // Wait for output file to be created
-    let serial_output_file = &config.kernel_log_file;
-    let start = Instant::now();
-    let file_creation_timeout = Duration::from_secs(120);
+    // Monitor for completion using the unified TestMonitor
+    let monitor = test_monitor::TestMonitor::new(
+        config.kernel_log_file.clone(),
+        "KTHREAD_TEST_ONLY_COMPLETE",
+        Duration::from_secs(300),
+    );
+    let result = monitor.monitor(&mut child)?;
 
-    while !serial_output_file.exists() {
-        if start.elapsed() > file_creation_timeout {
-            cleanup_qemu_child(&mut child);
-            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    // Monitor for completion
-    let timeout = Duration::from_secs(300);
-    let mut success = false;
-    let mut test_output = String::new();
-
-    while start.elapsed() < timeout {
-        if let Ok(contents) = fs::read_to_string(serial_output_file) {
-            test_output = contents.clone();
-
-            if contents.contains("KTHREAD_TEST_ONLY_COMPLETE") {
-                success = true;
-                break;
-            }
-
-            if contents.contains("panicked at") || contents.contains("PANIC:") {
-                println!("\n=== KTHREAD TEST FAILED (panic detected) ===\n");
-                for line in contents.lines() {
-                    if line.contains("KTHREAD") || line.contains("panic") || line.contains("PANIC") {
-                        println!("{}", line);
-                    }
-                }
-                cleanup_qemu_child(&mut child);
-                bail!("Kthread test panicked ({})", arch_label);
-            }
-        }
-
-        // Check if QEMU exited unexpectedly
-        if let Ok(Some(status)) = child.try_wait() {
-            // QEMU exited - read final output
-            if let Ok(contents) = fs::read_to_string(serial_output_file) {
-                test_output = contents.clone();
-                if contents.contains("KTHREAD_TEST_ONLY_COMPLETE") {
-                    success = true;
-                }
-            }
-            if !success {
-                println!("\n=== KTHREAD TEST FAILED (QEMU exited with {}) ===\n", status);
-                for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
-                    println!("{}", line);
-                }
-                bail!("QEMU exited with {} before kthread tests completed ({})", status, arch_label);
-            }
-            break;
-        }
-
-        thread::sleep(Duration::from_millis(500));
-    }
-
+    // Kill QEMU regardless of outcome
     let _ = child.kill();
     let _ = child.wait();
 
-    if success {
-        println!("\n=== Kthread Test Results ({}) ===\n", arch_label);
-        for line in test_output.lines() {
-            if line.contains("KTHREAD") {
+    match result.outcome {
+        test_monitor::MonitorOutcome::Success => {
+            println!("\n=== Kthread Test Results ({}) [{:.1}s] ===\n", arch_label, result.duration.as_secs_f64());
+            for line in result.serial_output.lines() {
+                if line.contains("KTHREAD") {
+                    println!("{}", line);
+                }
+            }
+            println!("\n=== KTHREAD TEST PASSED ({}) ===\n", arch_label);
+            Ok(())
+        }
+        test_monitor::MonitorOutcome::Panic => {
+            println!("\n=== KTHREAD TEST FAILED (panic detected) ===\n");
+            for line in result.serial_output.lines() {
+                if line.contains("KTHREAD") || line.contains("panic") || line.contains("PANIC") {
+                    println!("{}", line);
+                }
+            }
+            bail!("Kthread test panicked ({})", arch_label);
+        }
+        test_monitor::MonitorOutcome::QemuExited(status) => {
+            let status_str = status.map_or("unknown".to_string(), |c| c.to_string());
+            println!("\n=== KTHREAD TEST FAILED (QEMU exited with {}) ===\n", status_str);
+            for line in result.serial_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
                 println!("{}", line);
             }
+            bail!("QEMU exited with {} before kthread tests completed ({})", status_str, arch_label);
         }
-        println!("\n=== KTHREAD TEST PASSED ({}) ===\n", arch_label);
-        Ok(())
-    } else {
-        println!("\n=== KTHREAD TEST FAILED (timeout) ({}) ===\n", arch_label);
-        println!("Last output:");
-        for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
-            println!("{}", line);
+        test_monitor::MonitorOutcome::Timeout => {
+            println!("\n=== KTHREAD TEST FAILED (timeout) ({}) ===\n", arch_label);
+            println!("Last output:");
+            for line in result.serial_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+                println!("{}", line);
+            }
+            bail!("Kthread test timed out after {} seconds ({})", result.duration.as_secs(), arch_label);
         }
-        bail!("Kthread test timed out after {} seconds ({})", timeout.as_secs(), arch_label);
     }
 }
 
