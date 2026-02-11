@@ -24,6 +24,10 @@ pub mod scheduler;
 pub mod kthread;
 #[cfg(feature = "testing")]
 pub mod kthread_tests;
+#[cfg(feature = "testing")]
+pub mod workqueue_tests;
+#[cfg(feature = "testing")]
+pub mod softirq_tests;
 pub mod workqueue;
 pub mod softirqd;
 

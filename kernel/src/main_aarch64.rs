@@ -450,6 +450,22 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::task::kthread_tests::test_kthread_lifecycle();
     #[cfg(feature = "testing")]
     kernel::task::kthread_tests::test_kthread_join();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_exit_code();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_park_unpark();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_double_stop();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_should_stop_non_kthread();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_stop_after_exit();
+    // Skip workqueue test in kthread_stress_test mode - it passes in Boot Stages
+    // which has the same code but different build configuration.
+    #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
+    kernel::task::workqueue_tests::test_workqueue();
+    #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
+    kernel::task::softirq_tests::test_softirq();
 
     // In kthread_test_only mode, exit immediately after kthread tests pass
     #[cfg(feature = "kthread_test_only")]

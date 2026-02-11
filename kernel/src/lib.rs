@@ -77,6 +77,69 @@ pub mod tracing;
 #[cfg(any(feature = "boot_tests", feature = "btrt"))]
 pub mod test_framework;
 
+// =========================================================================
+// Modules migrated from main.rs for unified crate structure (Phase 2A)
+// These are x86_64-only modules that were previously declared only in main.rs.
+// #[allow(dead_code)] is applied because these modules export symbols consumed
+// by main.rs (the binary crate), not by lib.rs itself.
+// =========================================================================
+#[cfg(target_arch = "x86_64")]
+#[macro_use]
+#[allow(dead_code)]
+pub mod macros;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod clock_gettime_test;
+
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+#[allow(dead_code)]
+pub mod terminal_emulator;
+
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[allow(dead_code)]
+pub mod gdt_tests;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod test_checkpoints;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod rtc_test;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod spinlock;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod time_test;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod userspace_fault_tests;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod preempt_count_test;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod stack_switch;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod test_userspace;
+
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[allow(dead_code)]
+pub mod contracts;
+
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[allow(dead_code)]
+pub mod contract_runner;
+
 #[cfg(test)]
 use bootloader_api::{entry_point, BootInfo};
 
