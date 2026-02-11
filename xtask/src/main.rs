@@ -15,6 +15,7 @@ use structopt::StructOpt;
 
 mod btrt_catalog;
 mod btrt_parser;
+mod qemu_config;
 mod qmp;
 mod test_disk;
 
@@ -4870,21 +4871,15 @@ fn interactive_test() -> Result<()> {
 /// Run kthread lifecycle test for x86_64 or arm64.
 /// Both architectures use the same markers and validation logic.
 fn kthread_test(arch: &str) -> Result<()> {
-    let is_arm64 = arch == "arm64" || arch == "aarch64";
-    let arch_label = if is_arm64 { "arm64" } else { "x86_64" };
+    let arch = qemu_config::Arch::from_str(arch)?;
+    let config = qemu_config::QemuConfig::for_kthread(arch);
+    let arch_label = config.arch.label();
 
     println!("=== Kthread Lifecycle Test ({}) ===\n", arch_label);
 
-    // ARM64 has one serial port; x86_64 has COM1 (user) + COM2 (kernel logs)
-    let serial_output_file = if is_arm64 {
-        "target/kthread_test_arm64_output.txt"
-    } else {
-        "target/kthread_test_x86_64_kernel.txt" // COM2: kernel logs (test markers)
-    };
-    let user_output_file = "target/kthread_test_x86_64_user.txt"; // COM1: user output
-    let _ = fs::remove_file(serial_output_file);
-    if !is_arm64 {
-        let _ = fs::remove_file(user_output_file);
+    // Clean up previous serial output files
+    for sf in &config.serial_files {
+        let _ = fs::remove_file(sf);
     }
 
     // Kill any existing QEMU for this worktree
@@ -4892,86 +4887,22 @@ fn kthread_test(arch: &str) -> Result<()> {
     thread::sleep(Duration::from_millis(500));
 
     // Build
-    if is_arm64 {
-        println!("Building ARM64 kernel with kthread_test_only feature...");
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "--target", "aarch64-breenix.json",
-                "-Z", "build-std=core,alloc",
-                "-Z", "build-std-features=compiler-builtins-mem",
-                "-p", "kernel",
-                "--bin", "kernel-aarch64",
-                "--features", "kthread_test_only",
-            ])
-            .status()
-            .context("Failed to build ARM64 kernel")?;
-        if !status.success() {
-            bail!("ARM64 kernel build failed");
-        }
-    } else {
-        println!("Building x86_64 kernel with kthread_test_only feature...");
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "-p", "breenix",
-                "--features", "kthread_test_only",
-                "--bin", "qemu-uefi",
-            ])
-            .status()
-            .context("Failed to build x86_64 kernel")?;
-        if !status.success() {
-            bail!("x86_64 kernel build failed");
-        }
-    }
+    println!("Building {} kernel with kthread_test_only feature...", arch_label);
+    config.build()?;
     println!("  Build successful\n");
 
     // Launch QEMU
     println!("Starting QEMU...");
-    let mut child = if is_arm64 {
-        let kernel_binary = "target/aarch64-breenix/release/kernel-aarch64";
-        Command::new("qemu-system-aarch64")
-            .args(&[
-                "-M", "virt",
-                "-cpu", "cortex-a72",
-                "-m", "512",
-                "-smp", "1",
-                "-kernel", kernel_binary,
-                "-display", "none",
-                "-no-reboot",
-                "-serial", &format!("file:{}", serial_output_file),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn qemu-system-aarch64")?
-    } else {
-        Command::new("cargo")
-            .args(&[
-                "run", "--release",
-                "-p", "breenix",
-                "--features", "kthread_test_only",
-                "--bin", "qemu-uefi",
-                "--",
-                "-serial", &format!("file:{}", user_output_file),   // COM1: user output
-                "-serial", &format!("file:{}", serial_output_file), // COM2: kernel logs (test markers)
-                "-display", "none",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn QEMU")?
-    };
+    let mut child = config.spawn_qemu()?;
 
     save_qemu_pid(child.id());
 
     // Wait for output file to be created
+    let serial_output_file = &config.kernel_log_file;
     let start = Instant::now();
     let file_creation_timeout = Duration::from_secs(120);
 
-    while !Path::new(serial_output_file).exists() {
+    while !serial_output_file.exists() {
         if start.elapsed() > file_creation_timeout {
             cleanup_qemu_child(&mut child);
             bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
@@ -5376,27 +5307,26 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
     println!("BTRT Boot Test - arch: {}", arch);
     println!("========================================\n");
 
-    let is_arm64 = arch == "arm64" || arch == "aarch64";
+    let arch = qemu_config::Arch::from_str(arch)?;
+    let config = qemu_config::QemuConfig::for_btrt(arch);
 
-    let qmp_sock = "/tmp/breenix-qmp.sock";
     let btrt_bin = "/tmp/btrt-results.bin";
-    let serial_output_file = if is_arm64 {
-        "target/btrt_arm64_output.txt"
-    } else {
-        "target/btrt_x86_64_output.txt"
-    };
 
     // Clean up previous artifacts
-    let _ = fs::remove_file(qmp_sock);
+    if let Some(ref qmp) = config.qmp_socket {
+        let _ = fs::remove_file(qmp);
+    }
     let _ = fs::remove_file(btrt_bin);
-    let _ = fs::remove_file(serial_output_file);
+    for sf in &config.serial_files {
+        let _ = fs::remove_file(sf);
+    }
 
     // Kill any existing QEMU for this worktree
     kill_worktree_qemu();
     thread::sleep(Duration::from_millis(500));
 
-    // Build kernel with btrt feature
-    if is_arm64 {
+    // Architecture-specific pre-build steps
+    if config.arch.is_arm64() {
         println!("Building ARM64 kernel with btrt feature...");
 
         // Build ARM64 userspace and ext2 disk image if not already present
@@ -5408,7 +5338,7 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
             if userspace_dir.exists() {
                 let _ = fs::create_dir_all("userspace/tests/aarch64");
                 let status = Command::new("./build.sh")
-                    .args(&["--arch", "aarch64"])
+                    .args(["--arch", "aarch64"])
                     .current_dir(userspace_dir)
                     .status()
                     .context("Failed to run build.sh --arch aarch64")?;
@@ -5427,11 +5357,11 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
                 let use_sudo = cfg!(target_os = "linux") && std::env::var("CI").is_ok();
                 let status = if use_sudo {
                     Command::new("sudo")
-                        .args(&["./scripts/create_ext2_disk.sh", "--arch", "aarch64"])
+                        .args(["./scripts/create_ext2_disk.sh", "--arch", "aarch64"])
                         .status()
                 } else {
                     Command::new("./scripts/create_ext2_disk.sh")
-                        .args(&["--arch", "aarch64"])
+                        .args(["--arch", "aarch64"])
                         .status()
                 }
                 .context("Failed to run create_ext2_disk.sh --arch aarch64")?;
@@ -5440,10 +5370,10 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
                 }
                 if use_sudo {
                     let _ = Command::new("sudo")
-                        .args(&["chown", "-R", &format!("{}:{}",
+                        .args(["chown", "-R", &format!("{}:{}",
                             std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
                             std::env::var("GID").unwrap_or_else(|_| "1000".to_string()))])
-                        .args(&["target/", "testdata/"])
+                        .args(["target/", "testdata/"])
                         .status();
                 }
                 println!("  ARM64 ext2 disk image created successfully");
@@ -5452,96 +5382,29 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
             }
         }
 
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "--target", "aarch64-breenix.json",
-                "-Z", "build-std=core,alloc",
-                "-Z", "build-std-features=compiler-builtins-mem",
-                "-p", "kernel",
-                "--bin", "kernel-aarch64",
-                "--features", "btrt,testing",
-            ])
-            .status()
-            .context("Failed to build ARM64 kernel")?;
-        if !status.success() {
-            bail!("ARM64 kernel build failed");
-        }
+        // Copy ext2 image to writable location before QEMU launch
+        let _ = fs::copy("target/ext2-aarch64.img", "target/btrt_arm64_ext2.img");
     } else {
         println!("Building x86_64 kernel with btrt feature...");
         build_std_test_binaries()?;
         test_disk::create_test_disk()?;
-
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "-p", "breenix",
-                "--features", "btrt,testing,external_test_bins",
-                "--bin", "qemu-uefi",
-            ])
-            .status()
-            .context("Failed to build x86_64 kernel")?;
-        if !status.success() {
-            bail!("x86_64 kernel build failed");
-        }
     }
+
+    // Build kernel
+    config.build()?;
     println!("  Build successful\n");
 
     // Launch QEMU with QMP socket
     println!("Starting QEMU with QMP socket...");
-    let mut child = if is_arm64 {
-        let kernel_binary = "target/aarch64-breenix/release/kernel-aarch64";
-        let writable_ext2 = "target/btrt_arm64_ext2.img";
-        let _ = fs::copy("target/ext2-aarch64.img", writable_ext2);
-
-        Command::new("qemu-system-aarch64")
-            .args(&[
-                "-M", "virt",
-                "-cpu", "cortex-a72",
-                "-m", "512",
-                "-smp", "1",
-                "-kernel", kernel_binary,
-                "-display", "none",
-                "-no-reboot",
-                "-device", "virtio-gpu-device",
-                "-device", "virtio-keyboard-device",
-                "-device", "virtio-blk-device,drive=ext2",
-                "-drive", &format!("if=none,id=ext2,format=raw,file={}", writable_ext2),
-                "-device", "virtio-net-device,netdev=net0",
-                "-netdev", "user,id=net0",
-                "-serial", &format!("file:{}", serial_output_file),
-                "-qmp", &format!("unix:{},server,nowait", qmp_sock),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn qemu-system-aarch64")?
-    } else {
-        Command::new("cargo")
-            .args(&[
-                "run", "--release",
-                "-p", "breenix",
-                "--features", "btrt,testing,external_test_bins",
-                "--bin", "qemu-uefi",
-                "--",
-                "-serial", &format!("file:{}", serial_output_file),
-                "-display", "none",
-                "-qmp", &format!("unix:{},server,nowait", qmp_sock),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn QEMU")?
-    };
+    let mut child = config.spawn_qemu()?;
 
     save_qemu_pid(child.id());
 
     // Wait for serial output file
+    let serial_output_file = &config.kernel_log_file;
     let start = Instant::now();
     let file_timeout = Duration::from_secs(60);
-    while !Path::new(serial_output_file).exists() {
+    while !serial_output_file.exists() {
         if start.elapsed() > file_timeout {
             cleanup_qemu_child(&mut child);
             bail!("Serial output file not created after {} seconds", file_timeout.as_secs());
@@ -5598,7 +5461,7 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
 
             // Grace period fallback: if we found the BTRT address more than
             // addr_grace_period ago and still no BTRT_READY, some test process
-            // is stuck. Extract the BTRT data anyway — it accurately reflects
+            // is stuck. Extract the BTRT data anyway -- it accurately reflects
             // which tests passed/failed/are still running.
             if let Some(found_time) = btrt_addr_found_time {
                 if found_time.elapsed() > addr_grace_period {
@@ -5647,6 +5510,11 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
 
     // Small delay to ensure QMP socket is ready
     thread::sleep(Duration::from_millis(500));
+
+    let qmp_sock = config
+        .qmp_socket
+        .as_ref()
+        .expect("QemuConfig::for_btrt always sets qmp_socket");
 
     match qmp::QmpClient::connect(qmp_sock) {
         Ok(mut qmp_client) => {
