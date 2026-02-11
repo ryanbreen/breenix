@@ -79,6 +79,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         TcpConnection { conn_id: crate::net::tcp::ConnectionId },
         PtyMaster(u32),
         PtySlave(u32),
+        Device { device_type: crate::fs::devfs::DeviceType },
+        RegularFile { file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>> },
         Ebadf,
         Enotconn,
         Eisdir,
@@ -114,8 +116,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             }
             FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp,
-            FdKind::RegularFile(_) => WriteOperation::Eopnotsupp,
-            FdKind::Device(_) => WriteOperation::Eopnotsupp,
+            FdKind::RegularFile(file) => WriteOperation::RegularFile { file: file.clone() },
+            FdKind::Device(device_type) => WriteOperation::Device { device_type: *device_type },
             FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } => {
                 WriteOperation::Eisdir
             }
@@ -188,6 +190,62 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             } else {
                 SyscallResult::Err(5) // EIO
             }
+        }
+        WriteOperation::Device { device_type } => {
+            use crate::fs::devfs::DeviceType;
+            match device_type {
+                DeviceType::Null | DeviceType::Zero => {
+                    // /dev/null, /dev/zero - discard all data
+                    SyscallResult::Ok(buffer.len() as u64)
+                }
+                DeviceType::Console | DeviceType::Tty => {
+                    // Write to console/tty via TTY layer
+                    write_to_stdio(fd, &buffer)
+                }
+            }
+        }
+        WriteOperation::RegularFile { file } => {
+            // Write to ext2 regular file
+            let (inode_num, position, flags) = {
+                let file_guard = file.lock();
+                (file_guard.inode_num, file_guard.position, file_guard.flags)
+            };
+
+            // Handle O_APPEND flag - seek to end before writing
+            let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                let root_fs = crate::fs::ext2::root_fs();
+                match root_fs.as_ref() {
+                    Some(fs) => match fs.read_inode(inode_num as u32) {
+                        Ok(inode) => inode.size(),
+                        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+                    },
+                    None => return SyscallResult::Err(super::errno::EIO as u64),
+                }
+            } else {
+                position
+            };
+
+            // Write the data
+            let mut root_fs = crate::fs::ext2::root_fs();
+            let fs = match root_fs.as_mut() {
+                Some(fs) => fs,
+                None => return SyscallResult::Err(super::errno::EIO as u64),
+            };
+
+            let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
+                Ok(n) => n,
+                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+            };
+
+            drop(root_fs);
+
+            // Update file position
+            {
+                let mut file_guard = file.lock();
+                file_guard.position = write_offset + bytes_written as u64;
+            }
+
+            SyscallResult::Ok(bytes_written as u64)
         }
     }
 }

@@ -309,7 +309,11 @@ mod syscall_nums {
     pub const SHUTDOWN: u64 = 48;
     pub const BIND: u64 = 49;
     pub const LISTEN: u64 = 50;
+    pub const GETSOCKNAME: u64 = 51;
+    pub const GETPEERNAME: u64 = 52;
     pub const SOCKETPAIR: u64 = 53;
+    pub const SETSOCKOPT: u64 = 54;
+    pub const GETSOCKOPT: u64 = 55;
     pub const EXEC: u64 = 59;
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
@@ -650,6 +654,30 @@ fn dispatch_syscall(
         }
         syscall_nums::SOCKETPAIR => {
             match crate::syscall::socket::sys_socketpair(arg1, arg2, arg3, arg4) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETSOCKNAME => {
+            match crate::syscall::socket::sys_getsockname(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETPEERNAME => {
+            match crate::syscall::socket::sys_getpeername(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SETSOCKOPT => {
+            match crate::syscall::socket::sys_setsockopt(arg1, arg2, arg3, arg4, arg5) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETSOCKOPT => {
+            match crate::syscall::socket::sys_getsockopt(arg1, arg2, arg3, arg4, arg5) {
                 crate::syscall::SyscallResult::Ok(result) => result,
                 crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
             }

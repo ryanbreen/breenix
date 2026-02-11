@@ -134,6 +134,9 @@ if [[ "$(uname)" == "Darwin" ]]; then
             echo "  Installed $bin_count binaries in /bin"
             echo "  Installed $sbin_count binaries in /sbin"
 
+            # Create /tmp for filesystem write tests
+            mkdir -p /mnt/ext2/tmp
+
             # Create test files for filesystem testing
             echo "Hello from ext2!" > /mnt/ext2/hello.txt
             echo "Truncate test file" > /mnt/ext2/trunctest.txt
@@ -228,6 +231,9 @@ else
     done
     echo "  Installed $bin_count binaries in /bin"
     echo "  Installed $sbin_count binaries in /sbin"
+
+    # Create /tmp for filesystem write tests
+    mkdir -p "$MOUNT_DIR/tmp"
 
     # Create test files
     echo "Hello from ext2!" > "$MOUNT_DIR/hello.txt"

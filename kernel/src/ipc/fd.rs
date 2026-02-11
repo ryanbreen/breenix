@@ -507,6 +507,20 @@ impl FdTable {
         self.fds.iter().filter(|slot| slot.is_some()).count()
     }
 
+    /// Close all file descriptors marked with FD_CLOEXEC.
+    /// Called during exec() per POSIX semantics.
+    pub fn close_cloexec(&mut self) {
+        for i in 0..MAX_FDS {
+            let should_close = self.fds[i]
+                .as_ref()
+                .map(|fd| (fd.flags & flags::FD_CLOEXEC) != 0)
+                .unwrap_or(false);
+            if should_close {
+                let _ = self.fds[i].take();
+            }
+        }
+    }
+
     /// Set file status flags (for F_SETFL)
     /// Only modifies O_NONBLOCK and O_APPEND; other flags are ignored
     pub fn set_status_flags(&mut self, fd: i32, flags: u32) -> Result<(), i32> {
