@@ -28,6 +28,7 @@ use core::panic::PanicInfo;
 extern crate kernel;
 
 #[cfg(target_arch = "aarch64")]
+#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
 fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'static str> {
     use alloc::string::String;
     use core::arch::asm;
@@ -223,9 +224,9 @@ use kernel::graphics::primitives::{draw_vline, fill_rect, Color, Rect};
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::terminal_manager;
 #[cfg(target_arch = "aarch64")]
-use kernel::drivers::virtio::input_mmio::{self, event_type};
-#[cfg(target_arch = "aarch64")]
-use kernel::shell::ShellState;
+use kernel::drivers::virtio::input_mmio;
+// event_type and ShellState are used in the shell loop (unreachable in test-only modes)
+// Use fully qualified paths at usage sites to avoid unused import warnings.
 
 /// Kernel entry point called from assembly boot code.
 #[cfg(target_arch = "aarch64")]
@@ -478,6 +479,29 @@ pub extern "C" fn kernel_main() -> ! {
         }
     }
 
+    // In workqueue_test_only mode, exit immediately after workqueue test
+    #[cfg(feature = "workqueue_test_only")]
+    {
+        serial_println!("=== WORKQUEUE_TEST_ONLY: All workqueue tests passed ===");
+        serial_println!("WORKQUEUE_TEST_ONLY_COMPLETE");
+        kernel::exit_qemu(kernel::QemuExitCode::Success);
+        loop {
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        }
+    }
+
+    // In kthread_stress_test mode, run stress test and exit
+    #[cfg(feature = "kthread_stress_test")]
+    {
+        kernel::task::kthread_tests::test_kthread_stress();
+        serial_println!("=== KTHREAD_STRESS_TEST: All stress tests passed ===");
+        serial_println!("KTHREAD_STRESS_TEST_COMPLETE");
+        kernel::exit_qemu(kernel::QemuExitCode::Success);
+        loop {
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        }
+    }
+
     // Run parallel boot tests if enabled
     #[cfg(feature = "boot_tests")]
     {
@@ -590,7 +614,7 @@ pub extern "C" fn kernel_main() -> ! {
     serial_print!("breenix> ");
 
     // Create shell state for command processing
-    let mut shell = ShellState::new();
+    let mut shell = kernel::shell::ShellState::new();
 
     // Check if we have graphics (VirtIO GPU) or running in serial-only mode
     let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER.get().is_some();
@@ -616,7 +640,7 @@ pub extern "C" fn kernel_main() -> ! {
         if input_mmio::is_initialized() {
             for event in input_mmio::poll_events() {
                 // Only process key events (EV_KEY = 1)
-                if event.event_type == event_type::EV_KEY {
+                if event.event_type == input_mmio::event_type::EV_KEY {
                     let keycode = event.code;
                     let pressed = event.value != 0;
 
@@ -677,6 +701,7 @@ pub extern "C" fn kernel_main() -> ! {
 /// via create_user_process(). The scheduler will run them alongside init_shell.
 #[cfg(target_arch = "aarch64")]
 #[cfg(feature = "testing")]
+#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
 fn load_test_binaries_from_ext2() {
     use alloc::format;
     use alloc::string::String;

@@ -65,10 +65,12 @@ extern crate kernel;
 // Re-import commonly used kernel modules for unqualified access
 #[cfg(target_arch = "x86_64")]
 use kernel::{
-    clock_gettime_test, drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu,
-    preempt_count_test, process, serial, stack_switch, syscall, task, test_exec, time, time_test,
+    drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu,
+    preempt_count_test, process, serial, stack_switch, syscall, task, test_exec, time,
     tls, tracing, tty, userspace_test,
 };
+#[cfg(all(target_arch = "x86_64", not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"))))]
+use kernel::{clock_gettime_test, time_test};
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
 use kernel::{contract_runner, gdt_tests, userspace_fault_tests};
 #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
