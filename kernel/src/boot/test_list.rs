@@ -26,6 +26,8 @@ pub const TEST_BINARIES: &[&str] = &[
     "syscall_diagnostic_test",
     // Signal tests
     "signal_test",
+    "signal_handler_test",
+    "signal_return_test",
     "signal_regs_test",
     "sigaltstack_test",
     "sigchld_test",

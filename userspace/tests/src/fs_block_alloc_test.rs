@@ -50,8 +50,38 @@ fn get_stat(fd: i32) -> Option<(i64, i64)> {
     Some((st_size, st_blocks))
 }
 
+/// Raw getdents64 syscall - reads directory entries
+#[cfg(target_arch = "aarch64")]
+unsafe fn raw_getdents64(fd: i32, buf: *mut u8, count: usize) -> i64 {
+    let result: u64;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 260u64,  // GETDENTS64 (Breenix)
+        inlateout("x0") fd as u64 => result,
+        in("x1") buf as u64,
+        in("x2") count as u64,
+        options(nostack),
+    );
+    result as i64
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn raw_getdents64(fd: i32, buf: *mut u8, count: usize) -> i64 {
+    let result: u64;
+    core::arch::asm!(
+        "int 0x80",
+        in("rax") 260u64,  // GETDENTS64 (Breenix)
+        inlateout("rdi") fd as u64 => _,
+        in("rsi") buf as u64,
+        in("rdx") count as u64,
+        lateout("rax") result,
+        options(nostack, preserves_flags),
+    );
+    result as i64
+}
+
 /// Read directory entries and check if a name exists, returning its inode
-/// This is a simplified version using getdents64 syscall
+/// Uses getdents64 syscall (read() on directory fds returns EISDIR)
 fn find_inode_in_dir(dir_path: &[u8], target_name: &[u8]) -> Option<u64> {
     let fd = unsafe { open(dir_path.as_ptr(), O_RDONLY | O_DIRECTORY, 0) };
     if fd < 0 {
@@ -59,7 +89,7 @@ fn find_inode_in_dir(dir_path: &[u8], target_name: &[u8]) -> Option<u64> {
     }
 
     let mut buf = [0u8; 1024];
-    let n = unsafe { read(fd, buf.as_mut_ptr(), buf.len()) };
+    let n = unsafe { raw_getdents64(fd, buf.as_mut_ptr(), buf.len()) };
     unsafe { close(fd); }
 
     if n <= 0 {
