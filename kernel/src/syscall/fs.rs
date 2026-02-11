@@ -1531,8 +1531,8 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
         }
     };
 
-    // Resolve path to inode number (don't follow the symlink itself)
-    let inode_num = match fs.resolve_path(&path) {
+    // Resolve path to inode number (don't follow the final symlink - we want the symlink itself)
+    let inode_num = match fs.resolve_path_no_follow(&path) {
         Ok(ino) => ino,
         Err(e) => {
             log::debug!("sys_readlink: path resolution failed: {}", e);

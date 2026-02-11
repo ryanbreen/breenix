@@ -260,21 +260,7 @@ fn main() {
         let x22_expected: u64 = 0x5555_6666_7777_8888;
         let x23_expected: u64 = 0x9999_AAAA_BBBB_CCCC;
 
-        println!("Step 1: Setting callee-saved registers (x20-x23) to known values");
-
-        unsafe {
-            std::arch::asm!(
-                "mov x20, {0}",
-                "mov x21, {1}",
-                "mov x22, {2}",
-                "mov x23, {3}",
-                in(reg) x20_expected,
-                in(reg) x21_expected,
-                in(reg) x22_expected,
-                in(reg) x23_expected,
-            );
-        }
-
+        println!("Step 1: Will set callee-saved registers (x20-x23) to known values");
         println!("  X20 = {:#018x}", x20_expected);
         println!("  X21 = {:#018x}", x21_expected);
         println!("  X22 = {:#018x}", x22_expected);
@@ -295,32 +281,13 @@ fn main() {
         }
         println!("  Handler registered successfully");
 
-        println!("\nStep 3: Sending SIGUSR1 to self");
         let my_pid = unsafe { getpid() };
-        let ret = unsafe { kill(my_pid, SIGUSR1) };
-        if ret != 0 {
-            println!("  FAIL: kill failed");
-            std::process::exit(1);
-        }
-        println!("  Signal sent successfully");
 
-        println!("\nStep 4: Yielding to allow signal delivery");
-        for i in 0..100 {
-            unsafe { sched_yield(); }
-            if HANDLER_RAN.load(Ordering::SeqCst) && i > 10 {
-                break;
-            }
-        }
-
-        if !HANDLER_RAN.load(Ordering::SeqCst) {
-            println!("  FAIL: Handler never ran");
-            println!("SIGNAL_REGS_CORRUPTED");
-            std::process::exit(1);
-        }
-
-        println!("  Handler executed and returned");
-
-        println!("\nStep 5: Checking register values after signal return");
+        // Use a single asm block for the critical path: set registers, send
+        // signal via syscall, yield to allow delivery, then read registers back.
+        // This prevents the compiler from using x20-x23 between set and read.
+        // Breenix syscall numbers: kill=62, sched_yield=3
+        println!("\nStep 3: Setting registers, sending signal, yielding (all in asm)");
 
         let x20_actual: u64;
         let x21_actual: u64;
@@ -329,17 +296,61 @@ fn main() {
 
         unsafe {
             std::arch::asm!(
-                "mov {0}, x20",
-                "mov {1}, x21",
-                "mov {2}, x22",
-                "mov {3}, x23",
-                out(reg) x20_actual,
-                out(reg) x21_actual,
-                out(reg) x22_actual,
-                out(reg) x23_actual,
+                // Set callee-saved registers to known values
+                "mov x20, {e20}",
+                "mov x21, {e21}",
+                "mov x22, {e22}",
+                "mov x23, {e23}",
+                // kill(my_pid, SIGUSR1) - syscall 62
+                "mov x8, 62",
+                "mov x0, {pid}",
+                "mov x1, 10",
+                "svc #0",
+                // Yield loop to allow signal delivery (100 iterations)
+                // sched_yield = syscall 3
+                "mov x9, 100",
+                "2:",
+                "mov x8, 3",
+                "svc #0",
+                "sub x9, x9, 1",
+                "cbnz x9, 2b",
+                // Read back callee-saved registers
+                "mov {a20}, x20",
+                "mov {a21}, x21",
+                "mov {a22}, x22",
+                "mov {a23}, x23",
+                e20 = in(reg) x20_expected,
+                e21 = in(reg) x21_expected,
+                e22 = in(reg) x22_expected,
+                e23 = in(reg) x23_expected,
+                pid = in(reg) my_pid as u64,
+                a20 = out(reg) x20_actual,
+                a21 = out(reg) x21_actual,
+                a22 = out(reg) x22_actual,
+                a23 = out(reg) x23_actual,
+                out("x0") _,
+                out("x1") _,
+                out("x8") _,
+                out("x9") _,
+                out("x20") _,
+                out("x21") _,
+                out("x22") _,
+                out("x23") _,
             );
         }
 
+        println!("  Signal sent and yields completed");
+
+        // Verify handler ran (check after asm block is safe)
+        println!("\nStep 4: Checking if handler ran");
+        if !HANDLER_RAN.load(Ordering::SeqCst) {
+            println!("  FAIL: Handler never ran");
+            println!("SIGNAL_REGS_CORRUPTED");
+            std::process::exit(1);
+        }
+        println!("  Handler executed and returned");
+
+        println!("\nStep 5: Checking register values after signal return");
         println!("  X20 = {:#018x}", x20_actual);
         println!("  X21 = {:#018x}", x21_actual);
         println!("  X22 = {:#018x}", x22_actual);
@@ -348,10 +359,10 @@ fn main() {
         let mut all_match = true;
         let mut errors = 0u64;
 
-        if x20_actual != x20_expected { println!("  FAIL: X20 mismatch"); all_match = false; errors += 1; }
-        if x21_actual != x21_expected { println!("  FAIL: X21 mismatch"); all_match = false; errors += 1; }
-        if x22_actual != x22_expected { println!("  FAIL: X22 mismatch"); all_match = false; errors += 1; }
-        if x23_actual != x23_expected { println!("  FAIL: X23 mismatch"); all_match = false; errors += 1; }
+        if x20_actual != x20_expected { println!("  FAIL: X20 mismatch: expected {:#018x} got {:#018x}", x20_expected, x20_actual); all_match = false; errors += 1; }
+        if x21_actual != x21_expected { println!("  FAIL: X21 mismatch: expected {:#018x} got {:#018x}", x21_expected, x21_actual); all_match = false; errors += 1; }
+        if x22_actual != x22_expected { println!("  FAIL: X22 mismatch: expected {:#018x} got {:#018x}", x22_expected, x22_actual); all_match = false; errors += 1; }
+        if x23_actual != x23_expected { println!("  FAIL: X23 mismatch: expected {:#018x} got {:#018x}", x23_expected, x23_actual); all_match = false; errors += 1; }
 
         println!("\n=== TEST RESULT ===");
         if all_match {

@@ -90,11 +90,29 @@ impl Ext2Fs {
         Ok(find_entry(&dir_data, name).map(|entry| entry.inode))
     }
 
-    /// Resolve a path to an inode number
+    /// Resolve a path to an inode number, following symlinks
     ///
     /// Walks the directory tree from root, looking up each path component.
     /// Supports absolute paths starting with "/".
+    /// Symlinks are followed transparently (both intermediate and final components).
     pub fn resolve_path(&self, path: &str) -> Result<u32, &'static str> {
+        self.resolve_path_impl(path, true, 0)
+    }
+
+    /// Resolve a path to an inode number without following the final symlink
+    ///
+    /// Used by readlink() and lstat() which need the symlink inode itself.
+    pub fn resolve_path_no_follow(&self, path: &str) -> Result<u32, &'static str> {
+        self.resolve_path_impl(path, false, 0)
+    }
+
+    /// Internal path resolution with symlink following and depth limiting
+    fn resolve_path_impl(&self, path: &str, follow_final: bool, depth: u32) -> Result<u32, &'static str> {
+        const MAX_SYMLINK_DEPTH: u32 = 8;
+        if depth > MAX_SYMLINK_DEPTH {
+            return Err("Too many levels of symbolic links");
+        }
+
         // Must start with "/"
         if !path.starts_with('/') {
             return Err("Path must be absolute");
@@ -103,14 +121,15 @@ impl Ext2Fs {
         // Start at root inode (always inode 2 in ext2)
         let mut current_inode_num = EXT2_ROOT_INO;
 
-        // Split path into components, skipping empty parts
-        for component in path.split('/').filter(|s| !s.is_empty()) {
+        // Collect components so we can detect the final one
+        let components: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        for (i, component) in components.iter().enumerate() {
             // Read the current directory inode
             let current_inode = self.read_inode(current_inode_num)?;
 
             // Make sure it's a directory
             if !current_inode.is_dir() {
-                // Debug: log the inode info
                 let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(current_inode.i_mode)) };
                 log::error!(
                     "resolve_path: inode {} has mode=0x{:04x} (type={:?}), expected directory",
@@ -123,6 +142,50 @@ impl Ext2Fs {
             match self.lookup_in_dir(&current_inode, component)? {
                 Some(inode_num) => {
                     current_inode_num = inode_num;
+
+                    // Check if this resolved to a symlink
+                    let resolved_inode = self.read_inode(inode_num)?;
+                    let is_final = i == components.len() - 1;
+
+                    if resolved_inode.is_symlink() && (follow_final || !is_final) {
+                        // Read symlink target
+                        let target = self.read_symlink(inode_num)?;
+
+                        // Build the remaining path (components after this one)
+                        let remaining = if is_final {
+                            alloc::string::String::new()
+                        } else {
+                            let mut r = alloc::string::String::from("/");
+                            for (j, c) in components[i + 1..].iter().enumerate() {
+                                if j > 0 { r.push('/'); }
+                                r.push_str(c);
+                            }
+                            r
+                        };
+
+                        if target.starts_with('/') {
+                            // Absolute symlink target
+                            let mut full_path = target;
+                            if !remaining.is_empty() {
+                                full_path.push_str(&remaining);
+                            }
+                            return self.resolve_path_impl(&full_path, follow_final, depth + 1);
+                        } else {
+                            // Relative symlink - resolve relative to parent directory
+                            let mut parent = alloc::string::String::from("/");
+                            for (j, c) in components[..i].iter().enumerate() {
+                                if j > 0 { parent.push('/'); }
+                                parent.push_str(c);
+                            }
+                            let mut full_path = parent;
+                            full_path.push('/');
+                            full_path.push_str(&target);
+                            if !remaining.is_empty() {
+                                full_path.push_str(&remaining);
+                            }
+                            return self.resolve_path_impl(&full_path, follow_final, depth + 1);
+                        }
+                    }
                 }
                 None => {
                     return Err("Path component not found");
@@ -297,15 +360,18 @@ impl Ext2Fs {
         // This prevents block leaks where blocks remain marked "in use" but are unreachable
         let i_block = inode.i_block;
 
-        // Free direct blocks (0-11)
+        // Free direct blocks (0-11) and count how many were freed
+        let mut blocks_freed: u32 = 0;
         for i in 0..12 {
             if i_block[i] != 0 {
-                let _ = block_group::free_block(
+                if block_group::free_block(
                     self.device.as_ref(),
                     i_block[i],
                     &self.superblock,
                     &mut self.block_groups,
-                );
+                ).is_ok() {
+                    blocks_freed += 1;
+                }
             }
         }
 
@@ -331,7 +397,14 @@ impl Ext2Fs {
             &self.block_groups,
         ).map_err(|_| "Failed to write truncated inode")?;
 
-        log::debug!("ext2: truncated inode {} to zero length", inode_num);
+        // Update superblock free block count so freed blocks can be reused
+        if blocks_freed > 0 {
+            self.superblock.increment_free_blocks(blocks_freed);
+            self.superblock.write_to(self.device.as_ref())
+                .map_err(|_| "Failed to write superblock after truncate")?;
+        }
+
+        log::debug!("ext2: truncated inode {} to zero length, freed {} blocks", inode_num, blocks_freed);
         Ok(())
     }
 

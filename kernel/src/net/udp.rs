@@ -164,7 +164,7 @@ fn deliver_to_socket(
                             data: payload.to_vec(),
                         };
                         socket.enqueue_packet(packet);
-                        log::debug!("UDP: Delivered packet to socket on port {}", dst_port);
+                        log::info!("UDP: Delivered packet to socket on port {}", dst_port);
                         return;
                     }
                 }
