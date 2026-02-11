@@ -588,7 +588,15 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
     // Spawn render thread for deferred framebuffer rendering (interactive mode only)
-    // This must be done after kthread infrastructure is ready
+    // This must be done after kthread infrastructure is ready.
+    //
+    // Boot graphics architecture (shared with ARM64):
+    // - Both architectures use render_task::spawn_render_thread() for deferred rendering
+    // - Both use SHELL_FRAMEBUFFER (logger.rs on x86_64, arm64_fb.rs on ARM64)
+    // - Both use graphics::render_queue for lock-free echo from interrupt context
+    // - Both use graphics::terminal_manager for split-screen terminal UI
+    // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
+    // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
     #[cfg(feature = "interactive")]
     if let Err(e) = graphics::render_task::spawn_render_thread() {
         log::error!("Failed to spawn render thread: {}", e);

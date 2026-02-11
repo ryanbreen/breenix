@@ -410,8 +410,28 @@ pub extern "C" fn kernel_main() -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
+    // Initialize workqueue subsystem (depends on kthread infrastructure)
+    kernel::task::workqueue::init_workqueue();
+    serial_println!("[boot] Workqueue subsystem initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);
+
+    // Initialize softirq subsystem (depends on kthread infrastructure)
+    kernel::task::softirqd::init_softirq();
+    serial_println!("[boot] Softirq subsystem initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
+
     // Spawn render thread for deferred framebuffer rendering
-    // This MUST come after scheduler is initialized (needs kthread infrastructure)
+    // This MUST come after scheduler is initialized (needs kthread infrastructure).
+    //
+    // Boot graphics architecture (shared with x86_64):
+    // - Both architectures use render_task::spawn_render_thread() for deferred rendering
+    // - Both use SHELL_FRAMEBUFFER (arm64_fb.rs on ARM64, logger.rs on x86_64)
+    // - Both use graphics::render_queue for lock-free echo from interrupt context
+    // - Both use graphics::terminal_manager for split-screen terminal UI
+    // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
+    // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
     match kernel::graphics::render_task::spawn_render_thread() {
         Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
         Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),

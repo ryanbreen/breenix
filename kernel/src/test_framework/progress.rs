@@ -142,7 +142,6 @@ pub fn get_progress(id: SubsystemId) -> (u32, u32, u32) {
 ///
 /// Returns array of (completed, total) for each stage.
 /// Index by TestStage as usize.
-#[cfg_attr(all(target_arch = "x86_64", not(feature = "interactive")), allow(dead_code))]
 pub fn get_stage_progress(id: SubsystemId) -> [(u32, u32); TestStage::COUNT] {
     let idx = id as usize;
     let mut result = [(0u32, 0u32); TestStage::COUNT];
@@ -162,7 +161,6 @@ pub fn is_started(id: SubsystemId) -> bool {
 }
 
 /// Check if a subsystem has completed all tests
-#[cfg_attr(all(target_arch = "x86_64", not(feature = "interactive")), allow(dead_code))]
 pub fn is_complete(id: SubsystemId) -> bool {
     let (completed, total, _) = get_progress(id);
     total > 0 && completed >= total
