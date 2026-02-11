@@ -1418,7 +1418,7 @@ fn load_elf_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, i32> {
     // Trace: entering load_elf_from_ext2
     super::trace::trace_exec(b'1');
 
-    let fs_guard = ext2::root_fs();
+    let fs_guard = ext2::root_fs_read();
     // Trace: got fs_guard
     super::trace::trace_exec(b'2');
 

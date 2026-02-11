@@ -426,7 +426,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             // Handle O_APPEND flag - seek to end before writing
             let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
-                let root_fs = crate::fs::ext2::root_fs();
+                let root_fs = crate::fs::ext2::root_fs_read();
                 let fs = match root_fs.as_ref() {
                     Some(fs) => fs,
                     None => return SyscallResult::Err(super::errno::ENOSYS as u64),
@@ -440,7 +440,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
 
             // Write the data
-            let mut root_fs = crate::fs::ext2::root_fs();
+            let mut root_fs = crate::fs::ext2::root_fs_write();
             let fs = match root_fs.as_mut() {
                 Some(fs) => fs,
                 None => return SyscallResult::Err(super::errno::ENOSYS as u64),
@@ -957,7 +957,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
 
             // Access the mounted ext2 filesystem
-            let root_fs = crate::fs::ext2::root_fs();
+            let root_fs = crate::fs::ext2::root_fs_read();
             let fs = match root_fs.as_ref() {
                 Some(fs) => fs,
                 None => {
@@ -1946,7 +1946,7 @@ fn load_elf_from_ext2(path: &str) -> Result<Vec<u8>, i32> {
     use crate::fs::ext2;
 
     // Get ext2 filesystem
-    let fs_guard = ext2::root_fs();
+    let fs_guard = ext2::root_fs_read();
     let fs = fs_guard.as_ref().ok_or(EIO)?;
 
     // Resolve path to inode number

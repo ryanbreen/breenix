@@ -215,7 +215,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
 
             // Handle O_APPEND flag - seek to end before writing
             let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
-                let root_fs = crate::fs::ext2::root_fs();
+                let root_fs = crate::fs::ext2::root_fs_read();
                 match root_fs.as_ref() {
                     Some(fs) => match fs.read_inode(inode_num as u32) {
                         Ok(inode) => inode.size(),
@@ -228,7 +228,7 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             };
 
             // Write the data
-            let mut root_fs = crate::fs::ext2::root_fs();
+            let mut root_fs = crate::fs::ext2::root_fs_write();
             let fs = match root_fs.as_mut() {
                 Some(fs) => fs,
                 None => return SyscallResult::Err(super::errno::EIO as u64),
@@ -533,7 +533,7 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             drop(manager_guard);
 
             // Access the mounted ext2 filesystem
-            let root_fs = crate::fs::ext2::root_fs();
+            let root_fs = crate::fs::ext2::root_fs_read();
             let fs = match root_fs.as_ref() {
                 Some(fs) => fs,
                 None => {

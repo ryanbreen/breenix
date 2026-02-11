@@ -48,10 +48,10 @@ fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'st
     // F=ELF ok, G=process created, H=info extracted, I=scheduler reg,
     // J=percpu set, K=pid set, L=ttbr0 set, M=jumping to userspace
 
-    raw_char(b'A'); // Entry - about to call root_fs()
-    raw_char(b'a'); // Calling root_fs() now
-    let fs_guard = kernel::fs::ext2::root_fs();
-    raw_char(b'b'); // root_fs() returned, checking if Some
+    raw_char(b'A'); // Entry - about to call root_fs_read()
+    raw_char(b'a'); // Calling root_fs_read() now
+    let fs_guard = kernel::fs::ext2::root_fs_read();
+    raw_char(b'b'); // root_fs_read() returned, checking if Some
     let fs = fs_guard.as_ref().ok_or("ext2 root filesystem not mounted")?;
     raw_char(b'B'); // Got fs
 
@@ -748,7 +748,7 @@ fn load_test_binaries_from_ext2() {
 
         // Load ELF from ext2 - acquire and release lock for each binary
         let elf_data = {
-            let fs_guard = kernel::fs::ext2::root_fs();
+            let fs_guard = kernel::fs::ext2::root_fs_read();
             let fs = match fs_guard.as_ref() {
                 Some(fs) => fs,
                 None => {
