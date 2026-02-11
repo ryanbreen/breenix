@@ -33,7 +33,7 @@ mod aarch64_stub {
 extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
-use crate::syscall::SyscallResult;
+use kernel::syscall::SyscallResult;
 #[cfg(target_arch = "x86_64")]
 use alloc::boxed::Box;
 #[cfg(target_arch = "x86_64")]
@@ -56,95 +56,25 @@ pub static BOOTLOADER_CONFIG: BootloaderConfig = {
 #[cfg(target_arch = "x86_64")]
 bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
+// Import the kernel library crate. All modules are accessed via kernel::.
+// #[macro_use] makes serial_println!, serial_print!, delay!, test_checkpoint! available.
 #[cfg(target_arch = "x86_64")]
 #[macro_use]
-mod macros;
-#[cfg(target_arch = "x86_64")]
-mod arch_impl;
-#[cfg(target_arch = "x86_64")]
-mod clock_gettime_test;
-#[cfg(target_arch = "x86_64")]
-mod block;
-#[cfg(target_arch = "x86_64")]
-mod drivers;
-#[cfg(target_arch = "x86_64")]
-mod elf;
-#[cfg(target_arch = "x86_64")]
-mod framebuffer;
-#[cfg(target_arch = "x86_64")]
-mod fs;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-mod graphics;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-mod terminal_emulator;
-#[cfg(target_arch = "x86_64")]
-mod gdt;
-#[cfg(target_arch = "x86_64")]
-mod net;
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-mod gdt_tests;
-#[cfg(target_arch = "x86_64")]
-mod test_checkpoints;
-#[cfg(target_arch = "x86_64")]
-mod interrupts;
-#[cfg(target_arch = "x86_64")]
-mod irq_log;
-#[cfg(target_arch = "x86_64")]
-mod keyboard;
-#[cfg(target_arch = "x86_64")]
-mod logger;
-#[cfg(target_arch = "x86_64")]
-mod memory;
-#[cfg(target_arch = "x86_64")]
-mod per_cpu;
-#[cfg(target_arch = "x86_64")]
-mod process;
-#[cfg(target_arch = "x86_64")]
-mod rtc_test;
-#[cfg(target_arch = "x86_64")]
-mod signal;
-#[cfg(target_arch = "x86_64")]
-mod ipc;
-#[cfg(target_arch = "x86_64")]
-mod serial;
-#[cfg(target_arch = "x86_64")]
-mod socket;
-#[cfg(target_arch = "x86_64")]
-mod spinlock;
-#[cfg(target_arch = "x86_64")]
-mod syscall;
-#[cfg(target_arch = "x86_64")]
-mod task;
-#[cfg(target_arch = "x86_64")]
-pub mod test_exec;
-#[cfg(target_arch = "x86_64")]
-mod time;
-#[cfg(target_arch = "x86_64")]
-mod time_test;
-#[cfg(target_arch = "x86_64")]
-mod tracing;
-#[cfg(target_arch = "x86_64")]
-mod tls;
-#[cfg(target_arch = "x86_64")]
-mod tty;
-#[cfg(target_arch = "x86_64")]
-mod userspace_test;
-#[cfg(target_arch = "x86_64")]
-mod userspace_fault_tests;
-#[cfg(target_arch = "x86_64")]
-mod preempt_count_test;
-#[cfg(target_arch = "x86_64")]
-mod stack_switch;
-#[cfg(target_arch = "x86_64")]
-mod test_userspace;
+extern crate kernel;
 
+// Re-import commonly used kernel modules for unqualified access
+#[cfg(target_arch = "x86_64")]
+use kernel::{
+    clock_gettime_test, drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu,
+    preempt_count_test, process, serial, stack_switch, syscall, task, test_exec, time, time_test,
+    tls, tracing, tty, userspace_test,
+};
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
-mod contracts;
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-mod contract_runner;
+use kernel::{contract_runner, gdt_tests, userspace_fault_tests};
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+use kernel::graphics;
 #[cfg(all(target_arch = "x86_64", any(feature = "boot_tests", feature = "btrt")))]
-#[allow(dead_code)] // Wire protocol types + API surface used by host-side parser
-mod test_framework;
+use kernel::test_framework;
 
 // Fault test thread function
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
@@ -165,25 +95,6 @@ extern "C" fn fault_test_thread(_arg: u64) -> ! {
     // Thread complete, just halt
     loop {
         x86_64::instructions::hlt();
-    }
-}
-
-// Test infrastructure
-#[cfg(target_arch = "x86_64")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum QemuExitCode {
-    Success = 0x10,
-    Failed = 0x11,
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn test_exit_qemu(exit_code: QemuExitCode) {
-    use x86_64::instructions::port::Port;
-
-    unsafe {
-        let mut port = Port::new(0xf4);
-        port.write(exit_code as u32);
     }
 }
 
@@ -258,7 +169,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize BTRT (requires memory for virt_to_phys and serial for output)
     #[cfg(feature = "btrt")]
     {
-        use crate::test_framework::{btrt, catalog};
+        use kernel::test_framework::{btrt, catalog};
         btrt::init();
         btrt::pass(catalog::KERNEL_ENTRY);
         btrt::pass(catalog::SERIAL_INIT);
@@ -283,7 +194,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
             let mut fb_guard = fb.lock();
 
-            use crate::graphics::primitives::Canvas;
+            use kernel::graphics::primitives::Canvas;
             let width = Canvas::width(&*fb_guard);
             let height = Canvas::height(&*fb_guard);
 
@@ -357,50 +268,50 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let pci_device_count = drivers::init();
     log::info!("PCI subsystem initialized: {} devices found", pci_device_count);
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::PCI_ENUMERATION);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
     // Initialize network stack (after E1000 driver is ready)
     net::init();
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::NETWORK_STACK_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::NETWORK_STACK_INIT);
 
     // Initialize ext2 root filesystem (after VirtIO block device is ready)
-    match crate::fs::ext2::init_root_fs() {
+    match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             log::info!("ext2 root filesystem mounted");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::pass(crate::test_framework::catalog::EXT2_MOUNT);
+            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
             log::warn!("Failed to mount ext2 root: {:?}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(
-                crate::test_framework::catalog::EXT2_MOUNT,
-                crate::test_framework::btrt::BtrtErrorCode::IoError,
+            kernel::test_framework::btrt::fail(
+                kernel::test_framework::catalog::EXT2_MOUNT,
+                kernel::test_framework::btrt::BtrtErrorCode::IoError,
                 0,
             );
         }
     }
 
     // Initialize devfs (/dev virtual filesystem)
-    crate::fs::devfs::init();
+    kernel::fs::devfs::init();
     log::info!("devfs initialized at /dev");
 
     // Initialize devptsfs (/dev/pts pseudo-terminal slave filesystem)
-    crate::fs::devptsfs::init();
+    kernel::fs::devptsfs::init();
     log::info!("devptsfs initialized at /dev/pts");
 
     // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
-    crate::arch_impl::x86_64::cpuinfo::init();
-    log::info!("CPU detected: {}", crate::arch_impl::x86_64::cpuinfo::get()
+    kernel::arch_impl::x86_64::cpuinfo::init();
+    log::info!("CPU detected: {}", kernel::arch_impl::x86_64::cpuinfo::get()
         .map(|c| c.brand_str())
         .unwrap_or("Unknown"));
 
     // Initialize procfs (/proc virtual filesystem)
-    crate::fs::procfs::init();
+    kernel::fs::procfs::init();
     log::info!("procfs initialized at /proc");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::PROCFS_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
@@ -473,7 +384,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     time::init();
     log::info!("Timer initialized");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::TIMER_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::TIMER_INIT);
 
     // Initialize DTrace-style tracing framework
     // This must be after per_cpu::init() and time::init() for timestamps
@@ -483,7 +394,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     tracing::providers::enable_all();
     log::info!("Tracing subsystem initialized and enabled");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::TRACING_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::TRACING_INIT);
 
     // CHECKPOINT A: Verify PIT Configuration
     log::info!("CHECKPOINT A: PIT initialized at {} Hz", 100);
@@ -652,7 +563,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     task::scheduler::init_with_current(init_task);
     log::info!("Threading subsystem initialized with init_task (swapper/0)");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::SCHEDULER_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
     
     log::info!("percpu: cpu0 base={:#x}, current=swapper/0, rsp0={:#x}", 
         x86_64::registers::model_specific::GsBase::read().as_u64(),
@@ -667,12 +578,12 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     task::workqueue::init_workqueue();
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::WORKQUEUE_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);
 
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::KTHREAD_SUBSYSTEM);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
     // Spawn render thread for deferred framebuffer rendering (interactive mode only)
     // This must be done after kthread infrastructure is ready
@@ -684,16 +595,16 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]
-    crate::task::kthread_tests::test_kthread_lifecycle();
+    kernel::task::kthread_tests::test_kthread_lifecycle();
     #[cfg(feature = "testing")]
-    crate::task::kthread_tests::test_kthread_join();
+    kernel::task::kthread_tests::test_kthread_join();
     // Skip workqueue test in kthread_stress_test mode - it passes in Boot Stages
     // which has the same code but different build configuration. The stress test
     // focuses on kthread lifecycle, not workqueue functionality.
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
-    crate::task::workqueue_tests::test_workqueue();
+    kernel::task::workqueue_tests::test_workqueue();
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
-    crate::task::softirq_tests::test_softirq();
+    kernel::task::softirq_tests::test_softirq();
 
     // In kthread_test_only mode, exit immediately after join test
     #[cfg(feature = "kthread_test_only")]
@@ -725,7 +636,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // In kthread_stress_test mode, run stress test and exit
     #[cfg(feature = "kthread_stress_test")]
     {
-        crate::task::kthread_tests::test_kthread_stress();
+        kernel::task::kthread_tests::test_kthread_stress();
         log::info!("=== KTHREAD_STRESS_TEST: All stress tests passed ===");
         log::info!("KTHREAD_STRESS_TEST_COMPLETE");
         unsafe {
@@ -737,15 +648,15 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     }
 
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    crate::task::kthread_tests::test_kthread_exit_code();
+    kernel::task::kthread_tests::test_kthread_exit_code();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    crate::task::kthread_tests::test_kthread_park_unpark();
+    kernel::task::kthread_tests::test_kthread_park_unpark();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    crate::task::kthread_tests::test_kthread_double_stop();
+    kernel::task::kthread_tests::test_kthread_double_stop();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    crate::task::kthread_tests::test_kthread_should_stop_non_kthread();
+    kernel::task::kthread_tests::test_kthread_should_stop_non_kthread();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    crate::task::kthread_tests::test_kthread_stop_after_exit();
+    kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
@@ -979,7 +890,7 @@ fn kernel_main_continue() -> ! {
             // Launch register_init_test to verify registers are properly initialized
             {
                 serial_println!("RING3_SMOKE: creating register_init_test userspace process");
-                let register_test_buf = crate::userspace_test::get_test_binary("register_init_test");
+                let register_test_buf = kernel::userspace_test::get_test_binary("register_init_test");
                 match process::creation::create_user_process(String::from("register_init_test"), &register_test_buf) {
                     Ok(pid) => {
                         log::info!("Created register_init_test process with PID {}", pid.as_u64());
@@ -993,7 +904,7 @@ fn kernel_main_continue() -> ! {
             // Launch clock_gettime_test after hello_time
             {
                 serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
-                let clock_test_buf = crate::userspace_test::get_test_binary("clock_gettime_test");
+                let clock_test_buf = kernel::userspace_test::get_test_binary("clock_gettime_test");
                 match process::creation::create_user_process(String::from("clock_gettime_test"), &clock_test_buf) {
                     Ok(pid) => {
                         log::info!("Created clock_gettime_test process with PID {}", pid.as_u64());
@@ -1007,7 +918,7 @@ fn kernel_main_continue() -> ! {
             // Launch brk_test to validate heap management syscall
             {
                 serial_println!("RING3_SMOKE: creating brk_test userspace process");
-                let brk_test_buf = crate::userspace_test::get_test_binary("brk_test");
+                let brk_test_buf = kernel::userspace_test::get_test_binary("brk_test");
                 match process::creation::create_user_process(String::from("brk_test"), &brk_test_buf) {
                     Ok(pid) => {
                         log::info!("Created brk_test process with PID {}", pid.as_u64());
@@ -1021,7 +932,7 @@ fn kernel_main_continue() -> ! {
             // Launch test_mmap to validate mmap/munmap syscalls
             {
                 serial_println!("RING3_SMOKE: creating test_mmap userspace process");
-                let test_mmap_buf = crate::userspace_test::get_test_binary("test_mmap");
+                let test_mmap_buf = kernel::userspace_test::get_test_binary("test_mmap");
                 match process::creation::create_user_process(String::from("test_mmap"), &test_mmap_buf) {
                     Ok(pid) => {
                         log::info!("Created test_mmap process with PID {}", pid.as_u64());
@@ -1035,7 +946,7 @@ fn kernel_main_continue() -> ! {
             // Launch syscall_diagnostic_test to isolate register corruption bug
             {
                 serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
-                let diagnostic_test_buf = crate::userspace_test::get_test_binary("syscall_diagnostic_test");
+                let diagnostic_test_buf = kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
                 match process::creation::create_user_process(String::from("syscall_diagnostic_test"), &diagnostic_test_buf) {
                     Ok(pid) => {
                         log::info!("Created syscall_diagnostic_test process with PID {}", pid.as_u64());
@@ -1049,7 +960,7 @@ fn kernel_main_continue() -> ! {
             // Launch UDP socket test to verify network syscalls from userspace
             {
                 serial_println!("RING3_SMOKE: creating udp_socket_test userspace process");
-                let udp_test_buf = crate::userspace_test::get_test_binary("udp_socket_test");
+                let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
                 match process::creation::create_user_process(String::from("udp_socket_test"), &udp_test_buf) {
                     Ok(pid) => {
                         log::info!("Created udp_socket_test process with PID {}", pid.as_u64());
@@ -1063,7 +974,7 @@ fn kernel_main_continue() -> ! {
             // Launch TCP socket test to verify TCP syscalls from userspace
             {
                 serial_println!("RING3_SMOKE: creating tcp_socket_test userspace process");
-                let tcp_test_buf = crate::userspace_test::get_test_binary("tcp_socket_test");
+                let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
                 match process::creation::create_user_process(String::from("tcp_socket_test"), &tcp_test_buf) {
                     Ok(pid) => {
                         log::info!("Created tcp_socket_test process with PID {}", pid.as_u64());
@@ -1077,7 +988,7 @@ fn kernel_main_continue() -> ! {
             // Launch DNS test to verify DNS resolution using UDP sockets
             {
                 serial_println!("RING3_SMOKE: creating dns_test userspace process");
-                let dns_test_buf = crate::userspace_test::get_test_binary("dns_test");
+                let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
                 match process::creation::create_user_process(String::from("dns_test"), &dns_test_buf) {
                     Ok(pid) => {
                         log::info!("Created dns_test process with PID {}", pid.as_u64());
@@ -1091,7 +1002,7 @@ fn kernel_main_continue() -> ! {
             // Launch HTTP test to verify HTTP client over TCP+DNS
             {
                 serial_println!("RING3_SMOKE: creating http_test userspace process");
-                let http_test_buf = crate::userspace_test::get_test_binary("http_test");
+                let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
                 match process::creation::create_user_process(String::from("http_test"), &http_test_buf) {
                     Ok(pid) => {
                         log::info!("Created http_test process with PID {}", pid.as_u64());
@@ -1540,7 +1451,7 @@ fn kernel_main_continue() -> ! {
     {
         log::info!("[boot] Running parallel boot tests...");
         #[cfg(feature = "btrt")]
-        crate::test_framework::btrt::pass(crate::test_framework::catalog::BOOT_TESTS_START);
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
         let failures = test_framework::run_all_tests();
         if failures > 0 {
             log::error!("[boot] {} test(s) failed!", failures);
@@ -1548,7 +1459,7 @@ fn kernel_main_continue() -> ! {
             log::info!("[boot] All boot tests passed!");
         }
         #[cfg(feature = "btrt")]
-        crate::test_framework::btrt::pass(crate::test_framework::catalog::BOOT_TESTS_COMPLETE);
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
 
     // Mark kernel initialization complete BEFORE enabling interrupts
@@ -1560,7 +1471,7 @@ fn kernel_main_continue() -> ! {
     // In testing mode, auto-finalize happens via on_process_exit() when all
     // registered test processes have completed.
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
-    crate::test_framework::btrt::finalize();
+    kernel::test_framework::btrt::finalize();
 
 
     // Enable interrupts for preemptive multitasking - userspace processes will now run
@@ -1661,7 +1572,7 @@ fn panic(info: &PanicInfo) -> ! {
     // In testing/CI builds, request QEMU to exit with failure for deterministic CI signal
     #[cfg(feature = "testing")]
     {
-        test_exit_qemu(QemuExitCode::Failed);
+        kernel::exit_qemu(kernel::QemuExitCode::Failed);
     }
 
     // Disable interrupts and halt
@@ -1812,7 +1723,7 @@ fn test_threading() {
     log::info!("Testing threading infrastructure...");
 
     // Test 1: TLS infrastructure
-    let tls_base = crate::tls::current_tls_base();
+    let tls_base = kernel::tls::current_tls_base();
     log::info!("✓ TLS base: {:#x}", tls_base);
 
     if tls_base == 0 {
@@ -1821,10 +1732,10 @@ fn test_threading() {
     }
 
     // Test 2: CPU context creation
-    let _context = crate::task::thread::CpuContext::new(
+    let _context = kernel::task::thread::CpuContext::new(
         x86_64::VirtAddr::new(0x1000),
         x86_64::VirtAddr::new(0x2000),
-        crate::task::thread::ThreadPrivilege::Kernel,
+        kernel::task::thread::ThreadPrivilege::Kernel,
     );
     log::info!("✓ CPU context creation works");
 
@@ -1836,18 +1747,18 @@ fn test_threading() {
         }
     }
 
-    let _thread = crate::task::thread::Thread::new(
+    let _thread = kernel::task::thread::Thread::new(
         thread_name,
         dummy_thread,
         x86_64::VirtAddr::new(0x2000),
         x86_64::VirtAddr::new(0x1000),
         x86_64::VirtAddr::new(tls_base),
-        crate::task::thread::ThreadPrivilege::Kernel,
+        kernel::task::thread::ThreadPrivilege::Kernel,
     );
     log::info!("✓ Thread structure creation works");
 
     // Test 4: TLS helper functions
-    if let Some(_tls_block) = crate::tls::get_thread_tls_block(0) {
+    if let Some(_tls_block) = kernel::tls::get_thread_tls_block(0) {
         log::info!("✓ TLS block lookup works");
     } else {
         log::warn!("⚠️ TLS block lookup returned None (expected for thread 0)");
@@ -1872,8 +1783,8 @@ fn test_threading() {
 
     static SWITCH_TEST_COUNTER: core::sync::atomic::AtomicU32 =
         core::sync::atomic::AtomicU32::new(0);
-    static mut MAIN_CONTEXT: Option<crate::task::thread::CpuContext> = None;
-    static mut THREAD_CONTEXT: Option<crate::task::thread::CpuContext> = None;
+    static mut MAIN_CONTEXT: Option<kernel::task::thread::CpuContext> = None;
+    static mut THREAD_CONTEXT: Option<kernel::task::thread::CpuContext> = None;
 
     extern "C" fn test_thread_function() {
         // This is our test thread - it should run when we switch to it
@@ -1912,20 +1823,20 @@ fn test_threading() {
     }
 
     // Allocate stack for our test thread
-    if let Ok(test_stack) = crate::memory::stack::allocate_stack(8192) {
+    if let Ok(test_stack) = kernel::memory::stack::allocate_stack(8192) {
         log::info!("✓ Allocated test thread stack");
 
         // Create contexts
-        let main_context = crate::task::thread::CpuContext::new(
+        let main_context = kernel::task::thread::CpuContext::new(
             x86_64::VirtAddr::new(0), // Will be filled by actual switch
             x86_64::VirtAddr::new(0), // Will be filled by actual switch
-            crate::task::thread::ThreadPrivilege::Kernel,
+            kernel::task::thread::ThreadPrivilege::Kernel,
         );
 
-        let thread_context = crate::task::thread::CpuContext::new(
+        let thread_context = kernel::task::thread::CpuContext::new(
             x86_64::VirtAddr::new(test_thread_function as u64),
             test_stack.top(),
-            crate::task::thread::ThreadPrivilege::Kernel,
+            kernel::task::thread::ThreadPrivilege::Kernel,
         );
 
         log::info!("✓ Created contexts for real switching test");
@@ -1964,7 +1875,7 @@ fn test_threading() {
         unsafe {
             if let (Some(ref mut main_ctx), Some(ref thread_ctx)) = (MAIN_CONTEXT.as_mut(), THREAD_CONTEXT.as_ref()) {
                 // This should save our current context and jump to the thread
-                crate::task::context::perform_context_switch(
+                kernel::task::context::perform_context_switch(
                     main_ctx,
                     thread_ctx
                 );
