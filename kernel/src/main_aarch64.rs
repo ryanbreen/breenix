@@ -715,38 +715,13 @@ fn load_test_binaries_from_ext2() {
     // all binaries load in under a second.
     unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
 
-    let test_binaries = [
-        "hello_time", "clock_gettime_test", "brk_test", "test_mmap",
-        "syscall_diagnostic_test", "signal_test", "signal_regs_test",
-        "sigaltstack_test", "pipe_test", "unix_socket_test",
-        "sigchld_test", "pause_test", "sigsuspend_test",
-        "dup_test", "fcntl_test", "cloexec_test",
-        "pipe2_test", "shell_pipe_test", "signal_exec_test",
-        "waitpid_test", "signal_fork_test", "wnohang_timing_test",
-        "poll_test", "select_test", "nonblock_test", "tty_test",
-        "session_test", "file_read_test", "getdents_test", "lseek_test",
-        "fs_write_test", "fs_rename_test", "fs_large_file_test",
-        "fs_directory_test", "fs_link_test", "access_test",
-        "devfs_test", "cwd_test", "exec_from_ext2_test",
-        "fs_block_alloc_test", "true_test", "false_test",
-        "head_test", "tail_test", "wc_test", "which_test",
-        "cat_test", "ls_test",
-        // hello_std_real is installed as hello_world.elf on the ext2 disk
-        "hello_world",
-        "fork_memory_test", "fork_state_test",
-        "fork_pending_signal_test", "cow_signal_test",
-        "cow_cleanup_test", "cow_sole_owner_test",
-        "cow_stress_test", "cow_readonly_test",
-        "argv_test", "exec_argv_test", "exec_stack_argv_test",
-        "ctrl_c_test", "fbinfo_test",
-        // Network tests (depend on virtio-net)
-        "udp_socket_test", "tcp_socket_test", "dns_test", "http_test",
-    ];
+    // Use the canonical shared test binary list (see boot::test_list)
+    let test_binaries = kernel::boot::test_list::TEST_BINARIES;
 
     let mut loaded = 0;
     let mut failed = 0;
 
-    for name in &test_binaries {
+    for name in test_binaries {
         // create_ext2_disk.sh strips the .elf extension when installing binaries
         let path = format!("/bin/{}", name);
 

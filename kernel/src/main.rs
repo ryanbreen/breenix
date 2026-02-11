@@ -871,6 +871,11 @@ fn kernel_main_continue() -> ! {
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
+    //
+    // NOTE: The canonical list of test binaries is in boot::test_list::TEST_BINARIES.
+    // The x86_64 loading pattern below uses individual blocks with per-block
+    // without_interrupts for architectural reasons and is intentionally not
+    // refactored to iterate the shared list. See boot/test_list.rs for details.
     #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
         x86_64::instructions::interrupts::without_interrupts(|| {
