@@ -222,9 +222,12 @@ fn send_signal_to_process(target_pid: ProcessId, sig: u32) -> SyscallResult {
                 // to avoid deadlock
                 drop(manager_guard);
                 crate::task::scheduler::with_scheduler(|sched| {
+                    // Wake thread if it's blocked on pause()/sigsuspend()
                     sched.unblock_for_signal(thread_id);
+                    // Also wake thread if it's blocked on waitpid() - signals should
+                    // interrupt waitpid with EINTR so the signal can be delivered
+                    sched.unblock_for_child_exit(thread_id);
                 });
-                // NOTE: set_need_resched() is now called inside unblock_for_signal
                 return SyscallResult::Ok(0);
             } else {
                 log::warn!(
