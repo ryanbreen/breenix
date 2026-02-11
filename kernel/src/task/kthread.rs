@@ -13,7 +13,7 @@ use super::thread::Thread;
 // These delegate to the correct CpuOps implementation for each architecture.
 use crate::{
     arch_without_interrupts as without_interrupts,
-    arch_halt, arch_enable_interrupts, arch_disable_interrupts,
+    arch_halt, arch_enable_interrupts,
 };
 
 /// Kernel thread control block

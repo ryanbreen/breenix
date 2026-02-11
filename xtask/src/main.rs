@@ -64,11 +64,6 @@ fn kill_worktree_qemu() {
     let _ = fs::remove_file(&get_qemu_pid_file());
 }
 
-/// Send SIGTERM to this worktree's QEMU to allow graceful shutdown.
-fn term_worktree_qemu() {
-    signal_worktree_qemu("-TERM");
-}
-
 /// Clean up a QEMU child process properly.
 /// Kills the process, waits for it to exit, and removes the PID file.
 fn cleanup_qemu_child(child: &mut std::process::Child) {
@@ -3522,95 +3517,29 @@ fn boot_stages() -> Result<()> {
             }
         }
 
-        // Check for stage timeout
+        // Check for stage timeout (no new marker detected for stage_timeout duration).
+        // Don't kill QEMU here - serial output may be buffered and the kernel might still
+        // be making progress. Continue polling until the overall timeout expires.
+        // This is critical for CI where nested virtualization causes QEMU serial buffers
+        // to flush much less frequently than on native hardware.
         if last_progress.elapsed() > stage_timeout {
-            // Before giving up, send SIGTERM to allow QEMU to flush buffers
-            println!("\r\nTimeout reached, sending SIGTERM to QEMU to flush buffers...");
-            term_worktree_qemu();
-
-            // Wait 2 seconds for QEMU to flush and terminate gracefully
-            thread::sleep(Duration::from_secs(2));
-
-            // Check both files one last time after buffers flush
-            let mut combined_contents = String::new();
-            if let Ok(mut file) = fs::File::open(serial_output_file) {
-                let mut contents_bytes = Vec::new();
-                if file.read_to_end(&mut contents_bytes).is_ok() {
-                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
-                }
+            // Check if QEMU is still running
+            if let Ok(Some(_status)) = child.try_wait() {
+                // QEMU exited - break to final scan
+                break;
             }
-            if let Ok(mut file) = fs::File::open(user_output_file) {
-                let mut contents_bytes = Vec::new();
-                if file.read_to_end(&mut contents_bytes).is_ok() {
-                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
-                }
-            }
-
-            if !combined_contents.is_empty() {
-                let contents = &combined_contents;
-                // Check all remaining stages
-                let mut any_found = false;
-                for (i, stage) in stages.iter().enumerate() {
-                    if !checked_stages[i] {
-                        let found = if stage.marker.contains('|') {
-                            stage.marker.split('|').any(|m| contents.contains(m))
-                        } else {
-                            contents.contains(stage.marker)
-                        };
-
-                        if found {
-                            checked_stages[i] = true;
-                            stages_passed += 1;
-                            any_found = true;
-
-                            // Record timing for this stage
-                            let duration = stage_start_time.elapsed();
-                            stage_timings[i] = Some(StageTiming { duration });
-                            stage_start_time = Instant::now();
-
-                            let time_str = if duration.as_secs() >= 1 {
-                                format!("{:.2}s", duration.as_secs_f64())
-                            } else {
-                                format!("{}ms", duration.as_millis())
-                            };
-
-                            println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
-                        }
-                    }
-                }
-
-                if any_found {
-                    last_progress = Instant::now();
-                    // Continue checking if we found something
-                    if stages_passed < total_stages {
-                        continue;
-                    }
-                }
-            }
-
-            // Find first unchecked stage
+            // QEMU still running - log the stall and reset timer to avoid repeated messages
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    println!("\r                                                              ");
-                    println!("\r[{}/{}] {}... FAIL (timeout)", i + 1, total_stages, stage.name);
-                    println!();
-                    println!("  Meaning: {}", stage.failure_meaning);
-                    println!("  Check:   {}", stage.check_hint);
-                    println!();
-
-                    // Force kill QEMU if still running
-                    cleanup_qemu_child(&mut child);
-
-                    // Print summary
-                    println!("=========================================");
-                    println!("Result: {}/{} stages passed", stages_passed, total_stages);
-                    println!();
-                    println!("Stage {} timed out after {}s waiting for marker:", i + 1, stage_timeout.as_secs());
-                    println!("  \"{}\"", stage.marker);
-
-                    bail!("Boot stage validation failed at stage {}", i + 1);
+                    println!("\r[{}/{}] {}... (waiting, {}s elapsed)",
+                        i + 1, total_stages, stage.name,
+                        test_start.elapsed().as_secs());
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    break;
                 }
             }
+            last_progress = Instant::now();
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -3871,12 +3800,6 @@ fn arm64_boot_stages() -> Result<()> {
     let stage_timeout = Duration::from_secs(90);
     let mut last_progress = Instant::now();
 
-    // ARM64 CI uses a minimum pass threshold because several subsystems are
-    // still being implemented (signal delivery to sleeping processes, fork+exec,
-    // ext2 write support, clone syscall, sigreturn register preservation).
-    // Raise this as we fix ARM64-specific bugs.
-    let min_stages = 120;
-
     // Print initial waiting message
     if let Some(stage) = stages.get(0) {
         print!("[{}/{}] {}...", 1, total_stages, stage.name);
@@ -3955,118 +3878,27 @@ fn arm64_boot_stages() -> Result<()> {
             }
         }
 
-        // Check for stage timeout
+        // Check for stage timeout (no new marker detected for stage_timeout duration).
+        // Don't kill QEMU here - serial output may be buffered and the kernel might still
+        // be making progress. Continue polling until the overall timeout expires.
         if last_progress.elapsed() > stage_timeout {
-            println!("\r\nTimeout reached, sending SIGTERM to QEMU to flush buffers...");
-            term_worktree_qemu();
-            thread::sleep(Duration::from_secs(2));
-
-            // Check file one last time after buffer flush
-            let mut contents = String::new();
-            if let Ok(mut file) = fs::File::open(serial_output_file) {
-                let mut contents_bytes = Vec::new();
-                if file.read_to_end(&mut contents_bytes).is_ok() {
-                    contents = String::from_utf8_lossy(&contents_bytes).into_owned();
-                }
+            // Check if QEMU is still running
+            if let Ok(Some(_status)) = child.try_wait() {
+                // QEMU exited - break to final scan
+                break;
             }
-
-            if !contents.is_empty() {
-                let mut any_found = false;
-                for (i, stage) in stages.iter().enumerate() {
-                    if !checked_stages[i] {
-                        let found = if stage.marker.contains('|') {
-                            stage.marker.split('|').any(|m| contents.contains(m))
-                        } else {
-                            contents.contains(stage.marker)
-                        };
-
-                        if found {
-                            checked_stages[i] = true;
-                            stages_passed += 1;
-                            any_found = true;
-
-                            let duration = stage_start_time.elapsed();
-                            stage_timings[i] = Some(StageTiming { duration });
-                            stage_start_time = Instant::now();
-
-                            let time_str = if duration.as_secs() >= 1 {
-                                format!("{:.2}s", duration.as_secs_f64())
-                            } else {
-                                format!("{}ms", duration.as_millis())
-                            };
-
-                            println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
-                        }
-                    }
-                }
-
-                if any_found {
-                    last_progress = Instant::now();
-                    if stages_passed < total_stages {
-                        continue;
-                    }
-                }
-            }
-
-            // No progress for 90s - check if we've met the minimum threshold
-            cleanup_qemu_child(&mut child);
-
-            // Do one final scan after QEMU exit
-            thread::sleep(Duration::from_millis(100));
-            if let Ok(mut file) = fs::File::open(serial_output_file) {
-                let mut final_bytes = Vec::new();
-                if file.read_to_end(&mut final_bytes).is_ok() {
-                    let final_contents = String::from_utf8_lossy(&final_bytes);
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| final_contents.contains(m))
-                            } else {
-                                final_contents.contains(stage.marker)
-                            };
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Print status and either pass with threshold or fail
-            println!("\r                                                              ");
-            println!("=========================================");
-            println!("Result: {}/{} stages passed (minimum threshold: {})", stages_passed, total_stages, min_stages);
-            println!();
-
-            if stages_passed >= min_stages {
-                // Print failing stages as informational
-                let mut failed_count = 0;
-                for (i, stage) in stages.iter().enumerate() {
-                    if !checked_stages[i] {
-                        if failed_count == 0 {
-                            println!("Known failing stages ({}):", total_stages - stages_passed);
-                        }
-                        failed_count += 1;
-                        println!("  [{}/{}] {}", i + 1, total_stages, stage.name);
-                    }
-                }
-                println!();
-                println!("ARM64 boot stage validation PASSED (above minimum threshold of {})", min_stages);
-                return Ok(());
-            }
-
-            // Below threshold - report first failure
+            // QEMU still running - log the stall and reset timer
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    println!("Stage {} timed out after {}s waiting for marker:", i + 1, stage_timeout.as_secs());
-                    println!("  \"{}\"", stage.marker);
-                    println!("  Meaning: {}", stage.failure_meaning);
-                    println!("  Check:   {}", stage.check_hint);
+                    println!("\r[{}/{}] {}... (waiting, {}s elapsed)",
+                        i + 1, total_stages, stage.name,
+                        test_start.elapsed().as_secs());
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
                     break;
                 }
             }
-            bail!("ARM64 boot stage validation failed: {}/{} stages passed, minimum {} required", stages_passed, total_stages, min_stages);
+            last_progress = Instant::now();
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -4119,29 +3951,11 @@ fn arm64_boot_stages() -> Result<()> {
     if stages_passed == total_stages {
         println!("Result: ALL {}/{} stages passed (total: {})", stages_passed, total_stages, total_str);
         Ok(())
-    } else if stages_passed >= min_stages {
-        println!("Result: {}/{} stages passed (minimum: {}, total: {})", stages_passed, total_stages, min_stages, total_str);
-        println!();
-
-        // Print summary of failed stages
-        let mut failed_count = 0;
-        for (i, stage) in stages.iter().enumerate() {
-            if !checked_stages[i] {
-                if failed_count == 0 {
-                    println!("Known failing stages ({} total):", total_stages - stages_passed);
-                }
-                failed_count += 1;
-                println!("  [{}/{}] {}", i + 1, total_stages, stage.name);
-            }
-        }
-
-        println!();
-        println!("ARM64 boot stage validation PASSED (above minimum threshold of {})", min_stages);
-        Ok(())
     } else {
+        // Find first failed stage
         for (i, stage) in stages.iter().enumerate() {
             if !checked_stages[i] {
-                println!("Result: {}/{} stages passed (minimum: {})", stages_passed, total_stages, min_stages);
+                println!("Result: {}/{} stages passed", stages_passed, total_stages);
                 println!();
                 println!("First failed stage: [{}/{}] {}", i + 1, total_stages, stage.name);
                 println!("  Meaning: {}", stage.failure_meaning);
@@ -4150,7 +3964,7 @@ fn arm64_boot_stages() -> Result<()> {
             }
         }
 
-        bail!("ARM64 boot stage validation failed: {}/{} stages passed, minimum {} required", stages_passed, total_stages, min_stages);
+        bail!("ARM64 boot stage validation incomplete");
     }
 }
 
