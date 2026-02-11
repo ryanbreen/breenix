@@ -585,6 +585,7 @@ pub extern "C" fn kernel_main() -> ! {
         serial_println!("[test] Loading test binaries from ext2...");
         load_test_binaries_from_ext2();
         serial_println!("[test] Test processes loaded - will run via timer interrupts");
+        serial_println!("[test] Entering scheduler idle loop");
         // Print shell prompt to serial before enabling interrupts.
         // Once interrupts are enabled, the scheduler takes over and the BSP
         // (idle thread 0) enters idle_loop_arm64 - it won't return here.
