@@ -509,6 +509,7 @@ impl FdTable {
 
     /// Close all file descriptors marked with FD_CLOEXEC.
     /// Called during exec() per POSIX semantics.
+    /// Properly decrements pipe/fifo reference counts.
     pub fn close_cloexec(&mut self) {
         for i in 0..MAX_FDS {
             let should_close = self.fds[i]
@@ -516,7 +517,21 @@ impl FdTable {
                 .map(|fd| (fd.flags & flags::FD_CLOEXEC) != 0)
                 .unwrap_or(false);
             if should_close {
-                let _ = self.fds[i].take();
+                if let Some(fd_entry) = self.fds[i].take() {
+                    // Decrement reference counts for pipe/fifo buffers
+                    match &fd_entry.kind {
+                        FdKind::PipeRead(buffer) | FdKind::FifoRead(_, buffer) => {
+                            buffer.lock().close_read();
+                        }
+                        FdKind::PipeWrite(buffer) | FdKind::FifoWrite(_, buffer) => {
+                            buffer.lock().close_write();
+                        }
+                        FdKind::UnixStream(socket) => {
+                            socket.lock().close();
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
