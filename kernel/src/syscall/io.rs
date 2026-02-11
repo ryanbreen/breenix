@@ -7,6 +7,8 @@
 
 use super::SyscallResult;
 use alloc::vec::Vec;
+use crate::arch_impl::aarch64::Aarch64Cpu as Cpu;
+use crate::arch_impl::traits::CpuOps;
 use crate::syscall::userptr::validate_user_buffer;
 
 /// Copy a byte buffer from userspace.
@@ -79,6 +81,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
         TcpConnection { conn_id: crate::net::tcp::ConnectionId },
         PtyMaster(u32),
         PtySlave(u32),
+        Device { device_type: crate::fs::devfs::DeviceType },
+        RegularFile { file: alloc::sync::Arc<spin::Mutex<crate::ipc::fd::RegularFile>> },
         Ebadf,
         Enotconn,
         Eisdir,
@@ -114,8 +118,8 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             }
             FdKind::FifoRead(_, _) => WriteOperation::Ebadf,
             FdKind::UdpSocket(_) => WriteOperation::Eopnotsupp,
-            FdKind::RegularFile(_) => WriteOperation::Eopnotsupp,
-            FdKind::Device(_) => WriteOperation::Eopnotsupp,
+            FdKind::RegularFile(file) => WriteOperation::RegularFile { file: file.clone() },
+            FdKind::Device(device_type) => WriteOperation::Device { device_type: *device_type },
             FdKind::Directory(_) | FdKind::DevfsDirectory { .. } | FdKind::DevptsDirectory { .. } => {
                 WriteOperation::Eisdir
             }
@@ -188,6 +192,62 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             } else {
                 SyscallResult::Err(5) // EIO
             }
+        }
+        WriteOperation::Device { device_type } => {
+            use crate::fs::devfs::DeviceType;
+            match device_type {
+                DeviceType::Null | DeviceType::Zero => {
+                    // /dev/null, /dev/zero - discard all data
+                    SyscallResult::Ok(buffer.len() as u64)
+                }
+                DeviceType::Console | DeviceType::Tty => {
+                    // Write to console/tty via TTY layer
+                    write_to_stdio(fd, &buffer)
+                }
+            }
+        }
+        WriteOperation::RegularFile { file } => {
+            // Write to ext2 regular file
+            let (inode_num, position, flags) = {
+                let file_guard = file.lock();
+                (file_guard.inode_num, file_guard.position, file_guard.flags)
+            };
+
+            // Handle O_APPEND flag - seek to end before writing
+            let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
+                let root_fs = crate::fs::ext2::root_fs();
+                match root_fs.as_ref() {
+                    Some(fs) => match fs.read_inode(inode_num as u32) {
+                        Ok(inode) => inode.size(),
+                        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+                    },
+                    None => return SyscallResult::Err(super::errno::EIO as u64),
+                }
+            } else {
+                position
+            };
+
+            // Write the data
+            let mut root_fs = crate::fs::ext2::root_fs();
+            let fs = match root_fs.as_mut() {
+                Some(fs) => fs,
+                None => return SyscallResult::Err(super::errno::EIO as u64),
+            };
+
+            let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
+                Ok(n) => n,
+                Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+            };
+
+            drop(root_fs);
+
+            // Update file position
+            {
+                let mut file_guard = file.lock();
+                file_guard.position = write_offset + bytes_written as u64;
+            }
+
+            SyscallResult::Ok(bytes_written as u64)
         }
     }
 }
@@ -335,33 +395,127 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             }
         }
         FdKind::StdIo(_) => SyscallResult::Err(9),
-        FdKind::PipeRead(pipe_buffer) => {
-            let mut pipe = pipe_buffer.lock();
-            let mut buf = alloc::vec![0u8; count as usize];
-            match pipe.read(&mut buf) {
-                Ok(n) => {
-                    if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
-                        return SyscallResult::Err(14);
+        FdKind::PipeRead(pipe_buffer) | FdKind::FifoRead(_, pipe_buffer) => {
+            let is_nonblocking = (fd_entry.status_flags & crate::ipc::fd::status_flags::O_NONBLOCK) != 0;
+            let pipe_buffer_clone = pipe_buffer.clone();
+
+            // CRITICAL: Release process manager lock before potentially blocking!
+            // If we hold the lock while blocked, timer interrupts cannot perform
+            // context switches to the writer thread.
+            drop(manager_guard);
+
+            let mut user_buf = alloc::vec![0u8; count as usize];
+
+            loop {
+                let read_result = {
+                    let mut pipe = pipe_buffer_clone.lock();
+                    pipe.read(&mut user_buf)
+                };
+
+                match read_result {
+                    Ok(n) => {
+                        if n > 0 {
+                            if copy_to_user_bytes(buf_ptr, &user_buf[..n]).is_err() {
+                                return SyscallResult::Err(14); // EFAULT
+                            }
+                        }
+                        return SyscallResult::Ok(n as u64);
                     }
-                    SyscallResult::Ok(n as u64)
+                    Err(11) => {
+                        // EAGAIN - buffer empty but writers exist
+                        if is_nonblocking {
+                            return SyscallResult::Err(11); // EAGAIN
+                        }
+
+                        // === BLOCKING PATH ===
+                        // Register as waiter BEFORE blocking (race condition fix)
+                        {
+                            let mut pipe = pipe_buffer_clone.lock();
+                            pipe.add_read_waiter(thread_id);
+                        }
+
+                        // Block the thread
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            sched.block_current();
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = true;
+                            }
+                        });
+
+                        // Check if data arrived during setup (race condition fix)
+                        let data_ready = {
+                            let pipe = pipe_buffer_clone.lock();
+                            pipe.has_data_or_eof()
+                        };
+
+                        if data_ready {
+                            crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.blocked_in_syscall = false;
+                                    thread.set_ready();
+                                }
+                            });
+                            continue; // Retry read
+                        }
+
+                        // Enable preemption for yield loop
+                        crate::per_cpu::preempt_enable();
+
+                        // Wait for data or EOF
+                        loop {
+                            // Check for pending signals
+                            if let Some(e) = crate::syscall::check_signals_for_eintr() {
+                                {
+                                    let mut pipe = pipe_buffer_clone.lock();
+                                    pipe.remove_read_waiter(thread_id);
+                                }
+                                crate::task::scheduler::with_scheduler(|sched| {
+                                    if let Some(thread) = sched.current_thread_mut() {
+                                        thread.blocked_in_syscall = false;
+                                        thread.set_ready();
+                                    }
+                                });
+                                crate::per_cpu::preempt_disable();
+                                return SyscallResult::Err(e as u64);
+                            }
+
+                            crate::task::scheduler::yield_current();
+                            Cpu::halt_with_interrupts();
+
+                            let still_blocked = crate::task::scheduler::with_scheduler(|sched| {
+                                if let Some(thread) = sched.current_thread_mut() {
+                                    thread.state == crate::task::thread::ThreadState::Blocked
+                                } else {
+                                    false
+                                }
+                            }).unwrap_or(false);
+
+                            if !still_blocked {
+                                crate::per_cpu::preempt_disable();
+                                break;
+                            }
+                        }
+
+                        // Clear blocked state
+                        crate::task::scheduler::with_scheduler(|sched| {
+                            if let Some(thread) = sched.current_thread_mut() {
+                                thread.blocked_in_syscall = false;
+                            }
+                        });
+
+                        crate::arch_impl::aarch64::timer_interrupt::reset_quantum();
+                        crate::task::scheduler::check_and_clear_need_resched();
+
+                        // Continue loop to retry read
+                        continue;
+                    }
+                    Err(e) => {
+                        return SyscallResult::Err(e as u64);
+                    }
                 }
-                Err(e) => SyscallResult::Err(e as u64),
             }
         }
         FdKind::PipeWrite(_) => SyscallResult::Err(9),
-        FdKind::FifoRead(_path, pipe_buffer) => {
-            let mut pipe = pipe_buffer.lock();
-            let mut buf = alloc::vec![0u8; count as usize];
-            match pipe.read(&mut buf) {
-                Ok(n) => {
-                    if copy_to_user_bytes(buf_ptr, &buf[..n]).is_err() {
-                        return SyscallResult::Err(14);
-                    }
-                    SyscallResult::Ok(n as u64)
-                }
-                Err(e) => SyscallResult::Err(e as u64),
-            }
-        }
         FdKind::FifoWrite(_, _) => SyscallResult::Err(9),
         FdKind::UdpSocket(_) | FdKind::UnixSocket(_) | FdKind::UnixListener(_) => {
             SyscallResult::Err(super::errno::ENOTCONN as u64)

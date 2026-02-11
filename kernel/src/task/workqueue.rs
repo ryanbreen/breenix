@@ -33,28 +33,8 @@ use spin::Mutex;
 
 use super::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark, KthreadHandle};
 
-/// Architecture-specific halt instruction
-#[inline(always)]
-fn arch_halt() {
-    #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::hlt();
-
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("wfi", options(nomem, nostack));
-    }
-}
-
-/// Architecture-specific enable interrupts
-#[allow(dead_code)] // Used by worker_thread_fn which is part of the workqueue API
-#[inline(always)]
-unsafe fn arch_enable_interrupts() {
-    #[cfg(target_arch = "x86_64")]
-    x86_64::instructions::interrupts::enable();
-
-    #[cfg(target_arch = "aarch64")]
-    core::arch::asm!("msr daifclr, #2", options(nomem, nostack));
-}
+// Architecture-generic HAL wrappers for interrupt control and halt.
+use crate::{arch_halt, arch_enable_interrupts};
 
 /// Work states
 const WORK_IDLE: u8 = 0;

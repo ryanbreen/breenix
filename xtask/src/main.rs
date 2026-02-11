@@ -15,8 +15,10 @@ use structopt::StructOpt;
 
 mod btrt_catalog;
 mod btrt_parser;
+mod qemu_config;
 mod qmp;
 mod test_disk;
+mod test_monitor;
 
 /// Get the PID file path unique to this worktree.
 /// Uses a hash of the current working directory to avoid conflicts between worktrees.
@@ -60,11 +62,6 @@ fn kill_worktree_qemu() {
     signal_worktree_qemu("-9");
     // Remove the stale PID file
     let _ = fs::remove_file(&get_qemu_pid_file());
-}
-
-/// Send SIGTERM to this worktree's QEMU to allow graceful shutdown.
-fn term_worktree_qemu() {
-    signal_worktree_qemu("-TERM");
 }
 
 /// Clean up a QEMU child process properly.
@@ -260,9 +257,23 @@ struct StageTiming {
     duration: Duration,
 }
 
-/// Define all boot stages in order
-fn get_boot_stages() -> Vec<BootStage> {
-    vec![
+/// Define all boot stages in order for the given architecture.
+///
+/// For x86_64, returns x86_64-specific stages.
+/// For ARM64, returns ARM64-specific stages.
+///
+/// The ARM64 kernel has a different boot path from x86_64:
+/// - No GDT/IDT (uses exception vectors)
+/// - GICv2 instead of PIC/APIC
+/// - Generic Timer instead of PIT/TSC
+/// - VirtIO MMIO instead of PCI for devices
+/// - PSCI for SMP instead of APIC
+///
+/// ARM64 kernel boot stages are derived from main_aarch64.rs serial_println! markers.
+/// Userspace test stages are shared with x86_64 since test binaries emit identical markers.
+fn get_boot_stages(arch: &qemu_config::Arch) -> Vec<BootStage> {
+    match arch {
+        qemu_config::Arch::X86_64 => vec![
         BootStage {
             name: "Kernel entry point",
             marker: "Kernel entry point reached",
@@ -1913,22 +1924,8 @@ fn get_boot_stages() -> Vec<BootStage> {
         },
         // NOTE: ENOSYS syscall verification requires external_test_bins feature
         // which is not enabled by default. Add back when external binaries are integrated.
-    ]
-}
-
-/// Define ARM64-specific boot stages.
-///
-/// The ARM64 kernel has a different boot path from x86_64:
-/// - No GDT/IDT (uses exception vectors)
-/// - GICv2 instead of PIC/APIC
-/// - Generic Timer instead of PIT/TSC
-/// - VirtIO MMIO instead of PCI for devices
-/// - PSCI for SMP instead of APIC
-///
-/// Kernel boot stages are derived from main_aarch64.rs serial_println! markers.
-/// Userspace test stages are shared with x86_64 since test binaries emit identical markers.
-fn get_arm64_boot_stages() -> Vec<BootStage> {
-    vec![
+    ],
+        qemu_config::Arch::Arm64 => vec![
         // === ARM64 Kernel Boot Stages ===
         BootStage {
             name: "ARM64 kernel starting",
@@ -3087,7 +3084,8 @@ fn get_arm64_boot_stages() -> Vec<BootStage> {
         // These kernel subsystem tests require the `kthread_test_only` feature flag which
         // is not enabled in the standard `testing` build. They can be added back when
         // ARM64 supports kthread-specific test configurations.
-    ]
+    ],
+    }
 }
 
 /// Get DNS-specific boot stages for focused testing with dns_test_only feature
@@ -3321,7 +3319,7 @@ fn dns_test() -> Result<()> {
 /// We primarily monitor COM2 since all markers use log::info!() and userspace
 /// output is also logged there with "USERSPACE OUTPUT:" prefix.
 fn boot_stages() -> Result<()> {
-    let stages = get_boot_stages();
+    let stages = get_boot_stages(&qemu_config::Arch::X86_64);
     let total_stages = stages.len();
 
     println!("Boot Stage Validator - {} stages to check", total_stages);
@@ -3519,95 +3517,29 @@ fn boot_stages() -> Result<()> {
             }
         }
 
-        // Check for stage timeout
+        // Check for stage timeout (no new marker detected for stage_timeout duration).
+        // Don't kill QEMU here - serial output may be buffered and the kernel might still
+        // be making progress. Continue polling until the overall timeout expires.
+        // This is critical for CI where nested virtualization causes QEMU serial buffers
+        // to flush much less frequently than on native hardware.
         if last_progress.elapsed() > stage_timeout {
-            // Before giving up, send SIGTERM to allow QEMU to flush buffers
-            println!("\r\nTimeout reached, sending SIGTERM to QEMU to flush buffers...");
-            term_worktree_qemu();
-
-            // Wait 2 seconds for QEMU to flush and terminate gracefully
-            thread::sleep(Duration::from_secs(2));
-
-            // Check both files one last time after buffers flush
-            let mut combined_contents = String::new();
-            if let Ok(mut file) = fs::File::open(serial_output_file) {
-                let mut contents_bytes = Vec::new();
-                if file.read_to_end(&mut contents_bytes).is_ok() {
-                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
-                }
+            // Check if QEMU is still running
+            if let Ok(Some(_status)) = child.try_wait() {
+                // QEMU exited - break to final scan
+                break;
             }
-            if let Ok(mut file) = fs::File::open(user_output_file) {
-                let mut contents_bytes = Vec::new();
-                if file.read_to_end(&mut contents_bytes).is_ok() {
-                    combined_contents.push_str(&String::from_utf8_lossy(&contents_bytes));
-                }
-            }
-
-            if !combined_contents.is_empty() {
-                let contents = &combined_contents;
-                // Check all remaining stages
-                let mut any_found = false;
-                for (i, stage) in stages.iter().enumerate() {
-                    if !checked_stages[i] {
-                        let found = if stage.marker.contains('|') {
-                            stage.marker.split('|').any(|m| contents.contains(m))
-                        } else {
-                            contents.contains(stage.marker)
-                        };
-
-                        if found {
-                            checked_stages[i] = true;
-                            stages_passed += 1;
-                            any_found = true;
-
-                            // Record timing for this stage
-                            let duration = stage_start_time.elapsed();
-                            stage_timings[i] = Some(StageTiming { duration });
-                            stage_start_time = Instant::now();
-
-                            let time_str = if duration.as_secs() >= 1 {
-                                format!("{:.2}s", duration.as_secs_f64())
-                            } else {
-                                format!("{}ms", duration.as_millis())
-                            };
-
-                            println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
-                        }
-                    }
-                }
-
-                if any_found {
-                    last_progress = Instant::now();
-                    // Continue checking if we found something
-                    if stages_passed < total_stages {
-                        continue;
-                    }
-                }
-            }
-
-            // Find first unchecked stage
+            // QEMU still running - log the stall and reset timer to avoid repeated messages
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    println!("\r                                                              ");
-                    println!("\r[{}/{}] {}... FAIL (timeout)", i + 1, total_stages, stage.name);
-                    println!();
-                    println!("  Meaning: {}", stage.failure_meaning);
-                    println!("  Check:   {}", stage.check_hint);
-                    println!();
-
-                    // Force kill QEMU if still running
-                    cleanup_qemu_child(&mut child);
-
-                    // Print summary
-                    println!("=========================================");
-                    println!("Result: {}/{} stages passed", stages_passed, total_stages);
-                    println!();
-                    println!("Stage {} timed out after {}s waiting for marker:", i + 1, stage_timeout.as_secs());
-                    println!("  \"{}\"", stage.marker);
-
-                    bail!("Boot stage validation failed at stage {}", i + 1);
+                    println!("\r[{}/{}] {}... (waiting, {}s elapsed)",
+                        i + 1, total_stages, stage.name,
+                        test_start.elapsed().as_secs());
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    break;
                 }
             }
+            last_progress = Instant::now();
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -3698,7 +3630,7 @@ fn boot_stages() -> Result<()> {
 /// 4. Launches qemu-system-aarch64 with serial output to file
 /// 5. Validates boot stage markers sequentially
 fn arm64_boot_stages() -> Result<()> {
-    let stages = get_arm64_boot_stages();
+    let stages = get_boot_stages(&qemu_config::Arch::Arm64);
     let total_stages = stages.len();
 
     println!("ARM64 Boot Stage Validator - {} stages to check", total_stages);
@@ -3868,12 +3800,6 @@ fn arm64_boot_stages() -> Result<()> {
     let stage_timeout = Duration::from_secs(90);
     let mut last_progress = Instant::now();
 
-    // ARM64 CI uses a minimum pass threshold because several subsystems are
-    // still being implemented (signal delivery to sleeping processes, fork+exec,
-    // ext2 write support, clone syscall, sigreturn register preservation).
-    // Raise this as we fix ARM64-specific bugs.
-    let min_stages = 120;
-
     // Print initial waiting message
     if let Some(stage) = stages.get(0) {
         print!("[{}/{}] {}...", 1, total_stages, stage.name);
@@ -3952,118 +3878,27 @@ fn arm64_boot_stages() -> Result<()> {
             }
         }
 
-        // Check for stage timeout
+        // Check for stage timeout (no new marker detected for stage_timeout duration).
+        // Don't kill QEMU here - serial output may be buffered and the kernel might still
+        // be making progress. Continue polling until the overall timeout expires.
         if last_progress.elapsed() > stage_timeout {
-            println!("\r\nTimeout reached, sending SIGTERM to QEMU to flush buffers...");
-            term_worktree_qemu();
-            thread::sleep(Duration::from_secs(2));
-
-            // Check file one last time after buffer flush
-            let mut contents = String::new();
-            if let Ok(mut file) = fs::File::open(serial_output_file) {
-                let mut contents_bytes = Vec::new();
-                if file.read_to_end(&mut contents_bytes).is_ok() {
-                    contents = String::from_utf8_lossy(&contents_bytes).into_owned();
-                }
+            // Check if QEMU is still running
+            if let Ok(Some(_status)) = child.try_wait() {
+                // QEMU exited - break to final scan
+                break;
             }
-
-            if !contents.is_empty() {
-                let mut any_found = false;
-                for (i, stage) in stages.iter().enumerate() {
-                    if !checked_stages[i] {
-                        let found = if stage.marker.contains('|') {
-                            stage.marker.split('|').any(|m| contents.contains(m))
-                        } else {
-                            contents.contains(stage.marker)
-                        };
-
-                        if found {
-                            checked_stages[i] = true;
-                            stages_passed += 1;
-                            any_found = true;
-
-                            let duration = stage_start_time.elapsed();
-                            stage_timings[i] = Some(StageTiming { duration });
-                            stage_start_time = Instant::now();
-
-                            let time_str = if duration.as_secs() >= 1 {
-                                format!("{:.2}s", duration.as_secs_f64())
-                            } else {
-                                format!("{}ms", duration.as_millis())
-                            };
-
-                            println!("[{}/{}] {}... PASS ({}, found after buffer flush)", i + 1, total_stages, stage.name, time_str);
-                        }
-                    }
-                }
-
-                if any_found {
-                    last_progress = Instant::now();
-                    if stages_passed < total_stages {
-                        continue;
-                    }
-                }
-            }
-
-            // No progress for 90s - check if we've met the minimum threshold
-            cleanup_qemu_child(&mut child);
-
-            // Do one final scan after QEMU exit
-            thread::sleep(Duration::from_millis(100));
-            if let Ok(mut file) = fs::File::open(serial_output_file) {
-                let mut final_bytes = Vec::new();
-                if file.read_to_end(&mut final_bytes).is_ok() {
-                    let final_contents = String::from_utf8_lossy(&final_bytes);
-                    for (i, stage) in stages.iter().enumerate() {
-                        if !checked_stages[i] {
-                            let found = if stage.marker.contains('|') {
-                                stage.marker.split('|').any(|m| final_contents.contains(m))
-                            } else {
-                                final_contents.contains(stage.marker)
-                            };
-                            if found {
-                                checked_stages[i] = true;
-                                stages_passed += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Print status and either pass with threshold or fail
-            println!("\r                                                              ");
-            println!("=========================================");
-            println!("Result: {}/{} stages passed (minimum threshold: {})", stages_passed, total_stages, min_stages);
-            println!();
-
-            if stages_passed >= min_stages {
-                // Print failing stages as informational
-                let mut failed_count = 0;
-                for (i, stage) in stages.iter().enumerate() {
-                    if !checked_stages[i] {
-                        if failed_count == 0 {
-                            println!("Known failing stages ({}):", total_stages - stages_passed);
-                        }
-                        failed_count += 1;
-                        println!("  [{}/{}] {}", i + 1, total_stages, stage.name);
-                    }
-                }
-                println!();
-                println!("ARM64 boot stage validation PASSED (above minimum threshold of {})", min_stages);
-                return Ok(());
-            }
-
-            // Below threshold - report first failure
+            // QEMU still running - log the stall and reset timer
             for (i, stage) in stages.iter().enumerate() {
                 if !checked_stages[i] {
-                    println!("Stage {} timed out after {}s waiting for marker:", i + 1, stage_timeout.as_secs());
-                    println!("  \"{}\"", stage.marker);
-                    println!("  Meaning: {}", stage.failure_meaning);
-                    println!("  Check:   {}", stage.check_hint);
+                    println!("\r[{}/{}] {}... (waiting, {}s elapsed)",
+                        i + 1, total_stages, stage.name,
+                        test_start.elapsed().as_secs());
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
                     break;
                 }
             }
-            bail!("ARM64 boot stage validation failed: {}/{} stages passed, minimum {} required", stages_passed, total_stages, min_stages);
+            last_progress = Instant::now();
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -4116,29 +3951,11 @@ fn arm64_boot_stages() -> Result<()> {
     if stages_passed == total_stages {
         println!("Result: ALL {}/{} stages passed (total: {})", stages_passed, total_stages, total_str);
         Ok(())
-    } else if stages_passed >= min_stages {
-        println!("Result: {}/{} stages passed (minimum: {}, total: {})", stages_passed, total_stages, min_stages, total_str);
-        println!();
-
-        // Print summary of failed stages
-        let mut failed_count = 0;
-        for (i, stage) in stages.iter().enumerate() {
-            if !checked_stages[i] {
-                if failed_count == 0 {
-                    println!("Known failing stages ({} total):", total_stages - stages_passed);
-                }
-                failed_count += 1;
-                println!("  [{}/{}] {}", i + 1, total_stages, stage.name);
-            }
-        }
-
-        println!();
-        println!("ARM64 boot stage validation PASSED (above minimum threshold of {})", min_stages);
-        Ok(())
     } else {
+        // Find first failed stage
         for (i, stage) in stages.iter().enumerate() {
             if !checked_stages[i] {
-                println!("Result: {}/{} stages passed (minimum: {})", stages_passed, total_stages, min_stages);
+                println!("Result: {}/{} stages passed", stages_passed, total_stages);
                 println!();
                 println!("First failed stage: [{}/{}] {}", i + 1, total_stages, stage.name);
                 println!("  Meaning: {}", stage.failure_meaning);
@@ -4147,7 +3964,7 @@ fn arm64_boot_stages() -> Result<()> {
             }
         }
 
-        bail!("ARM64 boot stage validation failed: {}/{} stages passed, minimum {} required", stages_passed, total_stages, min_stages);
+        bail!("ARM64 boot stage validation incomplete");
     }
 }
 
@@ -4870,21 +4687,15 @@ fn interactive_test() -> Result<()> {
 /// Run kthread lifecycle test for x86_64 or arm64.
 /// Both architectures use the same markers and validation logic.
 fn kthread_test(arch: &str) -> Result<()> {
-    let is_arm64 = arch == "arm64" || arch == "aarch64";
-    let arch_label = if is_arm64 { "arm64" } else { "x86_64" };
+    let arch = qemu_config::Arch::from_str(arch)?;
+    let config = qemu_config::QemuConfig::for_kthread(arch);
+    let arch_label = config.arch.label();
 
     println!("=== Kthread Lifecycle Test ({}) ===\n", arch_label);
 
-    // ARM64 has one serial port; x86_64 has COM1 (user) + COM2 (kernel logs)
-    let serial_output_file = if is_arm64 {
-        "target/kthread_test_arm64_output.txt"
-    } else {
-        "target/kthread_test_x86_64_kernel.txt" // COM2: kernel logs (test markers)
-    };
-    let user_output_file = "target/kthread_test_x86_64_user.txt"; // COM1: user output
-    let _ = fs::remove_file(serial_output_file);
-    if !is_arm64 {
-        let _ = fs::remove_file(user_output_file);
+    // Clean up previous serial output files
+    for sf in &config.serial_files {
+        let _ = fs::remove_file(sf);
     }
 
     // Kill any existing QEMU for this worktree
@@ -4892,160 +4703,64 @@ fn kthread_test(arch: &str) -> Result<()> {
     thread::sleep(Duration::from_millis(500));
 
     // Build
-    if is_arm64 {
-        println!("Building ARM64 kernel with kthread_test_only feature...");
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "--target", "aarch64-breenix.json",
-                "-Z", "build-std=core,alloc",
-                "-Z", "build-std-features=compiler-builtins-mem",
-                "-p", "kernel",
-                "--bin", "kernel-aarch64",
-                "--features", "kthread_test_only",
-            ])
-            .status()
-            .context("Failed to build ARM64 kernel")?;
-        if !status.success() {
-            bail!("ARM64 kernel build failed");
-        }
-    } else {
-        println!("Building x86_64 kernel with kthread_test_only feature...");
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "-p", "breenix",
-                "--features", "kthread_test_only",
-                "--bin", "qemu-uefi",
-            ])
-            .status()
-            .context("Failed to build x86_64 kernel")?;
-        if !status.success() {
-            bail!("x86_64 kernel build failed");
-        }
-    }
+    println!("Building {} kernel with kthread_test_only feature...", arch_label);
+    config.build()?;
     println!("  Build successful\n");
 
     // Launch QEMU
     println!("Starting QEMU...");
-    let mut child = if is_arm64 {
-        let kernel_binary = "target/aarch64-breenix/release/kernel-aarch64";
-        Command::new("qemu-system-aarch64")
-            .args(&[
-                "-M", "virt",
-                "-cpu", "cortex-a72",
-                "-m", "512",
-                "-smp", "1",
-                "-kernel", kernel_binary,
-                "-display", "none",
-                "-no-reboot",
-                "-serial", &format!("file:{}", serial_output_file),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn qemu-system-aarch64")?
-    } else {
-        Command::new("cargo")
-            .args(&[
-                "run", "--release",
-                "-p", "breenix",
-                "--features", "kthread_test_only",
-                "--bin", "qemu-uefi",
-                "--",
-                "-serial", &format!("file:{}", user_output_file),   // COM1: user output
-                "-serial", &format!("file:{}", serial_output_file), // COM2: kernel logs (test markers)
-                "-display", "none",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn QEMU")?
-    };
+    let mut child = config.spawn_qemu()?;
 
     save_qemu_pid(child.id());
 
-    // Wait for output file to be created
-    let start = Instant::now();
-    let file_creation_timeout = Duration::from_secs(120);
+    // Monitor for completion using the unified TestMonitor
+    let monitor = test_monitor::TestMonitor::new(
+        config.kernel_log_file.clone(),
+        "KTHREAD_TEST_ONLY_COMPLETE",
+        Duration::from_secs(300),
+    );
+    let result = monitor.monitor(&mut child)?;
 
-    while !Path::new(serial_output_file).exists() {
-        if start.elapsed() > file_creation_timeout {
-            cleanup_qemu_child(&mut child);
-            bail!("Serial output file not created after {} seconds", file_creation_timeout.as_secs());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    // Monitor for completion
-    let timeout = Duration::from_secs(300);
-    let mut success = false;
-    let mut test_output = String::new();
-
-    while start.elapsed() < timeout {
-        if let Ok(contents) = fs::read_to_string(serial_output_file) {
-            test_output = contents.clone();
-
-            if contents.contains("KTHREAD_TEST_ONLY_COMPLETE") {
-                success = true;
-                break;
-            }
-
-            if contents.contains("panicked at") || contents.contains("PANIC:") {
-                println!("\n=== KTHREAD TEST FAILED (panic detected) ===\n");
-                for line in contents.lines() {
-                    if line.contains("KTHREAD") || line.contains("panic") || line.contains("PANIC") {
-                        println!("{}", line);
-                    }
-                }
-                cleanup_qemu_child(&mut child);
-                bail!("Kthread test panicked ({})", arch_label);
-            }
-        }
-
-        // Check if QEMU exited unexpectedly
-        if let Ok(Some(status)) = child.try_wait() {
-            // QEMU exited - read final output
-            if let Ok(contents) = fs::read_to_string(serial_output_file) {
-                test_output = contents.clone();
-                if contents.contains("KTHREAD_TEST_ONLY_COMPLETE") {
-                    success = true;
-                }
-            }
-            if !success {
-                println!("\n=== KTHREAD TEST FAILED (QEMU exited with {}) ===\n", status);
-                for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
-                    println!("{}", line);
-                }
-                bail!("QEMU exited with {} before kthread tests completed ({})", status, arch_label);
-            }
-            break;
-        }
-
-        thread::sleep(Duration::from_millis(500));
-    }
-
+    // Kill QEMU regardless of outcome
     let _ = child.kill();
     let _ = child.wait();
 
-    if success {
-        println!("\n=== Kthread Test Results ({}) ===\n", arch_label);
-        for line in test_output.lines() {
-            if line.contains("KTHREAD") {
+    match result.outcome {
+        test_monitor::MonitorOutcome::Success => {
+            println!("\n=== Kthread Test Results ({}) [{:.1}s] ===\n", arch_label, result.duration.as_secs_f64());
+            for line in result.serial_output.lines() {
+                if line.contains("KTHREAD") {
+                    println!("{}", line);
+                }
+            }
+            println!("\n=== KTHREAD TEST PASSED ({}) ===\n", arch_label);
+            Ok(())
+        }
+        test_monitor::MonitorOutcome::Panic => {
+            println!("\n=== KTHREAD TEST FAILED (panic detected) ===\n");
+            for line in result.serial_output.lines() {
+                if line.contains("KTHREAD") || line.contains("panic") || line.contains("PANIC") {
+                    println!("{}", line);
+                }
+            }
+            bail!("Kthread test panicked ({})", arch_label);
+        }
+        test_monitor::MonitorOutcome::QemuExited(status) => {
+            let status_str = status.map_or("unknown".to_string(), |c| c.to_string());
+            println!("\n=== KTHREAD TEST FAILED (QEMU exited with {}) ===\n", status_str);
+            for line in result.serial_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
                 println!("{}", line);
             }
+            bail!("QEMU exited with {} before kthread tests completed ({})", status_str, arch_label);
         }
-        println!("\n=== KTHREAD TEST PASSED ({}) ===\n", arch_label);
-        Ok(())
-    } else {
-        println!("\n=== KTHREAD TEST FAILED (timeout) ({}) ===\n", arch_label);
-        println!("Last output:");
-        for line in test_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
-            println!("{}", line);
+        test_monitor::MonitorOutcome::Timeout => {
+            println!("\n=== KTHREAD TEST FAILED (timeout) ({}) ===\n", arch_label);
+            println!("Last output:");
+            for line in result.serial_output.lines().rev().take(30).collect::<Vec<_>>().into_iter().rev() {
+                println!("{}", line);
+            }
+            bail!("Kthread test timed out after {} seconds ({})", result.duration.as_secs(), arch_label);
         }
-        bail!("Kthread test timed out after {} seconds ({})", timeout.as_secs(), arch_label);
     }
 }
 
@@ -5376,27 +5091,26 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
     println!("BTRT Boot Test - arch: {}", arch);
     println!("========================================\n");
 
-    let is_arm64 = arch == "arm64" || arch == "aarch64";
+    let arch = qemu_config::Arch::from_str(arch)?;
+    let config = qemu_config::QemuConfig::for_btrt(arch);
 
-    let qmp_sock = "/tmp/breenix-qmp.sock";
     let btrt_bin = "/tmp/btrt-results.bin";
-    let serial_output_file = if is_arm64 {
-        "target/btrt_arm64_output.txt"
-    } else {
-        "target/btrt_x86_64_output.txt"
-    };
 
     // Clean up previous artifacts
-    let _ = fs::remove_file(qmp_sock);
+    if let Some(ref qmp) = config.qmp_socket {
+        let _ = fs::remove_file(qmp);
+    }
     let _ = fs::remove_file(btrt_bin);
-    let _ = fs::remove_file(serial_output_file);
+    for sf in &config.serial_files {
+        let _ = fs::remove_file(sf);
+    }
 
     // Kill any existing QEMU for this worktree
     kill_worktree_qemu();
     thread::sleep(Duration::from_millis(500));
 
-    // Build kernel with btrt feature
-    if is_arm64 {
+    // Architecture-specific pre-build steps
+    if config.arch.is_arm64() {
         println!("Building ARM64 kernel with btrt feature...");
 
         // Build ARM64 userspace and ext2 disk image if not already present
@@ -5408,7 +5122,7 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
             if userspace_dir.exists() {
                 let _ = fs::create_dir_all("userspace/tests/aarch64");
                 let status = Command::new("./build.sh")
-                    .args(&["--arch", "aarch64"])
+                    .args(["--arch", "aarch64"])
                     .current_dir(userspace_dir)
                     .status()
                     .context("Failed to run build.sh --arch aarch64")?;
@@ -5427,11 +5141,11 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
                 let use_sudo = cfg!(target_os = "linux") && std::env::var("CI").is_ok();
                 let status = if use_sudo {
                     Command::new("sudo")
-                        .args(&["./scripts/create_ext2_disk.sh", "--arch", "aarch64"])
+                        .args(["./scripts/create_ext2_disk.sh", "--arch", "aarch64"])
                         .status()
                 } else {
                     Command::new("./scripts/create_ext2_disk.sh")
-                        .args(&["--arch", "aarch64"])
+                        .args(["--arch", "aarch64"])
                         .status()
                 }
                 .context("Failed to run create_ext2_disk.sh --arch aarch64")?;
@@ -5440,10 +5154,10 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
                 }
                 if use_sudo {
                     let _ = Command::new("sudo")
-                        .args(&["chown", "-R", &format!("{}:{}",
+                        .args(["chown", "-R", &format!("{}:{}",
                             std::env::var("UID").unwrap_or_else(|_| "1000".to_string()),
                             std::env::var("GID").unwrap_or_else(|_| "1000".to_string()))])
-                        .args(&["target/", "testdata/"])
+                        .args(["target/", "testdata/"])
                         .status();
                 }
                 println!("  ARM64 ext2 disk image created successfully");
@@ -5452,96 +5166,29 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
             }
         }
 
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "--target", "aarch64-breenix.json",
-                "-Z", "build-std=core,alloc",
-                "-Z", "build-std-features=compiler-builtins-mem",
-                "-p", "kernel",
-                "--bin", "kernel-aarch64",
-                "--features", "btrt,testing",
-            ])
-            .status()
-            .context("Failed to build ARM64 kernel")?;
-        if !status.success() {
-            bail!("ARM64 kernel build failed");
-        }
+        // Copy ext2 image to writable location before QEMU launch
+        let _ = fs::copy("target/ext2-aarch64.img", "target/btrt_arm64_ext2.img");
     } else {
         println!("Building x86_64 kernel with btrt feature...");
         build_std_test_binaries()?;
         test_disk::create_test_disk()?;
-
-        let status = Command::new("cargo")
-            .args(&[
-                "build", "--release",
-                "-p", "breenix",
-                "--features", "btrt,testing,external_test_bins",
-                "--bin", "qemu-uefi",
-            ])
-            .status()
-            .context("Failed to build x86_64 kernel")?;
-        if !status.success() {
-            bail!("x86_64 kernel build failed");
-        }
     }
+
+    // Build kernel
+    config.build()?;
     println!("  Build successful\n");
 
     // Launch QEMU with QMP socket
     println!("Starting QEMU with QMP socket...");
-    let mut child = if is_arm64 {
-        let kernel_binary = "target/aarch64-breenix/release/kernel-aarch64";
-        let writable_ext2 = "target/btrt_arm64_ext2.img";
-        let _ = fs::copy("target/ext2-aarch64.img", writable_ext2);
-
-        Command::new("qemu-system-aarch64")
-            .args(&[
-                "-M", "virt",
-                "-cpu", "cortex-a72",
-                "-m", "512",
-                "-smp", "1",
-                "-kernel", kernel_binary,
-                "-display", "none",
-                "-no-reboot",
-                "-device", "virtio-gpu-device",
-                "-device", "virtio-keyboard-device",
-                "-device", "virtio-blk-device,drive=ext2",
-                "-drive", &format!("if=none,id=ext2,format=raw,file={}", writable_ext2),
-                "-device", "virtio-net-device,netdev=net0",
-                "-netdev", "user,id=net0",
-                "-serial", &format!("file:{}", serial_output_file),
-                "-qmp", &format!("unix:{},server,nowait", qmp_sock),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn qemu-system-aarch64")?
-    } else {
-        Command::new("cargo")
-            .args(&[
-                "run", "--release",
-                "-p", "breenix",
-                "--features", "btrt,testing,external_test_bins",
-                "--bin", "qemu-uefi",
-                "--",
-                "-serial", &format!("file:{}", serial_output_file),
-                "-display", "none",
-                "-qmp", &format!("unix:{},server,nowait", qmp_sock),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("Failed to spawn QEMU")?
-    };
+    let mut child = config.spawn_qemu()?;
 
     save_qemu_pid(child.id());
 
     // Wait for serial output file
+    let serial_output_file = &config.kernel_log_file;
     let start = Instant::now();
     let file_timeout = Duration::from_secs(60);
-    while !Path::new(serial_output_file).exists() {
+    while !serial_output_file.exists() {
         if start.elapsed() > file_timeout {
             cleanup_qemu_child(&mut child);
             bail!("Serial output file not created after {} seconds", file_timeout.as_secs());
@@ -5598,7 +5245,7 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
 
             // Grace period fallback: if we found the BTRT address more than
             // addr_grace_period ago and still no BTRT_READY, some test process
-            // is stuck. Extract the BTRT data anyway — it accurately reflects
+            // is stuck. Extract the BTRT data anyway -- it accurately reflects
             // which tests passed/failed/are still running.
             if let Some(found_time) = btrt_addr_found_time {
                 if found_time.elapsed() > addr_grace_period {
@@ -5647,6 +5294,11 @@ fn boot_test_btrt(arch: &str) -> Result<()> {
 
     // Small delay to ensure QMP socket is ready
     thread::sleep(Duration::from_millis(500));
+
+    let qmp_sock = config
+        .qmp_socket
+        .as_ref()
+        .expect("QemuConfig::for_btrt always sets qmp_socket");
 
     match qmp::QmpClient::connect(qmp_sock) {
         Ok(mut qmp_client) => {

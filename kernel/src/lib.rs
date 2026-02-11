@@ -77,6 +77,69 @@ pub mod tracing;
 #[cfg(any(feature = "boot_tests", feature = "btrt"))]
 pub mod test_framework;
 
+// =========================================================================
+// Modules migrated from main.rs for unified crate structure (Phase 2A)
+// These are x86_64-only modules that were previously declared only in main.rs.
+// #[allow(dead_code)] is applied because these modules export symbols consumed
+// by main.rs (the binary crate), not by lib.rs itself.
+// =========================================================================
+#[cfg(target_arch = "x86_64")]
+#[macro_use]
+#[allow(dead_code)]
+pub mod macros;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod clock_gettime_test;
+
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+#[allow(dead_code)]
+pub mod terminal_emulator;
+
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[allow(dead_code)]
+pub mod gdt_tests;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod test_checkpoints;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod rtc_test;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod spinlock;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod time_test;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod userspace_fault_tests;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod preempt_count_test;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod stack_switch;
+
+#[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
+pub mod test_userspace;
+
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[allow(dead_code)]
+pub mod contracts;
+
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+#[allow(dead_code)]
+pub mod contract_runner;
+
 #[cfg(test)]
 use bootloader_api::{entry_point, BootInfo};
 
@@ -174,6 +237,95 @@ pub fn hlt_loop() -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     test_panic_handler(info)
+}
+
+// ============================================================
+// Architecture-generic HAL wrappers
+// These dispatch to the correct CpuOps/TimerOps implementation
+// so shared kernel code doesn't need #[cfg(target_arch)] blocks.
+// ============================================================
+
+use arch_impl::traits::{CpuOps, TimerOps};
+
+/// Disable interrupts, execute `f`, then restore previous interrupt state.
+#[inline(always)]
+pub fn arch_without_interrupts<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::without_interrupts(f) }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::without_interrupts(f) }
+}
+
+/// Enable interrupts.
+///
+/// # Safety
+/// Enabling interrupts can cause immediate preemption.
+#[inline(always)]
+pub unsafe fn arch_enable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::enable_interrupts() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts() }
+}
+
+/// Disable interrupts.
+///
+/// # Safety
+/// Disabling interrupts can cause deadlocks if not re-enabled.
+#[inline(always)]
+pub unsafe fn arch_disable_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::disable_interrupts() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts() }
+}
+
+/// Check if interrupts are currently enabled.
+#[inline(always)]
+pub fn arch_interrupts_enabled() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::interrupts_enabled() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::interrupts_enabled() }
+}
+
+/// Halt the CPU until the next interrupt.
+#[inline(always)]
+pub fn arch_halt() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::halt() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::halt() }
+}
+
+/// Enable interrupts and halt (atomic on x86_64).
+#[inline(always)]
+pub fn arch_halt_with_interrupts() {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::cpu::X86Cpu::halt_with_interrupts() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::cpu::Aarch64Cpu::halt_with_interrupts() }
+}
+
+/// Read the CPU timestamp counter (raw ticks).
+#[inline(always)]
+pub fn arch_read_timestamp() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::timer::X86Timer::read_timestamp() }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::timer::Aarch64Timer::read_timestamp() }
+}
+
+/// Convert raw timer ticks to nanoseconds.
+#[inline(always)]
+pub fn arch_ticks_to_nanos(ticks: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    { arch_impl::x86_64::timer::X86Timer::ticks_to_nanos(ticks) }
+    #[cfg(target_arch = "aarch64")]
+    { arch_impl::aarch64::timer::Aarch64Timer::ticks_to_nanos(ticks) }
 }
 
 #[test_case]

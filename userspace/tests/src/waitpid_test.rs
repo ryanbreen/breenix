@@ -16,6 +16,37 @@ extern "C" {
     fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
 }
 
+/// Raw waitpid syscall that returns the kernel value directly (-errno on error)
+/// instead of the C library convention (-1 + set errno).
+#[cfg(target_arch = "aarch64")]
+unsafe fn raw_waitpid(pid: i32, status: *mut i32, options: i32) -> i64 {
+    let result: u64;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 61u64,  // WAIT4
+        inlateout("x0") pid as u64 => result,
+        in("x1") status as u64,
+        in("x2") options as u64,
+        options(nostack),
+    );
+    result as i64
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn raw_waitpid(pid: i32, status: *mut i32, options: i32) -> i64 {
+    let result: u64;
+    core::arch::asm!(
+        "int 0x80",
+        in("rax") 61u64,  // WAIT4
+        inlateout("rdi") pid as u64 => _,
+        in("rsi") status as u64,
+        in("rdx") options as u64,
+        lateout("rax") result,
+        options(nostack, preserves_flags),
+    );
+    result as i64
+}
+
 /// POSIX WIFEXITED: true if child terminated normally
 fn wifexited(status: i32) -> bool {
     (status & 0x7f) == 0
@@ -98,19 +129,21 @@ fn main() {
         println!("[PARENT] Child exit code verified: 42");
 
         // Phase 3: Test WNOHANG with no more children
+        // Use raw syscall to get the kernel return value directly (-errno)
+        // instead of the C library convention (-1 + set errno).
         println!("[PARENT] Phase 3: Testing WNOHANG with no children...");
         let mut status2: i32 = 0;
-        let wnohang_result = unsafe { waitpid(-1, &mut status2, WNOHANG) };
+        let wnohang_result = unsafe { raw_waitpid(-1, &mut status2, WNOHANG) };
 
-        // With no children, waitpid(-1, ..., WNOHANG) MUST return -ECHILD (errno 10)
+        // With no children, waitpid(-1, ..., WNOHANG) MUST return -ECHILD (-10)
         // POSIX requires ECHILD when there are no child processes to wait for.
         // Returning 0 here would be incorrect - 0 means "children exist but none exited yet"
-        println!("[PARENT] waitpid(-1, WNOHANG) returned: {}", wnohang_result);
+        println!("[PARENT] raw_waitpid(-1, WNOHANG) returned: {}", wnohang_result);
 
         if wnohang_result == -10 {
             println!("[PARENT] Correctly returned ECHILD for no children");
         } else {
-            println!("[PARENT] ERROR: Expected -10 (ECHILD) but got different value");
+            println!("[PARENT] ERROR: Expected -10 (ECHILD) but got {}", wnohang_result);
             fail("waitpid with no children must return ECHILD");
         }
 

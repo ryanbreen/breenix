@@ -18,6 +18,37 @@ extern "C" {
     fn sched_yield() -> i32;
 }
 
+/// Raw waitpid syscall that returns the kernel value directly (-errno on error)
+/// instead of the C library convention (-1 + set errno).
+#[cfg(target_arch = "aarch64")]
+unsafe fn raw_waitpid(pid: i32, status: *mut i32, options: i32) -> i64 {
+    let result: u64;
+    core::arch::asm!(
+        "svc #0",
+        in("x8") 61u64,  // WAIT4
+        inlateout("x0") pid as u64 => result,
+        in("x1") status as u64,
+        in("x2") options as u64,
+        options(nostack),
+    );
+    result as i64
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn raw_waitpid(pid: i32, status: *mut i32, options: i32) -> i64 {
+    let result: u64;
+    core::arch::asm!(
+        "int 0x80",
+        in("rax") 61u64,  // WAIT4
+        inlateout("rdi") pid as u64 => _,
+        in("rsi") status as u64,
+        in("rdx") options as u64,
+        lateout("rax") result,
+        options(nostack, preserves_flags),
+    );
+    result as i64
+}
+
 /// POSIX WIFEXITED: true if child terminated normally
 fn wifexited(status: i32) -> bool {
     (status & 0x7f) == 0
@@ -136,16 +167,17 @@ fn main() {
         }
 
         // Step 4: Now that child is reaped, WNOHANG should return ECHILD
+        // Use raw syscall to get kernel return value directly (-errno)
         println!("\nStep 4: WNOHANG after child reaped (should return ECHILD)...");
         let mut status3: i32 = 0;
-        let final_result = unsafe { waitpid(-1, &mut status3, WNOHANG) };
+        let final_result = unsafe { raw_waitpid(-1, &mut status3, WNOHANG) };
 
-        println!("  waitpid(-1, WNOHANG) returned: {}", final_result);
+        println!("  raw_waitpid(-1, WNOHANG) returned: {}", final_result);
 
         if final_result == -10 {
             println!("  PASS: Correctly returned ECHILD (no more children)");
         } else {
-            println!("  FAIL: Expected -10 (ECHILD) but got different value");
+            println!("  FAIL: Expected -10 (ECHILD) but got {}", final_result);
             println!("WNOHANG_TIMING_TEST_FAILED");
             std::process::exit(1);
         }

@@ -309,7 +309,11 @@ mod syscall_nums {
     pub const SHUTDOWN: u64 = 48;
     pub const BIND: u64 = 49;
     pub const LISTEN: u64 = 50;
+    pub const GETSOCKNAME: u64 = 51;
+    pub const GETPEERNAME: u64 = 52;
     pub const SOCKETPAIR: u64 = 53;
+    pub const SETSOCKOPT: u64 = 54;
+    pub const GETSOCKOPT: u64 = 55;
     pub const EXEC: u64 = 59;
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
@@ -337,7 +341,14 @@ mod syscall_nums {
     pub const LSEEK: u64 = 258;
     pub const FSTAT: u64 = 259;
     pub const GETDENTS64: u64 = 260;
+    pub const NANOSLEEP: u64 = 35;
+    pub const CLONE: u64 = 56;
+    pub const GETPPID: u64 = 110;
+    pub const FUTEX: u64 = 202;
+    pub const SET_TID_ADDRESS: u64 = 218;
+    pub const EXIT_GROUP: u64 = 231;
     pub const PIPE2: u64 = 293;
+    pub const GETRANDOM: u64 = 318;
     // PTY syscalls (Breenix-specific)
     pub const POSIX_OPENPT: u64 = 400;
     pub const GRANTPT: u64 = 401;
@@ -370,12 +381,35 @@ fn dispatch_syscall(
     _frame: &mut Aarch64ExceptionFrame,
 ) -> u64 {
     match num {
-        syscall_nums::EXIT | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
+        syscall_nums::EXIT | syscall_nums::EXIT_GROUP | syscall_nums::ARM64_EXIT | syscall_nums::ARM64_EXIT_GROUP => {
             let exit_code = arg1 as i32;
             crate::serial_println!("[syscall] exit({})", exit_code);
 
             // Proper process termination (inlined from sys_exit since handlers module is x86_64-only)
             if let Some(thread_id) = crate::task::scheduler::current_thread_id() {
+                // Handle clear_child_tid for clone threads (CLONE_CHILD_CLEARTID)
+                // Write 0 to the tid address and futex-wake any joiners
+                {
+                    let manager_guard = crate::process::manager();
+                    if let Some(ref manager) = *manager_guard {
+                        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                            if let Some(tid_addr) = process.clear_child_tid {
+                                let tg_id = process.thread_group_id.unwrap_or(_pid.as_u64());
+                                // Write 0 to the tid address
+                                unsafe {
+                                    let ptr = tid_addr as *mut u32;
+                                    if !ptr.is_null() && tid_addr < 0x7FFF_FFFF_FFFF {
+                                        core::ptr::write_volatile(ptr, 0);
+                                    }
+                                }
+                                // Futex-wake any threads waiting on this address
+                                drop(manager_guard);
+                                crate::syscall::futex::futex_wake_for_thread_group(tg_id, tid_addr, u32::MAX);
+                            }
+                        }
+                    }
+                }
+
                 // Handle thread exit through ProcessScheduler
                 crate::task::process_task::ProcessScheduler::handle_thread_exit(thread_id, exit_code);
 
@@ -624,6 +658,30 @@ fn dispatch_syscall(
                 crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
             }
         }
+        syscall_nums::GETSOCKNAME => {
+            match crate::syscall::socket::sys_getsockname(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETPEERNAME => {
+            match crate::syscall::socket::sys_getpeername(arg1, arg2, arg3) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SETSOCKOPT => {
+            match crate::syscall::socket::sys_setsockopt(arg1, arg2, arg3, arg4, arg5) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETSOCKOPT => {
+            match crate::syscall::socket::sys_getsockopt(arg1, arg2, arg3, arg4, arg5) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
 
         // Filesystem syscalls
         syscall_nums::OPEN => {
@@ -791,7 +849,38 @@ fn dispatch_syscall(
             sys_simulate_oom_aarch64(arg1)
         }
 
+        // Thread/process creation syscalls
+        syscall_nums::CLONE => {
+            match crate::syscall::clone::sys_clone(arg1, arg2, arg3, arg4, arg5) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::FUTEX => {
+            match crate::syscall::futex::sys_futex(arg1, arg2 as u32, arg3 as u32, arg4, arg5, arg6 as u32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::GETRANDOM => {
+            match crate::syscall::random::sys_getrandom(arg1, arg2, arg3 as u32) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::NANOSLEEP => {
+            match crate::syscall::time::sys_nanosleep(arg1, arg2) {
+                crate::syscall::SyscallResult::Ok(result) => result,
+                crate::syscall::SyscallResult::Err(e) => (-(e as i64)) as u64,
+            }
+        }
+        syscall_nums::SET_TID_ADDRESS => {
+            // Minimal implementation: just return the current thread ID
+            crate::task::scheduler::current_thread_id().unwrap_or(0)
+        }
         syscall_nums::GETPID => sys_getpid(),
+
+        syscall_nums::GETPPID => sys_getppid(),
 
         syscall_nums::GETTID => sys_gettid(),
 
@@ -842,6 +931,24 @@ fn sys_getpid() -> u64 {
     if let Some(ref manager) = *crate::process::manager() {
         if let Some((pid, _process)) = manager.find_process_by_thread(thread_id) {
             return pid.as_u64();
+        }
+    }
+
+    0
+}
+
+/// sys_getppid - Get the parent process ID (ARM64)
+fn sys_getppid() -> u64 {
+    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    if thread_id == 0 {
+        return 0;
+    }
+
+    if let Some(ref manager) = *crate::process::manager() {
+        if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+            if let Some(parent_pid) = process.parent {
+                return parent_pid.as_u64();
+            }
         }
     }
 

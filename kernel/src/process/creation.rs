@@ -135,14 +135,19 @@ pub fn create_user_process(name: String, elf_data: &[u8]) -> Result<ProcessId, &
     crate::serial_println!("create_user_process: ENTRY - Creating '{}' (ARM64)", name);
 
     // Create the process using existing infrastructure
+    // Use create_process_with_argv to set up a proper argc/argv on the user stack.
+    // Without this, the process sees argc=0 and argv=NULL.
     crate::serial_println!("create_user_process: Acquiring process manager lock");
+    let mut default_argv_buf = name.as_bytes().to_vec();
+    default_argv_buf.push(0); // null-terminate
+    let argv_slices: &[&[u8]] = &[&default_argv_buf];
     let pid = {
         let mut manager_guard = crate::process::manager();
         crate::serial_println!("create_user_process: Got process manager lock");
         if let Some(ref mut manager) = *manager_guard {
-            crate::serial_println!("create_user_process: Calling manager.create_process");
-            let result = manager.create_process(name.clone(), elf_data);
-            crate::serial_println!("create_user_process: manager.create_process returned: {:?}", result.is_ok());
+            crate::serial_println!("create_user_process: Calling manager.create_process_with_argv");
+            let result = manager.create_process_with_argv(name.clone(), elf_data, argv_slices);
+            crate::serial_println!("create_user_process: manager.create_process_with_argv returned: {:?}", result.is_ok());
             result
         } else {
             crate::serial_println!("create_user_process: Process manager not available!");

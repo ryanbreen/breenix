@@ -1,10 +1,14 @@
 //! Graphical progress display for boot tests
 //!
 //! Renders progress bars showing test execution status in real-time.
-//! Works on both x86_64 (with interactive feature) and ARM64.
+//! Works on both x86_64 and ARM64 whenever a framebuffer is available.
 //!
-//! On platforms without graphical framebuffer support, this module
-//! gracefully degrades to a no-op.
+//! On x86_64, the SHELL_FRAMEBUFFER requires the `interactive` feature since it
+//! needs the double-buffered framebuffer setup. Without it, the raw framebuffer
+//! is consumed by the basic text logger and no shell framebuffer exists.
+//! On ARM64, VirtIO GPU provides the framebuffer regardless of feature flags.
+//!
+//! When no framebuffer is available, this module gracefully degrades to a no-op.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,16 +68,16 @@ pub fn request_refresh() {
 // =============================================================================
 
 /// Check if framebuffer is available (architecture-specific)
+///
+/// On x86_64, SHELL_FRAMEBUFFER only exists with the `interactive` feature.
+/// On ARM64, SHELL_FRAMEBUFFER is always available when VirtIO GPU initializes.
 fn has_framebuffer_available() -> bool {
-    #[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+    #[cfg(target_arch = "x86_64")]
     {
-        crate::logger::SHELL_FRAMEBUFFER.get().is_some()
-    }
-
-    #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
-    {
-        // Without interactive feature, no graphical framebuffer is available
-        false
+        #[cfg(feature = "interactive")]
+        { crate::logger::SHELL_FRAMEBUFFER.get().is_some() }
+        #[cfg(not(feature = "interactive"))]
+        { false }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -83,8 +87,14 @@ fn has_framebuffer_available() -> bool {
 }
 
 // =============================================================================
-// Graphical rendering implementation (only when graphics available)
+// Graphical rendering implementation
 // =============================================================================
+//
+// The full rendering code is compiled on platforms that can have a framebuffer:
+// - x86_64 with interactive feature (SHELL_FRAMEBUFFER exists)
+// - ARM64 (VirtIO GPU provides SHELL_FRAMEBUFFER)
+//
+// On x86_64 without interactive, a no-op stub is provided instead.
 
 /// Render to the appropriate framebuffer based on platform
 #[cfg(any(feature = "interactive", target_arch = "aarch64"))]
@@ -406,8 +416,12 @@ fn render_to_framebuffer() {
     }
 }
 
-/// No-op rendering for platforms without graphics support
+/// No-op rendering stub for x86_64 without interactive feature.
+///
+/// On x86_64, the SHELL_FRAMEBUFFER requires the `interactive` feature because
+/// without it, the raw framebuffer is consumed by the basic text logger.
+/// This stub ensures the code compiles cleanly with zero warnings.
 #[cfg(all(target_arch = "x86_64", not(feature = "interactive")))]
 fn render_to_framebuffer() {
-    // No graphical display available without interactive feature
+    // No graphical display available - framebuffer is used by basic text logger
 }

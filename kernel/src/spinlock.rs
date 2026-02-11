@@ -116,12 +116,12 @@ impl SpinLockIrq {
     #[allow(dead_code)]
     pub fn lock(&self) -> SpinLockIrqGuard<'_> {
         // Save interrupt state and disable interrupts
-        let was_enabled = x86_64::instructions::interrupts::are_enabled();
-        x86_64::instructions::interrupts::disable();
-        
+        let was_enabled = crate::arch_interrupts_enabled();
+        unsafe { crate::arch_disable_interrupts(); }
+
         // Now acquire the regular spinlock (which disables preemption)
         let _guard = self.lock.lock();
-        
+
         SpinLockIrqGuard {
             lock: &self.lock,
             irq_was_enabled: was_enabled,
@@ -140,10 +140,10 @@ impl<'a> Drop for SpinLockIrqGuard<'a> {
     fn drop(&mut self) {
         // Release the lock (and re-enable preemption)
         self.lock.unlock();
-        
+
         // Restore interrupt state
         if self.irq_was_enabled {
-            x86_64::instructions::interrupts::enable();
+            unsafe { crate::arch_enable_interrupts(); }
         }
     }
 }

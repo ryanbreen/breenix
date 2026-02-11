@@ -71,36 +71,33 @@ pub fn add_serial_byte(byte: u8) {
 }
 
 pub fn write_byte(byte: u8) {
-    use x86_64::instructions::interrupts;
-
     // CRITICAL: Check if interrupts are currently enabled
     // We must NOT re-enable interrupts if they were disabled by syscall entry
-    let irq_enabled = interrupts::are_enabled();
+    let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    interrupts::disable();
+    unsafe { crate::arch_disable_interrupts(); }
 
     SERIAL1.lock().send(byte);
 
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
     if irq_enabled {
-        interrupts::enable();
+        unsafe { crate::arch_enable_interrupts(); }
     }
 }
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    use x86_64::instructions::interrupts;
 
     // CRITICAL FIX: Check if interrupts are currently enabled BEFORE disabling
     // We must NOT re-enable interrupts if they were disabled by syscall entry
     // This fixes the RDI corruption bug where timer interrupts fire during syscalls
-    let irq_enabled = interrupts::are_enabled();
+    let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    interrupts::disable();
+    unsafe { crate::arch_disable_interrupts(); }
 
     SERIAL1
         .lock()
@@ -110,21 +107,20 @@ pub fn _print(args: fmt::Arguments) {
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
     if irq_enabled {
-        interrupts::enable();
+        unsafe { crate::arch_enable_interrupts(); }
     }
 }
 
 /// Try to print without blocking - returns Err if lock is held
 pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
-    use x86_64::instructions::interrupts;
 
     // CRITICAL: Check if interrupts are currently enabled
     // We must NOT re-enable interrupts if they were disabled by syscall entry
-    let irq_enabled = interrupts::are_enabled();
+    let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    interrupts::disable();
+    unsafe { crate::arch_disable_interrupts(); }
 
     let result = match SERIAL1.try_lock() {
         Some(mut serial) => {
@@ -137,7 +133,7 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
     // Only re-enable if they were enabled before
     // This prevents race condition in syscall handler where interrupts must stay disabled
     if irq_enabled {
-        interrupts::enable();
+        unsafe { crate::arch_enable_interrupts(); }
     }
 
     result
@@ -148,21 +144,20 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
 #[allow(dead_code)]
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
-    use x86_64::instructions::interrupts;
-    
+
     // Use a simple global flag to reduce corruption
-    static EMERGENCY_IN_USE: core::sync::atomic::AtomicBool = 
+    static EMERGENCY_IN_USE: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
-    
+
     // Try to claim exclusive emergency access
     if EMERGENCY_IN_USE.swap(true, core::sync::atomic::Ordering::Acquire) {
         return Err(()); // Someone else is using emergency path
     }
-    
+
     // Write directly to serial port without locking
     // This is unsafe but necessary for panic handling
     struct EmergencySerial;
-    
+
     impl fmt::Write for EmergencySerial {
         fn write_str(&mut self, s: &str) -> fmt::Result {
             for byte in s.bytes() {
@@ -174,14 +169,14 @@ pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
             Ok(())
         }
     }
-    
-    interrupts::without_interrupts(|| {
+
+    crate::arch_without_interrupts(|| {
         let mut emergency = EmergencySerial;
         let result = emergency.write_fmt(args).map_err(|_| ());
-        
+
         // Release emergency access
         EMERGENCY_IN_USE.store(false, core::sync::atomic::Ordering::Release);
-        
+
         result
     })
 }
@@ -216,14 +211,13 @@ macro_rules! serial_println {
 #[doc(hidden)]
 pub fn _log_print(args: fmt::Arguments) {
     use core::fmt::Write;
-    use x86_64::instructions::interrupts;
 
     // CRITICAL: Check if interrupts are currently enabled BEFORE disabling
     // We must NOT re-enable interrupts if they were disabled by syscall entry
-    let irq_enabled = interrupts::are_enabled();
+    let irq_enabled = crate::arch_interrupts_enabled();
 
     // Disable interrupts while holding the lock
-    interrupts::disable();
+    unsafe { crate::arch_disable_interrupts(); }
 
     SERIAL2
         .lock()
@@ -232,7 +226,7 @@ pub fn _log_print(args: fmt::Arguments) {
 
     // Only re-enable if they were enabled before
     if irq_enabled {
-        interrupts::enable();
+        unsafe { crate::arch_enable_interrupts(); }
     }
 }
 

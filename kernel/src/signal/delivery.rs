@@ -754,10 +754,14 @@ pub fn notify_parent_of_termination_deferred(notification: &ParentNotification) 
         // manager_guard is dropped here
     };
 
-    // Unblock parent thread if it's waiting on waitpid
+    // Unblock parent thread if it's waiting on waitpid or sigsuspend
     if let Some(parent_tid) = parent_thread_id {
         crate::task::scheduler::with_scheduler(|sched| {
+            // Wake parent if blocked in waitpid (BlockedOnChildExit)
             sched.unblock_for_child_exit(parent_tid);
+            // Also wake parent if blocked in sigsuspend/pause (BlockedOnSignal)
+            // so SIGCHLD can be delivered
+            sched.unblock_for_signal(parent_tid);
         });
         log::info!(
             "notify_parent_of_termination_deferred: unblocked parent thread {} for child {} termination",

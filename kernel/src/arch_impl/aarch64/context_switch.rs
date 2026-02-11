@@ -1150,10 +1150,13 @@ fn set_next_ttbr0_for_thread(thread_id: u64) {
         let manager_guard = crate::process::manager();
         if let Some(ref manager) = *manager_guard {
             if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
+                // Check page_table first (owns the page table), then inherited_cr3
+                // (clone/fork children that share parent's address space)
                 process
                     .page_table
                     .as_ref()
                     .map(|pt| pt.level_4_frame().start_address().as_u64())
+                    .or(process.inherited_cr3)
             } else {
                 None
             }

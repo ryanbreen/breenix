@@ -77,10 +77,45 @@ extern "C" fn __restore_rt() -> ! {
     )
 }
 
+/// Raw write syscall - async-signal-safe (no locks, no RefCell, no allocations)
+fn raw_write_str(s: &str) {
+    let fd: i32 = 1; // stdout
+    let buf = s.as_ptr();
+    let len = s.len();
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        std::arch::asm!(
+            "svc #0",
+            in("x8") 1u64,  // WRITE syscall
+            inlateout("x0") fd as u64 => _,
+            in("x1") buf as u64,
+            in("x2") len as u64,
+            options(nostack),
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        std::arch::asm!(
+            "int 0x80",
+            in("rax") 1u64,
+            in("rdi") fd as u64,
+            in("rsi") buf as u64,
+            in("rdx") len as u64,
+            lateout("rax") _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 /// SIGUSR1 handler - sets flag when called
+/// IMPORTANT: Uses raw write syscall, NOT println!, because signal handlers
+/// can fire during another println (which holds a RefCell borrow on stdout).
+/// Using println here would panic with "RefCell already borrowed".
 extern "C" fn sigusr1_handler(_sig: i32) {
     SIGUSR1_RECEIVED.store(true, Ordering::SeqCst);
-    println!("  HANDLER: SIGUSR1 received in parent!");
+    raw_write_str("  HANDLER: SIGUSR1 received in parent!\n");
 }
 
 fn main() {
@@ -144,24 +179,35 @@ fn main() {
         println!("[PARENT] Forked child PID: {}", fork_result);
 
         // Step 3: Call pause() to wait for signal
-        println!("\nStep 3: Calling pause() to wait for signal...");
-        let pause_ret = unsafe { pause() };
+        // NOTE: On ARM64, sched_yield doesn't cause an immediate context switch
+        // (it sets need_resched but the SVC return path has PREEMPT_ACTIVE set).
+        // The child may complete all its yields and send the signal before the
+        // parent gets a timer-driven context switch. In that case, the signal
+        // is delivered on a syscall return BEFORE we reach pause().
+        // We handle both paths: signal-before-pause and signal-during-pause.
+        if SIGUSR1_RECEIVED.load(Ordering::SeqCst) {
+            println!("\nStep 3: Signal already received before pause() (race-safe path)");
+            println!("  PASS: SIGUSR1 was delivered before pause() was called");
+        } else {
+            println!("\nStep 3: Calling pause() to wait for signal...");
+            let pause_ret = unsafe { pause() };
 
-        // pause() should return -1 (libc convention) with errno EINTR
-        // But the raw kernel returns -EINTR (-4)
-        // Our libbreenix-libc pause() calls syscall_result_to_c_int which
-        // may return -1 or the raw value. Check both.
-        println!("[PARENT] pause() returned: {}", pause_ret);
+            // pause() should return -1 (libc convention) with errno EINTR
+            // But the raw kernel returns -EINTR (-4)
+            // Our libbreenix-libc pause() calls syscall_result_to_c_int which
+            // may return -1 or the raw value. Check both.
+            println!("[PARENT] pause() returned: {}", pause_ret);
 
-        // The libc pause() converts to C convention: returns -1 with errno set
-        // But the original test checks for -4 (raw kernel return).
-        // Accept either -4 (raw) or -1 (libc converted).
-        if pause_ret != -4 && pause_ret != -1 {
-            println!("  FAIL: pause() should return -4 (-EINTR) or -1, got {}", pause_ret);
-            println!("PAUSE_TEST_FAILED");
-            std::process::exit(1);
+            // The libc pause() converts to C convention: returns -1 with errno set
+            // But the original test checks for -4 (raw kernel return).
+            // Accept either -4 (raw) or -1 (libc converted).
+            if pause_ret != -4 && pause_ret != -1 {
+                println!("  FAIL: pause() should return -4 (-EINTR) or -1, got {}", pause_ret);
+                println!("PAUSE_TEST_FAILED");
+                std::process::exit(1);
+            }
+            println!("  PASS: pause() correctly returned after signal");
         }
-        println!("  PASS: pause() correctly returned after signal");
 
         // Step 4: Verify signal handler was called
         println!("\nStep 4: Verify SIGUSR1 handler was called");

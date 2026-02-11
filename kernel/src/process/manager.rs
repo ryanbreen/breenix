@@ -2245,6 +2245,8 @@ impl ProcessManager {
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        // Close FD_CLOEXEC file descriptors per POSIX
+        process.fd_table.close_cloexec();
         log::debug!("exec_process: Reset signal/heap/mmap for process {}, heap_start={:#x}", pid.as_u64(), heap_base);
 
         // Replace the page table with the new one containing the loaded program
@@ -2541,6 +2543,9 @@ impl ProcessManager {
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
 
+        // Close FD_CLOEXEC file descriptors per POSIX
+        process.fd_table.close_cloexec();
+
         // Replace the page table with the new one
         process.page_table = Some(new_page_table);
         process.stack = Some(Box::new(new_stack));
@@ -2759,6 +2764,9 @@ impl ProcessManager {
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+
+        // Close FD_CLOEXEC file descriptors per POSIX
+        process.fd_table.close_cloexec();
 
         process.page_table = Some(new_page_table);
         process.stack = Some(Box::new(new_stack));
@@ -3019,6 +3027,8 @@ impl ProcessManager {
         process.signals.exec_reset();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        // Close FD_CLOEXEC file descriptors per POSIX
+        process.fd_table.close_cloexec();
         log::debug!(
             "exec_process [ARM64]: Reset signal/heap/mmap for process {}, heap_start={:#x}",
             pid.as_u64(),

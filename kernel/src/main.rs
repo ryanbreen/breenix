@@ -33,7 +33,7 @@ mod aarch64_stub {
 extern crate alloc;
 
 #[cfg(target_arch = "x86_64")]
-use crate::syscall::SyscallResult;
+use kernel::syscall::SyscallResult;
 #[cfg(target_arch = "x86_64")]
 use alloc::boxed::Box;
 #[cfg(target_arch = "x86_64")]
@@ -56,95 +56,27 @@ pub static BOOTLOADER_CONFIG: BootloaderConfig = {
 #[cfg(target_arch = "x86_64")]
 bootloader_api::entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
+// Import the kernel library crate. All modules are accessed via kernel::.
+// #[macro_use] makes serial_println!, serial_print!, delay!, test_checkpoint! available.
 #[cfg(target_arch = "x86_64")]
 #[macro_use]
-mod macros;
-#[cfg(target_arch = "x86_64")]
-mod arch_impl;
-#[cfg(target_arch = "x86_64")]
-mod clock_gettime_test;
-#[cfg(target_arch = "x86_64")]
-mod block;
-#[cfg(target_arch = "x86_64")]
-mod drivers;
-#[cfg(target_arch = "x86_64")]
-mod elf;
-#[cfg(target_arch = "x86_64")]
-mod framebuffer;
-#[cfg(target_arch = "x86_64")]
-mod fs;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-mod graphics;
-#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
-mod terminal_emulator;
-#[cfg(target_arch = "x86_64")]
-mod gdt;
-#[cfg(target_arch = "x86_64")]
-mod net;
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-mod gdt_tests;
-#[cfg(target_arch = "x86_64")]
-mod test_checkpoints;
-#[cfg(target_arch = "x86_64")]
-mod interrupts;
-#[cfg(target_arch = "x86_64")]
-mod irq_log;
-#[cfg(target_arch = "x86_64")]
-mod keyboard;
-#[cfg(target_arch = "x86_64")]
-mod logger;
-#[cfg(target_arch = "x86_64")]
-mod memory;
-#[cfg(target_arch = "x86_64")]
-mod per_cpu;
-#[cfg(target_arch = "x86_64")]
-mod process;
-#[cfg(target_arch = "x86_64")]
-mod rtc_test;
-#[cfg(target_arch = "x86_64")]
-mod signal;
-#[cfg(target_arch = "x86_64")]
-mod ipc;
-#[cfg(target_arch = "x86_64")]
-mod serial;
-#[cfg(target_arch = "x86_64")]
-mod socket;
-#[cfg(target_arch = "x86_64")]
-mod spinlock;
-#[cfg(target_arch = "x86_64")]
-mod syscall;
-#[cfg(target_arch = "x86_64")]
-mod task;
-#[cfg(target_arch = "x86_64")]
-pub mod test_exec;
-#[cfg(target_arch = "x86_64")]
-mod time;
-#[cfg(target_arch = "x86_64")]
-mod time_test;
-#[cfg(target_arch = "x86_64")]
-mod tracing;
-#[cfg(target_arch = "x86_64")]
-mod tls;
-#[cfg(target_arch = "x86_64")]
-mod tty;
-#[cfg(target_arch = "x86_64")]
-mod userspace_test;
-#[cfg(target_arch = "x86_64")]
-mod userspace_fault_tests;
-#[cfg(target_arch = "x86_64")]
-mod preempt_count_test;
-#[cfg(target_arch = "x86_64")]
-mod stack_switch;
-#[cfg(target_arch = "x86_64")]
-mod test_userspace;
+extern crate kernel;
 
+// Re-import commonly used kernel modules for unqualified access
+#[cfg(target_arch = "x86_64")]
+use kernel::{
+    drivers, gdt, interrupts, keyboard, logger, memory, net, per_cpu,
+    preempt_count_test, process, serial, stack_switch, syscall, task, test_exec, time,
+    tls, tracing, tty, userspace_test,
+};
+#[cfg(all(target_arch = "x86_64", not(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"))))]
+use kernel::{clock_gettime_test, time_test};
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
-mod contracts;
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-mod contract_runner;
+use kernel::{contract_runner, gdt_tests, userspace_fault_tests};
+#[cfg(all(target_arch = "x86_64", feature = "interactive"))]
+use kernel::graphics;
 #[cfg(all(target_arch = "x86_64", any(feature = "boot_tests", feature = "btrt")))]
-#[allow(dead_code)] // Wire protocol types + API surface used by host-side parser
-mod test_framework;
+use kernel::test_framework;
 
 // Fault test thread function
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
@@ -165,25 +97,6 @@ extern "C" fn fault_test_thread(_arg: u64) -> ! {
     // Thread complete, just halt
     loop {
         x86_64::instructions::hlt();
-    }
-}
-
-// Test infrastructure
-#[cfg(target_arch = "x86_64")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum QemuExitCode {
-    Success = 0x10,
-    Failed = 0x11,
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn test_exit_qemu(exit_code: QemuExitCode) {
-    use x86_64::instructions::port::Port;
-
-    unsafe {
-        let mut port = Port::new(0xf4);
-        port.write(exit_code as u32);
     }
 }
 
@@ -258,7 +171,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     // Initialize BTRT (requires memory for virt_to_phys and serial for output)
     #[cfg(feature = "btrt")]
     {
-        use crate::test_framework::{btrt, catalog};
+        use kernel::test_framework::{btrt, catalog};
         btrt::init();
         btrt::pass(catalog::KERNEL_ENTRY);
         btrt::pass(catalog::SERIAL_INIT);
@@ -283,7 +196,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
         if let Some(fb) = logger::SHELL_FRAMEBUFFER.get() {
             let mut fb_guard = fb.lock();
 
-            use crate::graphics::primitives::Canvas;
+            use kernel::graphics::primitives::Canvas;
             let width = Canvas::width(&*fb_guard);
             let height = Canvas::height(&*fb_guard);
 
@@ -357,50 +270,50 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     let pci_device_count = drivers::init();
     log::info!("PCI subsystem initialized: {} devices found", pci_device_count);
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::PCI_ENUMERATION);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PCI_ENUMERATION);
 
     // Initialize network stack (after E1000 driver is ready)
     net::init();
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::NETWORK_STACK_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::NETWORK_STACK_INIT);
 
     // Initialize ext2 root filesystem (after VirtIO block device is ready)
-    match crate::fs::ext2::init_root_fs() {
+    match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {
             log::info!("ext2 root filesystem mounted");
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::pass(crate::test_framework::catalog::EXT2_MOUNT);
+            kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
             log::warn!("Failed to mount ext2 root: {:?}", e);
             #[cfg(feature = "btrt")]
-            crate::test_framework::btrt::fail(
-                crate::test_framework::catalog::EXT2_MOUNT,
-                crate::test_framework::btrt::BtrtErrorCode::IoError,
+            kernel::test_framework::btrt::fail(
+                kernel::test_framework::catalog::EXT2_MOUNT,
+                kernel::test_framework::btrt::BtrtErrorCode::IoError,
                 0,
             );
         }
     }
 
     // Initialize devfs (/dev virtual filesystem)
-    crate::fs::devfs::init();
+    kernel::fs::devfs::init();
     log::info!("devfs initialized at /dev");
 
     // Initialize devptsfs (/dev/pts pseudo-terminal slave filesystem)
-    crate::fs::devptsfs::init();
+    kernel::fs::devptsfs::init();
     log::info!("devptsfs initialized at /dev/pts");
 
     // Detect CPU features (must be before procfs so /proc/cpuinfo has real data)
-    crate::arch_impl::x86_64::cpuinfo::init();
-    log::info!("CPU detected: {}", crate::arch_impl::x86_64::cpuinfo::get()
+    kernel::arch_impl::x86_64::cpuinfo::init();
+    log::info!("CPU detected: {}", kernel::arch_impl::x86_64::cpuinfo::get()
         .map(|c| c.brand_str())
         .unwrap_or("Unknown"));
 
     // Initialize procfs (/proc virtual filesystem)
-    crate::fs::procfs::init();
+    kernel::fs::procfs::init();
     log::info!("procfs initialized at /proc");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::PROCFS_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::PROCFS_INIT);
 
     // Update IST stacks with per-CPU emergency stacks
     gdt::update_ist_stacks();
@@ -473,7 +386,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     time::init();
     log::info!("Timer initialized");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::TIMER_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::TIMER_INIT);
 
     // Initialize DTrace-style tracing framework
     // This must be after per_cpu::init() and time::init() for timestamps
@@ -483,7 +396,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     tracing::providers::enable_all();
     log::info!("Tracing subsystem initialized and enabled");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::TRACING_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::TRACING_INIT);
 
     // CHECKPOINT A: Verify PIT Configuration
     log::info!("CHECKPOINT A: PIT initialized at {} Hz", 100);
@@ -652,7 +565,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     task::scheduler::init_with_current(init_task);
     log::info!("Threading subsystem initialized with init_task (swapper/0)");
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::SCHEDULER_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
     
     log::info!("percpu: cpu0 base={:#x}, current=swapper/0, rsp0={:#x}", 
         x86_64::registers::model_specific::GsBase::read().as_u64(),
@@ -667,15 +580,23 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     task::workqueue::init_workqueue();
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::WORKQUEUE_INIT);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);
 
     // Initialize softirq subsystem (depends on kthread infrastructure)
     task::softirqd::init_softirq();
     #[cfg(feature = "btrt")]
-    crate::test_framework::btrt::pass(crate::test_framework::catalog::KTHREAD_SUBSYSTEM);
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
 
     // Spawn render thread for deferred framebuffer rendering (interactive mode only)
-    // This must be done after kthread infrastructure is ready
+    // This must be done after kthread infrastructure is ready.
+    //
+    // Boot graphics architecture (shared with ARM64):
+    // - Both architectures use render_task::spawn_render_thread() for deferred rendering
+    // - Both use SHELL_FRAMEBUFFER (logger.rs on x86_64, arm64_fb.rs on ARM64)
+    // - Both use graphics::render_queue for lock-free echo from interrupt context
+    // - Both use graphics::terminal_manager for split-screen terminal UI
+    // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
+    // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
     #[cfg(feature = "interactive")]
     if let Err(e) = graphics::render_task::spawn_render_thread() {
         log::error!("Failed to spawn render thread: {}", e);
@@ -684,16 +605,16 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // Test kthread lifecycle BEFORE creating userspace processes
     // (must be done early so scheduler doesn't preempt to userspace)
     #[cfg(feature = "testing")]
-    crate::task::kthread_tests::test_kthread_lifecycle();
+    kernel::task::kthread_tests::test_kthread_lifecycle();
     #[cfg(feature = "testing")]
-    crate::task::kthread_tests::test_kthread_join();
+    kernel::task::kthread_tests::test_kthread_join();
     // Skip workqueue test in kthread_stress_test mode - it passes in Boot Stages
     // which has the same code but different build configuration. The stress test
     // focuses on kthread lifecycle, not workqueue functionality.
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
-    test_workqueue();
+    kernel::task::workqueue_tests::test_workqueue();
     #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
-    test_softirq();
+    kernel::task::softirq_tests::test_softirq();
 
     // In kthread_test_only mode, exit immediately after join test
     #[cfg(feature = "kthread_test_only")]
@@ -725,7 +646,7 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     // In kthread_stress_test mode, run stress test and exit
     #[cfg(feature = "kthread_stress_test")]
     {
-        test_kthread_stress();
+        kernel::task::kthread_tests::test_kthread_stress();
         log::info!("=== KTHREAD_STRESS_TEST: All stress tests passed ===");
         log::info!("KTHREAD_STRESS_TEST_COMPLETE");
         unsafe {
@@ -737,15 +658,15 @@ extern "C" fn kernel_main_on_kernel_stack(arg: *mut core::ffi::c_void) -> ! {
     }
 
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    test_kthread_exit_code();
+    kernel::task::kthread_tests::test_kthread_exit_code();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    test_kthread_park_unpark();
+    kernel::task::kthread_tests::test_kthread_park_unpark();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    test_kthread_double_stop();
+    kernel::task::kthread_tests::test_kthread_double_stop();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    test_kthread_should_stop_non_kthread();
+    kernel::task::kthread_tests::test_kthread_should_stop_non_kthread();
     #[cfg(all(feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-    test_kthread_stop_after_exit();
+    kernel::task::kthread_tests::test_kthread_stop_after_exit();
 
     // Continue with the rest of kernel initialization...
     // (This will include creating user processes, enabling interrupts, etc.)
@@ -958,6 +879,11 @@ fn kernel_main_continue() -> ! {
 
     // RING3_SMOKE: Create userspace process early for CI validation
     // Must be done before int3() which might hang in CI
+    //
+    // NOTE: The canonical list of test binaries is in boot::test_list::TEST_BINARIES.
+    // The x86_64 loading pattern below uses individual blocks with per-block
+    // without_interrupts for architectural reasons and is intentionally not
+    // refactored to iterate the shared list. See boot/test_list.rs for details.
     #[cfg(all(feature = "testing", not(feature = "interactive")))]
     {
         x86_64::instructions::interrupts::without_interrupts(|| {
@@ -979,7 +905,7 @@ fn kernel_main_continue() -> ! {
             // Launch register_init_test to verify registers are properly initialized
             {
                 serial_println!("RING3_SMOKE: creating register_init_test userspace process");
-                let register_test_buf = crate::userspace_test::get_test_binary("register_init_test");
+                let register_test_buf = kernel::userspace_test::get_test_binary("register_init_test");
                 match process::creation::create_user_process(String::from("register_init_test"), &register_test_buf) {
                     Ok(pid) => {
                         log::info!("Created register_init_test process with PID {}", pid.as_u64());
@@ -993,7 +919,7 @@ fn kernel_main_continue() -> ! {
             // Launch clock_gettime_test after hello_time
             {
                 serial_println!("RING3_SMOKE: creating clock_gettime_test userspace process");
-                let clock_test_buf = crate::userspace_test::get_test_binary("clock_gettime_test");
+                let clock_test_buf = kernel::userspace_test::get_test_binary("clock_gettime_test");
                 match process::creation::create_user_process(String::from("clock_gettime_test"), &clock_test_buf) {
                     Ok(pid) => {
                         log::info!("Created clock_gettime_test process with PID {}", pid.as_u64());
@@ -1007,7 +933,7 @@ fn kernel_main_continue() -> ! {
             // Launch brk_test to validate heap management syscall
             {
                 serial_println!("RING3_SMOKE: creating brk_test userspace process");
-                let brk_test_buf = crate::userspace_test::get_test_binary("brk_test");
+                let brk_test_buf = kernel::userspace_test::get_test_binary("brk_test");
                 match process::creation::create_user_process(String::from("brk_test"), &brk_test_buf) {
                     Ok(pid) => {
                         log::info!("Created brk_test process with PID {}", pid.as_u64());
@@ -1021,7 +947,7 @@ fn kernel_main_continue() -> ! {
             // Launch test_mmap to validate mmap/munmap syscalls
             {
                 serial_println!("RING3_SMOKE: creating test_mmap userspace process");
-                let test_mmap_buf = crate::userspace_test::get_test_binary("test_mmap");
+                let test_mmap_buf = kernel::userspace_test::get_test_binary("test_mmap");
                 match process::creation::create_user_process(String::from("test_mmap"), &test_mmap_buf) {
                     Ok(pid) => {
                         log::info!("Created test_mmap process with PID {}", pid.as_u64());
@@ -1035,7 +961,7 @@ fn kernel_main_continue() -> ! {
             // Launch syscall_diagnostic_test to isolate register corruption bug
             {
                 serial_println!("RING3_SMOKE: creating syscall_diagnostic_test userspace process");
-                let diagnostic_test_buf = crate::userspace_test::get_test_binary("syscall_diagnostic_test");
+                let diagnostic_test_buf = kernel::userspace_test::get_test_binary("syscall_diagnostic_test");
                 match process::creation::create_user_process(String::from("syscall_diagnostic_test"), &diagnostic_test_buf) {
                     Ok(pid) => {
                         log::info!("Created syscall_diagnostic_test process with PID {}", pid.as_u64());
@@ -1049,7 +975,7 @@ fn kernel_main_continue() -> ! {
             // Launch UDP socket test to verify network syscalls from userspace
             {
                 serial_println!("RING3_SMOKE: creating udp_socket_test userspace process");
-                let udp_test_buf = crate::userspace_test::get_test_binary("udp_socket_test");
+                let udp_test_buf = kernel::userspace_test::get_test_binary("udp_socket_test");
                 match process::creation::create_user_process(String::from("udp_socket_test"), &udp_test_buf) {
                     Ok(pid) => {
                         log::info!("Created udp_socket_test process with PID {}", pid.as_u64());
@@ -1063,7 +989,7 @@ fn kernel_main_continue() -> ! {
             // Launch TCP socket test to verify TCP syscalls from userspace
             {
                 serial_println!("RING3_SMOKE: creating tcp_socket_test userspace process");
-                let tcp_test_buf = crate::userspace_test::get_test_binary("tcp_socket_test");
+                let tcp_test_buf = kernel::userspace_test::get_test_binary("tcp_socket_test");
                 match process::creation::create_user_process(String::from("tcp_socket_test"), &tcp_test_buf) {
                     Ok(pid) => {
                         log::info!("Created tcp_socket_test process with PID {}", pid.as_u64());
@@ -1077,7 +1003,7 @@ fn kernel_main_continue() -> ! {
             // Launch DNS test to verify DNS resolution using UDP sockets
             {
                 serial_println!("RING3_SMOKE: creating dns_test userspace process");
-                let dns_test_buf = crate::userspace_test::get_test_binary("dns_test");
+                let dns_test_buf = kernel::userspace_test::get_test_binary("dns_test");
                 match process::creation::create_user_process(String::from("dns_test"), &dns_test_buf) {
                     Ok(pid) => {
                         log::info!("Created dns_test process with PID {}", pid.as_u64());
@@ -1091,7 +1017,7 @@ fn kernel_main_continue() -> ! {
             // Launch HTTP test to verify HTTP client over TCP+DNS
             {
                 serial_println!("RING3_SMOKE: creating http_test userspace process");
-                let http_test_buf = crate::userspace_test::get_test_binary("http_test");
+                let http_test_buf = kernel::userspace_test::get_test_binary("http_test");
                 match process::creation::create_user_process(String::from("http_test"), &http_test_buf) {
                     Ok(pid) => {
                         log::info!("Created http_test process with PID {}", pid.as_u64());
@@ -1540,7 +1466,7 @@ fn kernel_main_continue() -> ! {
     {
         log::info!("[boot] Running parallel boot tests...");
         #[cfg(feature = "btrt")]
-        crate::test_framework::btrt::pass(crate::test_framework::catalog::BOOT_TESTS_START);
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_START);
         let failures = test_framework::run_all_tests();
         if failures > 0 {
             log::error!("[boot] {} test(s) failed!", failures);
@@ -1548,7 +1474,7 @@ fn kernel_main_continue() -> ! {
             log::info!("[boot] All boot tests passed!");
         }
         #[cfg(feature = "btrt")]
-        crate::test_framework::btrt::pass(crate::test_framework::catalog::BOOT_TESTS_COMPLETE);
+        kernel::test_framework::btrt::pass(kernel::test_framework::catalog::BOOT_TESTS_COMPLETE);
     }
 
     // Mark kernel initialization complete BEFORE enabling interrupts
@@ -1560,7 +1486,7 @@ fn kernel_main_continue() -> ! {
     // In testing mode, auto-finalize happens via on_process_exit() when all
     // registered test processes have completed.
     #[cfg(all(feature = "btrt", not(feature = "testing")))]
-    crate::test_framework::btrt::finalize();
+    kernel::test_framework::btrt::finalize();
 
 
     // Enable interrupts for preemptive multitasking - userspace processes will now run
@@ -1661,7 +1587,7 @@ fn panic(info: &PanicInfo) -> ! {
     // In testing/CI builds, request QEMU to exit with failure for deterministic CI signal
     #[cfg(feature = "testing")]
     {
-        test_exit_qemu(QemuExitCode::Failed);
+        kernel::exit_qemu(kernel::QemuExitCode::Failed);
     }
 
     // Disable interrupts and halt
@@ -1796,919 +1722,14 @@ fn test_syscalls() {
 // test_kthread_lifecycle and test_kthread_join moved to task/kthread_tests.rs
 // for cross-architecture sharing (x86_64 + ARM64).
 
-/// Test kthread_exit() - setting a custom exit code
-/// This test verifies that kthread_exit(code) properly sets the exit code
-/// and that join() returns it correctly, with join() actually blocking.
-#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-fn test_kthread_exit_code() {
-    use crate::task::kthread::{kthread_exit, kthread_join, kthread_run};
+// test_kthread_exit_code, test_kthread_park_unpark, test_kthread_double_stop,
+// test_kthread_should_stop_non_kthread, and test_kthread_stop_after_exit
+// moved to task/kthread_tests.rs for cross-architecture sharing (x86_64 + ARM64).
 
-    log::info!("=== KTHREAD EXIT CODE TEST: Starting ===");
+// test_workqueue and test_softirq moved to task/workqueue_tests.rs and
+// task/softirq_tests.rs for cross-architecture sharing (x86_64 + ARM64).
 
-    let handle = kthread_run(
-        || {
-            x86_64::instructions::interrupts::enable();
-            // Exit immediately with custom code - no yielding for fast CI completion
-            kthread_exit(42);
-        },
-        "exit_code_kthread",
-    )
-    .expect("Failed to create kthread for exit code test");
-
-    x86_64::instructions::interrupts::enable();
-
-    // Call join IMMEDIATELY - tests blocking behavior
-    let exit_code = kthread_join(&handle).expect("kthread_join failed");
-    assert_eq!(exit_code, 42, "kthread exit_code should be 42");
-
-    x86_64::instructions::interrupts::disable();
-
-    log::info!("KTHREAD_EXIT_CODE_TEST: exit_code=42");
-    log::info!("=== KTHREAD EXIT CODE TEST: Completed ===");
-}
-
-/// Test kthread park/unpark functionality
-/// This test verifies that:
-/// 1. kthread_park() blocks the kthread
-/// 2. kthread_unpark() wakes it up
-/// 3. The kthread continues execution after unpark
-#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-fn test_kthread_park_unpark() {
-    use crate::task::kthread::{
-        kthread_park, kthread_run, kthread_should_stop, kthread_stop, kthread_unpark,
-    };
-    use core::sync::atomic::{AtomicBool, Ordering};
-
-    static KTHREAD_STARTED: AtomicBool = AtomicBool::new(false);
-    static KTHREAD_ABOUT_TO_PARK: AtomicBool = AtomicBool::new(false);
-    static KTHREAD_UNPARKED: AtomicBool = AtomicBool::new(false);
-    static KTHREAD_DONE: AtomicBool = AtomicBool::new(false);
-
-    // Reset flags
-    KTHREAD_STARTED.store(false, Ordering::Release);
-    KTHREAD_ABOUT_TO_PARK.store(false, Ordering::Release);
-    KTHREAD_UNPARKED.store(false, Ordering::Release);
-    KTHREAD_DONE.store(false, Ordering::Release);
-
-    log::info!("=== KTHREAD PARK TEST: Starting kthread park/unpark test ===");
-
-    let handle = kthread_run(
-        || {
-            // Kernel threads start with interrupts disabled - enable them to allow preemption
-            x86_64::instructions::interrupts::enable();
-
-            KTHREAD_STARTED.store(true, Ordering::Release);
-            log::info!("KTHREAD_PARK_TEST: started");
-
-            // Signal that we're about to park - main thread waits for this
-            // before checking that we haven't unparked yet
-            KTHREAD_ABOUT_TO_PARK.store(true, Ordering::Release);
-
-            // Park ourselves - will block until unparked
-            kthread_park();
-
-            // If we get here, we were unparked
-            KTHREAD_UNPARKED.store(true, Ordering::Release);
-            log::info!("KTHREAD_PARK_TEST: unparked");
-
-            // Use kthread_park() to wait - kthread_stop() will wake us
-            while !kthread_should_stop() {
-                kthread_park();
-            }
-
-            KTHREAD_DONE.store(true, Ordering::Release);
-        },
-        "test_kthread_park",
-    )
-    .expect("Failed to create kthread");
-
-    x86_64::instructions::interrupts::enable();
-
-    // Wait for kthread to reach the point right before kthread_park()
-    // This is the key fix - we wait for ABOUT_TO_PARK, not just STARTED
-    // Use more iterations for CI environments with slow TCG emulation
-    for _ in 0..1000 {
-        if KTHREAD_ABOUT_TO_PARK.load(Ordering::Acquire) {
-            break;
-        }
-        x86_64::instructions::hlt();
-    }
-    assert!(KTHREAD_ABOUT_TO_PARK.load(Ordering::Acquire), "kthread never reached park point");
-
-    // Give one more timer tick for kthread to enter kthread_park()
-    x86_64::instructions::hlt();
-
-    // Verify kthread hasn't unparked yet (it should be blocked in park)
-    assert!(!KTHREAD_UNPARKED.load(Ordering::Acquire), "kthread unparked before kthread_unpark was called");
-
-    // Now unpark it
-    kthread_unpark(&handle);
-
-    // Yield to give kthread a chance to run
-    crate::task::scheduler::yield_current();
-
-    // Wait for kthread to confirm it was unparked
-    // Use more iterations for CI environments with slow TCG emulation
-    for _ in 0..1000 {
-        if KTHREAD_UNPARKED.load(Ordering::Acquire) {
-            break;
-        }
-        x86_64::instructions::hlt();
-    }
-    assert!(KTHREAD_UNPARKED.load(Ordering::Acquire), "kthread never unparked after kthread_unpark");
-
-    // Send stop signal and verify return value
-    match kthread_stop(&handle) {
-        Ok(()) => log::info!("KTHREAD_PARK_TEST: stop signal sent"),
-        Err(err) => panic!("kthread_stop failed: {:?}", err),
-    }
-
-    // Yield to give kthread a chance to see the stop signal
-    crate::task::scheduler::yield_current();
-
-    // Wait for kthread to finish
-    // Use more iterations for CI environments with slow TCG emulation
-    for _ in 0..1000 {
-        if KTHREAD_DONE.load(Ordering::Acquire) {
-            break;
-        }
-        x86_64::instructions::hlt();
-    }
-    assert!(KTHREAD_DONE.load(Ordering::Acquire), "kthread never finished after stop signal");
-
-    x86_64::instructions::interrupts::disable();
-    log::info!("=== KTHREAD PARK TEST: Completed ===");
-}
-
-/// Test kthread_stop() called twice returns AlreadyStopped
-#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-fn test_kthread_double_stop() {
-    use crate::task::kthread::{kthread_run, kthread_should_stop, kthread_stop, KthreadError};
-    use core::sync::atomic::{AtomicBool, Ordering};
-
-    static KTHREAD_STARTED: AtomicBool = AtomicBool::new(false);
-    static KTHREAD_DONE: AtomicBool = AtomicBool::new(false);
-
-    KTHREAD_STARTED.store(false, Ordering::Release);
-    KTHREAD_DONE.store(false, Ordering::Release);
-
-    let handle = kthread_run(
-        || {
-            use crate::task::kthread::kthread_park;
-            x86_64::instructions::interrupts::enable();
-            KTHREAD_STARTED.store(true, Ordering::Release);
-
-            // Use kthread_park() to wait - kthread_stop() will wake us
-            while !kthread_should_stop() {
-                kthread_park();
-            }
-
-            KTHREAD_DONE.store(true, Ordering::Release);
-        },
-        "test_kthread_double_stop",
-    )
-    .expect("Failed to create kthread for double stop test");
-
-    x86_64::instructions::interrupts::enable();
-
-    // Use more iterations for CI environments with slow TCG emulation
-    for _ in 0..1000 {
-        if KTHREAD_STARTED.load(Ordering::Acquire) {
-            break;
-        }
-        x86_64::instructions::hlt();
-    }
-    assert!(KTHREAD_STARTED.load(Ordering::Acquire), "kthread never started");
-
-    match kthread_stop(&handle) {
-        Ok(()) => {}
-        Err(err) => panic!("kthread_stop failed: {:?}", err),
-    }
-
-    // Yield to give kthread a chance to see the stop signal
-    crate::task::scheduler::yield_current();
-
-    // Use more iterations for CI environments with slow TCG emulation
-    for _ in 0..1000 {
-        if KTHREAD_DONE.load(Ordering::Acquire) {
-            break;
-        }
-        x86_64::instructions::hlt();
-    }
-    assert!(KTHREAD_DONE.load(Ordering::Acquire), "kthread never finished after stop signal");
-
-    match kthread_stop(&handle) {
-        Err(KthreadError::AlreadyStopped) => {
-            log::info!("KTHREAD_DOUBLE_STOP_TEST: AlreadyStopped returned correctly");
-        }
-        Ok(()) => panic!("kthread_stop unexpectedly succeeded on second call"),
-        Err(err) => panic!("kthread_stop returned unexpected error: {:?}", err),
-    }
-
-    x86_64::instructions::interrupts::disable();
-}
-
-/// Test kthread_should_stop() from non-kthread context
-#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-fn test_kthread_should_stop_non_kthread() {
-    use crate::task::kthread::kthread_should_stop;
-
-    let should_stop = kthread_should_stop();
-    assert!(!should_stop, "kthread_should_stop should return false for non-kthread");
-    log::info!("KTHREAD_SHOULD_STOP_TEST: returns false for non-kthread");
-}
-
-/// Test kthread_stop() on a thread that has already exited naturally
-/// This is distinct from double-stop (stop -> stop) - this tests (natural exit -> stop)
-#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_test_only"), not(feature = "kthread_stress_test"), not(feature = "workqueue_test_only")))]
-fn test_kthread_stop_after_exit() {
-    use crate::task::kthread::{kthread_join, kthread_run, kthread_stop, KthreadError};
-
-    log::info!("=== KTHREAD STOP AFTER EXIT TEST: Starting ===");
-
-    // Create a kthread that exits immediately without being stopped
-    let handle = kthread_run(
-        || {
-            x86_64::instructions::interrupts::enable();
-            // Exit immediately - no stop signal needed
-            log::info!("KTHREAD_STOP_AFTER_EXIT_TEST: kthread exiting immediately");
-        },
-        "stop_after_exit_kthread",
-    )
-    .expect("Failed to create kthread");
-
-    x86_64::instructions::interrupts::enable();
-
-    // Wait for the kthread to exit using join (tests blocking join)
-    let exit_code = kthread_join(&handle).expect("kthread_join failed");
-    assert_eq!(exit_code, 0, "exit code should be 0");
-
-    // Now try to stop the already-exited thread - should return AlreadyStopped
-    match kthread_stop(&handle) {
-        Err(KthreadError::AlreadyStopped) => {
-            log::info!("KTHREAD_STOP_AFTER_EXIT_TEST: AlreadyStopped returned correctly");
-        }
-        Ok(()) => panic!("kthread_stop unexpectedly succeeded on exited thread"),
-        Err(err) => panic!("kthread_stop returned unexpected error: {:?}", err),
-    }
-
-    x86_64::instructions::interrupts::disable();
-    log::info!("=== KTHREAD STOP AFTER EXIT TEST: Completed ===");
-}
-
-/// Test workqueue functionality
-/// This validates the Linux-style work queue implementation:
-/// 1. Basic work execution via system workqueue
-/// 2. Multiple work items execute in order
-/// 3. Flush waits for all pending work
-#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_stress_test")))]
-fn test_workqueue() {
-    use alloc::sync::Arc;
-    use crate::task::workqueue::{flush_system_workqueue, schedule_work, schedule_work_fn, Work};
-    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
-    static EXEC_COUNT: AtomicU32 = AtomicU32::new(0);
-    static EXEC_ORDER: [AtomicU32; 3] = [
-        AtomicU32::new(0),
-        AtomicU32::new(0),
-        AtomicU32::new(0),
-    ];
-
-    // Reset counters
-    EXEC_COUNT.store(0, Ordering::SeqCst);
-    for order in &EXEC_ORDER {
-        order.store(0, Ordering::SeqCst);
-    }
-
-    log::info!("=== WORKQUEUE TEST: Starting workqueue test ===");
-
-    // Enable interrupts so worker thread can run
-    x86_64::instructions::interrupts::enable();
-
-    // Test 1: Basic execution
-    log::info!("WORKQUEUE_TEST: Testing basic execution...");
-    let work1 = schedule_work_fn(
-        || {
-            EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
-            log::info!("WORKQUEUE_TEST: work1 executed");
-        },
-        "test_work1",
-    );
-
-    // Wait for work1 to complete
-    work1.wait();
-    let count = EXEC_COUNT.load(Ordering::SeqCst);
-    assert_eq!(count, 1, "work1 should have executed once");
-    log::info!("WORKQUEUE_TEST: basic execution passed");
-
-    // Test 2: Multiple work items
-    log::info!("WORKQUEUE_TEST: Testing multiple work items...");
-    let work2 = schedule_work_fn(
-        || {
-            let order = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
-            EXEC_ORDER[0].store(order, Ordering::SeqCst);
-            log::info!("WORKQUEUE_TEST: work2 executed (order={})", order);
-        },
-        "test_work2",
-    );
-
-    let work3 = schedule_work_fn(
-        || {
-            let order = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
-            EXEC_ORDER[1].store(order, Ordering::SeqCst);
-            log::info!("WORKQUEUE_TEST: work3 executed (order={})", order);
-        },
-        "test_work3",
-    );
-
-    let work4 = schedule_work_fn(
-        || {
-            let order = EXEC_COUNT.fetch_add(1, Ordering::SeqCst);
-            EXEC_ORDER[2].store(order, Ordering::SeqCst);
-            log::info!("WORKQUEUE_TEST: work4 executed (order={})", order);
-        },
-        "test_work4",
-    );
-
-    // Wait for all work items
-    work2.wait();
-    work3.wait();
-    work4.wait();
-
-    let final_count = EXEC_COUNT.load(Ordering::SeqCst);
-    assert_eq!(final_count, 4, "all 4 work items should have executed");
-
-    // Verify execution order (work2 < work3 < work4)
-    let order2 = EXEC_ORDER[0].load(Ordering::SeqCst);
-    let order3 = EXEC_ORDER[1].load(Ordering::SeqCst);
-    let order4 = EXEC_ORDER[2].load(Ordering::SeqCst);
-    assert!(order2 < order3, "work2 should execute before work3");
-    assert!(order3 < order4, "work3 should execute before work4");
-    log::info!("WORKQUEUE_TEST: multiple work items passed");
-
-    // Test 3: Flush functionality
-    log::info!("WORKQUEUE_TEST: Testing flush...");
-    static FLUSH_WORK_DONE: AtomicU32 = AtomicU32::new(0);
-    FLUSH_WORK_DONE.store(0, Ordering::SeqCst);
-
-    let _flush_work = schedule_work_fn(
-        || {
-            FLUSH_WORK_DONE.fetch_add(1, Ordering::SeqCst);
-            log::info!("WORKQUEUE_TEST: flush_work executed");
-        },
-        "flush_work",
-    );
-
-    // Flush should wait for the work to complete
-    flush_system_workqueue();
-
-    let flush_done = FLUSH_WORK_DONE.load(Ordering::SeqCst);
-    assert_eq!(flush_done, 1, "flush should have waited for work to complete");
-    log::info!("WORKQUEUE_TEST: flush completed");
-
-    // Test 4: Re-queue rejection test
-    log::info!("WORKQUEUE_TEST: Testing re-queue rejection...");
-    static REQUEUE_BLOCK: AtomicBool = AtomicBool::new(false);
-    REQUEUE_BLOCK.store(false, Ordering::SeqCst);
-    let requeue_work = schedule_work_fn(
-        || {
-            while !REQUEUE_BLOCK.load(Ordering::Acquire) {
-                x86_64::instructions::hlt();
-            }
-        },
-        "requeue_work",
-    );
-    let requeue_work_clone = Arc::clone(&requeue_work);
-    let requeue_accepted = schedule_work(requeue_work_clone);
-    assert!(
-        !requeue_accepted,
-        "re-queue should be rejected while work is pending"
-    );
-    REQUEUE_BLOCK.store(true, Ordering::Release);
-    requeue_work.wait();
-    log::info!("WORKQUEUE_TEST: re-queue rejection passed");
-
-    // Test 5: Multi-item flush test
-    log::info!("WORKQUEUE_TEST: Testing multi-item flush...");
-    static MULTI_FLUSH_COUNT: AtomicU32 = AtomicU32::new(0);
-    MULTI_FLUSH_COUNT.store(0, Ordering::SeqCst);
-    for _ in 0..6 {
-        let _work = schedule_work_fn(
-            || {
-                MULTI_FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
-            },
-            "multi_flush_work",
-        );
-    }
-    flush_system_workqueue();
-    let multi_flush_done = MULTI_FLUSH_COUNT.load(Ordering::SeqCst);
-    assert_eq!(
-        multi_flush_done, 6,
-        "multi-item flush should execute all work items"
-    );
-    log::info!("WORKQUEUE_TEST: multi-item flush passed");
-
-    // Test 6: Shutdown test - creates a NEW workqueue (not system workqueue)
-    // This tests that new kthreads created later in boot can execute
-    log::info!("WORKQUEUE_TEST: Testing shutdown with new workqueue...");
-    {
-        use crate::task::workqueue::{Workqueue, WorkqueueFlags};
-
-        static SHUTDOWN_WORK_DONE: AtomicBool = AtomicBool::new(false);
-        SHUTDOWN_WORK_DONE.store(false, Ordering::SeqCst);
-
-        // Create a NEW workqueue (not the system workqueue)
-        let test_wq = Workqueue::new("test_wq", WorkqueueFlags::default());
-        log::info!("WORKQUEUE_TEST: Created new workqueue 'test_wq'");
-
-        // Queue work to it - this will spawn a NEW kworker thread
-        let work = Work::new(
-            || {
-                log::info!("WORKQUEUE_TEST: shutdown work executing!");
-                SHUTDOWN_WORK_DONE.store(true, Ordering::SeqCst);
-            },
-            "shutdown_work",
-        );
-
-        log::info!("WORKQUEUE_TEST: Queuing work to new workqueue...");
-        let queued = test_wq.queue(Arc::clone(&work));
-        assert!(queued, "work should be queued successfully");
-
-        // Wait for the work to complete
-        log::info!("WORKQUEUE_TEST: Waiting for work completion...");
-        work.wait();
-
-        // Verify work executed
-        let done = SHUTDOWN_WORK_DONE.load(Ordering::SeqCst);
-        assert!(done, "shutdown work should have executed");
-
-        // Destroy the workqueue (tests clean shutdown)
-        log::info!("WORKQUEUE_TEST: Destroying workqueue...");
-        test_wq.destroy();
-
-        // Test idempotent destroy - calling destroy() twice should be safe
-        test_wq.destroy(); // Second call - should be no-op, not panic or hang
-        log::info!("WORKQUEUE_TEST: idempotent destroy passed");
-
-        // Test flush after destroy - should return immediately, not hang
-        test_wq.flush();
-        log::info!("WORKQUEUE_TEST: flush after destroy passed");
-
-        log::info!("WORKQUEUE_TEST: shutdown test passed");
-    }
-
-    // Test 7: Error path test
-    log::info!("WORKQUEUE_TEST: Testing error path re-queue...");
-    static ERROR_PATH_BLOCK: AtomicBool = AtomicBool::new(false);
-    ERROR_PATH_BLOCK.store(false, Ordering::SeqCst);
-    let error_work = Work::new(
-        || {
-            while !ERROR_PATH_BLOCK.load(Ordering::Acquire) {
-                x86_64::instructions::hlt();
-            }
-        },
-        "error_path_work",
-    );
-    let first_schedule = schedule_work(Arc::clone(&error_work));
-    assert!(first_schedule, "schedule_work should accept idle work");
-    let second_schedule = schedule_work(Arc::clone(&error_work));
-    assert!(
-        !second_schedule,
-        "schedule_work should reject re-queue while work is pending"
-    );
-    ERROR_PATH_BLOCK.store(true, Ordering::Release);
-    error_work.wait();
-    log::info!("WORKQUEUE_TEST: error path test passed");
-
-    x86_64::instructions::interrupts::disable();
-    log::info!("WORKQUEUE_TEST: all tests passed");
-    log::info!("=== WORKQUEUE TEST: Completed ===");
-}
-
-/// Test the softirq (software interrupt) subsystem.
-/// This validates the Linux-style softirq implementation:
-/// 1. Softirq handler registration
-/// 2. raise_softirq() marks softirq as pending
-/// 3. do_softirq() invokes registered handlers
-/// 4. ksoftirqd thread is running
-#[cfg(all(target_arch = "x86_64", feature = "testing", not(feature = "kthread_stress_test")))]
-fn test_softirq() {
-    use crate::task::softirqd::{
-        do_softirq, raise_softirq, register_softirq_handler, SoftirqType,
-    };
-    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-
-    static TIMER_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
-    static NET_RX_HANDLER_CALLED: AtomicU32 = AtomicU32::new(0);
-
-    // Reset counters
-    TIMER_HANDLER_CALLED.store(0, Ordering::SeqCst);
-    NET_RX_HANDLER_CALLED.store(0, Ordering::SeqCst);
-
-    log::info!("=== SOFTIRQ TEST: Starting softirq test ===");
-
-    // Test 1: Register handlers
-    log::info!("SOFTIRQ_TEST: Testing handler registration...");
-    register_softirq_handler(SoftirqType::Timer, |_softirq| {
-        TIMER_HANDLER_CALLED.fetch_add(1, Ordering::SeqCst);
-    });
-    register_softirq_handler(SoftirqType::NetRx, |_softirq| {
-        NET_RX_HANDLER_CALLED.fetch_add(1, Ordering::SeqCst);
-    });
-    log::info!("SOFTIRQ_TEST: handler registration passed");
-
-    // Test 2: Raise and process Timer softirq
-    log::info!("SOFTIRQ_TEST: Testing Timer softirq...");
-    raise_softirq(SoftirqType::Timer);
-
-    // Check that softirq is pending
-    let pending = crate::per_cpu::softirq_pending();
-    assert!(
-        (pending & (1 << SoftirqType::Timer.as_nr())) != 0,
-        "Timer softirq should be pending"
-    );
-
-    // Process softirqs (we're in thread context, not interrupt context)
-    do_softirq();
-
-    let timer_count = TIMER_HANDLER_CALLED.load(Ordering::SeqCst);
-    assert_eq!(timer_count, 1, "Timer handler should have been called once");
-    log::info!("SOFTIRQ_TEST: Timer softirq passed");
-
-    // Test 3: Raise and process NetRx softirq
-    log::info!("SOFTIRQ_TEST: Testing NetRx softirq...");
-    raise_softirq(SoftirqType::NetRx);
-    do_softirq();
-
-    let net_rx_count = NET_RX_HANDLER_CALLED.load(Ordering::SeqCst);
-    assert_eq!(net_rx_count, 1, "NetRx handler should have been called once");
-    log::info!("SOFTIRQ_TEST: NetRx softirq passed");
-
-    // Test 4: Raise multiple softirqs at once
-    log::info!("SOFTIRQ_TEST: Testing multiple softirqs...");
-    raise_softirq(SoftirqType::Timer);
-    raise_softirq(SoftirqType::NetRx);
-    do_softirq();
-
-    let timer_count = TIMER_HANDLER_CALLED.load(Ordering::SeqCst);
-    let net_rx_count = NET_RX_HANDLER_CALLED.load(Ordering::SeqCst);
-    assert_eq!(timer_count, 2, "Timer handler should have been called twice");
-    assert_eq!(net_rx_count, 2, "NetRx handler should have been called twice");
-    log::info!("SOFTIRQ_TEST: multiple softirqs passed");
-
-    // Test 5: Priority order verification
-    // Timer (priority 1) should execute BEFORE NetRx (priority 3)
-    log::info!("SOFTIRQ_TEST: Testing priority order...");
-    static EXECUTION_ORDER: AtomicU32 = AtomicU32::new(0);
-    static TIMER_EXEC_ORDER: AtomicU32 = AtomicU32::new(0);
-    static NETRX_EXEC_ORDER: AtomicU32 = AtomicU32::new(0);
-
-    EXECUTION_ORDER.store(0, Ordering::SeqCst);
-    TIMER_EXEC_ORDER.store(0, Ordering::SeqCst);
-    NETRX_EXEC_ORDER.store(0, Ordering::SeqCst);
-
-    // Register new handlers that track execution order
-    register_softirq_handler(SoftirqType::Timer, |_softirq| {
-        let order = EXECUTION_ORDER.fetch_add(1, Ordering::SeqCst);
-        TIMER_EXEC_ORDER.store(order + 1, Ordering::SeqCst);
-    });
-    register_softirq_handler(SoftirqType::NetRx, |_softirq| {
-        let order = EXECUTION_ORDER.fetch_add(1, Ordering::SeqCst);
-        NETRX_EXEC_ORDER.store(order + 1, Ordering::SeqCst);
-    });
-
-    // Raise NetRx first, then Timer - Timer should still execute first due to priority
-    raise_softirq(SoftirqType::NetRx);
-    raise_softirq(SoftirqType::Timer);
-    do_softirq();
-
-    let timer_order = TIMER_EXEC_ORDER.load(Ordering::SeqCst);
-    let netrx_order = NETRX_EXEC_ORDER.load(Ordering::SeqCst);
-    assert!(
-        timer_order < netrx_order,
-        "Timer (priority 1) should execute before NetRx (priority 3): timer={}, netrx={}",
-        timer_order,
-        netrx_order
-    );
-    log::info!("SOFTIRQ_TEST: priority order passed (Timer={}, NetRx={})", timer_order, netrx_order);
-
-    // Test 6: Nested interrupt rejection
-    // do_softirq() should return false when already in interrupt context
-    log::info!("SOFTIRQ_TEST: Testing nested interrupt rejection...");
-    crate::per_cpu::softirq_enter(); // Simulate being in softirq context
-    raise_softirq(SoftirqType::Timer);
-    let processed = do_softirq();
-    assert!(
-        !processed,
-        "do_softirq() should return false when in interrupt context"
-    );
-    crate::per_cpu::softirq_exit();
-    // Now process the pending softirq outside interrupt context
-    let processed = do_softirq();
-    assert!(
-        processed,
-        "do_softirq() should return true when not in interrupt context"
-    );
-    log::info!("SOFTIRQ_TEST: nested interrupt rejection passed");
-
-    // Test 7: Iteration limit and ksoftirqd deferral
-    // A handler that re-raises itself will exceed MAX_SOFTIRQ_RESTART=10
-    // After the limit, remaining work is deferred to ksoftirqd
-    log::info!("SOFTIRQ_TEST: Testing iteration limit and ksoftirqd deferral...");
-    static ITERATION_COUNT: AtomicU32 = AtomicU32::new(0);
-    static KSOFTIRQD_PROCESSED: AtomicBool = AtomicBool::new(false);
-    const MAX_SOFTIRQ_RESTART: u32 = 10;
-    // TARGET must exceed 2 * MAX_SOFTIRQ_RESTART to force ksoftirqd involvement:
-    // - test's do_softirq(): 10 iterations, hits limit, wakes ksoftirqd
-    // - timer's irq_exit do_softirq(): 10 more iterations, hits limit, wakes ksoftirqd
-    // - ksoftirqd finally runs and processes remaining iterations
-    const TARGET_ITERATIONS: u32 = 25;
-
-    ITERATION_COUNT.store(0, Ordering::SeqCst);
-    KSOFTIRQD_PROCESSED.store(false, Ordering::SeqCst);
-
-    // Get ksoftirqd tid for later comparison
-    let ksoftirqd_tid = crate::task::softirqd::ksoftirqd_tid();
-
-    // Register a handler that re-raises itself until TARGET_ITERATIONS
-    // and tracks whether it runs in ksoftirqd context
-    register_softirq_handler(SoftirqType::Tasklet, |_softirq| {
-        let count = ITERATION_COUNT.fetch_add(1, Ordering::SeqCst);
-
-        // Check if we're running in ksoftirqd context
-        if let Some(ksoft_tid) = crate::task::softirqd::ksoftirqd_tid() {
-            if let Some(current_tid) = crate::task::scheduler::current_thread_id() {
-                if current_tid == ksoft_tid {
-                    KSOFTIRQD_PROCESSED.store(true, Ordering::SeqCst);
-                }
-            }
-        }
-
-        if count + 1 < TARGET_ITERATIONS {
-            raise_softirq(SoftirqType::Tasklet);
-        }
-    });
-
-    raise_softirq(SoftirqType::Tasklet);
-    do_softirq();
-
-    // After do_softirq() returns at iteration limit, some iterations should be done
-    let count_after_dosoftirq = ITERATION_COUNT.load(Ordering::SeqCst);
-    assert!(
-        count_after_dosoftirq <= MAX_SOFTIRQ_RESTART,
-        "do_softirq() should stop at iteration limit: got {}, expected <= {}",
-        count_after_dosoftirq,
-        MAX_SOFTIRQ_RESTART
-    );
-    log::info!(
-        "SOFTIRQ_TEST: After do_softirq(): {} iterations (limit={})",
-        count_after_dosoftirq,
-        MAX_SOFTIRQ_RESTART
-    );
-
-    // If ksoftirqd is working, remaining iterations will be processed
-    // Give ksoftirqd some time to process deferred softirqs
-    // Note: Remaining work can be processed by either:
-    // 1. irq_exit's do_softirq() during timer interrupts, or
-    // 2. ksoftirqd when it gets scheduled
-    // We use yield_current() + HLT to ensure scheduling opportunities
-    x86_64::instructions::interrupts::enable(); // Ensure interrupts are enabled
-    for _ in 0..100 {
-        // yield_current() sets need_resched, ensuring a context switch opportunity
-        // when the next interrupt occurs
-        crate::task::scheduler::yield_current();
-        x86_64::instructions::hlt();
-        let current = ITERATION_COUNT.load(Ordering::SeqCst);
-        if current >= TARGET_ITERATIONS {
-            break;
-        }
-    }
-
-    let final_count = ITERATION_COUNT.load(Ordering::SeqCst);
-    assert!(
-        final_count >= TARGET_ITERATIONS,
-        "ksoftirqd should have processed deferred softirqs: got {} iterations, expected {}",
-        final_count,
-        TARGET_ITERATIONS
-    );
-
-    // Verify ksoftirqd specifically processed the deferred work
-    let ksoftirqd_did_work = KSOFTIRQD_PROCESSED.load(Ordering::SeqCst);
-    assert!(
-        ksoftirqd_did_work,
-        "ksoftirqd should have processed deferred softirqs (tid={:?})",
-        ksoftirqd_tid
-    );
-    log::info!(
-        "SOFTIRQ_TEST: iteration limit passed ({} total iterations, ksoftirqd verified)",
-        final_count
-    );
-
-    // Test 8: Verify ksoftirqd is initialized (keep original test)
-    log::info!("SOFTIRQ_TEST: Verifying ksoftirqd is initialized...");
-    assert!(
-        crate::task::softirqd::is_initialized(),
-        "Softirq subsystem should be initialized"
-    );
-    log::info!("SOFTIRQ_TEST: ksoftirqd verification passed");
-
-    log::info!("SOFTIRQ_TEST: all tests passed");
-
-    // CRITICAL: Restore the real network softirq handler!
-    // The tests above registered test handlers that override the real ones.
-    // Without this, network packets won't be processed after the tests.
-    crate::net::register_net_softirq();
-    log::info!("SOFTIRQ_TEST: Restored network softirq handler");
-
-    log::info!("=== SOFTIRQ TEST: Completed ===");
-}
-
-/// Stress test for kthreads - creates 100+ kthreads and rapidly starts/stops them.
-/// This tests:
-/// 1. The race condition fix in kthread_park() (checking should_stop after setting parked)
-/// 2. The kthread_stop() always calling kthread_unpark() fix
-/// 3. Scheduler stability under high thread churn
-/// 4. Memory management with many concurrent threads
-#[cfg(all(target_arch = "x86_64", feature = "kthread_stress_test"))]
-fn test_kthread_stress() {
-    use crate::task::kthread::{kthread_join, kthread_park, kthread_run, kthread_should_stop, kthread_stop};
-    use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicU32, Ordering};
-
-    const KTHREAD_COUNT: usize = 100;
-    const RAPID_STOP_COUNT: usize = 50;
-
-    log::info!("=== KTHREAD STRESS TEST: Starting ===");
-    log::info!("KTHREAD_STRESS: Creating {} kthreads", KTHREAD_COUNT);
-
-    static STARTED_COUNT: AtomicU32 = AtomicU32::new(0);
-    static STOPPED_COUNT: AtomicU32 = AtomicU32::new(0);
-
-    // Reset counters
-    STARTED_COUNT.store(0, Ordering::SeqCst);
-    STOPPED_COUNT.store(0, Ordering::SeqCst);
-
-    // Phase 1: Create many kthreads that use kthread_park()
-    log::info!("KTHREAD_STRESS: Phase 1 - Creating {} parking kthreads", KTHREAD_COUNT);
-    let mut handles = Vec::with_capacity(KTHREAD_COUNT);
-
-    for i in 0..KTHREAD_COUNT {
-        let handle = kthread_run(
-            move || {
-                x86_64::instructions::interrupts::enable();
-                STARTED_COUNT.fetch_add(1, Ordering::SeqCst);
-
-                // Use kthread_park() to wait - this tests the race condition fix
-                while !kthread_should_stop() {
-                    kthread_park();
-                }
-
-                STOPPED_COUNT.fetch_add(1, Ordering::SeqCst);
-            },
-            "stress_kthread",
-        )
-        .expect("Failed to create stress kthread");
-
-        handles.push(handle);
-
-        // Log progress every 25 threads
-        if (i + 1) % 25 == 0 {
-            log::info!("KTHREAD_STRESS: Created {}/{} kthreads", i + 1, KTHREAD_COUNT);
-        }
-    }
-
-    // Enable interrupts to let kthreads run
-    x86_64::instructions::interrupts::enable();
-
-    // Wait for all kthreads to start
-    log::info!("KTHREAD_STRESS: Waiting for kthreads to start...");
-    for _ in 0..5000 {
-        if STARTED_COUNT.load(Ordering::SeqCst) >= KTHREAD_COUNT as u32 {
-            break;
-        }
-        x86_64::instructions::hlt();
-    }
-    let started = STARTED_COUNT.load(Ordering::SeqCst);
-    log::info!("KTHREAD_STRESS: {}/{} kthreads started", started, KTHREAD_COUNT);
-    assert!(
-        started == KTHREAD_COUNT as u32,
-        "All {} kthreads should have started, but only {} started",
-        KTHREAD_COUNT,
-        started
-    );
-
-    // Phase 2: Rapidly stop all kthreads (tests the race condition fix)
-    log::info!("KTHREAD_STRESS: Phase 2 - Stopping all kthreads rapidly");
-    let mut stop_errors = 0u32;
-    for (i, handle) in handles.iter().enumerate() {
-        if let Err(e) = kthread_stop(handle) {
-            log::error!("KTHREAD_STRESS: kthread_stop failed for thread {}: {:?}", i, e);
-            stop_errors += 1;
-        }
-    }
-    assert!(
-        stop_errors == 0,
-        "All kthread_stop calls should succeed, but {} failed",
-        stop_errors
-    );
-
-    // Wait for all kthreads to stop
-    log::info!("KTHREAD_STRESS: Waiting for kthreads to stop...");
-    for _ in 0..5000 {
-        if STOPPED_COUNT.load(Ordering::SeqCst) >= started {
-            break;
-        }
-        x86_64::instructions::hlt();
-    }
-    let stopped = STOPPED_COUNT.load(Ordering::SeqCst);
-    log::info!("KTHREAD_STRESS: {}/{} kthreads stopped cleanly", stopped, started);
-    assert!(
-        stopped == started,
-        "All {} started kthreads should have stopped, but only {} stopped",
-        started,
-        stopped
-    );
-
-    // Phase 3: Join all kthreads to ensure clean exit
-    log::info!("KTHREAD_STRESS: Phase 3 - Joining all kthreads");
-    let mut join_success = 0u32;
-    for (i, handle) in handles.iter().enumerate() {
-        match kthread_join(handle) {
-            Ok(exit_code) => {
-                assert_eq!(exit_code, 0, "kthread {} should exit with code 0, got {}", i, exit_code);
-                join_success += 1;
-            }
-            Err(e) => log::warn!("KTHREAD_STRESS: kthread_join failed for thread {}: {:?}", i, e),
-        }
-    }
-    log::info!("KTHREAD_STRESS: {}/{} kthreads joined successfully", join_success, KTHREAD_COUNT);
-    assert!(
-        join_success == KTHREAD_COUNT as u32,
-        "All {} kthreads should join successfully, but only {} joined",
-        KTHREAD_COUNT,
-        join_success
-    );
-
-    // Phase 4: Rapid create-stop-join cycle (tests memory/scheduling pressure)
-    log::info!("KTHREAD_STRESS: Phase 4 - Rapid create/stop/join cycle ({} iterations)", RAPID_STOP_COUNT);
-    STARTED_COUNT.store(0, Ordering::SeqCst);
-    STOPPED_COUNT.store(0, Ordering::SeqCst);
-
-    for i in 0..RAPID_STOP_COUNT {
-        let handle = kthread_run(
-            || {
-                x86_64::instructions::interrupts::enable();
-                STARTED_COUNT.fetch_add(1, Ordering::SeqCst);
-                // Immediately park - kthread_stop() should wake us
-                while !kthread_should_stop() {
-                    kthread_park();
-                }
-                STOPPED_COUNT.fetch_add(1, Ordering::SeqCst);
-            },
-            "rapid_kthread",
-        )
-        .expect("Failed to create rapid kthread");
-
-        // Give minimal time for kthread to start, then immediately stop
-        for _ in 0..10 {
-            x86_64::instructions::hlt();
-        }
-
-        // Stop and join immediately
-        kthread_stop(&handle).expect("rapid kthread_stop should not fail");
-        kthread_join(&handle).expect("rapid kthread_join should not fail");
-
-        if (i + 1) % 10 == 0 {
-            log::info!("KTHREAD_STRESS: Rapid cycle {}/{} complete", i + 1, RAPID_STOP_COUNT);
-        }
-    }
-
-    let rapid_started = STARTED_COUNT.load(Ordering::SeqCst);
-    let rapid_stopped = STOPPED_COUNT.load(Ordering::SeqCst);
-    log::info!("KTHREAD_STRESS: Rapid cycle results: {}/{} started, {}/{} stopped",
-        rapid_started, RAPID_STOP_COUNT, rapid_stopped, RAPID_STOP_COUNT);
-    assert!(
-        rapid_started == RAPID_STOP_COUNT as u32,
-        "All {} rapid kthreads should have started, but only {} started",
-        RAPID_STOP_COUNT,
-        rapid_started
-    );
-    assert!(
-        rapid_stopped == RAPID_STOP_COUNT as u32,
-        "All {} rapid kthreads should have stopped, but only {} stopped",
-        RAPID_STOP_COUNT,
-        rapid_stopped
-    );
-
-    x86_64::instructions::interrupts::disable();
-
-    log::info!("KTHREAD_STRESS: All phases complete");
-    log::info!("KTHREAD_STRESS: Phase 1 - {} kthreads created and parked", KTHREAD_COUNT);
-    log::info!("KTHREAD_STRESS: Phase 2 - {} kthreads stopped", stopped);
-    log::info!("KTHREAD_STRESS: Phase 3 - {} kthreads joined", join_success);
-    log::info!("KTHREAD_STRESS: Phase 4 - {} rapid create/stop/join cycles", RAPID_STOP_COUNT);
-    log::info!("=== KTHREAD STRESS TEST: Completed ===");
-}
+// test_kthread_stress moved to task/kthread_tests.rs for cross-architecture sharing (x86_64 + ARM64).
 
 /// Test basic threading functionality
 #[cfg(all(target_arch = "x86_64", feature = "testing"))]
@@ -2717,7 +1738,7 @@ fn test_threading() {
     log::info!("Testing threading infrastructure...");
 
     // Test 1: TLS infrastructure
-    let tls_base = crate::tls::current_tls_base();
+    let tls_base = kernel::tls::current_tls_base();
     log::info!("✓ TLS base: {:#x}", tls_base);
 
     if tls_base == 0 {
@@ -2726,10 +1747,10 @@ fn test_threading() {
     }
 
     // Test 2: CPU context creation
-    let _context = crate::task::thread::CpuContext::new(
+    let _context = kernel::task::thread::CpuContext::new(
         x86_64::VirtAddr::new(0x1000),
         x86_64::VirtAddr::new(0x2000),
-        crate::task::thread::ThreadPrivilege::Kernel,
+        kernel::task::thread::ThreadPrivilege::Kernel,
     );
     log::info!("✓ CPU context creation works");
 
@@ -2741,18 +1762,18 @@ fn test_threading() {
         }
     }
 
-    let _thread = crate::task::thread::Thread::new(
+    let _thread = kernel::task::thread::Thread::new(
         thread_name,
         dummy_thread,
         x86_64::VirtAddr::new(0x2000),
         x86_64::VirtAddr::new(0x1000),
         x86_64::VirtAddr::new(tls_base),
-        crate::task::thread::ThreadPrivilege::Kernel,
+        kernel::task::thread::ThreadPrivilege::Kernel,
     );
     log::info!("✓ Thread structure creation works");
 
     // Test 4: TLS helper functions
-    if let Some(_tls_block) = crate::tls::get_thread_tls_block(0) {
+    if let Some(_tls_block) = kernel::tls::get_thread_tls_block(0) {
         log::info!("✓ TLS block lookup works");
     } else {
         log::warn!("⚠️ TLS block lookup returned None (expected for thread 0)");
@@ -2777,8 +1798,8 @@ fn test_threading() {
 
     static SWITCH_TEST_COUNTER: core::sync::atomic::AtomicU32 =
         core::sync::atomic::AtomicU32::new(0);
-    static mut MAIN_CONTEXT: Option<crate::task::thread::CpuContext> = None;
-    static mut THREAD_CONTEXT: Option<crate::task::thread::CpuContext> = None;
+    static mut MAIN_CONTEXT: Option<kernel::task::thread::CpuContext> = None;
+    static mut THREAD_CONTEXT: Option<kernel::task::thread::CpuContext> = None;
 
     extern "C" fn test_thread_function() {
         // This is our test thread - it should run when we switch to it
@@ -2817,20 +1838,20 @@ fn test_threading() {
     }
 
     // Allocate stack for our test thread
-    if let Ok(test_stack) = crate::memory::stack::allocate_stack(8192) {
+    if let Ok(test_stack) = kernel::memory::stack::allocate_stack(8192) {
         log::info!("✓ Allocated test thread stack");
 
         // Create contexts
-        let main_context = crate::task::thread::CpuContext::new(
+        let main_context = kernel::task::thread::CpuContext::new(
             x86_64::VirtAddr::new(0), // Will be filled by actual switch
             x86_64::VirtAddr::new(0), // Will be filled by actual switch
-            crate::task::thread::ThreadPrivilege::Kernel,
+            kernel::task::thread::ThreadPrivilege::Kernel,
         );
 
-        let thread_context = crate::task::thread::CpuContext::new(
+        let thread_context = kernel::task::thread::CpuContext::new(
             x86_64::VirtAddr::new(test_thread_function as u64),
             test_stack.top(),
-            crate::task::thread::ThreadPrivilege::Kernel,
+            kernel::task::thread::ThreadPrivilege::Kernel,
         );
 
         log::info!("✓ Created contexts for real switching test");
@@ -2869,7 +1890,7 @@ fn test_threading() {
         unsafe {
             if let (Some(ref mut main_ctx), Some(ref thread_ctx)) = (MAIN_CONTEXT.as_mut(), THREAD_CONTEXT.as_ref()) {
                 // This should save our current context and jump to the thread
-                crate::task::context::perform_context_switch(
+                kernel::task::context::perform_context_switch(
                     main_ctx,
                     thread_ctx
                 );

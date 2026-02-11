@@ -52,12 +52,11 @@ use alloc::{boxed::Box, collections::VecDeque};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-// Architecture-specific interrupt control
-#[cfg(target_arch = "x86_64")]
-use x86_64::instructions::interrupts::{are_enabled, without_interrupts};
-
-#[cfg(target_arch = "aarch64")]
-use crate::arch_impl::aarch64::cpu::{interrupts_enabled as are_enabled, without_interrupts};
+// Architecture-generic HAL wrappers for interrupt control.
+use crate::{
+    arch_interrupts_enabled as are_enabled,
+    arch_without_interrupts as without_interrupts,
+};
 
 /// Global scheduler instance
 static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);

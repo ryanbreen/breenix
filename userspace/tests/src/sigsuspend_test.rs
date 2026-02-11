@@ -143,10 +143,45 @@ extern "C" fn __restore_rt() -> ! {
     )
 }
 
+/// Raw write syscall - async-signal-safe (no locks, no RefCell, no allocations)
+fn raw_write_str(s: &str) {
+    let fd: i32 = 1; // stdout
+    let buf = s.as_ptr();
+    let len = s.len();
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        std::arch::asm!(
+            "svc #0",
+            in("x8") 1u64,  // WRITE syscall
+            inlateout("x0") fd as u64 => _,
+            in("x1") buf as u64,
+            in("x2") len as u64,
+            options(nostack),
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        std::arch::asm!(
+            "int 0x80",
+            in("rax") 1u64,
+            in("rdi") fd as u64,
+            in("rsi") buf as u64,
+            in("rdx") len as u64,
+            lateout("rax") _,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 /// SIGUSR1 handler - sets flag when called
+/// IMPORTANT: Uses raw write syscall, NOT println!, because signal handlers
+/// must be async-signal-safe. println! holds a RefCell borrow on stdout
+/// and would panic if the signal fires during another println.
 extern "C" fn sigusr1_handler(_sig: i32) {
     SIGUSR1_RECEIVED.store(true, Ordering::SeqCst);
-    println!("  HANDLER: SIGUSR1 received in parent!");
+    raw_write_str("  HANDLER: SIGUSR1 received in parent!\n");
 }
 
 fn main() {

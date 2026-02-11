@@ -28,6 +28,7 @@ use core::panic::PanicInfo;
 extern crate kernel;
 
 #[cfg(target_arch = "aarch64")]
+#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
 fn run_userspace_from_ext2(path: &str) -> Result<core::convert::Infallible, &'static str> {
     use alloc::string::String;
     use core::arch::asm;
@@ -223,9 +224,9 @@ use kernel::graphics::primitives::{draw_vline, fill_rect, Color, Rect};
 #[cfg(target_arch = "aarch64")]
 use kernel::graphics::terminal_manager;
 #[cfg(target_arch = "aarch64")]
-use kernel::drivers::virtio::input_mmio::{self, event_type};
-#[cfg(target_arch = "aarch64")]
-use kernel::shell::ShellState;
+use kernel::drivers::virtio::input_mmio;
+// event_type and ShellState are used in the shell loop (unreachable in test-only modes)
+// Use fully qualified paths at usage sites to avoid unused import warnings.
 
 /// Kernel entry point called from assembly boot code.
 #[cfg(target_arch = "aarch64")]
@@ -409,8 +410,28 @@ pub extern "C" fn kernel_main() -> ! {
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::SCHEDULER_INIT);
 
+    // Initialize workqueue subsystem (depends on kthread infrastructure)
+    kernel::task::workqueue::init_workqueue();
+    serial_println!("[boot] Workqueue subsystem initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);
+
+    // Initialize softirq subsystem (depends on kthread infrastructure)
+    kernel::task::softirqd::init_softirq();
+    serial_println!("[boot] Softirq subsystem initialized");
+    #[cfg(feature = "btrt")]
+    kernel::test_framework::btrt::pass(kernel::test_framework::catalog::KTHREAD_SUBSYSTEM);
+
     // Spawn render thread for deferred framebuffer rendering
-    // This MUST come after scheduler is initialized (needs kthread infrastructure)
+    // This MUST come after scheduler is initialized (needs kthread infrastructure).
+    //
+    // Boot graphics architecture (shared with x86_64):
+    // - Both architectures use render_task::spawn_render_thread() for deferred rendering
+    // - Both use SHELL_FRAMEBUFFER (arm64_fb.rs on ARM64, logger.rs on x86_64)
+    // - Both use graphics::render_queue for lock-free echo from interrupt context
+    // - Both use graphics::terminal_manager for split-screen terminal UI
+    // - Boot test progress display (test_framework::display) renders to SHELL_FRAMEBUFFER
+    // - Boot milestones are tracked via BTRT (test_framework::btrt) on both platforms
     match kernel::graphics::render_task::spawn_render_thread() {
         Ok(tid) => serial_println!("[boot] Render thread spawned (tid={})", tid),
         Err(e) => serial_println!("[boot] Failed to spawn render thread: {}", e),
@@ -450,12 +471,51 @@ pub extern "C" fn kernel_main() -> ! {
     kernel::task::kthread_tests::test_kthread_lifecycle();
     #[cfg(feature = "testing")]
     kernel::task::kthread_tests::test_kthread_join();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_exit_code();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_park_unpark();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_double_stop();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_should_stop_non_kthread();
+    #[cfg(feature = "testing")]
+    kernel::task::kthread_tests::test_kthread_stop_after_exit();
+    // Skip workqueue test in kthread_stress_test mode - it passes in Boot Stages
+    // which has the same code but different build configuration.
+    #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
+    kernel::task::workqueue_tests::test_workqueue();
+    #[cfg(all(feature = "testing", not(feature = "kthread_stress_test")))]
+    kernel::task::softirq_tests::test_softirq();
 
     // In kthread_test_only mode, exit immediately after kthread tests pass
     #[cfg(feature = "kthread_test_only")]
     {
         serial_println!("=== KTHREAD_TEST_ONLY: All kthread tests passed ===");
         serial_println!("KTHREAD_TEST_ONLY_COMPLETE");
+        kernel::exit_qemu(kernel::QemuExitCode::Success);
+        loop {
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        }
+    }
+
+    // In workqueue_test_only mode, exit immediately after workqueue test
+    #[cfg(feature = "workqueue_test_only")]
+    {
+        serial_println!("=== WORKQUEUE_TEST_ONLY: All workqueue tests passed ===");
+        serial_println!("WORKQUEUE_TEST_ONLY_COMPLETE");
+        kernel::exit_qemu(kernel::QemuExitCode::Success);
+        loop {
+            unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        }
+    }
+
+    // In kthread_stress_test mode, run stress test and exit
+    #[cfg(feature = "kthread_stress_test")]
+    {
+        kernel::task::kthread_tests::test_kthread_stress();
+        serial_println!("=== KTHREAD_STRESS_TEST: All stress tests passed ===");
+        serial_println!("KTHREAD_STRESS_TEST_COMPLETE");
         kernel::exit_qemu(kernel::QemuExitCode::Success);
         loop {
             unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
@@ -525,6 +585,7 @@ pub extern "C" fn kernel_main() -> ! {
         serial_println!("[test] Loading test binaries from ext2...");
         load_test_binaries_from_ext2();
         serial_println!("[test] Test processes loaded - will run via timer interrupts");
+        serial_println!("[test] Entering scheduler idle loop");
         // Print shell prompt to serial before enabling interrupts.
         // Once interrupts are enabled, the scheduler takes over and the BSP
         // (idle thread 0) enters idle_loop_arm64 - it won't return here.
@@ -574,7 +635,7 @@ pub extern "C" fn kernel_main() -> ! {
     serial_print!("breenix> ");
 
     // Create shell state for command processing
-    let mut shell = ShellState::new();
+    let mut shell = kernel::shell::ShellState::new();
 
     // Check if we have graphics (VirtIO GPU) or running in serial-only mode
     let has_graphics = kernel::graphics::arm64_fb::SHELL_FRAMEBUFFER.get().is_some();
@@ -600,7 +661,7 @@ pub extern "C" fn kernel_main() -> ! {
         if input_mmio::is_initialized() {
             for event in input_mmio::poll_events() {
                 // Only process key events (EV_KEY = 1)
-                if event.event_type == event_type::EV_KEY {
+                if event.event_type == input_mmio::event_type::EV_KEY {
                     let keycode = event.code;
                     let pressed = event.value != 0;
 
@@ -661,6 +722,7 @@ pub extern "C" fn kernel_main() -> ! {
 /// via create_user_process(). The scheduler will run them alongside init_shell.
 #[cfg(target_arch = "aarch64")]
 #[cfg(feature = "testing")]
+#[cfg_attr(any(feature = "kthread_test_only", feature = "kthread_stress_test", feature = "workqueue_test_only"), allow(dead_code))]
 fn load_test_binaries_from_ext2() {
     use alloc::format;
     use alloc::string::String;
@@ -674,38 +736,13 @@ fn load_test_binaries_from_ext2() {
     // all binaries load in under a second.
     unsafe { kernel::arch_impl::aarch64::cpu::Aarch64Cpu::disable_interrupts(); }
 
-    let test_binaries = [
-        "hello_time", "clock_gettime_test", "brk_test", "test_mmap",
-        "syscall_diagnostic_test", "signal_test", "signal_regs_test",
-        "sigaltstack_test", "pipe_test", "unix_socket_test",
-        "sigchld_test", "pause_test", "sigsuspend_test",
-        "dup_test", "fcntl_test", "cloexec_test",
-        "pipe2_test", "shell_pipe_test", "signal_exec_test",
-        "waitpid_test", "signal_fork_test", "wnohang_timing_test",
-        "poll_test", "select_test", "nonblock_test", "tty_test",
-        "session_test", "file_read_test", "getdents_test", "lseek_test",
-        "fs_write_test", "fs_rename_test", "fs_large_file_test",
-        "fs_directory_test", "fs_link_test", "access_test",
-        "devfs_test", "cwd_test", "exec_from_ext2_test",
-        "fs_block_alloc_test", "true_test", "false_test",
-        "head_test", "tail_test", "wc_test", "which_test",
-        "cat_test", "ls_test",
-        // hello_std_real is installed as hello_world.elf on the ext2 disk
-        "hello_world",
-        "fork_memory_test", "fork_state_test",
-        "fork_pending_signal_test", "cow_signal_test",
-        "cow_cleanup_test", "cow_sole_owner_test",
-        "cow_stress_test", "cow_readonly_test",
-        "argv_test", "exec_argv_test", "exec_stack_argv_test",
-        "ctrl_c_test", "fbinfo_test",
-        // Network tests (depend on virtio-net)
-        "udp_socket_test", "tcp_socket_test", "dns_test", "http_test",
-    ];
+    // Use the canonical shared test binary list (see boot::test_list)
+    let test_binaries = kernel::boot::test_list::TEST_BINARIES;
 
     let mut loaded = 0;
     let mut failed = 0;
 
-    for name in &test_binaries {
+    for name in test_binaries {
         // create_ext2_disk.sh strips the .elf extension when installing binaries
         let path = format!("/bin/{}", name);
 
