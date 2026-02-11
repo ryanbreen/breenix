@@ -1411,8 +1411,14 @@ pub fn root_fs_read() -> spin::RwLockReadGuard<'static, Option<Ext2Fs>> {
 /// Exclusive access — blocks all readers and other writers.
 /// Use only for operations that modify filesystem state: create, truncate,
 /// rename, link, unlink, mkdir, rmdir, write.
+///
+/// Uses upgradeable_read() + upgrade() to prevent writer starvation.
+/// spin::RwLock is reader-preferring: write() spins until all readers release,
+/// but new readers can keep arriving indefinitely. The upgradeable guard sets
+/// the UPGRADED bit, which causes try_read() to reject new readers. The writer
+/// then only waits for existing readers to drain, guaranteeing forward progress.
 pub fn root_fs_write() -> spin::RwLockWriteGuard<'static, Option<Ext2Fs>> {
-    ROOT_EXT2.write()
+    ROOT_EXT2.upgradeable_read().upgrade()
 }
 
 /// Check if the root filesystem is mounted

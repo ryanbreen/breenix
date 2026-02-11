@@ -424,26 +424,22 @@ pub fn sys_write(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 (file_guard.inode_num, file_guard.position, file_guard.flags)
             };
 
-            // Handle O_APPEND flag - seek to end before writing
+            // Acquire write lock once for the entire operation.
+            // O_APPEND needs to read inode size and then write atomically under
+            // the same lock to avoid TOCTOU races.
+            let mut root_fs = crate::fs::ext2::root_fs_write();
+            let fs = match root_fs.as_mut() {
+                Some(fs) => fs,
+                None => return SyscallResult::Err(super::errno::ENOSYS as u64),
+            };
+
             let write_offset = if (flags & crate::syscall::fs::O_APPEND) != 0 {
-                let root_fs = crate::fs::ext2::root_fs_read();
-                let fs = match root_fs.as_ref() {
-                    Some(fs) => fs,
-                    None => return SyscallResult::Err(super::errno::ENOSYS as u64),
-                };
                 match fs.read_inode(inode_num as u32) {
                     Ok(inode) => inode.size(),
                     Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
                 }
             } else {
                 position
-            };
-
-            // Write the data
-            let mut root_fs = crate::fs::ext2::root_fs_write();
-            let fs = match root_fs.as_mut() {
-                Some(fs) => fs,
-                None => return SyscallResult::Err(super::errno::ENOSYS as u64),
             };
 
             let bytes_written = match fs.write_file_range(inode_num as u32, write_offset, &buffer) {
