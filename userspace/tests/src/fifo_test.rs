@@ -8,183 +8,89 @@
 //! - unlink() for FIFOs
 //! - Error conditions
 
-// Error codes
-const ENOENT: i32 = 2;
-const ENXIO: i32 = 6;
-const EAGAIN: i32 = 11;
-const EEXIST: i32 = 17;
-const EPIPE: i32 = 32;
-
-// Open flags
-const O_RDONLY: i32 = 0;
-const O_WRONLY: i32 = 1;
-const O_NONBLOCK: i32 = 0x800;
-
-// S_IFIFO for mknod
-const S_IFIFO: u32 = 0o010000;
-
-extern "C" {
-    fn open(path: *const u8, flags: i32, mode: u32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn unlink(path: *const u8) -> i32;
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn sched_yield() -> i32;
-    static mut ERRNO: i32;
-}
-
-// Raw syscall for mkfifo (uses MKNOD under the hood)
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_mknod(path: *const u8, mode: u32, dev: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") 133u64,  // SYS_MKNOD
-        in("rdi") path as u64,
-        in("rsi") mode as u64,
-        in("rdx") dev,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_mknod(path: *const u8, mode: u32, dev: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") 133u64,
-        inlateout("x0") path as u64 => ret,
-        in("x1") mode as u64,
-        in("x2") dev,
-        options(nostack),
-    );
-    ret as i64
-}
-
-fn get_errno() -> i32 {
-    unsafe { ERRNO }
-}
-
-fn do_mkfifo(path: &str, mode: u32) -> Result<(), i32> {
-    let ret = unsafe { raw_mknod(path.as_ptr(), S_IFIFO | mode, 0) };
-    if ret < 0 {
-        Err((-ret) as i32)
-    } else {
-        Ok(())
-    }
-}
-
-fn do_open(path: &str, flags: i32) -> Result<i32, i32> {
-    let ret = unsafe { open(path.as_ptr(), flags, 0) };
-    if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok(ret)
-    }
-}
-
-fn do_close(fd: i32) {
-    unsafe { close(fd); }
-}
-
-fn do_unlink(path: &str) {
-    unsafe { unlink(path.as_ptr()); }
-}
-
-fn do_read(fd: i32, buf: &mut [u8]) -> i64 {
-    let ret = unsafe { read(fd, buf.as_mut_ptr(), buf.len()) };
-    if ret < 0 {
-        -(get_errno() as i64)
-    } else {
-        ret as i64
-    }
-}
-
-fn do_write(fd: i32, data: &[u8]) -> i64 {
-    let ret = unsafe { write(fd, data.as_ptr(), data.len()) };
-    if ret < 0 {
-        -(get_errno() as i64)
-    } else {
-        ret as i64
-    }
-}
+use libbreenix::errno::Errno;
+use libbreenix::error::Error;
+use libbreenix::fs::{self, O_RDONLY, O_WRONLY, O_NONBLOCK};
+use libbreenix::process::{self, ForkResult};
 
 /// Phase 1: Basic FIFO create and open
 fn test_basic_fifo() -> bool {
     println!("Phase 1: Basic FIFO create/open/close");
 
     let path = "/tmp/test_fifo1\0";
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => println!("  Created FIFO at /tmp/test_fifo1"),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    let read_fd = match do_open(path, O_RDONLY | O_NONBLOCK) {
+    let read_fd = match fs::open(path, O_RDONLY | O_NONBLOCK) {
         Ok(fd) => {
-            println!("  Opened FIFO for reading: fd={}", fd);
+            println!("  Opened FIFO for reading: fd={}", fd.raw());
             fd
         }
         Err(e) => {
-            println!("  ERROR: open for read failed: {}", e);
-            do_unlink(path);
+            println!("  ERROR: open for read failed: {:?}", e);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
-    let write_fd = match do_open(path, O_WRONLY) {
+    let write_fd = match fs::open(path, O_WRONLY) {
         Ok(fd) => {
-            println!("  Opened FIFO for writing: fd={}", fd);
+            println!("  Opened FIFO for writing: fd={}", fd.raw());
             fd
         }
         Err(e) => {
-            println!("  ERROR: open for write failed: {}", e);
-            do_close(read_fd);
-            do_unlink(path);
+            println!("  ERROR: open for write failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
     let data = b"Hello FIFO!";
-    let write_ret = do_write(write_fd, data);
-    if write_ret < 0 {
-        println!("  ERROR: write failed: {}", -write_ret);
-        do_close(read_fd);
-        do_close(write_fd);
-        do_unlink(path);
-        return false;
+    match fs::write(write_fd, data) {
+        Ok(n) => {
+            println!("  Wrote {} bytes to FIFO", n);
+        }
+        Err(e) => {
+            println!("  ERROR: write failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            return false;
+        }
     }
-    println!("  Wrote {} bytes to FIFO", write_ret);
 
     let mut buf = [0u8; 32];
-    let read_ret = do_read(read_fd, &mut buf);
-    if read_ret < 0 {
-        println!("  ERROR: read failed: {}", -read_ret);
-        do_close(read_fd);
-        do_close(write_fd);
-        do_unlink(path);
-        return false;
-    }
-    println!("  Read {} bytes from FIFO", read_ret);
-    if &buf[..read_ret as usize] == data {
-        println!("  Data matches!");
-    } else {
-        println!("  ERROR: Data mismatch!");
-        do_close(read_fd);
-        do_close(write_fd);
-        do_unlink(path);
-        return false;
+    match fs::read(read_fd, &mut buf) {
+        Ok(n) => {
+            println!("  Read {} bytes from FIFO", n);
+            if &buf[..n] == data {
+                println!("  Data matches!");
+            } else {
+                println!("  ERROR: Data mismatch!");
+                let _ = fs::close(read_fd);
+                let _ = fs::close(write_fd);
+                let _ = fs::unlink(path);
+                return false;
+            }
+        }
+        Err(e) => {
+            println!("  ERROR: read failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            return false;
+        }
     }
 
-    do_close(read_fd);
-    do_close(write_fd);
-    do_unlink(path);
+    let _ = fs::close(read_fd);
+    let _ = fs::close(write_fd);
+    let _ = fs::unlink(path);
 
     println!("Phase 1: PASSED");
     true
@@ -196,32 +102,31 @@ fn test_eexist() -> bool {
 
     let path = "/tmp/test_fifo2\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => println!("  Created first FIFO"),
         Err(e) => {
-            println!("  ERROR: first mkfifo failed: {}", e);
+            println!("  ERROR: first mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => {
             println!("  ERROR: second mkfifo should have failed");
-            do_unlink(path);
+            let _ = fs::unlink(path);
             return false;
         }
+        Err(Error::Os(Errno::EEXIST)) => {
+            println!("  Got expected EEXIST error");
+        }
         Err(e) => {
-            if e == EEXIST {
-                println!("  Got expected EEXIST error");
-            } else {
-                println!("  ERROR: expected EEXIST, got {}", e);
-                do_unlink(path);
-                return false;
-            }
+            println!("  ERROR: expected EEXIST, got {:?}", e);
+            let _ = fs::unlink(path);
+            return false;
         }
     }
 
-    do_unlink(path);
+    let _ = fs::unlink(path);
     println!("Phase 2: PASSED");
     true
 }
@@ -232,19 +137,18 @@ fn test_enoent() -> bool {
 
     let path = "/tmp/nonexistent_fifo\0";
 
-    match do_open(path, O_RDONLY | O_NONBLOCK) {
+    match fs::open(path, O_RDONLY | O_NONBLOCK) {
         Ok(fd) => {
-            println!("  ERROR: open should have failed, got fd={}", fd);
-            do_close(fd);
+            println!("  ERROR: open should have failed, got fd={}", fd.raw());
+            let _ = fs::close(fd);
             return false;
         }
+        Err(Error::Os(Errno::ENOENT)) => {
+            println!("  Got expected ENOENT error");
+        }
         Err(e) => {
-            if e == ENOENT {
-                println!("  Got expected ENOENT error");
-            } else {
-                println!("  ERROR: expected ENOENT, got {}", e);
-                return false;
-            }
+            println!("  ERROR: expected ENOENT, got {:?}", e);
+            return false;
         }
     }
 
@@ -258,33 +162,32 @@ fn test_nonblock_write_no_reader() -> bool {
 
     let path = "/tmp/test_fifo4\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => println!("  Created FIFO"),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    match do_open(path, O_WRONLY | O_NONBLOCK) {
+    match fs::open(path, O_WRONLY | O_NONBLOCK) {
         Ok(fd) => {
-            println!("  ERROR: open should have returned ENXIO, got fd={}", fd);
-            do_close(fd);
-            do_unlink(path);
+            println!("  ERROR: open should have returned ENXIO, got fd={}", fd.raw());
+            let _ = fs::close(fd);
+            let _ = fs::unlink(path);
             return false;
+        }
+        Err(Error::Os(Errno::ENXIO)) => {
+            println!("  Got expected ENXIO error");
         }
         Err(e) => {
-            if e == ENXIO {
-                println!("  Got expected ENXIO error");
-            } else {
-                println!("  ERROR: expected ENXIO, got {}", e);
-                do_unlink(path);
-                return false;
-            }
+            println!("  ERROR: expected ENXIO, got {:?}", e);
+            let _ = fs::unlink(path);
+            return false;
         }
     }
 
-    do_unlink(path);
+    let _ = fs::unlink(path);
     println!("Phase 4: PASSED");
     true
 }
@@ -295,55 +198,57 @@ fn test_nonblock_read_empty() -> bool {
 
     let path = "/tmp/test_fifo5\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => println!("  Created FIFO"),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    let read_fd = match do_open(path, O_RDONLY | O_NONBLOCK) {
+    let read_fd = match fs::open(path, O_RDONLY | O_NONBLOCK) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for read failed: {}", e);
-            do_unlink(path);
+            println!("  ERROR: open for read failed: {:?}", e);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
-    let write_fd = match do_open(path, O_WRONLY) {
+    let write_fd = match fs::open(path, O_WRONLY) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for write failed: {}", e);
-            do_close(read_fd);
-            do_unlink(path);
+            println!("  ERROR: open for write failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
     let mut buf = [0u8; 32];
-    let read_ret = do_read(read_fd, &mut buf);
-    if read_ret >= 0 {
-        println!("  ERROR: read should have returned EAGAIN, got {} bytes", read_ret);
-        do_close(read_fd);
-        do_close(write_fd);
-        do_unlink(path);
-        return false;
-    }
-    if -read_ret == EAGAIN as i64 {
-        println!("  Got expected EAGAIN error");
-    } else {
-        println!("  ERROR: expected EAGAIN, got {}", -read_ret);
-        do_close(read_fd);
-        do_close(write_fd);
-        do_unlink(path);
-        return false;
+    match fs::read(read_fd, &mut buf) {
+        Ok(n) => {
+            println!("  ERROR: read should have returned EAGAIN, got {} bytes", n);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            return false;
+        }
+        Err(Error::Os(Errno::EAGAIN)) => {
+            println!("  Got expected EAGAIN error");
+        }
+        Err(e) => {
+            println!("  ERROR: expected EAGAIN, got {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            return false;
+        }
     }
 
-    do_close(read_fd);
-    do_close(write_fd);
-    do_unlink(path);
+    let _ = fs::close(read_fd);
+    let _ = fs::close(write_fd);
+    let _ = fs::unlink(path);
     println!("Phase 5: PASSED");
     true
 }
@@ -354,29 +259,29 @@ fn test_multiple_io() -> bool {
 
     let path = "/tmp/test_fifo6\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => (),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    let read_fd = match do_open(path, O_RDONLY | O_NONBLOCK) {
+    let read_fd = match fs::open(path, O_RDONLY | O_NONBLOCK) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for read failed: {}", e);
-            do_unlink(path);
+            println!("  ERROR: open for read failed: {:?}", e);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
-    let write_fd = match do_open(path, O_WRONLY) {
+    let write_fd = match fs::open(path, O_WRONLY) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for write failed: {}", e);
-            do_close(read_fd);
-            do_unlink(path);
+            println!("  ERROR: open for write failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
             return false;
         }
     };
@@ -386,49 +291,56 @@ fn test_multiple_io() -> bool {
     let data3 = b"Third\0\0\0";
 
     for (i, data) in [(1i64, data1 as &[u8]), (2i64, data2 as &[u8]), (3i64, data3 as &[u8])].iter() {
-        let write_ret = do_write(write_fd, data);
-        if write_ret < 0 {
-            println!("  ERROR: write failed: {}", -write_ret);
-            do_close(read_fd);
-            do_close(write_fd);
-            do_unlink(path);
-            return false;
+        match fs::write(write_fd, data) {
+            Ok(n) => {
+                println!("  Write {}: {} bytes", i, n);
+            }
+            Err(e) => {
+                println!("  ERROR: write failed: {:?}", e);
+                let _ = fs::close(read_fd);
+                let _ = fs::close(write_fd);
+                let _ = fs::unlink(path);
+                return false;
+            }
         }
-        println!("  Write {}: {} bytes", i, write_ret);
     }
 
     let mut buf = [0u8; 64];
     let mut total = 0usize;
     loop {
-        let read_ret = do_read(read_fd, &mut buf[total..]);
-        if read_ret == 0 {
-            break;
-        } else if read_ret < 0 {
-            if -read_ret == EAGAIN as i64 {
+        match fs::read(read_fd, &mut buf[total..]) {
+            Ok(0) => {
                 break;
             }
-            println!("  ERROR: read failed: {}", -read_ret);
-            do_close(read_fd);
-            do_close(write_fd);
-            do_unlink(path);
-            return false;
+            Ok(n) => {
+                total += n;
+                println!("  Read {} bytes (total: {})", n, total);
+            }
+            Err(Error::Os(Errno::EAGAIN)) => {
+                break;
+            }
+            Err(e) => {
+                println!("  ERROR: read failed: {:?}", e);
+                let _ = fs::close(read_fd);
+                let _ = fs::close(write_fd);
+                let _ = fs::unlink(path);
+                return false;
+            }
         }
-        total += read_ret as usize;
-        println!("  Read {} bytes (total: {})", read_ret, total);
     }
 
     println!("  Total read: {} bytes", total);
     if total != 24 {
         println!("  ERROR: expected 24 bytes, got {}", total);
-        do_close(read_fd);
-        do_close(write_fd);
-        do_unlink(path);
+        let _ = fs::close(read_fd);
+        let _ = fs::close(write_fd);
+        let _ = fs::unlink(path);
         return false;
     }
 
-    do_close(read_fd);
-    do_close(write_fd);
-    do_unlink(path);
+    let _ = fs::close(read_fd);
+    let _ = fs::close(write_fd);
+    let _ = fs::unlink(path);
     println!("Phase 6: PASSED");
     true
 }
@@ -439,91 +351,98 @@ fn test_blocking_read() -> bool {
 
     let path = "/tmp/test_fifo_block_rd\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => println!("  Created FIFO"),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    let pid = unsafe { fork() };
-    if pid < 0 {
-        println!("  ERROR: fork failed");
-        do_unlink(path);
-        return false;
-    }
+    match process::fork() {
+        Ok(ForkResult::Child) => {
+            // Child process: yield then open for write
+            for _ in 0..1000 {
+                let _ = process::yield_now();
+            }
 
-    if pid == 0 {
-        // Child process: yield then open for write
-        for _ in 0..1000 {
-            unsafe { sched_yield(); }
-        }
-
-        match do_open(path, O_WRONLY) {
-            Ok(fd) => {
-                let data = b"from_child";
-                let ret = do_write(fd, data);
-                if ret < 0 {
-                    println!("  Child: write failed with error {}", -ret);
+            match fs::open(path, O_WRONLY) {
+                Ok(fd) => {
+                    let data = b"from_child";
+                    match fs::write(fd, data) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("  Child: write failed with error {:?}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                    let _ = fs::close(fd);
+                }
+                Err(e) => {
+                    println!("  Child: open for write failed with error {:?}", e);
                     std::process::exit(1);
                 }
-                do_close(fd);
             }
-            Err(e) => {
-                println!("  Child: open for write failed with error {}", e);
-                std::process::exit(1);
-            }
+            std::process::exit(0);
         }
-        std::process::exit(0);
-    }
+        Ok(ForkResult::Parent(_child_pid)) => {
+            // Parent: open for read (blocking)
+            println!("  Parent: opening FIFO for read (blocking)...");
+            let read_fd = match fs::open(path, O_RDONLY) {
+                Ok(fd) => {
+                    println!("  Parent: opened for read, fd={}", fd.raw());
+                    fd
+                }
+                Err(e) => {
+                    println!("  ERROR: blocking open for read failed: {:?}", e);
+                    let _ = process::waitpid(-1, core::ptr::null_mut(), 0);
+                    let _ = fs::unlink(path);
+                    return false;
+                }
+            };
 
-    // Parent: open for read (blocking)
-    println!("  Parent: opening FIFO for read (blocking)...");
-    let read_fd = match do_open(path, O_RDONLY) {
-        Ok(fd) => {
-            println!("  Parent: opened for read, fd={}", fd);
-            fd
+            let mut buf = [0u8; 32];
+            let mut total = 0usize;
+            loop {
+                match fs::read(read_fd, &mut buf[total..]) {
+                    Ok(0) => {
+                        break;
+                    }
+                    Ok(n) => {
+                        total += n;
+                    }
+                    Err(Error::Os(Errno::EAGAIN)) => {
+                        break;
+                    }
+                    Err(e) => {
+                        println!("  ERROR: read failed: {:?}", e);
+                        let _ = fs::close(read_fd);
+                        let _ = process::waitpid(-1, core::ptr::null_mut(), 0);
+                        let _ = fs::unlink(path);
+                        return false;
+                    }
+                }
+            }
+
+            println!("  Parent: read {} bytes", total);
+
+            let _ = fs::close(read_fd);
+            let _ = process::waitpid(-1, core::ptr::null_mut(), 0);
+            let _ = fs::unlink(path);
+
+            if total == 10 {
+                println!("Phase 7: PASSED");
+                true
+            } else {
+                println!("  ERROR: expected exactly 10 bytes from child, got {}", total);
+                false
+            }
         }
         Err(e) => {
-            println!("  ERROR: blocking open for read failed: {}", e);
-            unsafe { waitpid(pid, std::ptr::null_mut(), 0); }
-            do_unlink(path);
-            return false;
+            println!("  ERROR: fork failed: {:?}", e);
+            let _ = fs::unlink(path);
+            false
         }
-    };
-
-    let mut buf = [0u8; 32];
-    let mut total = 0i64;
-    loop {
-        let ret = do_read(read_fd, &mut buf[total as usize..]);
-        if ret == 0 {
-            break;
-        } else if ret < 0 {
-            if -ret == EAGAIN as i64 {
-                break;
-            }
-            println!("  ERROR: read failed: {}", -ret);
-            do_close(read_fd);
-            unsafe { waitpid(pid, std::ptr::null_mut(), 0); }
-            do_unlink(path);
-            return false;
-        }
-        total += ret;
-    }
-
-    println!("  Parent: read {} bytes", total);
-
-    do_close(read_fd);
-    unsafe { waitpid(pid, std::ptr::null_mut(), 0); }
-    do_unlink(path);
-
-    if total == 10 {
-        println!("Phase 7: PASSED");
-        true
-    } else {
-        println!("  ERROR: expected exactly 10 bytes from child, got {}", total);
-        false
     }
 }
 
@@ -533,67 +452,84 @@ fn test_eof() -> bool {
 
     let path = "/tmp/test_fifo_eof\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => println!("  Created FIFO"),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    let read_fd = match do_open(path, O_RDONLY | O_NONBLOCK) {
+    let read_fd = match fs::open(path, O_RDONLY | O_NONBLOCK) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for read failed: {}", e);
-            do_unlink(path);
+            println!("  ERROR: open for read failed: {:?}", e);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
-    let write_fd = match do_open(path, O_WRONLY) {
+    let write_fd = match fs::open(path, O_WRONLY) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for write failed: {}", e);
-            do_close(read_fd);
-            do_unlink(path);
+            println!("  ERROR: open for write failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
     let data = b"test_data";
-    let _ = do_write(write_fd, data);
+    let _ = fs::write(write_fd, data);
     println!("  Wrote data");
 
-    do_close(write_fd);
+    let _ = fs::close(write_fd);
     println!("  Closed write end");
 
     let mut buf = [0u8; 32];
-    let ret = do_read(read_fd, &mut buf);
-    if ret < 0 {
-        println!("  ERROR: first read failed: {}", -ret);
-        do_close(read_fd);
-        do_unlink(path);
-        return false;
+    match fs::read(read_fd, &mut buf) {
+        Ok(n) => {
+            println!("  First read: {} bytes", n);
+        }
+        Err(e) => {
+            println!("  ERROR: first read failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
+            return false;
+        }
     }
-    println!("  First read: {} bytes", ret);
 
-    let ret2 = do_read(read_fd, &mut buf);
-    println!("  Second read (after writer closed): {}", ret2);
-
-    do_close(read_fd);
-    do_unlink(path);
-
-    if ret2 == 0 {
-        println!("  Got expected EOF (0)");
-        println!("Phase 8: PASSED");
-        true
-    } else if ret2 < 0 && -ret2 == EAGAIN as i64 {
-        println!("  ERROR: Got EAGAIN instead of EOF!");
-        println!("  FIFO must return 0 (EOF) when all writers close, not EAGAIN");
-        false
-    } else {
-        println!("  ERROR: expected EOF (0), got {}", ret2);
-        false
+    match fs::read(read_fd, &mut buf) {
+        Ok(0) => {
+            println!("  Second read (after writer closed): 0");
+            println!("  Got expected EOF (0)");
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
+            println!("Phase 8: PASSED");
+            true
+        }
+        Ok(n) => {
+            println!("  Second read (after writer closed): {}", n);
+            println!("  ERROR: expected EOF (0), got {}", n);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
+            false
+        }
+        Err(Error::Os(Errno::EAGAIN)) => {
+            println!("  Second read (after writer closed): EAGAIN");
+            println!("  ERROR: Got EAGAIN instead of EOF!");
+            println!("  FIFO must return 0 (EOF) when all writers close, not EAGAIN");
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
+            false
+        }
+        Err(e) => {
+            println!("  Second read (after writer closed): {:?}", e);
+            println!("  ERROR: expected EOF (0), got {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
+            false
+        }
     }
 }
 
@@ -603,66 +539,75 @@ fn test_epipe() -> bool {
 
     let path = "/tmp/test_fifo_epipe\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => println!("  Created FIFO"),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    let read_fd = match do_open(path, O_RDONLY | O_NONBLOCK) {
+    let read_fd = match fs::open(path, O_RDONLY | O_NONBLOCK) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for read failed: {}", e);
-            do_unlink(path);
+            println!("  ERROR: open for read failed: {:?}", e);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
-    let write_fd = match do_open(path, O_WRONLY) {
+    let write_fd = match fs::open(path, O_WRONLY) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for write failed: {}", e);
-            do_close(read_fd);
-            do_unlink(path);
+            println!("  ERROR: open for write failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
     let data = b"test";
-    let ret = do_write(write_fd, data);
-    if ret < 0 {
-        println!("  ERROR: write with reader open failed: {}", -ret);
-        do_close(read_fd);
-        do_close(write_fd);
-        do_unlink(path);
-        return false;
+    match fs::write(write_fd, data) {
+        Ok(n) => {
+            println!("  Write with reader open: {} bytes", n);
+        }
+        Err(e) => {
+            println!("  ERROR: write with reader open failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            return false;
+        }
     }
-    println!("  Write with reader open: {} bytes", ret);
 
-    do_close(read_fd);
+    let _ = fs::close(read_fd);
     println!("  Closed read end");
 
     let data2 = b"more_data";
-    let ret2 = do_write(write_fd, data2);
-    println!("  Write after reader closed: {}", ret2);
-
-    do_close(write_fd);
-    do_unlink(path);
-
-    if ret2 < 0 && -ret2 == EPIPE as i64 {
-        println!("  Got expected EPIPE");
-        println!("Phase 9: PASSED");
-        true
-    } else if ret2 >= 0 {
-        println!("  ERROR: Write succeeded after reader closed!");
-        println!("  FIFO must return EPIPE when all readers close, not accept data");
-        println!("  This would cause data loss in real applications");
-        false
-    } else {
-        println!("  ERROR: expected EPIPE (32), got {}", -ret2);
-        false
+    match fs::write(write_fd, data2) {
+        Err(Error::Os(Errno::EPIPE)) => {
+            println!("  Write after reader closed: EPIPE");
+            println!("  Got expected EPIPE");
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            println!("Phase 9: PASSED");
+            true
+        }
+        Ok(n) => {
+            println!("  Write after reader closed: {} bytes", n);
+            println!("  ERROR: Write succeeded after reader closed!");
+            println!("  FIFO must return EPIPE when all readers close, not accept data");
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            false
+        }
+        Err(e) => {
+            println!("  Write after reader closed: {:?}", e);
+            println!("  ERROR: expected EPIPE, got {:?}", e);
+            let _ = fs::close(write_fd);
+            let _ = fs::unlink(path);
+            false
+        }
     }
 }
 
@@ -672,72 +617,81 @@ fn test_unlink_while_open() -> bool {
 
     let path = "/tmp/test_fifo10\0";
 
-    match do_mkfifo(path, 0o644) {
+    match fs::mkfifo(path, 0o644) {
         Ok(()) => (),
         Err(e) => {
-            println!("  ERROR: mkfifo failed: {}", e);
+            println!("  ERROR: mkfifo failed: {:?}", e);
             return false;
         }
     }
 
-    let read_fd = match do_open(path, O_RDONLY | O_NONBLOCK) {
+    let read_fd = match fs::open(path, O_RDONLY | O_NONBLOCK) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for read failed: {}", e);
-            do_unlink(path);
+            println!("  ERROR: open for read failed: {:?}", e);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
-    let write_fd = match do_open(path, O_WRONLY) {
+    let write_fd = match fs::open(path, O_WRONLY) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  ERROR: open for write failed: {}", e);
-            do_close(read_fd);
-            do_unlink(path);
+            println!("  ERROR: open for write failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::unlink(path);
             return false;
         }
     };
 
     // Unlink while both ends are open
-    let ret = unsafe { unlink(path.as_ptr()) };
-    if ret < 0 {
-        println!("  ERROR: unlink failed");
-        do_close(read_fd);
-        do_close(write_fd);
-        return false;
+    match fs::unlink(path) {
+        Ok(()) => {
+            println!("  Unlinked FIFO while open");
+        }
+        Err(e) => {
+            println!("  ERROR: unlink failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            return false;
+        }
     }
-    println!("  Unlinked FIFO while open");
 
     // I/O should still work on open fds
     let data = b"After unlink";
-    let write_ret = do_write(write_fd, data);
-    if write_ret < 0 {
-        println!("  ERROR: write after unlink failed: {}", -write_ret);
-        do_close(read_fd);
-        do_close(write_fd);
-        return false;
+    match fs::write(write_fd, data) {
+        Ok(n) => {
+            println!("  Wrote {} bytes after unlink", n);
+        }
+        Err(e) => {
+            println!("  ERROR: write after unlink failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            return false;
+        }
     }
-    println!("  Wrote {} bytes after unlink", write_ret);
 
     let mut buf = [0u8; 32];
-    let read_ret = do_read(read_fd, &mut buf);
-    if read_ret < 0 {
-        println!("  ERROR: read after unlink failed: {}", -read_ret);
-        do_close(read_fd);
-        do_close(write_fd);
-        return false;
-    }
-    println!("  Read {} bytes after unlink", read_ret);
-    if &buf[..read_ret as usize] != data {
-        println!("  ERROR: data mismatch");
-        do_close(read_fd);
-        do_close(write_fd);
-        return false;
+    match fs::read(read_fd, &mut buf) {
+        Ok(n) => {
+            println!("  Read {} bytes after unlink", n);
+            if &buf[..n] != data {
+                println!("  ERROR: data mismatch");
+                let _ = fs::close(read_fd);
+                let _ = fs::close(write_fd);
+                return false;
+            }
+        }
+        Err(e) => {
+            println!("  ERROR: read after unlink failed: {:?}", e);
+            let _ = fs::close(read_fd);
+            let _ = fs::close(write_fd);
+            return false;
+        }
     }
 
-    do_close(read_fd);
-    do_close(write_fd);
+    let _ = fs::close(read_fd);
+    let _ = fs::close(write_fd);
     println!("Phase 10: PASSED");
     true
 }

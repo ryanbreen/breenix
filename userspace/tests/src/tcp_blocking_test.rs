@@ -13,71 +13,25 @@
 //! 5. connect() with invalid fd returns EBADF
 //! 6. connect() on connected socket returns EISCONN
 
-use std::process;
-
-#[repr(C)]
-struct SockAddrIn {
-    sin_family: u16,
-    sin_port: u16,
-    sin_addr: [u8; 4],
-    sin_zero: [u8; 8],
-}
-
-impl SockAddrIn {
-    fn new(addr: [u8; 4], port: u16) -> Self {
-        SockAddrIn {
-            sin_family: AF_INET as u16,
-            sin_port: port.to_be(),
-            sin_addr: addr,
-            sin_zero: [0; 8],
-        }
-    }
-}
-
-#[repr(C)]
-struct Timespec {
-    tv_sec: i64,
-    tv_nsec: i64,
-}
-
-const AF_INET: i32 = 2;
-const SOCK_STREAM: i32 = 1;
-const O_NONBLOCK: i32 = 2048;
-const EAGAIN: i32 = 11;
-const SIGKILL: i32 = 9;
-const F_GETFL: i32 = 3;
-const F_SETFL: i32 = 4;
-const CLOCK_MONOTONIC: i32 = 1;
-
-extern "C" {
-    fn socket(domain: i32, typ: i32, protocol: i32) -> i32;
-    fn bind(fd: i32, addr: *const SockAddrIn, addrlen: u32) -> i32;
-    fn listen(fd: i32, backlog: i32) -> i32;
-    fn accept(fd: i32, addr: *mut SockAddrIn, addrlen: *mut u32) -> i32;
-    fn connect(fd: i32, addr: *const SockAddrIn, addrlen: u32) -> i32;
-
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn fcntl(fd: i32, cmd: i32, arg: i64) -> i32;
-    fn fork() -> i32;
-    fn getpid() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn kill(pid: i32, sig: i32) -> i32;
-    fn sched_yield() -> i32;
-    fn nanosleep(req: *const Timespec, rem: *mut Timespec) -> i32;
-    fn clock_gettime(clockid: i32, tp: *mut Timespec) -> i32;
-}
-
-fn sock_size() -> u32 {
-    std::mem::size_of::<SockAddrIn>() as u32
-}
+use libbreenix::error::Error;
+use libbreenix::io;
+use libbreenix::io::fcntl_cmd::{F_GETFL, F_SETFL};
+use libbreenix::io::status_flags::O_NONBLOCK;
+use libbreenix::process::{self, ForkResult};
+use libbreenix::signal;
+use libbreenix::socket::{self, SockAddrIn, AF_INET, SOCK_STREAM};
+use libbreenix::time;
+use libbreenix::types::{Fd, Timespec};
+use libbreenix::Errno;
+use std::process as std_process;
 
 /// Yield CPU multiple times to give other process time to run
 fn delay_yield(iterations: usize) {
     for _ in 0..iterations {
-        unsafe { sched_yield(); }
-        for _ in 0..1000 { std::hint::spin_loop(); }
+        let _ = process::yield_now();
+        for _ in 0..1000 {
+            std::hint::spin_loop();
+        }
     }
 }
 
@@ -86,13 +40,11 @@ fn sleep_ms(ms: u64) {
         tv_sec: (ms / 1000) as i64,
         tv_nsec: ((ms % 1000) * 1_000_000) as i64,
     };
-    unsafe { nanosleep(&req, std::ptr::null_mut()); }
+    let _ = time::nanosleep(&req);
 }
 
 fn now_monotonic() -> Timespec {
-    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
-    unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts); }
-    ts
+    time::now_monotonic().unwrap_or(Timespec { tv_sec: 0, tv_nsec: 0 })
 }
 
 fn elapsed_ms(start: &Timespec, end: &Timespec) -> i64 {
@@ -112,119 +64,145 @@ fn main() {
     // =========================================================================
     println!("=== TEST 1: Blocking accept() ===");
 
-    let server_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-    if server_fd < 0 { println!("TCP_BLOCKING_TEST: FAIL - server socket failed"); process::exit(1); }
-    println!("  Server socket created: fd={}", server_fd);
+    let server_fd = match socket::socket(AF_INET, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            println!("TCP_BLOCKING_TEST: FAIL - server socket failed");
+            std_process::exit(1);
+        }
+    };
+    println!("  Server socket created: fd={}", server_fd.raw());
 
     let server_addr = SockAddrIn::new([0, 0, 0, 0], 9100);
-    if unsafe { bind(server_fd, &server_addr, sock_size()) } != 0 { println!("TCP_BLOCKING_TEST: FAIL - bind failed"); process::exit(2); }
+    if socket::bind_inet(server_fd, &server_addr).is_err() {
+        println!("TCP_BLOCKING_TEST: FAIL - bind failed");
+        std_process::exit(2);
+    }
     println!("  Server bound to port 9100");
 
-    if unsafe { listen(server_fd, 128) } != 0 { println!("TCP_BLOCKING_TEST: FAIL - listen failed"); process::exit(3); }
+    if socket::listen(server_fd, 128).is_err() {
+        println!("TCP_BLOCKING_TEST: FAIL - listen failed");
+        std_process::exit(3);
+    }
     println!("  Server listening");
 
-    let parent_pid = unsafe { getpid() };
-    let fork_result = unsafe { fork() };
+    let parent_pid = process::getpid().unwrap();
+    let fork_result = process::fork();
 
-    if fork_result < 0 { println!("TCP_BLOCKING_TEST: FAIL - fork failed"); process::exit(4); }
-
-    if fork_result == 0 {
-        // ===== CHILD PROCESS =====
-        println!("  [CHILD] Started, will delay then connect...");
-        println!("  [CHILD] Parent PID={} (watchdog target)", parent_pid);
-
-        delay_yield(50);
-
-        let client_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-        if client_fd < 0 {
-            println!("  [CHILD] FAIL - client socket creation failed");
-            println!("  [CHILD] WATCHDOG: Killing parent to prevent hang");
-            unsafe { kill(parent_pid, SIGKILL); }
-            process::exit(10);
+    match fork_result {
+        Err(_) => {
+            println!("TCP_BLOCKING_TEST: FAIL - fork failed");
+            std_process::exit(4);
         }
+        Ok(ForkResult::Child) => {
+            // ===== CHILD PROCESS =====
+            println!("  [CHILD] Started, will delay then connect...");
+            println!("  [CHILD] Parent PID={} (watchdog target)", parent_pid.raw());
 
-        let loopback = SockAddrIn::new([127, 0, 0, 1], 9100);
-        if unsafe { connect(client_fd, &loopback, sock_size()) } != 0 {
-            println!("  [CHILD] FAIL - connect failed");
-            println!("  [CHILD] WATCHDOG: Killing parent to prevent hang");
-            unsafe { kill(parent_pid, SIGKILL); }
-            process::exit(11);
+            delay_yield(50);
+
+            let client_fd = match socket::socket(AF_INET, SOCK_STREAM, 0) {
+                Ok(fd) => fd,
+                Err(_) => {
+                    println!("  [CHILD] FAIL - client socket creation failed");
+                    println!("  [CHILD] WATCHDOG: Killing parent to prevent hang");
+                    let _ = signal::kill(parent_pid.raw() as i32, signal::SIGKILL);
+                    std_process::exit(10);
+                }
+            };
+
+            let loopback = SockAddrIn::new([127, 0, 0, 1], 9100);
+            if socket::connect_inet(client_fd, &loopback).is_err() {
+                println!("  [CHILD] FAIL - connect failed");
+                println!("  [CHILD] WATCHDOG: Killing parent to prevent hang");
+                let _ = signal::kill(parent_pid.raw() as i32, signal::SIGKILL);
+                std_process::exit(11);
+            }
+            println!("  [CHILD] Connected to server");
+
+            delay_yield(30);
+
+            // Send test data
+            let test_data = b"BLOCKING_TEST_DATA";
+            match io::write(client_fd, test_data) {
+                Ok(written) => {
+                    println!("  [CHILD] Sent {} bytes", written);
+                }
+                Err(_) => {
+                    println!("  [CHILD] FAIL - write failed");
+                    println!("  [CHILD] WATCHDOG: Killing parent to prevent hang");
+                    let _ = signal::kill(parent_pid.raw() as i32, signal::SIGKILL);
+                    std_process::exit(12);
+                }
+            }
+
+            let _ = io::close(client_fd);
+            println!("  [CHILD] Exiting successfully");
+            std_process::exit(0);
         }
-        println!("  [CHILD] Connected to server");
+        Ok(ForkResult::Parent(child_pid)) => {
+            // ===== PARENT PROCESS =====
+            println!("  [PARENT] Forked child pid={}", child_pid.raw());
+            println!("  [PARENT] Calling accept() - should block until child connects...");
 
-        delay_yield(30);
+            match socket::accept(server_fd, None) {
+                Ok(accepted_fd) => {
+                    println!("  [PARENT] accept() returned fd={} - BLOCKING WORKED!", accepted_fd.raw());
+                    println!("  TEST 1 (blocking accept): PASS\n");
 
-        // Send test data
-        let test_data = b"BLOCKING_TEST_DATA";
-        let written = unsafe { write(client_fd, test_data.as_ptr(), test_data.len()) };
-        if written < 0 {
-            println!("  [CHILD] FAIL - write failed");
-            println!("  [CHILD] WATCHDOG: Killing parent to prevent hang");
-            unsafe { kill(parent_pid, SIGKILL); }
-            process::exit(12);
-        }
-        println!("  [CHILD] Sent {} bytes", written);
+                    // Test 2: Blocking read()
+                    println!("=== TEST 2: Blocking recv() ===");
+                    println!("  [PARENT] Calling read() - should block until child sends data...");
 
-        unsafe { close(client_fd); }
-        println!("  [CHILD] Exiting successfully");
-        process::exit(0);
-    } else {
-        // ===== PARENT PROCESS =====
-        println!("  [PARENT] Forked child pid={}", fork_result);
-        println!("  [PARENT] Calling accept() - should block until child connects...");
+                    let mut recv_buf = [0u8; 64];
+                    match io::read(accepted_fd, &mut recv_buf) {
+                        Err(Error::Os(Errno::EAGAIN)) => {
+                            println!("  [PARENT] FAIL - read() returned EAGAIN (-11)");
+                            println!("  TEST 2 (blocking recv): FAIL\n");
+                            failed += 1;
+                        }
+                        Err(e) => {
+                            println!("  [PARENT] FAIL - read() failed, error={:?}", e);
+                            println!("  TEST 2 (blocking recv): FAIL\n");
+                            failed += 1;
+                        }
+                        Ok(0) => {
+                            println!("  [PARENT] FAIL - read() returned 0 (EOF) - expected data");
+                            println!("  TEST 2 (blocking recv): FAIL\n");
+                            failed += 1;
+                        }
+                        Ok(bytes_read) => {
+                            println!("  [PARENT] read() returned {} bytes - BLOCKING WORKED!", bytes_read);
 
-        let accepted_fd = unsafe { accept(server_fd, std::ptr::null_mut(), std::ptr::null_mut()) };
+                            let expected = b"BLOCKING_TEST_DATA";
+                            if bytes_read == expected.len() && &recv_buf[..bytes_read] == expected {
+                                println!("  [PARENT] Data verified correctly");
+                                println!("  TEST 2 (blocking recv): PASS\n");
+                            } else {
+                                println!("  [PARENT] FAIL - data mismatch or wrong byte count");
+                                println!("  TEST 2 (blocking recv): FAIL\n");
+                                failed += 1;
+                            }
+                        }
+                    }
 
-        if accepted_fd >= 0 {
-            println!("  [PARENT] accept() returned fd={} - BLOCKING WORKED!", accepted_fd);
-            println!("  TEST 1 (blocking accept): PASS\n");
-
-            // Test 2: Blocking read()
-            println!("=== TEST 2: Blocking recv() ===");
-            println!("  [PARENT] Calling read() - should block until child sends data...");
-
-            let mut recv_buf = [0u8; 64];
-            let bytes_read = unsafe { read(accepted_fd, recv_buf.as_mut_ptr(), recv_buf.len()) };
-
-            if bytes_read == -(EAGAIN as isize) {
-                println!("  [PARENT] FAIL - read() returned EAGAIN (-11)");
-                println!("  TEST 2 (blocking recv): FAIL\n");
-                failed += 1;
-            } else if bytes_read < 0 {
-                println!("  [PARENT] FAIL - read() failed, errno={}", -bytes_read);
-                println!("  TEST 2 (blocking recv): FAIL\n");
-                failed += 1;
-            } else if bytes_read == 0 {
-                println!("  [PARENT] FAIL - read() returned 0 (EOF) - expected data");
-                println!("  TEST 2 (blocking recv): FAIL\n");
-                failed += 1;
-            } else {
-                println!("  [PARENT] read() returned {} bytes - BLOCKING WORKED!", bytes_read);
-
-                let expected = b"BLOCKING_TEST_DATA";
-                if bytes_read as usize == expected.len() && &recv_buf[..bytes_read as usize] == expected {
-                    println!("  [PARENT] Data verified correctly");
-                    println!("  TEST 2 (blocking recv): PASS\n");
-                } else {
-                    println!("  [PARENT] FAIL - data mismatch or wrong byte count");
-                    println!("  TEST 2 (blocking recv): FAIL\n");
+                    let _ = io::close(accepted_fd);
+                }
+                Err(Error::Os(Errno::EAGAIN)) => {
+                    println!("  [PARENT] FAIL - accept() returned EAGAIN (-11)");
+                    println!("  TEST 1 (blocking accept): FAIL\n");
+                    failed += 1;
+                }
+                Err(e) => {
+                    println!("  [PARENT] FAIL - accept() failed, error={:?}", e);
+                    println!("  TEST 1 (blocking accept): FAIL\n");
                     failed += 1;
                 }
             }
 
-            unsafe { close(accepted_fd); }
-        } else if -accepted_fd == EAGAIN {
-            println!("  [PARENT] FAIL - accept() returned EAGAIN (-11)");
-            println!("  TEST 1 (blocking accept): FAIL\n");
-            failed += 1;
-        } else {
-            println!("  [PARENT] FAIL - accept() failed, errno={}", -accepted_fd);
-            println!("  TEST 1 (blocking accept): FAIL\n");
-            failed += 1;
+            let mut status: i32 = 0;
+            let _ = process::waitpid(child_pid.raw() as i32, &mut status, 0);
         }
-
-        let mut status: i32 = 0;
-        unsafe { waitpid(fork_result, &mut status, 0); }
     }
 
     // =========================================================================
@@ -232,62 +210,75 @@ fn main() {
     // =========================================================================
     println!("=== TEST 3: Non-blocking connect() returns EINPROGRESS ===");
 
-    let server2_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-    if server2_fd < 0 {
-        println!("  FAIL - server2 socket creation failed");
-        println!("  TEST 3 (non-blocking connect): FAIL\n");
-        failed += 1;
-    } else {
+    let server2_fd = match socket::socket(AF_INET, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            println!("  FAIL - server2 socket creation failed");
+            println!("  TEST 3 (non-blocking connect): FAIL\n");
+            failed += 1;
+            Fd::from_raw(u64::MAX) // sentinel, won't be used
+        }
+    };
+    if server2_fd.raw() != u64::MAX {
         let server2_addr = SockAddrIn::new([0, 0, 0, 0], 9101);
-        if unsafe { bind(server2_fd, &server2_addr, sock_size()) } != 0 || unsafe { listen(server2_fd, 128) } != 0 {
+        if socket::bind_inet(server2_fd, &server2_addr).is_err() || socket::listen(server2_fd, 128).is_err() {
             println!("  FAIL - server2 bind/listen failed");
             println!("  TEST 3 (non-blocking connect): FAIL\n");
             failed += 1;
         } else {
             println!("  Server listening on port 9101");
 
-            let client_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-            if client_fd >= 0 {
-                let current_flags = unsafe { fcntl(client_fd, F_GETFL, 0) };
-                if current_flags >= 0 {
-                    let set_result = unsafe { fcntl(client_fd, F_SETFL, (current_flags | O_NONBLOCK) as i64) };
-                    if set_result >= 0 {
-                        println!("  Client socket set to non-blocking mode");
+            match socket::socket(AF_INET, SOCK_STREAM, 0) {
+                Ok(client_fd) => {
+                    match io::fcntl(client_fd, F_GETFL, 0) {
+                        Ok(current_flags) => {
+                            match io::fcntl(client_fd, F_SETFL, (current_flags as i32 | O_NONBLOCK) as i64) {
+                                Ok(_) => {
+                                    println!("  Client socket set to non-blocking mode");
 
-                        let loopback = SockAddrIn::new([127, 0, 0, 1], 9101);
-                        println!("  Calling connect() in non-blocking mode...");
+                                    let loopback = SockAddrIn::new([127, 0, 0, 1], 9101);
+                                    println!("  Calling connect() in non-blocking mode...");
 
-                        let ret = unsafe { connect(client_fd, &loopback, sock_size()) };
-                        if -ret == 115 {
-                            println!("  connect() returned EINPROGRESS (-115) as expected!");
-                            println!("  TEST 3 (non-blocking connect): PASS\n");
-                        } else if ret == 0 {
-                            println!("  FAIL - connect() returned success (0) instead of EINPROGRESS");
-                            println!("  TEST 3 (non-blocking connect): FAIL\n");
-                            failed += 1;
-                        } else {
-                            println!("  FAIL - connect() returned unexpected error, errno={}", -ret);
+                                    match socket::connect_inet(client_fd, &loopback) {
+                                        Err(Error::Os(Errno::EINPROGRESS)) => {
+                                            println!("  connect() returned EINPROGRESS (-115) as expected!");
+                                            println!("  TEST 3 (non-blocking connect): PASS\n");
+                                        }
+                                        Ok(()) => {
+                                            println!("  FAIL - connect() returned success (0) instead of EINPROGRESS");
+                                            println!("  TEST 3 (non-blocking connect): FAIL\n");
+                                            failed += 1;
+                                        }
+                                        Err(e) => {
+                                            println!("  FAIL - connect() returned unexpected error, error={:?}", e);
+                                            println!("  TEST 3 (non-blocking connect): FAIL\n");
+                                            failed += 1;
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    println!("  FAIL - fcntl(F_SETFL, O_NONBLOCK) failed");
+                                    println!("  TEST 3 (non-blocking connect): FAIL\n");
+                                    failed += 1;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            println!("  FAIL - fcntl(F_GETFL) failed");
                             println!("  TEST 3 (non-blocking connect): FAIL\n");
                             failed += 1;
                         }
-                    } else {
-                        println!("  FAIL - fcntl(F_SETFL, O_NONBLOCK) failed");
-                        println!("  TEST 3 (non-blocking connect): FAIL\n");
-                        failed += 1;
                     }
-                } else {
-                    println!("  FAIL - fcntl(F_GETFL) failed");
+                    let _ = io::close(client_fd);
+                }
+                Err(_) => {
+                    println!("  FAIL - client socket creation failed");
                     println!("  TEST 3 (non-blocking connect): FAIL\n");
                     failed += 1;
                 }
-                unsafe { close(client_fd); }
-            } else {
-                println!("  FAIL - client socket creation failed");
-                println!("  TEST 3 (non-blocking connect): FAIL\n");
-                failed += 1;
             }
         }
-        unsafe { close(server2_fd); }
+        let _ = io::close(server2_fd);
     }
 
     // =========================================================================
@@ -295,47 +286,58 @@ fn main() {
     // =========================================================================
     println!("=== TEST 4: Non-blocking accept() returns EAGAIN ===");
 
-    let server3_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-    if server3_fd >= 0 {
-        let current_flags = unsafe { fcntl(server3_fd, F_GETFL, 0) };
-        if current_flags >= 0 && unsafe { fcntl(server3_fd, F_SETFL, (current_flags | O_NONBLOCK) as i64) } >= 0 {
-            println!("  Socket set to non-blocking mode (O_NONBLOCK)");
+    match socket::socket(AF_INET, SOCK_STREAM, 0) {
+        Ok(server3_fd) => {
+            let fcntl_ok = match io::fcntl(server3_fd, F_GETFL, 0) {
+                Ok(current_flags) => {
+                    io::fcntl(server3_fd, F_SETFL, (current_flags as i32 | O_NONBLOCK) as i64).is_ok()
+                }
+                Err(_) => false,
+            };
+            if fcntl_ok {
+                println!("  Socket set to non-blocking mode (O_NONBLOCK)");
 
-            let server3_addr = SockAddrIn::new([0, 0, 0, 0], 9103);
-            if unsafe { bind(server3_fd, &server3_addr, sock_size()) } == 0 &&
-               unsafe { listen(server3_fd, 128) } == 0 {
-                println!("  Server listening");
-                println!("  Calling accept() with NO pending connections...");
+                let server3_addr = SockAddrIn::new([0, 0, 0, 0], 9103);
+                if socket::bind_inet(server3_fd, &server3_addr).is_ok()
+                    && socket::listen(server3_fd, 128).is_ok()
+                {
+                    println!("  Server listening");
+                    println!("  Calling accept() with NO pending connections...");
 
-                let accept_result = unsafe { accept(server3_fd, std::ptr::null_mut(), std::ptr::null_mut()) };
-                if -accept_result == EAGAIN {
-                    println!("  accept() returned EAGAIN (-11) as expected!");
-                    println!("  TEST 4 (non-blocking EAGAIN): PASS\n");
-                } else if accept_result >= 0 {
-                    println!("  FAIL - accept() returned fd={} but no client connected!", accept_result);
-                    println!("  TEST 4 (non-blocking EAGAIN): FAIL\n");
-                    failed += 1;
-                    unsafe { close(accept_result); }
+                    match socket::accept(server3_fd, None) {
+                        Err(Error::Os(Errno::EAGAIN)) => {
+                            println!("  accept() returned EAGAIN (-11) as expected!");
+                            println!("  TEST 4 (non-blocking EAGAIN): PASS\n");
+                        }
+                        Ok(accepted_fd) => {
+                            println!("  FAIL - accept() returned fd={} but no client connected!", accepted_fd.raw());
+                            println!("  TEST 4 (non-blocking EAGAIN): FAIL\n");
+                            failed += 1;
+                            let _ = io::close(accepted_fd);
+                        }
+                        Err(e) => {
+                            println!("  FAIL - accept() returned unexpected error, error={:?}", e);
+                            println!("  TEST 4 (non-blocking EAGAIN): FAIL\n");
+                            failed += 1;
+                        }
+                    }
                 } else {
-                    println!("  FAIL - accept() returned unexpected error, errno={}", -accept_result);
+                    println!("  FAIL - bind/listen failed");
                     println!("  TEST 4 (non-blocking EAGAIN): FAIL\n");
                     failed += 1;
                 }
             } else {
-                println!("  FAIL - bind/listen failed");
+                println!("  FAIL - fcntl failed");
                 println!("  TEST 4 (non-blocking EAGAIN): FAIL\n");
                 failed += 1;
             }
-        } else {
-            println!("  FAIL - fcntl failed");
+            let _ = io::close(server3_fd);
+        }
+        Err(_) => {
+            println!("  FAIL - server3 socket creation failed");
             println!("  TEST 4 (non-blocking EAGAIN): FAIL\n");
             failed += 1;
         }
-        unsafe { close(server3_fd); }
-    } else {
-        println!("  FAIL - server3 socket creation failed");
-        println!("  TEST 4 (non-blocking EAGAIN): FAIL\n");
-        failed += 1;
     }
 
     // =========================================================================
@@ -354,86 +356,104 @@ fn main() {
     // Part A: Prove blocking read actually blocks
     println!("  --- Part A: Proving blocking read actually blocks ---");
 
-    let server_a = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-    if server_a >= 0 {
+    if let Ok(server_a) = socket::socket(AF_INET, SOCK_STREAM, 0) {
         let server_a_addr = SockAddrIn::new([0, 0, 0, 0], 9104);
-        if unsafe { bind(server_a, &server_a_addr, sock_size()) } == 0 && unsafe { listen(server_a, 128) } == 0 {
+        if socket::bind_inet(server_a, &server_a_addr).is_ok() && socket::listen(server_a, 128).is_ok() {
             println!("  Server A listening on port 9104 (blocking test)");
 
-            let parent_pid = unsafe { getpid() };
-            let fork_a = unsafe { fork() };
+            let parent_pid = process::getpid().unwrap();
+            let fork_a = process::fork();
 
-            if fork_a == 0 {
-                // Child for Part A
-                println!("  [CHILD-A] Started, will delay then send data");
+            match fork_a {
+                Ok(ForkResult::Child) => {
+                    // Child for Part A
+                    println!("  [CHILD-A] Started, will delay then send data");
 
-                let client = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-                if client < 0 {
-                    println!("  [CHILD-A] FAIL - socket creation failed");
-                    unsafe { kill(parent_pid, SIGKILL); }
-                    process::exit(20);
-                }
-
-                let loopback = SockAddrIn::new([127, 0, 0, 1], 9104);
-                let _ = unsafe { connect(client, &loopback, sock_size()) };
-                delay_yield(10);
-                println!("  [CHILD-A] Connected");
-
-                println!("  [CHILD-A] Sleeping {}ms before send...", child_delay_ms);
-                sleep_ms(child_delay_ms);
-
-                let data = b"BLOCKING_TEST";
-                let written = unsafe { write(client, data.as_ptr(), data.len()) };
-                if written < 0 {
-                    println!("  [CHILD-A] FAIL - write failed");
-                    unsafe { kill(parent_pid, SIGKILL); }
-                    process::exit(21);
-                }
-                println!("  [CHILD-A] Sent data, exiting");
-                unsafe { close(client); }
-                process::exit(0);
-            } else if fork_a > 0 {
-                // Parent for Part A
-                delay_yield(20);
-
-                let conn_fd = unsafe { accept(server_a, std::ptr::null_mut(), std::ptr::null_mut()) };
-                if conn_fd >= 0 {
-                    println!("  [PARENT-A] Accepted connection");
-
-                    let mut buf = [0u8; 64];
-                    println!("  [PARENT-A] Starting BLOCKING read (should wait for child)...");
-
-                    let start = now_monotonic();
-                    let result = unsafe { read(conn_fd, buf.as_mut_ptr(), buf.len()) };
-                    let end = now_monotonic();
-
-                    let elapsed = elapsed_ms(&start, &end);
-
-                    if result > 0 {
-                        println!("  [PARENT-A] Blocking read returned {} bytes in {}ms", result, elapsed);
-                        if elapsed >= blocking_min_ms {
-                            println!("  [PARENT-A] PASS - blocking read took >= {}ms", blocking_min_ms);
-                            part_a_passed = true;
-                        } else {
-                            println!("  [PARENT-A] FAIL - blocking read too fast ({}ms < {}ms)", elapsed, blocking_min_ms);
+                    let client = match socket::socket(AF_INET, SOCK_STREAM, 0) {
+                        Ok(fd) => fd,
+                        Err(_) => {
+                            println!("  [CHILD-A] FAIL - socket creation failed");
+                            let _ = signal::kill(parent_pid.raw() as i32, signal::SIGKILL);
+                            std_process::exit(20);
                         }
-                    } else if result == -(EAGAIN as isize) {
-                        println!("  [PARENT-A] FAIL - blocking read returned EAGAIN!");
-                    } else {
-                        println!("  [PARENT-A] FAIL - blocking read error: {}", -result);
-                    }
-                    unsafe { close(conn_fd); }
-                } else {
-                    println!("  [PARENT-A] FAIL - accept failed");
-                }
+                    };
 
-                let mut status: i32 = 0;
-                unsafe { waitpid(fork_a, &mut status, 0); }
+                    let loopback = SockAddrIn::new([127, 0, 0, 1], 9104);
+                    let _ = socket::connect_inet(client, &loopback);
+                    delay_yield(10);
+                    println!("  [CHILD-A] Connected");
+
+                    println!("  [CHILD-A] Sleeping {}ms before send...", child_delay_ms);
+                    sleep_ms(child_delay_ms);
+
+                    let data = b"BLOCKING_TEST";
+                    match io::write(client, data) {
+                        Ok(_) => {}
+                        Err(_) => {
+                            println!("  [CHILD-A] FAIL - write failed");
+                            let _ = signal::kill(parent_pid.raw() as i32, signal::SIGKILL);
+                            std_process::exit(21);
+                        }
+                    }
+                    println!("  [CHILD-A] Sent data, exiting");
+                    let _ = io::close(client);
+                    std_process::exit(0);
+                }
+                Ok(ForkResult::Parent(child_a_pid)) => {
+                    // Parent for Part A
+                    delay_yield(20);
+
+                    if let Ok(conn_fd) = socket::accept(server_a, None) {
+                        println!("  [PARENT-A] Accepted connection");
+
+                        let mut buf = [0u8; 64];
+                        println!("  [PARENT-A] Starting BLOCKING read (should wait for child)...");
+
+                        let start = now_monotonic();
+                        let result = io::read(conn_fd, &mut buf);
+                        let end = now_monotonic();
+
+                        let elapsed = elapsed_ms(&start, &end);
+
+                        match result {
+                            Ok(n) if n > 0 => {
+                                println!("  [PARENT-A] Blocking read returned {} bytes in {}ms", n, elapsed);
+                                if elapsed >= blocking_min_ms {
+                                    println!("  [PARENT-A] PASS - blocking read took >= {}ms", blocking_min_ms);
+                                    part_a_passed = true;
+                                } else {
+                                    println!(
+                                        "  [PARENT-A] FAIL - blocking read too fast ({}ms < {}ms)",
+                                        elapsed, blocking_min_ms
+                                    );
+                                }
+                            }
+                            Err(Error::Os(Errno::EAGAIN)) => {
+                                println!("  [PARENT-A] FAIL - blocking read returned EAGAIN!");
+                            }
+                            Ok(_) => {
+                                println!("  [PARENT-A] FAIL - blocking read returned 0 bytes");
+                            }
+                            Err(e) => {
+                                println!("  [PARENT-A] FAIL - blocking read error: {:?}", e);
+                            }
+                        }
+                        let _ = io::close(conn_fd);
+                    } else {
+                        println!("  [PARENT-A] FAIL - accept failed");
+                    }
+
+                    let mut status: i32 = 0;
+                    let _ = process::waitpid(child_a_pid.raw() as i32, &mut status, 0);
+                }
+                Err(_) => {
+                    println!("  FAIL - Part A fork failed");
+                }
             }
         } else {
             println!("  FAIL - Part A bind/listen failed");
         }
-        unsafe { close(server_a); }
+        let _ = io::close(server_a);
     }
 
     println!();
@@ -441,64 +461,77 @@ fn main() {
     // Part B: Prove non-blocking read returns IMMEDIATELY
     println!("  --- Part B: Proving non-blocking read returns immediately ---");
 
-    let server_b = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-    if server_b >= 0 {
+    if let Ok(server_b) = socket::socket(AF_INET, SOCK_STREAM, 0) {
         let server_b_addr = SockAddrIn::new([0, 0, 0, 0], 9105);
-        if unsafe { bind(server_b, &server_b_addr, sock_size()) } == 0 && unsafe { listen(server_b, 128) } == 0 {
+        if socket::bind_inet(server_b, &server_b_addr).is_ok() && socket::listen(server_b, 128).is_ok() {
             println!("  Server B listening on port 9105 (non-blocking test)");
 
-            let client_b = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-            if client_b >= 0 {
+            if let Ok(client_b) = socket::socket(AF_INET, SOCK_STREAM, 0) {
                 let loopback = SockAddrIn::new([127, 0, 0, 1], 9105);
-                let _ = unsafe { connect(client_b, &loopback, sock_size()) };
+                let _ = socket::connect_inet(client_b, &loopback);
                 delay_yield(10);
 
-                let conn_fd = unsafe { accept(server_b, std::ptr::null_mut(), std::ptr::null_mut()) };
-                if conn_fd >= 0 {
+                if let Ok(conn_fd) = socket::accept(server_b, None) {
                     println!("  Connection established");
 
-                    let flags = unsafe { fcntl(conn_fd, F_GETFL, 0) };
-                    if flags >= 0 && unsafe { fcntl(conn_fd, F_SETFL, (flags | O_NONBLOCK) as i64) } >= 0 {
+                    let flags_ok = match io::fcntl(conn_fd, F_GETFL, 0) {
+                        Ok(flags) => {
+                            io::fcntl(conn_fd, F_SETFL, (flags as i32 | O_NONBLOCK) as i64).is_ok()
+                        }
+                        Err(_) => false,
+                    };
+                    if flags_ok {
                         println!("  Socket set to O_NONBLOCK");
 
                         let mut buf = [0u8; 64];
                         println!("  Starting NON-BLOCKING read (no data pending)...");
 
                         let start = now_monotonic();
-                        let result = unsafe { read(conn_fd, buf.as_mut_ptr(), buf.len()) };
+                        let result = io::read(conn_fd, &mut buf);
                         let end = now_monotonic();
 
                         let elapsed = elapsed_ms(&start, &end);
 
-                        println!("  Non-blocking read returned in {}ms with result {}", elapsed, result);
-
-                        if result == -(EAGAIN as isize) {
-                            if elapsed < nonblock_max_ms {
-                                println!("  PASS - returned EAGAIN in < {}ms", nonblock_max_ms);
-                                part_b_passed = true;
-                            } else {
-                                println!("  FAIL - returned EAGAIN but took too long ({}ms >= {}ms)", elapsed, nonblock_max_ms);
+                        match result {
+                            Err(Error::Os(Errno::EAGAIN)) => {
+                                println!("  Non-blocking read returned in {}ms with EAGAIN", elapsed);
+                                if elapsed < nonblock_max_ms {
+                                    println!("  PASS - returned EAGAIN in < {}ms", nonblock_max_ms);
+                                    part_b_passed = true;
+                                } else {
+                                    println!(
+                                        "  FAIL - returned EAGAIN but took too long ({}ms >= {}ms)",
+                                        elapsed, nonblock_max_ms
+                                    );
+                                }
                             }
-                        } else if result >= 0 {
-                            println!("  FAIL - read returned data but none was sent!");
-                        } else {
-                            println!("  FAIL - unexpected error: {}", -result);
+                            Ok(n) => {
+                                println!(
+                                    "  Non-blocking read returned in {}ms with result {}",
+                                    elapsed, n
+                                );
+                                println!("  FAIL - read returned data but none was sent!");
+                            }
+                            Err(e) => {
+                                println!("  Non-blocking read returned in {}ms with error {:?}", elapsed, e);
+                                println!("  FAIL - unexpected error");
+                            }
                         }
                     } else {
                         println!("  FAIL - fcntl failed");
                     }
-                    unsafe { close(conn_fd); }
+                    let _ = io::close(conn_fd);
                 } else {
                     println!("  FAIL - Part B accept failed");
                 }
-                unsafe { close(client_b); }
+                let _ = io::close(client_b);
             } else {
                 println!("  FAIL - Part B client socket creation failed");
             }
         } else {
             println!("  FAIL - Part B bind/listen failed");
         }
-        unsafe { close(server_b); }
+        let _ = io::close(server_b);
     }
 
     // Final verdict for Test 4b
@@ -508,8 +541,12 @@ fn main() {
         println!("  Part B (non-blocking proof): PASS");
         println!("  TEST 4b: PASS (unfalsifiable - both paths verified)\n");
     } else {
-        if !part_a_passed { println!("  Part A (blocking proof): FAIL"); }
-        if !part_b_passed { println!("  Part B (non-blocking proof): FAIL"); }
+        if !part_a_passed {
+            println!("  Part A (blocking proof): FAIL");
+        }
+        if !part_b_passed {
+            println!("  Part B (non-blocking proof): FAIL");
+        }
         println!("  TEST 4b: FAIL\n");
         failed += 1;
     }
@@ -522,18 +559,21 @@ fn main() {
         let addr = SockAddrIn::new([127, 0, 0, 1], 9999);
         println!("  Calling connect() with invalid fd=9999...");
 
-        let ret = unsafe { connect(9999, &addr, sock_size()) };
-        if -ret == 9 {
-            println!("  connect() returned EBADF (-9) as expected!");
-            println!("  TEST 5 (EBADF): PASS\n");
-        } else if ret == 0 {
-            println!("  FAIL - connect() succeeded with invalid fd!");
-            println!("  TEST 5 (EBADF): FAIL\n");
-            failed += 1;
-        } else {
-            println!("  FAIL - connect() returned unexpected error, errno={}", -ret);
-            println!("  TEST 5 (EBADF): FAIL\n");
-            failed += 1;
+        match socket::connect_inet(Fd::from_raw(9999), &addr) {
+            Err(Error::Os(Errno::EBADF)) => {
+                println!("  connect() returned EBADF (-9) as expected!");
+                println!("  TEST 5 (EBADF): PASS\n");
+            }
+            Ok(()) => {
+                println!("  FAIL - connect() succeeded with invalid fd!");
+                println!("  TEST 5 (EBADF): FAIL\n");
+                failed += 1;
+            }
+            Err(e) => {
+                println!("  FAIL - connect() returned unexpected error, error={:?}", e);
+                println!("  TEST 5 (EBADF): FAIL\n");
+                failed += 1;
+            }
         }
     }
 
@@ -542,67 +582,91 @@ fn main() {
     // =========================================================================
     println!("=== TEST 6: connect() on connected socket returns EISCONN ===");
     {
-        let server_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-        if server_fd >= 0 {
-            let server_addr = SockAddrIn::new([0, 0, 0, 0], 9106);
-            if unsafe { bind(server_fd, &server_addr, sock_size()) } == 0 && unsafe { listen(server_fd, 128) } == 0 {
-                let client_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-                if client_fd >= 0 {
-                    let loopback = SockAddrIn::new([127, 0, 0, 1], 9106);
+        match socket::socket(AF_INET, SOCK_STREAM, 0) {
+            Ok(server_fd) => {
+                let server_addr = SockAddrIn::new([0, 0, 0, 0], 9106);
+                if socket::bind_inet(server_fd, &server_addr).is_ok()
+                    && socket::listen(server_fd, 128).is_ok()
+                {
+                    match socket::socket(AF_INET, SOCK_STREAM, 0) {
+                        Ok(client_fd) => {
+                            let loopback = SockAddrIn::new([127, 0, 0, 1], 9106);
 
-                    println!("  First connect() call...");
-                    let ret = unsafe { connect(client_fd, &loopback, sock_size()) };
-                    if ret == 0 {
-                        println!("  First connect() succeeded");
-                        println!("  Second connect() call on same socket...");
-                        let ret2 = unsafe { connect(client_fd, &loopback, sock_size()) };
-                        if -ret2 == 106 {
-                            println!("  connect() returned EISCONN (-106) as expected!");
-                            println!("  TEST 6 (EISCONN): PASS\n");
-                        } else if ret2 == 0 {
-                            println!("  FAIL - second connect() succeeded!");
-                            println!("  TEST 6 (EISCONN): FAIL\n");
-                            failed += 1;
-                        } else {
-                            println!("  FAIL - connect() returned unexpected error, errno={}", -ret2);
+                            println!("  First connect() call...");
+                            match socket::connect_inet(client_fd, &loopback) {
+                                Ok(()) => {
+                                    println!("  First connect() succeeded");
+                                    println!("  Second connect() call on same socket...");
+                                    match socket::connect_inet(client_fd, &loopback) {
+                                        Err(Error::Os(Errno::EISCONN)) => {
+                                            println!(
+                                                "  connect() returned EISCONN (-106) as expected!"
+                                            );
+                                            println!("  TEST 6 (EISCONN): PASS\n");
+                                        }
+                                        Ok(()) => {
+                                            println!("  FAIL - second connect() succeeded!");
+                                            println!("  TEST 6 (EISCONN): FAIL\n");
+                                            failed += 1;
+                                        }
+                                        Err(e) => {
+                                            println!(
+                                                "  FAIL - connect() returned unexpected error, error={:?}",
+                                                e
+                                            );
+                                            println!("  TEST 6 (EISCONN): FAIL\n");
+                                            failed += 1;
+                                        }
+                                    }
+                                }
+                                Err(Error::Os(Errno::EINPROGRESS)) => {
+                                    // EINPROGRESS
+                                    println!("  First connect() returned EINPROGRESS, waiting...");
+                                    delay_yield(50);
+                                    println!("  Second connect() call on same socket...");
+                                    match socket::connect_inet(client_fd, &loopback) {
+                                        Err(Error::Os(Errno::EISCONN)) => {
+                                            println!(
+                                                "  connect() returned EISCONN (-106) as expected!"
+                                            );
+                                            println!("  TEST 6 (EISCONN): PASS\n");
+                                        }
+                                        _ => {
+                                            println!("  FAIL - second connect() did not return EISCONN");
+                                            println!("  TEST 6 (EISCONN): FAIL\n");
+                                            failed += 1;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    println!(
+                                        "  FAIL - first connect() failed, error={:?}",
+                                        e
+                                    );
+                                    println!("  TEST 6 (EISCONN): FAIL\n");
+                                    failed += 1;
+                                }
+                            }
+                            let _ = io::close(client_fd);
+                        }
+                        Err(_) => {
+                            println!("  FAIL - client socket creation failed");
                             println!("  TEST 6 (EISCONN): FAIL\n");
                             failed += 1;
                         }
-                    } else if -ret == 115 {
-                        // EINPROGRESS
-                        println!("  First connect() returned EINPROGRESS, waiting...");
-                        delay_yield(50);
-                        println!("  Second connect() call on same socket...");
-                        let ret2 = unsafe { connect(client_fd, &loopback, sock_size()) };
-                        if -ret2 == 106 {
-                            println!("  connect() returned EISCONN (-106) as expected!");
-                            println!("  TEST 6 (EISCONN): PASS\n");
-                        } else {
-                            println!("  FAIL - second connect() returned errno={}", -ret2);
-                            println!("  TEST 6 (EISCONN): FAIL\n");
-                            failed += 1;
-                        }
-                    } else {
-                        println!("  FAIL - first connect() failed, errno={}", -ret);
-                        println!("  TEST 6 (EISCONN): FAIL\n");
-                        failed += 1;
                     }
-                    unsafe { close(client_fd); }
                 } else {
-                    println!("  FAIL - client socket creation failed");
+                    println!("  FAIL - server bind/listen failed");
                     println!("  TEST 6 (EISCONN): FAIL\n");
                     failed += 1;
                 }
-            } else {
-                println!("  FAIL - server bind/listen failed");
+                let _ = io::close(server_fd);
+            }
+            Err(_) => {
+                println!("  FAIL - server socket creation failed");
                 println!("  TEST 6 (EISCONN): FAIL\n");
                 failed += 1;
             }
-            unsafe { close(server_fd); }
-        } else {
-            println!("  FAIL - server socket creation failed");
-            println!("  TEST 6 (EISCONN): FAIL\n");
-            failed += 1;
         }
     }
 
@@ -611,10 +675,10 @@ fn main() {
     if failed == 0 {
         println!("TCP_BLOCKING_TEST: ALL TESTS PASSED");
         println!("TCP_BLOCKING_TEST: PASS");
-        process::exit(0);
+        std_process::exit(0);
     } else {
         println!("TCP_BLOCKING_TEST: {} tests FAILED", failed);
         println!("TCP_BLOCKING_TEST: FAIL");
-        process::exit(1);
+        std_process::exit(1);
     }
 }

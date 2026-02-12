@@ -12,14 +12,22 @@
 
 // NO #![no_std] - this uses real std!
 
+use libbreenix::errno::Errno;
+use libbreenix::error::Error;
+use libbreenix::io;
+use libbreenix::memory;
+use libbreenix::process;
+use libbreenix::types::Fd;
+
 fn main() {
     // Test 1: Basic println! using std
     println!("RUST_STD_PRINTLN_WORKS");
 
     // Test 2: Direct clone syscall test (bypasses pthread_create + std::thread)
     {
+        // We keep extern "C" write here because child_fn is an extern "C" callback
+        // that runs in a raw cloned thread context with inline assembly.
         extern "C" {
-            fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
             fn write(fd: i32, buf: *const u8, count: usize) -> isize;
         }
 
@@ -78,19 +86,24 @@ fn main() {
 
             // Allocate child stack (64KB is enough for a simple test)
             let stack_size: usize = 64 * 1024;
-            let stack = mmap(core::ptr::null_mut(), stack_size, 3, 0x22, -1, 0); // PROT_READ|WRITE, MAP_PRIVATE|MAP_ANON
-            if stack == usize::MAX as *mut u8 {
-                raw_msg(b"THREAD_TEST: ERROR stack mmap failed\n");
-                std::process::exit(1);
-            }
+            let stack = memory::mmap(core::ptr::null_mut(), stack_size, 3, 0x22, -1, 0); // PROT_READ|WRITE, MAP_PRIVATE|MAP_ANON
+            let stack = match stack {
+                Ok(ptr) => ptr,
+                Err(_) => {
+                    raw_msg(b"THREAD_TEST: ERROR stack mmap failed\n");
+                    std::process::exit(1);
+                }
+            };
             raw_msg(b"THREAD_TEST: stack allocated\n");
 
             // Allocate shared result page
-            let shared = mmap(core::ptr::null_mut(), 4096, 3, 0x22, -1, 0);
-            if shared == usize::MAX as *mut u8 {
-                raw_msg(b"THREAD_TEST: ERROR shared mmap failed\n");
-                std::process::exit(1);
-            }
+            let shared = match memory::mmap(core::ptr::null_mut(), 4096, 3, 0x22, -1, 0) {
+                Ok(ptr) => ptr,
+                Err(_) => {
+                    raw_msg(b"THREAD_TEST: ERROR shared mmap failed\n");
+                    std::process::exit(1);
+                }
+            };
             // Initialize result to 0
             core::ptr::write_volatile(shared as *mut u64, 0);
             // Initialize tid word (at offset 8) to 0xFFFF
@@ -217,6 +230,7 @@ fn main() {
 
     // Test 5: getrandom returns random bytes
     // The kernel implements getrandom (syscall 318) with a TSC-seeded PRNG.
+    // Note: getrandom is a libc function, not available in libbreenix.
     unsafe {
         extern "C" {
             fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize;
@@ -260,6 +274,7 @@ fn main() {
     // This test verifies that realloc properly preserves data when growing an allocation.
     // Previously, realloc would copy `new_size` bytes from the old allocation, which
     // could read beyond the old allocation's bounds (undefined behavior).
+    // Note: malloc/realloc/free are libc functions, not available in libbreenix.
     unsafe {
         extern "C" {
             fn malloc(size: usize) -> *mut u8;
@@ -303,6 +318,7 @@ fn main() {
     // Test 7: realloc shrink case (128->64 bytes)
     // This test verifies that realloc properly preserves data when shrinking an allocation.
     // The fix uses min(old_size, new_size) to copy the correct number of bytes.
+    // Note: malloc/realloc/free are libc functions, not available in libbreenix.
     unsafe {
         extern "C" {
             fn malloc(size: usize) -> *mut u8;
@@ -345,95 +361,85 @@ fn main() {
 
     // Test 8: read() error handling
     // Test that read() with invalid fd returns error with EBADF
-    unsafe {
-        extern "C" {
-            fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-            fn __errno_location() -> *mut i32;
-        }
-
+    {
         let mut buf = [0u8; 16];
         // Read from invalid fd (-1) should fail with EBADF
-        let result = read(-1, buf.as_mut_ptr(), buf.len());
+        // We use Fd::from_raw with a large value that wraps to -1 in the syscall
+        let result = io::read(Fd::from_raw(-1i32 as u64), &mut buf);
 
-        if result == -1 {
-            let errno = *__errno_location();
-            // EBADF = 9
-            if errno == 9 {
+        match result {
+            Err(Error::Os(Errno::EBADF)) => {
                 println!("RUST_STD_READ_ERROR_WORKS");
-            } else {
-                eprintln!("ERROR: read set errno to {}, expected 9 (EBADF)", errno);
+            }
+            Err(Error::Os(errno)) => {
+                eprintln!("ERROR: read set errno to {:?}, expected EBADF", errno);
                 std::process::exit(1);
             }
-        } else {
-            eprintln!("ERROR: read returned {}, expected -1", result);
-            std::process::exit(1);
+            Ok(n) => {
+                eprintln!("ERROR: read returned Ok({}), expected Err(EBADF)", n);
+                std::process::exit(1);
+            }
         }
     }
 
     // Test 9: read() success with pipe
     // This tests that read() actually works with a valid file descriptor.
     // We create a pipe, write to it, and read back the data.
-    unsafe {
-        extern "C" {
-            fn pipe(pipefd: *mut i32) -> i32;
-            fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-            fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-            fn close(fd: i32) -> i32;
-        }
+    {
+        let (read_fd, write_fd) = io::pipe().unwrap_or_else(|e| {
+            eprintln!("ERROR: pipe() failed: {:?}", e);
+            std::process::exit(1);
+        });
 
-        let mut pipefd: [i32; 2] = [0, 0];
-        let result = pipe(pipefd.as_mut_ptr());
+        // Write some test data to the pipe
+        let test_data = b"Hello pipe!";
+        let written = io::write(write_fd, test_data).unwrap_or_else(|e| {
+            eprintln!("ERROR: write failed: {:?}", e);
+            std::process::exit(1);
+        });
 
-        if result == 0 {
-            let read_fd = pipefd[0];
-            let write_fd = pipefd[1];
+        if written == test_data.len() {
+            // Read the data back
+            let mut buf = [0u8; 32];
+            let bytes_read = io::read(read_fd, &mut buf).unwrap_or_else(|e| {
+                eprintln!("ERROR: read failed: {:?}", e);
+                std::process::exit(1);
+            });
 
-            // Write some test data to the pipe
-            let test_data = b"Hello pipe!";
-            let written = write(write_fd, test_data.as_ptr(), test_data.len());
-
-            if written == test_data.len() as isize {
-                // Read the data back
-                let mut buf = [0u8; 32];
-                let bytes_read = read(read_fd, buf.as_mut_ptr(), buf.len());
-
-                if bytes_read == test_data.len() as isize {
-                    // Verify the data matches
-                    let mut data_matches = true;
-                    for i in 0..test_data.len() {
-                        if buf[i] != test_data[i] {
-                            data_matches = false;
-                            break;
-                        }
+            if bytes_read == test_data.len() {
+                // Verify the data matches
+                let mut data_matches = true;
+                for i in 0..test_data.len() {
+                    if buf[i] != test_data[i] {
+                        data_matches = false;
+                        break;
                     }
+                }
 
-                    if data_matches {
-                        println!("RUST_STD_READ_SUCCESS_WORKS");
-                    } else {
-                        eprintln!("ERROR: read data does not match written data");
-                        std::process::exit(1);
-                    }
+                if data_matches {
+                    println!("RUST_STD_READ_SUCCESS_WORKS");
                 } else {
-                    eprintln!("ERROR: read returned {}, expected {}", bytes_read, test_data.len());
+                    eprintln!("ERROR: read data does not match written data");
                     std::process::exit(1);
                 }
             } else {
-                eprintln!("ERROR: write returned {}, expected {}", written, test_data.len());
+                eprintln!("ERROR: read returned {}, expected {}", bytes_read, test_data.len());
                 std::process::exit(1);
             }
-
-            // Close the pipe fds
-            close(read_fd);
-            close(write_fd);
         } else {
-            eprintln!("ERROR: pipe() failed with result {}", result);
+            eprintln!("ERROR: write returned {}, expected {}", written, test_data.len());
             std::process::exit(1);
         }
+
+        // Close the pipe fds
+        let _ = io::close(read_fd);
+        let _ = io::close(write_fd);
     }
 
     // Test 10: malloc boundary conditions
     // Test malloc with edge cases: size=0 and small allocations
     // Use black_box to prevent compiler from optimizing away malloc(0) call
+    // Note: malloc/free are libc functions, not available in libbreenix.
     unsafe {
         extern "C" {
             fn malloc(size: usize) -> *mut u8;
@@ -472,6 +478,7 @@ fn main() {
 
     // Test 11: posix_memalign
     // This test verifies that posix_memalign properly allocates aligned memory.
+    // Note: posix_memalign/free are libc functions, not available in libbreenix.
     unsafe {
         extern "C" {
             fn posix_memalign(memptr: *mut *mut u8, alignment: usize, size: usize) -> i32;
@@ -517,6 +524,8 @@ fn main() {
 
     // Test 12: sbrk
     // This test verifies that sbrk properly manages the program break.
+    // Note: We test the C sbrk + __errno_location since we need to test
+    // negative-increment error behavior at the C ABI level.
     unsafe {
         extern "C" {
             fn sbrk(increment: isize) -> *mut u8;
@@ -547,26 +556,30 @@ fn main() {
     // Test 13: getpid and gettid
     // This test verifies that getpid() and gettid() return valid positive values.
     // These are Phase 1 required functions for process identification.
-    unsafe {
-        extern "C" {
-            fn getpid() -> i32;
-            fn gettid() -> i32;
-        }
+    {
+        let pid = process::getpid().unwrap_or_else(|e| {
+            eprintln!("ERROR: getpid failed: {:?}", e);
+            std::process::exit(1);
+        });
+        let tid = process::gettid().unwrap_or_else(|e| {
+            eprintln!("ERROR: gettid failed: {:?}", e);
+            std::process::exit(1);
+        });
 
-        let pid = getpid();
-        let tid = gettid();
+        let pid_val = pid.raw() as i32;
+        let tid_val = tid.raw() as i32;
 
         // Both should be positive (valid process/thread IDs)
-        let pid_ok = pid > 0;
-        let tid_ok = tid > 0;
+        let pid_ok = pid_val > 0;
+        let tid_ok = tid_val > 0;
         // For single-threaded process, tid >= pid (typically equal or tid > pid)
-        let tid_ge_pid = tid >= pid;
+        let tid_ge_pid = tid_val >= pid_val;
 
         if pid_ok && tid_ok && tid_ge_pid {
             println!("RUST_STD_GETPID_WORKS");
         } else {
             eprintln!("ERROR: getpid/gettid test failed: pid={} (>0: {}), tid={} (>0: {}), tid>=pid: {}",
-                      pid, pid_ok, tid, tid_ok, tid_ge_pid);
+                      pid_val, pid_ok, tid_val, tid_ok, tid_ge_pid);
             std::process::exit(1);
         }
     }
@@ -577,6 +590,7 @@ fn main() {
     // - alignment is 0
     // - alignment is not a power of 2
     // - alignment is not a multiple of sizeof(void*) (8 bytes on x86_64)
+    // Note: posix_memalign is a libc function, not available in libbreenix.
     unsafe {
         extern "C" {
             fn posix_memalign(memptr: *mut *mut u8, alignment: usize, size: usize) -> i32;
@@ -628,6 +642,7 @@ fn main() {
     // NOTE: Double-free (calling free() on already-freed memory) is UNDEFINED BEHAVIOR
     // and cannot be safely tested - it may corrupt heap state, crash, or appear to work.
     // We only test free(NULL) which is defined behavior.
+    // Note: free is a libc function, not available in libbreenix.
     unsafe {
         extern "C" {
             fn free(ptr: *mut u8);
@@ -645,37 +660,32 @@ fn main() {
     // Test 16: close() syscall
     // This test verifies that close() properly closes file descriptors.
     // We use dup() to create a valid fd, then close() it.
-    unsafe {
-        extern "C" {
-            fn dup(oldfd: i32) -> i32;
-            fn close(fd: i32) -> i32;
-            fn __errno_location() -> *mut i32;
-        }
-
+    {
         // Test 1: dup stdout (fd 1) to get a new valid fd
-        let new_fd = dup(1);
-        if new_fd < 0 {
-            eprintln!("ERROR: dup(1) failed with errno {}", *__errno_location());
+        let new_fd = io::dup(Fd::STDOUT).unwrap_or_else(|e| {
+            eprintln!("ERROR: dup(1) failed: {:?}", e);
             std::process::exit(1);
-        }
+        });
 
-        // Test 2: close the dup'd fd - should succeed with 0
-        let close_result = close(new_fd);
-        if close_result != 0 {
-            eprintln!("ERROR: close({}) failed with errno {}", new_fd, *__errno_location());
+        // Test 2: close the dup'd fd - should succeed
+        io::close(new_fd).unwrap_or_else(|e| {
+            eprintln!("ERROR: close({}) failed: {:?}", new_fd.raw(), e);
             std::process::exit(1);
-        }
+        });
 
         // Test 3: closing an already-closed fd should fail with EBADF (9)
-        let close_again = close(new_fd);
-        if close_again != -1 {
-            eprintln!("ERROR: close({}) on already-closed fd returned {}, expected -1", new_fd, close_again);
-            std::process::exit(1);
-        }
-        let errno = *__errno_location();
-        if errno != 9 {
-            eprintln!("ERROR: close on closed fd set errno to {}, expected 9 (EBADF)", errno);
-            std::process::exit(1);
+        match io::close(new_fd) {
+            Err(Error::Os(Errno::EBADF)) => {
+                // Expected
+            }
+            Err(Error::Os(errno)) => {
+                eprintln!("ERROR: close on closed fd set errno to {:?}, expected EBADF", errno);
+                std::process::exit(1);
+            }
+            Ok(()) => {
+                eprintln!("ERROR: close({}) on already-closed fd succeeded, expected EBADF", new_fd.raw());
+                std::process::exit(1);
+            }
         }
 
         println!("RUST_STD_CLOSE_WORKS");
@@ -683,62 +693,50 @@ fn main() {
 
     // Test 17: mprotect
     // This test verifies that mprotect properly changes memory protection.
-    unsafe {
-        extern "C" {
-            fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
-            fn mprotect(addr: *mut u8, len: usize, prot: i32) -> i32;
-            fn munmap(addr: *mut u8, len: usize) -> i32;
-        }
-
+    {
         // Protection flags
         const PROT_READ: i32 = 1;
         const PROT_WRITE: i32 = 2;
-        // Map flags
-        const MAP_PRIVATE: i32 = 0x02;
-        const MAP_ANONYMOUS: i32 = 0x20;
-        // MAP_FAILED
-        const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
 
         // Test 1: Allocate a page with read-write permissions
-        let ptr = mmap(
+        let ptr = memory::mmap(
             core::ptr::null_mut(),
             4096,
             PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
+            memory::MAP_PRIVATE | memory::MAP_ANONYMOUS,
             -1,
             0,
-        );
-
-        if ptr == MAP_FAILED || ptr.is_null() {
-            eprintln!("ERROR: mmap for mprotect test failed");
+        ).unwrap_or_else(|e| {
+            eprintln!("ERROR: mmap for mprotect test failed: {:?}", e);
             std::process::exit(1);
-        }
+        });
 
-        // Write to the memory to verify it's writable
-        *ptr = 42;
-        let write1_ok = *ptr == 42;
+        unsafe {
+            // Write to the memory to verify it's writable
+            *ptr = 42;
+            let write1_ok = *ptr == 42;
 
-        // Test 2: Change to read-only
-        let result1 = mprotect(ptr, 4096, PROT_READ);
+            // Test 2: Change to read-only
+            let result1 = memory::mprotect(ptr, 4096, PROT_READ);
 
-        // Test 3: Change back to read-write
-        let result2 = mprotect(ptr, 4096, PROT_READ | PROT_WRITE);
+            // Test 3: Change back to read-write
+            let result2 = memory::mprotect(ptr, 4096, PROT_READ | PROT_WRITE);
 
-        // Verify we can still write after restoring write permission
-        *ptr = 123;
-        let write2_ok = *ptr == 123;
+            // Verify we can still write after restoring write permission
+            *ptr = 123;
+            let write2_ok = *ptr == 123;
 
-        // Clean up
-        munmap(ptr, 4096);
+            // Clean up
+            let _ = memory::munmap(ptr, 4096);
 
-        // Verify results
-        // Both mprotect calls should return 0 (success)
-        if write1_ok && result1 == 0 && result2 == 0 && write2_ok {
-            println!("RUST_STD_MPROTECT_WORKS");
-        } else {
-            eprintln!("ERROR: mprotect test failed: write1={}, mprotect_ro={}, mprotect_rw={}, write2={}",
-                      write1_ok, result1, result2, write2_ok);
-            std::process::exit(1);
+            // Verify results
+            if write1_ok && result1.is_ok() && result2.is_ok() && write2_ok {
+                println!("RUST_STD_MPROTECT_WORKS");
+            } else {
+                eprintln!("ERROR: mprotect test failed: write1={}, mprotect_ro={:?}, mprotect_rw={:?}, write2={}",
+                          write1_ok, result1, result2, write2_ok);
+                std::process::exit(1);
+            }
         }
     }
 
@@ -747,6 +745,7 @@ fn main() {
     // The goal is not to fully test these stubs (they're stubs after all), but to verify they:
     // - Don't panic
     // - Return sensible values that won't break Rust std
+    // Note: These are all libc stub functions, not kernel syscalls.
     unsafe {
         extern "C" {
             fn pthread_self() -> usize;
@@ -967,7 +966,7 @@ fn main() {
     // This test verifies write() behavior for edge cases:
     // - write() with count=0 should return 0 (not an error)
     // - write() to invalid fd should return -1 with EBADF
-    // - write() to a closed pipe write end should return -1 with EPIPE or EBADF
+    // - write() to a closed pipe write end should return -1 with EBADF
     //
     // Note on partial writes: Triggering a partial write (where write returns less
     // than the requested count) is difficult to do reliably in a test because it
@@ -975,14 +974,7 @@ fn main() {
     // Additionally, our kernel may not implement non-blocking I/O or may have
     // different buffer sizes. Instead, we test the edge cases that are
     // deterministic and verify the basic contract of write().
-    unsafe {
-        extern "C" {
-            fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-            fn pipe(pipefd: *mut i32) -> i32;
-            fn close(fd: i32) -> i32;
-            fn __errno_location() -> *mut i32;
-        }
-
+    {
         let mut all_edge_cases_ok = true;
 
         // Test 1: write() with count=0 should return 0
@@ -990,76 +982,79 @@ fn main() {
         // return errors... If count is zero and fd refers to a regular file,
         // write() may return zero... or may return -1 with errno set."
         // Most implementations return 0 for count=0 on valid fds.
-        let test_data = b"test";
-        let result = write(1, test_data.as_ptr(), 0);
-        // We accept either 0 (success with 0 bytes) or -1 (some error for 0-length write)
-        // But typically should return 0
-        if result != 0 {
-            eprintln!("Note: write(stdout, buf, 0) returned {}, expected 0 (may be acceptable)", result);
-            // Don't fail - some implementations may behave differently
+        let result = io::write(Fd::STDOUT, b"");
+        // We accept either Ok(0) or an error -- typically should return Ok(0)
+        match result {
+            Ok(0) => {}
+            Ok(_) | Err(_) => {
+                eprintln!("Note: write(stdout, \"\", 0) returned {:?}, expected Ok(0) (may be acceptable)", result);
+                // Don't fail - some implementations may behave differently
+            }
         }
 
-        // Test 2: write() to invalid fd (-1) should return -1 with EBADF (9)
-        let result = write(-1, test_data.as_ptr(), test_data.len());
-        if result == -1 {
-            let errno = *__errno_location();
-            if errno != 9 {
-                eprintln!("ERROR: write(-1, ...) set errno to {}, expected 9 (EBADF)", errno);
+        // Test 2: write() to invalid fd (-1) should return Err(EBADF)
+        let test_data = b"test";
+        match io::write(Fd::from_raw(-1i32 as u64), test_data) {
+            Err(Error::Os(Errno::EBADF)) => {}
+            Err(Error::Os(errno)) => {
+                eprintln!("ERROR: write(-1, ...) set errno to {:?}, expected EBADF", errno);
                 all_edge_cases_ok = false;
             }
-        } else {
-            eprintln!("ERROR: write(-1, ...) returned {}, expected -1", result);
-            all_edge_cases_ok = false;
+            Ok(n) => {
+                eprintln!("ERROR: write(-1, ...) returned Ok({}), expected Err(EBADF)", n);
+                all_edge_cases_ok = false;
+            }
         }
 
         // Test 3: write() to a closed fd should fail with EBADF
-        let mut pipefd: [i32; 2] = [0, 0];
-        if pipe(pipefd.as_mut_ptr()) == 0 {
-            let write_fd = pipefd[1];
-            close(pipefd[0]); // Close read end
-            close(write_fd);  // Close write end
+        let (pipe_read, pipe_write) = io::pipe().unwrap_or_else(|e| {
+            eprintln!("ERROR: pipe() failed for write edge case test: {:?}", e);
+            all_edge_cases_ok = false;
+            (Fd::from_raw(0), Fd::from_raw(0))
+        });
+
+        if all_edge_cases_ok {
+            let _ = io::close(pipe_read);  // Close read end
+            let _ = io::close(pipe_write); // Close write end
 
             // Now writing to the closed write fd should fail with EBADF
-            let result = write(write_fd, test_data.as_ptr(), test_data.len());
-            if result == -1 {
-                let errno = *__errno_location();
-                if errno != 9 {
-                    eprintln!("ERROR: write(closed_fd, ...) set errno to {}, expected 9 (EBADF)", errno);
+            match io::write(pipe_write, test_data) {
+                Err(Error::Os(Errno::EBADF)) => {}
+                Err(Error::Os(errno)) => {
+                    eprintln!("ERROR: write(closed_fd, ...) set errno to {:?}, expected EBADF", errno);
                     all_edge_cases_ok = false;
                 }
-            } else {
-                eprintln!("ERROR: write(closed_fd, ...) returned {}, expected -1", result);
-                all_edge_cases_ok = false;
+                Ok(n) => {
+                    eprintln!("ERROR: write(closed_fd, ...) returned Ok({}), expected Err(EBADF)", n);
+                    all_edge_cases_ok = false;
+                }
             }
-        } else {
-            eprintln!("ERROR: pipe() failed for write edge case test");
-            all_edge_cases_ok = false;
         }
 
         // Test 4: write() to pipe with closed read end should fail with EPIPE (32)
         // (In a full POSIX implementation, this would also generate SIGPIPE)
         // Note: Our kernel may return EBADF instead if it doesn't track pipe state
-        if pipe(pipefd.as_mut_ptr()) == 0 {
-            let read_fd = pipefd[0];
-            let write_fd = pipefd[1];
-            close(read_fd); // Close read end - now writes should fail
+        match io::pipe() {
+            Ok((read_fd, write_fd)) => {
+                let _ = io::close(read_fd); // Close read end - now writes should fail
 
-            let result = write(write_fd, test_data.as_ptr(), test_data.len());
-            if result == -1 {
-                let errno = *__errno_location();
-                // Accept either EPIPE (32) or EBADF (9) depending on kernel implementation
-                if errno != 32 && errno != 9 {
-                    eprintln!("ERROR: write(pipe_with_closed_read_end, ...) set errno to {}, expected 32 (EPIPE) or 9 (EBADF)", errno);
-                    all_edge_cases_ok = false;
+                match io::write(write_fd, test_data) {
+                    Err(Error::Os(Errno::EPIPE)) | Err(Error::Os(Errno::EBADF)) => {}
+                    Err(Error::Os(errno)) => {
+                        eprintln!("ERROR: write(pipe_with_closed_read_end, ...) set errno to {:?}, expected EPIPE or EBADF", errno);
+                        all_edge_cases_ok = false;
+                    }
+                    Ok(n) => {
+                        eprintln!("ERROR: write(pipe_with_closed_read_end, ...) returned Ok({}), expected Err", n);
+                        all_edge_cases_ok = false;
+                    }
                 }
-            } else {
-                eprintln!("ERROR: write(pipe_with_closed_read_end, ...) returned {}, expected -1", result);
+                let _ = io::close(write_fd);
+            }
+            Err(e) => {
+                eprintln!("ERROR: pipe() failed for EPIPE test: {:?}", e);
                 all_edge_cases_ok = false;
             }
-            close(write_fd);
-        } else {
-            eprintln!("ERROR: pipe() failed for EPIPE test");
-            all_edge_cases_ok = false;
         }
 
         if all_edge_cases_ok {
@@ -1073,129 +1068,125 @@ fn main() {
     // Test 19: Direct mmap and munmap tests
     // This test explicitly validates mmap and munmap syscalls, which were previously
     // only tested indirectly through malloc.
-    unsafe {
-        extern "C" {
-            fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
-            fn munmap(addr: *mut u8, len: usize) -> i32;
-            fn __errno_location() -> *mut i32;
-        }
-
-        // Protection flags
-        const PROT_READ: i32 = 1;
-        const PROT_WRITE: i32 = 2;
-        // Map flags
-        const MAP_PRIVATE: i32 = 0x02;
-        const MAP_ANONYMOUS: i32 = 0x20;
-        // MAP_FAILED
-        const MAP_FAILED: *mut u8 = usize::MAX as *mut u8;
-
+    {
         let mut all_mmap_tests_ok = true;
 
         // Test 1: Basic mmap with MAP_ANONYMOUS | MAP_PRIVATE
         let page_size: usize = 4096;
-        let ptr = mmap(
+        match memory::mmap(
             core::ptr::null_mut(),
             page_size,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
+            memory::PROT_READ | memory::PROT_WRITE,
+            memory::MAP_PRIVATE | memory::MAP_ANONYMOUS,
             -1,
             0,
-        );
-
-        if ptr == MAP_FAILED || ptr.is_null() {
-            eprintln!("ERROR: mmap(MAP_ANONYMOUS | MAP_PRIVATE) returned MAP_FAILED or null");
-            all_mmap_tests_ok = false;
-        } else {
-            // Test 2: Write to the memory and read it back
-            let test_pattern: u8 = 0xAB;
-            *ptr = test_pattern;
-            *ptr.add(page_size - 1) = test_pattern; // Write to last byte too
-
-            let read_first = *ptr;
-            let read_last = *ptr.add(page_size - 1);
-
-            if read_first != test_pattern || read_last != test_pattern {
-                eprintln!("ERROR: mmap memory write/read failed: wrote {:#x}, read first={:#x}, last={:#x}",
-                          test_pattern, read_first, read_last);
+        ) {
+            Err(e) => {
+                eprintln!("ERROR: mmap(MAP_ANONYMOUS | MAP_PRIVATE) failed: {:?}", e);
                 all_mmap_tests_ok = false;
             }
-
-            // Test 3: munmap should return 0 on success
-            let unmap_result = munmap(ptr, page_size);
-            if unmap_result != 0 {
-                let errno = *__errno_location();
-                eprintln!("ERROR: munmap returned {}, expected 0 (errno={})", unmap_result, errno);
+            Ok(ptr) if ptr.is_null() => {
+                eprintln!("ERROR: mmap(MAP_ANONYMOUS | MAP_PRIVATE) returned null");
                 all_mmap_tests_ok = false;
+            }
+            Ok(ptr) => {
+                unsafe {
+                    // Test 2: Write to the memory and read it back
+                    let test_pattern: u8 = 0xAB;
+                    *ptr = test_pattern;
+                    *ptr.add(page_size - 1) = test_pattern; // Write to last byte too
+
+                    let read_first = *ptr;
+                    let read_last = *ptr.add(page_size - 1);
+
+                    if read_first != test_pattern || read_last != test_pattern {
+                        eprintln!("ERROR: mmap memory write/read failed: wrote {:#x}, read first={:#x}, last={:#x}",
+                                  test_pattern, read_first, read_last);
+                        all_mmap_tests_ok = false;
+                    }
+
+                    // Test 3: munmap should return Ok(())
+                    if let Err(e) = memory::munmap(ptr, page_size) {
+                        eprintln!("ERROR: munmap failed: {:?}", e);
+                        all_mmap_tests_ok = false;
+                    }
+                }
             }
         }
 
-        // Test 4: mmap error case - size=0 should return MAP_FAILED with EINVAL
-        let ptr_zero = mmap(
+        // Test 4: mmap error case - size=0 should return error with EINVAL
+        match memory::mmap(
             core::ptr::null_mut(),
             0,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
+            memory::PROT_READ | memory::PROT_WRITE,
+            memory::MAP_PRIVATE | memory::MAP_ANONYMOUS,
             -1,
             0,
-        );
-
-        if ptr_zero != MAP_FAILED {
-            eprintln!("ERROR: mmap(size=0) did not return MAP_FAILED, got {:?}", ptr_zero);
-            // Clean up if it somehow succeeded
-            if !ptr_zero.is_null() {
-                let _ = munmap(ptr_zero, page_size);
+        ) {
+            Err(Error::Os(Errno::EINVAL)) => {
+                // Expected
             }
-            all_mmap_tests_ok = false;
-        } else {
-            let errno = *__errno_location();
-            // EINVAL = 22
-            if errno != 22 {
-                eprintln!("ERROR: mmap(size=0) set errno to {}, expected 22 (EINVAL)", errno);
+            Err(Error::Os(errno)) => {
+                eprintln!("ERROR: mmap(size=0) set errno to {:?}, expected EINVAL", errno);
+                all_mmap_tests_ok = false;
+            }
+            Ok(ptr) => {
+                eprintln!("ERROR: mmap(size=0) did not return error, got {:?}", ptr);
+                // Clean up if it somehow succeeded
+                if !ptr.is_null() {
+                    let _ = memory::munmap(ptr, page_size);
+                }
                 all_mmap_tests_ok = false;
             }
         }
 
         // Test 5: Multi-page allocation
         let multi_page_size = page_size * 4;
-        let ptr_multi = mmap(
+        match memory::mmap(
             core::ptr::null_mut(),
             multi_page_size,
-            PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS,
+            memory::PROT_READ | memory::PROT_WRITE,
+            memory::MAP_PRIVATE | memory::MAP_ANONYMOUS,
             -1,
             0,
-        );
-
-        if ptr_multi == MAP_FAILED || ptr_multi.is_null() {
-            eprintln!("ERROR: mmap(4 pages) returned MAP_FAILED or null");
-            all_mmap_tests_ok = false;
-        } else {
-            // Write to each page to verify they're all usable
-            for i in 0..4 {
-                let offset = i * page_size;
-                *ptr_multi.add(offset) = (i as u8) + 1;
+        ) {
+            Err(e) => {
+                eprintln!("ERROR: mmap(4 pages) failed: {:?}", e);
+                all_mmap_tests_ok = false;
             }
+            Ok(ptr) if ptr.is_null() => {
+                eprintln!("ERROR: mmap(4 pages) returned null");
+                all_mmap_tests_ok = false;
+            }
+            Ok(ptr_multi) => {
+                unsafe {
+                    // Write to each page to verify they're all usable
+                    for i in 0..4 {
+                        let offset = i * page_size;
+                        *ptr_multi.add(offset) = (i as u8) + 1;
+                    }
 
-            // Verify the writes
-            let mut multi_page_ok = true;
-            for i in 0..4 {
-                let offset = i * page_size;
-                if *ptr_multi.add(offset) != (i as u8) + 1 {
-                    eprintln!("ERROR: Multi-page mmap verification failed at page {}", i);
-                    multi_page_ok = false;
-                    break;
+                    // Verify the writes
+                    let mut multi_page_ok = true;
+                    for i in 0..4 {
+                        let offset = i * page_size;
+                        if *ptr_multi.add(offset) != (i as u8) + 1 {
+                            eprintln!("ERROR: Multi-page mmap verification failed at page {}", i);
+                            multi_page_ok = false;
+                            break;
+                        }
+                    }
+
+                    if !multi_page_ok {
+                        all_mmap_tests_ok = false;
+                    }
+
+                    // Unmap the multi-page allocation
+                    if let Err(e) = memory::munmap(ptr_multi, multi_page_size) {
+                        eprintln!("ERROR: munmap(4 pages) failed: {:?}", e);
+                        all_mmap_tests_ok = false;
+                    }
                 }
-            }
-
-            if !multi_page_ok {
-                all_mmap_tests_ok = false;
-            }
-
-            // Unmap the multi-page allocation
-            let unmap_multi = munmap(ptr_multi, multi_page_size);
-            if unmap_multi != 0 {
-                eprintln!("ERROR: munmap(4 pages) returned {}, expected 0", unmap_multi);
-                all_mmap_tests_ok = false;
             }
         }
 

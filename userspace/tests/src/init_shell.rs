@@ -24,42 +24,25 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// ============================================================================
-// FFI declarations for syscalls not available through std
-// ============================================================================
-
-extern "C" {
-    fn fork() -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-    fn pipe(pipefd: *mut i32) -> i32;
-    fn dup2(oldfd: i32, newfd: i32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn kill(pid: i32, sig: i32) -> i32;
-    fn setpgid(pid: i32, pgid: i32) -> i32;
-    fn getpid() -> i32;
-    fn access(pathname: *const u8, mode: i32) -> i32;
-    fn sched_yield() -> i32;
-}
+use libbreenix::io::{close, dup2, pipe, read, write};
+use libbreenix::process::{
+    fork, getpid, getpgid, setpgid, waitpid, yield_now,
+    wifexited, wexitstatus, wifsignaled, wifstopped,
+    ForkResult, WNOHANG, WUNTRACED,
+};
+use libbreenix::signal::{sigaction, Sigaction, SIGINT, SIGCHLD, SIGCONT};
+use libbreenix::termios::{
+    self, Termios, tcgetattr, tcsetattr, tcsetpgrp, cfmakeraw, TCSANOW,
+    lflag, iflag, oflag,
+};
+use libbreenix::types::Fd;
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-const STDIN: i32 = 0;
-const STDOUT: i32 = 1;
-const EAGAIN: isize = 11;
-
-// Signal constants
-const SIGINT: i32 = 2;
-const SIGCHLD: i32 = 17;
-const SIGCONT: i32 = 18;
-
-// Wait options
-const WNOHANG: i32 = 1;
-const WUNTRACED: i32 = 2;
+const STDIN: Fd = Fd::from_raw(0);
+const STDOUT: Fd = Fd::from_raw(1);
 
 // Access mode
 const X_OK: i32 = 1;
@@ -69,280 +52,68 @@ const O_RDONLY: i32 = 0;
 const O_WRONLY: i32 = 1;
 const O_DIRECTORY: i32 = 0o200000;
 
-// SA_RESTORER flag
-const SA_RESTORER: u64 = 0x04000000;
-
-// ioctl request codes
-const TCGETS: u64 = 0x5401;
-const TCSETS: u64 = 0x5402;
-const TIOCSPGRP: u64 = 0x5410;
-
-// Syscall numbers
-const SYS_SIGACTION: u64 = 13;
-const SYS_IOCTL: u64 = 16;
-const SYS_GETPGID: u64 = 121;
-const SYS_OPEN: u64 = 2;
-
-// Termios c_lflag bits
-const ICANON: u32 = 0x0002;
-const ECHO: u32 = 0x0008;
-const ECHOE: u32 = 0x0010;
-const ISIG: u32 = 0x0001;
-const IEXTEN: u32 = 0x8000;
-
-// Termios c_iflag bits
+// Additional termios flags not in libbreenix convenience module
 const IGNBRK: u32 = 0x0001;
 const BRKINT: u32 = 0x0002;
 const PARMRK: u32 = 0x0008;
 const ISTRIP: u32 = 0x0020;
 const INLCR: u32 = 0x0040;
 const IGNCR: u32 = 0x0080;
-const ICRNL: u32 = 0x0100;
-const IXON: u32 = 0x0400;
 
-// Termios c_oflag bits
-const OPOST: u32 = 0x0001;
-const ONLCR: u32 = 0x0004;
-
-// Termios c_cflag bits
+// c_cflag bits
 const CSIZE: u32 = 0x0030;
 const CS8: u32 = 0x0030;
 const PARENB: u32 = 0x0100;
 
-// c_cc indices
-const VMIN: usize = 6;
-const VTIME: usize = 5;
-const NCCS: usize = 32;
+// Syscall numbers for calls not yet in libbreenix
+const SYS_OPEN: u64 = 2;
 
-// ============================================================================
-// POSIX wait status macros
-// ============================================================================
-
-fn wifexited(status: i32) -> bool {
-    (status & 0x7f) == 0
-}
-
-fn wexitstatus(status: i32) -> i32 {
-    (status >> 8) & 0xff
-}
-
-fn wifsignaled(status: i32) -> bool {
-    let sig = status & 0x7f;
-    sig != 0 && sig != 0x7f
-}
-
-fn wifstopped(status: i32) -> bool {
-    (status & 0xff) == 0x7f
-}
-
-// ============================================================================
-// Raw syscall wrappers (for syscalls not in libc)
-// ============================================================================
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_syscall3(num: u64, arg1: u64, arg2: u64, arg3: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        in("rsi") arg2,
-        in("rdx") arg3,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_syscall4(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        in("rsi") arg2,
-        in("rdx") arg3,
-        in("r10") arg4,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "x86_64")]
-unsafe fn raw_syscall1(num: u64, arg1: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "int 0x80",
-        in("rax") num,
-        in("rdi") arg1,
-        lateout("rax") ret,
-        options(nostack, preserves_flags),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_syscall3(num: u64, arg1: u64, arg2: u64, arg3: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        in("x1") arg2,
-        in("x2") arg3,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_syscall4(num: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        in("x1") arg2,
-        in("x2") arg3,
-        in("x3") arg4,
-        options(nostack),
-    );
-    ret as i64
-}
-
-#[cfg(target_arch = "aarch64")]
-unsafe fn raw_syscall1(num: u64, arg1: u64) -> i64 {
-    let ret: u64;
-    std::arch::asm!(
-        "svc #0",
-        in("x8") num,
-        inlateout("x0") arg1 => ret,
-        options(nostack),
-    );
-    ret as i64
-}
-
-// ============================================================================
-// Signal restorer trampoline (required for signal handlers)
-// ============================================================================
-
-#[cfg(target_arch = "x86_64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov rax, 15", // SYS_rt_sigreturn
-        "int 0x80",
-        "ud2",
-    )
-}
-
-#[cfg(target_arch = "aarch64")]
-#[unsafe(naked)]
-extern "C" fn __restore_rt() -> ! {
-    std::arch::naked_asm!(
-        "mov x8, 15", // SYS_rt_sigreturn
-        "svc #0",
-        "brk #1",
-    )
-}
-
-// ============================================================================
-// KernelSigaction struct matching kernel layout
-// ============================================================================
-
-#[repr(C)]
-struct KernelSigaction {
-    handler: u64,
-    mask: u64,
-    flags: u64,
-    restorer: u64,
-}
-
-fn raw_sigaction(sig: i32, act: *const KernelSigaction, oldact: *mut KernelSigaction) -> i64 {
-    unsafe { raw_syscall4(SYS_SIGACTION, sig as u64, act as u64, oldact as u64, 8) }
-}
-
-// ============================================================================
-// Termios struct and helpers
-// ============================================================================
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Termios {
-    c_iflag: u32,
-    c_oflag: u32,
-    c_cflag: u32,
-    c_lflag: u32,
-    c_line: u8,
-    c_cc: [u8; NCCS],
-    c_ispeed: u32,
-    c_ospeed: u32,
-}
-
-impl Default for Termios {
-    fn default() -> Self {
-        Termios {
-            c_iflag: 0,
-            c_oflag: 0,
-            c_cflag: 0,
-            c_lflag: 0,
-            c_line: 0,
-            c_cc: [0; NCCS],
-            c_ispeed: 0,
-            c_ospeed: 0,
-        }
+/// Raw execve wrapper using libbreenix syscall primitives.
+/// This replaces the `extern "C" { fn execve(...) }` FFI import.
+fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32 {
+    unsafe {
+        libbreenix::raw::syscall3(
+            libbreenix::syscall::nr::EXEC,
+            path as u64,
+            argv as u64,
+            envp as u64,
+        ) as i32
     }
 }
 
-fn raw_ioctl(fd: i32, request: u64, arg: u64) -> i64 {
-    unsafe { raw_syscall3(SYS_IOCTL, fd as u64, request, arg) }
+// ============================================================================
+// Raw syscall helper for open (fs::open takes &str, we sometimes need *const u8)
+// ============================================================================
+
+fn sys_open(path: *const u8, flags: i32) -> i64 {
+    unsafe { libbreenix::raw::syscall3(SYS_OPEN, path as u64, flags as u64, 0) as i64 }
 }
 
-fn tcgetattr(fd: i32, termios: &mut Termios) -> Result<(), i32> {
-    let ret = raw_ioctl(fd, TCGETS, termios as *mut Termios as u64);
-    if ret < 0 {
-        Err(-ret as i32)
-    } else {
-        Ok(())
+fn sys_access(pathname: *const u8, mode: i32) -> i32 {
+    unsafe {
+        libbreenix::raw::syscall2(
+            libbreenix::syscall::nr::ACCESS,
+            pathname as u64,
+            mode as u64,
+        ) as i32
     }
-}
-
-fn tcsetattr(fd: i32, termios: &Termios) -> Result<(), i32> {
-    let ret = raw_ioctl(fd, TCSETS, termios as *const Termios as u64);
-    if ret < 0 {
-        Err(-ret as i32)
-    } else {
-        Ok(())
-    }
-}
-
-fn tcsetpgrp(fd: i32, pgrp: i32) -> Result<(), i32> {
-    let ret = raw_ioctl(fd, TIOCSPGRP, &pgrp as *const i32 as u64);
-    if ret < 0 {
-        Err(-ret as i32)
-    } else {
-        Ok(())
-    }
-}
-
-fn cfmakeraw(t: &mut Termios) {
-    t.c_iflag &= !(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
-    t.c_oflag &= !OPOST;
-    t.c_lflag &= !(ECHO | ICANON | ISIG | IEXTEN);
-    t.c_cflag &= !(CSIZE | PARENB);
-    t.c_cflag |= CS8;
-    t.c_cc[VMIN] = 1;
-    t.c_cc[VTIME] = 0;
 }
 
 fn getpgrp() -> i32 {
-    unsafe { raw_syscall1(SYS_GETPGID, 0) as i32 }
+    match getpgid(0) {
+        Ok(pid) => pid.raw() as i32,
+        Err(_) => -1,
+    }
 }
 
-fn sys_open(path: *const u8, flags: i32) -> i64 {
-    unsafe { raw_syscall3(SYS_OPEN, path as u64, flags as u64, 0) }
+fn shell_cfmakeraw(t: &mut Termios) {
+    t.c_iflag &= !(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | iflag::ICRNL | iflag::IXON);
+    t.c_oflag &= !oflag::OPOST;
+    t.c_lflag &= !(lflag::ECHO | lflag::ICANON | lflag::ISIG | lflag::IEXTEN);
+    t.c_cflag &= !(CSIZE | PARENB);
+    t.c_cflag |= CS8;
+    t.c_cc[termios::cc::VMIN] = 1;
+    t.c_cc[termios::cc::VTIME] = 0;
 }
 
 // ============================================================================
@@ -569,9 +340,7 @@ fn builtin_bg(arg: &str) {
         }
 
         // Send SIGCONT to resume the job in background
-        unsafe {
-            kill(-(job.pgid), SIGCONT);
-        }
+        let _ = libbreenix::signal::kill(-(job.pgid), SIGCONT);
         job.status = JobStatus::Running;
 
         println!("[{}] {} &", job_id, job.command);
@@ -612,13 +381,11 @@ fn builtin_fg(arg: &str) {
     println!("[{}] {}", job_id, cmd);
 
     // Give terminal to the job's process group
-    let _ = tcsetpgrp(0, pgid);
+    let _ = tcsetpgrp(STDIN, pgid);
 
     // If job was stopped, send SIGCONT to resume it
     if was_stopped {
-        unsafe {
-            kill(-pgid, SIGCONT);
-        }
+        let _ = libbreenix::signal::kill(-pgid, SIGCONT);
         if let Some(job) = job_table().find_by_id_mut(job_id) {
             job.status = JobStatus::Running;
         }
@@ -626,28 +393,31 @@ fn builtin_fg(arg: &str) {
 
     // Wait for the job (with WUNTRACED to catch if it stops again)
     let mut status: i32 = 0;
-    let wait_result = unsafe { waitpid(pid, &mut status, WUNTRACED) };
+    let wait_result = waitpid(pid, &mut status as *mut i32, WUNTRACED);
 
     // Take terminal back
     let shell_pgrp = getpgrp();
-    let _ = tcsetpgrp(0, shell_pgrp);
+    let _ = tcsetpgrp(STDIN, shell_pgrp);
 
     // Update job status based on result
-    if wait_result > 0 {
-        if wifstopped(status) {
-            // Job was stopped again (e.g., Ctrl+Z)
-            if let Some(job) = job_table().find_by_id_mut(job_id) {
-                job.status = JobStatus::Stopped;
+    match wait_result {
+        Ok(reaped) if reaped.raw() > 0 => {
+            if wifstopped(status) {
+                // Job was stopped again (e.g., Ctrl+Z)
+                if let Some(job) = job_table().find_by_id_mut(job_id) {
+                    job.status = JobStatus::Stopped;
+                }
+                println!();
+                println!("[{}]+  Stopped\t\t{}", job_id, cmd);
+            } else {
+                // Job completed - remove from table
+                job_table().remove(job_id);
             }
-            println!();
-            println!("[{}]+  Stopped\t\t{}", job_id, cmd);
-        } else {
-            // Job completed - remove from table
+        }
+        _ => {
+            // Wait failed - remove job from table anyway
             job_table().remove(job_id);
         }
-    } else {
-        // Wait failed - remove job from table anyway
-        job_table().remove(job_id);
     }
 }
 
@@ -828,7 +598,7 @@ fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<
             candidate.extend_from_slice(cmd_name.as_bytes());
             candidate.push(0);
 
-            if unsafe { access(candidate.as_ptr(), X_OK) } == 0 {
+            if sys_access(candidate.as_ptr(), X_OK) == 0 {
                 path_buf = candidate;
                 found = true;
                 break;
@@ -846,129 +616,128 @@ fn try_execute_external(cmd_name: &str, args: &str, background: bool) -> Result<
         println!("Running: {}", cmd_name);
     }
 
-    let pid = unsafe { fork() };
+    match fork() {
+        Ok(ForkResult::Child) => {
+            // Child process
+            // Put ourselves in our own process group BEFORE exec.
+            let _ = setpgid(0, 0);
 
-    if pid < 0 {
-        println!("Error: fork failed with code {}", -pid);
-        return Ok(-1);
-    }
+            let args = args.trim();
 
-    if pid == 0 {
-        // Child process
-        // Put ourselves in our own process group BEFORE exec.
-        unsafe {
-            setpgid(0, 0);
+            // Determine which binary path to use
+            let binary_path: &[u8] = if let Some(entry) = registry_entry {
+                entry.binary_name
+            } else {
+                &path_buf
+            };
+
+            // Build argv: [binary_path, arg1, arg2, ..., null]
+            // We need to keep the CString-like data alive through the execve call
+            let mut arg_strings: Vec<Vec<u8>> = Vec::new();
+
+            // argv[0] = binary path (already null-terminated)
+            // For the rest, parse the args string
+            if !args.is_empty() {
+                let mut i = 0;
+                let args_bytes = args.as_bytes();
+                while i < args_bytes.len() {
+                    // Skip whitespace
+                    while i < args_bytes.len() && (args_bytes[i] == b' ' || args_bytes[i] == b'\t')
+                    {
+                        i += 1;
+                    }
+                    if i >= args_bytes.len() {
+                        break;
+                    }
+                    // Find end of arg
+                    let start = i;
+                    while i < args_bytes.len() && args_bytes[i] != b' ' && args_bytes[i] != b'\t' {
+                        i += 1;
+                    }
+                    let mut arg = args_bytes[start..i].to_vec();
+                    arg.push(0); // null-terminate
+                    arg_strings.push(arg);
+                }
+            }
+
+            // Build argv pointer array
+            let mut argv_ptrs: Vec<*const u8> = Vec::new();
+            argv_ptrs.push(binary_path.as_ptr()); // argv[0]
+            for arg in &arg_strings {
+                argv_ptrs.push(arg.as_ptr());
+            }
+            argv_ptrs.push(std::ptr::null()); // null terminator
+
+            let envp: [*const u8; 1] = [std::ptr::null()];
+
+            // Use black_box to prevent compiler from optimizing away buffers
+            let _keep_alive = std::hint::black_box(&arg_strings);
+            let _keep_argv = std::hint::black_box(&argv_ptrs);
+
+            sys_execve(binary_path.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+
+            // If exec returns, it failed
+            eprintln!("Error: exec failed");
+            std::process::exit(1);
         }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let pid = child_pid.raw() as i32;
 
-        let args = args.trim();
+            // Also set the child's process group from parent side (POSIX race avoidance)
+            let _ = setpgid(pid, pid);
 
-        // Determine which binary path to use
-        let binary_path: &[u8] = if let Some(entry) = registry_entry {
-            entry.binary_name
-        } else {
-            &path_buf
-        };
+            if background {
+                let job_id = add_job(pid, cmd_name);
+                println!("[{}] {}", job_id, pid);
+                return Ok(0);
+            }
 
-        // Build argv: [binary_path, arg1, arg2, ..., null]
-        // We need to keep the CString-like data alive through the execve call
-        let mut arg_strings: Vec<Vec<u8>> = Vec::new();
+            // Foreground execution - give terminal to child, then wait
+            let shell_pgrp = getpgrp();
+            let child_pgrp = pid;
+            let _ = tcsetpgrp(STDIN, child_pgrp);
 
-        // argv[0] = binary path (already null-terminated)
-        // For the rest, parse the args string
-        if !args.is_empty() {
-            let mut i = 0;
-            let args_bytes = args.as_bytes();
-            while i < args_bytes.len() {
-                // Skip whitespace
-                while i < args_bytes.len() && (args_bytes[i] == b' ' || args_bytes[i] == b'\t') {
-                    i += 1;
+            let mut status: i32 = 0;
+            let wait_result = waitpid(pid, &mut status as *mut i32, WUNTRACED);
+
+            // Take terminal back from child
+            let _ = tcsetpgrp(STDIN, shell_pgrp);
+
+            match wait_result {
+                Err(_) => {
+                    println!("Error: waitpid failed");
+                    Ok(-1)
                 }
-                if i >= args_bytes.len() {
-                    break;
+                Ok(_) => {
+                    if wifexited(status) {
+                        let exit_code = wexitstatus(status);
+                        if exit_code != 0 {
+                            println!("Process exited with code: {}", exit_code);
+                        }
+                        Ok(exit_code)
+                    } else if wifsignaled(status) {
+                        println!();
+                        Ok(-1)
+                    } else if wifstopped(status) {
+                        let job_id = add_job(pid, cmd_name);
+                        // Mark as stopped
+                        if let Some(job) = job_table().find_by_id_mut(job_id) {
+                            job.status = JobStatus::Stopped;
+                        }
+                        println!();
+                        println!("[{}]+ Stopped                 {}", job_id, cmd_name);
+                        Ok(0)
+                    } else {
+                        println!("Process terminated abnormally");
+                        Ok(-1)
+                    }
                 }
-                // Find end of arg
-                let start = i;
-                while i < args_bytes.len() && args_bytes[i] != b' ' && args_bytes[i] != b'\t' {
-                    i += 1;
-                }
-                let mut arg = args_bytes[start..i].to_vec();
-                arg.push(0); // null-terminate
-                arg_strings.push(arg);
             }
         }
-
-        // Build argv pointer array
-        let mut argv_ptrs: Vec<*const u8> = Vec::new();
-        argv_ptrs.push(binary_path.as_ptr()); // argv[0]
-        for arg in &arg_strings {
-            argv_ptrs.push(arg.as_ptr());
+        Err(_) => {
+            println!("Error: fork failed");
+            Ok(-1)
         }
-        argv_ptrs.push(std::ptr::null()); // null terminator
-
-        let envp: [*const u8; 1] = [std::ptr::null()];
-
-        // Use black_box to prevent compiler from optimizing away buffers
-        let _keep_alive = std::hint::black_box(&arg_strings);
-        let _keep_argv = std::hint::black_box(&argv_ptrs);
-
-        unsafe {
-            execve(binary_path.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
-        }
-
-        // If exec returns, it failed
-        eprintln!("Error: exec failed");
-        std::process::exit(1);
-    }
-
-    // Parent process
-    // Also set the child's process group from parent side (POSIX race avoidance)
-    unsafe {
-        setpgid(pid, pid);
-    }
-
-    if background {
-        let job_id = add_job(pid, cmd_name);
-        println!("[{}] {}", job_id, pid);
-        return Ok(0);
-    }
-
-    // Foreground execution - give terminal to child, then wait
-    let shell_pgrp = getpgrp();
-    let child_pgrp = pid;
-    let _ = tcsetpgrp(STDIN, child_pgrp);
-
-    let mut status: i32 = 0;
-    let wait_result = unsafe { waitpid(pid, &mut status, WUNTRACED) };
-
-    // Take terminal back from child
-    let _ = tcsetpgrp(STDIN, shell_pgrp);
-
-    if wait_result < 0 {
-        println!("Error: waitpid failed with code {}", -wait_result);
-        return Ok(-1);
-    }
-
-    if wifexited(status) {
-        let exit_code = wexitstatus(status);
-        if exit_code != 0 {
-            println!("Process exited with code: {}", exit_code);
-        }
-        Ok(exit_code)
-    } else if wifsignaled(status) {
-        println!();
-        Ok(-1)
-    } else if wifstopped(status) {
-        let job_id = add_job(pid, cmd_name);
-        // Mark as stopped
-        if let Some(job) = job_table().find_by_id_mut(job_id) {
-            job.status = JobStatus::Stopped;
-        }
-        println!();
-        println!("[{}]+ Stopped                 {}", job_id, cmd_name);
-        Ok(0)
-    } else {
-        println!("Process terminated abnormally");
-        Ok(-1)
     }
 }
 
@@ -1086,9 +855,7 @@ fn execute_pipeline_command(cmd: &PipelineCommand) -> ! {
     if let Some(entry) = find_program(cmd.name) {
         let argv: [*const u8; 2] = [entry.binary_name.as_ptr(), std::ptr::null()];
         let envp: [*const u8; 1] = [std::ptr::null()];
-        unsafe {
-            execve(entry.binary_name.as_ptr(), argv.as_ptr(), envp.as_ptr());
-        }
+        sys_execve(entry.binary_name.as_ptr(), argv.as_ptr(), envp.as_ptr());
         eprintln!("exec failed");
         std::process::exit(1);
     }
@@ -1101,13 +868,11 @@ fn execute_pipeline_command(cmd: &PipelineCommand) -> ! {
         path_buf.extend_from_slice(cmd.name.as_bytes());
         path_buf.push(0);
 
-        if unsafe { access(path_buf.as_ptr(), X_OK) } == 0 {
+        if sys_access(path_buf.as_ptr(), X_OK) == 0 {
             let argv: [*const u8; 2] = [path_buf.as_ptr(), std::ptr::null()];
             let envp: [*const u8; 1] = [std::ptr::null()];
             let _keep = std::hint::black_box(&path_buf);
-            unsafe {
-                execve(path_buf.as_ptr(), argv.as_ptr(), envp.as_ptr());
-            }
+            sys_execve(path_buf.as_ptr(), argv.as_ptr(), envp.as_ptr());
             eprintln!("exec failed");
             std::process::exit(1);
         }
@@ -1142,7 +907,7 @@ fn execute_pipeline(input: &str) -> bool {
                 path_buf.extend_from_slice(prefix);
                 path_buf.extend_from_slice(cmd.name.as_bytes());
                 path_buf.push(0);
-                if unsafe { access(path_buf.as_ptr(), X_OK) } == 0 {
+                if sys_access(path_buf.as_ptr(), X_OK) == 0 {
                     found = true;
                     break;
                 }
@@ -1156,88 +921,76 @@ fn execute_pipeline(input: &str) -> bool {
 
     let mut child_pids: [i32; MAX_PIPELINE_COMMANDS] = [0; MAX_PIPELINE_COMMANDS];
     let mut pipeline_pgrp: i32 = 0;
-    let mut prev_read_fd: i32 = -1;
+    let mut prev_read_fd: Option<Fd> = None;
 
     for i in 0..cmd_count {
         let is_last = i == cmd_count - 1;
 
-        let mut pipefd: [i32; 2] = [-1, -1];
-        if !is_last {
-            let ret = unsafe { pipe(pipefd.as_mut_ptr()) };
-            if ret < 0 {
-                println!("pipe failed: {}", -ret);
-                if prev_read_fd >= 0 {
-                    unsafe {
-                        close(prev_read_fd);
+        let pipe_fds = if !is_last {
+            match pipe() {
+                Ok(fds) => Some(fds),
+                Err(_) => {
+                    println!("pipe failed");
+                    if let Some(fd) = prev_read_fd {
+                        let _ = close(fd);
                     }
+                    return true;
+                }
+            }
+        } else {
+            None
+        };
+
+        match fork() {
+            Ok(ForkResult::Child) => {
+                // ========== CHILD PROCESS ==========
+                let _ = setpgid(0, pipeline_pgrp);
+
+                if let Some(fd) = prev_read_fd {
+                    let _ = dup2(fd, STDIN);
+                    let _ = close(fd);
+                }
+
+                if let Some((read_fd, write_fd)) = pipe_fds {
+                    let _ = dup2(write_fd, STDOUT);
+                    let _ = close(read_fd);
+                    let _ = close(write_fd);
+                }
+
+                execute_pipeline_command(&commands[i]);
+            }
+            Ok(ForkResult::Parent(child_pid)) => {
+                // ========== PARENT PROCESS ==========
+                let pid = child_pid.raw() as i32;
+                child_pids[i] = pid;
+
+                if i == 0 {
+                    pipeline_pgrp = pid;
+                }
+                let _ = setpgid(pid, pipeline_pgrp);
+
+                if let Some(fd) = prev_read_fd {
+                    let _ = close(fd);
+                }
+
+                if let Some((read_fd, write_fd)) = pipe_fds {
+                    let _ = close(write_fd);
+                    prev_read_fd = Some(read_fd);
+                } else {
+                    prev_read_fd = None;
+                }
+            }
+            Err(_) => {
+                println!("fork failed");
+                if let Some(fd) = prev_read_fd {
+                    let _ = close(fd);
+                }
+                if let Some((read_fd, write_fd)) = pipe_fds {
+                    let _ = close(read_fd);
+                    let _ = close(write_fd);
                 }
                 return true;
             }
-        }
-
-        let pid = unsafe { fork() };
-
-        if pid < 0 {
-            println!("fork failed: {}", -pid);
-            if prev_read_fd >= 0 {
-                unsafe {
-                    close(prev_read_fd);
-                }
-            }
-            if !is_last {
-                unsafe {
-                    close(pipefd[0]);
-                    close(pipefd[1]);
-                }
-            }
-            return true;
-        }
-
-        if pid == 0 {
-            // ========== CHILD PROCESS ==========
-            unsafe {
-                setpgid(0, pipeline_pgrp);
-            }
-
-            if prev_read_fd >= 0 {
-                unsafe {
-                    dup2(prev_read_fd, STDIN);
-                    close(prev_read_fd);
-                }
-            }
-
-            if !is_last {
-                unsafe {
-                    dup2(pipefd[1], STDOUT);
-                    close(pipefd[0]);
-                    close(pipefd[1]);
-                }
-            }
-
-            execute_pipeline_command(&commands[i]);
-        }
-
-        // ========== PARENT PROCESS ==========
-        child_pids[i] = pid;
-
-        if i == 0 {
-            pipeline_pgrp = pid;
-        }
-        unsafe {
-            setpgid(pid, pipeline_pgrp);
-        }
-
-        if prev_read_fd >= 0 {
-            unsafe {
-                close(prev_read_fd);
-            }
-        }
-
-        if !is_last {
-            unsafe {
-                close(pipefd[1]);
-            }
-            prev_read_fd = pipefd[0];
         }
     }
 
@@ -1251,9 +1004,7 @@ fn execute_pipeline(input: &str) -> bool {
     for i in 0..cmd_count {
         if child_pids[i] > 0 {
             let mut status: i32 = 0;
-            unsafe {
-                waitpid(child_pids[i], &mut status, 0);
-            }
+            let _ = waitpid(child_pids[i], &mut status as *mut i32, 0);
         }
     }
 
@@ -1291,16 +1042,16 @@ fn check_children() {
 
     loop {
         let mut status: i32 = 0;
-        let pid = unsafe { waitpid(-1, &mut status, WNOHANG) };
-
-        if pid <= 0 {
-            break;
-        }
-
-        if wifexited(status) || wifsignaled(status) {
-            update_job_status(pid, JobStatus::Done);
-        } else if wifstopped(status) {
-            update_job_status(pid, JobStatus::Stopped);
+        match waitpid(-1, &mut status as *mut i32, WNOHANG) {
+            Ok(pid) if pid.raw() > 0 => {
+                let pid_i32 = pid.raw() as i32;
+                if wifexited(status) || wifsignaled(status) {
+                    update_job_status(pid_i32, JobStatus::Done);
+                } else if wifstopped(status) {
+                    update_job_status(pid_i32, JobStatus::Stopped);
+                }
+            }
+            _ => break,
         }
     }
 }
@@ -1338,55 +1089,42 @@ fn read_line() -> Option<String> {
         }
 
         let mut c = [0u8; 1];
-        let n = unsafe { read(STDIN, c.as_mut_ptr(), 1) };
+        match read(STDIN, &mut c) {
+            Ok(n) if n > 0 => {
+                let ch = c[0];
 
-        if n == -EAGAIN {
-            unsafe {
-                sched_yield();
+                // Handle newline
+                if ch == b'\n' || ch == b'\r' {
+                    println!();
+                    return Some(line);
+                }
+
+                // Handle backspace (ASCII DEL or BS)
+                if ch == 0x7f || ch == 0x08 {
+                    if !line.is_empty() {
+                        line.pop();
+                        print!("\x08 \x08");
+                    }
+                    continue;
+                }
+
+                // Handle printable characters
+                if line.len() < 255 && ch >= 0x20 && ch < 0x7f {
+                    line.push(ch as char);
+                    // Note: Kernel echoes characters in push_byte, so no shell echo needed
+                }
             }
-            continue;
-        }
-
-        if n == 0 {
-            // EOF - if not PID 1, exit gracefully
-            if unsafe { getpid() } != 1 {
-                std::process::exit(0);
+            Ok(_) => {
+                // EOF or no data
+                if getpid().map(|p| p.raw()).unwrap_or(0) != 1 {
+                    std::process::exit(0);
+                }
+                let _ = yield_now();
             }
-            unsafe {
-                sched_yield();
+            Err(_) => {
+                // EAGAIN, EINTR, or other transient error - just yield and retry
+                let _ = yield_now();
             }
-            continue;
-        }
-
-        if n < 0 {
-            // Other error (possibly EINTR from signal)
-            unsafe {
-                sched_yield();
-            }
-            continue;
-        }
-
-        let ch = c[0];
-
-        // Handle newline
-        if ch == b'\n' || ch == b'\r' {
-            println!();
-            return Some(line);
-        }
-
-        // Handle backspace (ASCII DEL or BS)
-        if ch == 0x7f || ch == 0x08 {
-            if !line.is_empty() {
-                line.pop();
-                print!("\x08 \x08");
-            }
-            continue;
-        }
-
-        // Handle printable characters
-        if line.len() < 255 && ch >= 0x20 && ch < 0x7f {
-            line.push(ch as char);
-            // Note: Kernel echoes characters in push_byte, so no shell echo needed
         }
     }
 }
@@ -1444,23 +1182,14 @@ fn cmd_ps() {
 }
 
 fn cmd_uptime() {
-    // Use std::time::Instant would require a meaningful epoch.
-    // Keep using clock_gettime for CLOCK_MONOTONIC to match original behavior.
-    #[repr(C)]
-    struct Timespec {
-        tv_sec: i64,
-        tv_nsec: i64,
-    }
-
-    extern "C" {
-        fn clock_gettime(clk_id: i32, tp: *mut Timespec) -> i32;
-    }
-
-    let mut ts = Timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
+    // Use libbreenix::time::now_monotonic() for CLOCK_MONOTONIC
+    let ts = match libbreenix::time::now_monotonic() {
+        Ok(ts) => ts,
+        Err(_) => {
+            println!("Error: could not get monotonic time");
+            return;
+        }
     };
-    let _ret = unsafe { clock_gettime(1 /* CLOCK_MONOTONIC */, &mut ts) };
 
     let secs = ts.tv_sec as u64;
     let mins = secs / 60;
@@ -1516,22 +1245,22 @@ fn cmd_raw() {
     println!("Press keys to see their codes. Press 'q' to exit raw mode.");
     println!();
 
-    let mut termios = Termios::default();
-    if tcgetattr(0, &mut termios).is_err() {
+    let mut t = Termios::default();
+    if tcgetattr(STDIN, &mut t).is_err() {
         println!("Error: Could not get terminal attributes");
         return;
     }
 
-    let original_termios = termios;
+    let original_termios = t;
     unsafe {
         SAVED_TERMIOS = Some(original_termios);
     }
 
-    cfmakeraw(&mut termios);
+    shell_cfmakeraw(&mut t);
     // Keep output processing enabled so newlines work correctly
-    termios.c_oflag |= OPOST | ONLCR;
+    t.c_oflag |= oflag::OPOST | oflag::ONLCR;
 
-    if tcsetattr(0, &termios).is_err() {
+    if tcsetattr(STDIN, TCSANOW, &t).is_err() {
         println!("Error: Could not set raw mode");
         return;
     }
@@ -1541,50 +1270,44 @@ fn cmd_raw() {
 
     loop {
         let mut c = [0u8; 1];
-        let n = unsafe { read(STDIN, c.as_mut_ptr(), 1) };
+        match read(STDIN, &mut c) {
+            Ok(n) if n > 0 => {
+                let ch = c[0];
 
-        if n == -EAGAIN || n == 0 {
-            unsafe {
-                sched_yield();
+                // Display the keypress
+                if ch >= 0x20 && ch < 0x7f {
+                    println!("Key: '{}' (0x{:02x}, {})", ch as char, ch, ch);
+                } else if ch == 0x1b {
+                    println!("Key: ESC (0x{:02x}, {})", ch, ch);
+                } else if ch < 0x20 {
+                    println!(
+                        "Key: ^{} (0x{:02x}, {})",
+                        (b'@' + ch) as char,
+                        ch,
+                        ch
+                    );
+                } else if ch == 0x7f {
+                    println!("Key: DEL (0x{:02x}, {})", ch, ch);
+                } else {
+                    println!("Key:     (0x{:02x}, {})", ch, ch);
+                }
+
+                if ch == b'q' || ch == b'Q' {
+                    println!();
+                    println!("Exiting raw mode...");
+                    break;
+                }
             }
-            continue;
-        }
-
-        if n < 0 {
-            unsafe {
-                sched_yield();
+            Ok(_) => {
+                let _ = yield_now();
             }
-            continue;
-        }
-
-        let ch = c[0];
-
-        // Display the keypress
-        if ch >= 0x20 && ch < 0x7f {
-            println!("Key: '{}' (0x{:02x}, {})", ch as char, ch, ch);
-        } else if ch == 0x1b {
-            println!("Key: ESC (0x{:02x}, {})", ch, ch);
-        } else if ch < 0x20 {
-            println!(
-                "Key: ^{} (0x{:02x}, {})",
-                (b'@' + ch) as char,
-                ch,
-                ch
-            );
-        } else if ch == 0x7f {
-            println!("Key: DEL (0x{:02x}, {})", ch, ch);
-        } else {
-            println!("Key:     (0x{:02x}, {})", ch, ch);
-        }
-
-        if ch == b'q' || ch == b'Q' {
-            println!();
-            println!("Exiting raw mode...");
-            break;
+            Err(_) => {
+                let _ = yield_now();
+            }
         }
     }
 
-    if tcsetattr(0, &original_termios).is_err() {
+    if tcsetattr(STDIN, TCSANOW, &original_termios).is_err() {
         println!("Warning: Could not restore terminal settings");
     }
 
@@ -1597,16 +1320,16 @@ fn cmd_cooked() {
 
     let restored = unsafe {
         if let Some(ref original) = SAVED_TERMIOS {
-            tcsetattr(0, original).is_ok()
+            tcsetattr(STDIN, TCSANOW, original).is_ok()
         } else {
-            let mut termios = Termios::default();
-            if tcgetattr(0, &mut termios).is_err() {
+            let mut t = Termios::default();
+            if tcgetattr(STDIN, &mut t).is_err() {
                 println!("Error: Could not get terminal attributes");
                 return;
             }
-            termios.c_lflag |= ICANON | ECHO | ECHOE | ISIG;
-            termios.c_oflag |= OPOST | ONLCR;
-            tcsetattr(0, &termios).is_ok()
+            t.c_lflag |= lflag::ICANON | lflag::ECHO | lflag::ECHOE | lflag::ISIG;
+            t.c_oflag |= oflag::OPOST | oflag::ONLCR;
+            tcsetattr(STDIN, TCSANOW, &t).is_ok()
         }
     };
 
@@ -1628,14 +1351,13 @@ fn cmd_devtest() {
     let fd = sys_open(b"/dev/null\0".as_ptr(), O_WRONLY);
     if fd >= 0 {
         let data = b"test data";
-        let result = unsafe { write(fd as i32, data.as_ptr(), data.len()) };
-        unsafe {
-            close(fd as i32);
-        }
-        if result == data.len() as isize {
-            println!("OK (data discarded)");
-        } else {
-            println!("FAIL (returned {})", result);
+        let fd_handle = Fd::from_raw(fd as u64);
+        let result = write(fd_handle, data);
+        let _ = close(fd_handle);
+        match result {
+            Ok(n) if n == data.len() => println!("OK (data discarded)"),
+            Ok(n) => println!("FAIL (returned {})", n),
+            Err(_) => println!("FAIL (write error)"),
         }
     } else {
         println!("FAIL (open error {})", -fd);
@@ -1646,14 +1368,13 @@ fn cmd_devtest() {
     let fd = sys_open(b"/dev/null\0".as_ptr(), O_RDONLY);
     if fd >= 0 {
         let mut buf = [0u8; 16];
-        let result = unsafe { read(fd as i32, buf.as_mut_ptr(), buf.len()) };
-        unsafe {
-            close(fd as i32);
-        }
-        if result == 0 {
-            println!("OK (EOF as expected)");
-        } else {
-            println!("FAIL (returned {})", result);
+        let fd_handle = Fd::from_raw(fd as u64);
+        let result = read(fd_handle, &mut buf);
+        let _ = close(fd_handle);
+        match result {
+            Ok(0) => println!("OK (EOF as expected)"),
+            Ok(n) => println!("FAIL (returned {})", n),
+            Err(_) => println!("FAIL (read error)"),
         }
     } else {
         println!("FAIL (open error {})", -fd);
@@ -1664,14 +1385,13 @@ fn cmd_devtest() {
     let fd = sys_open(b"/dev/zero\0".as_ptr(), O_RDONLY);
     if fd >= 0 {
         let mut buf = [0xFFu8; 8];
-        let result = unsafe { read(fd as i32, buf.as_mut_ptr(), buf.len()) };
-        unsafe {
-            close(fd as i32);
-        }
-        if result == 8 && buf.iter().all(|&b| b == 0) {
-            println!("OK (8 zeros read)");
-        } else {
-            println!("FAIL ({} bytes, or non-zero data)", result);
+        let fd_handle = Fd::from_raw(fd as u64);
+        let result = read(fd_handle, &mut buf);
+        let _ = close(fd_handle);
+        match result {
+            Ok(8) if buf.iter().all(|&b| b == 0) => println!("OK (8 zeros read)"),
+            Ok(n) => println!("FAIL ({} bytes, or non-zero data)", n),
+            Err(_) => println!("FAIL (read error)"),
         }
     } else {
         println!("FAIL (open error {})", -fd);
@@ -1682,14 +1402,13 @@ fn cmd_devtest() {
     let fd = sys_open(b"/dev/console\0".as_ptr(), O_WRONLY);
     if fd >= 0 {
         let msg = b"[console test] ";
-        let result = unsafe { write(fd as i32, msg.as_ptr(), msg.len()) };
-        unsafe {
-            close(fd as i32);
-        }
-        if result == msg.len() as isize {
-            println!("OK");
-        } else {
-            println!("FAIL (returned {})", result);
+        let fd_handle = Fd::from_raw(fd as u64);
+        let result = write(fd_handle, msg);
+        let _ = close(fd_handle);
+        match result {
+            Ok(n) if n == msg.len() => println!("OK"),
+            Ok(n) => println!("FAIL (returned {})", n),
+            Err(_) => println!("FAIL (write error)"),
         }
     } else {
         println!("FAIL (open error {})", -fd);
@@ -1699,9 +1418,7 @@ fn cmd_devtest() {
     print!("5. ls /dev:         ");
     let fd = sys_open(b"/dev\0".as_ptr(), O_DIRECTORY | O_RDONLY);
     if fd >= 0 {
-        unsafe {
-            close(fd as i32);
-        }
+        let _ = close(Fd::from_raw(fd as u64));
         println!("OK (directory opened)");
         println!("   Contents: null zero console tty");
     } else {
@@ -1812,29 +1529,16 @@ fn print_banner() {
 // ============================================================================
 
 fn setup_signal_handlers() {
-    // Set up SIGINT handler for Ctrl+C
-    let sigint_action = KernelSigaction {
-        handler: sigint_handler as u64,
-        mask: 0,
-        flags: SA_RESTORER,
-        restorer: __restore_rt as u64,
-    };
-
-    let ret = raw_sigaction(SIGINT, &sigint_action, std::ptr::null_mut());
-    if ret < 0 {
+    // Set up SIGINT handler for Ctrl+C using libbreenix::Sigaction::new()
+    // which automatically sets SA_RESTORER and uses the libbreenix restorer
+    let sigint_action = Sigaction::new(sigint_handler);
+    if sigaction(SIGINT, Some(&sigint_action), None).is_err() {
         println!("Warning: Could not set up SIGINT handler");
     }
 
     // Set up SIGCHLD handler for background job status updates
-    let sigchld_action = KernelSigaction {
-        handler: sigchld_handler as u64,
-        mask: 0,
-        flags: SA_RESTORER,
-        restorer: __restore_rt as u64,
-    };
-
-    let ret = raw_sigaction(SIGCHLD, &sigchld_action, std::ptr::null_mut());
-    if ret < 0 {
+    let sigchld_action = Sigaction::new(sigchld_handler);
+    if sigaction(SIGCHLD, Some(&sigchld_action), None).is_err() {
         println!("Warning: Could not set up SIGCHLD handler");
     }
 }
@@ -1849,7 +1553,7 @@ fn main() {
 
     // Set this shell as the foreground process group for the TTY
     let pgrp = getpgrp();
-    if tcsetpgrp(0, pgrp).is_err() {
+    if tcsetpgrp(STDIN, pgrp).is_err() {
         println!("Warning: Could not set foreground process group");
     }
 

@@ -3,107 +3,27 @@
 //! Tests socketpair(), named sockets (bind/listen/accept/connect),
 //! EOF, EPIPE, EAGAIN, SOCK_NONBLOCK, SOCK_CLOEXEC, and error handling.
 
-// Socket constants
-const AF_UNIX: i32 = 1;
-const AF_INET: i32 = 2;
-const SOCK_STREAM: i32 = 1;
-const SOCK_DGRAM: i32 = 2;
-const SOCK_NONBLOCK: i32 = 0x800;
-const SOCK_CLOEXEC: i32 = 0x80000;
-
-// Error codes
-const EAGAIN: i32 = 11;
-const EINVAL: i32 = 22;
-const EPIPE: i32 = 32;
-const EAFNOSUPPORT: i32 = 97;
-const EADDRINUSE: i32 = 98;
-const EISCONN: i32 = 106;
-const ECONNREFUSED: i32 = 111;
-const EOPNOTSUPP: i32 = 95;
-const EFAULT: i32 = 14;
-
-// fcntl constants
-const F_GETFD: i32 = 1;
-const FD_CLOEXEC: i32 = 1;
+use libbreenix::errno::Errno;
+use libbreenix::error::Error;
+use libbreenix::io;
+use libbreenix::socket::{
+    self, SockAddrUn, AF_INET, AF_UNIX, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK, SOCK_STREAM,
+};
+use libbreenix::types::Fd;
 
 // Buffer size (must match kernel's UNIX_SOCKET_BUFFER_SIZE)
 const UNIX_SOCKET_BUFFER_SIZE: usize = 65536;
 
-// SockAddrUn structure matching the kernel layout
-#[repr(C)]
-struct SockAddrUn {
-    family: u16,
-    path: [u8; 108],
+fn write_fd(fd: Fd, data: &[u8]) -> Result<usize, Errno> {
+    io::write(fd, data).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
 }
 
-impl SockAddrUn {
-    fn abstract_socket(name: &[u8]) -> Self {
-        let mut addr = SockAddrUn {
-            family: AF_UNIX as u16,
-            path: [0u8; 108],
-        };
-        // Abstract socket: path[0] = 0, name follows
-        let copy_len = name.len().min(107);
-        addr.path[1..1 + copy_len].copy_from_slice(&name[..copy_len]);
-        addr
-    }
-
-    fn len(&self) -> u32 {
-        // family (2) + null byte (1) + name length
-        let mut name_len = 0;
-        for i in 1..108 {
-            if self.path[i] == 0 { break; }
-            name_len += 1;
-        }
-        (2 + 1 + name_len) as u32
-    }
-}
-
-extern "C" {
-    fn socket(domain: i32, sock_type: i32, protocol: i32) -> i32;
-    fn socketpair(domain: i32, sock_type: i32, protocol: i32, sv: *mut i32) -> i32;
-    fn bind(sockfd: i32, addr: *const u8, addrlen: u32) -> i32;
-    fn listen(sockfd: i32, backlog: i32) -> i32;
-    fn accept(sockfd: i32, addr: *mut u8, addrlen: *mut u32) -> i32;
-    fn connect(sockfd: i32, addr: *const u8, addrlen: u32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn fcntl(fd: i32, cmd: i32, arg: u64) -> i32;
-}
-
-// Wrapper to get errno from libbreenix-libc
-// The libc functions set a global ERRNO variable and return -1 on error.
-// For raw fd operations we use extern "C" directly.
-fn write_fd(fd: i32, data: &[u8]) -> Result<usize, i32> {
-    let ret = unsafe { write(fd, data.as_ptr(), data.len()) };
-    if ret < 0 {
-        // The libbreenix-libc returns -1 and sets ERRNO, but we need the actual errno.
-        // For now we'll use a raw syscall approach.
-        Err(get_errno())
-    } else {
-        Ok(ret as usize)
-    }
-}
-
-fn read_fd(fd: i32, buf: &mut [u8]) -> Result<usize, i32> {
-    let ret = unsafe { read(fd, buf.as_mut_ptr(), buf.len()) };
-    if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok(ret as usize)
-    }
-}
-
-// Get errno from the libbreenix-libc global
-fn get_errno() -> i32 {
-    // The libbreenix-libc stores errno in a global. We access it via __errno_location
-    // or directly. For simplicity, use a raw syscall approach instead.
-    // Actually, let's use the libc's errno mechanism.
-    extern "C" {
-        static mut ERRNO: i32;
-    }
-    unsafe { ERRNO }
+fn read_fd(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
+    io::read(fd, buf).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
 }
 
 fn fail(msg: &str) -> ! {
@@ -111,76 +31,69 @@ fn fail(msg: &str) -> ! {
     std::process::exit(1);
 }
 
-fn do_socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(i32, i32), i32> {
-    let mut sv = [0i32; 2];
-    let ret = unsafe { socketpair(domain, sock_type, protocol, sv.as_mut_ptr()) };
-    if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok((sv[0], sv[1]))
-    }
+fn do_socketpair(domain: i32, sock_type: i32, protocol: i32) -> Result<(Fd, Fd), Errno> {
+    socket::socketpair(domain, sock_type, protocol).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
 }
 
-fn do_socketpair_raw(domain: i32, sock_type: i32, protocol: i32, sv_ptr: u64) -> Result<(), i32> {
-    let ret = unsafe { socketpair(domain, sock_type, protocol, sv_ptr as *mut i32) };
+/// Raw socketpair for testing invalid pointer/args (bypasses safe API)
+fn do_socketpair_raw(domain: i32, sock_type: i32, protocol: i32, sv_ptr: u64) -> Result<(), Errno> {
+    let ret = unsafe {
+        libbreenix::raw::syscall4(
+            libbreenix::syscall::nr::SOCKETPAIR,
+            domain as u64,
+            sock_type as u64,
+            protocol as u64,
+            sv_ptr,
+        ) as i64
+    };
     if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok(())
-    }
-}
-
-fn do_socket(domain: i32, sock_type: i32, protocol: i32) -> Result<i32, i32> {
-    let ret = unsafe { socket(domain, sock_type, protocol) };
-    if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok(ret)
-    }
-}
-
-fn do_bind(sockfd: i32, addr: &SockAddrUn) -> Result<(), i32> {
-    let ret = unsafe { bind(sockfd, addr as *const SockAddrUn as *const u8, addr.len()) };
-    if ret < 0 {
-        Err(get_errno())
+        Err(Errno::from_raw(-ret))
     } else {
         Ok(())
     }
 }
 
-fn do_listen(sockfd: i32, backlog: i32) -> Result<(), i32> {
-    let ret = unsafe { listen(sockfd, backlog) };
-    if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok(())
+fn do_socket(domain: i32, sock_type: i32, protocol: i32) -> Result<Fd, Errno> {
+    socket::socket(domain, sock_type, protocol).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
+}
+
+fn do_bind(sockfd: Fd, addr: &SockAddrUn) -> Result<(), Errno> {
+    socket::bind_unix(sockfd, addr).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
+}
+
+fn do_listen(sockfd: Fd, backlog: i32) -> Result<(), Errno> {
+    socket::listen(sockfd, backlog).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
+}
+
+fn do_accept(sockfd: Fd) -> Result<Fd, Errno> {
+    socket::accept(sockfd, None).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
+}
+
+fn do_connect(sockfd: Fd, addr: &SockAddrUn) -> Result<(), Errno> {
+    socket::connect_unix(sockfd, addr).map_err(|e| match e {
+        Error::Os(errno) => errno,
+    })
+}
+
+fn do_close(fd: Fd) {
+    let _ = io::close(fd);
+}
+
+fn do_fcntl_getfd(fd: Fd) -> i64 {
+    match io::fcntl_getfd(fd) {
+        Ok(flags) => flags,
+        Err(_) => -1,
     }
-}
-
-fn do_accept(sockfd: i32) -> Result<i32, i32> {
-    let ret = unsafe { accept(sockfd, std::ptr::null_mut(), std::ptr::null_mut()) };
-    if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok(ret)
-    }
-}
-
-fn do_connect(sockfd: i32, addr: &SockAddrUn) -> Result<(), i32> {
-    let ret = unsafe { connect(sockfd, addr as *const SockAddrUn as *const u8, addr.len()) };
-    if ret < 0 {
-        Err(get_errno())
-    } else {
-        Ok(())
-    }
-}
-
-fn do_close(fd: i32) {
-    unsafe { close(fd); }
-}
-
-fn do_fcntl_getfd(fd: i32) -> i32 {
-    unsafe { fcntl(fd, F_GETFD, 0) }
 }
 
 // Named socket test functions
@@ -188,19 +101,19 @@ fn do_fcntl_getfd(fd: i32) -> i32 {
 fn test_named_basic_server_client() {
     let server_fd = match do_socket(AF_UNIX, SOCK_STREAM, 0) {
         Ok(fd) => fd,
-        Err(e) => { println!("  socket() failed: {}", e); fail("socket() for server failed"); }
+        Err(e) => { println!("  socket() failed: {:?}", e); fail("socket() for server failed"); }
     };
 
     let addr = SockAddrUn::abstract_socket(b"combined_test_1_std");
 
     if let Err(e) = do_bind(server_fd, &addr) {
-        println!("  bind() failed: {}", e);
+        println!("  bind() failed: {:?}", e);
         do_close(server_fd);
         fail("bind() failed");
     }
 
     if let Err(e) = do_listen(server_fd, 5) {
-        println!("  listen() failed: {}", e);
+        println!("  listen() failed: {:?}", e);
         do_close(server_fd);
         fail("listen() failed");
     }
@@ -211,7 +124,7 @@ fn test_named_basic_server_client() {
     };
 
     if let Err(e) = do_connect(client_fd, &addr) {
-        println!("  connect() failed: {}", e);
+        println!("  connect() failed: {:?}", e);
         do_close(client_fd);
         do_close(server_fd);
         fail("connect() failed");
@@ -220,7 +133,7 @@ fn test_named_basic_server_client() {
     let accepted_fd = match do_accept(server_fd) {
         Ok(fd) => fd,
         Err(e) => {
-            println!("  accept() failed: {}", e);
+            println!("  accept() failed: {:?}", e);
             do_close(client_fd);
             do_close(server_fd);
             fail("accept() failed");
@@ -230,7 +143,7 @@ fn test_named_basic_server_client() {
     // Test bidirectional I/O
     let test_data = b"Hello from client!";
     if let Err(e) = write_fd(client_fd, test_data) {
-        println!("  client write() failed: {}", e);
+        println!("  client write() failed: {:?}", e);
         fail("client write failed");
     }
 
@@ -242,14 +155,14 @@ fn test_named_basic_server_client() {
             }
         }
         Err(e) => {
-            println!("  server read() failed: {}", e);
+            println!("  server read() failed: {:?}", e);
             fail("server read failed");
         }
     }
 
     let reply_data = b"Hello from server!";
     if let Err(e) = write_fd(accepted_fd, reply_data) {
-        println!("  server write() failed: {}", e);
+        println!("  server write() failed: {:?}", e);
         fail("server write failed");
     }
 
@@ -261,7 +174,7 @@ fn test_named_basic_server_client() {
             }
         }
         Err(e) => {
-            println!("  client read() failed: {}", e);
+            println!("  client read() failed: {:?}", e);
             fail("client read failed");
         }
     }
@@ -287,8 +200,8 @@ fn test_named_econnrefused() {
             fail("connect() should have failed with ECONNREFUSED");
         }
         Err(e) => {
-            if e != ECONNREFUSED {
-                println!("  Expected ECONNREFUSED, got: {}", e);
+            if e != Errno::ECONNREFUSED {
+                println!("  Expected ECONNREFUSED, got: {:?}", e);
                 do_close(client_fd);
                 fail("Expected ECONNREFUSED");
             }
@@ -328,8 +241,8 @@ fn test_named_eaddrinuse() {
             fail("Second bind() should have failed with EADDRINUSE");
         }
         Err(e) => {
-            if e != EADDRINUSE {
-                println!("  Expected EADDRINUSE, got: {}", e);
+            if e != Errno::EADDRINUSE {
+                println!("  Expected EADDRINUSE, got: {:?}", e);
                 do_close(fd1);
                 do_close(fd2);
                 fail("Expected EADDRINUSE");
@@ -365,8 +278,8 @@ fn test_named_nonblock_accept() {
             fail("accept() should have returned EAGAIN");
         }
         Err(e) => {
-            if e != EAGAIN {
-                println!("  Expected EAGAIN, got: {}", e);
+            if e != Errno::EAGAIN {
+                println!("  Expected EAGAIN, got: {:?}", e);
                 do_close(server_fd);
                 fail("Expected EAGAIN");
             }
@@ -400,7 +313,7 @@ fn test_named_eisconn() {
     };
 
     if let Err(e) = do_connect(client_fd, &addr) {
-        println!("  First connect failed: {}", e);
+        println!("  First connect failed: {:?}", e);
         do_close(client_fd);
         do_close(server_fd);
         fail("First connect should succeed");
@@ -413,8 +326,8 @@ fn test_named_eisconn() {
             fail("Second connect() should have failed with EISCONN");
         }
         Err(e) => {
-            if e != EISCONN {
-                println!("  Expected EISCONN, got: {}", e);
+            if e != Errno::EISCONN {
+                println!("  Expected EISCONN, got: {:?}", e);
                 do_close(client_fd);
                 do_close(server_fd);
                 fail("Expected EISCONN");
@@ -438,8 +351,8 @@ fn test_named_accept_non_listener() {
             fail("accept() on non-listener should have failed");
         }
         Err(e) => {
-            if e != EOPNOTSUPP {
-                println!("  Expected EOPNOTSUPP, got: {}", e);
+            if e != Errno::EOPNOTSUPP {
+                println!("  Expected EOPNOTSUPP, got: {:?}", e);
                 do_close(fd);
                 fail("Expected EOPNOTSUPP");
             }
@@ -457,16 +370,16 @@ fn main() {
     let (sv0, sv1) = match do_socketpair(AF_UNIX, SOCK_STREAM, 0) {
         Ok(pair) => pair,
         Err(e) => {
-            println!("  socketpair() returned error: {}", e);
+            println!("  socketpair() returned error: {:?}", e);
             fail("socketpair() failed");
         }
     };
 
     println!("  Socket pair created successfully");
-    println!("  sv[0] = {}", sv0);
-    println!("  sv[1] = {}", sv1);
+    println!("  sv[0] = {}", sv0.raw());
+    println!("  sv[1] = {}", sv1.raw());
 
-    if sv0 < 3 || sv1 < 3 {
+    if (sv0.raw() as i32) < 3 || (sv1.raw() as i32) < 3 {
         fail("Socket fds should be >= 3 (after stdin/stdout/stderr)");
     }
     if sv0 == sv1 {
@@ -480,7 +393,7 @@ fn main() {
     let write_ret = match write_fd(sv0, test_data) {
         Ok(n) => n,
         Err(e) => {
-            println!("  write(sv[0]) returned error: {}", e);
+            println!("  write(sv[0]) returned error: {:?}", e);
             fail("write to sv[0] failed");
         }
     };
@@ -494,7 +407,7 @@ fn main() {
     let read_ret = match read_fd(sv1, &mut read_buf) {
         Ok(n) => n,
         Err(e) => {
-            println!("  read(sv[1]) returned error: {}", e);
+            println!("  read(sv[1]) returned error: {:?}", e);
             fail("read from sv[1] failed");
         }
     };
@@ -516,7 +429,7 @@ fn main() {
     let write_ret2 = match write_fd(sv1, test_data2) {
         Ok(n) => n,
         Err(e) => {
-            println!("  write(sv[1]) returned error: {}", e);
+            println!("  write(sv[1]) returned error: {:?}", e);
             fail("write to sv[1] failed");
         }
     };
@@ -527,7 +440,7 @@ fn main() {
     let read_ret2 = match read_fd(sv0, &mut read_buf2) {
         Ok(n) => n,
         Err(e) => {
-            println!("  read(sv[0]) returned error: {}", e);
+            println!("  read(sv[0]) returned error: {:?}", e);
             fail("read from sv[0] failed");
         }
     };
@@ -565,12 +478,12 @@ fn main() {
     let (sv_nb0, sv_nb1) = match do_socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0) {
         Ok(pair) => pair,
         Err(e) => {
-            println!("  socketpair(SOCK_NONBLOCK) returned error: {}", e);
+            println!("  socketpair(SOCK_NONBLOCK) returned error: {:?}", e);
             fail("socketpair(SOCK_NONBLOCK) failed");
         }
     };
     println!("  Created non-blocking socket pair");
-    println!("  sv_nb[0] = {}, sv_nb[1] = {}", sv_nb0, sv_nb1);
+    println!("  sv_nb[0] = {}, sv_nb[1] = {}", sv_nb0.raw(), sv_nb1.raw());
 
     let mut nb_buf = [0u8; 8];
     match read_fd(sv_nb1, &mut nb_buf) {
@@ -579,8 +492,8 @@ fn main() {
             fail("Non-blocking read should return EAGAIN when no data available");
         }
         Err(e) => {
-            println!("  Read from empty non-blocking socket returned: -{}", e);
-            if e != EAGAIN {
+            println!("  Read from empty non-blocking socket returned: {:?}", e);
+            if e != Errno::EAGAIN {
                 println!("  Expected EAGAIN, got different error");
                 fail("Non-blocking read should return EAGAIN when no data available");
             }
@@ -609,8 +522,8 @@ fn main() {
             fail("Write to closed peer should return EPIPE");
         }
         Err(e) => {
-            println!("  Write to socket with closed peer returned: -{}", e);
-            if e != EPIPE {
+            println!("  Write to socket with closed peer returned: {:?}", e);
+            if e != Errno::EPIPE {
                 println!("  Expected EPIPE, got different error");
                 fail("Write to closed peer should return EPIPE");
             }
@@ -626,9 +539,9 @@ fn main() {
     match do_socketpair(AF_INET, SOCK_STREAM, 0) {
         Ok(_) => fail("socketpair(AF_INET) should fail"),
         Err(e) => {
-            println!("  socketpair(AF_INET) returned: -{}", e);
-            if e != EAFNOSUPPORT {
-                println!("  Expected EAFNOSUPPORT (97)");
+            println!("  socketpair(AF_INET) returned: {:?}", e);
+            if e != Errno::EAFNOSUPPORT {
+                println!("  Expected EAFNOSUPPORT");
                 fail("socketpair(AF_INET) should return EAFNOSUPPORT");
             }
         }
@@ -638,9 +551,9 @@ fn main() {
     match do_socketpair(AF_UNIX, SOCK_DGRAM, 0) {
         Ok(_) => fail("socketpair(SOCK_DGRAM) should fail"),
         Err(e) => {
-            println!("  socketpair(SOCK_DGRAM) returned: -{}", e);
-            if e != EINVAL {
-                println!("  Expected EINVAL (22)");
+            println!("  socketpair(SOCK_DGRAM) returned: {:?}", e);
+            if e != Errno::EINVAL {
+                println!("  Expected EINVAL");
                 fail("socketpair(SOCK_DGRAM) should return EINVAL");
             }
         }
@@ -667,12 +580,12 @@ fn main() {
                 total_written += n;
             }
             Err(e) => {
-                if e == EAGAIN {
+                if e == Errno::EAGAIN {
                     eagain_received = true;
                     println!("  Got EAGAIN after writing {} bytes", total_written);
                     break;
                 } else {
-                    println!("  Unexpected error during buffer fill: -{}", e);
+                    println!("  Unexpected error during buffer fill: {:?}", e);
                     fail("Unexpected error while filling buffer");
                 }
             }
@@ -698,8 +611,8 @@ fn main() {
     match do_socketpair_raw(AF_UNIX, SOCK_STREAM, 0, 0) {
         Ok(_) => fail("socketpair(NULL) should fail"),
         Err(e) => {
-            println!("  socketpair(NULL) returned: -{}", e);
-            if e != EFAULT {
+            println!("  socketpair(NULL) returned: {:?}", e);
+            if e != Errno::EFAULT {
                 println!("  Expected EFAULT");
                 fail("socketpair(NULL) should return EFAULT");
             }
@@ -713,8 +626,8 @@ fn main() {
     match do_socketpair_raw(AF_UNIX, SOCK_STREAM, 1, sv_proto.as_mut_ptr() as u64) {
         Ok(_) => fail("socketpair(protocol=1) should fail"),
         Err(e) => {
-            println!("  socketpair(protocol=1) returned: -{}", e);
-            if e != EINVAL {
+            println!("  socketpair(protocol=1) returned: {:?}", e);
+            if e != Errno::EINVAL {
                 println!("  Expected EINVAL");
                 fail("socketpair(protocol!=0) should return EINVAL");
             }
@@ -727,7 +640,7 @@ fn main() {
     let (sv_cloexec0, sv_cloexec1) = match do_socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0) {
         Ok(pair) => pair,
         Err(e) => {
-            println!("  socketpair(SOCK_CLOEXEC) returned error: {}", e);
+            println!("  socketpair(SOCK_CLOEXEC) returned error: {:?}", e);
             fail("socketpair(SOCK_CLOEXEC) failed");
         }
     };
@@ -743,10 +656,10 @@ fn main() {
         fail("fcntl(F_GETFD) failed on SOCK_CLOEXEC socket");
     }
 
-    if (flags0 & FD_CLOEXEC) == 0 {
+    if (flags0 & libbreenix::io::fd_flags::FD_CLOEXEC as i64) == 0 {
         fail("sv_cloexec[0] should have FD_CLOEXEC set");
     }
-    if (flags1 & FD_CLOEXEC) == 0 {
+    if (flags1 & libbreenix::io::fd_flags::FD_CLOEXEC as i64) == 0 {
         fail("sv_cloexec[1] should have FD_CLOEXEC set");
     }
     println!("  FD_CLOEXEC correctly set on both sockets");

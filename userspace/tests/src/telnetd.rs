@@ -7,74 +7,38 @@
 //! - Parent relays data between socket and PTY master
 //! - Provides proper terminal semantics (line discipline, ioctls)
 
+use libbreenix::io::{close, dup2, fcntl_getfl, fcntl_setfl, read, write, status_flags::O_NONBLOCK};
+use libbreenix::process::{fork, waitpid, yield_now, ForkResult, WNOHANG};
+use libbreenix::pty;
+use libbreenix::socket::{socket, bind_inet, listen, accept, SockAddrIn, AF_INET, SOCK_STREAM};
+use libbreenix::types::Fd;
+
 const TELNET_PORT: u16 = 2323;
 const SHELL_PATH: &[u8] = b"/bin/init_shell\0";
 
-// Socket constants
-const AF_INET: i32 = 2;
-const SOCK_STREAM: i32 = 1;
+// setsockopt constants (not yet in libbreenix)
 const SOL_SOCKET: i32 = 1;
 const SO_REUSEADDR: i32 = 2;
-
-// Open flags
-const O_RDWR: i32 = 0x02;
-const O_NOCTTY: i32 = 0x100;
-const O_NONBLOCK: i32 = 2048;
-
-// fcntl commands
-const F_GETFL: i32 = 3;
-const F_SETFL: i32 = 4;
-
-// waitpid options
-const WNOHANG: i32 = 1;
-
-extern "C" {
-    fn fork() -> i32;
-    fn execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> i32;
-    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    fn dup2(oldfd: i32, newfd: i32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-    fn socket(domain: i32, typ: i32, protocol: i32) -> i32;
-    fn bind(fd: i32, addr: *const u8, addrlen: u32) -> i32;
-    fn listen(fd: i32, backlog: i32) -> i32;
-    fn accept(fd: i32, addr: *mut u8, addrlen: *mut u32) -> i32;
-    fn setsockopt(fd: i32, level: i32, optname: i32, optval: *const u8, optlen: u32) -> i32;
-    fn sched_yield() -> i32;
-    fn posix_openpt(flags: i32) -> i32;
-    fn grantpt(fd: i32) -> i32;
-    fn unlockpt(fd: i32) -> i32;
-    fn ptsname_r(fd: i32, buf: *mut u8, buflen: usize) -> i32;
-    fn open(path: *const u8, flags: i32, mode: i32) -> i32;
-    fn fcntl(fd: i32, cmd: i32, arg: i64) -> i32;
-}
+const SYS_SETSOCKOPT: u64 = 54;
 
 /// Set a file descriptor to non-blocking mode
-fn set_nonblocking(fd: i32) {
-    let flags = unsafe { fcntl(fd, F_GETFL, 0) };
-    if flags >= 0 {
-        unsafe { fcntl(fd, F_SETFL, (flags | O_NONBLOCK) as i64); }
+fn set_nonblocking(fd: Fd) {
+    if let Ok(flags) = fcntl_getfl(fd) {
+        let _ = fcntl_setfl(fd, flags as i32 | O_NONBLOCK);
     }
 }
 
-/// sockaddr_in structure (matching kernel layout)
-#[repr(C)]
-struct SockAddrIn {
-    sin_family: u16,
-    sin_port: u16, // network byte order (big-endian)
-    sin_addr: u32,
-    sin_zero: [u8; 8],
-}
-
-impl SockAddrIn {
-    fn new(addr: [u8; 4], port: u16) -> Self {
-        SockAddrIn {
-            sin_family: AF_INET as u16,
-            sin_port: port.to_be(),
-            sin_addr: u32::from_ne_bytes(addr),
-            sin_zero: [0u8; 8],
-        }
+/// Raw setsockopt (not yet in libbreenix)
+fn setsockopt(fd: Fd, level: i32, optname: i32, optval: &i32) {
+    unsafe {
+        libbreenix::raw::syscall5(
+            SYS_SETSOCKOPT,
+            fd.raw(),
+            level as u64,
+            optname as u64,
+            optval as *const i32 as u64,
+            core::mem::size_of::<i32>() as u64,
+        );
     }
 }
 
@@ -111,7 +75,7 @@ fn filter_telnet(
     data: &[u8],
     out: &mut [u8],
     state: &mut TelnetState,
-    client_fd: i32,
+    client_fd: Fd,
 ) -> usize {
     let mut out_pos = 0;
     for &byte in data {
@@ -157,7 +121,7 @@ fn filter_telnet(
                 // byte is the option code - refuse the negotiation
                 let response_cmd = if cmd == WILL || cmd == WONT { DONT } else { WONT };
                 let resp = [IAC, response_cmd, byte];
-                unsafe { write(client_fd, resp.as_ptr(), 3); }
+                let _ = write(client_fd, &resp);
                 *state = TelnetState::Data;
             }
             TelnetState::SubNeg => {
@@ -181,7 +145,7 @@ fn filter_telnet(
 
 /// Relay data between socket and PTY master using non-blocking I/O.
 /// Returns when the child process exits.
-fn relay_loop(client_fd: i32, master_fd: i32, child_pid: i32) {
+fn relay_loop(client_fd: Fd, master_fd: Fd, child_pid: i32) {
     set_nonblocking(client_fd);
     set_nonblocking(master_fd);
 
@@ -192,191 +156,172 @@ fn relay_loop(client_fd: i32, master_fd: i32, child_pid: i32) {
     loop {
         // Check if child has exited
         let mut status: i32 = 0;
-        let ret = unsafe { waitpid(child_pid, &mut status as *mut i32, WNOHANG) };
-        if ret > 0 {
-            // Child exited - drain any remaining PTY master data to socket
-            loop {
-                let n = unsafe { read(master_fd, buf.as_mut_ptr(), buf.len()) };
-                if n <= 0 {
-                    break;
+        if let Ok(pid) = waitpid(child_pid, &mut status as *mut i32, WNOHANG) {
+            if pid.raw() > 0 {
+                // Child exited - drain any remaining PTY master data to socket
+                loop {
+                    match read(master_fd, &mut buf) {
+                        Ok(n) if n > 0 => { let _ = write(client_fd, &buf[..n]); }
+                        _ => break,
+                    }
                 }
-                unsafe { write(client_fd, buf.as_ptr(), n as usize); }
+                return;
             }
-            return;
         }
 
         let mut did_work = false;
 
         // Socket -> PTY master (client input to shell)
         // Filter out Telnet IAC protocol bytes so only user data reaches the PTY
-        let n = unsafe { read(client_fd, buf.as_mut_ptr(), buf.len()) };
-        if n > 0 {
-            let clean = filter_telnet(
-                &buf[..n as usize],
-                &mut filtered,
-                &mut telnet_state,
-                client_fd,
-            );
-            if clean > 0 {
-                unsafe { write(master_fd, filtered.as_ptr(), clean); }
+        match read(client_fd, &mut buf) {
+            Ok(n) if n > 0 => {
+                let clean = filter_telnet(
+                    &buf[..n],
+                    &mut filtered,
+                    &mut telnet_state,
+                    client_fd,
+                );
+                if clean > 0 {
+                    let _ = write(master_fd, &filtered[..clean]);
+                }
+                did_work = true;
             }
-            did_work = true;
-        } else if n == 0 {
-            // Client disconnected
-            return;
+            Ok(0) => {
+                // Client disconnected
+                return;
+            }
+            _ => {}
         }
 
         // PTY master -> socket (shell output to client)
-        let n = unsafe { read(master_fd, buf.as_mut_ptr(), buf.len()) };
-        if n > 0 {
-            unsafe { write(client_fd, buf.as_ptr(), n as usize); }
-            did_work = true;
+        match read(master_fd, &mut buf) {
+            Ok(n) if n > 0 => {
+                let _ = write(client_fd, &buf[..n]);
+                did_work = true;
+            }
+            _ => {}
         }
 
         if !did_work {
-            unsafe { sched_yield(); }
+            let _ = yield_now();
         }
     }
 }
 
 /// Handle a single telnet connection using a PTY pair
-fn handle_connection(client_fd: i32) {
-    // Create PTY pair
-    let master_fd = unsafe { posix_openpt(O_RDWR | O_NOCTTY) };
-    if master_fd < 0 {
-        print!("TELNETD_ERROR: posix_openpt failed\n");
-        unsafe { close(client_fd); }
-        return;
-    }
-
-    if unsafe { grantpt(master_fd) } != 0 {
-        print!("TELNETD_ERROR: grantpt failed\n");
-        unsafe { close(master_fd); close(client_fd); }
-        return;
-    }
-
-    if unsafe { unlockpt(master_fd) } != 0 {
-        print!("TELNETD_ERROR: unlockpt failed\n");
-        unsafe { close(master_fd); close(client_fd); }
-        return;
-    }
-
-    let mut path_buf = [0u8; 32];
-    if unsafe { ptsname_r(master_fd, path_buf.as_mut_ptr(), path_buf.len()) } != 0 {
-        print!("TELNETD_ERROR: ptsname_r failed\n");
-        unsafe { close(master_fd); close(client_fd); }
-        return;
-    }
+fn handle_connection(client_fd: Fd) {
+    // Create PTY pair using libbreenix convenience function
+    let (master_fd, path_buf) = match pty::openpty() {
+        Ok(pair) => pair,
+        Err(_) => {
+            print!("TELNETD_ERROR: openpty failed\n");
+            let _ = close(client_fd);
+            return;
+        }
+    };
 
     // Fork child process for shell
-    let pid = unsafe { fork() };
+    match fork() {
+        Ok(ForkResult::Child) => {
+            // Child process: open slave PTY and redirect stdin/stdout/stderr
 
-    if pid == 0 {
-        // Child process: open slave PTY and redirect stdin/stdout/stderr
+            // Close fds the child doesn't need
+            let _ = close(master_fd);
+            let _ = close(client_fd);
 
-        // Close fds the child doesn't need
-        unsafe { close(master_fd); }
-        unsafe { close(client_fd); }
+            // Open the slave PTY device
+            let slave_path = core::str::from_utf8(pty::slave_path_bytes(&path_buf)).unwrap_or("");
+            // Need null-terminated path for open
+            let mut path_with_null = String::from(slave_path);
+            path_with_null.push('\0');
+            let slave_fd = match libbreenix::fs::open(&path_with_null, libbreenix::fs::O_RDWR) {
+                Ok(fd) => fd,
+                Err(_) => {
+                    let msg = b"TELNETD_CHILD: open slave failed\n";
+                    let _ = write(Fd::STDOUT, msg);
+                    std::process::exit(10);
+                }
+            };
 
-        // Open the slave PTY device
-        let slave_fd = unsafe { open(path_buf.as_ptr(), O_RDWR, 0) };
-        if slave_fd < 0 {
-            let msg = b"TELNETD_CHILD: open slave failed\n";
-            unsafe { write(1, msg.as_ptr(), msg.len()); }
-            std::process::exit(10);
+            // Redirect stdin/stdout/stderr to the PTY slave
+            if dup2(slave_fd, Fd::from_raw(0)).is_err() {
+                let msg = b"TELNETD_CHILD: dup2 stdin failed\n";
+                let _ = write(Fd::STDOUT, msg);
+                std::process::exit(11);
+            }
+            if dup2(slave_fd, Fd::from_raw(1)).is_err() {
+                let msg = b"TELNETD_CHILD: dup2 stdout failed\n";
+                let _ = write(Fd::STDERR, msg);
+                std::process::exit(12);
+            }
+            if dup2(slave_fd, Fd::from_raw(2)).is_err() {
+                std::process::exit(13);
+            }
+
+            // Close original slave_fd (now duplicated to 0/1/2)
+            if slave_fd.raw() > 2 {
+                let _ = close(slave_fd);
+            }
+
+            // Execute shell
+            let argv: [*const u8; 2] = [SHELL_PATH.as_ptr(), core::ptr::null()];
+            // envp was just [null] (empty environment), so execv (no envp arg) is equivalent
+            let _ = libbreenix::process::execv(SHELL_PATH, argv.as_ptr());
+
+            // If exec fails
+            std::process::exit(127);
         }
+        Ok(ForkResult::Parent(child_pid)) => {
+            let pid = child_pid.raw() as i32;
 
-        // Redirect stdin/stdout/stderr to the PTY slave
-        if unsafe { dup2(slave_fd, 0) } < 0 {
-            let msg = b"TELNETD_CHILD: dup2 stdin failed\n";
-            unsafe { write(1, msg.as_ptr(), msg.len()); }
-            std::process::exit(11);
-        }
-        if unsafe { dup2(slave_fd, 1) } < 0 {
-            // fd 1 still works here (dup2 failed so it wasn't replaced)
-            let msg = b"TELNETD_CHILD: dup2 stdout failed\n";
-            unsafe { write(2, msg.as_ptr(), msg.len()); }
-            std::process::exit(12);
-        }
-        if unsafe { dup2(slave_fd, 2) } < 0 {
-            std::process::exit(13);
-        }
+            print!("TELNETD_SHELL_FORKED\n");
 
-        // Close original slave_fd (now duplicated to 0/1/2)
-        if slave_fd > 2 {
-            unsafe { close(slave_fd); }
+            // Parent: relay data between socket and PTY master
+            relay_loop(client_fd, master_fd, pid);
+
+            // Clean up
+            let _ = close(master_fd);
+            let _ = close(client_fd);
+
+            // Ensure child is reaped
+            let mut status: i32 = 0;
+            let _ = waitpid(pid, &mut status as *mut i32, 0);
+
+            print!("TELNETD_SESSION_ENDED\n");
         }
-
-        // Execute shell
-        let argv: [*const u8; 2] = [SHELL_PATH.as_ptr(), std::ptr::null()];
-        let envp: [*const u8; 1] = [std::ptr::null()];
-        unsafe { execve(SHELL_PATH.as_ptr(), argv.as_ptr(), envp.as_ptr()); }
-
-        // If exec fails
-        std::process::exit(127);
+        Err(_) => {
+            print!("TELNETD_ERROR: fork failed\n");
+            let _ = close(master_fd);
+            let _ = close(client_fd);
+        }
     }
-
-    if pid < 0 {
-        print!("TELNETD_ERROR: fork failed\n");
-        unsafe { close(master_fd); close(client_fd); }
-        return;
-    }
-
-    print!("TELNETD_SHELL_FORKED\n");
-
-    // Parent: relay data between socket and PTY master
-    relay_loop(client_fd, master_fd, pid);
-
-    // Clean up
-    unsafe { close(master_fd); }
-    unsafe { close(client_fd); }
-
-    // Ensure child is reaped
-    let mut status: i32 = 0;
-    unsafe { waitpid(pid, &mut status as *mut i32, 0); }
-
-    print!("TELNETD_SESSION_ENDED\n");
 }
 
 fn main() {
     print!("TELNETD_STARTING\n");
 
     // Create listening socket
-    let listen_fd = unsafe { socket(AF_INET, SOCK_STREAM, 0) };
-    if listen_fd < 0 {
-        print!("TELNETD_ERROR: socket failed\n");
-        std::process::exit(1);
-    }
+    let listen_fd = match socket(AF_INET, SOCK_STREAM, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            print!("TELNETD_ERROR: socket failed\n");
+            std::process::exit(1);
+        }
+    };
 
     // Set SO_REUSEADDR
     let optval: i32 = 1;
-    unsafe {
-        setsockopt(
-            listen_fd,
-            SOL_SOCKET,
-            SO_REUSEADDR,
-            &optval as *const i32 as *const u8,
-            core::mem::size_of::<i32>() as u32,
-        );
-    }
+    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &optval);
 
     // Bind to port
     let addr = SockAddrIn::new([0, 0, 0, 0], TELNET_PORT);
-    let ret = unsafe {
-        bind(
-            listen_fd,
-            &addr as *const SockAddrIn as *const u8,
-            core::mem::size_of::<SockAddrIn>() as u32,
-        )
-    };
-    if ret < 0 {
+    if bind_inet(listen_fd, &addr).is_err() {
         print!("TELNETD_ERROR: bind failed\n");
         std::process::exit(1);
     }
 
     // Start listening
-    let ret = unsafe { listen(listen_fd, 128) };
-    if ret < 0 {
+    if listen(listen_fd, 128).is_err() {
         print!("TELNETD_ERROR: listen failed\n");
         std::process::exit(1);
     }
@@ -385,14 +330,16 @@ fn main() {
 
     // Accept connections forever (daemon mode)
     loop {
-        let client_fd = unsafe { accept(listen_fd, std::ptr::null_mut(), std::ptr::null_mut()) };
-        if client_fd >= 0 {
-            print!("TELNETD_CONNECTED\n");
-            handle_connection(client_fd);
-            print!("TELNETD_LISTENING\n");
-        } else {
-            // EAGAIN or other error - just yield and retry
-            unsafe { sched_yield(); }
+        match accept(listen_fd, None) {
+            Ok(client_fd) => {
+                print!("TELNETD_CONNECTED\n");
+                handle_connection(client_fd);
+                print!("TELNETD_LISTENING\n");
+            }
+            Err(_) => {
+                // EAGAIN or other error - just yield and retry
+                let _ = yield_now();
+            }
         }
     }
 }
