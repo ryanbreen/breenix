@@ -1390,6 +1390,129 @@ mod tests {
         );
     }
 
+    // --- Higher-order array method tests ---
+
+    #[test]
+    fn test_array_map() {
+        assert_eq!(
+            eval_and_capture("let a = [1, 2, 3].map(x => x * 2); print(a);"),
+            "2,4,6\n"
+        );
+    }
+
+    #[test]
+    fn test_array_map_with_index() {
+        assert_eq!(
+            eval_and_capture("let a = [10, 20, 30].map((x, i) => x + i); print(a);"),
+            "10,21,32\n"
+        );
+    }
+
+    #[test]
+    fn test_array_filter() {
+        assert_eq!(
+            eval_and_capture("let a = [1, 2, 3, 4, 5].filter(x => x > 3); print(a);"),
+            "4,5\n"
+        );
+    }
+
+    #[test]
+    fn test_array_reduce() {
+        assert_eq!(
+            eval_and_capture("let r = [1, 2, 3].reduce((acc, x) => acc + x, 0); print(r);"),
+            "6\n"
+        );
+    }
+
+    #[test]
+    fn test_array_reduce_no_initial() {
+        assert_eq!(
+            eval_and_capture("let r = [1, 2, 3, 4].reduce((acc, x) => acc + x); print(r);"),
+            "10\n"
+        );
+    }
+
+    #[test]
+    fn test_array_foreach() {
+        // Use an array to accumulate results since closures capture by value
+        assert_eq!(
+            eval_and_capture("let result = []; [1, 2, 3].forEach(x => { result.push(x * 10); }); print(result);"),
+            "10,20,30\n"
+        );
+    }
+
+    #[test]
+    fn test_array_find() {
+        assert_eq!(
+            eval_and_capture("let r = [1, 2, 3, 4].find(x => x > 2); print(r);"),
+            "3\n"
+        );
+    }
+
+    #[test]
+    fn test_array_find_not_found() {
+        assert_eq!(
+            eval_and_capture("let r = [1, 2, 3].find(x => x > 10); print(r);"),
+            "undefined\n"
+        );
+    }
+
+    #[test]
+    fn test_array_some() {
+        assert_eq!(
+            eval_and_capture("print([1, 2, 3].some(x => x > 2));"),
+            "1\n"
+        );
+    }
+
+    #[test]
+    fn test_array_some_false() {
+        assert_eq!(
+            eval_and_capture("print([1, 2, 3].some(x => x > 10));"),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn test_array_every() {
+        assert_eq!(
+            eval_and_capture("print([1, 2, 3].every(x => x > 0));"),
+            "1\n"
+        );
+    }
+
+    #[test]
+    fn test_array_every_false() {
+        assert_eq!(
+            eval_and_capture("print([1, 2, 3].every(x => x > 2));"),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn test_array_flat() {
+        assert_eq!(
+            eval_and_capture("let a = [1, [2, 3], [4, 5]].flat(); print(a);"),
+            "1,2,3,4,5\n"
+        );
+    }
+
+    #[test]
+    fn test_array_flat_deep() {
+        assert_eq!(
+            eval_and_capture("let a = [1, [2, [3, [4]]]].flat(2); print(a);"),
+            "1,2,3,4\n"
+        );
+    }
+
+    #[test]
+    fn test_array_method_chaining() {
+        assert_eq!(
+            eval_and_capture("let r = [1, 2, 3, 4, 5].filter(x => x > 2).map(x => x * 10); print(r);"),
+            "30,40,50\n"
+        );
+    }
+
     // --- String method tests ---
 
     #[test]

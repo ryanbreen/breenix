@@ -1274,9 +1274,13 @@ impl<'a> Compiler<'a> {
 
         if let TokenKind::Identifier(name) = &tok.kind {
             let name = name.clone();
-            // Look ahead for assignment operator
+            // Look ahead for assignment operator or arrow function
             let next = self.lexer.peek_ahead(1);
             match &next.kind {
+                TokenKind::Arrow => {
+                    // Single-param arrow function without parens: x => expr
+                    return self.compile_arrow_function_single_param();
+                }
                 TokenKind::Assign => {
                     self.lexer.next_token(); // consume identifier
                     self.lexer.next_token(); // consume '='
@@ -2207,6 +2211,88 @@ impl<'a> Compiler<'a> {
         for param in &params {
             self.declare_local(param.clone(), false);
         }
+
+        // Compile body: either a block or a single expression
+        if self.lexer.peek().kind == TokenKind::LeftBrace {
+            // Block body: { statements }
+            self.lexer.next_token(); // consume '{'
+            while self.lexer.peek().kind != TokenKind::RightBrace
+                && self.lexer.peek().kind != TokenKind::Eof
+            {
+                self.compile_statement()?;
+            }
+            self.lexer.expect(&TokenKind::RightBrace)?;
+            // Implicit undefined return if no explicit return
+            self.emit_undefined();
+            self.code.emit_op(Op::Return);
+        } else {
+            // Expression body: the expression result is the return value
+            self.compile_assignment()?;
+            self.code.emit_op(Op::Return);
+        }
+
+        self.code.local_count = self.next_slot;
+
+        // Collect upvalues
+        let func_upvalues = core::mem::take(&mut self.upvalues);
+
+        // Restore parent context
+        let parent_ctx = self.function_stack.pop().unwrap();
+        let func_code = core::mem::replace(&mut self.code, parent_ctx.code);
+        self.scopes = parent_ctx.scopes;
+        self.next_slot = parent_ctx.next_slot;
+        self.loop_stack = parent_ctx.loop_stack;
+        self.upvalues = parent_ctx.upvalues;
+        self.is_async = parent_ctx.is_async;
+
+        let func_index = self.functions.len();
+        self.functions.push(func_code);
+
+        if func_upvalues.is_empty() {
+            let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+            self.code.emit_op_u16(Op::LoadConst, const_idx);
+        } else {
+            self.emit_create_closure(func_index, &func_upvalues);
+        }
+        Ok(())
+    }
+
+    /// Compile an arrow function with a single parameter and no parens: x => expr
+    fn compile_arrow_function_single_param(&mut self) -> JsResult<()> {
+        // Current token is the identifier (param name)
+        let tok = self.lexer.next_token().clone();
+        let param_name = match &tok.kind {
+            TokenKind::Identifier(n) => n.clone(),
+            _ => {
+                return Err(JsError::syntax(
+                    "expected parameter name",
+                    tok.span.line,
+                    tok.span.column,
+                ));
+            }
+        };
+        self.lexer.expect(&TokenKind::Arrow)?;
+
+        // Push current context onto the function stack
+        let parent_ctx = FunctionContext {
+            code: core::mem::replace(&mut self.code, CodeBlock::new("<arrow>")),
+            scopes: core::mem::replace(
+                &mut self.scopes,
+                vec![Scope {
+                    locals: Vec::new(),
+                    base_slot: 0,
+                }],
+            ),
+            next_slot: self.next_slot,
+            loop_stack: core::mem::take(&mut self.loop_stack),
+            upvalues: core::mem::take(&mut self.upvalues),
+            is_async: self.is_async,
+        };
+        self.function_stack.push(parent_ctx);
+        self.next_slot = 0;
+
+        // Declare the single parameter as a local
+        self.declare_local(param_name, false);
 
         // Compile body: either a block or a single expression
         if self.lexer.peek().kind == TokenKind::LeftBrace {
