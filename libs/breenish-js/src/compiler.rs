@@ -58,6 +58,8 @@ struct FunctionContext {
     loop_stack: Vec<LoopContext>,
     /// Upvalues captured by this function.
     upvalues: Vec<Upvalue>,
+    /// Whether the current function being compiled is async.
+    is_async: bool,
 }
 
 /// The compiler transforms source code into bytecode.
@@ -74,6 +76,8 @@ pub struct Compiler<'a> {
     upvalues: Vec<Upvalue>,
     /// Stack of parent function contexts (for resolving upvalues).
     function_stack: Vec<FunctionContext>,
+    /// Whether the current function being compiled is async.
+    is_async: bool,
 }
 
 impl<'a> Compiler<'a> {
@@ -91,6 +95,7 @@ impl<'a> Compiler<'a> {
             functions: Vec::new(),
             upvalues: Vec::new(),
             function_stack: Vec::new(),
+            is_async: false,
         }
     }
 
@@ -122,6 +127,13 @@ impl<'a> Compiler<'a> {
             TokenKind::Do => self.compile_do_while_statement()?,
             TokenKind::Switch => self.compile_switch_statement()?,
             TokenKind::Function => self.compile_function_declaration()?,
+            TokenKind::Async => {
+                // Consume 'async', then compile the following function declaration
+                self.lexer.next_token();
+                self.is_async = true;
+                self.compile_function_declaration()?;
+                self.is_async = false;
+            }
             TokenKind::Return => self.compile_return_statement()?,
             TokenKind::Break => self.compile_break_statement()?,
             TokenKind::Continue => self.compile_continue_statement()?,
@@ -964,7 +976,7 @@ impl<'a> Compiler<'a> {
             }
         };
 
-        let (func_index, upvalues) = self.compile_function_body(&name)?;
+        let (func_index, upvalues) = self.compile_function_body(&name, self.is_async)?;
 
         // Store function as both a local and a global so recursive calls
         // from within the function body can find it via global lookup.
@@ -988,7 +1000,9 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compile a function body and return (function_index, upvalues).
-    fn compile_function_body(&mut self, name: &str) -> JsResult<(usize, Vec<Upvalue>)> {
+    /// If `is_async` is true, a WrapPromise opcode is emitted before each Return
+    /// so that the function's return value is wrapped in a fulfilled Promise.
+    fn compile_function_body(&mut self, name: &str, is_async: bool) -> JsResult<(usize, Vec<Upvalue>)> {
         self.lexer.expect(&TokenKind::LeftParen)?;
 
         // Parse parameter list
@@ -1026,9 +1040,11 @@ impl<'a> Compiler<'a> {
             next_slot: self.next_slot,
             loop_stack: core::mem::take(&mut self.loop_stack),
             upvalues: core::mem::take(&mut self.upvalues),
+            is_async: self.is_async,
         };
         self.function_stack.push(parent_ctx);
         self.next_slot = 0;
+        self.is_async = is_async;
 
         // Declare parameters as locals
         for param in &params {
@@ -1046,6 +1062,9 @@ impl<'a> Compiler<'a> {
 
         // Ensure function returns undefined if no explicit return
         self.emit_undefined();
+        if self.is_async {
+            self.code.emit_op(Op::WrapPromise);
+        }
         self.code.emit_op(Op::Return);
 
         self.code.local_count = self.next_slot;
@@ -1060,6 +1079,7 @@ impl<'a> Compiler<'a> {
         self.next_slot = parent_ctx.next_slot;
         self.loop_stack = parent_ctx.loop_stack;
         self.upvalues = parent_ctx.upvalues;
+        self.is_async = parent_ctx.is_async;
 
         let func_index = self.functions.len();
         self.functions.push(func_code);
@@ -1078,6 +1098,10 @@ impl<'a> Compiler<'a> {
             self.compile_expression()?;
         }
 
+        // In async functions, wrap the return value in a fulfilled Promise.
+        if self.is_async {
+            self.code.emit_op(Op::WrapPromise);
+        }
         self.code.emit_op(Op::Return);
         self.eat_semicolon();
         Ok(())
@@ -1677,7 +1701,7 @@ impl<'a> Compiler<'a> {
                     String::from("<anonymous>")
                 };
 
-                let (func_index, upvalues) = self.compile_function_body(&name)?;
+                let (func_index, upvalues) = self.compile_function_body(&name, false)?;
                 if upvalues.is_empty() {
                     let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
                     self.code.emit_op_u16(Op::LoadConst, const_idx);
@@ -1685,6 +1709,35 @@ impl<'a> Compiler<'a> {
                     self.emit_create_closure(func_index, &upvalues);
                 }
                 Ok(())
+            }
+
+            TokenKind::Async => {
+                self.lexer.next_token(); // consume 'async'
+
+                if self.lexer.peek().kind == TokenKind::Function {
+                    // async function expression: async function name() { ... }
+                    self.lexer.next_token(); // consume 'function'
+
+                    let name = if let TokenKind::Identifier(n) = &self.lexer.peek().kind {
+                        let n = n.clone();
+                        self.lexer.next_token();
+                        n
+                    } else {
+                        String::from("<async>")
+                    };
+
+                    let (func_index, upvalues) = self.compile_function_body(&name, true)?;
+                    if upvalues.is_empty() {
+                        let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+                        self.code.emit_op_u16(Op::LoadConst, const_idx);
+                    } else {
+                        self.emit_create_closure(func_index, &upvalues);
+                    }
+                    Ok(())
+                } else {
+                    // async arrow function: async () => expr  or  async (params) => { body }
+                    self.compile_async_arrow_function()
+                }
             }
 
             // Array literal: [expr, expr, ...]
@@ -2046,6 +2099,7 @@ impl<'a> Compiler<'a> {
             next_slot: self.next_slot,
             loop_stack: core::mem::take(&mut self.loop_stack),
             upvalues: core::mem::take(&mut self.upvalues),
+            is_async: self.is_async,
         };
         self.function_stack.push(parent_ctx);
         self.next_slot = 0;
@@ -2086,6 +2140,106 @@ impl<'a> Compiler<'a> {
         self.next_slot = parent_ctx.next_slot;
         self.loop_stack = parent_ctx.loop_stack;
         self.upvalues = parent_ctx.upvalues;
+        self.is_async = parent_ctx.is_async;
+
+        let func_index = self.functions.len();
+        self.functions.push(func_code);
+
+        if func_upvalues.is_empty() {
+            let const_idx = self.code.add_constant(Constant::Function(func_index as u32));
+            self.code.emit_op_u16(Op::LoadConst, const_idx);
+        } else {
+            self.emit_create_closure(func_index, &func_upvalues);
+        }
+        Ok(())
+    }
+
+    /// Compile an async arrow function: async (params) => expr  or  async (params) => { body }
+    /// The 'async' token has already been consumed.
+    fn compile_async_arrow_function(&mut self) -> JsResult<()> {
+        self.lexer.expect(&TokenKind::LeftParen)?;
+
+        // Parse parameter list
+        let mut params: Vec<String> = Vec::new();
+        if self.lexer.peek().kind != TokenKind::RightParen {
+            loop {
+                let tok = self.lexer.next_token().clone();
+                match &tok.kind {
+                    TokenKind::Identifier(n) => params.push(n.clone()),
+                    _ => {
+                        return Err(JsError::syntax(
+                            "expected parameter name",
+                            tok.span.line,
+                            tok.span.column,
+                        ));
+                    }
+                }
+                if !self.lexer.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.lexer.expect(&TokenKind::RightParen)?;
+        self.lexer.expect(&TokenKind::Arrow)?;
+
+        // Push current context onto the function stack
+        let parent_ctx = FunctionContext {
+            code: core::mem::replace(&mut self.code, CodeBlock::new("<async arrow>")),
+            scopes: core::mem::replace(
+                &mut self.scopes,
+                vec![Scope {
+                    locals: Vec::new(),
+                    base_slot: 0,
+                }],
+            ),
+            next_slot: self.next_slot,
+            loop_stack: core::mem::take(&mut self.loop_stack),
+            upvalues: core::mem::take(&mut self.upvalues),
+            is_async: self.is_async,
+        };
+        self.function_stack.push(parent_ctx);
+        self.next_slot = 0;
+        self.is_async = true;
+
+        // Declare parameters as locals
+        for param in &params {
+            self.declare_local(param.clone(), false);
+        }
+
+        // Compile body: either a block or a single expression
+        if self.lexer.peek().kind == TokenKind::LeftBrace {
+            // Block body: { statements }
+            self.lexer.next_token(); // consume '{'
+            while self.lexer.peek().kind != TokenKind::RightBrace
+                && self.lexer.peek().kind != TokenKind::Eof
+            {
+                self.compile_statement()?;
+            }
+            self.lexer.expect(&TokenKind::RightBrace)?;
+            // Implicit undefined return if no explicit return
+            self.emit_undefined();
+            self.code.emit_op(Op::WrapPromise);
+            self.code.emit_op(Op::Return);
+        } else {
+            // Expression body: the expression result is the return value, wrapped in a Promise
+            self.compile_assignment()?;
+            self.code.emit_op(Op::WrapPromise);
+            self.code.emit_op(Op::Return);
+        }
+
+        self.code.local_count = self.next_slot;
+
+        // Collect upvalues
+        let func_upvalues = core::mem::take(&mut self.upvalues);
+
+        // Restore parent context
+        let parent_ctx = self.function_stack.pop().unwrap();
+        let func_code = core::mem::replace(&mut self.code, parent_ctx.code);
+        self.scopes = parent_ctx.scopes;
+        self.next_slot = parent_ctx.next_slot;
+        self.loop_stack = parent_ctx.loop_stack;
+        self.upvalues = parent_ctx.upvalues;
+        self.is_async = parent_ctx.is_async;
 
         let func_index = self.functions.len();
         self.functions.push(func_code);

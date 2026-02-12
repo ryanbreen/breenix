@@ -187,6 +187,11 @@ pub enum Op {
     /// If it's not a Promise, pushes the value unchanged.
     Await = 131,
 
+    /// Wrap the top-of-stack value in a fulfilled Promise.
+    /// Stack: [value] -> [Promise(fulfilled(value))]
+    /// Used by async functions to wrap their return value.
+    WrapPromise = 132,
+
     /// Halt execution.
     Halt = 255,
 }
@@ -242,6 +247,7 @@ impl Op {
             122 => Some(Op::Throw),
             130 => Some(Op::CallSpread),
             131 => Some(Op::Await),
+            132 => Some(Op::WrapPromise),
             255 => Some(Op::Halt),
             _ => None,
         }

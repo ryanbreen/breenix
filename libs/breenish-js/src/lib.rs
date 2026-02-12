@@ -149,24 +149,165 @@ impl Context {
             Ok(JsValue::object(promise_idx))
         }
 
+        fn promise_race(args: &[JsValue], _strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let arr_val = args.first().copied().unwrap_or(JsValue::undefined());
+            if !arr_val.is_object() {
+                return Err(JsError::type_error("Promise.race: expected array"));
+            }
+
+            let arr_idx = arr_val.as_object_index();
+            let elements: Vec<JsValue> = {
+                let arr = heap.get(arr_idx)
+                    .ok_or_else(|| JsError::type_error("Promise.race: invalid array"))?;
+                arr.elements().to_vec()
+            };
+
+            // Return the first fulfilled promise's value, or the first rejected
+            // if none are fulfilled (synchronous model).
+            let mut first_rejected: Option<JsValue> = None;
+            for elem in &elements {
+                if elem.is_object() {
+                    if let Some(obj) = heap.get(elem.as_object_index()) {
+                        match &obj.kind {
+                            ObjectKind::Promise(PromiseState::Fulfilled(v)) => {
+                                let result = JsObject::new_promise_fulfilled(*v);
+                                let idx = heap.alloc(result);
+                                return Ok(JsValue::object(idx));
+                            }
+                            ObjectKind::Promise(PromiseState::Rejected(v)) => {
+                                if first_rejected.is_none() {
+                                    first_rejected = Some(*v);
+                                }
+                            }
+                            ObjectKind::Promise(PromiseState::Pending) => {
+                                return Err(JsError::runtime("Promise.race: unresolved pending promise"));
+                            }
+                            _ => {
+                                // Non-promise object treated as fulfilled value
+                                let result = JsObject::new_promise_fulfilled(*elem);
+                                let idx = heap.alloc(result);
+                                return Ok(JsValue::object(idx));
+                            }
+                        }
+                    }
+                } else {
+                    // Non-object value treated as fulfilled
+                    let result = JsObject::new_promise_fulfilled(*elem);
+                    let idx = heap.alloc(result);
+                    return Ok(JsValue::object(idx));
+                }
+            }
+
+            // All rejected (or empty array) - return the first rejection
+            if let Some(reason) = first_rejected {
+                let result = JsObject::new_promise_rejected(reason);
+                let idx = heap.alloc(result);
+                Ok(JsValue::object(idx))
+            } else {
+                // Empty array: return a pending promise (per spec, never resolves)
+                let result = JsObject::new_promise_pending();
+                let idx = heap.alloc(result);
+                Ok(JsValue::object(idx))
+            }
+        }
+
+        fn promise_all_settled(args: &[JsValue], strings: &mut SP, heap: &mut ObjectHeap) -> JsResult<JsValue> {
+            let arr_val = args.first().copied().unwrap_or(JsValue::undefined());
+            if !arr_val.is_object() {
+                return Err(JsError::type_error("Promise.allSettled: expected array"));
+            }
+
+            let arr_idx = arr_val.as_object_index();
+            let elements: Vec<JsValue> = {
+                let arr = heap.get(arr_idx)
+                    .ok_or_else(|| JsError::type_error("Promise.allSettled: invalid array"))?;
+                arr.elements().to_vec()
+            };
+
+            let status_key = strings.intern("status");
+            let fulfilled_str = strings.intern("fulfilled");
+            let rejected_str = strings.intern("rejected");
+            let value_key = strings.intern("value");
+            let reason_key = strings.intern("reason");
+
+            let mut result_indices: Vec<u32> = Vec::new();
+            for elem in &elements {
+                if elem.is_object() {
+                    if let Some(obj) = heap.get(elem.as_object_index()) {
+                        match &obj.kind {
+                            ObjectKind::Promise(PromiseState::Fulfilled(v)) => {
+                                let v_copy = *v;
+                                let mut entry = JsObject::new();
+                                entry.set(status_key, JsValue::string(fulfilled_str));
+                                entry.set(value_key, v_copy);
+                                result_indices.push(heap.alloc(entry));
+                            }
+                            ObjectKind::Promise(PromiseState::Rejected(v)) => {
+                                let v_copy = *v;
+                                let mut entry = JsObject::new();
+                                entry.set(status_key, JsValue::string(rejected_str));
+                                entry.set(reason_key, v_copy);
+                                result_indices.push(heap.alloc(entry));
+                            }
+                            ObjectKind::Promise(PromiseState::Pending) => {
+                                return Err(JsError::runtime("Promise.allSettled: unresolved pending promise"));
+                            }
+                            _ => {
+                                // Non-promise object: treat as fulfilled
+                                let mut entry = JsObject::new();
+                                entry.set(status_key, JsValue::string(fulfilled_str));
+                                entry.set(value_key, *elem);
+                                result_indices.push(heap.alloc(entry));
+                            }
+                        }
+                    }
+                } else {
+                    // Non-object: treat as fulfilled with the value itself
+                    let mut entry = JsObject::new();
+                    entry.set(status_key, JsValue::string(fulfilled_str));
+                    entry.set(value_key, *elem);
+                    result_indices.push(heap.alloc(entry));
+                }
+            }
+
+            // Build the result array
+            let mut result_arr = JsObject::new_array();
+            for idx in &result_indices {
+                result_arr.push(JsValue::object(*idx));
+            }
+            let arr_obj_idx = heap.alloc(result_arr);
+
+            let promise = JsObject::new_promise_fulfilled(JsValue::object(arr_obj_idx));
+            let promise_idx = heap.alloc(promise);
+            Ok(JsValue::object(promise_idx))
+        }
+
         // Register the native functions
         self.vm.register_native("Promise_resolve", promise_resolve);
         self.vm.register_native("Promise_reject", promise_reject);
         self.vm.register_native("Promise_all", promise_all);
+        self.vm.register_native("Promise_race", promise_race);
+        self.vm.register_native("Promise_allSettled", promise_all_settled);
 
         // Build the Promise global object programmatically so it persists
         // across eval() calls (unlike `let` which creates a local).
-        let resolve_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 3];
-        let reject_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 2];
-        let all_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 1];
+        let resolve_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 5];
+        let reject_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 4];
+        let all_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 3];
+        let race_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 2];
+        let all_settled_idx = self.vm.native_obj_indices[self.vm.native_obj_indices.len() - 1];
 
         let mut promise_obj = JsObject::new();
         let resolve_key = self.strings.intern("resolve");
         let reject_key = self.strings.intern("reject");
         let all_key = self.strings.intern("all");
+        let race_key = self.strings.intern("race");
+        let all_settled_key = self.strings.intern("allSettled");
         promise_obj.set(resolve_key, JsValue::object(resolve_idx));
         promise_obj.set(reject_key, JsValue::object(reject_idx));
         promise_obj.set(all_key, JsValue::object(all_idx));
+        promise_obj.set(race_key, JsValue::object(race_idx));
+        promise_obj.set(all_settled_key, JsValue::object(all_settled_idx));
 
         let obj_idx = self.vm.heap.alloc(promise_obj);
         self.vm.set_global_by_name("Promise", JsValue::object(obj_idx), &mut self.strings);
@@ -1159,6 +1300,92 @@ mod tests {
                 "let a = await Promise.resolve(10); let b = await Promise.resolve(20); print(a + b);"
             ),
             "30\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_race() {
+        // race returns the first fulfilled promise's value
+        assert_eq!(
+            eval_promise(
+                "let result = await Promise.race([Promise.resolve(1), Promise.resolve(2)]); print(result);"
+            ),
+            "1\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_race_with_rejection() {
+        // If the first element is rejected but second is fulfilled, return the fulfilled one
+        assert_eq!(
+            eval_promise(
+                "let result = await Promise.race([Promise.reject(\"err\"), Promise.resolve(42)]); print(result);"
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_race_all_rejected() {
+        // If all are rejected, return the first rejection reason
+        assert_eq!(
+            eval_promise(
+                "try { await Promise.race([Promise.reject(\"first\"), Promise.reject(\"second\")]); } catch (e) { print(e); }"
+            ),
+            "first\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_all_settled() {
+        // allSettled returns status objects for all promises
+        assert_eq!(
+            eval_promise(
+                "let results = await Promise.allSettled([Promise.resolve(1), Promise.reject(\"err\"), Promise.resolve(3)]); print(results[0].status, results[0].value); print(results[1].status, results[1].reason); print(results[2].status, results[2].value);"
+            ),
+            "fulfilled 1\nrejected err\nfulfilled 3\n"
+        );
+    }
+
+    #[test]
+    fn test_promise_all_settled_all_fulfilled() {
+        assert_eq!(
+            eval_promise(
+                "let results = await Promise.allSettled([Promise.resolve(10), Promise.resolve(20)]); print(results.length, results[0].value, results[1].value);"
+            ),
+            "2 10 20\n"
+        );
+    }
+
+    // --- Async function tests ---
+
+    #[test]
+    fn test_async_function_basic() {
+        assert_eq!(
+            eval_promise(
+                "async function foo() { return 42; } let p = foo(); let val = await p; print(val);"
+            ),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn test_async_function_with_await() {
+        assert_eq!(
+            eval_promise(
+                "async function fetch() { return await Promise.resolve(\"data\"); } let result = await fetch(); print(result);"
+            ),
+            "data\n"
+        );
+    }
+
+    #[test]
+    fn test_async_arrow_basic() {
+        assert_eq!(
+            eval_promise(
+                "let f = async () => 42; let val = await f(); print(val);"
+            ),
+            "42\n"
         );
     }
 }
