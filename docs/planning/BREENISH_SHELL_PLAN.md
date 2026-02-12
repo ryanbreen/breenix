@@ -54,7 +54,10 @@
   - Interactive line editing: cursor movement, Home/End, Ctrl+A/E/U/K/W/C/D
   - Command history with Up/Down arrow navigation
   - Raw mode terminal handling via libbreenix termios
-  - 149 passing tests, bsh v0.5.0 with full shell builtins
+  - Tab completion for commands (PATH scan) and filenames (directory listing)
+  - Nullish coalescing operator (??) with IsNullish opcode
+  - Prefix/postfix increment/decrement operators (++/--)
+  - 162 passing tests, bsh v0.5.0 with full shell builtins
 - **Phase 6**: PLANNED -- Advanced features (class, Proxy, JIT)
 
 ## Architecture

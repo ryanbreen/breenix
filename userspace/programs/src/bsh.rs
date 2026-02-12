@@ -748,6 +748,8 @@ enum Key {
     CtrlU,
     /// Ctrl+W - delete word before cursor
     CtrlW,
+    /// Tab key - trigger completion
+    Tab,
     /// End of file (read returned 0 bytes)
     Eof,
     /// Unknown or unhandled key
@@ -851,6 +853,8 @@ impl LineEditor {
             0x04 => Key::CtrlD,
             // Ctrl+E
             0x05 => Key::CtrlE,
+            // Tab
+            0x09 => Key::Tab,
             // Ctrl+K
             0x0B => Key::CtrlK,
             // Ctrl+U
@@ -1019,6 +1023,218 @@ impl LineEditor {
         self.buffer.drain(self.cursor..orig);
     }
 
+    // ----- Tab completion -----
+
+    /// Find the start of the word under the cursor by walking backwards
+    /// from the cursor position, skipping non-whitespace characters.
+    /// Handles quoted strings: if the cursor is inside quotes, the word
+    /// starts just after the opening quote character.
+    fn find_word_start(&self) -> usize {
+        let mut pos = self.cursor;
+        if pos == 0 {
+            return 0;
+        }
+
+        // Check if we are inside a quoted string by counting quotes
+        // before the cursor position.
+        let before_cursor = &self.buffer[..pos];
+        let single_quotes = before_cursor.iter().filter(|&&b| b == b'\'').count();
+        let double_quotes = before_cursor.iter().filter(|&&b| b == b'"').count();
+
+        // If inside an open single quote, walk back to just after the quote
+        if single_quotes % 2 == 1 {
+            while pos > 0 && self.buffer[pos - 1] != b'\'' {
+                pos -= 1;
+            }
+            return pos;
+        }
+
+        // If inside an open double quote, walk back to just after the quote
+        if double_quotes % 2 == 1 {
+            while pos > 0 && self.buffer[pos - 1] != b'"' {
+                pos -= 1;
+            }
+            return pos;
+        }
+
+        // Normal case: walk back over non-whitespace
+        while pos > 0 && !self.buffer[pos - 1].is_ascii_whitespace() {
+            pos -= 1;
+        }
+        pos
+    }
+
+    /// Perform tab completion. Determines whether we are completing a
+    /// command (first word) or a filename (subsequent words), collects
+    /// candidates, and inserts the completion into the buffer.
+    fn complete(&mut self, prompt: &str) {
+        let word_start = self.find_word_start();
+        let partial = String::from_utf8_lossy(&self.buffer[word_start..self.cursor]).to_string();
+
+        // Determine if this is a command position: the text before word_start
+        // is all whitespace (or empty), meaning this is the first word.
+        let is_command = self.buffer[..word_start]
+            .iter()
+            .all(|b| b.is_ascii_whitespace());
+
+        let completions = if is_command {
+            self.complete_command(&partial)
+        } else {
+            self.complete_filename(&partial)
+        };
+
+        if completions.len() == 1 {
+            // Single match: complete it fully
+            let completion = &completions[0];
+            if completion.len() > partial.len() {
+                let suffix = &completion[partial.len()..];
+                for b in suffix.bytes() {
+                    self.insert_char(b);
+                }
+            }
+            // Add a trailing space after command completion, or after a
+            // filename that is not a directory (directories end with '/').
+            if is_command {
+                self.insert_char(b' ');
+            } else if !completions[0].ends_with('/') {
+                self.insert_char(b' ');
+            }
+            self.refresh_line(prompt);
+        } else if completions.len() > 1 {
+            // Multiple matches: show them and complete the common prefix
+            Self::write_out(b"\r\n");
+            for c in &completions {
+                Self::write_out(c.as_bytes());
+                Self::write_out(b"  ");
+            }
+            Self::write_out(b"\r\n");
+
+            // Complete the longest common prefix
+            let common = Self::find_common_prefix(&completions);
+            if common.len() > partial.len() {
+                let suffix = &common[partial.len()..];
+                for b in suffix.bytes() {
+                    self.insert_char(b);
+                }
+            }
+
+            // Redraw the prompt and current line
+            self.refresh_line(prompt);
+        }
+        // No matches: do nothing (bell could be added later)
+    }
+
+    /// Complete a command name by searching PATH directories for executables
+    /// whose names start with `partial`.
+    fn complete_command(&self, partial: &str) -> Vec<String> {
+        if partial.is_empty() {
+            return Vec::new();
+        }
+
+        let mut matches: Vec<String> = Vec::new();
+        let path_dirs =
+            std::env::var("PATH").unwrap_or_else(|_| String::from("/bin:/usr/bin"));
+
+        for dir in path_dirs.split(':') {
+            if dir.is_empty() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with(partial) {
+                        // Avoid duplicates (same command name in multiple PATH dirs)
+                        let name = name_str.to_string();
+                        if !matches.contains(&name) {
+                            matches.push(name);
+                        }
+                    }
+                }
+            }
+        }
+
+        matches.sort();
+        matches
+    }
+
+    /// Complete a filename. The `partial` may contain a directory prefix
+    /// (e.g. `/bin/ls` -> dir="/bin", prefix="ls"). If there is no slash,
+    /// the current directory is used. Directory entries get a trailing '/'.
+    fn complete_filename(&self, partial: &str) -> Vec<String> {
+        let (dir, prefix) = if let Some(pos) = partial.rfind('/') {
+            let d = &partial[..pos];
+            let p = &partial[pos + 1..];
+            (
+                if d.is_empty() {
+                    String::from("/")
+                } else {
+                    d.to_string()
+                },
+                p.to_string(),
+            )
+        } else {
+            (String::from("."), partial.to_string())
+        };
+
+        let mut matches: Vec<String> = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy().to_string();
+                if name_str.starts_with(&prefix) {
+                    // Check if the entry is a directory to append '/'
+                    let is_dir = entry
+                        .file_type()
+                        .map(|ft| ft.is_dir())
+                        .unwrap_or(false);
+
+                    // Build the completion string: if the user typed a path
+                    // prefix with '/', include it in the result; otherwise
+                    // just return the filename.
+                    let completed = if partial.contains('/') {
+                        let dir_prefix = &partial[..partial.rfind('/').unwrap() + 1];
+                        format!(
+                            "{}{}{}",
+                            dir_prefix,
+                            name_str,
+                            if is_dir { "/" } else { "" }
+                        )
+                    } else {
+                        format!("{}{}", name_str, if is_dir { "/" } else { "" })
+                    };
+
+                    matches.push(completed);
+                }
+            }
+        }
+
+        matches.sort();
+        matches
+    }
+
+    /// Find the longest common prefix among a list of strings.
+    fn find_common_prefix(words: &[String]) -> String {
+        if words.is_empty() {
+            return String::new();
+        }
+        let first = &words[0];
+        let mut prefix_len = first.len();
+        for word in &words[1..] {
+            prefix_len = prefix_len.min(word.len());
+            for (i, (a, b)) in first.bytes().zip(word.bytes()).enumerate() {
+                if a != b {
+                    prefix_len = prefix_len.min(i);
+                    break;
+                }
+            }
+        }
+        first[..prefix_len].to_string()
+    }
+
+    // ----- History and buffer management -----
+
     /// Replace the buffer with a history entry or the saved line.
     fn set_buffer_from_str(&mut self, s: &str) {
         self.buffer.clear();
@@ -1162,6 +1378,9 @@ impl LineEditor {
                 Key::CtrlW => {
                     self.delete_word_back();
                     self.refresh_line(prompt);
+                }
+                Key::Tab => {
+                    self.complete(prompt);
                 }
                 Key::Char(ch) => {
                     self.insert_char(ch);

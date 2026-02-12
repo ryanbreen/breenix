@@ -2434,4 +2434,118 @@ mod tests {
             "boolean\nboolean\n"
         );
     }
+
+    // --- Nullish coalescing tests ---
+
+    #[test]
+    fn test_nullish_coalescing() {
+        assert_eq!(
+            eval_and_capture("let a = null; print(a ?? 42);"),
+            "42\n"
+        );
+    }
+
+    #[test]
+    fn test_nullish_coalescing_non_null() {
+        assert_eq!(
+            eval_and_capture("let a = 10; print(a ?? 42);"),
+            "10\n"
+        );
+    }
+
+    #[test]
+    fn test_nullish_undefined() {
+        assert_eq!(
+            eval_and_capture("let a = undefined; print(a ?? \"default\");"),
+            "default\n"
+        );
+    }
+
+    #[test]
+    fn test_nullish_zero() {
+        // 0 is NOT nullish, so ?? should return 0
+        assert_eq!(
+            eval_and_capture("let a = 0; print(a ?? 42);"),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn test_nullish_empty_string() {
+        // Empty string is NOT nullish, so ?? should return ""
+        assert_eq!(
+            eval_and_capture("let a = \"\"; print(a ?? \"default\");"),
+            "\n"
+        );
+    }
+
+    #[test]
+    fn test_nullish_false() {
+        // false is NOT nullish, so ?? should return false
+        assert_eq!(
+            eval_and_capture("let a = false; print(a ?? true);"),
+            "false\n"
+        );
+    }
+
+    #[test]
+    fn test_nullish_chained() {
+        assert_eq!(
+            eval_and_capture("let a = null; let b = null; print(a ?? b ?? 99);"),
+            "99\n"
+        );
+    }
+
+    // --- Increment/Decrement tests ---
+
+    #[test]
+    fn test_prefix_increment() {
+        assert_eq!(
+            eval_and_capture("let x = 5; ++x; print(x);"),
+            "6\n"
+        );
+    }
+
+    #[test]
+    fn test_prefix_decrement() {
+        assert_eq!(
+            eval_and_capture("let x = 5; --x; print(x);"),
+            "4\n"
+        );
+    }
+
+    #[test]
+    fn test_prefix_increment_expression() {
+        // ++x returns the NEW value
+        assert_eq!(
+            eval_and_capture("let x = 5; let y = ++x; print(x, y);"),
+            "6 6\n"
+        );
+    }
+
+    #[test]
+    fn test_postfix_increment() {
+        // x++ returns the OLD value, but x is updated
+        assert_eq!(
+            eval_and_capture("let x = 5; let y = x++; print(x, y);"),
+            "6 5\n"
+        );
+    }
+
+    #[test]
+    fn test_postfix_decrement() {
+        // x-- returns the OLD value, but x is updated
+        assert_eq!(
+            eval_and_capture("let x = 5; let y = x--; print(x, y);"),
+            "4 5\n"
+        );
+    }
+
+    #[test]
+    fn test_increment_in_loop() {
+        assert_eq!(
+            eval_and_capture("let sum = 0; for (let i = 0; i < 5; i++) { sum += i; } print(sum);"),
+            "10\n"
+        );
+    }
 }
